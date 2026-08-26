@@ -20,11 +20,20 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
   reuso da integração `ModelProvider` com o CLI Hugging Face.
 
 O relatório de entrega desta integração está em
-`rdma-hf-provider-relatorio.md`.
+`rdma-hf-provider-relatorio.md` e registra também o status autenticado do CLI,
+a consulta de licença e o fallback para detalhes do modelo.
+O relatório da troca para HTTP nativo está em
+`rdma-hf-provider-http-relatorio.md`; ele registra a resposta factual sobre o
+empacotamento Python, o cache próprio, retomada, cancelamento, integridade,
+autenticação e a remoção do caminho por CLI.
 O levantamento de reuso da fase de UI está em
 `rdma-hf-provider-ui-reuso.md`.
 O relatório de entrega da fase de UI está em
-`rdma-hf-provider-ui-relatorio.md`.
+`rdma-hf-provider-ui-relatorio.md` e descreve o painel de status, os modelos
+gated e a licença antes do download.
+- `subsystems/freetoken-moe.md` - método, medições e invariantes do goal que
+  adiciona o caminho MoE próprio ao lado do caminho denso, incluindo o marco
+  dos quatro modelos da ksia, a salvaguarda por dtype e o goal CUDA posterior.
 
 ## subsystems/
 

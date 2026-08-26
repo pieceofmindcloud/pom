@@ -1,31 +1,65 @@
+import { lazy, Suspense } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { canAccessRoute } from "./lib/access";
 import { useProfile } from "./lib/profile";
 import { useIsSetupMode } from "./lib/queries";
-import { Setup } from "./routes/Setup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
-import { Chat } from "./routes/Chat";
-import { Dashboard } from "./routes/Dashboard";
-import { LogsByToken } from "./routes/LogsByToken";
-import { LogsLive } from "./routes/LogsLive";
-import { ModelPaths } from "./routes/ModelPaths";
-import { NetworkSettings } from "./routes/NetworkSettings";
-import { NotFound } from "./routes/NotFound";
-import { DeployModel } from "./routes/DeployModel";
-import { Deployments } from "./routes/Deployments";
-import { Shards } from "./routes/Shards";
-import { SliceModels } from "./routes/SliceModels";
-import { ConnectionKeys, TokenKeys } from "./routes/Keys";
-import { SendFile } from "./routes/SendFile";
-import { Transfers } from "./routes/Transfers";
-import { WholeModels } from "./routes/WholeModels";
-import { RemoteModels } from "./routes/RemoteModels";
-import { Documentation } from "./routes/Documentation";
-import { Forbidden } from "./routes/Forbidden";
 import { useI18n } from "./i18n/provider";
+
+/**
+ * Route modules are loaded on demand so the dashboard does not pay for every
+ * screen, editor and visualization before the operator opens it.
+ */
+export const routeLoaders = {
+  setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
+  chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
+  dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
+  logsByToken: () => import("./routes/LogsByToken").then(({ LogsByToken }) => LogsByToken),
+  logsLive: () => import("./routes/LogsLive").then(({ LogsLive }) => LogsLive),
+  modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
+  networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
+  notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
+  deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
+  deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
+  shards: () => import("./routes/Shards").then(({ Shards }) => Shards),
+  sliceModels: () => import("./routes/SliceModels").then(({ SliceModels }) => SliceModels),
+  tokenKeys: () => import("./routes/Keys").then(({ TokenKeys }) => TokenKeys),
+  connectionKeys: () => import("./routes/Keys").then(({ ConnectionKeys }) => ConnectionKeys),
+  sendFile: () => import("./routes/SendFile").then(({ SendFile }) => SendFile),
+  transfers: () => import("./routes/Transfers").then(({ Transfers }) => Transfers),
+  wholeModels: () => import("./routes/WholeModels").then(({ WholeModels }) => WholeModels),
+  remoteModels: () => import("./routes/RemoteModels").then(({ RemoteModels }) => RemoteModels),
+  documentation: () => import("./routes/Documentation").then(({ Documentation }) => Documentation),
+  forbidden: () => import("./routes/Forbidden").then(({ Forbidden }) => Forbidden),
+};
+
+function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>) {
+  return lazy(() => loader().then((Component) => ({ default: Component })));
+}
+
+const Setup = lazyRoute(routeLoaders.setup);
+const Chat = lazyRoute(routeLoaders.chat);
+const Dashboard = lazyRoute(routeLoaders.dashboard);
+const LogsByToken = lazyRoute(routeLoaders.logsByToken);
+const LogsLive = lazyRoute(routeLoaders.logsLive);
+const ModelPaths = lazyRoute(routeLoaders.modelPaths);
+const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
+const NotFound = lazyRoute(routeLoaders.notFound);
+const DeployModel = lazyRoute(routeLoaders.deployModel);
+const Deployments = lazyRoute(routeLoaders.deployments);
+const Shards = lazyRoute(routeLoaders.shards);
+const SliceModels = lazyRoute(routeLoaders.sliceModels);
+const TokenKeys = lazyRoute(routeLoaders.tokenKeys);
+const ConnectionKeys = lazyRoute(routeLoaders.connectionKeys);
+const SendFile = lazyRoute(routeLoaders.sendFile);
+const Transfers = lazyRoute(routeLoaders.transfers);
+const WholeModels = lazyRoute(routeLoaders.wholeModels);
+const RemoteModels = lazyRoute(routeLoaders.remoteModels);
+const Documentation = lazyRoute(routeLoaders.documentation);
+const Forbidden = lazyRoute(routeLoaders.forbidden);
 
 /**
  * Route changes cross-fade upward by a few pixels — enough to read as a new
@@ -42,6 +76,15 @@ function Page({ children }: { children: React.ReactNode }) {
     >
       {children}
     </motion.div>
+  );
+}
+
+function RouteFallback({ fullScreen = false }: { fullScreen?: boolean }) {
+  return (
+    <div
+      className={fullScreen ? "min-h-screen bg-ink" : "h-full min-h-[12rem] bg-ink"}
+      aria-busy="true"
+    />
   );
 }
 
@@ -84,7 +127,15 @@ export default function App() {
   // Undefined means the probe has not answered yet. Rendering either branch on
   // a guess flashes the wrong screen, so hold the paint for one request.
   if (isSetup === undefined) return <div className="h-full bg-ink" />;
-  if (isSetup) return <Setup />;
+  if (isSetup) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={<RouteFallback fullScreen />}>
+          <Setup />
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 w-full overflow-hidden">
@@ -113,46 +164,46 @@ export default function App() {
               : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
           }
         >
-          {!allowed ? (
-            <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
-              <ErrorBoundary resetKey={location.pathname}>
-                <Page><Forbidden /></Page>
-              </ErrorBoundary>
-            </div>
-          ) : isChat ? (
-            <ErrorBoundary resetKey={location.pathname}>
-              <Chat />
-            </ErrorBoundary>
-          ) : (
-            <div className={isFullBleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
-              <ErrorBoundary resetKey={location.pathname}>
-                <AnimatePresence mode="wait">
-                  <Routes location={location} key={location.pathname}>
-                    <Route path="/" element={<Page><Dashboard /></Page>} />
-                    <Route path="/modelos" element={<Page><WholeModels /></Page>} />
-                    <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
-                    <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
-                    <Route path="/fatias" element={<Page><Shards /></Page>} />
-                    <Route path="/implantar" element={<Page><DeployModel /></Page>} />
-                    <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
-                    {/* Keep the former deploy URL working for old bookmarks. */}
-                    <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
-                    <Route path="/transferencias" element={<Page><Transfers /></Page>} />
-                    <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
-                    <Route path="/logs" element={<Page><LogsByToken /></Page>} />
-                    <Route path="/logs/ao-vivo" element={<Page><LogsLive /></Page>} />
-                    <Route path="/documentacao" element={<Page><Documentation /></Page>} />
-                    <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
-                    <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
-                    <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
-                    <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
-                    <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
-                    <Route path="*" element={<Page><NotFound /></Page>} />
-                  </Routes>
-                </AnimatePresence>
-              </ErrorBoundary>
-            </div>
-          )}
+          <ErrorBoundary resetKey={location.pathname}>
+            <Suspense fallback={<RouteFallback />}>
+              {!allowed ? (
+                <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+                  <Page>
+                    <Forbidden />
+                  </Page>
+                </div>
+              ) : isChat ? (
+                <Chat />
+              ) : (
+                <div className={isFullBleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
+                  <AnimatePresence mode="wait">
+                    <Routes location={location} key={location.pathname}>
+                      <Route path="/" element={<Page><Dashboard /></Page>} />
+                      <Route path="/modelos" element={<Page><WholeModels /></Page>} />
+                      <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
+                      <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
+                      <Route path="/fatias" element={<Page><Shards /></Page>} />
+                      <Route path="/implantar" element={<Page><DeployModel /></Page>} />
+                      <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
+                      {/* Keep the former deploy URL working for old bookmarks. */}
+                      <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
+                      <Route path="/transferencias" element={<Page><Transfers /></Page>} />
+                      <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
+                      <Route path="/logs" element={<Page><LogsByToken /></Page>} />
+                      <Route path="/logs/ao-vivo" element={<Page><LogsLive /></Page>} />
+                      <Route path="/documentacao" element={<Page><Documentation /></Page>} />
+                      <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
+                      <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
+                      <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
+                      <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
+                      <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
+                      <Route path="*" element={<Page><NotFound /></Page>} />
+                    </Routes>
+                  </AnimatePresence>
+                </div>
+              )}
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
     </div>

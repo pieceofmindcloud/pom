@@ -1,8 +1,7 @@
 //! Contrato agnóstico para fontes de modelos.
 //!
-//! Este módulo não conhece o Hugging Face. A implementação baseada no CLI
-//! vive em `huggingface.rs`; os tipos daqui são o limite que uma UI ou um
-//! provider HTTP futuro pode consumir.
+//! Este módulo não conhece o transporte do Hugging Face. Os tipos daqui são o
+//! limite estável que a UI e qualquer provider remoto podem consumir.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -16,37 +15,24 @@ pub type ProgressSender = UnboundedSender<DownloadProgress>;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum HfError {
-    HfCliNotInstalled,
     HfAuthenticationRequired,
     HfRepositoryNotFound,
+    HfFileNotFound,
     HfAccessDenied,
     HfRateLimited,
-    HfDownloadFailed {
-        message: String,
-    },
-    HfInvalidResponse {
-        message: String,
-    },
-    InvalidInput {
-        field: String,
-        message: String,
-    },
-    ProcessFailed {
-        exit_code: Option<i32>,
-        message: String,
-    },
-    Io {
-        message: String,
-    },
+    HfDownloadFailed { message: String },
+    HfInvalidResponse { message: String },
+    InvalidInput { field: String, message: String },
+    Io { message: String },
     Cancelled,
 }
 
 impl fmt::Debug for HfError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::HfCliNotInstalled => f.write_str("HfCliNotInstalled"),
             Self::HfAuthenticationRequired => f.write_str("HfAuthenticationRequired"),
             Self::HfRepositoryNotFound => f.write_str("HfRepositoryNotFound"),
+            Self::HfFileNotFound => f.write_str("HfFileNotFound"),
             Self::HfAccessDenied => f.write_str("HfAccessDenied"),
             Self::HfRateLimited => f.write_str("HfRateLimited"),
             Self::HfDownloadFailed { message } => f
@@ -62,11 +48,6 @@ impl fmt::Debug for HfError {
                 .field("field", field)
                 .field("message", &redact_sensitive(message))
                 .finish(),
-            Self::ProcessFailed { exit_code, message } => f
-                .debug_struct("ProcessFailed")
-                .field("exit_code", exit_code)
-                .field("message", &redact_sensitive(message))
-                .finish(),
             Self::Io { message } => f
                 .debug_struct("Io")
                 .field("message", &redact_sensitive(message))
@@ -79,11 +60,11 @@ impl fmt::Debug for HfError {
 impl fmt::Display for HfError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::HfCliNotInstalled => write!(f, "o CLI hf não está instalado ou não está no PATH"),
             Self::HfAuthenticationRequired => {
                 write!(f, "autenticação do Hugging Face é necessária")
             }
             Self::HfRepositoryNotFound => write!(f, "repositório do Hugging Face não encontrado"),
+            Self::HfFileNotFound => write!(f, "arquivo do Hugging Face não encontrado"),
             Self::HfAccessDenied => write!(f, "acesso ao repositório do Hugging Face negado"),
             Self::HfRateLimited => {
                 write!(f, "o Hugging Face recusou a requisição por limite de uso")
@@ -100,13 +81,6 @@ impl fmt::Display for HfError {
             ),
             Self::InvalidInput { field, message } => {
                 write!(f, "{field} inválido: {}", redact_sensitive(message))
-            }
-            Self::ProcessFailed { exit_code, message } => {
-                write!(
-                    f,
-                    "processo hf falhou (código {exit_code:?}): {}",
-                    redact_sensitive(message)
-                )
             }
             Self::Io { message } => {
                 write!(f, "operação local falhou: {}", redact_sensitive(message))
@@ -228,6 +202,7 @@ pub struct HfCliStatus {
 }
 
 impl HfCliStatus {
+    #[cfg(test)]
     pub fn not_installed() -> Self {
         Self {
             installed: false,
@@ -517,7 +492,6 @@ pub fn gguf_metadata(filename: &str) -> GgufMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn rejects_repo_id_traversal() {
@@ -606,10 +580,5 @@ mod tests {
         assert_eq!(manifest.files[0].filename, "model.gguf");
         assert!(manifest.files[0].sha256.is_some());
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[allow(dead_code)]
-    fn _path_type_is_portable(path: PathBuf) -> PathBuf {
-        path
     }
 }

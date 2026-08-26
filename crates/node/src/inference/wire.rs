@@ -23,16 +23,25 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-/// Largest decoded tensor payload accepted from an inference peer. The Axum
-/// handlers apply the same body limit before this decoder sees the frame.
-pub const MAX_FRAME_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// Largest inference frame body accepted from an authenticated peer. The
+/// previous 16 MiB ceiling was smaller than a normal multi-session hidden
+/// batch for wide models, so it rejected valid work before the peer could
+/// produce a token.
+pub const MAX_FRAME_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// The first and only inference wire version. The frame already carries one
 /// or more independent items, so there is no separate single-item legacy
 /// format to negotiate.
 pub const BATCH_FRAME_VERSION: u32 = 1;
 
-const MAX_BATCH_HEADER_BYTES: usize = 1024 * 1024;
+pub const MAX_BATCH_HEADER_BYTES: usize = 1024 * 1024;
+
+/// Payload budget that leaves room for the largest permitted batch header and
+/// its four-byte length prefix. The relay uses this when splitting coalesced
+/// calls, so the encoded body also fits the Axum limit.
+pub const MAX_BATCH_PAYLOAD_BYTES: usize = MAX_FRAME_PAYLOAD_BYTES
+    .saturating_sub(MAX_BATCH_HEADER_BYTES)
+    .saturating_sub(4);
 
 /// Marker retained at call boundaries while all inference traffic uses the
 /// canonical batch frame. Compression negotiation is intentionally absent from
@@ -498,6 +507,16 @@ fn frame_bytes(head: Vec<u8>, payload: Vec<u8>) -> Result<Vec<u8>> {
     if head.len() > u32::MAX as usize {
         return Err(anyhow!("cabeçalho excede o limite do protocolo"));
     }
+    let frame_len = 4usize
+        .checked_add(head.len())
+        .and_then(|len| len.checked_add(payload.len()))
+        .ok_or_else(|| anyhow!("corpo do frame excede o limite numérico"))?;
+    if frame_len > MAX_FRAME_PAYLOAD_BYTES {
+        return Err(anyhow!(
+            "corpo do frame excede limite de {} bytes",
+            MAX_FRAME_PAYLOAD_BYTES
+        ));
+    }
     let mut out = Vec::with_capacity(4 + head.len() + payload.len());
     out.extend_from_slice(&(head.len() as u32).to_be_bytes());
     out.extend_from_slice(&head);
@@ -585,6 +604,26 @@ fn checked_tensor_bytes(shape: [usize; 2], dtype: WireDtype) -> Result<usize> {
         ));
     }
     Ok(bytes)
+}
+
+/// Number of bytes an owned tensor occupies after wire conversion, without
+/// allocating the converted payload. The relay uses this to split a
+/// multi-item frame before encoding it.
+pub fn tensor_payload_len(tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype) -> Result<usize> {
+    let Some((values, shape)) = tensor else {
+        return Ok(0);
+    };
+    let expected_values = shape[0]
+        .checked_mul(shape[1])
+        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    if values.len() != expected_values {
+        return Err(anyhow!(
+            "tensor com {} valores não bate com shape {:?}",
+            values.len(),
+            shape
+        ));
+    }
+    checked_tensor_bytes(shape, dtype)
 }
 
 // ── f16 conversion ───────────────────────────────────────────────────────────

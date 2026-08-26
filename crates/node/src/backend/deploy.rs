@@ -70,8 +70,9 @@ use crate::gateway::GatewayState;
 use crate::network::PeerInfo;
 use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
-    jobs, launch, new_job, set_job, set_job_progress, LaunchRequest, LaunchTarget, MergeSource,
-    RuntimeParams, PEER_TIMEOUT,
+    jobs, launch, new_job, set_job, set_job_progress, InferenceMode, LaunchRequest, LaunchTarget,
+    LayerCut, MergeSource, ModelLayerOptions, RuntimeParams, SliceRange, SliceRangesRequest,
+    PEER_TIMEOUT,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -452,6 +453,10 @@ pub struct DeployRequest {
     /// decides, and the screen shows the decision.
     #[serde(default)]
     pub selection: Option<Vec<SelectedSlice>>,
+    /// Prefix cut requested from a whole model proposer. The remainder stays
+    /// on that proposer as the next pipeline stage.
+    #[serde(default)]
+    pub whole_slice: Option<WholeSliceSelection>,
     /// Join adjacent slices assigned to the same machine into a single file,
     /// so that run becomes one pipeline step. `false` keeps each selected
     /// range as its own pipeline step.
@@ -462,6 +467,23 @@ pub struct DeployRequest {
     /// workers extraem o próprio shard de tensor.
     #[serde(default)]
     pub tp: Option<TpLaunch>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WholeSliceSelection {
+    pub source_node_id: String,
+    pub target_node_id: String,
+    pub end_layer: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WholeLayerOptions {
+    pub source_node_id: String,
+    pub total_layers: u32,
+    pub cuts: Vec<LayerCut>,
+    pub granularity: Option<u32>,
+    pub rule: String,
+    pub reason: Option<String>,
 }
 
 /// Especificação de um grupo de tensor parallelism para o deploy.
@@ -515,10 +537,19 @@ struct HeldShard {
     /// `Machine::holds`. `None` num modelo inteiro, que não é parte de rodada
     /// nenhuma.
     sha256: Option<String>,
+    /// Identidade da rodada de fatiamento que produziu a parte.
+    pom_id: Option<String>,
+    /// Planner-only range backed by a whole GGUF that still needs local
+    /// materialization before it can be transferred or loaded.
+    virtual_slice: bool,
     /// Rank TP desta parte, quando a rodada foi fatiada para tensor parallelism.
     tp_rank: Option<u32>,
     /// Número total de ranks desta rodada TP.
     tp_size: Option<u32>,
+    /// Whether the actual GGUF metadata identifies this model as MoE.
+    is_moe: bool,
+    /// Evidência do modelo lida no GGUF, quando o peer conseguiu apurá-la.
+    model_capabilities: Option<crate::gguf::ModelCapabilityEvidence>,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -538,6 +569,8 @@ struct Machine {
     /// inferência, preservadas para o grupo TP.
     libp2p_peer_id: Option<String>,
     supports_tunnel: bool,
+    /// Capacidades runtime anunciadas pelo peer selecionado.
+    inference_capabilities: Option<Vec<String>>,
     /// Memory the weights would have to fit in: free VRAM on a machine with a
     /// discrete GPU, available RAM anywhere else. `0` means the machine did not
     /// answer, and nothing is inferred from that.
@@ -588,6 +621,11 @@ impl Machine {
         self.held
             .iter()
             .find(|s| s.start_layer == start && s.end_layer == end)
+    }
+    fn holds_ready(&self, start: u32, end: u32) -> Option<&HeldShard> {
+        self.held
+            .iter()
+            .find(|s| s.start_layer == start && s.end_layer == end && !s.virtual_slice)
     }
     fn holds_tp(&self, start: u32, end: u32, rank: u32, size: u32) -> Option<&HeldShard> {
         self.held.iter().find(|s| {
@@ -745,6 +783,19 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                         .iter()
                         .any(|value| value == crate::pipeline::CAP_LIBP2P_TUNNEL)
                 });
+            let inference_capabilities = node
+                .get("inference_frame_capabilities")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    (!peer.inference_frame_capabilities.is_empty())
+                        .then(|| peer.inference_frame_capabilities.clone())
+                });
             let rtt_report = match rtt {
                 Ok(response) if response.status().is_success() => {
                     response.json::<RttReport>().await.ok()
@@ -761,20 +812,47 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     .flatten()
                     .filter(|set| set.get("group").and_then(|g| g.as_str()) == Some(group.as_str()))
                     .flat_map(|set| {
+                        let pom_id = set.get("pom_id").and_then(|value| value.as_str());
                         set.get("shards")
                             .and_then(|v| v.as_array())
                             .into_iter()
                             .flatten()
+                            .map(move |shard| (shard, pom_id))
                     })
-                    .filter_map(parse_shard)
+                    .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
                     .collect(),
-                DeployKind::Whole => body
-                    .get("models")
-                    .and_then(|v| v.as_array())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|m| parse_whole(m, &group))
-                    .collect(),
+                DeployKind::Whole => {
+                    let mut models = body
+                        .get("models")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|m| parse_whole(m, &group))
+                        .collect::<Vec<_>>();
+                    let mut slices = body
+                        .get("shard_sets")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter(|set| {
+                            set.get("group").and_then(|value| value.as_str())
+                                == Some(group.as_str())
+                                || set.get("model_label").and_then(|value| value.as_str())
+                                    == Some(group.as_str())
+                        })
+                        .flat_map(|set| {
+                            let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                            set.get("shards")
+                                .and_then(|v| v.as_array())
+                                .into_iter()
+                                .flatten()
+                                .map(move |shard| (shard, pom_id))
+                        })
+                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                        .collect::<Vec<_>>();
+                    models.append(&mut slices);
+                    models
+                }
                 DeployKind::TensorParallel => {
                     let parts: Vec<HeldShard> = body
                         .get("shard_sets")
@@ -787,12 +865,14 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                                     == Some(group.as_str())
                         })
                         .flat_map(|set| {
+                            let pom_id = set.get("pom_id").and_then(|value| value.as_str());
                             set.get("tp_parts")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
+                                .map(move |shard| (shard, pom_id))
                         })
-                        .filter_map(parse_shard)
+                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
                         .collect();
                     if parts.is_empty() {
                         body.get("models")
@@ -825,6 +905,7 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     addr_candidates,
                     libp2p_peer_id,
                     supports_tunnel,
+                    inference_capabilities,
                     hostname: if peer.hostname.is_empty() && is_self {
                         body.get("hostname")
                             .and_then(|h| h.as_str())
@@ -912,7 +993,7 @@ fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) {
     (gpu, ram)
 }
 
-fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
+fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option<HeldShard> {
     let range = v.get("shard_range")?.as_array()?;
     Some(HeldShard {
         start_layer: range.first()?.as_u64()? as u32,
@@ -930,6 +1011,8 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
             .and_then(|h| h.as_str())
             .filter(|h| crate::pom::is_sha256_hex(h))
             .map(|h| h.to_string()),
+        pom_id: pom_id.map(str::to_string),
+        virtual_slice: false,
         tp_rank: v
             .get("tp_rank")
             .and_then(|rank| rank.as_u64())
@@ -938,6 +1021,13 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
             .get("tp_size")
             .and_then(|size| size.as_u64())
             .map(|size| size as u32),
+        is_moe: v
+            .get("is_moe")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        model_capabilities: v
+            .get("capabilities")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     })
 }
 
@@ -978,8 +1068,17 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
         sha256: None,
+        pom_id: None,
+        virtual_slice: false,
         tp_rank: None,
         tp_size: None,
+        is_moe: v
+            .get("is_moe")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        model_capabilities: v
+            .get("capabilities")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     })
 }
 
@@ -1056,6 +1155,9 @@ pub struct StepPart {
     /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
     /// arquivo solto, e sabe conferir o que chegou.
     source_sha256: Option<String>,
+    /// True when the source is a virtual range that still has to be cut out
+    /// of its whole GGUF before it can be transferred or launched.
+    source_needs_split: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1082,6 +1184,8 @@ pub struct Step {
     /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
     /// arquivo solto, e sabe conferir o que chegou.
     source_sha256: Option<String>,
+    /// True when the source is a virtual range backed by a whole GGUF.
+    source_needs_split: bool,
     /// Where it will be on the target once it lands, when known up front.
     target_path: Option<String>,
     /// Entry point of the pipeline — whoever holds layer 0.
@@ -1138,6 +1242,18 @@ pub struct Plan {
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     kind: DeployKind,
+    /// True only when the surveyed GGUF metadata reports more than one expert.
+    /// The UI must never infer this from a filename or architecture label.
+    is_moe: bool,
+    /// Whether this plan can honor the requested inference mode.
+    inference_mode_supported: bool,
+    /// Explicit reason when the selected execution mode cannot be honored.
+    inference_mode_reason: Option<String>,
+    /// Capacidades condicionais apuradas para os alvos deste plano.
+    capabilities: crate::capabilities::DeploymentCapabilities,
+    /// Real cut points from the whole GGUF proposer, when this model can be
+    /// split locally for a destination that lacks the selected slice.
+    layer_options: Option<WholeLayerOptions>,
     /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
     /// usa isto para gerar os alvos dos workers.
     tp: Option<TpLaunch>,
@@ -1207,6 +1323,79 @@ pub struct LoadDistribution {
     projected: u32,
     selected: bool,
 }
+
+#[derive(Debug, Clone)]
+struct RequestedModelIdentity {
+    proof: Option<crate::deployment::DeploymentIdentity>,
+    /// Caminhos só valem como prova no peer que os anunciou. Eles existem
+    /// mesmo quando o hash não pôde ser calculado, para a reserva aprovada.
+    paths_by_peer: HashMap<String, String>,
+}
+
+fn deployment_identity_matches(
+    desired: &RequestedModelIdentity,
+    current: &crate::deployment::DeploymentModel,
+    peer_id: &str,
+    current_path: Option<&str>,
+) -> bool {
+    let known_current = current.identity.clone().or_else(|| {
+        current
+            .pom_id
+            .clone()
+            .map(|pom_id| crate::deployment::DeploymentIdentity::PomId { pom_id })
+    });
+    if desired.proof.is_some() && desired.proof == known_current {
+        return true;
+    }
+    desired
+        .paths_by_peer
+        .get(peer_id)
+        .zip(current_path)
+        .is_some_and(|(desired_path, current_path)| desired_path == current_path)
+}
+
+fn node_is_idle(snapshot: &serde_json::Value) -> bool {
+    snapshot
+        .get("config")
+        .is_some_and(|config| config.is_null())
+        && snapshot
+            .pointer("/status/state")
+            .and_then(|state| state.as_str())
+            == Some("disabled")
+        && snapshot
+            .get("active_deployment")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .is_empty()
+        && snapshot
+            .get("active_model")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .is_empty()
+}
+
+fn node_state_detail(snapshot: &serde_json::Value) -> String {
+    format!(
+        "estado={}, modelo={}, implantação={}",
+        snapshot
+            .pointer("/status/state")
+            .and_then(|value| value.as_str())
+            .unwrap_or("desconhecido"),
+        snapshot
+            .get("active_model")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("nenhum"),
+        snapshot
+            .get("active_deployment")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("nenhuma"),
+    )
+}
+
+const DEPLOY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const DEPLOY_IDLE_POLL: Duration = Duration::from_millis(250);
 
 /// Every distinct range anyone holds, in layer order.
 fn candidates(machines: &[Machine]) -> Vec<Candidate> {
@@ -1395,7 +1584,7 @@ fn target_capacity_mb(machine: &Machine) -> u64 {
 
 fn target_capacity_class(candidate: &Candidate, machine: &Machine) -> u8 {
     if machine
-        .holds(candidate.start_layer, candidate.end_layer)
+        .holds_ready(candidate.start_layer, candidate.end_layer)
         .is_some()
     {
         return 0;
@@ -1521,7 +1710,331 @@ fn plan_with_options(
         deployment_name,
         preferred_node_ids,
         &PairwiseRtt::default(),
+        None,
     )
+}
+
+fn combine_known(values: impl Iterator<Item = Option<bool>>) -> Option<bool> {
+    let mut found = false;
+    for value in values {
+        found = true;
+        if value == Some(false) {
+            return Some(false);
+        }
+        if value.is_none() {
+            return None;
+        }
+    }
+    found.then_some(true)
+}
+
+fn selected_model_capability(
+    steps: &[Step],
+    machines: &[Machine],
+    select: impl Fn(&crate::gguf::ModelCapabilityEvidence) -> Option<bool>,
+) -> Option<bool> {
+    let mut values = Vec::new();
+    for step in steps {
+        let ranges = if step.parts.is_empty() {
+            vec![(step.start_layer, step.end_layer)]
+        } else {
+            step.parts
+                .iter()
+                .map(|part| (part.start_layer, part.end_layer))
+                .collect()
+        };
+        for (start_layer, end_layer) in ranges {
+            let evidence = machines
+                .iter()
+                .find(|machine| machine.node_id == step.target_node_id)
+                .and_then(|machine| machine.holds(start_layer, end_layer))
+                .or_else(|| {
+                    machines
+                        .iter()
+                        .find_map(|machine| machine.holds(start_layer, end_layer))
+                })
+                .and_then(|shard| shard.model_capabilities.as_ref())
+                .and_then(&select);
+            values.push(evidence);
+        }
+    }
+    combine_known(values.into_iter())
+}
+
+fn selected_final_model_capability(
+    steps: &[Step],
+    machines: &[Machine],
+    select: impl Fn(&crate::gguf::ModelCapabilityEvidence) -> Option<bool>,
+) -> Option<bool> {
+    let step = steps.last()?;
+    let (start_layer, end_layer) = step
+        .parts
+        .last()
+        .map(|part| (part.start_layer, part.end_layer))
+        .unwrap_or((step.start_layer, step.end_layer));
+    machines
+        .iter()
+        .find(|machine| machine.node_id == step.target_node_id)
+        .and_then(|machine| machine.holds(start_layer, end_layer))
+        .or_else(|| {
+            machines
+                .iter()
+                .find_map(|machine| machine.holds(start_layer, end_layer))
+        })
+        .and_then(|shard| shard.model_capabilities.as_ref())
+        .and_then(select)
+}
+
+fn selected_runtime_capability(
+    steps: &[Step],
+    machines: &[Machine],
+    capability: &str,
+) -> Option<bool> {
+    combine_known(steps.iter().map(|step| {
+        machines
+            .iter()
+            .find(|machine| machine.node_id == step.target_node_id)
+            .and_then(|machine| machine.inference_capabilities.as_ref())
+            .map(|caps| caps.iter().any(|candidate| candidate == capability))
+    }))
+}
+
+fn selected_runtime_capability_for_step(
+    step: &Step,
+    machines: &[Machine],
+    capability: &str,
+) -> Option<bool> {
+    machines
+        .iter()
+        .find(|machine| machine.node_id == step.target_node_id)
+        .and_then(|machine| machine.inference_capabilities.as_ref())
+        .map(|caps| caps.iter().any(|candidate| candidate == capability))
+}
+
+fn runtime_capability_for_ui(
+    value: Option<bool>,
+    source: &str,
+    supported_reason: &str,
+    unsupported_reason: &str,
+    unknown_reason: &str,
+) -> crate::capabilities::Capability {
+    match value {
+        Some(true) => crate::capabilities::supported(source, supported_reason),
+        Some(false) => {
+            let mut capability = crate::capabilities::supported(source, unsupported_reason);
+            capability.warning = Some(format!(
+                "Limitação do runtime: {unsupported_reason}; a opção permanece acionável e pode não ser executada."
+            ));
+            capability
+        }
+        None => {
+            let mut capability = crate::capabilities::unknown(source, unknown_reason);
+            capability.warning = Some(
+                "O runtime não confirmou esta capacidade; ligá-la é por conta e risco do usuário."
+                    .to_string(),
+            );
+            capability
+        }
+    }
+}
+
+fn capability_from_bool(
+    value: Option<bool>,
+    source: &str,
+    supported_reason: &str,
+    unsupported_reason: &str,
+    unknown_reason: &str,
+) -> crate::capabilities::Capability {
+    match value {
+        Some(true) => crate::capabilities::supported(source, supported_reason),
+        Some(false) => crate::capabilities::unsupported(source, unsupported_reason),
+        None => crate::capabilities::unknown(source, unknown_reason),
+    }
+}
+
+fn no_embeddings_topology(
+    steps: &[Step],
+    total_layers: Option<u32>,
+    kind: DeployKind,
+) -> crate::capabilities::NoEmbeddingsEvaluation {
+    let mut ranges = Vec::new();
+    if kind == DeployKind::Shards || (kind == DeployKind::Whole && steps.len() > 1) {
+        for step in steps {
+            let range = (step.start_layer, step.end_layer);
+            if !ranges.contains(&range) {
+                ranges.push(range);
+            }
+        }
+    } else if !steps.is_empty() {
+        ranges.push((steps[0].start_layer, steps[0].end_layer));
+    }
+    let count = if ranges.is_empty() {
+        None
+    } else {
+        Some(ranges.len() as u32)
+    };
+    let peers = steps
+        .iter()
+        .map(|step| {
+            let index = ranges
+                .iter()
+                .position(|range| *range == (step.start_layer, step.end_layer))
+                .map(|value| value as u32);
+            crate::capabilities::PeerTopology {
+                node_id: step.target_node_id.clone(),
+                start_layer: Some(step.start_layer),
+                end_layer: Some(step.end_layer),
+                total_layers,
+                peer_index: index,
+                peer_count: count,
+            }
+        })
+        .collect::<Vec<_>>();
+    crate::capabilities::evaluate_no_embeddings(&peers)
+}
+
+fn capabilities_for_plan(
+    steps: &[Step],
+    machines: &[Machine],
+    total_layers: Option<u32>,
+    kind: DeployKind,
+) -> (
+    crate::capabilities::DeploymentCapabilities,
+    crate::capabilities::NoEmbeddingsEvaluation,
+) {
+    let no_embeddings = no_embeddings_topology(steps, total_layers, kind);
+    let no_thinking = capability_from_bool(
+        selected_model_capability(steps, machines, |evidence| evidence.thinking),
+        "GGUF tokenizer.chat_template + tokenizer.ggml.tokens",
+        "o template e o vocabulário do modelo permitem o controle de thinking",
+        "o template e o vocabulário do modelo não oferecem o controle de thinking",
+        "o template ou o vocabulário do modelo não pôde ser confirmado",
+    );
+    let lookup = selected_runtime_capability(steps, machines, "speculate/v1-lookup");
+    let speculative_decoding = runtime_capability_for_ui(
+        lookup,
+        "capacidades runtime dos peers selecionados",
+        "todos os peers selecionados anunciam lookup especulativo",
+        "pelo menos um peer selecionado não anuncia lookup especulativo",
+        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+    );
+    let model_mtp = selected_final_model_capability(steps, machines, |evidence| evidence.mtp);
+    let runtime_mtp = combine_known(
+        [
+            lookup,
+            selected_runtime_capability(steps, machines, "speculate/v1-mtp-sliced"),
+            steps.last().and_then(|step| {
+                selected_runtime_capability_for_step(step, machines, "speculate/v1-mtp")
+            }),
+        ]
+        .into_iter(),
+    );
+    let mtp = match model_mtp {
+        Some(false) => crate::capabilities::unsupported(
+            "arquivo GGUF selecionado",
+            "o GGUF selecionado não traz previsão nextn comprovada",
+        ),
+        Some(true) => {
+            let mut capability = crate::capabilities::supported(
+                "arquivo GGUF selecionado",
+                "o GGUF selecionado traz metadata e tensores nextn comprovados",
+            );
+            match runtime_mtp {
+                Some(true) => {}
+                Some(false) => {
+                    capability.warning = Some(
+                        "Limitação do runtime: um ou mais peers não anunciam o protocolo MTP necessário; a opção permanece acionável e pode não ser executada."
+                            .to_string(),
+                    );
+                }
+                None => {
+                    capability.warning = Some(
+                        "O runtime dos peers não confirmou o protocolo MTP; ligá-lo é por conta e risco do usuário."
+                            .to_string(),
+                    );
+                }
+            }
+            capability
+        }
+        None => {
+            let mut capability = crate::capabilities::unknown(
+                "arquivo GGUF selecionado",
+                "metadata ou tensores nextn do GGUF selecionado não puderam ser confirmados",
+            );
+            if runtime_mtp.is_some() {
+                capability.warning = Some(
+                    "O runtime foi consultado, mas não substitui a prova do modelo; ligá-lo é por conta e risco do usuário."
+                        .to_string(),
+                );
+            }
+            capability
+        }
+    };
+    let mut no_embeddings = no_embeddings.capability.clone();
+    let unsafe_peers = no_embeddings_topology(steps, total_layers, kind)
+        .peers
+        .into_iter()
+        .filter(|peer| peer.safe == Some(false))
+        .map(|peer| format!("{}: {}", peer.node_id, peer.reason))
+        .collect::<Vec<_>>();
+    let unknown_peers = no_embeddings_topology(steps, total_layers, kind)
+        .peers
+        .into_iter()
+        .filter(|peer| peer.safe.is_none())
+        .map(|peer| format!("{}: {}", peer.node_id, peer.reason))
+        .collect::<Vec<_>>();
+    if !unsafe_peers.is_empty() {
+        no_embeddings.reason = format!(
+            "controle visível, mas estes peers precisam manter embeddings: {}",
+            unsafe_peers.join("; ")
+        );
+    } else if !unknown_peers.is_empty() {
+        no_embeddings.reason = format!(
+            "controle visível, mas a topologia não pôde ser confirmada em: {}",
+            unknown_peers.join("; ")
+        );
+    }
+    (
+        crate::capabilities::DeploymentCapabilities {
+            fit_memory: if kind == DeployKind::TensorParallel {
+                crate::capabilities::unsupported(
+                    "estratégia Tensor Parallelism",
+                    "o ajuste automático de memória não é compatível com Tensor Parallelism",
+                )
+            } else {
+                crate::capabilities::supported(
+                    "estratégia do plano",
+                    "esta estratégia permite o ajuste automático de memória",
+                )
+            },
+            no_thinking,
+            no_embeddings,
+            speculative_decoding,
+            mtp,
+        },
+        no_embeddings_topology(steps, total_layers, kind),
+    )
+}
+
+fn requested_capability_block(
+    params: &RuntimeParams,
+    capabilities: &crate::capabilities::DeploymentCapabilities,
+    no_embeddings: &crate::capabilities::NoEmbeddingsEvaluation,
+) -> Option<String> {
+    crate::capabilities::validate_no_embeddings(no_embeddings, params.no_embeddings)
+        .err()
+        .or_else(|| {
+            if params.fit_memory
+                && capabilities.fit_memory.state == crate::capabilities::CapabilityState::Unknown
+            {
+                Some(format!(
+                    "Ajustar à memória não pode ser confirmado: {}",
+                    capabilities.fit_memory.reason
+                ))
+            } else {
+                None
+            }
+        })
 }
 
 fn plan_with_rtt_options(
@@ -1536,11 +2049,24 @@ fn plan_with_rtt_options(
     deployment_name: &str,
     preferred_node_ids: &[String],
     pairwise_rtt: &PairwiseRtt,
+    layer_options: Option<WholeLayerOptions>,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
     let total_layers = size.value();
     let tp_pre_sliced = kind == DeployKind::TensorParallel && has_tp_parts(machines);
+    let is_moe = machines
+        .iter()
+        .flat_map(|machine| &machine.held)
+        .any(|shard| shard.is_moe);
+    let inference_mode_reason = if params.inference_mode == InferenceMode::Moe && !is_moe {
+        Some("MoE exige metadata real de experts no GGUF deste modelo.".to_string())
+    } else if kind == DeployKind::TensorParallel && is_moe {
+        Some("Tensor Parallelism não suporta MoE nesta versão.".to_string())
+    } else {
+        None
+    };
+    let inference_mode_supported = inference_mode_reason.is_none();
 
     // What we are planning: (index into `available`, target node id).
     let auto = selection.is_none();
@@ -1548,6 +2074,10 @@ fn plan_with_rtt_options(
     let mut chosen: Vec<(usize, String, PeerOverrides)> = Vec::new();
     let mut blocked: Option<String> = None;
     let mut warnings: Vec<String> = Vec::new();
+
+    if let Some(reason) = &inference_mode_reason {
+        blocked = Some(reason.clone());
+    }
 
     match selection {
         None => {
@@ -1784,16 +2314,21 @@ fn plan_with_rtt_options(
             for (i, _, _) in &grp {
                 let c = &available[*i];
                 let part_ready =
-                    target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
+                    target.is_some_and(|t| t.holds_ready(c.start_layer, c.end_layer).is_some());
                 let source = if part_ready {
                     None
                 } else {
                     machines.iter().find(|m| {
-                        Some(&m.node_id) != target.map(|t| &t.node_id)
+                        (Some(&m.node_id) != target.map(|t| &t.node_id)
+                            || m.holds(c.start_layer, c.end_layer)
+                                .is_some_and(|shard| shard.virtual_slice))
                             && m.holds(c.start_layer, c.end_layer).is_some()
                     })
                 };
-                if !part_ready && target.is_some() {
+                if !part_ready
+                    && target.is_some()
+                    && source.is_none_or(|source| source.node_id != *target_id)
+                {
                     transfer_bytes += c.size_bytes;
                 }
                 parts.push(StepPart {
@@ -1810,6 +2345,10 @@ fn plan_with_rtt_options(
                     source_sha256: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .and_then(|s| s.sha256.clone()),
+                    source_needs_split: source.is_some_and(|m| {
+                        m.holds(c.start_layer, c.end_layer)
+                            .is_some_and(|shard| shard.virtual_slice)
+                    }),
                 });
             }
 
@@ -1898,6 +2437,7 @@ fn plan_with_rtt_options(
                 source_host: None,
                 source_path: None,
                 source_sha256: None,
+                source_needs_split: false,
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
@@ -1914,16 +2454,23 @@ fn plan_with_rtt_options(
             for (i, target_id, over) in &grp {
                 let c = &available[*i];
                 let target = machines.iter().find(|m| &m.node_id == target_id);
-                let ready = target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
+                let ready =
+                    target.is_some_and(|t| t.holds_ready(c.start_layer, c.end_layer).is_some());
                 let source = if ready {
                     None
                 } else {
                     machines.iter().find(|m| {
-                        Some(&m.node_id) != target.map(|t| &t.node_id)
+                        (Some(&m.node_id) != target.map(|t| &t.node_id)
+                            || m.holds(c.start_layer, c.end_layer)
+                                .is_some_and(|shard| shard.virtual_slice))
                             && m.holds(c.start_layer, c.end_layer).is_some()
                     })
                 };
-                if !tp_pre_sliced && !ready && target.is_some() {
+                if !tp_pre_sliced
+                    && !ready
+                    && target.is_some()
+                    && source.is_none_or(|source| source.node_id != *target_id)
+                {
                     transfer_bytes += c.size_bytes;
                 }
 
@@ -2004,8 +2551,12 @@ fn plan_with_rtt_options(
                     source_sha256: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .and_then(|s| s.sha256.clone()),
+                    source_needs_split: source.is_some_and(|m| {
+                        m.holds(c.start_layer, c.end_layer)
+                            .is_some_and(|shard| shard.virtual_slice)
+                    }),
                     target_path: target
-                        .and_then(|t| t.holds(c.start_layer, c.end_layer))
+                        .and_then(|t| t.holds_ready(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
                     primary: c.start_layer == 0,
                     n_gpu_layers: over.n_gpu_layers,
@@ -2146,6 +2697,18 @@ fn plan_with_rtt_options(
             stage_ranges.push(range);
         }
     }
+    let (capabilities, no_embeddings_evaluation) =
+        capabilities_for_plan(&steps, machines, total_layers, kind);
+    if let Some(reason) =
+        requested_capability_block(params, &capabilities, &no_embeddings_evaluation)
+    {
+        if blocked.is_none() {
+            blocked = Some(reason);
+        } else {
+            warnings.push(reason);
+        }
+    }
+
     let mut route_options = Vec::new();
     for pair in stage_ranges.windows(2) {
         let from_range = pair[0];
@@ -2203,6 +2766,11 @@ fn plan_with_rtt_options(
         strategy,
         kind,
         tp,
+        is_moe,
+        inference_mode_supported,
+        inference_mode_reason,
+        capabilities,
+        layer_options,
         total_layers,
         total_layers_inferred: size.inferred(),
         complete,
@@ -2244,7 +2812,7 @@ fn alternatives(c: &Candidate, machines: &[Machine], kind: DeployKind) -> Vec<Al
     machines
         .iter()
         .map(|m| {
-            let has = m.holds(c.start_layer, c.end_layer).is_some();
+            let has = m.holds_ready(c.start_layer, c.end_layer).is_some();
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
             let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
@@ -2285,7 +2853,7 @@ fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> Vec<Alternat
         .map(|m| {
             let has = parts
                 .iter()
-                .all(|p| m.holds(p.start_layer, p.end_layer).is_some());
+                .all(|p| m.holds_ready(p.start_layer, p.end_layer).is_some());
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
             let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
@@ -2411,8 +2979,19 @@ async fn plan_endpoint(
             Err(error) => return bad(json!({ "error": error })),
         };
     let survey = survey(&state, &req.group, req.kind).await;
-    let machines = survey.machines;
+    let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
+    let layer_options = if req.kind == DeployKind::Whole {
+        whole_layer_options_for_plan(&state, &machines, &req.group).await
+    } else {
+        None
+    };
+    if let (Some(selection), Some(options)) = (&req.whole_slice, &layer_options) {
+        if let Err(error) = add_virtual_whole_slices(&mut machines, &req.group, selection, options)
+        {
+            return bad(json!({ "error": error }));
+        }
+    }
     let params = effective_params_for_kind(req.kind, &req.params);
     let mut p = plan_with_rtt_options(
         &req.group,
@@ -2426,6 +3005,7 @@ async fn plan_endpoint(
         &deployment_name,
         &req.preferred_node_ids,
         &pairwise_rtt,
+        layer_options,
     );
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() && !has_tp_parts(&machines) {
         if let Some(tp) = &req.tp {
@@ -2450,8 +3030,19 @@ async fn deploy_endpoint(
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
     let survey = survey(&state, &req.group, req.kind).await;
-    let machines = survey.machines;
+    let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
+    let layer_options = if req.kind == DeployKind::Whole {
+        whole_layer_options_for_plan(&state, &machines, &req.group).await
+    } else {
+        None
+    };
+    if let (Some(selection), Some(options)) = (&req.whole_slice, &layer_options) {
+        if let Err(error) = add_virtual_whole_slices(&mut machines, &req.group, selection, options)
+        {
+            return bad(json!({ "error": error }));
+        }
+    }
     let deployment_name =
         match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
             Ok(name) => name,
@@ -2470,6 +3061,7 @@ async fn deploy_endpoint(
         &deployment_name,
         &req.preferred_node_ids,
         &pairwise_rtt,
+        layer_options,
     );
 
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
@@ -2499,6 +3091,14 @@ async fn deploy_endpoint(
             .into_response();
     }
 
+    // A identidade é resolvida antes de criar o job e antes de tocar em um
+    // peer. Se o GGUF não puder ser provado por hash, ou a fatia não trouxer
+    // pom_id, o operador recebe a recusa na própria ação de implantar.
+    let identity = match resolve_requested_model_identity(&state, &plan, &machines).await {
+        Ok(identity) => identity,
+        Err(error) => return bad(json!({ "error": error })),
+    };
+
     let job_id = uuid::Uuid::new_v4().to_string();
     // A whole model is one machine, and "em 1 nós" is the kind of seam that
     // makes an operator wonder what else was written for the other case.
@@ -2518,7 +3118,7 @@ async fn deploy_endpoint(
     let deploy_id = crate::deployment::new_deploy_id();
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, &deploy_id, &id).await {
+        match run(state, plan, params, identity, &deploy_id, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -2859,6 +3459,7 @@ fn launch_targets(
                 merge: None,
                 n_gpu_layers: target.n_gpu_layers,
                 offload_kqv: target.offload_kqv,
+                no_embeddings: None,
                 peer_index: None,
                 peer_count: None,
                 tp: Some(tp_identity(
@@ -2889,7 +3490,7 @@ fn launch_targets(
     }
     let pipeline_peer_count = pipeline_ranges.len() as u32;
     let pipeline_fields = |step: &Step| {
-        if kind != DeployKind::Shards {
+        if kind != DeployKind::Shards && !(kind == DeployKind::Whole && steps.len() > 1) {
             return (None, None);
         }
         let index = pipeline_ranges
@@ -2909,7 +3510,7 @@ fn launch_targets(
             let mut merge: Vec<MergeSource> = Vec::new();
             for part in &step.parts {
                 let path = target_machine
-                    .and_then(|m| m.holds(part.start_layer, part.end_layer))
+                    .and_then(|m| m.holds_ready(part.start_layer, part.end_layer))
                     .map(|s| s.path.clone())
                     .ok_or_else(|| {
                         format!(
@@ -2945,6 +3546,7 @@ fn launch_targets(
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
+                no_embeddings: None,
                 peer_index,
                 peer_count,
                 tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
@@ -2953,7 +3555,7 @@ fn launch_targets(
         }
 
         let held = target_machine
-            .and_then(|m| m.holds(step.start_layer, step.end_layer))
+            .and_then(|m| m.holds_ready(step.start_layer, step.end_layer))
             .ok_or_else(|| {
                 format!(
                     "{} não achou {} depois da cópia",
@@ -2975,6 +3577,7 @@ fn launch_targets(
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
             offload_kqv: step.offload_kqv,
+            no_embeddings: None,
             peer_index,
             peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
@@ -2992,7 +3595,7 @@ fn launch_targets(
                 .find(|m| m.node_id == *worker_id)
                 .ok_or_else(|| format!("worker {worker_id} não está no cluster"))?;
             let path = worker_machine
-                .holds(head.start_layer, head.end_layer)
+                .holds_ready(head.start_layer, head.end_layer)
                 .map(|s| s.path.clone())
                 .ok_or_else(|| {
                     format!(
@@ -3012,6 +3615,7 @@ fn launch_targets(
                 merge: None,
                 n_gpu_layers: head.n_gpu_layers,
                 offload_kqv: head.offload_kqv,
+                no_embeddings: None,
                 peer_index: None,
                 peer_count: None,
                 tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
@@ -3022,14 +3626,701 @@ fn launch_targets(
     Ok(targets)
 }
 
+fn planned_model_paths(plan: &Plan) -> Vec<(String, String)> {
+    let mut paths = Vec::new();
+    let mut add = |node_id: &str, path: Option<&String>| {
+        if !node_id.is_empty() {
+            if let Some(path) = path.filter(|path| !path.is_empty()) {
+                if !paths
+                    .iter()
+                    .any(|(node, existing)| node == node_id && existing == path)
+                {
+                    paths.push((node_id.to_string(), path.clone()));
+                }
+            }
+        }
+    };
+    for step in &plan.steps {
+        add(&step.target_node_id, step.target_path.as_ref());
+        add(
+            &step.source_node_id.clone().unwrap_or_default(),
+            step.source_path.as_ref(),
+        );
+        for part in &step.parts {
+            add(
+                &part.source_node_id.clone().unwrap_or_default(),
+                part.source_path.as_ref(),
+            );
+        }
+    }
+    for target in &plan.tp_targets {
+        add(&target.target_node_id, target.target_path.as_ref());
+        add(
+            &target.source_node_id.clone().unwrap_or_default(),
+            target.source_path.as_ref(),
+        );
+    }
+    paths
+}
+
+async fn whole_layer_options_for_plan(
+    state: &GatewayState,
+    machines: &[Machine],
+    group: &str,
+) -> Option<WholeLayerOptions> {
+    let source = machines.iter().find_map(|machine| {
+        machine
+            .held
+            .iter()
+            .find(|shard| shard.start_layer == 0 && shard.total_layers == Some(shard.end_layer + 1))
+            .map(|shard| (machine, shard.path.clone(), shard.total_layers.unwrap_or(0)))
+    })?;
+    let (machine, path, total_layers) = source;
+    let result: Result<ModelLayerOptions, String> = if machine.node_id == state.network.node_id {
+        crate::webui::model_layer_options_local(state, &path).await
+    } else {
+        let Some(base) = machine.gateway_url.clone() else {
+            return Some(WholeLayerOptions {
+                source_node_id: machine.node_id.clone(),
+                total_layers,
+                cuts: Vec::new(),
+                granularity: None,
+                rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                reason: Some(format!("{} não anuncia gateway", machine.label())),
+            });
+        };
+        let Ok(client) = state.peer_http.for_peer(&machine.node_id) else {
+            return Some(WholeLayerOptions {
+                source_node_id: machine.node_id.clone(),
+                total_layers,
+                cuts: Vec::new(),
+                granularity: None,
+                rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                reason: Some(format!("não foi possível falar com {}", machine.label())),
+            });
+        };
+        let key = state.auth.read().await.connection_key.clone();
+        let response = client
+            .post(format!("{base}/api/ui/model-layer-options"))
+            .bearer_auth(key)
+            .json(&crate::webui::ModelLayerOptionsRequest { path })
+            .timeout(PEER_TIMEOUT * 4)
+            .send()
+            .await
+            .map_err(|error| {
+                format!(
+                    "não foi possível ler as regras de fatiamento em {}: {error}",
+                    machine.label()
+                )
+            });
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                return Some(WholeLayerOptions {
+                    source_node_id: machine.node_id.clone(),
+                    total_layers,
+                    cuts: Vec::new(),
+                    granularity: None,
+                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                    reason: Some(error),
+                })
+            }
+        };
+        let status = response.status();
+        let body = match response.json::<serde_json::Value>().await {
+            Ok(body) => body,
+            Err(error) => {
+                return Some(WholeLayerOptions {
+                    source_node_id: machine.node_id.clone(),
+                    total_layers,
+                    cuts: Vec::new(),
+                    granularity: None,
+                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                    reason: Some(format!(
+                        "resposta inválida das regras de fatiamento: {error}"
+                    )),
+                })
+            }
+        };
+        if !status.is_success() {
+            Err(body
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("o peer recusou a leitura das regras de fatiamento")
+                .to_string())
+        } else {
+            serde_json::from_value::<ModelLayerOptions>(body)
+                .map_err(|error| format!("resposta inválida das regras de fatiamento: {error}"))
+        }
+    };
+    match result {
+        Ok(options) => Some(WholeLayerOptions {
+            source_node_id: machine.node_id.clone(),
+            total_layers: options.total_layers,
+            cuts: options.cuts,
+            granularity: options.granularity,
+            rule: options.rule,
+            reason: None,
+        }),
+        Err(error) => Some(WholeLayerOptions {
+            source_node_id: machine.node_id.clone(),
+            total_layers,
+            cuts: Vec::new(),
+            granularity: None,
+            rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+            reason: Some(format!("{}: {}", group, error)),
+        }),
+    }
+}
+
+fn add_virtual_whole_slices(
+    machines: &mut [Machine],
+    group: &str,
+    selection: &WholeSliceSelection,
+    options: &WholeLayerOptions,
+) -> Result<(), String> {
+    if let Some(reason) = &options.reason {
+        return Err(format!(
+            "não é possível escolher camadas de {}: {}",
+            group, reason
+        ));
+    }
+    let cut = options
+        .cuts
+        .iter()
+        .find(|cut| cut.end_layer == selection.end_layer)
+        .ok_or_else(|| {
+            format!(
+                "o corte na camada L{} não respeita as regras reais do GGUF",
+                selection.end_layer
+            )
+        })?;
+    if selection.source_node_id == selection.target_node_id {
+        return Err(
+            "a máquina de origem e a máquina de destino precisam ser diferentes".to_string(),
+        );
+    }
+    let source = machines
+        .iter()
+        .find(|machine| machine.node_id == selection.source_node_id)
+        .ok_or_else(|| "a máquina que propõe o modelo não está no cluster".to_string())?;
+    let whole = source
+        .held
+        .iter()
+        .find(|shard| {
+            shard.start_layer == 0
+                && shard.end_layer + 1 == options.total_layers
+                && !shard.virtual_slice
+        })
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "{} não tem o modelo inteiro selecionado para fatiar",
+                source.label()
+            )
+        })?;
+    if !machines
+        .iter()
+        .any(|machine| machine.node_id == selection.target_node_id)
+    {
+        return Err("a máquina de destino não está no cluster".to_string());
+    }
+
+    let mut ranges = vec![(0, cut.end_layer, cut.size_bytes)];
+    if cut.end_layer + 1 < options.total_layers {
+        ranges.push((
+            cut.end_layer + 1,
+            options.total_layers - 1,
+            cut.remainder_bytes,
+        ));
+    }
+    let source = machines
+        .iter_mut()
+        .find(|machine| machine.node_id == selection.source_node_id)
+        .expect("origem validada");
+    for (start_layer, end_layer, size_bytes) in ranges {
+        if source.holds_ready(start_layer, end_layer).is_some()
+            || source
+                .holds(start_layer, end_layer)
+                .is_some_and(|shard| shard.virtual_slice)
+        {
+            continue;
+        }
+        source.held.push(HeldShard {
+            start_layer,
+            end_layer,
+            total_layers: Some(options.total_layers),
+            name: format!("{group} L{start_layer}-{end_layer}"),
+            path: whole.path.clone(),
+            size_bytes,
+            sha256: None,
+            pom_id: None,
+            virtual_slice: true,
+            tp_rank: None,
+            tp_size: None,
+            is_moe: whole.is_moe,
+            model_capabilities: whole.model_capabilities.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Cut virtual ranges on the peer that owns the whole GGUF. The actual
+/// fatiador remains in `webui`, so deploy only coordinates the local operation
+/// and receives the content-addressed paths that transfer already understands.
+async fn materialize_slices_on_peer(
+    state: &GatewayState,
+    source_node_id: &str,
+    request: &SliceRangesRequest,
+) -> Result<crate::webui::SliceRangesResponse, String> {
+    if source_node_id == state.network.node_id {
+        return crate::webui::materialize_slice_ranges(state, request).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == source_node_id)
+        .ok_or_else(|| format!("a máquina de origem {source_node_id} não está no cluster"))?;
+    let base = peer
+        .gateway_url()
+        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
+    let client = state
+        .peer_http
+        .for_peer(source_node_id)
+        .map_err(|error| format!("sem cliente para {}: {error}", peer.hostname))?;
+    let key = state.auth.read().await.connection_key.clone();
+    let response = client
+        .post(format!("{base}/api/ui/slice-ranges"))
+        .bearer_auth(key)
+        .timeout(Duration::from_secs(3600))
+        .json(request)
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "não foi possível fatiar o modelo em {}: {error}",
+                peer.hostname
+            )
+        })?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.map_err(|error| {
+        format!(
+            "{} respondeu uma materialização inválida: {error}",
+            peer.hostname
+        )
+    })?;
+    if !status.is_success() {
+        return Err(body
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("o peer recusou o fatiamento local")
+            .to_string());
+    }
+    serde_json::from_value(body).map_err(|error| {
+        format!(
+            "resposta inválida do fatiamento em {}: {error}",
+            peer.hostname
+        )
+    })
+}
+
+async fn model_identity_on_peer(
+    state: &GatewayState,
+    node_id: &str,
+    path: &str,
+    hash: bool,
+) -> Result<crate::webui::ModelIdentityResponse, String> {
+    if node_id == state.network.node_id {
+        return crate::webui::model_identity_local(state, path, hash).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == node_id)
+        .ok_or_else(|| format!("peer {node_id} não está no cluster"))?;
+    let base = peer
+        .gateway_url()
+        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
+    let client = state
+        .peer_http
+        .for_peer(node_id)
+        .map_err(|e| format!("sem cliente para {node_id}: {e}"))?;
+    let key = state.auth.read().await.connection_key.clone();
+    let response = client
+        .post(format!("{base}/api/ui/model-identity"))
+        .bearer_auth(key)
+        .timeout(PEER_TIMEOUT)
+        .json(&crate::webui::ModelIdentityRequest {
+            path: path.to_string(),
+            hash,
+        })
+        .send()
+        .await
+        .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e}"))?;
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))?;
+    if !status.is_success() {
+        return Err(body
+            .get("error")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("peer respondeu HTTP {status}")));
+    }
+    serde_json::from_value(body)
+        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))
+}
+
+async fn resolve_requested_model_identity(
+    state: &GatewayState,
+    plan: &Plan,
+    machines: &[Machine],
+) -> Result<RequestedModelIdentity, String> {
+    let mut pom_ids = Vec::new();
+    for machine in machines {
+        for shard in &machine.held {
+            if let Some(pom_id) = shard.pom_id.as_deref() {
+                if !pom_ids.iter().any(|known| known == pom_id) {
+                    pom_ids.push(pom_id.to_string());
+                }
+            }
+        }
+    }
+
+    let paths = planned_model_paths(plan);
+    if paths.is_empty() {
+        return Err(format!(
+            "identidade indisponível: o plano de {} não informa o arquivo selecionado",
+            plan.group
+        ));
+    }
+
+    let mut paths_by_peer = HashMap::new();
+    let needs_hash = if pom_ids.is_empty() {
+        match plan.kind {
+            DeployKind::Whole => true,
+            DeployKind::TensorParallel if plan.tp_targets.is_empty() => true,
+            DeployKind::Shards | DeployKind::TensorParallel => {
+                return Err(format!(
+                    "identidade indisponível: o plano de {} usa fatias sem pom_id; não é seguro provar o mesmo modelo por hash de uma fatia",
+                    plan.group
+                ));
+            }
+        }
+    } else {
+        false
+    };
+    let mut proof = if pom_ids.len() == 1 {
+        Some(crate::deployment::DeploymentIdentity::PomId {
+            pom_id: pom_ids.remove(0),
+        })
+    } else if pom_ids.len() > 1 {
+        return Err(format!(
+            "identidade indisponível: o plano de {} mistura mais de um pom_id",
+            plan.group
+        ));
+    } else {
+        None
+    };
+
+    let mut first_hash_error = None;
+    for (index, (node_id, path)) in paths.iter().enumerate() {
+        let ask_hash = needs_hash && index == 0;
+        let identity = match model_identity_on_peer(state, node_id, path, ask_hash).await {
+            Ok(identity) => identity,
+            Err(error) if ask_hash => {
+                first_hash_error = Some(error);
+                model_identity_on_peer(state, node_id, path, false)
+                    .await
+                    .map_err(|fallback| {
+                        format!(
+                            "identidade indisponível para {}: {} (reserva de caminho também falhou: {})",
+                            plan.group,
+                            first_hash_error.as_deref().unwrap_or("hash não calculado"),
+                            fallback
+                        )
+                    })?
+            }
+            Err(error) => {
+                return Err(format!(
+                    "identidade indisponível para {} em {}: {}",
+                    plan.group, node_id, error
+                ));
+            }
+        };
+        if let Some(sha256) = identity.sha256 {
+            proof = Some(crate::deployment::DeploymentIdentity::Sha256 { sha256 });
+        }
+        paths_by_peer.insert(node_id.clone(), identity.canonical_path);
+    }
+
+    if proof.is_none() && needs_hash {
+        info!(
+            model = %plan.group,
+            error = ?first_hash_error,
+            "usando caminho canônico como prova de reserva no peer de origem"
+        );
+    }
+
+    Ok(RequestedModelIdentity {
+        proof,
+        paths_by_peer,
+    })
+}
+
+async fn peer_node_snapshot(
+    state: &GatewayState,
+    peer: &PeerInfo,
+) -> Result<serde_json::Value, String> {
+    if peer.node_id == state.network.node_id {
+        let config = state.runtime.config().await;
+        let active_deployment = config
+            .as_ref()
+            .map(|config| config.deployment_name.clone())
+            .unwrap_or_default();
+        return Ok(json!({
+            "config": config,
+            "status": state.runtime.status().await,
+            "active_model": state.active_model().await,
+            "active_deployment": active_deployment,
+        }));
+    }
+    let base = peer
+        .gateway_url()
+        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
+    let client = state
+        .peer_http
+        .for_peer(&peer.node_id)
+        .map_err(|e| format!("sem cliente para {}: {e}", peer.hostname))?;
+    let response = client
+        .get(format!("{base}/api/ui/node"))
+        .timeout(PEER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("{} não respondeu: {e}", peer.hostname))?;
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("{} respondeu estado inválido: {e}", peer.hostname))?;
+    if !status.is_success() {
+        return Err(format!("{} respondeu HTTP {status}", peer.hostname));
+    }
+    Ok(body)
+}
+
+async fn canonical_current_path(
+    state: &GatewayState,
+    peer: &PeerInfo,
+    snapshot: &serde_json::Value,
+) -> Result<Option<String>, String> {
+    let Some(path) = snapshot
+        .pointer("/config/model_path")
+        .and_then(|value| value.as_str())
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        model_identity_on_peer(state, &peer.node_id, path, false)
+            .await?
+            .canonical_path,
+    ))
+}
+
+async fn wait_for_peer_idle_with_timeout(
+    state: &GatewayState,
+    peer: &PeerInfo,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let last = match peer_node_snapshot(state, peer).await {
+            Ok(snapshot) if node_is_idle(&snapshot) => return Ok(()),
+            Ok(snapshot) => node_state_detail(&snapshot),
+            Err(error) => error,
+        };
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "{} não ficou ocioso dentro do limite de {}s; ficou ocupado: {}",
+                if peer.hostname.is_empty() {
+                    &peer.node_id
+                } else {
+                    &peer.hostname
+                },
+                timeout.as_secs(),
+                last
+            ));
+        }
+        tokio::time::sleep(DEPLOY_IDLE_POLL.min(deadline - now)).await;
+    }
+}
+
+async fn prepare_existing_model(
+    state: &GatewayState,
+    group: &str,
+    desired: &RequestedModelIdentity,
+    job_id: &str,
+) -> Result<(), String> {
+    let peers = state.all_peers().await;
+    let mut to_release = Vec::new();
+
+    for peer in peers.into_iter().filter(|peer| peer.total_layers > 0) {
+        if peer.model.is_empty() {
+            return Err(format!(
+                "não foi possível provar a identidade antes de implantar {}: {} está ocupado, mas não anuncia qual modelo está servindo",
+                group, peer.hostname
+            ));
+        }
+        if peer.model != group {
+            continue;
+        }
+
+        let record = if peer.deploy_id.is_empty() {
+            None
+        } else {
+            find_record(state, &peer.deploy_id).await
+        };
+        let known_identity = record.as_ref().and_then(|record| {
+            record.model.identity.clone().or_else(|| {
+                record
+                    .model
+                    .pom_id
+                    .clone()
+                    .map(|pom_id| crate::deployment::DeploymentIdentity::PomId { pom_id })
+            })
+        });
+        if desired.proof.is_some() && desired.proof == known_identity {
+            to_release.push(peer);
+            continue;
+        }
+        if desired.proof.is_some() && known_identity.is_some() && desired.proof != known_identity {
+            continue;
+        }
+
+        let snapshot = peer_node_snapshot(state, &peer).await.map_err(|error| {
+            format!(
+                "não foi possível provar a identidade do modelo em {}: {}",
+                peer.hostname, error
+            )
+        })?;
+        let current_path = canonical_current_path(state, &peer, &snapshot)
+            .await
+            .map_err(|error| {
+                format!(
+                    "não foi possível provar a identidade do modelo em {}: {}",
+                    peer.hostname, error
+                )
+            })?;
+        let current_model = record
+            .as_ref()
+            .map(|record| record.model.clone())
+            .unwrap_or_else(|| crate::deployment::DeploymentModel {
+                label: peer.model.clone(),
+                total_layers: peer.total_layers,
+                pom_id: None,
+                identity: None,
+            });
+        if deployment_identity_matches(
+            desired,
+            &current_model,
+            &peer.node_id,
+            current_path.as_deref(),
+        ) {
+            to_release.push(peer);
+        } else {
+            return Err(format!(
+                "não foi possível provar que o modelo ativo em {} é o mesmo que {}: o registro não tem hash/pom_id e o caminho canônico não coincide",
+                peer.hostname, group
+            ));
+        }
+    }
+
+    if to_release.is_empty() {
+        return Ok(());
+    }
+
+    set_job(
+        job_id,
+        "running",
+        "desimplantando",
+        &format!(
+            "liberando {} máquina(s) que já servem este modelo",
+            to_release.len()
+        ),
+    )
+    .await;
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let releases = futures::future::join_all(to_release.iter().map(|peer| {
+        let key = key.clone();
+        let self_id = self_id.clone();
+        async move { (peer, release_one(state, peer, &key, &self_id).await) }
+    }))
+    .await;
+    let failures: Vec<String> = releases
+        .iter()
+        .filter_map(|(peer, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{}: {}", peer.hostname, error))
+        })
+        .collect();
+    if !failures.is_empty() {
+        return Err(format!(
+            "a nova implantação foi recusada porque a desimplantação falhou: {}",
+            failures.join("; ")
+        ));
+    }
+
+    set_job(
+        job_id,
+        "running",
+        "aguardando recursos ociosos",
+        "esperando as máquinas liberarem memória e encerrarem a inferência",
+    )
+    .await;
+    let waits = futures::future::join_all(to_release.iter().map(|peer| async move {
+        (
+            peer,
+            wait_for_peer_idle_with_timeout(state, peer, DEPLOY_IDLE_TIMEOUT).await,
+        )
+    }))
+    .await;
+    let failures: Vec<String> = waits
+        .iter()
+        .filter_map(|(peer, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{}: {}", peer.hostname, error))
+        })
+        .collect();
+    if !failures.is_empty() {
+        return Err(format!(
+            "a nova implantação foi recusada porque as máquinas não ficaram ociosas: {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(())
+}
+
 /// Copy what has to be copied, then bind every peer to its range.
 async fn run(
     state: GatewayState,
     plan: Plan,
     params: RuntimeParams,
+    identity: RequestedModelIdentity,
     deploy_id: &str,
     job_id: &str,
 ) -> Result<(), String> {
+    prepare_existing_model(&state, &plan.group, &identity, job_id).await?;
     let key = state.auth.read().await.connection_key.clone();
 
     // One unit of movement: a slice that has to reach a target. A merged step
@@ -3041,6 +4332,7 @@ async fn run(
         source_path: String,
         /// Hash da parte, quando a origem a tem endereçada por conteúdo.
         source_sha256: Option<String>,
+        source_needs_split: bool,
         name: String,
         start_layer: u32,
         end_layer: u32,
@@ -3066,6 +4358,7 @@ async fn run(
                 source_node_id: source_node.clone(),
                 source_path: source_path.clone(),
                 source_sha256: target.source_sha256.clone(),
+                source_needs_split: false,
                 name: target.name.clone(),
                 start_layer: target.start_layer,
                 end_layer: target.end_layer,
@@ -3092,6 +4385,7 @@ async fn run(
                         source_node_id: source_node.clone(),
                         source_path: source_path.clone(),
                         source_sha256: part.source_sha256.clone(),
+                        source_needs_split: part.source_needs_split,
                         name: part.name.clone(),
                         start_layer: part.start_layer,
                         end_layer: part.end_layer,
@@ -3112,12 +4406,85 @@ async fn run(
                     source_node_id: source_node.clone(),
                     source_path: source_path.clone(),
                     source_sha256: step.source_sha256.clone(),
+                    source_needs_split: step.source_needs_split,
                     name: step.name.clone(),
                     start_layer: step.start_layer,
                     end_layer: step.end_layer,
                 });
             }
         }
+    }
+
+    // Virtual ranges are backed by the proposer's whole GGUF. Materialize all
+    // of them on that peer before any destination asks the transfer service to
+    // pull a path. Grouping keeps one source read/manifest operation per
+    // source model even when the selected pipeline has several ranges.
+    let mut materializations: HashMap<(String, String, u32, String), Vec<SliceRange>> =
+        HashMap::new();
+    for pull in &pulls {
+        if pull.source_needs_split {
+            let ranges = materializations
+                .entry((
+                    pull.source_node_id.clone(),
+                    pull.source_path.clone(),
+                    plan.total_layers.ok_or_else(|| {
+                        format!("as fatias de {} não dizem o total de camadas", plan.group)
+                    })?,
+                    plan.group.clone(),
+                ))
+                .or_default();
+            if !ranges.iter().any(|range| {
+                range.start_layer == pull.start_layer && range.end_layer == pull.end_layer
+            }) {
+                ranges.push(SliceRange {
+                    start_layer: pull.start_layer,
+                    end_layer: pull.end_layer,
+                });
+            }
+        }
+    }
+    for ((source_node_id, source_path, total_layers, name), ranges) in materializations {
+        set_job(
+            job_id,
+            "running",
+            "fatiando modelo inteiro",
+            &format!(
+                "materializando {} faixa(s) na máquina que propôs o modelo",
+                ranges.len()
+            ),
+        )
+        .await;
+        let response = materialize_slices_on_peer(
+            &state,
+            &source_node_id,
+            &SliceRangesRequest {
+                model_path: source_path.clone(),
+                name: name.clone(),
+                total_layers,
+                ranges,
+            },
+        )
+        .await?;
+        for materialized in response.slices {
+            let Some(pull) = pulls.iter_mut().find(|pull| {
+                pull.source_needs_split
+                    && pull.source_node_id == source_node_id
+                    && pull.source_path == source_path
+                    && pull.start_layer == materialized.start_layer
+                    && pull.end_layer == materialized.end_layer
+            }) else {
+                return Err(format!(
+                    "o fatiador devolveu uma faixa L{}-{} que não estava no plano",
+                    materialized.start_layer, materialized.end_layer
+                ));
+            };
+            pull.source_path = materialized.path;
+            pull.source_sha256 = Some(materialized.sha256);
+            pull.source_needs_split = false;
+        }
+    }
+    if pulls.iter().any(|pull| pull.source_needs_split) {
+        return Err("o fatiamento local não devolveu todas as faixas pedidas".to_string());
     }
 
     // ── Phase 1: transfers ───────────────────────────────────────────────────
@@ -3142,6 +4509,9 @@ async fn run(
         // certificado dele - uma URL sozinha não tem identidade a verificar.
         let mut watching: Vec<(String, String, String)> = Vec::new();
         for pull in &pulls {
+            if pull.target_node_id == pull.source_node_id {
+                continue;
+            }
             let gateway = gateway_of(&state, &pull.target_node_id)
                 .await
                 .ok_or_else(|| format!("{} não anuncia porta de gateway", pull.target_host))?;
@@ -3202,13 +4572,21 @@ async fn run(
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
     let machines = survey(&state, &plan.group, plan.kind).await.machines;
-    let targets = launch_targets(
+    let mut targets = launch_targets(
         &plan.steps,
         &machines,
         plan.kind,
         plan.tp.as_ref(),
         &plan.tp_targets,
     )?;
+    if params.no_embeddings {
+        // O planner já validou atomicamente a topologia. Marcar cada alvo
+        // explicitamente evita que um interruptor global seja reinterpretado
+        // de forma diferente por um peer.
+        for target in &mut targets {
+            target.no_embeddings = Some(true);
+        }
+    }
 
     // The pipeline is the layer order, so the entry point is whoever holds
     // layer 0 — the same machine the screen marks "processa o prompt".
@@ -3236,6 +4614,7 @@ async fn run(
         &machines,
         total_layers,
         &params,
+        &identity,
         &state.network.node_id,
     );
 
@@ -3281,6 +4660,7 @@ fn build_record(
     machines: &[Machine],
     total_layers: u32,
     params: &RuntimeParams,
+    identity: &RequestedModelIdentity,
     created_by: &str,
 ) -> crate::deployment::Deployment {
     let kind = match plan.kind {
@@ -3322,7 +4702,13 @@ fn build_record(
         crate::deployment::DeploymentModel {
             label: plan.group.clone(),
             total_layers,
-            pom_id: None,
+            pom_id: match identity.proof.as_ref() {
+                Some(crate::deployment::DeploymentIdentity::PomId { pom_id }) => {
+                    Some(pom_id.clone())
+                }
+                _ => None,
+            },
+            identity: identity.proof.clone(),
         },
         created_by,
         nodes,
@@ -3703,6 +5089,7 @@ mod deployments_tests {
                 label: rotulo.into(),
                 total_layers: 32,
                 pom_id: None,
+                identity: None,
             },
             "coordenador",
             vec![no("n1", 0, 31)],
@@ -3983,6 +5370,7 @@ async fn add_node_endpoint(
                 merge: None,
                 n_gpu_layers: None,
                 offload_kqv: None,
+                no_embeddings: None,
                 // Um alvo por requisição, mas a posição é a do pipeline: sem
                 // isto o nó somado se diz o último da divisão.
                 peer_index: Some(peer_index),
@@ -4550,6 +5938,10 @@ mod whole_route_tests {
                     "quant": "Q4_K_M",
                     "shard_range": serde_json::Value::Null,
                     "shard_group": serde_json::Value::Null,
+                    "capabilities": {
+                        "thinking": true,
+                        "mtp": false,
+                    },
                 },
                 {
                     "id": "2",
@@ -4923,7 +6315,311 @@ mod undeploy_tests {
 }
 
 #[cfg(test)]
+mod redeploy_preflight_tests {
+    use super::*;
+    use crate::deployment::{Deployment, DeploymentIdentity, DeploymentKind, DeploymentNode};
+    use crate::gateway::testkit::state_with;
+    use axum::routing::{get as axum_get, post as axum_post};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    async fn peer_with_deployment(
+        identity: Option<DeploymentIdentity>,
+        unload_status: axum::http::StatusCode,
+        identity_path: &'static str,
+    ) -> (u16, Arc<AtomicU32>) {
+        let released = Arc::new(AtomicBool::new(false));
+        let unload_hits = Arc::new(AtomicU32::new(0));
+        let record = Deployment::new(
+            "d-aaaaaaaa".into(),
+            DeploymentKind::Whole,
+            crate::deployment::DeploymentModel {
+                label: "qwen".into(),
+                total_layers: 32,
+                pom_id: None,
+                identity,
+            },
+            "coordinator",
+            vec![DeploymentNode {
+                node_id: "peer-a".into(),
+                hostname: "ksia".into(),
+                start_layer: 0,
+                end_layer: 31,
+                peer_index: 0,
+                peer_count: 1,
+                primary: true,
+                part_sha256: None,
+                tp_rank: None,
+                config: RuntimeParams::default(),
+            }],
+        );
+        let deployments = json!({ "deployments": [record] });
+        let released_for_unload = released.clone();
+        let unload_hits_for_route = unload_hits.clone();
+        let released_for_node = released.clone();
+        let app = Router::new()
+            .route(
+                "/api/ui/deployments",
+                axum_get(move || {
+                    let deployments = deployments.clone();
+                    async move { Json(deployments) }
+                }),
+            )
+            .route(
+                "/api/ui/unload",
+                axum_post(move || {
+                    let released = released_for_unload.clone();
+                    let hits = unload_hits_for_route.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        if unload_status.is_success() {
+                            released.store(true, Ordering::SeqCst);
+                        }
+                        (
+                            unload_status,
+                            Json(json!({ "unloaded": unload_status.is_success() })),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/api/ui/node",
+                axum_get(move || {
+                    let released = released_for_node.clone();
+                    async move {
+                        if released.load(Ordering::SeqCst) {
+                            Json(json!({
+                                "config": null,
+                                "status": {"state": "disabled"},
+                                "active_model": "",
+                                "active_deployment": ""
+                            }))
+                        } else {
+                            Json(json!({
+                                "config": {"model_path": "/models/active.gguf"},
+                                "status": {"state": "ready"},
+                                "active_model": "qwen",
+                                "active_deployment": "d-aaaaaaaa"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/api/ui/model-identity",
+                axum_post(move || async move {
+                    Json(json!({
+                        "canonical_path": identity_path,
+                        "sha256": serde_json::Value::Null
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (port, unload_hits)
+    }
+
+    fn serving_peer(port: u16) -> PeerInfo {
+        let mut peer = crate::gateway::testkit::peer("peer-a", "ksia", port);
+        peer.model = "qwen".into();
+        peer.deploy_id = "d-aaaaaaaa".into();
+        peer.start_layer = 0;
+        peer.end_layer = 31;
+        peer.total_layers = 32;
+        peer
+    }
+
+    fn desired(hash: char) -> RequestedModelIdentity {
+        RequestedModelIdentity {
+            proof: Some(DeploymentIdentity::Sha256 {
+                sha256: hash.to_string().repeat(64),
+            }),
+            paths_by_peer: HashMap::new(),
+        }
+    }
+
+    async fn install_job(state: &GatewayState, id: &str) {
+        jobs()
+            .write()
+            .await
+            .insert(id.into(), new_job(id, "deploy", "teste", "preparando"));
+        let _ = state;
+    }
+
+    #[tokio::test]
+    async fn same_proven_model_is_released_and_waited_before_continue() {
+        let (port, hits) = peer_with_deployment(
+            Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            axum::http::StatusCode::OK,
+            "/models/active.gguf",
+        )
+        .await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-same").await;
+
+        prepare_existing_model(&state, "qwen", &desired('a'), "preflight-same")
+            .await
+            .expect("a implantação igual deve ser liberada");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn identity_failure_is_visible_and_does_not_unload() {
+        let (port, hits) =
+            peer_with_deployment(None, axum::http::StatusCode::OK, "/models/different.gguf").await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-unknown").await;
+        let error = prepare_existing_model(
+            &state,
+            "qwen",
+            &RequestedModelIdentity {
+                proof: Some(DeploymentIdentity::Sha256 {
+                    sha256: "a".repeat(64),
+                }),
+                paths_by_peer: [("peer-a".into(), "/models/qwen.gguf".into())]
+                    .into_iter()
+                    .collect(),
+            },
+            "preflight-unknown",
+        )
+        .await
+        .expect_err("sem prova, não pode desimplantar");
+        assert!(error.contains("não foi possível provar"), "{error}");
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_unload_is_visible_and_blocks_the_new_deploy() {
+        let (port, hits) = peer_with_deployment(
+            Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "/models/active.gguf",
+        )
+        .await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-failed").await;
+        let error = prepare_existing_model(&state, "qwen", &desired('a'), "preflight-failed")
+            .await
+            .expect_err("falha de unload bloqueia o deploy");
+        assert!(error.contains("desimplantação falhou"), "{error}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_names_the_peer_and_the_occupied_state() {
+        let app = Router::new().route(
+            "/api/ui/node",
+            axum_get(|| async {
+                Json(json!({
+                    "config": {"model_path": "/models/active.gguf"},
+                    "status": {"state": "ready"},
+                    "active_model": "qwen",
+                    "active_deployment": "d-aaaaaaaa"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        let error =
+            wait_for_peer_idle_with_timeout(&state, &serving_peer(port), Duration::from_millis(10))
+                .await
+                .expect_err("peer ocupado deve estourar o limite");
+        assert!(
+            error.contains("ksia") && error.contains("ocupado"),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use crate::deployment::{DeploymentIdentity, DeploymentModel};
+
+    #[test]
+    fn model_identity_requires_proof_and_allows_same_peer_path_fallback() {
+        let desired = super::RequestedModelIdentity {
+            proof: Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            paths_by_peer: [("peer-a".into(), "/models/qwen.gguf".into())]
+                .into_iter()
+                .collect(),
+        };
+        let same = DeploymentModel {
+            label: "qwen".into(),
+            total_layers: 32,
+            pom_id: None,
+            identity: desired.proof.clone(),
+        };
+        assert!(super::deployment_identity_matches(
+            &desired,
+            &same,
+            "peer-a",
+            Some("/other/path.gguf")
+        ));
+
+        let unknown = DeploymentModel {
+            identity: None,
+            ..same.clone()
+        };
+        assert!(super::deployment_identity_matches(
+            &desired,
+            &unknown,
+            "peer-a",
+            Some("/models/qwen.gguf")
+        ));
+        assert!(!super::deployment_identity_matches(
+            &desired,
+            &unknown,
+            "peer-b",
+            Some("/models/qwen.gguf")
+        ));
+        assert!(!super::deployment_identity_matches(
+            &desired,
+            &DeploymentModel {
+                identity: Some(DeploymentIdentity::Sha256 {
+                    sha256: "b".repeat(64),
+                }),
+                ..same
+            },
+            "peer-a",
+            None
+        ));
+    }
+
+    #[test]
+    fn node_idle_requires_disabled_status_and_no_configuration() {
+        assert!(super::node_is_idle(&serde_json::json!({
+            "config": null,
+            "status": {"state": "disabled"},
+            "active_deployment": "",
+            "active_model": ""
+        })));
+        assert!(!super::node_is_idle(&serde_json::json!({
+            "config": null,
+            "status": {"state": "starting"},
+            "active_deployment": "",
+            "active_model": ""
+        })));
+        assert!(!super::node_is_idle(&serde_json::json!({
+            "config": {"model_path": "/models/qwen.gguf"},
+            "status": {"state": "disabled"},
+            "active_deployment": "",
+            "active_model": ""
+        })));
+    }
+
     #[test]
     fn deployment_request_defaults_to_simple_and_normalizes_name() {
         let req: super::DeployRequest = serde_json::from_value(serde_json::json!({
@@ -5088,6 +6784,7 @@ mod tests {
                 addr_candidates: Vec::new(),
                 libp2p_peer_id: None,
                 supports_tunnel: false,
+                inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
                 mem_free_mb: s.mem_free_mb,
                 gpu_free_mb: s.mem_free_mb,
                 ram_free_mb: s.mem_free_mb,
@@ -5104,8 +6801,15 @@ mod tests {
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
                         sha256: None,
+                        pom_id: None,
+                        virtual_slice: false,
                         tp_rank: None,
                         tp_size: None,
+                        is_moe: false,
+                        model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                            thinking: Some(true),
+                            mtp: Some(false),
+                        }),
                         size_bytes: GIB,
                     })
                     .collect(),
@@ -5121,6 +6825,131 @@ mod tests {
             n_gpu_layers: None,
             offload_kqv: None,
         }
+    }
+
+    #[test]
+    fn model_mtp_comes_from_the_final_selected_file_and_runtime_is_only_a_warning() {
+        let mut machines = build(vec![
+            m("first", 900_000, &[(0, 15)]),
+            m("last", 900_000, &[(16, 31)]),
+        ]);
+        machines[0].held[0].model_capabilities.as_mut().unwrap().mtp = Some(false);
+        machines[1].held[0].model_capabilities.as_mut().unwrap().mtp = Some(true);
+
+        let p = plan(
+            "model",
+            &machines,
+            Some(&[pick(0, 15, "first"), pick(16, 31, "last")]),
+        );
+
+        assert_eq!(
+            p.capabilities.mtp.state,
+            crate::capabilities::CapabilityState::Supported
+        );
+        assert!(p
+            .capabilities
+            .mtp
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("runtime")));
+    }
+
+    #[test]
+    fn runtime_only_speculation_is_visible_with_a_runtime_limitation_warning() {
+        let mut machines = build(vec![m("only", 900_000, &[(0, 31)])]);
+        machines[0].inference_capabilities = Some(Vec::new());
+        let p = plan("model", &machines, Some(&[pick(0, 31, "only")]));
+
+        assert_ne!(
+            p.capabilities.speculative_decoding.state,
+            crate::capabilities::CapabilityState::Unsupported
+        );
+        assert!(p
+            .capabilities
+            .speculative_decoding
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("runtime")));
+    }
+
+    #[test]
+    fn model_mtp_absence_is_the_only_case_that_hides_mtp() {
+        let mut machines = build(vec![m("only", 900_000, &[(0, 31)])]);
+        machines[0].held[0].model_capabilities.as_mut().unwrap().mtp = Some(false);
+        let p = plan("model", &machines, Some(&[pick(0, 31, "only")]));
+
+        assert_eq!(
+            p.capabilities.mtp.state,
+            crate::capabilities::CapabilityState::Unsupported
+        );
+        assert!(p.capabilities.mtp.warning.is_none());
+    }
+
+    #[test]
+    fn model_mtp_unknown_stays_visible_and_actionable() {
+        let mut machines = build(vec![m("only", 900_000, &[(0, 31)])]);
+        machines[0].held[0].model_capabilities = None;
+        let p = plan("model", &machines, Some(&[pick(0, 31, "only")]));
+
+        assert_eq!(
+            p.capabilities.mtp.state,
+            crate::capabilities::CapabilityState::Unknown
+        );
+        assert!(p.capabilities.mtp.warning.is_some());
+    }
+
+    #[test]
+    fn whole_model_cut_creates_virtual_ranges_for_local_materialization() {
+        let mut machines = build(vec![
+            m("source", 900_000, &[(0, 31)]),
+            m("target", 900_000, &[]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "source".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut {
+                end_layer: 3,
+                layers: 4,
+                size_bytes: GIB,
+                remainder_bytes: GIB,
+            }],
+            granularity: Some(4),
+            rule: "fronteiras reais".to_string(),
+            reason: None,
+        };
+        super::add_virtual_whole_slices(
+            &mut machines,
+            "model",
+            &WholeSliceSelection {
+                source_node_id: "source".to_string(),
+                target_node_id: "target".to_string(),
+                end_layer: 3,
+            },
+            &options,
+        )
+        .expect("corte válido");
+
+        assert!(machines[0]
+            .holds(0, 3)
+            .is_some_and(|shard| shard.virtual_slice));
+        assert!(machines[0]
+            .holds(4, 31)
+            .is_some_and(|shard| shard.virtual_slice));
+        let selection = [pick(0, 3, "target"), pick(4, 31, "source")];
+        let plan = super::plan(
+            "model",
+            &machines,
+            Some(&selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Whole,
+            None,
+        );
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.steps.iter().all(|step| !step.ready));
+        assert!(plan.steps[0].source_needs_split);
+        assert!(plan.steps[1].source_needs_split);
     }
 
     /// The knobs are their own axis; every test below is about the placement,
@@ -5895,6 +7724,7 @@ mod tests {
             "qwen",
             &[],
             &rtts,
+            None,
         );
         let values: Vec<_> = p.route_options.iter().map(|route| route.rtt_ms).collect();
         assert_eq!(values, vec![Some(11.5), Some(22.5), Some(33.5)]);
@@ -5948,6 +7778,88 @@ mod tests {
         assert!(params.fit_memory);
         assert!(!effective_params_for_kind(DeployKind::TensorParallel, &params).fit_memory);
         assert!(effective_params_for_kind(DeployKind::Shards, &params).fit_memory);
+    }
+
+    #[test]
+    fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
+        for kind in [
+            DeployKind::Whole,
+            DeployKind::Shards,
+            DeployKind::TensorParallel,
+        ] {
+            let request: DeployRequest = serde_json::from_value(serde_json::json!({
+                "group": "model",
+                "kind": kind,
+                "params": { "inference_mode": "moe" }
+            }))
+            .unwrap();
+            assert_eq!(request.params.inference_mode, InferenceMode::Moe);
+            assert_eq!(
+                effective_params_for_kind(kind, &request.params).inference_mode,
+                InferenceMode::Moe
+            );
+        }
+    }
+
+    #[test]
+    fn moe_capability_is_reported_for_whole_shards_and_tensor_parallel() {
+        let mut params = RuntimeParams::default();
+        params.inference_mode = InferenceMode::Moe;
+
+        let mut whole = whole_machine("whole", 900_000, true);
+        whole.held[0].is_moe = true;
+        let p_whole = super::plan(
+            "qwen-moe",
+            std::slice::from_ref(&whole),
+            None,
+            &params,
+            false,
+            DeployKind::Whole,
+            None,
+        );
+        let p_shards = super::plan(
+            "qwen-moe",
+            std::slice::from_ref(&whole),
+            None,
+            &params,
+            false,
+            DeployKind::Shards,
+            None,
+        );
+        for (kind, p) in [(DeployKind::Whole, p_whole), (DeployKind::Shards, p_shards)] {
+            assert!(p.is_moe);
+            assert!(
+                p.inference_mode_supported,
+                "{kind:?}: {:?}",
+                p.inference_mode_reason
+            );
+            assert!(p.inference_mode_reason.is_none());
+        }
+
+        let mut primary = tp_machine("primary", 0);
+        let mut worker = tp_machine("worker", 1);
+        primary.held[0].is_moe = true;
+        worker.held[0].is_moe = true;
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "primary".into(),
+            worker_node_ids: vec!["worker".into()],
+        };
+        let p = super::plan(
+            "qwen-moe",
+            &[primary, worker],
+            None,
+            &params,
+            false,
+            DeployKind::TensorParallel,
+            Some(tp),
+        );
+        assert!(p.is_moe);
+        assert!(!p.inference_mode_supported);
+        assert_eq!(
+            p.inference_mode_reason.as_deref(),
+            Some("Tensor Parallelism não suporta MoE nesta versão.")
+        );
     }
 
     /// A cluster of unlike machines is the whole point of the per-peer offload:
@@ -6139,23 +8051,29 @@ mod tests {
     /// answers `null`. Both mean "this file does not say".
     #[test]
     fn a_shard_that_reports_zero_layers_is_a_shard_with_no_total() {
-        let shard = parse_shard(&json!({
-            "shard_range": [0, 15],
-            "total_layers": 0,
-            "name": "qwen_0_15.gguf",
-            "path": "/models/qwen/qwen_0_15.gguf",
-            "size_bytes": 2569314208u64,
-        }))
+        let shard = parse_shard(
+            &json!({
+                "shard_range": [0, 15],
+                "total_layers": 0,
+                "name": "qwen_0_15.gguf",
+                "path": "/models/qwen/qwen_0_15.gguf",
+                "size_bytes": 2569314208u64,
+            }),
+            None,
+        )
         .expect("a fatia é válida, só não diz o total");
         assert_eq!(shard.total_layers, None);
 
-        let declared = parse_shard(&json!({
-            "shard_range": [0, 5],
-            "total_layers": 40,
-            "name": "phi_0_5.gguf",
-            "path": "/models/phi/phi_0_5.gguf",
-            "size_bytes": 1u64,
-        }))
+        let declared = parse_shard(
+            &json!({
+                "shard_range": [0, 5],
+                "total_layers": 40,
+                "name": "phi_0_5.gguf",
+                "path": "/models/phi/phi_0_5.gguf",
+                "size_bytes": 1u64,
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(declared.total_layers, Some(40));
     }
@@ -6179,6 +8097,7 @@ mod tests {
             addr_candidates: Vec::new(),
             libp2p_peer_id: None,
             supports_tunnel: false,
+            inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
             mem_free_mb,
             gpu_free_mb: mem_free_mb,
             ram_free_mb: mem_free_mb,
@@ -6188,8 +8107,15 @@ mod tests {
             held: if has {
                 vec![HeldShard {
                     sha256: None,
+                    pom_id: None,
+                    virtual_slice: false,
                     tp_rank: None,
                     tp_size: None,
+                    is_moe: false,
+                    model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                        thinking: Some(true),
+                        mtp: Some(false),
+                    }),
                     start_layer: 0,
                     end_layer: 31,
                     total_layers: Some(32),
@@ -6213,8 +8139,15 @@ mod tests {
             path: format!("/{id}/rank-{rank}.gguf"),
             size_bytes: 2 * GIB,
             sha256: Some(format!("{:064x}", rank + 1)),
+            pom_id: None,
+            virtual_slice: false,
             tp_rank: Some(rank),
             tp_size: Some(2),
+            is_moe: false,
+            model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                thinking: Some(true),
+                mtp: Some(false),
+            }),
         });
         machine
     }
@@ -6691,6 +8624,7 @@ mod tests {
             addr_candidates: Vec::new(),
             libp2p_peer_id: None,
             supports_tunnel: false,
+            inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
             mem_free_mb: 900_000,
             gpu_free_mb: 900_000,
             ram_free_mb: 900_000,
@@ -6699,8 +8633,15 @@ mod tests {
             load: 0,
             held: vec![HeldShard {
                 sha256: None,
+                pom_id: None,
+                virtual_slice: false,
                 tp_rank: None,
                 tp_size: None,
+                is_moe: false,
+                model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                    thinking: Some(true),
+                    mtp: Some(false),
+                }),
                 start_layer: 0,
                 end_layer: 31,
                 total_layers: Some(32),

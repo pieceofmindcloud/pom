@@ -139,6 +139,9 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
+        .route("/api/ui/model-identity", post(model_identity))
+        .route("/api/ui/model-layer-options", post(model_layer_options))
+        .route("/api/ui/slice-ranges", post(slice_ranges))
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
@@ -1460,6 +1463,16 @@ pub struct PlanRequest {
     /// file actually is.
     #[serde(default)]
     pub layout_node_id: Option<String>,
+    /// Parâmetros usados para cobrar o KV junto com o peso. Ausentes usam os
+    /// defaults da tela de runtime e os tipos globais da instalação.
+    #[serde(default)]
+    pub n_ctx: Option<u32>,
+    #[serde(default)]
+    pub max_sessions: Option<u32>,
+    #[serde(default)]
+    pub cache_type_k: Option<KvCacheType>,
+    #[serde(default)]
+    pub cache_type_v: Option<KvCacheType>,
 }
 
 /// Work out asymmetric layer ranges from each peer's declared memory budget.
@@ -1507,20 +1520,49 @@ async fn plan_split_endpoint(
     }
 
     let path = std::path::PathBuf::from(&req.model_path);
-    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&path)).await {
+    let layout_path = path.clone();
+    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&layout_path)).await {
         Ok(Ok(l)) => l,
         Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
         Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
     };
 
+    let info = match tokio::task::spawn_blocking(move || gguf::read_info(&path)).await {
+        Ok(Ok(info)) => info,
+        Ok(Err(e)) => {
+            return bad_request(format!("não foi possível ler a geometria KV do GGUF: {e}"))
+        }
+        Err(e) => return bad_request(format!("leitura da geometria KV falhou: {e}")),
+    };
+
     let reserve = req.reserve_pct.unwrap_or(DEFAULT_RESERVE_PCT);
-    match plan::plan_split(&req.model_path, &layout, &req.budgets, reserve) {
+    let defaults = RuntimeParams::default();
+    let installation = state.auth.read().await;
+    let kv = plan::KvPlanParams {
+        n_ctx: req.n_ctx.unwrap_or(defaults.n_ctx),
+        max_sessions: req.max_sessions.unwrap_or(defaults.max_sessions),
+        cache_type_k: req.cache_type_k.unwrap_or(installation.cache_type_k),
+        cache_type_v: req.cache_type_v.unwrap_or(installation.cache_type_v),
+    };
+    match plan::plan_split_with_kv(&req.model_path, &layout, &info, &req.budgets, reserve, kv) {
         Ok(p) => Json(p).into_response(),
         Err(e) => bad_request(e.to_string()),
     }
 }
 
 // ── Applying a configuration ─────────────────────────────────────────────────
+
+/// Which inference engine the operator asks the runtime to use for a model.
+/// `Auto` keeps the runtime's model-metadata decision; the explicit variants
+/// are persisted with the deployment so every peer receives the same choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceMode {
+    #[default]
+    Auto,
+    Dense,
+    Moe,
+}
 
 /// Sampling and context knobs. Defaults match `run-p1.sh`, which is the
 /// configuration the two-peer cluster was validated with.
@@ -1530,6 +1572,10 @@ async fn plan_split_endpoint(
 /// verifica que uma reimplantação mudou alguma coisa.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
+    /// Engine preference. `Auto` is backwards-compatible and lets the runtime
+    /// choose from the actual GGUF metadata.
+    #[serde(default)]
+    pub inference_mode: InferenceMode,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
@@ -1664,6 +1710,7 @@ fn d_mtp_min_probability() -> f32 {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
+            inference_mode: InferenceMode::Auto,
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -1702,6 +1749,7 @@ impl Default for RuntimeParams {
 impl From<&NodeConfig> for RuntimeParams {
     fn from(c: &NodeConfig) -> Self {
         Self {
+            inference_mode: c.inference_mode,
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
@@ -1809,6 +1857,17 @@ impl ApplyRequest {
         } else {
             !self.single_peer() && self.is_last_peer()
         }
+    }
+
+    fn no_embeddings_evaluation(&self) -> crate::capabilities::NoEmbeddingsEvaluation {
+        crate::capabilities::evaluate_no_embeddings(&[crate::capabilities::PeerTopology {
+            node_id: self.base_name.clone(),
+            start_layer: Some(self.start_layer),
+            end_layer: Some(self.end_layer),
+            total_layers: Some(self.total_layers),
+            peer_index: Some(self.peer_index),
+            peer_count: Some(self.peer_count),
+        }])
     }
 }
 
@@ -2040,6 +2099,13 @@ async fn apply(
     State(state): State<GatewayState>,
     Json(req): Json<ApplyRequest>,
 ) -> Response {
+    if req.params.no_embeddings {
+        if let Err(reason) =
+            crate::capabilities::validate_no_embeddings(&req.no_embeddings_evaluation(), true)
+        {
+            return bad_request(reason);
+        }
+    }
     // A merge request lists the files it needs instead of pointing at one; the
     // guard below checks whichever set is actually going to be read.
     if let Some(parts) = &req.merge {
@@ -2121,6 +2187,183 @@ async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
     tokio::task::spawn_blocking(move || crate::pom::hash_file(&path).map(|(sha256, _)| sha256))
         .await
         .context("calcular o hash do modelo original")?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ModelIdentityRequest {
+    pub path: String,
+    #[serde(default = "default_true")]
+    pub hash: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ModelIdentityResponse {
+    pub canonical_path: String,
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LayerCut {
+    pub end_layer: u32,
+    pub layers: u32,
+    pub size_bytes: u64,
+    pub remainder_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ModelLayerOptions {
+    pub total_layers: u32,
+    pub cuts: Vec<LayerCut>,
+    pub granularity: Option<u32>,
+    pub rule: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ModelLayerOptionsRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SliceRange {
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SliceRangesRequest {
+    pub model_path: String,
+    pub name: String,
+    pub total_layers: u32,
+    pub ranges: Vec<SliceRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MaterializedSlice {
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SliceRangesResponse {
+    pub slices: Vec<MaterializedSlice>,
+}
+
+/// Proves the identity of a file selected for deployment without hashing the
+/// catalog during ordinary polling. The path must already be in this peer's
+/// catalog, so a caller cannot turn the route into an arbitrary file reader.
+async fn model_identity(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ModelIdentityRequest>,
+) -> Response {
+    match model_identity_local(&state, &req.path, req.hash).await {
+        Ok(identity) => Json(identity).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+pub(crate) async fn model_identity_local(
+    state: &GatewayState,
+    requested: &str,
+    calculate_hash: bool,
+) -> Result<ModelIdentityResponse, String> {
+    let requested = std::path::Path::new(requested);
+    let canonical = requested
+        .canonicalize()
+        .map_err(|e| format!("não foi possível resolver o arquivo do modelo: {e}"))?;
+    let catalog = local_catalog(state).await;
+    let listed = catalog.models.iter().any(|model| {
+        std::path::Path::new(&model.path)
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| path == canonical)
+    });
+    if !listed {
+        return Err(format!(
+            "o arquivo {} não pertence ao catálogo deste peer",
+            requested.display()
+        ));
+    }
+    let sha256 = if calculate_hash {
+        Some(
+            source_model_sha256(&canonical)
+                .await
+                .map_err(|e| format!("não foi possível calcular a identidade do GGUF: {e}"))?,
+        )
+    } else {
+        None
+    };
+    Ok(ModelIdentityResponse {
+        canonical_path: canonical.to_string_lossy().into_owned(),
+        sha256,
+    })
+}
+
+async fn model_layer_options(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ModelLayerOptionsRequest>,
+) -> Response {
+    match model_layer_options_local(&state, &req.path).await {
+        Ok(options) => Json(options).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+pub(crate) async fn model_layer_options_local(
+    state: &GatewayState,
+    requested: &str,
+) -> Result<ModelLayerOptions, String> {
+    let requested_path = std::path::Path::new(requested);
+    let canonical = requested_path
+        .canonicalize()
+        .map_err(|e| format!("não foi possível resolver o modelo inteiro: {e}"))?;
+    let catalog = local_catalog(state).await;
+    let listed = catalog.models.iter().any(|model| {
+        std::path::Path::new(&model.path)
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| path == canonical)
+            && model.shard_range.is_none()
+    });
+    if !listed {
+        return Err(format!(
+            "o arquivo {} não é um modelo inteiro do catálogo deste peer",
+            requested_path.display()
+        ));
+    }
+    let layout = layout_of(&canonical).await?;
+    let total_layers = layout.layer_count();
+    if total_layers == 0 {
+        return Err("o GGUF não declara camadas para fatiar".to_string());
+    }
+    let cuts = layout
+        .valid_prefix_end_layers()
+        .into_iter()
+        .map(|end_layer| LayerCut {
+            end_layer,
+            layers: end_layer + 1,
+            size_bytes: layout.slice_bytes(0, end_layer, end_layer + 1 >= total_layers),
+            remainder_bytes: if end_layer + 1 < total_layers {
+                layout.slice_bytes(end_layer + 1, total_layers - 1, true)
+            } else {
+                0
+            },
+        })
+        .collect::<Vec<_>>();
+    let rule = if layout.arch_boundaries().is_empty() {
+        "modelo denso: qualquer corte em camada inteira".to_string()
+    } else {
+        "modelo híbrido: cortes apenas nas fronteiras arquiteturais reais do GGUF".to_string()
+    };
+    Ok(ModelLayerOptions {
+        total_layers,
+        cuts,
+        granularity: layout.prefix_cut_granularity(),
+        rule,
+    })
 }
 
 /// Sela uma parte cortada aqui no manifesto do modelo original.
@@ -2337,6 +2580,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         peer_index: req.peer_index,
         primary: req.primary,
         tp: req.tp.clone(),
+        inference_mode: req.params.inference_mode,
         inference_port,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),
@@ -3180,6 +3424,137 @@ async fn run_slice(
     Ok(manifesto)
 }
 
+/// Materialize the exact ranges selected by deploy from a local whole model.
+/// The deploy coordinator calls this on the peer that proposed the model before
+/// asking the destination to pull the resulting slice files.
+async fn slice_ranges(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SliceRangesRequest>,
+) -> Response {
+    match materialize_slice_ranges(&state, &req).await {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+pub(crate) async fn materialize_slice_ranges(
+    state: &GatewayState,
+    req: &SliceRangesRequest,
+) -> Result<SliceRangesResponse, String> {
+    if req.ranges.is_empty() || req.ranges.len() > 64 {
+        return Err("o fatiamento precisa de entre 1 e 64 faixas".to_string());
+    }
+    if req.name.trim().is_empty() {
+        return Err("o fatiamento precisa do nome do modelo".to_string());
+    }
+    let options = model_layer_options_local(state, &req.model_path).await?;
+    let source = std::path::Path::new(&req.model_path)
+        .canonicalize()
+        .map_err(|error| format!("não foi possível resolver o modelo inteiro: {error}"))?;
+    let layout = layout_of(&source).await?;
+    if req.total_layers != options.total_layers {
+        return Err(format!(
+            "o modelo declara {} camadas, mas a implantação pediu {}",
+            options.total_layers, req.total_layers
+        ));
+    }
+    for range in &req.ranges {
+        if range.start_layer > range.end_layer || range.end_layer >= req.total_layers {
+            return Err(format!(
+                "faixa L{}-{} fora do modelo de {} camadas",
+                range.start_layer, range.end_layer, req.total_layers
+            ));
+        }
+        if !layout.is_valid_slice_start(range.start_layer) {
+            return Err(format!(
+                "a faixa L{}-{} começa fora de uma fronteira arquitetural real do modelo",
+                range.start_layer, range.end_layer
+            ));
+        }
+        if layout.snap_end_layer(range.start_layer, range.end_layer, req.total_layers)
+            != range.end_layer
+        {
+            return Err(format!(
+                "a faixa L{}-{} não respeita as fronteiras arquiteturais reais do modelo",
+                range.start_layer, range.end_layer
+            ));
+        }
+    }
+    let source = source;
+    let source_sha256 = source_model_sha256(&source)
+        .await
+        .map_err(|error| format!("não foi possível identificar o modelo inteiro: {error:#}"))?;
+    let shard_dir = state.shard_dir().await;
+    let scratch = crate::pom::scratch_dir(&shard_dir);
+    let job_id = uuid::Uuid::new_v4().simple().to_string();
+    jobs().write().await.insert(
+        job_id.clone(),
+        new_job(
+            &job_id,
+            "slice",
+            format!("Fatiando {} para a implantação", req.name),
+            "preparando",
+        ),
+    );
+    let ranges = req
+        .ranges
+        .iter()
+        .map(|range| (range.start_layer, range.end_layer))
+        .collect();
+    let result = run_slice(
+        state.clone(),
+        source,
+        shard_dir.clone(),
+        scratch,
+        req.name.clone(),
+        req.name.clone(),
+        ranges,
+        req.total_layers,
+        state.network.node_id.clone(),
+        source_sha256,
+        &job_id,
+    )
+    .await;
+    let manifest = match result {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+            return Err(format!(
+                "não foi possível fatiar o modelo inteiro: {error:#}"
+            ));
+        }
+    };
+    let directory = crate::pom::dir_for(&shard_dir, &manifest);
+    let slices = manifest
+        .parts
+        .iter()
+        .map(|part| {
+            crate::pom::part_path(&directory, &part.sha256)
+                .map(|path| MaterializedSlice {
+                    start_layer: part.start_layer,
+                    end_layer: part.end_layer,
+                    path: path.to_string_lossy().into_owned(),
+                    sha256: part.sha256.clone(),
+                })
+                .map_err(|error| {
+                    format!("não foi possível localizar a fatia materializada: {error}")
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    set_job(
+        &job_id,
+        "done",
+        "pronto",
+        &format!(
+            "{} fatia(s) materializada(s) para a implantação",
+            slices.len()
+        ),
+    )
+    .await;
+    Ok(SliceRangesResponse { slices })
+}
+
 // ── Cluster launch ───────────────────────────────────────────────────────────
 
 /// Stop the inference server on this node, announce the node as idle,
@@ -3693,6 +4068,10 @@ pub struct LaunchTarget {
     /// pipeline não podem estar as duas certas sobre onde ele cabe.
     #[serde(default)]
     pub offload_kqv: Option<bool>,
+    /// Override por alvo, calculado a partir da topologia do plano. `None`
+    /// preserva o comportamento automático do peer final.
+    #[serde(default)]
+    pub no_embeddings: Option<bool>,
     /// Posição deste peer no pipeline, quando ela não é a posição dele nesta
     /// requisição.
     ///
@@ -3751,7 +4130,54 @@ pub(crate) fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> Runtime
     if let Some(kqv) = target.offload_kqv {
         params.offload_kqv = kqv;
     }
+    if let Some(no_embeddings) = target.no_embeddings {
+        params.no_embeddings = no_embeddings;
+    }
     params
+}
+
+fn launch_no_embeddings_evaluation(
+    req: &LaunchRequest,
+) -> crate::capabilities::NoEmbeddingsEvaluation {
+    let mut ranges = Vec::new();
+    for target in &req.targets {
+        if target.tp.is_none() {
+            let range = (target.start_layer, target.end_layer);
+            if !ranges.contains(&range) {
+                ranges.push(range);
+            }
+        }
+    }
+    let pipeline_count = ranges.len() as u32;
+    let peers = req
+        .targets
+        .iter()
+        .map(|target| {
+            let derived_index = if target.tp.is_some() {
+                Some(0)
+            } else {
+                ranges
+                    .iter()
+                    .position(|range| *range == (target.start_layer, target.end_layer))
+                    .map(|value| value as u32)
+            };
+            crate::capabilities::PeerTopology {
+                node_id: target.node_id.clone(),
+                start_layer: Some(target.start_layer),
+                end_layer: Some(target.end_layer),
+                total_layers: Some(req.total_layers),
+                peer_index: target.peer_index.or(derived_index),
+                peer_count: target.peer_count.or_else(|| {
+                    if target.tp.is_some() {
+                        Some(1)
+                    } else {
+                        Some(pipeline_count)
+                    }
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+    crate::capabilities::evaluate_no_embeddings(&peers)
 }
 
 /// Dispatch the planned configuration to every peer, including this one.
@@ -3783,6 +4209,15 @@ pub(crate) async fn launch(
             "a fatia L{}-{} passa do fim de um modelo de {} camadas",
             t.start_layer, t.end_layer, req.total_layers
         ));
+    }
+
+    if req.params.no_embeddings {
+        if let Err(reason) = crate::capabilities::validate_no_embeddings(
+            &launch_no_embeddings_evaluation(&req),
+            true,
+        ) {
+            return bad_request(reason);
+        }
     }
 
     let peers = state.all_peers().await;
@@ -4636,6 +5071,7 @@ mod tests {
             merge: None,
             n_gpu_layers: gpu,
             offload_kqv: kqv,
+            no_embeddings: None,
             peer_index: None,
             peer_count: None,
             tp: None,
@@ -4711,6 +5147,20 @@ mod tests {
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
         assert!(p.fit_memory);
+    }
+
+    #[test]
+    fn inference_mode_defaults_to_auto_and_round_trips() {
+        let default: RuntimeParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.inference_mode, InferenceMode::Auto);
+
+        let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "inference_mode": "moe"
+        }))
+        .unwrap();
+        assert_eq!(explicit.inference_mode, InferenceMode::Moe);
+        let encoded = serde_json::to_value(explicit).unwrap();
+        assert_eq!(encoded["inference_mode"], "moe");
     }
 
     #[test]
@@ -5130,6 +5580,15 @@ mod peer_runtime_tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         port
     }
 

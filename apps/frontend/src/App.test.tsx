@@ -80,22 +80,22 @@ describe("guarda de perfil por rota", () => {
   ] as const;
 
   for (const [path, marker] of fechadas) {
-    it(`abre ${path} para o administrador`, () => {
+    it(`abre ${path} para o administrador`, async () => {
       open(path, "admin");
-      expect(screen.getByText(marker)).toBeTruthy();
+      expect(await screen.findByText(marker)).toBeTruthy();
       expect(screen.queryByText("Tela restrita a outro perfil")).toBeNull();
     });
 
-    it(`barra ${path} para o perfil do nó`, () => {
+    it(`barra ${path} para o perfil do nó`, async () => {
       open(path, "node");
       expect(screen.queryByText(marker)).toBeNull();
-      expect(screen.getByText("Tela restrita a outro perfil")).toBeTruthy();
+      expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
     });
   }
 
-  it("não mexe nas rotas que ninguém restringiu", () => {
+  it("não mexe nas rotas que ninguém restringiu", async () => {
     open("/modelos", "node");
-    expect(screen.getByText("tela-modelos")).toBeTruthy();
+    expect(await screen.findByText("tela-modelos")).toBeTruthy();
   });
 
   /**
@@ -103,8 +103,8 @@ describe("guarda de perfil por rota", () => {
    * de fora. Hoje ele é livre, e este teste é o que avisa se a exceção do chat
    * voltar a escapar do guarda quando alguém o restringir.
    */
-  it("passa o chat pelo mesmo guarda", () => {
+  it("passa o chat pelo mesmo guarda", async () => {
     open("/chat", "node");
-    expect(screen.getByText("tela-chat")).toBeTruthy();
+    expect(await screen.findByText("tela-chat")).toBeTruthy();
   });
 });

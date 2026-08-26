@@ -34,6 +34,11 @@ const PIPELINE_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// request this guard exists to stop.
 const CHARS_PER_TOKEN: usize = 3;
 
+/// Prazo do `/v1/session/rewind`. Curto de propósito: o evento final do stream
+/// espera por ele (ver `generate_stream_inner`), e do outro lado é só apagar
+/// uma sequência de KV.
+const REWIND_TIMEOUT: Duration = Duration::from_secs(3);
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -101,6 +106,9 @@ pub struct GatewayState {
     pub local_assignment: Arc<tokio::sync::RwLock<Option<LayerAssignment>>>,
     /// Tracks in-flight inference requests per peer (for pipeline load balancing).
     pub loads: Arc<LoadTracker>,
+    /// Prefixos de conversas que continuam vivos entre turnos. A entrada só
+    /// guarda uma sessão KV já existente, nunca pesos ou estado oculto.
+    pub prefix_cache: Arc<crate::prefix_cache::PrefixCache>,
     /// Clientes HTTP de saída, **um por peer**, com o certificado do destino
     /// fixado pelo node_id (`peer_client::PeerClients`).
     ///
@@ -138,7 +146,7 @@ pub struct GatewayState {
     /// Retrato curto do cluster, isolado por gateway e por instância de teste.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.
-    pub model_service: Arc<crate::model_provider_backend::ModelService>,
+    pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
 }
 
 #[cfg(test)]
@@ -444,6 +452,35 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
 pub struct GenerateRequest {
     pub model: Option<String>,
     pub prompt: String,
+    /// Total completion-token budget. The first token is emitted by prefill
+    /// but counts here, just as it does in the other HTTP APIs.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub stop: Option<StopInput>,
+}
+
+fn resolve_request_max_tokens(
+    requested: Option<u32>,
+    configured_limit: u32,
+) -> Result<u32, String> {
+    let max_tokens = requested.unwrap_or(DEFAULT_MAX_TOKENS);
+    if max_tokens == 0 {
+        return Err("max_tokens deve ser maior que zero".to_string());
+    }
+    if configured_limit == 0 {
+        return Err("max_new_tokens configurado deve ser maior que zero".to_string());
+    }
+    if max_tokens > configured_limit {
+        return Err(format!(
+            "max_tokens solicitado ({max_tokens}) excede max_new_tokens configurado ({configured_limit})"
+        ));
+    }
+    Ok(max_tokens)
+}
+
+fn remaining_generation_steps(max_tokens: u32, tokens_generated: u32) -> u32 {
+    max_tokens.saturating_sub(tokens_generated)
 }
 
 #[derive(Debug, Serialize)]
@@ -454,6 +491,7 @@ pub struct GenerateResponse {
     pub tokens_generated: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
+    pub stop_sequence: Option<String>,
     pub trace: Option<crate::prefill::RequestTrace>,
 }
 
@@ -496,6 +534,28 @@ pub enum GenEvent {
     Failed(String),
 }
 
+/// Inputs shared by the blocking, streaming and logged generation adapters.
+/// Keeping them together prevents each adapter from growing a subtly
+/// different list of generation parameters.
+pub(crate) struct GenerationInput {
+    pub(crate) state: GatewayState,
+    pub(crate) model: String,
+    pub(crate) prompt: String,
+    pub(crate) chat_template: bool,
+    pub(crate) max_tokens: u32,
+    pub(crate) stops: Vec<String>,
+    /// Como o cache de prefixo reconhece que esta requisição continua a
+    /// anterior. `None` usa o próprio prompt.
+    ///
+    /// O texto renderizado não serve como chave: `render_prompt` devolve uma
+    /// mensagem de usuário solitária **crua** e rotula a partir da segunda, de
+    /// modo que o prompt do turno 1 não é prefixo do prompt do turno 2 e a
+    /// transição 1→2 de qualquer chat nunca acertava. A chave vem do array de
+    /// mensagens, que só cresce: imune a template, a rótulo e a bloco de
+    /// ferramentas. Ver `crate::openai::conversation_cache_key`.
+    pub(crate) cache_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GenSummary {
     /// "pipeline:<hop-chain>", with " (partial)" when it stopped early.
@@ -505,8 +565,211 @@ pub struct GenSummary {
     pub duration_ms: u64,
     /// True when a peer failed mid-generation but some text was salvaged.
     pub partial: bool,
+    /// "stop" when a server-side stop sequence ended the generation.
+    pub finish_reason: Option<String>,
+    /// The exact stop sequence that was matched, when one ended the stream.
+    pub stop_sequence: Option<String>,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
+}
+
+/// OpenAI's `stop` accepts either one string or a list. Keeping this parser in
+/// the gateway lets all HTTP adapters share the same matcher and keeps the
+/// internal inference protocol unchanged.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum StopInput {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StopInput {
+    pub fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::One(stop) => vec![stop],
+            Self::Many(stops) => stops,
+        }
+    }
+}
+
+/// Normalize request-provided stop sequences once at the gateway boundary.
+/// Empty strings cannot delimit meaningful generated text, and duplicates do
+/// not change matching semantics.
+pub fn normalize_stop_sequences(stops: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for stop in stops {
+        if stop.is_empty() || normalized.iter().any(|known| known == &stop) {
+            continue;
+        }
+        normalized.push(stop);
+    }
+    normalized
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopEmission {
+    pub text: String,
+    pub matched: Option<String>,
+}
+
+/// Incremental stop matcher for already-valid UTF-8 output.
+///
+/// A suffix that could still become a stop sequence is retained between
+/// token events. This is deliberately byte-indexed only after `char_indices`
+/// has found a UTF-8 boundary, so a split multibyte character is never cut.
+#[derive(Debug, Clone)]
+pub struct StopMatcher {
+    stops: Vec<String>,
+    pending: String,
+    matched: Option<String>,
+}
+
+impl StopMatcher {
+    pub fn new(stops: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            stops: normalize_stop_sequences(stops),
+            pending: String::new(),
+            matched: None,
+        }
+    }
+
+    pub fn feed(&mut self, text: &str) -> StopEmission {
+        if self.matched.is_some() {
+            return StopEmission {
+                text: String::new(),
+                matched: self.matched.clone(),
+            };
+        }
+
+        self.pending.push_str(text);
+        if self.stops.is_empty() {
+            return StopEmission {
+                text: std::mem::take(&mut self.pending),
+                matched: None,
+            };
+        }
+
+        let mut match_at: Option<(usize, usize)> = None;
+        let mut matched_stop = None;
+        for (index, stop) in self.stops.iter().enumerate() {
+            if let Some(found) = self.pending.find(stop) {
+                if match_at.is_none_or(|current| (found, index) < current) {
+                    match_at = Some((found, index));
+                    matched_stop = Some(stop.clone());
+                }
+            }
+        }
+
+        if let Some((index, _)) = match_at {
+            let emitted = self.pending[..index].to_string();
+            self.pending.clear();
+            self.matched = matched_stop.clone();
+            return StopEmission {
+                text: emitted,
+                matched: matched_stop,
+            };
+        }
+
+        let hold = self
+            .pending
+            .char_indices()
+            .filter_map(|(index, _)| {
+                let suffix = &self.pending[index..];
+                self.stops
+                    .iter()
+                    .any(|stop| stop.starts_with(suffix))
+                    .then_some(suffix.len())
+            })
+            .max()
+            .unwrap_or(0);
+        let emit_len = self.pending.len().saturating_sub(hold);
+        let emitted = self.pending[..emit_len].to_string();
+        self.pending.drain(..emit_len);
+        StopEmission {
+            text: emitted,
+            matched: None,
+        }
+    }
+
+    pub fn finish(&mut self) -> String {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StopSend {
+    Continue,
+    Stopped(String),
+    Disconnected,
+}
+
+async fn send_text_with_stop(
+    tx: &mpsc::Sender<GenEvent>,
+    matcher: &mut StopMatcher,
+    text: &str,
+) -> StopSend {
+    let emission = matcher.feed(text);
+    if !emission.text.is_empty() && tx.send(GenEvent::Token(emission.text)).await.is_err() {
+        return StopSend::Disconnected;
+    }
+    match emission.matched {
+        Some(stop) => StopSend::Stopped(stop),
+        None => StopSend::Continue,
+    }
+}
+
+async fn flush_stop_matcher(tx: &mpsc::Sender<GenEvent>, matcher: &mut StopMatcher) -> bool {
+    let tail = matcher.finish();
+    tail.is_empty() || tx.send(GenEvent::Token(tail)).await.is_ok()
+}
+
+async fn send_stopped_summary(
+    tx: &mpsc::Sender<GenEvent>,
+    plan: &PipelinePlan,
+    gen_start: Instant,
+    tokens_generated: u32,
+    mut trace: crate::prefill::RequestTrace,
+    stop_sequence: String,
+) {
+    let elapsed = gen_start.elapsed();
+    trace.output_tokens = tokens_generated;
+    trace.complete = true;
+    let _ = tx
+        .send(GenEvent::Done(GenSummary {
+            source: format!("pipeline:{}", plan.hop_chain()),
+            tokens_generated,
+            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+            duration_ms: elapsed.as_millis() as u64,
+            partial: false,
+            finish_reason: Some("stop".to_string()),
+            stop_sequence: Some(stop_sequence),
+            trace: Some(trace),
+        }))
+        .await;
+}
+
+async fn send_length_summary(
+    tx: &mpsc::Sender<GenEvent>,
+    plan: &PipelinePlan,
+    gen_start: Instant,
+    tokens_generated: u32,
+    mut trace: crate::prefill::RequestTrace,
+) {
+    let elapsed = gen_start.elapsed();
+    trace.output_tokens = tokens_generated;
+    trace.complete = true;
+    let _ = tx
+        .send(GenEvent::Done(GenSummary {
+            source: format!("pipeline:{}", plan.hop_chain()),
+            tokens_generated,
+            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+            duration_ms: elapsed.as_millis() as u64,
+            partial: false,
+            finish_reason: Some("length".to_string()),
+            stop_sequence: None,
+            trace: Some(trace),
+        }))
+        .await;
 }
 
 /// Run one generation, emitting each token as it is decoded.
@@ -515,14 +778,36 @@ pub struct GenSummary {
 /// the events into one response, the OpenAI endpoints forward them as SSE. The
 /// per-token loop and the peer protocol are unchanged — one round trip through
 /// every peer yields exactly one token.
-pub async fn generate_stream(
-    state: GatewayState,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
+pub async fn generate_stream_with_stops(input: GenerationInput, tx: mpsc::Sender<GenEvent>) {
+    let cancellation = crate::prefill::Cancellation::new();
+    let monitor_cancel = cancellation.clone();
+    let monitor_tx = tx.clone();
+    let monitor = tokio::spawn(async move {
+        monitor_tx.closed().await;
+        monitor_cancel.cancel();
+    });
+
+    generate_stream_inner(input, tx, cancellation).await;
+    monitor.abort();
+}
+
+async fn generate_stream_inner(
+    input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
 ) {
+    let GenerationInput {
+        state,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        stops,
+        cache_key,
+    } = input;
+    if cancellation.is_cancelled() {
+        return;
+    }
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = prompt_budget_error(&cfg, &prompt) {
@@ -551,10 +836,6 @@ pub async fn generate_stream(
         })
         .map(|p| p.total_layers)
         .unwrap_or(32);
-
-    // Each request gets a unique session_id passed to every inference server
-    // call, so parallel requests keep isolated KV cache state.
-    let session_id = Uuid::new_v4().to_string();
 
     let route_rtt = state
         .network
@@ -593,6 +874,28 @@ pub async fn generate_stream(
                 crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
         }
     }
+    let prefix_key = crate::prefix_cache::PrefixRouteKey::new(
+        format!(
+            "{}|deployment={}|chat_template={chat_template}",
+            model,
+            deploy_id.unwrap_or("<default>")
+        ),
+        plan.steps.iter().map(|step| {
+            format!(
+                "{}@{}:{}-{}",
+                step.node_id, step.inference_url, step.exec_start, step.exec_end
+            )
+        }),
+    );
+    // A hit reuses the peer session that stayed parked at the end of the prior
+    // prompt. A miss gets a fresh id and is published only after this turn has
+    // completed its prefill, so an incomplete session cannot enter the cache.
+    let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
+    let prefix_lease =
+        state
+            .prefix_cache
+            .acquire(prefix_key, &cache_prompt, Uuid::new_v4().to_string());
+    let session_id = prefix_lease.session_id().to_string();
     // A sessão não pode trocar de réplica depois que o primeiro prefill criou
     // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
     // usada para revisar qualquer transformação futura da rota.
@@ -602,6 +905,7 @@ pub async fn generate_stream(
         &plan,
     );
     debug_assert!(route_affinity.matches_plan(&plan));
+    let reuse_prefix = prefix_lease.is_hit();
 
     // Para onde a cauda entrega a resposta. `None` quando esta máquina não
     // sabe nenhum endereço de si mesma — aí a cadeia volta a borbulhar, que é
@@ -634,6 +938,12 @@ pub async fn generate_stream(
     let gen_start = Instant::now();
     let mut tokens_generated: u32 = 0;
     let max_tokens = max_tokens.max(1);
+    let mut retained_prefix_tokens: Option<u32> = None;
+    // Quantos tokens do prompt a cabeça de fato não reprocessou. Não é a
+    // escolha do cache, é o que o pipeline executou - ver
+    // `PrefillOutcome::cached_tokens`. Sai no `GenSummary` e daí para
+    // `usage.prompt_tokens_details.cached_tokens`.
+    let mut honored_cached_tokens: u32 = 0;
 
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
@@ -676,6 +986,38 @@ pub async fn generate_stream(
         )
     };
 
+    let mut stop_matcher = StopMatcher::new(stops);
+
+    // O evento final não pode sair antes de a sessão estar arrumada.
+    //
+    // Um chat manda o turno seguinte assim que o stream fecha. Enquanto o
+    // rewind e a liberação rodavam *depois* do `[DONE]`, a requisição seguinte
+    // chegava no meio deles - medido: 54 ms antes de a liberação do turno
+    // anterior terminar - e pegava o cache num estado que ninguém tinha
+    // acabado de escrever. Aqui os eventos de token seguem na hora, ao vivo, e
+    // só o terminal (`Done`/`Failed`) espera a arrumação.
+    let client_tx = tx;
+    let (tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
+    let pump = {
+        let client_tx = client_tx.clone();
+        tokio::spawn(async move {
+            let mut terminal = None;
+            while let Some(event) = inner_rx.recv().await {
+                match event {
+                    event @ (GenEvent::Done(_) | GenEvent::Failed(_)) => terminal = Some(event),
+                    event => {
+                        if client_tx.send(event).await.is_err() {
+                            // Cliente foi embora. Fechar o lado de cá é o que
+                            // faz o laço de geração perceber e cancelar.
+                            break;
+                        }
+                    }
+                }
+            }
+            terminal
+        })
+    };
+
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
     // sampling peer used to free anything, and only on EOS, so the first peer
@@ -683,29 +1025,58 @@ pub async fn generate_stream(
     async {
         // ── Prefill: the prompt goes in chunk by chunk, and the last peer hands
         // back the first token once the whole prompt is in.
-        let first = match crate::prefill::run(
-            &plan,
-            model,
-            &session_id,
-            &prompt,
-            chat_template,
-            chunk_tokens,
-            dtype,
-            &state.peer_http,
-            &state.network.routes,
-            direct.as_ref(),
-            state.tunnel_tx.as_ref(),
-        )
-        .await
-        {
+        // Reusar prefixo é otimização, nunca motivo para a requisição falhar.
+        // Um peer pode ter despejado a sessão, reiniciado ou divergido do que
+        // este gateway acha que ele guarda; nesse caso a primeira tentativa
+        // morre com posições fora de ordem. A segunda vai fria, que é
+        // exatamente o comportamento de antes desta funcionalidade existir.
+        let prefill_attempt = |reuse: bool| {
+            crate::prefill::run(
+                &plan,
+                model,
+                &session_id,
+                &prompt,
+                chat_template,
+                chunk_tokens,
+                dtype,
+                &state.peer_http,
+                &state.network.routes,
+                direct.as_ref(),
+                state.tunnel_tx.as_ref(),
+                &cancellation,
+                reuse,
+            )
+        };
+        let mut prefill_result = prefill_attempt(reuse_prefix).await;
+        if reuse_prefix {
+            if let Err(e) = &prefill_result {
+                if crate::relay::is_frame_size_error(e) {
+                    warn!(
+                        "prefill com prefixo falhou por limite de frame ({e}); \
+                         não é recuperável repetindo o mesmo chunk"
+                    );
+                } else if !crate::prefill::is_cancelled(e) {
+                    warn!("prefill com prefixo reaproveitado falhou ({e}); repetindo do zero");
+                    prefill_result = prefill_attempt(false).await;
+                }
+            }
+        }
+        let first = match prefill_result {
             Ok(o) => {
                 info!(
-                    "📥 prompt de {} tokens em {} pedaço(s) · {:.1}s até a primeira palavra",
+                    "📥 prompt de {} tokens em {} pedaço(s), {} do cache · {:.1}s até a primeira palavra",
                     o.prompt_tokens,
                     o.chunks,
+                    o.cached_tokens,
                     gen_start.elapsed().as_secs_f64(),
                 );
+                retained_prefix_tokens = Some(o.retained_tokens);
+                honored_cached_tokens = o.cached_tokens;
                 o
+            }
+            Err(e) if crate::prefill::is_cancelled(&e) => {
+                info!("cliente desconectou durante o prefill; cancelando pipeline");
+                return;
             }
             Err(e) => {
                 let _ = tx
@@ -718,11 +1089,29 @@ pub async fn generate_stream(
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         tokens_generated += 1;
-        if !first.text.is_empty() && tx.send(GenEvent::Token(first.text)).await.is_err() {
-            info!("cliente desconectou logo após o prompt");
-            return;
+        match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
+            StopSend::Disconnected => {
+                info!("cliente desconectou logo após o prompt");
+                return;
+            }
+            StopSend::Stopped(stop_sequence) => {
+                send_stopped_summary(
+                    &tx,
+                    &plan,
+                    gen_start,
+                    tokens_generated,
+                    trace,
+                    stop_sequence,
+                )
+                .await;
+                return;
+            }
+            StopSend::Continue => {}
         }
         if first.done {
+            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                return;
+            }
             let elapsed = gen_start.elapsed();
             trace.output_tokens = tokens_generated;
             trace.complete = true;
@@ -733,9 +1122,19 @@ pub async fn generate_stream(
                     tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                     duration_ms: elapsed.as_millis() as u64,
                     partial: false,
+                    finish_reason: None,
+                    stop_sequence: None,
                     trace: Some(trace),
                 }))
                 .await;
+            return;
+        }
+
+        if remaining_generation_steps(max_tokens, tokens_generated) == 0 {
+            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                return;
+            }
+            send_length_summary(&tx, &plan, gen_start, tokens_generated, trace).await;
             return;
         }
 
@@ -758,7 +1157,10 @@ pub async fn generate_stream(
             // recusa da cabeça é esperada) das seguintes (o rascunho foi
             // mandado — ignorado aí é motivo para parar).
             let mut stored_draft: Option<Vec<i32>> = None;
-            while tokens_generated < max_tokens {
+            while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
+                if cancellation.is_cancelled() {
+                    return;
+                }
                 let draft_sent = especulando && sliced_mtp && stored_draft.is_some();
                 let res = if especulando {
                     if sliced_mtp {
@@ -831,6 +1233,8 @@ pub async fn generate_stream(
                                     tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                     duration_ms: elapsed.as_millis() as u64,
                                     partial: true,
+                                    finish_reason: None,
+                                    stop_sequence: None,
                                     trace: {
                                         trace.output_tokens = tokens_generated;
                                         Some(trace)
@@ -882,22 +1286,40 @@ pub async fn generate_stream(
                 // stream only what fits, and note it so `step.done` (which
                 // may refer to a position we never even looked at) isn't
                 // trusted past the cut.
-                let remaining = (max_tokens - tokens_generated) as usize;
+                let remaining = remaining_generation_steps(max_tokens, tokens_generated) as usize;
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
-                    if !text.is_empty() && tx.send(GenEvent::Token(text.clone())).await.is_err() {
-                        info!("cliente desconectou após {tokens_generated} tokens");
-                        return;
+                    match send_text_with_stop(&tx, &mut stop_matcher, text).await {
+                        StopSend::Disconnected => {
+                            info!("cliente desconectou após {tokens_generated} tokens");
+                            return;
+                        }
+                        StopSend::Stopped(stop_sequence) => {
+                            send_stopped_summary(
+                                &tx,
+                                &plan,
+                                gen_start,
+                                tokens_generated,
+                                trace,
+                                stop_sequence,
+                            )
+                            .await;
+                            return;
+                        }
+                        StopSend::Continue => {}
                     }
                 }
 
                 let finished =
                     (step.done && !truncated_by_budget) || tokens_generated >= max_tokens;
                 if finished {
+                    if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                        return;
+                    }
                     let elapsed = gen_start.elapsed();
                     trace.output_tokens = tokens_generated;
                     trace.complete = true;
@@ -919,6 +1341,8 @@ pub async fn generate_stream(
                             tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                             duration_ms: elapsed.as_millis() as u64,
                             partial: false,
+                            finish_reason: None,
+                            stop_sequence: None,
                             trace: Some(trace),
                         }))
                         .await;
@@ -963,6 +1387,8 @@ pub async fn generate_stream(
                                     tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                     duration_ms: elapsed.as_millis() as u64,
                                     partial: true,
+                                    finish_reason: None,
+                                    stop_sequence: None,
                                     trace: {
                                         trace.output_tokens = tokens_generated;
                                         Some(trace)
@@ -983,7 +1409,7 @@ pub async fn generate_stream(
             return;
         }
 
-        for i in 0..max_tokens {
+        while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
             let res = crate::prefill::step(
                 &plan,
                 model,
@@ -1005,14 +1431,32 @@ pub async fn generate_stream(
                     let (token_id, text) = &step.accepted[0];
                     next_token = *token_id;
                     tokens_generated += 1;
-                    if !text.is_empty() && tx.send(GenEvent::Token(text.clone())).await.is_err() {
-                        // Client hung up; stop burning GPU time on a dead request.
-                        info!("cliente desconectou após {tokens_generated} tokens");
-                        return;
+                    match send_text_with_stop(&tx, &mut stop_matcher, text).await {
+                        StopSend::Disconnected => {
+                            // Client hung up; stop burning GPU time on a dead request.
+                            info!("cliente desconectou após {tokens_generated} tokens");
+                            return;
+                        }
+                        StopSend::Stopped(stop_sequence) => {
+                            send_stopped_summary(
+                                &tx,
+                                &plan,
+                                gen_start,
+                                tokens_generated,
+                                trace,
+                                stop_sequence,
+                            )
+                            .await;
+                            return;
+                        }
+                        StopSend::Continue => {}
                     }
                     let done = step.done;
 
-                    if done || i == max_tokens - 1 {
+                    if done || remaining_generation_steps(max_tokens, tokens_generated) == 0 {
+                        if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                            return;
+                        }
                         let elapsed = gen_start.elapsed();
                         trace.output_tokens = tokens_generated;
                         trace.complete = true;
@@ -1029,6 +1473,8 @@ pub async fn generate_stream(
                                 tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                 duration_ms: elapsed.as_millis() as u64,
                                 partial: false,
+                                finish_reason: (!done).then(|| "length".to_string()),
+                                stop_sequence: None,
                                 trace: Some(trace),
                             }))
                             .await;
@@ -1036,7 +1482,7 @@ pub async fn generate_stream(
                     }
                 }
                 Err(e) => {
-                    warn!("Erro no passo {i} do pipeline: {e}");
+                    warn!("Erro no passo {tokens_generated} do pipeline: {e}");
                     let elapsed = gen_start.elapsed();
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
@@ -1048,6 +1494,8 @@ pub async fn generate_stream(
                                 tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                 duration_ms: elapsed.as_millis() as u64,
                                 partial: true,
+                                finish_reason: None,
+                                stop_sequence: None,
                                 trace: {
                                     trace.output_tokens = tokens_generated;
                                     Some(trace)
@@ -1057,7 +1505,7 @@ pub async fn generate_stream(
                     } else {
                         let _ = tx
                             .send(GenEvent::Failed(format!(
-                                "Pipeline falhou no passo {i}: {e}"
+                                "Pipeline falhou no passo {tokens_generated}: {e}"
                             )))
                             .await;
                     }
@@ -1068,7 +1516,96 @@ pub async fn generate_stream(
     }
     .await;
 
-    release_sessions(&plan, &session_id, &state.peer_http).await;
+    drop(tx);
+    let terminal = pump.await.ok().flatten();
+
+    // O lease sai daqui de um jeito só: publicado se todos os hops confirmaram
+    // que a sessão ficou parada no fim do prompt, descartado com a sessão
+    // liberada em qualquer outro caso.
+    let mut lease = Some(prefix_lease);
+    if let Some(retained_tokens) = retained_prefix_tokens {
+        if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http).await {
+            if let Some(lease) = lease.take() {
+                lease.commit(cache_prompt, retained_tokens);
+            }
+        } else {
+            warn!(
+                "não foi possível preservar o prefixo da sessão {}; liberando KV",
+                &session_id[..8.min(session_id.len())]
+            );
+        }
+    }
+    if let Some(lease) = lease.take() {
+        lease.discard();
+        release_sessions(&plan, &session_id, &state.peer_http).await;
+    }
+
+    if let Some(event) = terminal {
+        let _ = client_tx.send(event).await;
+    }
+}
+
+/// Confirma em cada peer que a sessão ficou parada no fim do prompt, pronta
+/// para o turno seguinte. Falha em um hop invalida a entrada inteira: manter só
+/// parte da cadeia criaria um buraco silencioso.
+///
+/// Do lado do peer isto **não** recua nada - a geração correu numa sequência de
+/// KV separada e some inteira (ver `infer_server::handle_rewind`). Por isso o
+/// prazo aqui é curto: é escrituração, não inferência, e o evento final do
+/// stream espera por ela.
+async fn rewind_sessions(
+    plan: &PipelinePlan,
+    session_id: &str,
+    retained_tokens: u32,
+    clients: &crate::peer_client::PeerClients,
+) -> bool {
+    let mut all_ok = true;
+    for step in &plan.steps {
+        let url = format!("{}/v1/session/rewind", step.inference_url);
+        let Ok(http) = clients.for_peer(&step.node_id) else {
+            all_ok = false;
+            continue;
+        };
+        let request = http
+            .post(&url)
+            .json(&serde_json::json!({
+                "session_id": session_id,
+                "n_tokens": retained_tokens,
+            }))
+            .timeout(REWIND_TIMEOUT);
+        match clients
+            .authorize_inference_request(request)
+            .await
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(body)
+                        if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
+                            && body.get("n_past").and_then(|v| v.as_u64())
+                                == Some(retained_tokens as u64) => {}
+                    Ok(body) => {
+                        warn!("rewind recusado por {}: {}", step.node_id, body);
+                        all_ok = false;
+                    }
+                    Err(error) => {
+                        warn!("resposta ilegível no rewind de {}: {error}", step.node_id);
+                        all_ok = false;
+                    }
+                }
+            }
+            Ok(response) => {
+                warn!("rewind em {} respondeu {}", step.node_id, response.status());
+                all_ok = false;
+            }
+            Err(error) => {
+                warn!("rewind em {} falhou: {error}", step.node_id);
+                all_ok = false;
+            }
+        }
+    }
+    all_ok
 }
 
 /// Hand every peer in the plan its KV slot back. Best effort: a peer that is
@@ -1117,7 +1654,7 @@ async fn release_sessions(
 /// request itself failed) — a 200 response is not success by itself,
 /// `handle_rollback` returns 200 either way and puts the real answer in the
 /// body. The caller has to treat `false` as fatal for the generation: see
-/// its call site in `generate_stream`.
+/// its call site in `generate_stream_with_stops`.
 async fn rollback_sessions(
     plan: &PipelinePlan,
     session_id: &str,
@@ -1221,32 +1758,20 @@ fn rate(tokens: u32, secs: f64) -> f64 {
 /// Identity lives with the HTTP route (it is in the `Authorization` header) and
 /// the pipeline lives with the generator, so neither one alone can fill in the
 /// Logs screen. Forwarding the events through here joins the two without
-/// putting a caller argument through every early return in `generate_stream` —
-/// which is the hot inference path and not worth destabilising for a log line.
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_logged_generation(
-    state: GatewayState,
+/// putting a caller argument through every early return in the hot inference
+/// path.
+pub fn spawn_logged_generation_with_stops(
     route: &'static str,
     caller: crate::reqlog::Caller,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
+    input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
 ) {
-    let entry_node_id = state.network.node_id.clone();
-    let prompt_tokens = estimate_tokens(&prompt);
-    let logged_model = model.clone();
+    let entry_node_id = input.state.network.node_id.clone();
+    let prompt_tokens = estimate_tokens(&input.prompt);
+    let logged_model = input.model.clone();
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream(
-        state,
-        model,
-        prompt,
-        chat_template,
-        max_tokens,
-        inner_tx,
-    ));
+    tokio::spawn(generate_stream_with_stops(input, inner_tx));
 
     tokio::spawn(async move {
         let started = Instant::now();
@@ -1328,26 +1853,13 @@ pub fn spawn_logged_generation(
 }
 
 /// Run a generation to completion and return the whole text.
-pub async fn generate_blocking(
-    state: GatewayState,
+pub async fn generate_blocking_with_stops(
     route: &'static str,
     caller: crate::reqlog::Caller,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
+    input: GenerationInput,
 ) -> std::result::Result<(String, GenSummary), String> {
     let (tx, mut rx) = mpsc::channel(64);
-    spawn_logged_generation(
-        state,
-        route,
-        caller,
-        model,
-        prompt,
-        chat_template,
-        max_tokens,
-        tx,
-    );
+    spawn_logged_generation_with_stops(route, caller, input, tx);
 
     let mut text = String::new();
     while let Some(event) = rx.recv().await {
@@ -1457,6 +1969,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     tokens_generated: 0,
                     tokens_per_sec: 0.0,
                     duration_ms: 0,
+                    stop_sequence: None,
                     trace: None,
                 }),
             )
@@ -1468,6 +1981,31 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         Some(m) => m.to_string(),
         None => state.active_model().await,
     };
+    let configured_limit = state
+        .runtime
+        .config()
+        .await
+        .map(|cfg| cfg.max_new_tokens)
+        .unwrap_or(DEFAULT_MAX_TOKENS);
+    let max_tokens = match resolve_request_max_tokens(req.max_tokens, configured_limit) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(GenerateResponse {
+                    response: error,
+                    source: "error".to_string(),
+                    tokens_generated: 0,
+                    tokens_per_sec: 0.0,
+                    duration_ms: 0,
+                    stop_sequence: None,
+                    trace: None,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
 
     info!(
         "📨 /api/generate model={} prompt_len={}",
@@ -1477,14 +2015,20 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
 
     // `/api/generate` has never been behind auth, so there is no credential to
     // attribute the request to — the log says exactly that instead of guessing.
-    match generate_blocking(
-        state,
+    match generate_blocking_with_stops(
         "/api/generate",
         crate::reqlog::Caller::anonymous(),
-        model,
-        req.prompt,
-        true,
-        DEFAULT_MAX_TOKENS,
+        GenerationInput {
+            state,
+            model,
+            prompt: req.prompt,
+            chat_template: true,
+            max_tokens,
+            stops,
+            // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
+            // o próprio texto.
+            cache_key: None,
+        },
     )
     .await
     {
@@ -1496,6 +2040,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: summary.tokens_generated,
                 tokens_per_sec: summary.tokens_per_sec,
                 duration_ms: summary.duration_ms,
+                stop_sequence: summary.stop_sequence,
                 trace: summary.trace,
             }),
         )
@@ -1510,6 +2055,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: 0,
                 tokens_per_sec: 0.0,
                 duration_ms: 0,
+                stop_sequence: None,
                 trace: None,
             }),
         )
@@ -1558,6 +2104,108 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn stop_matcher_holds_a_suffix_that_is_a_stop_prefix() {
+        let mut matcher = StopMatcher::new(vec!["<END>".to_string()]);
+
+        assert_eq!(
+            matcher.feed("answer<").text,
+            "answer",
+            "the possible prefix must stay buffered"
+        );
+        assert_eq!(matcher.feed("EN").text, "");
+        let matched = matcher.feed("D>ignored");
+        assert_eq!(matched.text, "");
+        assert_eq!(matched.matched.as_deref(), Some("<END>"));
+        assert_eq!(matcher.feed("after").text, "");
+    }
+
+    #[test]
+    fn stop_matcher_emits_text_before_a_stop_and_flushes_unmatched_suffix() {
+        let mut matcher = StopMatcher::new(vec!["STOP".to_string()]);
+
+        assert_eq!(matcher.feed("abcST").text, "abc");
+        assert_eq!(matcher.finish(), "ST");
+
+        let mut matcher = StopMatcher::new(vec!["STOP".to_string()]);
+        assert_eq!(matcher.feed("abcST").text, "abc");
+        assert_eq!(matcher.feed("ill").text, "STill");
+        assert_eq!(matcher.finish(), "");
+    }
+
+    #[test]
+    fn stop_matcher_preserves_utf8_boundaries_and_flushes_at_end() {
+        let mut matcher = StopMatcher::new(vec!["fim".to_string()]);
+
+        assert_eq!(matcher.feed("olá f").text, "olá ");
+        assert_eq!(matcher.feed("oi").text, "foi");
+        assert_eq!(matcher.finish(), "");
+
+        let mut unicode = StopMatcher::new(vec!["終".to_string()]);
+        assert_eq!(unicode.feed("pré").text, "pré");
+        let emission = unicode.feed("終depois");
+        assert_eq!(emission.text, "");
+        assert_eq!(emission.matched.as_deref(), Some("終"));
+    }
+
+    #[test]
+    fn stop_matcher_uses_the_earliest_match_and_normalizes_requests() {
+        let mut matcher = StopMatcher::new(vec![
+            "DONE".to_string(),
+            "DONE".to_string(),
+            "END".to_string(),
+            String::new(),
+        ]);
+
+        let emission = matcher.feed("prefixENDsuffix");
+        assert_eq!(emission.text, "prefix");
+        assert_eq!(emission.matched.as_deref(), Some("END"));
+    }
+
+    #[test]
+    fn openai_stop_input_accepts_one_string_or_a_list() {
+        let one: StopInput = serde_json::from_str(r#""END""#).unwrap();
+        let many: StopInput = serde_json::from_str(r#"["END","DONE"]"#).unwrap();
+
+        assert_eq!(one.into_vec(), vec!["END"]);
+        assert_eq!(many.into_vec(), vec!["END", "DONE"]);
+    }
+
+    #[test]
+    fn api_generate_max_tokens_defaults_accepts_and_rejects_by_configured_limit() {
+        let absent: GenerateRequest = serde_json::from_str(r#"{"prompt":"oi"}"#).unwrap();
+        let requested: GenerateRequest =
+            serde_json::from_str(r#"{"prompt":"oi","max_tokens":64}"#).unwrap();
+        let excessive: GenerateRequest =
+            serde_json::from_str(r#"{"prompt":"oi","max_tokens":513}"#).unwrap();
+
+        assert_eq!(resolve_request_max_tokens(absent.max_tokens, 512), Ok(512));
+        assert_eq!(
+            resolve_request_max_tokens(requested.max_tokens, 512),
+            Ok(64)
+        );
+        assert_eq!(
+            resolve_request_max_tokens(excessive.max_tokens, 512),
+            Err("max_tokens solicitado (513) excede max_new_tokens configurado (512)".into())
+        );
+    }
+
+    #[test]
+    fn api_generate_max_tokens_rejects_zero_instead_of_silently_clamping() {
+        assert_eq!(
+            resolve_request_max_tokens(Some(0), 512),
+            Err("max_tokens deve ser maior que zero".into())
+        );
+    }
+
+    #[test]
+    fn output_budget_counts_the_first_token_returned_by_prefill() {
+        assert_eq!(remaining_generation_steps(64, 1), 63);
+        assert_eq!(remaining_generation_steps(1, 1), 0);
+        assert_eq!(remaining_generation_steps(64, 64), 0);
+    }
 
     /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
     /// dentro de `next_hops`, e um hop noutro site que receba `192.168.x.y`
@@ -1609,6 +2257,51 @@ mod tests {
         );
     }
 
+    /// Live regression for the captain's Gemma4 request. Set
+    /// `POM_FTK_E2E_URL` to a gateway before running this ignored test; it is
+    /// deliberately not part of the default suite because it consumes a real
+    /// model and GPU time.
+    #[tokio::test]
+    #[ignore = "requires a live Gemma4 MoE gateway"]
+    async fn gemma4_hello_world_request_uses_moe_and_stops_on_its_turn() {
+        let base = std::env::var("POM_FTK_E2E_URL")
+            .expect("POM_FTK_E2E_URL must point at the live gateway");
+        let model = std::env::var("POM_FTK_E2E_MODEL")
+            .unwrap_or_else(|_| "Gemma4-26b-NVFP4.gguf".to_string());
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/generate"))
+            .json(&json!({
+                "model": model,
+                "prompt": "Escreva hello world 10 vezes.",
+                "max_tokens": 64
+            }))
+            .send()
+            .await
+            .expect("gateway request");
+        assert!(
+            response.status().is_success(),
+            "gateway returned {}",
+            response.status()
+        );
+        let body: Value = response.json().await.expect("JSON generation response");
+
+        assert!(body["tokens_generated"].as_u64().unwrap_or(513) <= 64);
+        assert!(body["trace"]["input_tokens"].as_u64().unwrap_or(0) > 0);
+        assert!(body["trace"]["complete"].as_bool().unwrap_or(false));
+        for phase in ["prefill", "decode"] {
+            let phase = &body["trace"]["hops"][0][phase];
+            assert_eq!(phase["executed_engine"], "moe");
+            assert_eq!(phase["engine_mismatch"], false);
+        }
+        let text = body["response"].as_str().unwrap_or_default();
+        for marker in ["<|im_start|>", "<|im_end|>", "<|channel>", "<channel|>"] {
+            assert!(
+                !text.contains(marker),
+                "raw template marker leaked: {marker}"
+            );
+        }
+    }
+
     #[test]
     fn token_estimate_is_pessimistic() {
         // 3 chars per token errs high, which is what a crash guard needs.
@@ -1648,6 +2341,7 @@ mod budget_tests {
             peer_count: 1,
             peer_index: 0,
             primary: true,
+            inference_mode: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx,
@@ -1879,6 +2573,7 @@ pub(crate) mod testkit {
             default_model: String::new(),
             local_assignment: assignment.clone(),
             loads: Arc::new(LoadTracker::new()),
+            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),
@@ -1891,6 +2586,7 @@ pub(crate) mod testkit {
                 role: Role::Node,
                 tls_required: false,
                 node_name: None,
+                huggingface_token: None,
                 connection_key: "chave".into(),
                 gateway_port: 8080,
                 p2p_port: 42777,
@@ -1928,6 +2624,7 @@ pub(crate) mod testkit {
             peer_count: 2,
             peer_index: 0,
             primary: true,
+            inference_mode: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 0,
             n_ctx: 8192,

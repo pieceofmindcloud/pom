@@ -16,6 +16,7 @@
 #include "llama.cpp/src/llama-ext.h"
 #include "llama.cpp/src/llama-model.h"
 #include "llama.cpp/ggml/include/ggml-backend.h"
+#include "llama.cpp/ggml/include/ggml-cpu.h"
 #include "llama.cpp/common/fit.h"
 #include "llama.cpp/common/json-schema-to-grammar.h"
 #include "llama.cpp/common/speculative.h"
@@ -294,6 +295,204 @@ extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_conte
         return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
     } catch (const std::exception &) {
         return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
+static ggml_tensor * llama_rs_moe_expert_view(
+        ggml_context * ctx,
+        const ggml_tensor * tensor,
+        uint32_t expert) {
+    if (!tensor || ggml_n_dims(tensor) != 3 || expert >= static_cast<uint32_t>(tensor->ne[2])) {
+        return nullptr;
+    }
+    return ggml_view_2d(
+        ctx,
+        const_cast<ggml_tensor *>(tensor),
+        tensor->ne[0],
+        tensor->ne[1],
+        tensor->nb[1],
+        static_cast<size_t>(expert) * tensor->nb[2]);
+}
+
+static ggml_tensor * llama_rs_moe_expert_scale(
+        ggml_context * ctx,
+        const llama_model * model,
+        const std::string & base,
+        uint32_t expert) {
+    const ggml_tensor * tensor = model->get_tensor((base + ".scale").c_str());
+    const std::string weight_suffix = ".weight";
+    if (!tensor && base.size() >= weight_suffix.size() &&
+        base.compare(base.size() - weight_suffix.size(), weight_suffix.size(), weight_suffix) == 0) {
+        const std::string stem = base.substr(0, base.size() - weight_suffix.size());
+        tensor = model->get_tensor((stem + ".scale").c_str());
+    }
+    if (!tensor || ggml_n_dims(tensor) != 1 || expert >= static_cast<uint32_t>(tensor->ne[0])) {
+        return nullptr;
+    }
+    return ggml_view_1d(
+        ctx,
+        const_cast<ggml_tensor *>(tensor),
+        1,
+        static_cast<size_t>(expert) * tensor->nb[0]);
+}
+
+static ggml_tensor * llama_rs_moe_scaled_matmul(
+        ggml_context * ctx,
+        const llama_model * model,
+        const ggml_tensor * weight,
+        const std::string & weight_name,
+        uint32_t expert,
+        ggml_tensor * hidden) {
+    ggml_tensor * view = llama_rs_moe_expert_view(ctx, weight, expert);
+    if (!view) {
+        return nullptr;
+    }
+    ggml_tensor * result = ggml_mul_mat(ctx, view, hidden);
+    if (ggml_tensor * scale = llama_rs_moe_expert_scale(ctx, model, weight_name, expert)) {
+        result = ggml_mul(ctx, result, scale);
+    }
+    return result;
+}
+
+extern "C" int llama_rs_moe_reference_expert(
+        const struct llama_model * model,
+        int32_t layer,
+        uint32_t expert,
+        const float * hidden,
+        size_t hidden_count,
+        int32_t activation,
+        float * gate,
+        size_t gate_capacity,
+        float * up,
+        size_t up_capacity,
+        float * activated,
+        size_t activated_capacity,
+        float * output,
+        size_t output_capacity) {
+    if (!model || !hidden || !gate || !up || !activated || !output || layer < 0) {
+        return 1;
+    }
+
+    try {
+        const std::string prefix = "blk." + std::to_string(layer) + ".";
+        const std::string gate_up_name = prefix + "ffn_gate_up_exps.weight";
+        const std::string gate_name = prefix + "ffn_gate_exps.weight";
+        const std::string up_name = prefix + "ffn_up_exps.weight";
+        const std::string down_name = prefix + "ffn_down_exps.weight";
+        const ggml_tensor * gate_up_weight = model->get_tensor(gate_up_name.c_str());
+        const ggml_tensor * gate_weight = model->get_tensor(gate_name.c_str());
+        const ggml_tensor * up_weight = model->get_tensor(up_name.c_str());
+        const ggml_tensor * down_weight = model->get_tensor(down_name.c_str());
+        const ggml_tensor * first_weight = gate_up_weight ? gate_up_weight : gate_weight;
+        if (!first_weight || !down_weight || hidden_count != static_cast<size_t>(first_weight->ne[0])) {
+            return 2;
+        }
+
+        const size_t intermediate = gate_up_weight
+            ? static_cast<size_t>(gate_up_weight->ne[1] / 2)
+            : static_cast<size_t>(gate_weight->ne[1]);
+        const size_t output_width = static_cast<size_t>(down_weight->ne[1]);
+        if (intermediate == 0 || output_width == 0 ||
+            gate_capacity < intermediate || up_capacity < intermediate ||
+            activated_capacity < intermediate || output_capacity < output_width) {
+            return 2;
+        }
+
+        ggml_init_params init = {
+            .mem_size   = 64ull * 1024ull * 1024ull,
+            .mem_buffer = nullptr,
+            .no_alloc   = true,
+        };
+        ggml_context * ctx = ggml_init(init);
+        if (!ctx) {
+            return 3;
+        }
+
+        ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden_count, 1);
+
+        ggml_tensor * gate_node = nullptr;
+        ggml_tensor * up_node = nullptr;
+        if (gate_up_weight) {
+            ggml_tensor * gate_up = llama_rs_moe_expert_view(ctx, gate_up_weight, expert);
+            if (!gate_up) {
+                ggml_free(ctx);
+                return 2;
+            }
+            ggml_tensor * gate_up_result = ggml_mul_mat(ctx, gate_up, input);
+            gate_node = ggml_view_1d(ctx, gate_up_result, intermediate, 0);
+            up_node = ggml_view_1d(ctx, gate_up_result, intermediate, intermediate * sizeof(float));
+        } else {
+            if (!gate_weight || !up_weight) {
+                ggml_free(ctx);
+                return 2;
+            }
+            gate_node = llama_rs_moe_scaled_matmul(
+                ctx, model, gate_weight, gate_name, expert, input);
+            up_node = llama_rs_moe_scaled_matmul(
+                ctx, model, up_weight, up_name, expert, input);
+        }
+        if (!gate_node || !up_node) {
+            ggml_free(ctx);
+            return 2;
+        }
+
+        // The fused Gemma4 path has no native gate/up scale tensors. The
+        // separate path was already scaled by llama_rs_moe_scaled_matmul.
+        ggml_tensor * activated_node = nullptr;
+        switch (activation) {
+            case 1:
+                activated_node = ggml_swiglu_split(ctx, gate_node, up_node);
+                break;
+            case 2:
+                activated_node = ggml_geglu_split(ctx, gate_node, up_node);
+                break;
+            default:
+                ggml_free(ctx);
+                return 4;
+        }
+        if (!activated_node) {
+            ggml_free(ctx);
+            return 3;
+        }
+
+        ggml_tensor * down_node = llama_rs_moe_scaled_matmul(
+            ctx, model, down_weight, down_name, expert, activated_node);
+        if (!down_node) {
+            ggml_free(ctx);
+            return 2;
+        }
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        ggml_build_forward_expand(graph, down_node);
+        ggml_backend_t backend = ggml_backend_cpu_init();
+        if (!backend) {
+            ggml_free(ctx);
+            return 3;
+        }
+        ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+        if (!buffer) {
+            ggml_backend_free(backend);
+            ggml_free(ctx);
+            return 3;
+        }
+        ggml_backend_tensor_set(input, hidden, 0, hidden_count * sizeof(float));
+        if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+            ggml_backend_buffer_free(buffer);
+            ggml_backend_free(backend);
+            ggml_free(ctx);
+            return 3;
+        }
+
+        ggml_backend_tensor_get(gate_node, gate, 0, intermediate * sizeof(float));
+        ggml_backend_tensor_get(up_node, up, 0, intermediate * sizeof(float));
+        ggml_backend_tensor_get(activated_node, activated, 0, intermediate * sizeof(float));
+        ggml_backend_tensor_get(down_node, output, 0, output_width * sizeof(float));
+        ggml_backend_buffer_free(buffer);
+        ggml_backend_free(backend);
+        ggml_free(ctx);
+        return 0;
+    } catch (...) {
+        return 3;
     }
 }
 

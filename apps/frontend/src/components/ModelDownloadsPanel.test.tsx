@@ -38,7 +38,7 @@ const job: Job = {
   total_bytes: 100,
   speed_bytes_per_sec: 10,
   eta_seconds: 6,
-  local_path: null,
+  local_path: "/models/model-Q5_K_M.gguf",
   error: null,
 };
 
@@ -64,6 +64,7 @@ describe("ModelDownloadsPanel", () => {
     renderPanel();
     expect(screen.getByText("Qwen/model")).toBeTruthy();
     expect(screen.getByText("40%")).toBeTruthy();
+    expect(screen.getByText("/models/model-Q5_K_M.gguf")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(cancelRemoteModelDownload).toHaveBeenCalledWith("download-1");

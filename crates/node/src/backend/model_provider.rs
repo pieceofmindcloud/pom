@@ -6,10 +6,11 @@
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
+use crate::huggingface::HfTokenStore;
 use crate::model_provider::{
     validate_filename, validate_repo_id, validate_revision, DownloadOptions, DownloadProgress,
-    DownloadResult, DownloadStatus, DynModelProvider, GgufFile, HfError, ManifestFile, ModelFile,
-    ModelLicense,
+    DownloadResult, DownloadStatus, DynModelProvider, GgufFile, HfCliStatus, HfError, ManifestFile,
+    ModelFile, ModelLicense,
 };
 use crate::webui::{self, Job};
 use axum::{
@@ -25,7 +26,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use tokio::sync::{mpsc, Mutex, RwLock, Semaphore};
@@ -38,15 +39,25 @@ pub(crate) const MODEL_DOWNLOAD_KIND: &str = "model_download";
 #[derive(Clone)]
 pub(crate) struct ModelService {
     pub(crate) provider: DynModelProvider,
+    pub(crate) hf_token_store: HfTokenStore,
     permits: Arc<Semaphore>,
     admission: Arc<Mutex<()>>,
     cancellations: Arc<RwLock<HashMap<String, CancellationToken>>>,
 }
 
 impl ModelService {
+    #[cfg(test)]
     pub(crate) fn new(provider: DynModelProvider) -> Self {
+        Self::with_token_store(provider, HfTokenStore::default())
+    }
+
+    pub(crate) fn with_token_store(
+        provider: DynModelProvider,
+        hf_token_store: HfTokenStore,
+    ) -> Self {
         Self {
             provider,
+            hf_token_store,
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
             admission: Arc::new(Mutex::new(())),
             cancellations: Arc::new(RwLock::new(HashMap::new())),
@@ -149,6 +160,23 @@ pub(crate) struct ModelDetailsResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct ModelProviderStatusResponse {
+    pub cli: HfCliStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct HuggingFaceTokenConfigResponse {
+    pub configured: bool,
+    pub masked: Option<String>,
+    pub source: &'static str,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct HuggingFaceTokenUpdate {
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ModelFileView {
     pub filename: String,
     pub size_bytes: Option<u64>,
@@ -175,6 +203,7 @@ pub(crate) struct GgufFileView {
 pub(crate) struct StorageResponse {
     pub available_bytes: Option<u64>,
     pub destination_available: bool,
+    pub destination_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +225,11 @@ pub(crate) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/model-provider/search", get(search_models))
         .route("/api/ui/model-provider/details", get(model_details))
+        .route("/api/ui/model-provider/status", get(status))
+        .route(
+            "/api/ui/model-provider/config",
+            get(token_config).post(save_token_config),
+        )
         .route("/api/ui/model-provider/storage", get(storage_info))
         .route("/api/ui/model-provider/downloads", post(start_download))
         .route(
@@ -326,6 +360,16 @@ async fn model_details(
         info.files = files.files;
         info.gguf_files = files.gguf_files;
     }
+    let license = match model_license(
+        &state.model_service.provider,
+        &repo_id,
+        info.license.clone(),
+    )
+    .await
+    {
+        Ok(license) => license,
+        Err(error) => return provider_error(error),
+    };
     let storage = storage_response(&state).await;
     let files = file_views(&state, &repo_id, revision.as_deref(), &info.files).await;
     let gguf_files = gguf_views(&state, &repo_id, revision.as_deref(), &info.gguf_files).await;
@@ -340,12 +384,93 @@ async fn model_details(
         private: info.private,
         gated: info.gated,
         tags: info.tags,
-        license: info.license,
+        license,
         files,
         gguf_files,
         storage,
     })
     .into_response()
+}
+
+async fn status(auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    consume_connection_auth(auth);
+    match provider_status(&state.model_service.provider).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => provider_error(error),
+    }
+}
+
+async fn token_config(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    match state.model_service.hf_token_store.status() {
+        Ok(status) => Json(token_config_response(status)).into_response(),
+        Err(error) => provider_error(error),
+    }
+}
+
+async fn save_token_config(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(update): Json<HuggingFaceTokenUpdate>,
+) -> Response {
+    let token = update
+        .token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty());
+    {
+        let mut config = state.auth.write().await;
+        let previous = config.huggingface_token.clone();
+        config.huggingface_token = token.clone();
+        if let Err(error) = config.save() {
+            config.huggingface_token = previous;
+            return provider_error(HfError::Io {
+                message: format!("não foi possível salvar a configuração do Hugging Face: {error}"),
+            });
+        }
+    }
+
+    // The provider reads this shared store for every request, so the next
+    // status check and download use the saved credential without a restart.
+    state.model_service.hf_token_store.set(token);
+    match state.model_service.hf_token_store.status() {
+        Ok(status) => Json(token_config_response(status)).into_response(),
+        Err(error) => provider_error(error),
+    }
+}
+
+fn token_config_response(
+    status: crate::huggingface::HfTokenStatus,
+) -> HuggingFaceTokenConfigResponse {
+    HuggingFaceTokenConfigResponse {
+        configured: status.configured,
+        masked: status.masked,
+        source: status.source.label(),
+    }
+}
+
+fn consume_connection_auth(auth: ConnectionAuth) {
+    match auth {
+        ConnectionAuth => {}
+    }
+}
+
+async fn provider_status(
+    provider: &DynModelProvider,
+) -> Result<ModelProviderStatusResponse, HfError> {
+    Ok(ModelProviderStatusResponse {
+        cli: provider.check_authentication().await?,
+    })
+}
+
+async fn model_license(
+    provider: &DynModelProvider,
+    repo_id: &str,
+    fallback: ModelLicense,
+) -> Result<ModelLicense, HfError> {
+    match provider.get_license(repo_id).await {
+        Ok(license) => Ok(license),
+        Err(HfError::HfInvalidResponse { .. } | HfError::HfDownloadFailed { .. }) => Ok(fallback),
+        Err(error) => Err(error),
+    }
 }
 
 async fn storage_info(
@@ -406,7 +531,8 @@ async fn start_download(
             );
         }
     }
-    let Some(destination) = state.model_dirs().await.into_iter().next() else {
+    let destinations = configured_model_destinations(state.model_dirs().await);
+    let Some(destination) = configured_model_destination(&destinations) else {
         return conflict(
             "destination_unavailable",
             "nenhuma pasta de modelos está configurada".into(),
@@ -431,6 +557,12 @@ async fn start_download(
     job.quantization = request.quantization.clone();
     job.download_status = Some("queued");
     job.total_bytes = file.size_bytes;
+    job.local_path = Some(
+        destination
+            .join(&identity.filename)
+            .to_string_lossy()
+            .into_owned(),
+    );
     webui::jobs().write().await.insert(id.clone(), job);
 
     let cancel = CancellationToken::new();
@@ -674,7 +806,7 @@ async fn run_download(
 async fn complete_download(
     job_id: &str,
     request: &DownloadRequest,
-    destination: &PathBuf,
+    destination: &Path,
     result: DownloadResult,
 ) {
     if let Err(error) = write_installed_record(destination, request, &result).await {
@@ -702,7 +834,10 @@ async fn complete_download(
         (result.duration_ms > 0)
             .then_some(result.total_bytes.saturating_mul(1000) / result.duration_ms),
         None,
-        None,
+        result
+            .local_paths
+            .first()
+            .map(|path| path.to_string_lossy().into_owned()),
         None,
     )
     .await;
@@ -719,7 +854,7 @@ async fn complete_download(
 }
 
 async fn write_installed_record(
-    destination: &PathBuf,
+    destination: &Path,
     request: &DownloadRequest,
     result: &DownloadResult,
 ) -> Result<(), HfError> {
@@ -860,10 +995,29 @@ async fn gguf_views(
 }
 
 async fn storage_response(state: &GatewayState) -> StorageResponse {
+    let destinations = configured_model_destinations(state.model_dirs().await);
     StorageResponse {
         available_bytes: disk_free_bytes().await,
-        destination_available: state.model_dirs().await.into_iter().next().is_some(),
+        destination_available: configured_model_destination(&destinations).is_some(),
+        destination_paths: destinations
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
     }
+}
+
+fn configured_model_destinations(directories: Vec<PathBuf>) -> Vec<PathBuf> {
+    directories
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect()
+}
+
+fn configured_model_destination(directories: &[PathBuf]) -> Option<PathBuf> {
+    directories
+        .iter()
+        .find(|path| !path.as_os_str().is_empty())
+        .cloned()
 }
 
 async fn disk_free_bytes() -> Option<u64> {
@@ -965,16 +1119,15 @@ async fn remove_cancellation(service: &ModelService, id: &str) {
 
 fn provider_error(error: HfError) -> Response {
     let (status, code) = match error {
-        HfError::HfCliNotInstalled => (StatusCode::SERVICE_UNAVAILABLE, "cli_not_installed"),
         HfError::HfAuthenticationRequired => (StatusCode::UNAUTHORIZED, "authentication_required"),
         HfError::HfRepositoryNotFound => (StatusCode::NOT_FOUND, "repository_not_found"),
+        HfError::HfFileNotFound => (StatusCode::NOT_FOUND, "file_not_found"),
         HfError::HfAccessDenied => (StatusCode::FORBIDDEN, "access_denied"),
         HfError::HfRateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         HfError::InvalidInput { .. } => (StatusCode::BAD_REQUEST, "invalid_input"),
         HfError::Cancelled => (StatusCode::CONFLICT, "cancelled"),
         HfError::HfDownloadFailed { .. } => (StatusCode::BAD_GATEWAY, "download_failed"),
         HfError::HfInvalidResponse { .. } => (StatusCode::BAD_GATEWAY, "invalid_response"),
-        HfError::ProcessFailed { .. } => (StatusCode::BAD_GATEWAY, "process_failed"),
         HfError::Io { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "io_error"),
     };
     let message = public_error_message_code(code);
@@ -1003,15 +1156,14 @@ fn not_found(message: &'static str) -> Response {
 
 fn error_code(error: &HfError) -> &'static str {
     match error {
-        HfError::HfCliNotInstalled => "cli_not_installed",
         HfError::HfAuthenticationRequired => "authentication_required",
         HfError::HfRepositoryNotFound => "repository_not_found",
+        HfError::HfFileNotFound => "file_not_found",
         HfError::HfAccessDenied => "access_denied",
         HfError::HfRateLimited => "rate_limited",
         HfError::HfDownloadFailed { .. } => "download_failed",
         HfError::HfInvalidResponse { .. } => "invalid_response",
         HfError::InvalidInput { .. } => "invalid_input",
-        HfError::ProcessFailed { .. } => "process_failed",
         HfError::Io { .. } => "io_error",
         HfError::Cancelled => "cancelled",
     }
@@ -1023,9 +1175,9 @@ fn public_error_message(error: &HfError) -> String {
 
 fn public_error_message_code(code: &str) -> &'static str {
     match code {
-        "cli_not_installed" => "o suporte ao provedor não está instalado neste nó",
         "authentication_required" => "autenticação do provedor necessária",
         "repository_not_found" => "modelo não encontrado",
+        "file_not_found" => "arquivo do modelo não encontrado",
         "access_denied" => "você não possui acesso a este modelo",
         "rate_limited" => "o provedor recusou a requisição por limite de uso",
         "insufficient_space" => "espaço insuficiente para baixar este modelo",
@@ -1033,6 +1185,12 @@ fn public_error_message_code(code: &str) -> &'static str {
         "download_in_progress" => "este modelo já está sendo baixado",
         "model_installed" => "este modelo já está instalado",
         "destination_unavailable" => "nenhuma pasta de modelos está disponível",
+        "download_failed" => {
+            "não foi possível concluir o download; verifique a conexão e tente novamente"
+        }
+        "invalid_response" => {
+            "o Hugging Face não respondeu corretamente; verifique a conexão e tente novamente"
+        }
         _ => "não foi possível concluir a operação do modelo",
     }
 }
@@ -1040,7 +1198,281 @@ fn public_error_message_code(code: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_provider::HfError;
+    use crate::model_provider::{
+        DownloadOptions, DownloadResult, GgufFile, HfCliStatus, ModelFile, ModelFiles, ModelInfo,
+        ModelProvider, ModelSummary, ProgressSender,
+    };
+    use async_trait::async_trait;
+    use axum::{body::Body, http::Request};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_util::sync::CancellationToken;
+    use tower::ServiceExt;
+
+    struct TestProvider {
+        license: ModelLicense,
+        license_calls: Arc<AtomicUsize>,
+        status: HfCliStatus,
+    }
+
+    fn unreachable_provider_call<T>(value: T) -> ! {
+        std::mem::drop(value);
+        unreachable!("não faz parte deste teste")
+    }
+
+    #[async_trait]
+    impl ModelProvider for TestProvider {
+        async fn search_models(&self, query: &str) -> Result<Vec<ModelSummary>, HfError> {
+            unreachable_provider_call(query)
+        }
+
+        async fn get_model_info(&self, repo_id: &str) -> Result<ModelInfo, HfError> {
+            unreachable_provider_call(repo_id)
+        }
+
+        async fn list_files(
+            &self,
+            repo_id: &str,
+            revision: Option<&str>,
+        ) -> Result<ModelFiles, HfError> {
+            unreachable_provider_call((repo_id, revision))
+        }
+
+        async fn download_file(
+            &self,
+            repo_id: &str,
+            filename: &str,
+            options: DownloadOptions,
+            progress: Option<ProgressSender>,
+            cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            unreachable_provider_call((repo_id, filename, options, progress, cancel))
+        }
+
+        async fn download_model(
+            &self,
+            repo_id: &str,
+            options: DownloadOptions,
+            progress: Option<ProgressSender>,
+            cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            unreachable_provider_call((repo_id, options, progress, cancel))
+        }
+
+        async fn get_license(&self, repo_id: &str) -> Result<ModelLicense, HfError> {
+            assert!(!repo_id.is_empty());
+            self.license_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.license.clone())
+        }
+
+        async fn check_authentication(&self) -> Result<HfCliStatus, HfError> {
+            Ok(self.status.clone())
+        }
+    }
+
+    struct DestinationProvider;
+
+    #[async_trait]
+    impl ModelProvider for DestinationProvider {
+        async fn search_models(&self, query: &str) -> Result<Vec<ModelSummary>, HfError> {
+            unreachable_provider_call(query)
+        }
+
+        async fn get_model_info(&self, repo_id: &str) -> Result<ModelInfo, HfError> {
+            unreachable_provider_call(repo_id)
+        }
+
+        async fn list_files(
+            &self,
+            repo_id: &str,
+            revision: Option<&str>,
+        ) -> Result<ModelFiles, HfError> {
+            Ok(ModelFiles {
+                repo_id: repo_id.to_string(),
+                revision: revision.map(str::to_string),
+                files: vec![ModelFile {
+                    filename: "model.gguf".into(),
+                    size_bytes: Some(1),
+                    sha256: None,
+                    lfs: None,
+                }],
+                gguf_files: vec![GgufFile {
+                    filename: "model.gguf".into(),
+                    size_bytes: Some(1),
+                    quantization: None,
+                    parameter_size: None,
+                    base_name: None,
+                }],
+            })
+        }
+
+        async fn download_file(
+            &self,
+            _repo_id: &str,
+            _filename: &str,
+            _options: DownloadOptions,
+            _progress: Option<ProgressSender>,
+            _cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            Err(HfError::Cancelled)
+        }
+
+        async fn download_model(
+            &self,
+            repo_id: &str,
+            options: DownloadOptions,
+            progress: Option<ProgressSender>,
+            cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            self.download_file(repo_id, "model.gguf", options, progress, cancel)
+                .await
+        }
+
+        async fn get_license(&self, repo_id: &str) -> Result<ModelLicense, HfError> {
+            unreachable_provider_call(repo_id)
+        }
+
+        async fn check_authentication(&self) -> Result<HfCliStatus, HfError> {
+            Ok(HfCliStatus::not_installed())
+        }
+    }
+
+    fn test_provider() -> (DynModelProvider, Arc<AtomicUsize>) {
+        let license_calls = Arc::new(AtomicUsize::new(0));
+        let provider = TestProvider {
+            license: ModelLicense {
+                id: Some("apache-2.0".into()),
+                name: Some("Apache License 2.0".into()),
+                url: Some("https://www.apache.org/licenses/LICENSE-2.0".into()),
+                raw_value: Some("apache-2.0".into()),
+                detected: true,
+            },
+            license_calls: license_calls.clone(),
+            status: HfCliStatus::not_installed(),
+        };
+        (Arc::new(provider), license_calls)
+    }
+
+    #[tokio::test]
+    async fn status_endpoint_reads_structured_cli_state() {
+        let (provider, _) = test_provider();
+
+        let response = provider_status(&provider).await.unwrap();
+
+        assert!(!response.cli.installed);
+        assert!(!response.cli.authenticated);
+        assert_eq!(response.cli.version, None);
+    }
+
+    #[tokio::test]
+    async fn status_route_requires_auth_and_serializes_cli_state() {
+        let (provider, _) = test_provider();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.model_service = Arc::new(ModelService::new(provider));
+        let app = routes().with_state(state);
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::get("/api/ui/model-provider/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/ui/model-provider/status")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["cli"]["installed"], false);
+        assert_eq!(body["cli"]["authenticated"], false);
+    }
+
+    #[tokio::test]
+    async fn token_config_route_returns_only_masked_state() {
+        let (provider, _) = test_provider();
+        let store = crate::huggingface::HfTokenStore::new(Some("hf_super_secret".into()));
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.model_service = Arc::new(ModelService::with_token_store(provider, store));
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/ui/model-provider/config")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        let serialized = body.to_string();
+        assert!(!serialized.contains("hf_super_secret"));
+        assert_eq!(body["configured"], true);
+        assert_eq!(body["source"], "pom.json");
+        assert!(body["masked"].as_str().unwrap().contains("••••"));
+        assert!(body.get("token").is_none());
+    }
+
+    #[tokio::test]
+    async fn details_license_uses_provider_license_contract() {
+        let (provider, license_calls) = test_provider();
+
+        let license = model_license(&provider, "owner/model", ModelLicense::unknown())
+            .await
+            .unwrap();
+
+        assert_eq!(license.id.as_deref(), Some("apache-2.0"));
+        assert_eq!(license_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn start_download_records_the_configured_folder_as_destination() {
+        let destination = std::env::temp_dir().join(format!(
+            "pom-model-destination-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&destination).await.unwrap();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.model_dirs =
+            Some(vec![destination.to_string_lossy().into_owned()]);
+        state.model_service = Arc::new(ModelService::new(Arc::new(DestinationProvider)));
+
+        let response = start_download(
+            ConnectionAuth,
+            State(state),
+            Json(DownloadRequest {
+                repo_id: "owner/model".into(),
+                revision: None,
+                filename: "model.gguf".into(),
+                quantization: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        let download_id = body["download_id"].as_str().unwrap().to_string();
+        let expected_path = destination.join("model.gguf");
+
+        let job = webui::jobs()
+            .read()
+            .await
+            .get(&download_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(job.local_path.as_deref(), expected_path.to_str());
+
+        tokio::fs::remove_dir_all(destination).await.unwrap();
+    }
 
     #[test]
     fn structured_download_identity_rejects_traversal() {
@@ -1096,6 +1528,37 @@ mod tests {
         let job = webui::new_job("job-1", MODEL_DOWNLOAD_KIND, "Qwen/model", "queued");
         assert_eq!(job.kind, MODEL_DOWNLOAD_KIND);
         assert_eq!(job.download_status, None);
+    }
+
+    #[test]
+    fn model_download_destination_uses_only_configured_folders() {
+        let configured = vec![
+            PathBuf::from("/models/primary"),
+            PathBuf::from("/models/backup"),
+        ];
+
+        assert_eq!(
+            configured_model_destination(&configured),
+            Some(PathBuf::from("/models/primary"))
+        );
+        assert_eq!(configured_model_destination(&[]), None);
+        assert_eq!(configured_model_destination(&[PathBuf::new()]), None);
+    }
+
+    #[tokio::test]
+    async fn storage_response_reports_resolved_model_destinations() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.model_dirs = Some(vec!["/models/primary".into(), "/models/backup".into()]);
+        }
+
+        let response = storage_response(&state).await;
+
+        assert_eq!(
+            response.destination_paths,
+            vec!["/models/primary".to_string(), "/models/backup".to_string()]
+        );
     }
 
     #[test]

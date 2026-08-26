@@ -39,4 +39,20 @@ describe("chat stream parsing", () => {
     expect(state.trace?.model).toBe("qwen");
     expect(state.trace?.input_tokens).toBe(12);
   });
+
+  it("keeps the reused prefix count, which is what the chat shows as savings", () => {
+    const state = finishChatStream(emptyChatStream(), {
+      trace: { model: "qwen", input_tokens: 40, cached_tokens: 33, output_tokens: 4, prefill_ms: 90, total_bytes_sent: 10, total_bytes_received: 20, hops: [] },
+    });
+
+    expect(state.trace?.cached_tokens).toBe(33);
+  });
+
+  it("treats a node that does not report reuse as zero, never as savings", () => {
+    const state = finishChatStream(emptyChatStream(), {
+      trace: { model: "qwen", input_tokens: 40, output_tokens: 4, prefill_ms: 90, total_bytes_sent: 10, total_bytes_received: 20, hops: [] },
+    });
+
+    expect(state.trace?.cached_tokens).toBeUndefined();
+  });
 });

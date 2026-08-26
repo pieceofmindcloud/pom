@@ -197,6 +197,7 @@ mod tests {
             shard_dir: None,
             shard_max_gb: 1.0,
             node_name: None,
+            huggingface_token: None,
         };
 
         assert!(is_valid_inference_token(&cfg, "cluster-secret"));
@@ -231,6 +232,7 @@ mod tests {
             shard_dir: None,
             shard_max_gb: 1.0,
             node_name: None,
+            huggingface_token: None,
         };
 
         assert_eq!(inference_token(&cfg).as_deref(), Some("cluster-secret"));

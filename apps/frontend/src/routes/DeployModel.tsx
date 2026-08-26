@@ -10,9 +10,9 @@
  *   a single range covering every layer, so the plan that comes back has the
  *   same shape and the same route validates it; nothing here recomputes it.
  *   What the screen drops is the questions that have only one answer. There is
- *   no order to choose in a pipeline of one, and no subset of layers to tick:
- *   the coverage ribbon would be a solid bar and the "included" column a single
- *   permanently-ticked box, which is noise dressed as a choice.
+ *   no order to choose in a pipeline of one, and no per-layer checklist: when
+ *   another peer lacks a slice, the machine inspector offers a discrete slider
+ *   over the cut points the backend read from the selected GGUF.
  *
  * The rest of this comment is about the slice case, which is the one with
  * decisions in it.
@@ -57,7 +57,7 @@ import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemo
 import { useToast } from "../lib/toast";
 import { bytes, layerRange, megabytes } from "../lib/format";
 import { Confirm } from "../components/Confirm";
-import { MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
+import { CapabilitySwitch, MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
@@ -76,8 +76,10 @@ import type {
   DeployStrategy,
   CacheTypesResponse,
   KvCacheType,
+  InferenceMode,
   RuntimeParams,
   TpLaunch,
+  WholeSliceSelection,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -348,6 +350,8 @@ export function DeployModel() {
   const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
   const [selection, setSelection] = useState<DeploySelection[] | null>(null);
+  /** A whole-model prefix cut requested for a destination without that slice. */
+  const [wholeSlice, setWholeSlice] = useState<WholeSliceSelection | null>(null);
   /** `null` means "the node's own defaults", which is what most deploys want. */
   const [params, setParams] = useState<RuntimeParams | null>(null);
   const nodeParams = useRef<RuntimeParams | null>(null);
@@ -432,6 +436,10 @@ export function DeployModel() {
         ? tpGroup?.group ?? ""
         : wholeName || wholes[0]?.name || ""
       : group || groups[0]?.key || "";
+
+  useEffect(() => {
+    setWholeSlice(null);
+  }, [chosen, kind]);
   const defaultDeploymentName = useRef("");
   useEffect(() => {
     if (!chosen) return;
@@ -500,6 +508,7 @@ export function DeployModel() {
       deploymentName,
       strategy,
       JSON.stringify(preferredNodeIds),
+      wholeSlice ? JSON.stringify(wholeSlice) : "sem-corte-do-inteiro",
       // TP: o plano revalida quando o primary/workers mudam — a checagem de
       // shardabilidade roda no nó, então a troca precisa re-disparar a query.
       isTp ? JSON.stringify(tpPayload()) : "sem-tp",
@@ -513,6 +522,7 @@ export function DeployModel() {
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
         ...(settledParams ? { params: settledParams } : {}),
+        ...(wholeSlice ? { whole_slice: wholeSlice } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
@@ -733,6 +743,9 @@ export function DeployModel() {
   const labelOf = (id: string) =>
     p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
 
+  const wholeLayerOptions = isWhole ? p?.layer_options ?? undefined : undefined;
+  const wholeSourceNodeId = wholeLayerOptions?.source_node_id ?? wholeModel?.holders[0] ?? "";
+
   const tpRankRows = useMemo(() => {
     if (p?.tp_targets && p.tp_targets.length > 0) {
       return p.tp_targets.slice().sort((a, b) => a.rank - b.rank);
@@ -748,6 +761,8 @@ export function DeployModel() {
 
   /** The settings in force: the operator's edit, or the node's own defaults. */
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
+  /** The server's GGUF metadata is the only source of truth for MoE. */
+  const isMoePlan = p?.is_moe === true;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
 
@@ -808,6 +823,18 @@ export function DeployModel() {
       (item) => item.start_layer === startLayer && item.end_layer === endLayer,
     );
     if (!candidate) return;
+    const wholeOptions = isWhole ? p?.layer_options : undefined;
+    if (
+      isWhole
+      && candidate.start_layer === 0
+      && wholeOptions
+      && candidate.end_layer + 1 < wholeOptions.total_layers
+      && wholeOptions.cuts.some((cut) => cut.end_layer === candidate.end_layer)
+    ) {
+      assignWholeCut(nodeId, candidate.end_layer);
+      return;
+    }
+    setWholeSlice(null);
     setSelection((current) => {
       const base = (current ?? rows)
         .filter(
@@ -850,6 +877,7 @@ export function DeployModel() {
    * tirar uma camada não é o mesmo gesto que "Remover da implantação".
    */
   function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
+    setWholeSlice(null);
     edit((base) =>
       base.filter(
         (row) =>
@@ -863,6 +891,7 @@ export function DeployModel() {
   }
 
   function assignWhole(nodeId: string) {
+    setWholeSlice(null);
     const candidate = p?.available[0] ?? (
       wholeModel?.total_layers != null
         ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
@@ -879,6 +908,41 @@ export function DeployModel() {
     }]);
   }
 
+  /**
+   * Pick one of the cuts the GGUF layout accepts. The slider index is an
+   * index into those cuts, never an invented layer number, so hybrid models
+   * jump over their real architectural blocks instead of cutting inside one.
+   */
+  function assignWholeCut(targetNodeId: string, endLayer: number) {
+    const options = p?.layer_options;
+    const sourceNodeId = options?.source_node_id ?? wholeModel?.holders[0];
+    const totalLayers = options?.total_layers ?? wholeModel?.total_layers;
+    if (!options || !sourceNodeId || totalLayers == null || sourceNodeId === targetNodeId) return;
+    const cut = options.cuts.find((candidate) => candidate.end_layer === endLayer);
+    if (!cut) return;
+    const template = rows[0];
+    const next: DeploySelection[] = [{
+      start_layer: 0,
+      end_layer: cut.end_layer,
+      target_node_id: targetNodeId,
+      n_gpu_layers: template?.n_gpu_layers ?? null,
+      offload_kqv: template?.offload_kqv ?? null,
+    }];
+    if (cut.end_layer + 1 < totalLayers) {
+      next.push({
+        start_layer: cut.end_layer + 1,
+        end_layer: totalLayers - 1,
+        target_node_id: sourceNodeId,
+        n_gpu_layers: template?.n_gpu_layers ?? null,
+        offload_kqv: template?.offload_kqv ?? null,
+      });
+    }
+    setWholeSlice({ source_node_id: sourceNodeId, target_node_id: targetNodeId, end_layer: cut.end_layer });
+    setSelection(next);
+    setInspectedNodeId(targetNodeId);
+    setInspectorTab("machine");
+  }
+
   async function deploy() {
     setRunning(true);
     setAsked(false);
@@ -890,6 +954,7 @@ export function DeployModel() {
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...(selection ? { selection: rows } : {}),
+        ...(wholeSlice ? { whole_slice: wholeSlice } : {}),
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
@@ -940,6 +1005,7 @@ export function DeployModel() {
 
   function restoreNodePlan() {
     setSelection(null);
+    setWholeSlice(null);
     const defaults = nodeParams.current ?? p?.params ?? null;
     setParams(defaults);
     setDrafts(defaults ? { n_ctx: String(defaults.n_ctx) } : {});
@@ -963,6 +1029,7 @@ export function DeployModel() {
           : undefined
       );
       if (candidate) {
+        setWholeSlice(null);
         setSelection((current) => {
           const base = current ?? rows;
           if (base.some((row) => row.target_node_id === nodeId)) return base;
@@ -999,7 +1066,7 @@ export function DeployModel() {
   }
 
   const job = jobs.data?.jobs.find((j) => j.id === jobId);
-  const canDeploy = validated && !p?.blocked && rows.length > 0;
+  const canDeploy = validated && !p?.blocked && p?.inference_mode_supported !== false && rows.length > 0;
   const machineOptions = liveMachines.length > 0 ? liveMachines : (cluster.data?.peers ?? []).map((peer) => ({
     node_id: peer.node_id,
     label: peer.hostname || peer.node_id,
@@ -1021,8 +1088,10 @@ export function DeployModel() {
       ? t("deploy.whyNotEmpty")
       : syncing || !p
         ? t("deploy.whyNotChecking")
-        : p.blocked
-          ? t("deploy.whyNotBlocked")
+          : p.blocked
+            ? t("deploy.whyNotBlocked")
+          : p.inference_mode_supported === false
+            ? t("deploy.whyNotBlocked")
           : !validated
             ? t("deploy.whyNotMismatch")
             : rows.length === 0
@@ -1060,6 +1129,7 @@ export function DeployModel() {
                   onClick={() => {
                     setPickedKind(value);
                     setSelection(null);
+                    setWholeSlice(null);
                     setPreferredNodeIds([]);
                     setJobId(null);
                   }}
@@ -1081,6 +1151,7 @@ export function DeployModel() {
                   else if (isTp) setWholeName(event.target.value);
                   else setGroup(event.target.value);
                   setSelection(null);
+                  setWholeSlice(null);
                   setPreferredNodeIds([]);
                 }}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
@@ -1121,6 +1192,7 @@ export function DeployModel() {
                   onClick={() => {
                     setStrategy(value);
                     setSelection(null);
+                    setWholeSlice(null);
                     setPreferredNodeIds((current) =>
                       isTp ? current : value === "complete" ? liveMachines.map((machine) => machine.node_id) : [],
                     );
@@ -1167,13 +1239,18 @@ export function DeployModel() {
           </div>
         )}
         {job && (
-          <div className="shrink-0 border-b border-line bg-ink/70 px-4 py-1.5 text-[0.62rem] sm:px-5">
+          <div className={`shrink-0 border-b px-4 py-1.5 text-[0.62rem] sm:px-5 ${job.state === "failed" ? "border-rose/40 bg-rose/[0.06]" : "border-line bg-ink/70"}`}>
             <div className="flex items-center justify-between gap-2 text-muted">
               <span className="truncate">{job.step || job.message}</span>
               <span className="shrink-0 font-mono text-faint">
                 {job.progress == null ? job.state : `${job.progress.toFixed(0)}%`}
               </span>
             </div>
+            {job.state === "failed" && job.message && (
+              <p role="alert" className="mt-1 break-words leading-relaxed text-rose">
+                {job.message}
+              </p>
+            )}
             {job.state === "running" && (
               <div className="mt-1 h-1 overflow-hidden rounded-full bg-line">
                 <div
@@ -1255,11 +1332,36 @@ export function DeployModel() {
                     <Input name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
                   </label>
                 ))}
-                <Switch checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
-                <Switch checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
-                <Switch checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
+                <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
+                <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
+                <CapabilitySwitch capability={p?.capabilities?.no_embeddings} alwaysVisible checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
               </div>
             </section>
+
+            {isMoePlan && (
+              <section className="border-b border-amber/25 bg-amber/[0.04] px-2 py-3">
+                <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-amber">Motor de inferência</p>
+                <label className="mt-2 grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
+                  <span className="truncate text-muted">Escolha para os três modos</span>
+                  <Select
+                    aria-label="Motor de inferência"
+                    value={eff.inference_mode ?? "auto"}
+                    onChange={(event) => setParams({ ...eff, inference_mode: event.target.value as InferenceMode })}
+                    compact
+                  >
+                    <option value="auto">Automático</option>
+                    <option value="dense">llama.cpp</option>
+                    <option value="moe">MoE</option>
+                  </Select>
+                </label>
+                <p className="mt-1.5 text-[0.6rem] leading-relaxed text-faint">A decisão usa metadata real do GGUF e é enviada ao modelo inteiro, às fatias e ao Tensor Parallelism.</p>
+                {p?.inference_mode_supported === false && (
+                  <p role="alert" className="mt-2 rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
+                    {p.inference_mode_reason ?? "Este caminho não pode honrar o motor escolhido."}
+                  </p>
+                )}
+              </section>
+            )}
 
             <section className="border-b border-aqua/20 bg-aqua/[0.035] px-2 py-3">
               <div className="flex items-start justify-between gap-2">
@@ -1383,12 +1485,14 @@ export function DeployModel() {
 
             <section className="border-b border-line py-3">
               <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Execução</p>
-              <Switch
+              <CapabilitySwitch
+                capability={p?.capabilities?.speculative_decoding}
                 checked={eff.speculative_decoding_enabled ?? false}
                 onChange={(value) => setParams({ ...eff, speculative_decoding_enabled: value })}
                 label="Decodificação especulativa"
               />
-              {eff.speculative_decoding_enabled && (
+              {eff.speculative_decoding_enabled &&
+                p?.capabilities?.speculative_decoding?.state !== "unsupported" && (
                 <div className="mt-1.5 space-y-1.5">
                   <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Largura do rascunho</span>
@@ -1401,7 +1505,8 @@ export function DeployModel() {
                 </div>
               )}
               <div className="mt-2">
-                <Switch
+                <CapabilitySwitch
+                  capability={p?.capabilities?.mtp}
                   checked={eff.mtp_enabled ?? false}
                   onChange={(value) => setParams({
                     ...eff,
@@ -1411,7 +1516,8 @@ export function DeployModel() {
                   label="Predição multi-token (MTP)"
                 />
               </div>
-              {eff.mtp_enabled && (
+              {eff.mtp_enabled &&
+                p?.capabilities?.mtp?.state !== "unsupported" && (
                 <div className="mt-1.5 space-y-1.5">
                   <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
@@ -1478,6 +1584,19 @@ export function DeployModel() {
               const first = taking[0];
               if (!machine) return <p className="py-4 text-[0.68rem] text-faint">Selecione uma máquina no canvas.</p>;
               const availableForMachine = p?.available.filter((candidate) => candidate.holders.includes(machine.node_id)) ?? [];
+              const wholeCuts = wholeLayerOptions?.cuts ?? [];
+              const selectedWholeCutIndex = wholeSlice?.target_node_id === machine.node_id
+                ? wholeCuts.findIndex((cut) => cut.end_layer === wholeSlice.end_layer)
+                : -1;
+              const wholeCutIndex = selectedWholeCutIndex >= 0
+                ? selectedWholeCutIndex
+                : Math.max(0, wholeCuts.length - 1);
+              const wholeCut = wholeCuts[wholeCutIndex];
+              const showWholeSlider = isWhole
+                && machine.node_id !== wholeSourceNodeId
+                && availableForMachine.length === 0
+                && !!wholeCut
+                && !wholeLayerOptions?.reason;
               return (
                 <section className="border border-aqua/20 bg-aqua/[0.035] pt-0">
                   <div className="flex items-center justify-between gap-2 border-b border-aqua/20 bg-aqua/10 px-2 py-1.5">
@@ -1546,6 +1665,43 @@ export function DeployModel() {
                           }) : <span className="text-[0.64rem] text-faint">Nenhuma fatia disponível</span>}
                         </div>
                       </div>
+                      {isWhole && wholeLayerOptions?.reason && machine.node_id !== wholeSourceNodeId && (
+                        <p role="alert" className="mt-3 border-t border-amber/20 pt-2 text-[0.62rem] leading-relaxed text-amber">
+                          Não foi possível confirmar os cortes reais deste modelo: {wholeLayerOptions.reason}
+                        </p>
+                      )}
+                      {showWholeSlider && (
+                        <div className="mt-3 border-t border-iris/20 pt-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Enviar camadas para este peer</p>
+                              <p className="mt-1 text-[0.62rem] leading-relaxed text-muted">
+                                {layerRange(0, wholeCut.end_layer)} para {machine.label}; o restante fica em {labelOf(wholeSourceNodeId)}.
+                              </p>
+                            </div>
+                            <span className="shrink-0 font-mono text-[0.62rem] text-iris">{wholeCut.layers} camadas</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={wholeCuts.length - 1}
+                            step={1}
+                            value={wholeCutIndex}
+                            aria-label={`Camadas a enviar para ${machine.label}`}
+                            onChange={(event) => {
+                              const cut = wholeCuts[Number(event.target.value)];
+                              if (cut) assignWholeCut(machine.node_id, cut.end_layer);
+                            }}
+                            className="mt-2 w-full accent-iris"
+                          />
+                          <p className="mt-1 text-[0.58rem] leading-relaxed text-faint">
+                            {wholeLayerOptions?.rule}. {wholeLayerOptions?.granularity
+                              ? `Passo real: ${wholeLayerOptions.granularity} camadas.`
+                              : "Os cortes disponíveis podem ter tamanhos diferentes."}
+                            {" "}O fatiamento acontece localmente na máquina que propôs o modelo antes da transferência.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                   {first && (

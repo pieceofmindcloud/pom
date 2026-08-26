@@ -144,7 +144,13 @@ impl MtpDrafter {
         cparams.n_ctx = cfg.n_ctx;
         cparams.n_batch = cfg.n_batch;
         cparams.n_ubatch = cfg.n_batch;
-        cparams.n_seq_max = cfg.max_sessions.max(1);
+        // Mesmo orçamento de sequências do contexto alvo: `mtp_draft` recebe o
+        // `seq_id` de lá, que a partir do desenho de duas sequências por sessão
+        // pode ser o da geração (`prompt_seq + max_sessions`). Sem isto o
+        // rascunho decodificaria numa sequência fora da faixa deste contexto.
+        // Ver `llm::kv_seq_budget`.
+        cparams.n_seq_max = crate::llm::kv_seq_budget(cfg.max_sessions);
+        cparams.kv_unified = true;
         cparams.ctx_type = sys::LLAMA_CONTEXT_TYPE_MTP;
         cparams.offload_kqv = cfg.offload_kqv;
         crate::llm::apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
@@ -489,8 +495,16 @@ mod tests {
             need_embeddings: false,
             mtp: true,
             rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
-        let mut engine = crate::llm::LlmEngine::load(&path, &cfg).expect("carregar o modelo");
+        let mut engine = crate::llm::LlmEngine::load_with_cache(
+            &path,
+            &cfg,
+            &crate::llm::ModelCache::new(),
+            false,
+        )
+        .expect("carregar o modelo");
         assert!(
             engine.mtp_ready(),
             "o modelo em {path} não trouxe bloco nextn — a sonda precisa de um que traga"

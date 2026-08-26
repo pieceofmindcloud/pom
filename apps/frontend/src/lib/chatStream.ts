@@ -1,3 +1,7 @@
+import type { ExecutionEngine } from "./types";
+
+export type { ExecutionEngine } from "./types";
+
 export interface StreamMetrics {
   tokens_per_sec?: number;
   tokens_generated?: number;
@@ -8,6 +12,10 @@ export interface StreamMetrics {
 export interface RequestTrace {
   model: string;
   input_tokens: number;
+  /** Tokens do prompt que o pipeline não reprocessou porque já estavam no KV
+   *  da sessão do turno anterior. Medida do executado, não da escolha do
+   *  cache. Ausente em trace de nó antigo. */
+  cached_tokens?: number;
   output_tokens: number;
   prefill_ms: number;
   total_bytes_sent: number;
@@ -82,6 +90,14 @@ export interface PhaseTrace {
   node_encode_ms: number;
   node_p50_ms: number;
   node_p95_ms: number;
+  /** Caminho escolhido pelo GGUF, separado do motor que executou. */
+  selected_path?: string;
+  /** Motor único observado nesta fase, ou unknown quando houve mistura. */
+  executed_engine?: ExecutionEngine;
+  /** Evidência completa para diagnosticar uma fase mista. */
+  executed_engines?: ExecutionEngine[];
+  engine_mismatch?: boolean;
+  mixed_execution?: boolean;
   tp?: TpTelemetry | null;
 }
 
@@ -127,6 +143,12 @@ export interface LegacyHopTrace {
   node_encode_ms: number;
   node_decode_p50_ms: number;
   node_decode_p95_ms: number;
+  /** Peers antigos normalmente não informam estes campos. */
+  selected_path?: string;
+  executed_engine?: ExecutionEngine;
+  executed_engines?: ExecutionEngine[];
+  engine_mismatch?: boolean;
+  mixed_execution?: boolean;
 }
 
 export type HopTrace = PhasedHopTrace | LegacyHopTrace;

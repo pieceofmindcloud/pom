@@ -25,7 +25,13 @@ use crate::wire::{FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::json;
+use std::future::Future;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Instant;
+use tokio::sync::Notify;
 use tracing::info;
 
 /// Prompt tokens pushed through the pipeline per round trip.
@@ -36,6 +42,70 @@ use tracing::info;
 /// this cluster actually has, which keeps a retry cheap while leaving the
 /// per-chunk overhead well under the transfer time it covers.
 pub const DEFAULT_CHUNK_TOKENS: u32 = 512;
+
+/// Cancelamento compartilhado entre o stream HTTP e o prefill. O `Notify`
+/// acorda uma chamada em voo; o `AtomicBool` torna as checagens entre hops e
+/// chunks baratas e sem await.
+#[derive(Clone, Default)]
+pub struct Cancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl Cancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        if !self.cancelled.swap(true, Ordering::Release) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        self.notify.notified().await;
+    }
+}
+
+#[derive(Debug)]
+pub struct GenerationCancelled;
+
+impl std::fmt::Display for GenerationCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("geração cancelada pelo cliente")
+    }
+}
+
+impl std::error::Error for GenerationCancelled {}
+
+pub fn is_cancelled(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<GenerationCancelled>().is_some()
+}
+
+fn check_cancelled(cancellation: &Cancellation) -> Result<()> {
+    if cancellation.is_cancelled() {
+        return Err(anyhow::Error::new(GenerationCancelled));
+    }
+    Ok(())
+}
+
+async fn cancelable<F, T>(cancellation: &Cancellation, future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    tokio::select! {
+        result = future => result,
+        _ = cancellation.cancelled() => Err(anyhow::Error::new(GenerationCancelled)),
+    }
+}
 
 /// Attempts per chunk before the request is given up on. Lives in `relay.rs`
 /// (`crate::relay::CHUNK_ATTEMPTS`) since a ring-mode relaying hop needs the
@@ -52,6 +122,18 @@ pub struct PrefillOutcome {
     pub done: bool,
     /// Prompt length as counted by the peer that tokenised it.
     pub prompt_tokens: u32,
+    /// Tokens actually left in `prompt_seq` after the volatile template tail
+    /// and generation were separated. This is the value `/v1/session/rewind`
+    /// confirms; it can be smaller than `prompt_tokens` by construction.
+    pub retained_tokens: u32,
+    /// Quantos tokens do prompt a cabeça **não** reprocessou porque já estavam
+    /// no KV desta sessão.
+    ///
+    /// É a medida do que foi *executado*, não do que o gateway escolheu: quem
+    /// tokeniza é quem decide se o prefixo retido servia. Zero num turno frio,
+    /// num prefixo que divergiu e num modelo qualquer que tenha recomeçado a
+    /// sessão. Vai para o log e para `usage.prompt_tokens_details.cached_tokens`.
+    pub cached_tokens: u32,
     pub chunks: u32,
     pub trace: RequestTrace,
 }
@@ -115,6 +197,12 @@ pub struct PhaseTrace {
     /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
     /// by `/health` and must never be inferred from this timing.
     pub node_backend_completion_ms: f64,
+    /// Tempo do forward MoE externo, medido fora de `llama_decode`.
+    ///
+    /// O hook do llama.cpp e opt-in e registra o forward depois que ele
+    /// retorna; sem este campo o trace confundia esse custo com o restante do
+    /// backend e deixava a soma impossível de fechar.
+    pub node_moe_forward_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
     pub node_residual_capture_d2h_sync_ms: f64,
     pub node_residual_ms: f64,
@@ -131,8 +219,24 @@ pub struct PhaseTrace {
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
     pub node_p50_ms: f64,
     pub node_p95_ms: f64,
+    /// Caminho que o backend selecionou a partir do GGUF.
+    pub selected_path: Option<String>,
+    /// Motor único quando a fase foi homogênea; `unknown` para mistura ou
+    /// ausência de amostra.
+    pub executed_engine: crate::executor::ExecutionEngine,
+    /// Todos os motores observados, preservando a evidência de uma fase mista.
+    pub executed_engines: Vec<crate::executor::ExecutionEngine>,
+    pub engine_mismatch: bool,
+    pub mixed_execution: bool,
+    pub moe_executor: Option<String>,
+    pub moe_executors: Vec<String>,
+    pub moe_executor_dtypes: Vec<u32>,
+    pub moe_executor_reason: Option<String>,
+    pub moe_executor_diagnostics: Option<crate::moe::runtime::MoeExecutorDiagnostics>,
     #[serde(skip)]
     node_samples_ms: Vec<f64>,
+    #[serde(skip)]
+    selected_path_seen: bool,
 }
 
 impl PhaseTrace {
@@ -151,6 +255,64 @@ impl PhaseTrace {
     ) {
         let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
         let node_decode_ms = node_ms("decode_ms");
+        let selected_path = node
+            .get("selected_path")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let engines = node
+            .get("executed_engines")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(crate::executor::ExecutionEngine::from_telemetry)
+                    .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|engines| !engines.is_empty())
+            .unwrap_or_else(|| {
+                node.get("executed_engine")
+                    .and_then(|value| value.as_str())
+                    .map(crate::executor::ExecutionEngine::from_telemetry)
+                    .into_iter()
+                    .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
+                    .collect()
+            });
+        let moe_executor = node
+            .get("moe_executor")
+            .and_then(|value| value.as_str())
+            .filter(|value| *value != "not-run")
+            .map(str::to_owned);
+        let moe_executors = node
+            .get("moe_executors")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let moe_executor_dtypes = node
+            .get("moe_executor_dtypes")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_u64())
+                    .filter_map(|value| u32::try_from(value).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let moe_executor_reason = node
+            .get("moe_executor_reason")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let moe_executor_diagnostics = node
+            .get("moe_executor_diagnostics")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -174,6 +336,7 @@ impl PhaseTrace {
         self.node_decode_ms += node_decode_ms;
         self.node_backend_enqueue_ms += node_ms("backend_enqueue_ms");
         self.node_backend_completion_ms += node_ms("backend_completion_ms");
+        self.node_moe_forward_ms += node_ms("moe_forward_ms");
         self.node_residual_capture_d2h_sync_ms += node_ms("residual_capture_d2h_sync_ms");
         self.node_residual_ms += node_ms("residual_ms");
         self.node_logits_access_ms += node_ms("logits_access_ms");
@@ -188,7 +351,87 @@ impl PhaseTrace {
         self.node_encode_ms += node_ms("encode_ms");
 
         self.node_samples_ms.push(node_decode_ms);
+        self.observe_path(selected_path);
+        for engine in engines {
+            self.observe_engine(engine);
+        }
+        self.observe_moe_executor(moe_executor);
+        for executor in moe_executors {
+            self.observe_moe_executor(Some(executor));
+        }
+        for dtype in moe_executor_dtypes {
+            if !self.moe_executor_dtypes.contains(&dtype) {
+                self.moe_executor_dtypes.push(dtype);
+            }
+        }
+        if let Some(reason) = moe_executor_reason {
+            if self.moe_executor_reason.is_none() {
+                self.moe_executor_reason = Some(reason);
+            }
+        }
+        if moe_executor_diagnostics.is_some() {
+            self.moe_executor_diagnostics = moe_executor_diagnostics;
+        }
         self.refresh_percentiles();
+    }
+
+    fn observe_moe_executor(&mut self, next: Option<String>) {
+        let Some(next) = next else {
+            return;
+        };
+        if !self.moe_executors.contains(&next) {
+            self.moe_executors.push(next);
+        }
+        self.moe_executor = match self.moe_executors.as_slice() {
+            [executor] => Some(executor.clone()),
+            [] => None,
+            _ => Some("mixed".to_owned()),
+        };
+    }
+
+    fn observe_engine(&mut self, next: crate::executor::ExecutionEngine) {
+        if next != crate::executor::ExecutionEngine::Unknown
+            && !self.executed_engines.contains(&next)
+        {
+            self.executed_engines.push(next);
+        }
+        self.executed_engine = match self.executed_engines.as_slice() {
+            [engine] => *engine,
+            _ => crate::executor::ExecutionEngine::Unknown,
+        };
+        self.mixed_execution = self.executed_engines.len() > 1;
+        self.refresh_engine_mismatch();
+    }
+
+    fn observe_path(&mut self, next: Option<String>) {
+        let Some(next) = next else {
+            return;
+        };
+        if self.selected_path_seen {
+            if self.selected_path.as_deref() != Some(next.as_str()) {
+                self.selected_path = None;
+            }
+        } else {
+            self.selected_path = Some(next);
+            self.selected_path_seen = true;
+        }
+        self.refresh_engine_mismatch();
+    }
+
+    fn refresh_engine_mismatch(&mut self) {
+        let Some(path) = self.selected_path.as_deref() else {
+            self.engine_mismatch = false;
+            return;
+        };
+        let expected = if path.starts_with("moe/") {
+            crate::executor::ExecutionEngine::Moe
+        } else if path.starts_with("dense/") {
+            crate::executor::ExecutionEngine::LlamaCpp
+        } else {
+            crate::executor::ExecutionEngine::Unknown
+        };
+        self.engine_mismatch = expected != crate::executor::ExecutionEngine::Unknown
+            && !self.executed_engines.contains(&expected);
     }
 
     fn merge(&mut self, next: &PhaseTrace) {
@@ -226,6 +469,27 @@ impl PhaseTrace {
         self.node_encode_ms += next.node_encode_ms;
         self.node_samples_ms
             .extend_from_slice(&next.node_samples_ms);
+        if next.selected_path_seen {
+            self.observe_path(next.selected_path.clone());
+        }
+        for engine in &next.executed_engines {
+            self.observe_engine(*engine);
+        }
+        self.observe_moe_executor(next.moe_executor.clone());
+        for executor in &next.moe_executors {
+            self.observe_moe_executor(Some(executor.clone()));
+        }
+        for dtype in &next.moe_executor_dtypes {
+            if !self.moe_executor_dtypes.contains(dtype) {
+                self.moe_executor_dtypes.push(*dtype);
+            }
+        }
+        if self.moe_executor_reason.is_none() {
+            self.moe_executor_reason = next.moe_executor_reason.clone();
+        }
+        if next.moe_executor_diagnostics.is_some() {
+            self.moe_executor_diagnostics = next.moe_executor_diagnostics.clone();
+        }
         self.refresh_percentiles();
     }
 
@@ -248,6 +512,15 @@ pub struct HopTrace {
 pub struct RequestTrace {
     pub model: String,
     pub input_tokens: u32,
+    /// Quantos dos `input_tokens` a cabeça **não** reprocessou porque já
+    /// estavam no KV da sessão reaproveitada.
+    ///
+    /// Medida do executado, não da escolha: quem a preenche é a resposta da
+    /// cabeça (`PrefillOutcome::cached_tokens`). Um turno frio, um prefixo que
+    /// divergiu e um peer que recomeçou a sessão contam todos zero. Era
+    /// exatamente esta a lacuna que fazia o cache parecer estar funcionando -
+    /// o log dizia "sessão reusada" e a economia era nenhuma.
+    pub cached_tokens: u32,
     pub output_tokens: u32,
     pub prefill_ms: u64,
     pub total_bytes_sent: u64,
@@ -381,6 +654,7 @@ impl RequestTrace {
         Self {
             model: model.into(),
             input_tokens: 0,
+            cached_tokens: 0,
             output_tokens: 0,
             prefill_ms: 0,
             total_bytes_sent: 0,
@@ -511,6 +785,8 @@ fn head_prefill_meta(
     is_last: bool,
     prompt: Option<&str>,
     chat_template: bool,
+    reuse_prefix: bool,
+    start_pos: Option<u32>,
 ) -> serde_json::Value {
     json!({
         "session_id": session_id,
@@ -520,7 +796,67 @@ fn head_prefill_meta(
         "is_final_chunk": false,
         "prompt": prompt,
         "chat_template": chat_template,
+        "reuse_prefix": reuse_prefix,
+        "start_pos": start_pos,
     })
+}
+
+/// Posições de prefill são absolutas na sessão, não são deriváveis do índice
+/// lógico do pedaço. Um prompt curto pode terminar no token 42 e o pedaço 1
+/// seguinte começa em 42, não em `1 * chunk_size`.
+fn required_prefill_position(
+    meta: &serde_json::Value,
+    field: &str,
+    chunk_index: u32,
+) -> Result<u32> {
+    meta.get(field)
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32)
+        .ok_or_else(|| {
+            anyhow!("peer omitiu {field} no chunk {chunk_index}; posição absoluta obrigatória")
+        })
+}
+
+/// No primeiro pedaço frio, zero é uma posição absoluta conhecida. Em todos
+/// os outros casos, inventar a posição pelo índice pode misturar KV de
+/// sessões diferentes e precisa abortar o caminho de reuso.
+fn observed_prefill_start(
+    meta: &serde_json::Value,
+    chunk_index: u32,
+    reused_prefix: bool,
+) -> Result<u32> {
+    match meta.get("start_pos").and_then(|value| value.as_u64()) {
+        Some(value) => Ok(value as u32),
+        None if chunk_index == 0 && !reused_prefix => Ok(0),
+        None => required_prefill_position(meta, "start_pos", chunk_index),
+    }
+}
+
+/// Quantos tokens de prompt a cabeça informou ter aproveitado neste pedaço.
+///
+/// Só o pedaço 0 traz o campo, e só a cabeça o preenche. Peer que não o mande
+/// (ou que tenha recomeçado a sessão) conta zero, que é a leitura conservadora
+/// certa: telemetria de cache nunca deve inventar economia.
+fn cached_tokens_of(meta: &serde_json::Value) -> u32 {
+    meta.get("cached_tokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0) as u32
+}
+
+/// A peer's measured prompt/generation frontier. When no frontier was measured
+/// for this request, the full prompt count is the only safe retained length.
+fn retained_tokens_of(meta: &serde_json::Value, prompt_tokens: u32) -> u32 {
+    meta.get("stable_len")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32)
+        .unwrap_or(prompt_tokens)
+}
+
+/// Se a cabeça de fato aproveitou o prefixo. Ver `cached_tokens_of`.
+fn head_reused_prefix(meta: &serde_json::Value, requested: bool) -> bool {
+    meta.get("reuse_prefix")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(requested)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -536,7 +872,10 @@ pub async fn run(
     routes: &crate::route::RouteTable,
     direct: Option<&crate::direct::DirectReply>,
     tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
+    check_cancelled(cancellation)?;
     let chunk_size = chunk_size.max(1);
     let n_peers = plan.steps.len();
     if n_peers == 0 {
@@ -555,6 +894,8 @@ pub async fn run(
             routes,
             direct,
             tunnel,
+            cancellation,
+            reuse_prefix,
         )
         .await;
     }
@@ -570,16 +911,21 @@ pub async fn run(
             http,
             routes,
             tunnel,
+            cancellation,
+            reuse_prefix,
         )
         .await;
     }
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut cached_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
+        check_cancelled(cancellation)?;
         // ── First peer: it owns the tokenizer and decides whether more remain.
         let head_meta = head_prefill_meta(
             session_id,
@@ -588,6 +934,8 @@ pub async fn run(
             n_peers == 1,
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
 
         let (mut meta, mut tensor) = send_chunk(
@@ -603,20 +951,40 @@ pub async fn run(
             &mut trace,
             0,
             Phase::Prefill,
+            cancellation,
         )
         .await?;
 
         if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
+        // A decisão da cabeça, lida do meta dela e não do que este gateway
+        // pediu: os hops seguintes obedecem a esta, e a telemetria reporta
+        // esta. Ver `infer_server::apply_prefix_decision`.
+        let head_reused = if chunk_index == 0 {
+            cached_tokens = cached_tokens_of(&meta);
+            head_reused_prefix(&meta, reuse_prefix)
+        } else {
+            false
+        };
         let more = meta
             .get("more_chunks")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
+        let chunk_start_pos = observed_prefill_start(&meta, chunk_index, head_reused)?;
+        let chunk_next_pos = if more {
+            required_prefill_position(&meta, "next_pos", chunk_index)?
+        } else {
+            chunk_start_pos
+        };
+        // A fronteira medida pela cabeça, para os hops partirem o prompt na
+        // mesma posição - ver `infer_server::Session::stable_len`.
+        let chunk_stable_len = meta.get("stable_len").and_then(|value| value.as_u64());
 
         // ── The rest of the pipeline, carrying this chunk's hidden state.
         for (i, step) in plan.steps.iter().enumerate().skip(1) {
+            check_cancelled(cancellation)?;
             let is_last = i == n_peers - 1;
             let Some((values, shape)) = tensor.take() else {
                 return Err(anyhow!(
@@ -630,8 +998,13 @@ pub async fn run(
                 "chunk_size": chunk_size,
                 "is_last": is_last,
                 "is_final_chunk": is_final_chunk,
+                "reuse_prefix": head_reused,
+                "start_pos": chunk_start_pos,
                 "scale": 1.0,
             });
+            if let Some(stable) = chunk_stable_len {
+                body_meta["stable_len"] = json!(stable);
+            }
             if let Some(tokens) = meta.get("tokens") {
                 body_meta["tokens"] = tokens.clone();
             }
@@ -648,6 +1021,7 @@ pub async fn run(
                 &mut trace,
                 i,
                 Phase::Prefill,
+                cancellation,
             )
             .await?;
             meta = m;
@@ -673,15 +1047,19 @@ pub async fn run(
                     .to_string(),
                 done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt_tokens,
+                retained_tokens: retained_tokens_of(&meta, prompt_tokens),
+                cached_tokens,
                 chunks,
                 trace: {
                     trace.input_tokens = prompt_tokens;
+                    trace.cached_tokens = cached_tokens;
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -704,16 +1082,21 @@ async fn run_ring(
     http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut cached_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
+        check_cancelled(cancellation)?;
         let mut head_meta = head_prefill_meta(
             session_id,
             chunk_index,
@@ -721,27 +1104,34 @@ async fn run_ring(
             next_hops.is_empty(),
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
         head_meta["exec_end"] = json!(head.exec_end);
 
-        let sent = crate::relay::send_frame_or_tunnel(
-            http,
-            head,
-            tunnel,
-            "/v1/prefill",
-            &head_meta,
-            None,
-            dtype,
-            head.frame_encoding(),
-            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
-            &head.node_id,
-            |_issue| {},
+        let sent = cancelable(
+            cancellation,
+            crate::relay::send_frame_or_tunnel(
+                http,
+                head,
+                tunnel,
+                "/v1/prefill",
+                &head_meta,
+                None,
+                dtype,
+                head.frame_encoding(),
+                crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+                &head.node_id,
+                |_issue| {},
+            ),
         )
         .await
         .map_err(|e| {
-            routes.mark_failure(&head.node_id, &head.inference_url);
+            if !is_cancelled(&e) {
+                routes.mark_failure(&head.node_id, &head.inference_url);
+            }
             ring_relay_error(&head.node_id, e)
         })?;
 
@@ -755,12 +1145,22 @@ async fn run_ring(
         if let Some(n) = sent.meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
+        // No anel a cabeça repassa a própria decisão adiante; aqui só se lê o
+        // que ela executou, para a telemetria. Ver `cached_tokens_of`.
+        if chunk_index == 0 {
+            cached_tokens = cached_tokens_of(&sent.meta);
+        }
         let more = sent
             .meta
             .get("more_chunks")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
+        let chunk_next_pos = if more {
+            required_prefill_position(&sent.meta, "next_pos", chunk_index)?
+        } else {
+            0
+        };
 
         if is_final_chunk {
             let token_id = sent
@@ -787,15 +1187,19 @@ async fn run_ring(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 prompt_tokens,
+                retained_tokens: retained_tokens_of(&sent.meta, prompt_tokens),
+                cached_tokens,
                 chunks,
                 trace: {
                     trace.input_tokens = prompt_tokens;
+                    trace.cached_tokens = cached_tokens;
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -820,16 +1224,21 @@ async fn run_direct(
     routes: &crate::route::RouteTable,
     direct: &crate::direct::DirectReply,
     tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut cached_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
+        check_cancelled(cancellation)?;
         let mut ticket = direct.ticket();
         let mut head_meta = head_prefill_meta(
             session_id,
@@ -838,6 +1247,8 @@ async fn run_direct(
             next_hops.is_empty(),
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["reply_to"] = direct.reply_to(ticket.id());
@@ -845,29 +1256,36 @@ async fn run_direct(
         head_meta["exec_end"] = json!(head.exec_end);
 
         let dispatched = Instant::now();
-        let ack = crate::relay::send_frame_or_tunnel(
-            http,
-            head,
-            tunnel,
-            "/v1/prefill",
-            &head_meta,
-            None,
-            dtype,
-            head.frame_encoding(),
-            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
-            &head.node_id,
-            |_issue| {},
+        let ack = cancelable(
+            cancellation,
+            crate::relay::send_frame_or_tunnel(
+                http,
+                head,
+                tunnel,
+                "/v1/prefill",
+                &head_meta,
+                None,
+                dtype,
+                head.frame_encoding(),
+                crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+                &head.node_id,
+                |_issue| {},
+            ),
         );
-        let meta = crate::direct::await_result(ack, &mut ticket, &head.node_id)
-            .await
-            .map_err(|e| {
+        let meta = cancelable(
+            cancellation,
+            crate::direct::await_result(ack, &mut ticket, &head.node_id),
+        )
+        .await
+        .map_err(|e| {
+            if !is_cancelled(&e) {
                 routes.mark_failure(&head.node_id, &head.inference_url);
-                ring_relay_error(&head.node_id, e)
-            })?;
+            }
+            ring_relay_error(&head.node_id, e)
+        })?;
         if let Some(error) = direct_failure(plan, routes, &meta) {
             return Err(error);
         }
-
         record_direct_hops(
             &mut trace,
             Phase::Prefill,
@@ -878,10 +1296,20 @@ async fn run_direct(
         if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
+        // A cabeça repassa a própria decisão adiante (`forward` em
+        // `handle_prefill`); a cauda a devolve em `prompt_progress`.
+        if chunk_index == 0 {
+            cached_tokens = cached_tokens_of(&meta);
+        }
         let more = meta
             .get("more_chunks")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let chunk_next_pos = if more {
+            required_prefill_position(&meta, "next_pos", chunk_index)?
+        } else {
+            0
+        };
 
         if !more {
             let token_id = meta
@@ -903,15 +1331,19 @@ async fn run_direct(
                     .to_string(),
                 done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt_tokens,
+                retained_tokens: retained_tokens_of(&meta, prompt_tokens),
+                cached_tokens,
                 chunks,
                 trace: {
                     trace.input_tokens = prompt_tokens;
+                    trace.cached_tokens = cached_tokens;
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -987,22 +1419,27 @@ async fn send_chunk(
     trace: &mut RequestTrace,
     hop: usize,
     phase: Phase,
+    cancellation: &Cancellation,
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
+    check_cancelled(cancellation)?;
     let node_id = &step.node_id;
     let peer_label = format!("{node_id} (pedaço {chunk_index})");
     let mut issues = Vec::new();
-    let result = crate::relay::send_frame_or_tunnel(
-        http,
-        step,
-        tunnel,
-        "/v1/prefill",
-        meta,
-        tensor,
-        dtype,
-        encoding,
-        CHUNK_ATTEMPTS,
-        &peer_label,
-        |issue| issues.push(issue),
+    let result = cancelable(
+        cancellation,
+        crate::relay::send_frame_or_tunnel(
+            http,
+            step,
+            tunnel,
+            "/v1/prefill",
+            meta,
+            tensor,
+            dtype,
+            encoding,
+            CHUNK_ATTEMPTS,
+            &peer_label,
+            |issue| issues.push(issue),
+        ),
     )
     .await;
 
@@ -1027,7 +1464,9 @@ async fn send_chunk(
         // nesse meio tempo. A proxima medicao reescolhe. Uma recuperação bem
         // sucedida via túnel nunca chega aqui — só o insucesso final marca a
         // rota como ruim.
-        routes.mark_failure(node_id, &step.inference_url);
+        if !is_cancelled(&e) {
+            routes.mark_failure(node_id, &step.inference_url);
+        }
         e
     })?;
     let processing_ms = sent
@@ -1667,11 +2106,42 @@ fn speculative_step_from_meta(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn cancelamento_acorda_chamada_em_voo() {
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+
+        let error = cancelable(&cancellation, async {
+            std::future::pending::<Result<(), anyhow::Error>>().await
+        })
+        .await
+        .unwrap_err();
+        assert!(is_cancelled(&error));
+    }
+
     #[test]
     fn chat_head_frame_delivers_prompt_with_template_mode() {
-        let meta = head_prefill_meta("session", 0, 512, true, Some("Oi, teste"), true);
+        let meta = head_prefill_meta(
+            "session",
+            0,
+            512,
+            true,
+            Some("Oi, teste"),
+            true,
+            false,
+            None,
+        );
         assert_eq!(meta["prompt"], "Oi, teste");
         assert_eq!(meta["chat_template"], true);
+    }
+
+    #[test]
+    fn missing_absolute_prefill_position_is_an_error_not_a_chunk_index() {
+        let error = required_prefill_position(&json!({"start_pos": 42}), "next_pos", 1)
+            .expect_err("a continuation without next_pos must not invent position 512");
+
+        assert!(error.to_string().contains("next_pos"));
+        assert!(error.to_string().contains("chunk 1"));
     }
 
     fn route_item(
@@ -1815,6 +2285,142 @@ mod tests {
         let phase = &trace.hops[0].decode;
         assert!((phase.node_decode_ms as f64 - 0.999).abs() < 1e-12);
         assert!((phase.node_backend_completion_ms as f64 - 0.999).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hop_trace_publica_o_motor_real_e_nao_inventa_o_de_peer_antigo() {
+        let mut moe = RequestTrace::new("qwen", &[("moe", 0, 15)]);
+        moe.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "moe",
+            }),
+        );
+        assert_eq!(
+            moe.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::Moe
+        );
+        assert_eq!(
+            moe.hops[0].decode.selected_path.as_deref(),
+            Some("moe/q4_0")
+        );
+
+        let mut delegated = RequestTrace::new("qwen", &[("delegated", 0, 15)]);
+        delegated.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "llama.cpp",
+            }),
+        );
+        assert_eq!(
+            delegated.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::LlamaCpp
+        );
+        assert!(delegated.hops[0].decode.engine_mismatch);
+
+        let mut old = RequestTrace::new("qwen", &[("old", 0, 15)]);
+        old.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+        assert_eq!(
+            old.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
+    }
+
+    #[test]
+    fn hop_trace_propaga_executor_moe_dtype_e_motivo_por_fase() {
+        let mut trace = RequestTrace::new("qwen", &[("moe", 0, 39)]);
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 10,
+                "processing_ms": 9,
+                "bytes_sent": 1,
+                "bytes_received": 2,
+                "node_timings": {
+                    "selected_path": "moe/q4_0",
+                    "executed_engine": "moe",
+                    "moe_executor": "cpu-reference",
+                    "moe_executors": ["cpu-reference"],
+                    "moe_executor_dtypes": [21, 22, 23],
+                    "moe_executor_reason": "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado"
+                }
+            }),
+        );
+
+        let phase = &trace.hops[0].decode;
+        assert_eq!(phase.moe_executor.as_deref(), Some("cpu-reference"));
+        assert_eq!(phase.moe_executors, vec!["cpu-reference"]);
+        assert_eq!(phase.moe_executor_dtypes, vec![21, 22, 23]);
+        assert_eq!(
+            phase.moe_executor_reason.as_deref(),
+            Some("dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado")
+        );
+    }
+
+    #[test]
+    fn hop_trace_fica_desconhecido_se_as_chamadas_do_mesmo_hop_divergirem() {
+        let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
+        for (path, engine) in [("moe/q4_0", "llama.cpp"), ("moe/q4_0", "moe")] {
+            trace.record_hop(
+                0,
+                Phase::Prefill,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                TlsHop::default(),
+                &json!({
+                    "selected_path": path,
+                    "executed_engine": engine,
+                }),
+            );
+        }
+        assert_eq!(
+            trace.hops[0].prefill.executed_engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
+        assert!(trace.hops[0].prefill.mixed_execution);
+        assert!(!trace.hops[0].prefill.engine_mismatch);
     }
 
     /// Ring mode reconstructs a trace from a bubbled `hop_timings` array

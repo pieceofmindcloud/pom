@@ -12,7 +12,9 @@ import {
   ApiError,
   api,
   getRemoteModelDetails,
+  getRemoteModelProviderStatus,
   getRemoteModelStorage,
+  getHuggingFaceTokenConfig,
   listDeployments,
   searchRemoteModels,
   setConnectionKey,
@@ -74,6 +76,8 @@ export const keys = {
   remoteModelDetails: (repoId: string, revision: string | undefined) =>
     ["remote-model-details", repoId, revision ?? "default"] as const,
   remoteModelStorage: ["remote-model-storage"] as const,
+  remoteModelProviderStatus: ["remote-model-provider-status"] as const,
+  huggingFaceTokenConfig: ["hugging-face-token-config"] as const,
 };
 
 /**
@@ -333,6 +337,7 @@ export function useRemoteModelSearch(options: {
   page: number;
   pageSize: number;
   sort?: "relevance" | "downloads" | "recent";
+  enabled?: boolean;
 }) {
   return useQuery({
     queryKey: [
@@ -340,7 +345,7 @@ export function useRemoteModelSearch(options: {
       options.sort ?? "relevance",
     ],
     queryFn: ({ signal }) => searchRemoteModels(options, signal),
-    enabled: options.query.trim().length > 0,
+    enabled: options.enabled !== false && options.query.trim().length > 0,
     staleTime: 15_000,
     retry: false,
   });
@@ -365,6 +370,24 @@ export function useRemoteModelStorage() {
   });
 }
 
+export function useRemoteModelProviderStatus() {
+  return useQuery({
+    queryKey: keys.remoteModelProviderStatus,
+    queryFn: ({ signal }) => getRemoteModelProviderStatus(signal),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export function useHuggingFaceTokenConfig() {
+  return useQuery({
+    queryKey: keys.huggingFaceTokenConfig,
+    queryFn: ({ signal }) => getHuggingFaceTokenConfig(signal),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
 export function useModelDownloads() {
   const jobs = useJobs();
   return {
@@ -381,6 +404,8 @@ export function invalidateAfterAction(qc: QueryClient) {
     keys.jobs,
     keys.adminNodes,
     keys.models,
+    keys.remoteModelProviderStatus,
+    keys.huggingFaceTokenConfig,
   ]) {
     void qc.invalidateQueries({ queryKey: key });
   }

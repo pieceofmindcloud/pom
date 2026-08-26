@@ -21,8 +21,9 @@ Per-file list:
   snapshot, directional RTT for each adjacent execution pair and each peer's
   inference health. `ExecutionEnvironment` keeps requested configuration
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
-  from the explicit per-peer health field. Missing snapshots stay visible as
-  missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  from the explicit per-peer health field; health shows the selected path,
+  while the request trace shows the executed engine and mixed/mismatch flags.
+  Missing snapshots stay visible as missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
   resolution retain those ids.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
@@ -108,8 +109,22 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
+  Quando a máquina selecionada não tem uma fatia, o inspetor de máquina expõe
+  um slider indexado pelos cortes que o backend leu do GGUF. O índice não é uma
+  camada cravada: em modelos densos os cortes podem ser camada a camada, e em
+  modelos híbridos saltam pelas fronteiras arquiteturais reais. A seleção envia
+  `whole_slice`; o backend materializa prefixo e restante na máquina que tem o
+  modelo inteiro e só então usa a transferência existente. Se o destino já tem
+  a faixa, a lista "Camadas disponíveis neste peer" continua sendo o controle e
+  o slider fica oculto; falha na leitura aparece no inspetor com o motivo.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
+  For a real MoE model, identified by `DeployPlan.is_moe` from GGUF metadata,
+  the Globais inspector shows the inference engine selector and sends
+  `RuntimeParams.inference_mode` in whole-model, sliced and TP requests. Dense
+  models hide it. A MoE Tensor Parallelism plan keeps the selector visible but
+  is blocked with the backend's explicit unsupported reason, so the UI cannot
+  imply that the request will use another engine silently.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
@@ -125,7 +140,9 @@ Per-file list:
   `split-mode tensor`.
   Plan edits are debounced 260 ms and validated by `POST /api/ui/deploy/plan`;
   the deploy itself re-surveys the cluster via `POST /api/ui/deploy`, returning
-  a job shown through `useJobs`. Restores the last deploy from localStorage via
+  a job shown through `useJobs`. A failed preflight keeps the backend's reason
+  visible in the rose job banner, including the peer that stayed occupied.
+  Restores the last deploy from localStorage via
   `../lib/deployMemory` (`recallDeploy`/`rememberDeploy`/`usableSelection`),
   after the first plan, pruned against what still exists.
 - The TP inspector never offers pipeline layer buttons. It lists available and
@@ -156,6 +173,11 @@ Per-file list:
   `model_label` como texto; quando há duas rodadas do mesmo modelo, o seletor
   mostra o prefixo do `pom_id` para desambiguar sem trocar o grupo enviado ao
   backend.
+- As opções globais condicionadas pelo modelo usam `DeployPlan.capabilities`:
+  `unsupported` fica oculto; `unknown` permanece visível, desabilitado e
+  explica a fonte e o motivo. `no_embeddings` é a exceção de produto:
+  permanece visível, e o backend valida atomicamente a topologia por peer antes
+  de aplicar o controle.
 - O fechamento do inspetor é uma barra visual de 3px em altura total, com uma
   área de clique e foco maior e invisível. Ela fica fora do scroll do conteúdo,
   então continua ancorada na altura da tela durante rolagem e resize; ao fechar,
@@ -180,6 +202,8 @@ Per-file list:
 - `NetworkSettings.tsx` — Admin view: this node's membership
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
+  Também monta o `HuggingFaceSettingsPanel`, que salva o token local sem
+  receber o segredo de volta.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
@@ -210,10 +234,13 @@ Per-file list:
   `SlicingJobsPanel` is shown only while at least one slicing job is running.
   `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
   can be sliced.
-- `Transfers.tsx` — Three panels: pending offers (accept/reject via
+- `Transfers.tsx` — Shows remote model downloads from `useModelDownloads` in
+  the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
-  ones. State classification from `../lib/transferStatus`. `cancelled` é
+  ones. Model downloads reuse `ModelDownloadsPanel`, so their backend progress,
+  configured destination path and cancel/retry actions stay visible here.
+  State classification from `../lib/transferStatus`. `cancelled` é
   mostrada como **recusada**, em âmbar, e não como falha vermelha: foi decisão
   de alguém, não erro. Fatias aparecem por modelo e faixa de camadas
   (`../lib/transferLabel`), com o hash curto ao lado.
@@ -221,10 +248,13 @@ Per-file list:
   per model with actions: slice (links to `/modelos/fatiar?path=`), send
   (`/transferencias/enviar?path=`), delete (`../lib/deleteModel`). `ScannedRoots`
   lists the scanned folders and per-folder file counts.
-- `RemoteModels.tsx` - busca com debounce em `/api/ui/model-provider/search`,
-  filtro GGUF, ordenação, paginação por URL, detalhes lazy e confirmação de
-  download. Os jobs aparecem no `ModelDownloadsPanel`, então trocar de rota ou
-  recarregar não perde uma transferência.
+- `RemoteModels.tsx` - mostra primeiro o status do CLI e da autenticação,
+  depois busca com debounce em `/api/ui/model-provider/search`, filtro GGUF,
+  ordenação, paginação por URL, detalhes lazy e confirmação de download. O
+  detalhe resolve a licença pelo provider e marca modelos gated antes do
+  download. O diálogo mostra as pastas de modelos resolvidas pelo backend. Os
+  jobs aparecem no `ModelDownloadsPanel`, também em Transferências, então trocar
+  de rota ou recarregar não perde uma transferência.
 
 Key logic carriers:
 
@@ -234,12 +264,12 @@ Key logic carriers:
   aborts via `AbortController`, persists the session on finish. The only screen
   that talks to the OpenAI-compatible surface.
 - `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` - the
-  closed-by-default telemetry table: per-hop prefill/decode phases, gateway vs
-  backend vs residual vs transport timing, bytes per hop; renders the legacy
-  (pre-phase-split) hop shape separately, an optional TP collective table and
-  a pure diagnosis card. The AI action sends both tables as private request
-  content, while the initial model is shown as a non-turn mark before chat
-  messages.
+  closed-by-default telemetry table: per-hop prefill/decode phases, selected
+  path versus backend-reported executed engine, mixed/mismatch evidence,
+  gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
+  optional TP collective table and a pure diagnosis card. The AI action sends
+  both tables as private request content, while the initial model is shown as
+  a non-turn mark before chat messages.
 - `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
   merged steps expand back into per-slice rows and the planner answer is compared
   with the displayed rows after sorting by layer.

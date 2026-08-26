@@ -43,6 +43,7 @@ vi.mock("../lib/api", () => ({
 }));
 
 const params: RuntimeParams = {
+  inference_mode: "auto",
   n_gpu_layers: 99,
   n_ctx: 8192,
   offload_kqv: true,

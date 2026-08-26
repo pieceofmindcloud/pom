@@ -3,7 +3,7 @@
 Único arquivo por ora. Decide uma cadeia ordenada de peers que cobre
 `0..total_layers` por sub-faixas executáveis, mede a carga em voo e o RTT de
 entrada de cada peer e escolhe o endereço por hop. É a entrada de nível mais
-alto consumida pelo `gateway.rs` (`generate_stream`).
+alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 
 ## Arquivos
 
@@ -63,7 +63,7 @@ alto consumida pelo `gateway.rs` (`generate_stream`).
 
 ## Ligações
 
-- **Chamado por**: `gateway.rs::generate_stream` (plano por requisição) e
+- **Chamado por**: `gateway.rs::generate_stream_with_stops` (plano por requisição) e
   `backend/webui.rs`.
 - **Chama**: `network::PeerInfo` e `network::route::RouteTable`
   (`resolve_step_url`).

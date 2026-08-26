@@ -4,7 +4,7 @@
 //!
 //! Same shape as that module: a protocol adapter, nothing more. It renders
 //! `messages`/`system`/`tools` into the single prompt string the pipeline
-//! already accepts, calls [`crate::gateway::generate_stream`], and dresses
+//! already accepts, calls [`crate::gateway::generate_stream_with_stops`], and dresses
 //! the result as Anthropic Messages API responses (SSE event names
 //! included). No inference behaviour is changed or duplicated here — this
 //! file and `openai.rs` both bottom out in the same generation path.
@@ -25,15 +25,15 @@
 //! fine-tuned on. This has real, bounded failure modes a grammar-constrained
 //! backend wouldn't: a malformed or nameless `<tool_call>` degrades to plain
 //! text (see `parse_tool_call`) rather than failing the request or losing
-//! the content. `tool_choice` is parsed-and-ignored like `stop_sequences` —
-//! neither needs a struct field to be accepted, since serde silently drops
-//! unknown JSON fields on both request types here.
+//! the content. `tool_choice` remains parsed-and-ignored, while
+//! `stop_sequences` is applied by the shared gateway matcher before output
+//! reaches the SSE adapter.
 //!
 //! Endpoints: `POST /v1/messages` (`stream: true` → SSE),
 //! `POST /v1/messages/count_tokens`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent, GenSummary};
+use crate::gateway::{GatewayState, GenEvent, GenSummary, GenerationInput};
 use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
 use crate::tool_call::{
     parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
@@ -203,6 +203,8 @@ pub struct MessagesRequest {
     pub max_tokens: u32,
     #[serde(default)]
     pub tools: Vec<ToolDef>,
+    #[serde(default)]
+    pub stop_sequences: Vec<String>,
 }
 
 fn default_max_tokens() -> u32 {
@@ -231,6 +233,41 @@ pub struct CountTokensRequest {
 /// peer already applies the model's chat template once, so a second one here
 /// would nest inside it. A lone user message with no system prompt and no
 /// tools passes through untouched.
+/// Chave do cache de prefixo para uma conversa Anthropic.
+///
+/// Mesma razão e mesma forma da versão OpenAI - ver
+/// `crate::openai::conversation_cache_key`, que documenta por que o texto
+/// renderizado não serve como chave.
+pub fn conversation_cache_key(
+    system: Option<&SystemPrompt>,
+    messages: &[AnthropicMessage],
+    tools: &[ToolDef],
+) -> String {
+    let mut key = String::new();
+    for tool in tools {
+        key.push_str("tool\u{1f}");
+        key.push_str(&tool.name);
+        key.push('\u{1f}');
+        key.push_str(&tool.input_schema.to_string());
+        key.push('\u{1e}');
+    }
+    if let Some(system) = system {
+        key.push_str("system\u{1f}");
+        key.push_str(&system.as_text());
+        key.push('\u{1e}');
+    }
+    for message in messages
+        .iter()
+        .filter(|m| !m.content.as_text().trim().is_empty())
+    {
+        key.push_str(&message.role);
+        key.push('\u{1f}');
+        key.push_str(&message.content.as_text());
+        key.push('\u{1e}');
+    }
+    key
+}
+
 pub fn render_prompt(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
@@ -251,14 +288,9 @@ pub fn render_prompt(
     }
     let system_text = system_text.trim();
 
-    if system_text.is_empty() {
-        if let [only] = non_empty.as_slice() {
-            if only.role == "user" {
-                return only.content.as_text();
-            }
-        }
-    }
-
+    // Todo turno é rotulado, inclusive o primeiro - ver
+    // `crate::openai::render_prompt`, que documenta por que a passagem crua da
+    // mensagem solitária quebrava o reuso de prefixo na transição 1→2.
     let mut out = String::new();
     if !system_text.is_empty() {
         out.push_str(system_text);
@@ -327,7 +359,10 @@ async fn messages(
         _ => state.active_model().await,
     };
     let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+    // Ver `conversation_cache_key`: a chave do cache vem das mensagens.
+    let cache_key = conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
     let max_tokens = req.clamped_max_tokens();
+    let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);
 
     info!(
@@ -349,6 +384,8 @@ async fn messages(
             max_tokens,
             id,
             input_tokens,
+            stops,
+            Some(cache_key),
         )
     } else {
         blocking_response(
@@ -359,6 +396,8 @@ async fn messages(
             max_tokens,
             id,
             input_tokens,
+            stops,
+            Some(cache_key),
         )
         .await
     }
@@ -376,6 +415,8 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
 fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
     if saw_tool_call {
         "tool_use"
+    } else if summary.finish_reason.as_deref() == Some("stop") {
+        "stop_sequence"
     } else if summary.tokens_generated >= max_tokens {
         "max_tokens"
     } else {
@@ -391,15 +432,21 @@ async fn blocking_response(
     max_tokens: u32,
     id: String,
     input_tokens: u32,
+    stops: Vec<String>,
+    cache_key: Option<String>,
 ) -> Response {
-    match crate::gateway::generate_blocking(
-        state,
+    match crate::gateway::generate_blocking_with_stops(
         "/v1/messages",
         caller,
-        model.clone(),
-        prompt,
-        true,
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: true,
+            max_tokens,
+            stops,
+            cache_key,
+        },
     )
     .await
     {
@@ -415,10 +462,19 @@ async fn blocking_response(
                     "model": model,
                     "content": content,
                     "stop_reason": reason,
-                    "stop_sequence": null,
+                    "stop_sequence": summary.stop_sequence,
                     "usage": {
                         "input_tokens": input_tokens,
                         "output_tokens": summary.tokens_generated,
+                        // Quantos tokens do prompt o pipeline não reprocessou,
+                        // medido no lado que executa. Ver
+                        // `RequestTrace::cached_tokens`. O nome segue o campo
+                        // de leitura de cache da Anthropic.
+                        "cache_read_input_tokens": summary
+                            .trace
+                            .as_ref()
+                            .map(|trace| trace.cached_tokens)
+                            .unwrap_or(0),
                     },
                     // Not part of the Anthropic schema; kept so the hop chain
                     // that proves distributed execution stays visible.
@@ -427,6 +483,8 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "partial": summary.partial,
+                        "finish_reason": summary.finish_reason,
+                        "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                     },
                 })),
@@ -445,16 +503,22 @@ fn stream_response(
     max_tokens: u32,
     id: String,
     input_tokens: u32,
+    stops: Vec<String>,
+    cache_key: Option<String>,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
-    crate::gateway::spawn_logged_generation(
-        state,
+    crate::gateway::spawn_logged_generation_with_stops(
         "/v1/messages",
         caller,
-        model.clone(),
-        prompt,
-        true,
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: true,
+            max_tokens,
+            stops,
+            cache_key,
+        },
         tx,
     );
 
@@ -694,7 +758,10 @@ fn sse_stream(
                             "message_delta",
                             json!({
                                 "type": "message_delta",
-                                "delta": { "stop_reason": reason, "stop_sequence": null },
+                                "delta": {
+                                    "stop_reason": reason,
+                                    "stop_sequence": summary.stop_sequence,
+                                },
                                 "usage": { "output_tokens": summary.tokens_generated },
                             }),
                         ));
@@ -754,11 +821,30 @@ mod tests {
     // ── render_prompt ────────────────────────────────────────────────────────
 
     #[test]
-    fn single_user_message_with_no_system_passes_through_unchanged() {
+    fn single_user_message_is_labelled_like_every_other_turn() {
+        // Ver `crate::openai::render_prompt`: o rótulo desde o primeiro turno é
+        // o que faz um prompt ser prefixo exato do prompt do turno seguinte.
         assert_eq!(
             render_prompt(None, &[msg("user", "O que e inferencia distribuida?")], &[]),
-            "O que e inferencia distribuida?"
+            "User: O que e inferencia distribuida?"
         );
+    }
+
+    /// A propriedade de que o reuso de prefixo depende, no caminho Anthropic.
+    #[test]
+    fn every_extra_turn_only_appends_to_the_previous_prompt() {
+        let turno1 = vec![msg("user", "1+1?")];
+        let mut turno2 = turno1.clone();
+        turno2.push(msg("assistant", "2"));
+        turno2.push(msg("user", "e 2+2?"));
+
+        let p1 = render_prompt(None, &turno1, &[]);
+        let p2 = render_prompt(None, &turno2, &[]);
+        assert!(p2.starts_with(&p1), "turno 2 não continua o turno 1");
+
+        let k1 = conversation_cache_key(None, &turno1, &[]);
+        let k2 = conversation_cache_key(None, &turno2, &[]);
+        assert!(k2.starts_with(&k1));
     }
 
     #[test]
@@ -916,6 +1002,8 @@ mod tests {
             tokens_per_sec: 1.0,
             duration_ms: 10,
             partial: false,
+            finish_reason: None,
+            stop_sequence: None,
             trace: None,
         };
         assert_eq!(stop_reason(&summary(5), 100, false), "end_turn");

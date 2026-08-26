@@ -1,5 +1,6 @@
 import { Check, CheckCircle2, Download, Inbox, Upload, X } from "lucide-react";
 import { Link } from "react-router-dom";
+import { ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
 import {
   Badge,
   Button,
@@ -14,7 +15,7 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, duration, layerRange, rate } from "../lib/format";
-import { useOffers, useTransfers } from "../lib/queries";
+import { useModelDownloads, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { canCancel, isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
@@ -24,6 +25,7 @@ export function Transfers() {
   const { t } = useI18n();
   const transfers = useTransfers();
   const offers = useOffers();
+  const modelDownloads = useModelDownloads();
   const toast = useToast();
 
   const jobs = transfers.data?.jobs ?? [];
@@ -74,6 +76,8 @@ export function Transfers() {
       )}
 
       <div className="space-y-5">
+        <ModelDownloadsPanel />
+
         {waiting.length > 0 && (
           <Panel>
             <PanelHeader
@@ -270,7 +274,7 @@ export function Transfers() {
         )}
       </div>
 
-      {waiting.length === 0 && jobs.length === 0 && (
+      {waiting.length === 0 && jobs.length === 0 && (modelDownloads.data?.length ?? 0) === 0 && (
         <Footnote
           className="mt-4"
           icon={<Inbox className="h-3.5 w-3.5" />}

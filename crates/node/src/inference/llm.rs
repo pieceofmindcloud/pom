@@ -44,7 +44,247 @@ use llama_cpp_sys_2 as sys;
 struct CaptureSlot {
     want: Option<CString>,
     buf: Option<Vec<f32>>,
+    expected_floats: Option<usize>,
+    last_shape: Option<[i64; 4]>,
+    last_strides: Option<[usize; 4]>,
+    last_nbytes: Option<usize>,
     copy_us: u64,
+}
+
+#[derive(Default)]
+struct MoeCallbackTelemetry {
+    forward_us: u64,
+    executors: Vec<crate::moe::runtime::MoeExecutorKind>,
+}
+
+struct MoeCallbackState {
+    runtime: Arc<crate::moe::runtime::MoeRuntime>,
+    telemetry: Mutex<MoeCallbackTelemetry>,
+    error: Mutex<Option<String>>,
+}
+
+impl MoeCallbackState {
+    fn begin(&self) {
+        *self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .telemetry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = MoeCallbackTelemetry::default();
+    }
+
+    fn fail(&self, message: String) {
+        let mut error = self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if error.is_none() {
+            *error = Some(message);
+        }
+    }
+
+    fn take(&self) -> Result<MoeCallbackTelemetry> {
+        let error = self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(error) = error {
+            bail!("hook MoE do llama.cpp falhou: {error}");
+        }
+        Ok(std::mem::take(
+            &mut *self
+                .telemetry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        ))
+    }
+}
+
+unsafe extern "C" fn moe_ffn_callback(
+    user_data: *mut c_void,
+    descriptor: *const sys::llama_moe_ffn_descriptor,
+    hidden: *const f32,
+    selected_experts: *const i32,
+    weights: *const f32,
+    n_tokens: usize,
+    hidden_width: usize,
+    output: *mut f32,
+) -> bool {
+    if user_data.is_null()
+        || descriptor.is_null()
+        || hidden.is_null()
+        || selected_experts.is_null()
+        || weights.is_null()
+        || output.is_null()
+    {
+        return false;
+    }
+    let state = unsafe { &*(user_data as *const MoeCallbackState) };
+    let descriptor = unsafe { &*descriptor };
+    let used = match usize::try_from(descriptor.expert_count_used) {
+        Ok(used) if used > 0 => used,
+        _ => {
+            state.fail("descriptor MoE sem quantidade válida de experts ativos".to_string());
+            return false;
+        }
+    };
+    let expected = match n_tokens.checked_mul(hidden_width) {
+        Some(expected) => expected,
+        None => {
+            state.fail("overflow na geometria hidden do hook".to_string());
+            return false;
+        }
+    };
+    let route_len = match n_tokens.checked_mul(used) {
+        Some(length) => length,
+        None => {
+            state.fail("overflow na geometria da rota do hook".to_string());
+            return false;
+        }
+    };
+    let hidden = unsafe { std::slice::from_raw_parts(hidden, expected) };
+    let selected_experts = unsafe { std::slice::from_raw_parts(selected_experts, route_len) };
+    let weights = unsafe { std::slice::from_raw_parts(weights, route_len) };
+    let architecture = unsafe {
+        CStr::from_ptr(descriptor.architecture.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    };
+    if descriptor.gate_up_bias.present != 0
+        || descriptor.gate_bias.present != 0
+        || descriptor.up_bias.present != 0
+        || descriptor.down_bias.present != 0
+    {
+        state.fail(format!(
+            "arquitetura {architecture} usa bias de experts não suportado pelo hook"
+        ));
+        return false;
+    }
+    if descriptor.down.present == 0
+        || (descriptor.gate_up.present == 0
+            && (descriptor.gate.present == 0 || descriptor.up.present == 0))
+    {
+        state.fail(format!(
+            "arquitetura {architecture} não forneceu metadata completa de gate/up/down"
+        ));
+        return false;
+    }
+    let mut metadata_owned = Vec::new();
+    for (role, tensor) in [
+        (
+            crate::moe::format_heterogeneous::TensorRole::GateUp,
+            &descriptor.gate_up,
+        ),
+        (
+            crate::moe::format_heterogeneous::TensorRole::Gate,
+            &descriptor.gate,
+        ),
+        (
+            crate::moe::format_heterogeneous::TensorRole::Up,
+            &descriptor.up,
+        ),
+        (
+            crate::moe::format_heterogeneous::TensorRole::Down,
+            &descriptor.down,
+        ),
+    ] {
+        if tensor.present == 0 {
+            continue;
+        }
+        let end = tensor
+            .name
+            .iter()
+            .position(|&character| character == 0)
+            .unwrap_or(tensor.name.len());
+        let name = tensor.name[..end]
+            .iter()
+            .map(|&character| u8::try_from(character).map_err(|_| "nome de tensor inválido"))
+            .collect::<Result<Vec<_>, _>>();
+        let name = match name
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| "nome de tensor não UTF-8"))
+        {
+            Ok(name) => name,
+            Err(error) => {
+                state.fail(format!("arquitetura {architecture}: {error}"));
+                return false;
+            }
+        };
+        let dtype = match u32::try_from(tensor.dtype) {
+            Ok(dtype) => dtype,
+            Err(_) => {
+                state.fail(format!(
+                    "arquitetura {architecture}: tensor {name} tem dtype negativo {}",
+                    tensor.dtype
+                ));
+                return false;
+            }
+        };
+        metadata_owned.push((role, name, dtype));
+    }
+    let metadata = metadata_owned
+        .iter()
+        .map(|(role, name, dtype)| (*role, name.as_str(), *dtype))
+        .collect::<Vec<_>>();
+    if let Err(error) = state
+        .runtime
+        .validate_callback_metadata(descriptor.layer as u32, &metadata)
+    {
+        state.fail(format!("arquitetura {architecture}: {error}"));
+        return false;
+    }
+    let expert_count = match usize::try_from(descriptor.expert_count) {
+        Ok(count) => count,
+        Err(_) => {
+            state.fail(format!(
+                "arquitetura {architecture}: quantidade de experts excede usize"
+            ));
+            return false;
+        }
+    };
+    let started = Instant::now();
+    let result = state
+        .runtime
+        .forward_batch_with_route(crate::moe::runtime::MoeRouteBatch {
+            layer: descriptor.layer as u32,
+            hidden,
+            selected_experts,
+            weights,
+            tokens: n_tokens,
+            expert_count,
+            expert_count_used: used,
+            activation: descriptor.activation,
+            weight_before_ffn: descriptor.weight_before_ffn != 0,
+        });
+    let values = match result {
+        Ok(values) if values.len() == expected => values,
+        Ok(values) => {
+            state.fail(format!(
+                "hook MoE devolveu {} floats, esperado {expected}",
+                values.len()
+            ));
+            return false;
+        }
+        Err(error) => {
+            state.fail(format!("arquitetura {architecture}: {error}"));
+            return false;
+        }
+    };
+    unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), output, expected) };
+    let mut telemetry = state
+        .telemetry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    telemetry.forward_us = telemetry
+        .forward_us
+        .saturating_add(started.elapsed().as_micros() as u64);
+    let executor = state.runtime.executor_kind();
+    if !telemetry.executors.contains(&executor) {
+        telemetry.executors.push(executor);
+    }
+    true
 }
 
 unsafe extern "C" fn capture_callback(
@@ -55,7 +295,7 @@ unsafe extern "C" fn capture_callback(
     if user_data.is_null() {
         return true;
     }
-    // SAFETY: `user_data` é o ponteiro que `LlmEngine::load` registrou, e ele
+    // SAFETY: `user_data` é o ponteiro que `LlmEngine::load_with_cache` registrou, e ele
     // aponta para o `Box<Mutex<CaptureSlot>>` do mesmo `LlmEngine` que é dono
     // deste contexto. O Box vive enquanto o contexto viver (ver `Drop`).
     let slot = unsafe { &*(user_data as *const Mutex<CaptureSlot>) };
@@ -100,7 +340,12 @@ unsafe extern "C" fn capture_callback(
 
     // Compute phase: copy the tensor bytes.
     let copy_started = Instant::now();
+    let tensor_shape = unsafe { (*t).ne };
+    let tensor_strides = unsafe { (*t).nb };
     let n_bytes = unsafe { sys::ggml_nbytes(t) } as usize;
+    slot.last_shape = Some(tensor_shape);
+    slot.last_strides = Some(tensor_strides);
+    slot.last_nbytes = Some(n_bytes);
     let n_floats = n_bytes / 4;
     let mut raw = vec![0u8; n_bytes];
     unsafe {
@@ -131,11 +376,23 @@ unsafe extern "C" fn capture_callback(
 ///
 /// A ordem sai certa porque `split_simple` do llama.cpp fatia o lote em índices
 /// crescentes e contíguos, que é exatamente a ordem das linhas que
-/// `BatchLayout` usa para reencontrar cada item. Ver o defeito anotado sobre
-/// `max_sessions > 1` no `AGENTS.md` desta pasta: com vários streams o
-/// llama.cpp usa `split_equal`, que agrupa por sequência, e aí esta ordem
-/// deixa de valer.
+/// `BatchLayout` usa para reencontrar cada item. O llama.cpp só escolhe
+/// `split_simple` quando o cache tem um stream só
+/// (`n_stream = kv_unified ? 1 : n_seq_max`); com vários streams ele usa
+/// `split_equal`, que agrupa por sequência e trocaria o residual de cada item
+/// sem erro nenhum. **É por isso que `kv_unified` é ligado incondicionalmente**
+/// nos dois pontos que criam contexto - ver `kv_seq_budget`. Mexer nisso quebra
+/// esta função em silêncio.
 fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
+    if let Some(expected) = slot.expected_floats {
+        let current = slot.buf.as_ref().map_or(0, Vec::len);
+        if current >= expected {
+            // Gemma4 can evaluate the same named boundary more than once in a
+            // decode. Once the requested batch is complete, later callbacks
+            // are duplicate evaluations, not additional token rows.
+            return;
+        }
+    }
     match slot.buf.as_mut() {
         Some(acumulado) => acumulado.extend_from_slice(&floats),
         None => slot.buf = Some(floats),
@@ -208,6 +465,11 @@ pub struct EngineConfig {
     /// modelo comum. Ver `infer_server::should_draft` e
     /// `gateway::rollback_sessions`, que são o resto do mecanismo.
     pub rs_seq_window: u32,
+    /// Load routed MoE expert metadata without allocating expert weights in llama.cpp.
+    pub moe_external_executor: bool,
+    /// Per-layer ownership passed to the generic llama.cpp hook. Zero keeps
+    /// the native experts, one delegates the whole layer to the device cache.
+    pub moe_external_executor_layers: Vec<u8>,
 }
 
 pub(crate) fn apply_cache_types(
@@ -253,6 +515,47 @@ pub struct LoadedModel {
 // llama.cpp que permite vários contextos sobre um modelo.
 unsafe impl Send for LoadedModel {}
 unsafe impl Sync for LoadedModel {}
+
+/// Primeiro palpite para o buffer do template de chat. Não é limite: quando o
+/// llama.cpp informa que precisa de mais, `apply_chat_template` realoca com o
+/// tamanho exato e renderiza de novo.
+const CHAT_TEMPLATE_INITIAL_BUF: usize = 65536;
+
+/// Quantas sequências de KV o contexto precisa reservar para `max_sessions`
+/// sessões simultâneas.
+///
+/// **Duas por sessão**: uma guarda o prompt e ninguém escreve nela; a outra
+/// recebe a geração do turno e é apagada inteira no fim (ver
+/// `LlmEngine::kv_copy_seq` e `infer_server::InferState::open_generation`). O
+/// par é fixo - a sequência de geração da sessão que ocupa `seq` é
+/// `seq + max_sessions` -, então nunca falta slot de geração para uma sessão
+/// que já tem slot de prompt.
+///
+/// Vem sempre acompanhado de `kv_unified = true`: sem ele o llama.cpp fatia
+/// `n_ctx` por sequência (`n_ctx_seq = n_ctx / n_seq_max`) e dobrar as
+/// sequências cortaria a janela de prompt pela metade. Unificado, as duas
+/// sequências dividem as mesmas células, a janela continua sendo `n_ctx`
+/// inteiro e a cópia prompt→geração não move tensor nenhum.
+///
+/// **O que isto custa, declarado.** Duas famílias de cache não compartilham
+/// células e passam a reservar de verdade duas fatias por sessão:
+///
+/// - o estado recorrente (`llama_memory_recurrent`, dimensionado por
+///   `n_seq_max`), porque estado de prompt e estado de geração são estados
+///   diferentes - não há como um modelo Mamba/GDN reter o prompt sem guardar o
+///   estado dele em separado;
+/// - o cache DSV4, que hoje ignora o pedido de unificação
+///   (`llama-kv-cache-dsv4.h`, `unified_raw = false`) e mantém um stream por
+///   sequência.
+///
+/// Em ambos os casos o `fit_memory` (`llama_rs_fit_params`, que recebe estes
+/// mesmos `cparams`) dimensiona o contexto já contando as duas sequências, e
+/// `/health` publica `n_seq_max` para o operador conferir. A alternativa seria
+/// oferecer o cache só a alguns modelos, que é exatamente o que a decisão de
+/// produto recusou.
+pub fn kv_seq_budget(max_sessions: u32) -> u32 {
+    max_sessions.max(1).saturating_mul(2)
+}
 
 const DEFAULT_GPU_LAYERS: i32 = 99;
 const FIT_MEMORY_MARGIN_BYTES: usize = 1024 * 1024 * 1024;
@@ -330,12 +633,18 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     let mut mparams = unsafe { sys::llama_model_default_params() };
     mparams.n_gpu_layers = -1;
     mparams.load_mtp = load_mtp_weights(cfg);
+    mparams.moe_external_executor = cfg.moe_external_executor;
+    if !cfg.moe_external_executor_layers.is_empty() {
+        mparams.moe_external_executor_layers = cfg.moe_external_executor_layers.as_ptr();
+        mparams.moe_external_executor_layer_count = cfg.moe_external_executor_layers.len();
+    }
 
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
     cparams.n_ubatch = effective_n_ubatch(cfg);
-    cparams.n_seq_max = cfg.max_sessions.max(1);
+    cparams.n_seq_max = kv_seq_budget(cfg.max_sessions);
+    cparams.kv_unified = true;
     cparams.offload_kqv = cfg.offload_kqv;
     apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
     cparams.embeddings = cfg.need_embeddings;
@@ -425,10 +734,80 @@ pub struct LlmEngine {
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
     effective_n_ubatch: u32,
+    /// Whether llama.cpp loaded this model in metadata-only external-MoE mode.
+    /// This is part of the engine identity because a dense/native context and
+    /// an external-executor context cannot share the same loaded model.
+    moe_external_executor: bool,
     /// A cabeça de rascunho `nextn`, quando o modelo traz uma e o operador
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
     mtp: Option<crate::mtp::MtpDrafter>,
+    moe_callback: Option<Arc<MoeCallbackState>>,
+}
+
+/// Pesos mantidos entre gerações do servidor para que uma reconfiguração de
+/// contexto não faça outra leitura do GGUF nem outra carga de VRAM.
+#[derive(Default)]
+pub(crate) struct ModelCache {
+    entry: Mutex<Option<CachedModel>>,
+}
+
+#[derive(Clone)]
+struct CachedModel {
+    model_path: String,
+    loaded: Arc<LoadedModel>,
+    fit_memory_applied: bool,
+    effective_n_gpu_layers: i32,
+    moe_external_executor: bool,
+    moe_external_executor_layers: Vec<u8>,
+}
+
+impl ModelCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(
+        &self,
+        model_path: &str,
+        moe_external_executor: bool,
+        moe_external_executor_layers: &[u8],
+    ) -> Option<CachedModel> {
+        let entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry
+            .as_ref()
+            .filter(|cached| {
+                cached.model_path == model_path
+                    && cached.moe_external_executor == moe_external_executor
+                    && cached.moe_external_executor_layers == moe_external_executor_layers
+            })
+            .cloned()
+    }
+
+    fn put(
+        &self,
+        model_path: &str,
+        loaded: Arc<LoadedModel>,
+        fit_memory_applied: bool,
+        effective_n_gpu_layers: i32,
+        moe_external_executor: bool,
+        moe_external_executor_layers: Vec<u8>,
+    ) {
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        *entry = Some(CachedModel {
+            model_path: model_path.to_string(),
+            loaded,
+            fit_memory_applied,
+            effective_n_gpu_layers,
+            moe_external_executor,
+            moe_external_executor_layers,
+        });
+    }
+
+    pub(crate) fn clear(&self) {
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        *entry = None;
+    }
 }
 
 /// A diagnostic boundary around `llama_decode`. `backend_completion_us` is
@@ -440,6 +819,9 @@ pub struct DecodeTimings {
     pub enqueue_us: u64,
     pub backend_completion_us: u64,
     pub residual_capture_d2h_sync_us: u64,
+    pub moe_forward_us: u64,
+    pub moe_executors: Vec<crate::moe::runtime::MoeExecutorKind>,
+    pub moe_executor: Option<crate::moe::runtime::MoeExecutorTelemetry>,
 }
 
 /// **Ligado por padrão** desde 2026-08-13; `POM_PROFILE_SYNC=0` desliga.
@@ -493,15 +875,74 @@ impl LlmEngine {
         self.mtp = None;
         unsafe {
             if !self.ctx.is_null() {
+                sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());
                 sys::llama_free(self.ctx);
                 self.ctx = std::ptr::null_mut();
             }
         }
+        self.moe_callback = None;
         // Os pesos só saem se este era o último contexto sobre eles; com um
         // irmão vivo, `get_mut` devolve `None` e o `Drop` do último resolve.
         if let Some(loaded) = Arc::get_mut(&mut self.loaded) {
             loaded.free_now();
         }
+    }
+
+    pub fn set_moe_runtime(&mut self, runtime: Arc<crate::moe::runtime::MoeRuntime>) -> Result<()> {
+        if self.moe_callback.is_some() {
+            bail!("hook MoE já está instalado neste contexto");
+        }
+        let state = Arc::new(MoeCallbackState {
+            runtime,
+            telemetry: Mutex::new(MoeCallbackTelemetry::default()),
+            error: Mutex::new(None),
+        });
+        unsafe {
+            sys::llama_set_moe_ffn_callback(
+                self.ctx,
+                Some(moe_ffn_callback),
+                Arc::as_ptr(&state) as *mut c_void,
+            );
+        }
+        self.moe_callback = Some(state);
+        Ok(())
+    }
+
+    pub fn moe_hook_enabled(&self) -> bool {
+        self.moe_callback.is_some()
+    }
+
+    pub fn moe_external_executor_enabled(&self) -> bool {
+        self.moe_external_executor
+    }
+
+    fn begin_moe_callback(&self) {
+        if let Some(state) = self.moe_callback.as_ref() {
+            state.begin();
+        }
+    }
+
+    fn ensure_moe_executor_ready(&self) -> Result<()> {
+        if self.moe_external_executor && self.moe_callback.is_none() {
+            bail!(
+                "executor externo de MoE opt-in sem callback; recusa para evitar fallback nativo silencioso"
+            );
+        }
+        Ok(())
+    }
+
+    fn finish_moe_callback(&self, timings: &mut DecodeTimings) -> Result<()> {
+        let Some(state) = self.moe_callback.as_ref() else {
+            return Ok(());
+        };
+        let telemetry = state.take()?;
+        if telemetry.forward_us == 0 {
+            bail!("hook MoE instalado, mas nenhum bloco MoE foi executado no llama.cpp; recusa para evitar fallback nativo silencioso");
+        }
+        timings.moe_forward_us = telemetry.forward_us;
+        timings.moe_executors = telemetry.executors;
+        timings.moe_executor = Some(state.runtime.executor_telemetry());
+        Ok(())
     }
 }
 
@@ -512,9 +953,11 @@ impl Drop for LlmEngine {
         // irmão ainda vivo, seria use-after-free.
         unsafe {
             if !self.ctx.is_null() {
+                sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());
                 sys::llama_free(self.ctx);
             }
         }
+        self.moe_callback = None;
     }
 }
 
@@ -530,6 +973,13 @@ impl LoadedModel {
         let mut mparams = unsafe { sys::llama_model_default_params() };
         mparams.n_gpu_layers = plan.config.n_gpu_layers;
         mparams.load_mtp = load_mtp_weights(&plan.config);
+        mparams.moe_external_executor = plan.config.moe_external_executor;
+        if !plan.config.moe_external_executor_layers.is_empty() {
+            mparams.moe_external_executor_layers =
+                plan.config.moe_external_executor_layers.as_ptr();
+            mparams.moe_external_executor_layer_count =
+                plan.config.moe_external_executor_layers.len();
+        }
         if !plan.tensor_split.is_empty() {
             mparams.tensor_split = plan.tensor_split.as_ptr();
         }
@@ -556,35 +1006,83 @@ impl LoadedModel {
 }
 
 impl LlmEngine {
-    /// Load a GGUF model slice and create a llama context.
-    pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
+    /// Cria um contexto e, quando permitido pelo runtime, reaproveita os
+    /// pesos carregados por uma geração anterior.
+    pub(crate) fn load_with_cache(
+        model_path: &str,
+        cfg: &EngineConfig,
+        cache: &ModelCache,
+        reuse_weights: bool,
+    ) -> Result<Self> {
+        if reuse_weights {
+            if let Some(cached) = cache.get(
+                model_path,
+                cfg.moe_external_executor,
+                &cfg.moe_external_executor_layers,
+            ) {
+                tracing::info!(
+                    model = %model_path,
+                    "reutilizando pesos carregados; reconstruindo apenas o contexto"
+                );
+                return Self::from_loaded(
+                    cached.loaded,
+                    cfg,
+                    cached.fit_memory_applied,
+                    cached.effective_n_gpu_layers,
+                );
+            }
+        }
+
         let plan = fit_plan(model_path, cfg)?;
         let loaded = LoadedModel::load(model_path, &plan)?;
-        match Self::with_model(loaded.clone(), &plan.config) {
+        let engine = Self::from_loaded(
+            loaded.clone(),
+            &plan.config,
+            plan.applied,
+            plan.config.n_gpu_layers,
+        )?;
+        cache.put(
+            model_path,
+            loaded,
+            engine.fit_memory_applied,
+            engine.effective_n_gpu_layers,
+            engine.moe_external_executor,
+            cfg.moe_external_executor_layers.clone(),
+        );
+        Ok(engine)
+    }
+
+    fn from_loaded(
+        loaded: Arc<LoadedModel>,
+        cfg: &EngineConfig,
+        fit_memory_applied: bool,
+        effective_n_gpu_layers: i32,
+    ) -> Result<Self> {
+        match Self::with_model(loaded.clone(), cfg) {
             Ok(mut engine) => {
-                engine.fit_memory_applied = plan.applied;
-                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
-                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                engine.fit_memory_applied = fit_memory_applied;
+                engine.effective_n_gpu_layers = effective_n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(cfg);
                 Ok(engine)
             }
             Err(gpu_kv_error) => {
-                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(&plan.config) else {
+                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(cfg) else {
                     return Err(gpu_kv_error);
                 };
 
                 warn!(
                     "llama context failed with KV cache on GPU: {gpu_kv_error}; retrying with KV cache in host RAM while keeping {} GPU layers",
-                    plan.config.n_gpu_layers
+                    effective_n_gpu_layers
                 );
                 let mut engine = Self::with_model(loaded, &cpu_kv_cfg).with_context(|| {
                     format!(
                         "llama context failed with GPU KV and host-RAM KV fallback; requested {} GPU layers",
-                        plan.config.n_gpu_layers
+                        effective_n_gpu_layers
                     )
                 })?;
-                engine.fit_memory_applied = plan.applied;
-                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
-                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                engine.fit_memory_applied = fit_memory_applied;
+                engine.effective_n_gpu_layers = effective_n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&cpu_kv_cfg);
                 Ok(engine)
             }
         }
@@ -642,7 +1140,8 @@ impl LlmEngine {
         cparams.n_ctx = cfg.n_ctx;
         cparams.n_batch = cfg.n_batch;
         cparams.n_ubatch = effective_n_ubatch(cfg);
-        cparams.n_seq_max = cfg.max_sessions.max(1);
+        cparams.n_seq_max = kv_seq_budget(cfg.max_sessions);
+        cparams.kv_unified = true;
         cparams.offload_kqv = cfg.offload_kqv;
         apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
         cparams.embeddings = cfg.need_embeddings;
@@ -656,6 +1155,10 @@ impl LlmEngine {
         let capture: Box<Mutex<CaptureSlot>> = Box::new(Mutex::new(CaptureSlot {
             want: None,
             buf: None,
+            expected_floats: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
             copy_us: 0,
         }));
         let capture_ok = if cfg.need_embeddings {
@@ -686,10 +1189,12 @@ impl LlmEngine {
         unsafe { sys::llama_set_causal_attn(ctx, true) };
 
         let actual_n_ctx = unsafe { sys::llama_n_ctx(ctx) };
-        let n_ctx_seq = actual_n_ctx / cfg.max_sessions.max(1);
+        // Cache unificado: as sequências dividem as mesmas células, então a
+        // janela por sequência é o contexto inteiro - ver `kv_seq_budget`.
+        let n_ctx_seq = actual_n_ctx;
         tracing::info!(
             "llama context ready: n_seq_max={} n_ctx={} n_ctx_seq={} capture={}",
-            cfg.max_sessions,
+            kv_seq_budget(cfg.max_sessions),
             actual_n_ctx,
             n_ctx_seq,
             if capture_ok {
@@ -736,7 +1241,9 @@ impl LlmEngine {
             fit_memory_applied: false,
             effective_n_gpu_layers: cfg.n_gpu_layers,
             effective_n_ubatch: effective_n_ubatch(cfg),
+            moe_external_executor: cfg.moe_external_executor,
             mtp,
+            moe_callback: None,
         })
     }
 
@@ -858,8 +1365,41 @@ impl LlmEngine {
         unsafe { json_from_wrapper(|out| sys::llama_rs_context_memory_json(self.ctx, out)) }
     }
 
+    /// Compute buffer CUDA medido pelo próprio llama.cpp para este contexto.
+    ///
+    /// O valor alimenta o orçamento do cache residente de experts. Se a ponte
+    /// de memória não reportar um buffer CUDA completo, devolve `None` para que
+    /// o caminho CUDA seja recusado nominalmente.
+    pub fn cuda_compute_bytes(&self) -> Option<u64> {
+        crate::moe::admission::cuda_compute_bytes_from_llama_memory(&self.context_memory()?)
+    }
+
     pub fn eos_token(&self) -> i32 {
         unsafe { sys::llama_vocab_eos(self.loaded.vocab) }
+    }
+
+    /// Returns true for the model EOS or for a complete turn terminator named
+    /// by the GGUF chat template. A Gemma4 turn is not necessarily the model
+    /// EOS, so checking only `eos_token()` lets the next turn leak into the
+    /// response.
+    pub fn is_generation_stop(&self, recent: &[i32], next: i32) -> bool {
+        if next == self.eos_token() {
+            return true;
+        }
+        let Some(template) = self.chat_template() else {
+            return false;
+        };
+        if !template.contains("<turn|>") {
+            return false;
+        }
+        let turn_end = self.tokenize("<turn|>", false, true);
+        if turn_end.is_empty() {
+            return false;
+        }
+        let mut candidate = Vec::with_capacity(recent.len() + 1);
+        candidate.extend_from_slice(recent);
+        candidate.push(next);
+        token_sequence_ends_with(&candidate, &turn_end)
     }
 
     // ── Tokenization ─────────────────────────────────────────────────────────
@@ -940,7 +1480,16 @@ impl LlmEngine {
 
     /// The `tokenizer.chat_template` from the model's GGUF metadata, or None.
     pub fn chat_template(&self) -> Option<String> {
-        let key = CString::new("tokenizer.chat_template").ok()?;
+        self.model_metadata_string("tokenizer.chat_template")
+    }
+
+    /// A arquitetura declarada no GGUF, sem inferência pelo nome do arquivo.
+    pub fn model_architecture(&self) -> Option<String> {
+        self.model_metadata_string("general.architecture")
+    }
+
+    fn model_metadata_string(&self, key: &str) -> Option<String> {
+        let key = CString::new(key).ok()?;
         let mut buf = vec![0u8; 32768];
         let n = unsafe {
             sys::llama_model_meta_val_str(
@@ -959,20 +1508,45 @@ impl LlmEngine {
 
     /// Apply the model's built-in Jinja2 chat template.
     ///
-    /// Returns the formatted prompt string. On failure falls back to a simple
-    /// Qwen-style `<|im_start|>` wrapper — same as the Python server's last resort.
+    /// Gemma4 receives an explicit renderer because its `enable_thinking`
+    /// variable cannot be passed through the current llama.cpp C API. Other
+    /// templates must succeed in llama.cpp; a failure is returned rather than
+    /// silently changing the model's control tokens.
     pub fn apply_chat_template(
         &self,
         messages: &[(&str, &str)],
         add_generation_prompt: bool,
         no_thinking: bool,
-    ) -> String {
+    ) -> Result<String> {
         let sys_msg = "You are a helpful assistant.";
         let full_messages: Vec<(&str, &str)> = std::iter::once(("system", sys_msg))
             .chain(messages.iter().copied())
             .collect();
 
         let tmpl = self.chat_template();
+        let architecture = self.model_architecture();
+        if architecture
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("gemma4"))
+        {
+            let template = tmpl.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Gemma4 exige tokenizer.chat_template no GGUF; renderer não inventado"
+                )
+            })?;
+            let bos = unsafe { sys::llama_vocab_bos(self.loaded.vocab) };
+            let bos = String::from_utf8_lossy(&self.token_to_piece_bytes(bos, true)).into_owned();
+            if bos.is_empty() {
+                bail!("Gemma4 exige token BOS no vocabulário GGUF");
+            }
+            return render_gemma4_template(
+                template,
+                &bos,
+                messages,
+                add_generation_prompt,
+                no_thinking,
+            );
+        }
 
         // Build the llama_chat_message array.
         let c_msgs: Vec<(CString, CString)> = full_messages
@@ -995,8 +1569,16 @@ impl LlmEngine {
             .map(|c| c.into_raw() as *const i8)
             .unwrap_or(ptr::null());
 
-        let mut out_buf = vec![0u8; 65536];
-        let n = unsafe {
+        // `llama_chat_apply_template` devolve **sempre** o tamanho completo do
+        // texto renderizado e copia no máximo `length` bytes (`strncpy` em
+        // `llama.cpp`). Um buffer fixo, portanto, não é um limite: é um corte
+        // silencioso pelo fim. Com 65536 bytes fixos, dois prompts distintos de
+        // ~126 KB rendiam exatamente os mesmos 12941 tokens - a última mensagem
+        // do usuário simplesmente não chegava ao modelo, e o prefixo do turno
+        // seguinte ficava idêntico ao do anterior. Pedir de novo com o tamanho
+        // informado é o contrato: a segunda chamada cabe por construção.
+        let mut out_buf = vec![0u8; CHAT_TEMPLATE_INITIAL_BUF];
+        let mut n = unsafe {
             sys::llama_chat_apply_template(
                 tmpl_ptr,
                 raw_msgs.as_ptr(),
@@ -1006,6 +1588,19 @@ impl LlmEngine {
                 out_buf.len() as i32,
             )
         };
+        if n > 0 && (n as usize) > out_buf.len() {
+            out_buf = vec![0u8; n as usize];
+            n = unsafe {
+                sys::llama_chat_apply_template(
+                    tmpl_ptr,
+                    raw_msgs.as_ptr(),
+                    raw_msgs.len(),
+                    add_generation_prompt,
+                    out_buf.as_mut_ptr() as *mut i8,
+                    out_buf.len() as i32,
+                )
+            };
+        }
 
         // Reclaim tmpl_ptr if we allocated one.
         if !tmpl_ptr.is_null() {
@@ -1013,11 +1608,21 @@ impl LlmEngine {
         }
 
         let mut text = if n > 0 {
-            out_buf.truncate(n as usize);
+            let escrito = (n as usize).min(out_buf.len());
+            if escrito < n as usize {
+                bail!(
+                    "llama_chat_apply_template pediu {n} bytes e o buffer tem {}; \
+                     renderizar o prompt cortado entregaria a conversa pela metade",
+                    out_buf.len()
+                );
+            }
+            out_buf.truncate(escrito);
             String::from_utf8_lossy(&out_buf).into_owned()
         } else {
-            warn!("llama_chat_apply_template returned {n}; using Qwen fallback");
-            qwen_fallback(messages, sys_msg, no_thinking)
+            bail!(
+                "llama_chat_apply_template falhou (rc={n}) para arquitetura {}; renderer explícito indisponível",
+                architecture.as_deref().unwrap_or("desconhecida")
+            );
         };
 
         if no_thinking {
@@ -1027,7 +1632,7 @@ impl LlmEngine {
                 }
             }
         }
-        text
+        Ok(text)
     }
 
     // ── Batch decode ─────────────────────────────────────────────────────────
@@ -1042,6 +1647,7 @@ impl LlmEngine {
         entries: &[TokenBatchEntry],
         need_residual: bool,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        self.ensure_moe_executor_ready()?;
         if entries.is_empty() {
             bail!("batch de tokens vazio");
         }
@@ -1061,7 +1667,7 @@ impl LlmEngine {
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
         let enqueue_started = Instant::now();
-        self.reset_capture_slot();
+        self.reset_capture_slot(layout.total_tokens());
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
         batch.n_tokens = n;
         let mut row = 0usize;
@@ -1082,6 +1688,7 @@ impl LlmEngine {
                 }
             }
         }
+        self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1096,6 +1703,7 @@ impl LlmEngine {
         entries: &[HiddenBatchEntry],
         need_residual: bool,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        self.ensure_moe_executor_ready()?;
         if entries.is_empty() {
             bail!("batch de hidden states vazio");
         }
@@ -1116,7 +1724,7 @@ impl LlmEngine {
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
         let enqueue_started = Instant::now();
-        self.reset_capture_slot();
+        self.reset_capture_slot(layout.total_tokens());
         let mut batch = unsafe { sys::llama_batch_init(n, self.n_embd as i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut();
@@ -1144,6 +1752,7 @@ impl LlmEngine {
                 }
             }
         }
+        self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1152,9 +1761,13 @@ impl LlmEngine {
         self.finish_batch(layout, need_residual, enqueue_started)
     }
 
-    fn reset_capture_slot(&self) {
+    fn reset_capture_slot(&self, n_tokens: usize) {
         let mut capture = self.capture.lock().unwrap();
         capture.buf = None;
+        capture.expected_floats = n_tokens.checked_mul(self.n_embd);
+        capture.last_shape = None;
+        capture.last_strides = None;
+        capture.last_nbytes = None;
         capture.copy_us = 0;
     }
 
@@ -1192,6 +1805,7 @@ impl LlmEngine {
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
+        self.finish_moe_callback(&mut timings)?;
         Ok((
             BatchDecodeOutput {
                 layout,
@@ -1211,10 +1825,11 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
+        self.ensure_moe_executor_ready()?;
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
-        self.reset_capture_slot();
+        self.reset_capture_slot(tokens.len());
         let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
@@ -1234,7 +1849,9 @@ impl LlmEngine {
             }
         }
 
+        self.begin_moe_callback();
         let tp_antes = crate::tp::reduce_count();
+        self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1320,6 +1937,7 @@ impl LlmEngine {
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
+        self.finish_moe_callback(&mut timings)?;
         Ok(timings)
     }
 
@@ -1337,10 +1955,11 @@ impl LlmEngine {
         logits_all: bool,
         tokens: Option<&[i32]>,
     ) -> Result<DecodeTimings> {
+        self.ensure_moe_executor_ready()?;
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
-        self.reset_capture_slot();
+        self.reset_capture_slot(n_tokens);
         let enqueue_started = Instant::now();
         if hidden.len() != n_tokens * self.n_embd {
             bail!(
@@ -1429,6 +2048,7 @@ impl LlmEngine {
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
+        self.finish_moe_callback(&mut timings)?;
         Ok(timings)
     }
 
@@ -1439,11 +2059,15 @@ impl LlmEngine {
     /// Must be called exactly once per decode when `need_embeddings` is true.
     pub fn take_residual(&self, n_tokens: usize) -> Result<Vec<f32>> {
         if self.capture_ok {
-            let buf = self.capture.lock().unwrap().buf.take();
+            let mut capture = self.capture.lock().unwrap();
+            let shape = capture.last_shape;
+            let strides = capture.last_strides;
+            let nbytes = capture.last_nbytes;
+            let buf = capture.buf.take();
             match buf {
                 Some(v) if v.len() == n_tokens * self.n_embd => Ok(v),
                 Some(v) => bail!(
-                    "residual capture: got {} floats, expected {} ({}×{})",
+                    "residual capture: got {} floats, expected {} ({}×{}), tensor shape={shape:?} strides={strides:?} nbytes={nbytes:?}",
                     v.len(),
                     n_tokens * self.n_embd,
                     n_tokens,
@@ -1500,6 +2124,33 @@ impl LlmEngine {
                 return false;
             }
             sys::llama_memory_seq_rm(mem, seq_id as i32, from, to)
+        }
+    }
+
+    /// Compartilha o KV de `src` com `dst`, sequência inteira.
+    ///
+    /// É o que permite **não gerar dentro da sequência do prompt**: o prompt
+    /// fica numa sequência que ninguém estende, a geração corre numa cópia, e
+    /// no fim do turno a cópia some inteira - remoção total, que todo motor
+    /// aceita, inclusive os recorrentes que recusam remoção parcial (ver
+    /// `kv_remove`). Sem isto o reuso de prefixo dependeria de o modelo aceitar
+    /// recuar o cache, e essa é justamente a dependência que o desenho remove.
+    ///
+    /// Custo: com o cache unificado (`kv_unified`, ver `llama_context_params`)
+    /// as duas sequências dividem as mesmas células e a cópia é só metadado -
+    /// nenhum tensor é duplicado. O llama.cpp faz cópia-na-escrita quando a
+    /// geração escreve por cima de uma célula compartilhada, inclusive no
+    /// estado recorrente (`llama_memory_recurrent::find_slot`).
+    pub fn kv_copy_seq(&self, src: u32, dst: u32) {
+        if src == dst {
+            return;
+        }
+        unsafe {
+            let mem = sys::llama_get_memory(self.ctx);
+            if mem.is_null() {
+                return;
+            }
+            sys::llama_memory_seq_cp(mem, src as i32, dst as i32, -1, -1);
         }
     }
 
@@ -1822,6 +2473,8 @@ mod pool_tests {
             need_embeddings: true,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         }
     }
 
@@ -1868,6 +2521,10 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_floats: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
             copy_us: 0,
         };
 
@@ -1901,12 +2558,34 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_floats: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
             copy_us: 0,
         };
         accumulate_capture(&mut slot, vec![1.0, 2.0]);
         slot.buf = None; // o que `reset_capture_slot` faz antes de cada decode
         accumulate_capture(&mut slot, vec![3.0, 4.0]);
         assert_eq!(slot.buf.expect("captura"), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn capture_ignores_duplicate_named_boundary_after_expected_rows() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            expected_floats: Some(4),
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
+            copy_us: 0,
+        };
+
+        accumulate_capture(&mut slot, vec![1.0, 2.0, 3.0, 4.0]);
+        accumulate_capture(&mut slot, vec![5.0, 6.0, 7.0, 8.0]);
+
+        assert_eq!(slot.buf.as_deref(), Some(&[1.0, 2.0, 3.0, 4.0][..]));
     }
 
     #[test]
@@ -2170,21 +2849,108 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> String {
-    let mut out = format!("<|im_start|>system\n{system}<|im_end|>\n");
-    for (role, content) in messages {
-        out.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
+fn template_marker<'a>(template: &str, marker: &'a str) -> Result<&'a str> {
+    if template.contains(marker) {
+        Ok(marker)
+    } else {
+        bail!("GGUF Gemma4 chat_template não contém o marcador {marker:?}")
     }
-    out.push_str("<|im_start|>assistant\n");
-    if no_thinking {
-        out.push_str("<think>\n\n</think>\n");
+}
+
+/// Render the Gemma4 template shape stored in the GGUF.
+///
+/// llama.cpp's public C helper accepts the Jinja source but has no argument
+/// for `enable_thinking`. This renderer only supports the exact control-flow
+/// markers it finds in the model's own template and refuses a drifted
+/// template instead of substituting a Qwen-like prompt.
+fn render_gemma4_template(
+    template: &str,
+    bos: &str,
+    messages: &[(&str, &str)],
+    add_generation_prompt: bool,
+    no_thinking: bool,
+) -> Result<String> {
+    let turn = template_marker(template, "<|turn>")?;
+    let turn_end = template_marker(template, "<turn|>")?;
+    let think = template_marker(template, "<|think|>")?;
+    let channel = template_marker(template, "<|channel>")?;
+    let channel_end = template_marker(template, "<channel|>")?;
+    let enable_thinking = !no_thinking;
+
+    let mut out = String::from(bos);
+    let mut loop_messages = messages;
+    let has_system_block = enable_thinking
+        || messages
+            .first()
+            .is_some_and(|(role, _)| *role == "system" || *role == "developer");
+    if has_system_block {
+        out.push_str(turn);
+        out.push_str("system\n");
+        if enable_thinking {
+            out.push_str(think);
+            out.push('\n');
+        }
+        if let Some((role, content)) = messages.first() {
+            if *role == "system" || *role == "developer" {
+                out.push_str(content.trim());
+                loop_messages = &messages[1..];
+            }
+        }
+        out.push_str(turn_end);
+        out.push('\n');
     }
-    out
+
+    for (role, content) in loop_messages {
+        let role = if *role == "assistant" { "model" } else { role };
+        out.push_str(turn);
+        out.push_str(role);
+        out.push('\n');
+        out.push_str(content.trim());
+        out.push_str(turn_end);
+        out.push('\n');
+    }
+
+    if add_generation_prompt {
+        out.push_str(turn);
+        out.push_str("model\n");
+        if !enable_thinking {
+            out.push_str(channel);
+            out.push_str("thought\n");
+            out.push_str(channel_end);
+        }
+    }
+    Ok(out)
+}
+
+fn token_sequence_ends_with(tokens: &[i32], suffix: &[i32]) -> bool {
+    !suffix.is_empty() && tokens.len() >= suffix.len() && tokens.ends_with(suffix)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GEMMA4_TEMPLATE_FIXTURE: &str = r#"
+        {{- bos_token -}}
+        {%- if (enable_thinking is defined and enable_thinking) or messages[0]['role'] in ['system', 'developer'] -%}
+            {{- '<|turn>system\n' -}}
+            {%- if enable_thinking is defined and enable_thinking -%}
+                {{- '<|think|>\n' -}}
+            {%- endif -%}
+            {{- '<turn|>\n' -}}
+        {%- endif -%}
+        {%- for message in messages -%}
+            {{- '<|turn>' + ('model' if message['role'] == 'assistant' else message['role']) + '\n' -}}
+            {{- message['content'] | trim -}}
+            {{- '<turn|>\n' -}}
+        {%- endfor -%}
+        {%- if add_generation_prompt -%}
+            {{- '<|turn>model\n' -}}
+            {%- if not enable_thinking | default(false) -%}
+                {{- '<|channel>thought\n<channel|>' -}}
+            {%- endif -%}
+        {%- endif -%}
+    "#;
 
     #[test]
     fn profile_sync_defaults_on_and_accepts_explicit_off_values() {
@@ -2202,6 +2968,29 @@ mod tests {
             cache_type_to_ggml(KvCacheType::Iq4Nl),
             sys::GGML_TYPE_IQ4_NL
         );
+    }
+
+    #[test]
+    fn model_cache_retem_handle_ate_clear() {
+        let cache = ModelCache::new();
+        let loaded = Arc::new(LoadedModel {
+            model: std::ptr::null_mut(),
+            vocab: std::ptr::null(),
+            n_embd: 1,
+            n_vocab: 1,
+        });
+        cache.put("model.gguf", loaded.clone(), true, 7, false, Vec::new());
+
+        let first = cache.get("model.gguf", false, &[]).unwrap().loaded;
+        let second = cache.get("model.gguf", false, &[]).unwrap().loaded;
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(cache.get("model.gguf", true, &[]).is_none());
+        assert!(cache.get("other.gguf", false, &[]).is_none());
+
+        drop((first, second));
+        cache.clear();
+        assert!(cache.get("model.gguf", false, &[]).is_none());
+        assert_eq!(Arc::strong_count(&loaded), 1);
     }
 
     /// Characterisation tests: they pin the sampler's *current* choices so the
@@ -2352,7 +3141,7 @@ mod tests {
     /// rejected chunk 0 with "não tem tokens" before the second peer was ever
     /// contacted. Only a real vocab exercises the contract, so the test points
     /// at a GGUF given by the environment and skips when there is none.
-
+    ///
     /// The residual capture has to actually fire, and the tensor has to have one
     /// row per token. This is the regression test for the eval-callback
     /// contract: returning `false` in the compute phase does not mean "not my
@@ -2360,7 +3149,7 @@ mod tests {
     /// graph. With that inverted, the forward pass stopped at the input
     /// embedding, `llama_decode` still returned success, and the peer answered
     /// "residual capture did not fire".
-
+    ///
     /// The middle-peer path: a hidden state comes in, the residual must come
     /// out. This is the one the pipeline actually breaks on and the one the
     /// token test above cannot reach — `decode_hidden` builds a different batch
@@ -2387,8 +3176,11 @@ mod tests {
             need_embeddings: true,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
 
         let n_tokens = 4;
         // Values in the range a real residual carries; zeros would let a graph
@@ -2430,8 +3222,11 @@ mod tests {
             need_embeddings: true,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let toks = engine.tokenize("Explique inferencia distribuida em uma frase.", true, true);
         assert!(!toks.is_empty(), "prompt must tokenize");
         engine
@@ -2486,8 +3281,11 @@ mod tests {
             need_embeddings: false,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let tokens = engine.tokenize(
             "Explique o que e inferencia distribuida em uma frase.",
             true,
@@ -2553,8 +3351,11 @@ mod tests {
             need_embeddings: false,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
-        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let tokens = engine.tokenize("oi", true, true);
         assert!(!tokens.is_empty(), "a two-character prompt must tokenize");
         assert!(
@@ -2590,9 +3391,14 @@ mod tests {
             need_embeddings: false,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
-        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
-        let formatted = engine.apply_chat_template(&[("user", "Oi, teste")], true, false);
+        let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
+        let formatted = engine
+            .apply_chat_template(&[("user", "Oi, teste")], true, false)
+            .expect("chat template must render");
         assert!(formatted.contains("Oi, teste"));
         assert!(!formatted.starts_with("Oi, teste"));
         assert!(formatted.to_ascii_lowercase().contains("assistant"));
@@ -2600,6 +3406,62 @@ mod tests {
             engine.tokenize(&formatted, false, true).len()
                 > engine.tokenize("Oi, teste", true, true).len()
         );
+    }
+
+    #[test]
+    fn gemma4_fallback_usa_turnos_e_token_de_thinking_do_modelo() {
+        let formatted = render_gemma4_template(
+            GEMMA4_TEMPLATE_FIXTURE,
+            "<bos>",
+            &[("user", "Oi, teste")],
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert!(formatted.starts_with("<bos><|turn>user\n"));
+        assert!(formatted.contains("<|turn>user\nOi, teste<turn|>\n"));
+        assert!(formatted.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
+        assert!(formatted.contains("<|channel>thought\n<channel|>"));
+        assert!(!formatted.contains("<|im_start|>"));
+        assert!(!formatted.contains("<|im_end|>"));
+        assert!(!formatted.contains("<think>"));
+    }
+
+    #[test]
+    fn gemma4_fallback_preserva_o_inicio_de_thinking_quando_habilitado() {
+        let formatted = render_gemma4_template(
+            GEMMA4_TEMPLATE_FIXTURE,
+            "<bos>",
+            &[("user", "Oi")],
+            true,
+            false,
+        )
+        .unwrap();
+
+        assert!(formatted.contains("<|turn>system\n<|think|>\n<turn|>\n"));
+        assert!(formatted.ends_with("<|turn>model\n"));
+        assert!(!formatted.contains("<|channel>thought\n<channel|>"));
+    }
+
+    #[test]
+    fn gemma4_renderer_honors_add_generation_prompt_from_the_gguf_template() {
+        let formatted = render_gemma4_template(
+            GEMMA4_TEMPLATE_FIXTURE,
+            "<bos>",
+            &[("user", "Oi")],
+            false,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(formatted, "<bos><|turn>user\nOi<turn|>\n");
+    }
+
+    #[test]
+    fn generation_stop_matches_a_complete_turn_marker() {
+        assert!(token_sequence_ends_with(&[12, 106], &[106]));
+        assert!(!token_sequence_ends_with(&[12, 105], &[106]));
     }
 }
 

@@ -119,6 +119,10 @@ Per-file list:
   o slider fica oculto; falha na leitura aparece no inspetor com o motivo.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
+  A lista de modelos pode aparecer antes do fim da leitura dos cabeçalhos GGUF.
+  Enquanto algum peer informa `metadata_complete: false`, a tela mantém o plano
+  visível, mas desabilita a implantação e explica que camadas e fatias estão
+  pendentes.
   For a real MoE model, identified by `DeployPlan.is_moe` from GGUF metadata,
   the Globais inspector shows the inference engine selector and sends
   `RuntimeParams.inference_mode` in whole-model, sliced and TP requests. Dense

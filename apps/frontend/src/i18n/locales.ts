@@ -815,6 +815,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     // Why the deploy button is grey, said next to the button. A disabled
     // control with no reason beside it is what this screen was reported for.
     "deploy.whyNotEmpty": () => "select at least one shard",
+    "deploy.metadataPending": () => "waiting for GGUF metadata",
+    "deploy.metadataPendingDetail": () => "The model list is ready. Layer and shard metadata are still being read from disk; deployment will unlock when the scan finishes.",
     "deploy.whyNotChecking": () => "checking with the node…",
     "deploy.whyNotBlocked": () => "see the reason above",
     "deploy.whyNotMismatch": () => "the node did not accept this selection - see the reason above",
@@ -1895,6 +1897,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.mergeHint": () => "Duas faixas adjacentes podem ficar na mesma máquina: elas são fundidas num arquivo só antes de subir. Sem isto, cada máquina continua servindo uma faixa.",
     "deploy.deploy": () => "Implantar assim",
     "deploy.whyNotEmpty": () => "marque ao menos uma fatia",
+    "deploy.metadataPending": () => "aguardando os metadados do GGUF",
+    "deploy.metadataPendingDetail": () => "A lista de modelos já está disponível. As camadas e fatias ainda estão sendo lidas do disco; a implantação será liberada quando a leitura terminar.",
     "deploy.whyNotChecking": () => "conferindo com o nó…",
     "deploy.whyNotBlocked": () => "veja o motivo acima",
     "deploy.whyNotMismatch": () => "o nó não aceitou esta seleção - veja o motivo acima",

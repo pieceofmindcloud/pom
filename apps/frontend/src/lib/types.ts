@@ -411,6 +411,8 @@ export interface CatalogResponse {
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
   scanned: ScannedRoot[];
+  /** False while the node is reading GGUF headers in the background. */
+  metadata_complete: boolean;
 }
 
 export interface PeerCatalog {
@@ -420,6 +422,8 @@ export interface PeerCatalog {
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
   scanned?: ScannedRoot[];
+  /** False while this peer is reading GGUF headers in the background. */
+  metadata_complete?: boolean;
   error?: string;
 }
 

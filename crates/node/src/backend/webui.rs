@@ -302,6 +302,8 @@ struct CachedCatalog {
     catalog: Arc<Catalog>,
     /// A refresh is already running; a second one would only duplicate the work.
     refreshing: bool,
+    /// Header enrichment is running behind the fast inventory.
+    enriching: bool,
 }
 
 fn catalog_cache() -> &'static Mutex<Option<CachedCatalog>> {
@@ -309,10 +311,10 @@ fn catalog_cache() -> &'static Mutex<Option<CachedCatalog>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
-/// Walk the directories. Blocking work, kept off the reactor.
+/// Inventory the directories without opening GGUF headers.
 async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
     let (dirs, shards) = (roots.0.clone(), roots.1.clone());
-    tokio::task::spawn_blocking(move || catalog::discover(&dirs, &shards))
+    tokio::task::spawn_blocking(move || catalog::discover_fast(&dirs, &shards))
         .await
         .unwrap_or_else(|e| {
             warn!("varredura de modelos falhou: {e}");
@@ -320,8 +322,39 @@ async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
                 models: Vec::new(),
                 shard_sets: Vec::new(),
                 scanned: Vec::new(),
+                metadata_complete: false,
             }
         })
+}
+
+/// Read GGUF headers off the reactor and return a complete catalog.
+async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
+    let fallback = partial.clone();
+    let input = (*partial).clone();
+    match tokio::task::spawn_blocking(move || catalog::enrich(input)).await {
+        Ok(catalog) => Arc::new(catalog),
+        Err(e) => {
+            warn!("enriquecimento do catálogo falhou: {e}");
+            fallback
+        }
+    }
+}
+
+/// Publish header metadata only if the inventory it enriches is still current.
+fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
+    tokio::spawn(async move {
+        let enriched = enrich_catalog(partial.clone()).await;
+        let mut guard = catalog_cache().lock().await;
+        let Some(current) = guard.as_mut() else {
+            return;
+        };
+        if current.roots != roots || !Arc::ptr_eq(&current.catalog, &partial) {
+            return;
+        }
+        current.catalog = enriched;
+        current.enriching = false;
+        info!("metadados do catálogo prontos");
+    });
 }
 
 /// Rescan in the background and publish the result, unless the configuration
@@ -336,10 +369,13 @@ fn spawn_refresh(roots: CatalogRoots) {
         }
         *guard = Some(CachedCatalog {
             at: Instant::now(),
-            roots,
-            catalog,
+            roots: roots.clone(),
+            catalog: catalog.clone(),
             refreshing: false,
+            enriching: true,
         });
+        drop(guard);
+        spawn_enrichment(roots, catalog);
     });
 }
 
@@ -376,6 +412,10 @@ async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
         let mut guard = catalog_cache().lock().await;
         if let Some(c) = guard.as_mut() {
             if c.roots == roots {
+                if !c.catalog.metadata_complete && !c.enriching {
+                    c.enriching = true;
+                    spawn_enrichment(roots.clone(), c.catalog.clone());
+                }
                 let stale = c.at.elapsed() >= CATALOG_TTL;
                 if stale && !c.refreshing {
                     c.refreshing = true;
@@ -389,14 +429,17 @@ async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
     let catalog = Arc::new(scan_catalog(&roots).await);
     *catalog_cache().lock().await = Some(CachedCatalog {
         at: Instant::now(),
-        roots,
+        roots: roots.clone(),
         catalog: catalog.clone(),
         refreshing: false,
+        enriching: true,
     });
+    spawn_enrichment(roots, catalog.clone());
     catalog
 }
 
-/// Walk the directories once at boot, so the first screen does not pay for it.
+/// Inventory the directories once at boot, so the first screen does not pay
+/// for the walk or wait for GGUF header enrichment.
 ///
 /// Measured on the captain's machine with the slices on an external volume: the
 /// very first `/api/ui/models` took **11,9 s**, and the deploy screen's own
@@ -414,7 +457,7 @@ pub fn warm_catalog(state: GatewayState) {
         let started = Instant::now();
         let catalog = local_catalog(&state).await;
         info!(
-            "catálogo pronto em {:.1}s — {} modelos, {} conjuntos de fatias",
+            "catálogo inicial em {:.1}s - {} modelos, {} conjuntos de fatias; cabeçalhos em background",
             started.elapsed().as_secs_f32(),
             catalog.models.len(),
             catalog.shard_sets.len()
@@ -738,6 +781,7 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
         "models": catalog.models,
         "shard_sets": catalog.shard_sets,
         "scanned": catalog.scanned,
+        "metadata_complete": catalog.metadata_complete,
     }))
 }
 
@@ -1414,6 +1458,7 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
         "models": local.models,
         "shard_sets": local.shard_sets,
         "scanned": local.scanned,
+        "metadata_complete": local.metadata_complete,
     })];
 
     for (node_id, value, error) in futures::future::join_all(futures).await {
@@ -1425,6 +1470,10 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                 "models": v.get("models").cloned().unwrap_or(json!([])),
                 "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
+                "metadata_complete": v
+                    .get("metadata_complete")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
             })),
             // Um peer que não respondeu continua sendo uma máquina com nome:
             // a tabela local de peers guarda o que ele anunciou. Sem isto o

@@ -305,13 +305,89 @@ struct CachedCatalog {
     /// else and the old result stops being an answer to the new question.
     roots: CatalogRoots,
     catalog: Arc<Catalog>,
-    /// A refresh is already running; a second one would only duplicate the work.
-    refreshing: bool,
+    /// Roots currently being scanned. The separate `enriching` marker stays set
+    /// after this slot is released, until the header task publishes.
+    refreshing: Option<CatalogRoots>,
+    /// Roots of the one metadata task currently running. A new inventory must
+    /// reuse or reconcile this task instead of starting another one.
+    enriching: Option<CatalogRoots>,
+    /// Latest roots requested while another scan is in flight.
+    pending_refresh: Option<CatalogRoots>,
 }
 
 fn catalog_cache() -> &'static Mutex<Option<CachedCatalog>> {
     static CACHE: std::sync::OnceLock<Mutex<Option<CachedCatalog>>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn normalize_catalog_roots(
+    model_dirs: Vec<std::path::PathBuf>,
+    shard_dir: std::path::PathBuf,
+) -> CatalogRoots {
+    let mut model_dirs: Vec<_> = model_dirs
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .collect();
+    model_dirs.sort_unstable();
+    model_dirs.dedup();
+    let shard_dir = shard_dir.canonicalize().unwrap_or(shard_dir);
+    (model_dirs, shard_dir)
+}
+
+/// Claim the sole background scan slot. A changed configuration is remembered
+/// and scanned after the current walk, rather than starting another walk now.
+fn claim_refresh(cached: &mut CachedCatalog, roots: CatalogRoots) -> bool {
+    if let Some(in_flight) = &cached.refreshing {
+        if in_flight != &roots {
+            cached.pending_refresh = Some(roots);
+        }
+        return false;
+    }
+    cached.refreshing = Some(roots);
+    cached.pending_refresh = None;
+    true
+}
+
+fn claim_enrichment(cached: &mut CachedCatalog, roots: CatalogRoots) -> bool {
+    if cached.enriching.is_some() {
+        return false;
+    }
+    cached.enriching = Some(roots);
+    true
+}
+
+fn pending_metadata(catalog: &Catalog) -> Catalog {
+    let mut pending = catalog.clone();
+    pending
+        .models
+        .retain(|model| !catalog::metadata_is_current(model));
+    catalog::rebuild_shard_sets(&mut pending);
+    pending.metadata_complete = false;
+    pending
+}
+
+/// Copy completed metadata into a newer inventory by filesystem identity.
+/// Inventory refreshes necessarily create a new `Arc`, so pointer equality is
+/// not a valid publication condition.
+fn reconcile_enriched_catalog(current: &mut Catalog, enriched: &Catalog) -> usize {
+    let mut applied = 0;
+    for source in &enriched.models {
+        let Some(identity) = source.metadata_identity.as_ref() else {
+            continue;
+        };
+        let Some(target) = current
+            .models
+            .iter_mut()
+            .find(|target| catalog::current_metadata_identity(target).as_ref() == Some(identity))
+        else {
+            continue;
+        };
+        *target = source.clone();
+        applied += 1;
+    }
+    catalog::rebuild_shard_sets(current);
+    current.metadata_complete = current.models.iter().all(catalog::metadata_is_current);
+    applied
 }
 
 /// Inventory the directories without opening GGUF headers.
@@ -341,6 +417,7 @@ async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
             let mut catalog = (*fallback).clone();
             catalog.metadata_complete = true;
             for model in &mut catalog.models {
+                model.metadata_identity = catalog::current_metadata_identity(model);
                 model.metadata_error = Some(format!(
                     "a tarefa de enriquecimento do catálogo falhou: {e}"
                 ));
@@ -350,7 +427,7 @@ async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
     }
 }
 
-/// Publish header metadata only if the inventory it enriches is still current.
+/// Publish header metadata, reconciling it with whichever inventory is current.
 fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
     tokio::spawn(async move {
         let started = Instant::now();
@@ -360,46 +437,102 @@ fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
             partial.shard_sets.len()
         );
         let enriched = enrich_catalog(partial.clone()).await;
-        let mut guard = catalog_cache().lock().await;
-        let Some(current) = guard.as_mut() else {
-            return;
+        let next = {
+            let mut guard = catalog_cache().lock().await;
+            let Some(current) = guard.as_mut() else {
+                warn!(
+                    "enriquecimento do catálogo concluído em {:.1}s, mas descartado: cache ausente",
+                    started.elapsed().as_secs_f32()
+                );
+                return;
+            };
+            if current.enriching.as_ref() != Some(&roots) {
+                warn!(
+                    "enriquecimento do catálogo concluído em {:.1}s, mas descartado: tarefa substituída",
+                    started.elapsed().as_secs_f32()
+                );
+                return;
+            }
+
+            let applied =
+                reconcile_enriched_catalog(Arc::make_mut(&mut current.catalog), &enriched);
+            current.enriching = None;
+            let pending = pending_metadata(&current.catalog);
+            let failed = enriched
+                .models
+                .iter()
+                .filter(|model| model.metadata_error.is_some())
+                .count();
+            let pending_count = pending.models.len();
+            let next = if current.refreshing.is_none() && !pending.models.is_empty() {
+                let roots = current.roots.clone();
+                claim_enrichment(current, roots.clone()).then_some((roots, Arc::new(pending)))
+            } else {
+                None
+            };
+            info!(
+                "metadados do catálogo concluídos em {:.1}s - {} aplicados, {} falhas, {} pendentes",
+                started.elapsed().as_secs_f32(),
+                applied,
+                failed,
+                pending_count
+            );
+            next
         };
-        if current.roots != roots || !Arc::ptr_eq(&current.catalog, &partial) {
-            return;
+        if let Some((next_roots, next_partial)) = next {
+            spawn_enrichment(next_roots, next_partial);
         }
-        let failed = enriched
-            .models
-            .iter()
-            .filter(|model| model.metadata_error.is_some())
-            .count();
-        current.catalog = enriched;
-        info!(
-            "metadados do catálogo prontos em {:.1}s - {} modelos, {} falhas",
-            started.elapsed().as_secs_f32(),
-            current.catalog.models.len(),
-            failed
-        );
     });
 }
 
-/// Rescan in the background and publish the result, unless the configuration
-/// moved on in the meantime.
+/// Rescan in the background and publish the result. Metadata already read for
+/// unchanged files is copied into the new inventory before a new task is
+/// considered.
 fn spawn_refresh(roots: CatalogRoots) {
     tokio::spawn(async move {
-        let catalog = Arc::new(scan_catalog(&roots).await);
-        let mut guard = catalog_cache().lock().await;
-        let superseded = guard.as_ref().is_some_and(|c| c.roots != roots);
-        if superseded {
-            return;
+        let scanned = scan_catalog(&roots).await;
+        let (next_refresh, next_enrichment) = {
+            let mut guard = catalog_cache().lock().await;
+            let Some(current) = guard.as_mut() else {
+                warn!("varredura do catálogo concluída, mas descartada: cache ausente");
+                return;
+            };
+            if current.refreshing.as_ref() != Some(&roots) {
+                warn!("varredura do catálogo descartada: tarefa substituída");
+                return;
+            }
+
+            let mut catalog = scanned;
+            reconcile_enriched_catalog(&mut catalog, &current.catalog);
+            current.at = Instant::now();
+            current.roots = roots.clone();
+            current.catalog = Arc::new(catalog);
+            current.refreshing = None;
+
+            let next_refresh = current.pending_refresh.take().map(|roots| {
+                current.refreshing = Some(roots.clone());
+                roots
+            });
+            let next_enrichment = if next_refresh.is_none() && current.enriching.is_none() {
+                let pending = pending_metadata(&current.catalog);
+                if pending.models.is_empty() {
+                    Arc::make_mut(&mut current.catalog).metadata_complete = true;
+                    None
+                } else {
+                    let roots = current.roots.clone();
+                    claim_enrichment(current, roots.clone()).then_some((roots, Arc::new(pending)))
+                }
+            } else {
+                None
+            };
+            (next_refresh, next_enrichment)
+        };
+        if let Some(next_roots) = next_refresh {
+            spawn_refresh(next_roots);
         }
-        *guard = Some(CachedCatalog {
-            at: Instant::now(),
-            roots: roots.clone(),
-            catalog: catalog.clone(),
-            refreshing: false,
-        });
-        drop(guard);
-        spawn_enrichment(roots, catalog);
+        if let Some((next_roots, next_partial)) = next_enrichment {
+            spawn_enrichment(next_roots, next_partial);
+        }
     });
 }
 
@@ -409,13 +542,11 @@ fn spawn_refresh(roots: CatalogRoots) {
 pub(crate) async fn invalidate_catalog() {
     let roots = {
         let mut guard = catalog_cache().lock().await;
-        match guard.as_mut() {
-            Some(c) if !c.refreshing => {
-                c.refreshing = true;
-                Some(c.roots.clone())
-            }
-            _ => None,
-        }
+        let Some(cached) = guard.as_mut() else {
+            return;
+        };
+        let roots = cached.roots.clone();
+        claim_refresh(cached, roots.clone()).then_some(roots)
     };
     if let Some(roots) = roots {
         spawn_refresh(roots);
@@ -424,53 +555,65 @@ pub(crate) async fn invalidate_catalog() {
 
 /// The catalog of this machine, served from cache while it is refreshed.
 ///
-/// Scanning a slow volume is not cheap — the captain's SD card full of models
-/// takes about two minutes the first time — and the screen polls this. Handing
+/// Scanning a slow volume is not cheap - the captain's SD card full of models
+/// takes about two minutes the first time - and the screen polls this. Handing
 /// back the previous answer and refreshing behind it keeps the list on screen
-/// instead of blanking it every time the cache turns stale. Only the very first
-/// scan, and a change of directories, have nothing valid to serve and wait.
+/// instead of blanking it every time the cache turns stale. The first request
+/// installs an empty placeholder and shares the one background scan with all
+/// concurrent requests, including F5 and model selection.
 async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
-    let roots: CatalogRoots = (state.model_dirs().await, state.shard_dir().await);
-
-    {
+    let roots = normalize_catalog_roots(state.model_dirs().await, state.shard_dir().await);
+    let (catalog, start_refresh) = {
         let mut guard = catalog_cache().lock().await;
-        if let Some(c) = guard.as_mut() {
-            if c.roots == roots {
-                let stale = c.at.elapsed() >= CATALOG_TTL;
-                if stale && !c.refreshing {
-                    c.refreshing = true;
-                    spawn_refresh(roots.clone());
-                }
-                return c.catalog.clone();
+        match guard.as_mut() {
+            Some(cached) => {
+                let stale = cached.roots == roots && cached.at.elapsed() >= CATALOG_TTL;
+                let roots_changed = cached.roots != roots;
+                let start_refresh =
+                    (stale || roots_changed) && claim_refresh(cached, roots.clone());
+                (cached.catalog.clone(), start_refresh)
+            }
+            None => {
+                let catalog = Arc::new(Catalog {
+                    models: Vec::new(),
+                    shard_sets: Vec::new(),
+                    scanned: Vec::new(),
+                    metadata_complete: false,
+                });
+                let mut cached = CachedCatalog {
+                    at: Instant::now(),
+                    roots: roots.clone(),
+                    catalog: catalog.clone(),
+                    refreshing: None,
+                    enriching: None,
+                    pending_refresh: None,
+                };
+                let start_refresh = claim_refresh(&mut cached, roots.clone());
+                *guard = Some(cached);
+                (catalog, start_refresh)
             }
         }
+    };
+    if start_refresh {
+        spawn_refresh(roots);
     }
-
-    let catalog = Arc::new(scan_catalog(&roots).await);
-    *catalog_cache().lock().await = Some(CachedCatalog {
-        at: Instant::now(),
-        roots: roots.clone(),
-        catalog: catalog.clone(),
-        refreshing: false,
-    });
-    spawn_enrichment(roots, catalog.clone());
     catalog
 }
 
-/// Inventory the directories once at boot, so the first screen does not pay
-/// for the walk or wait for GGUF header enrichment.
+/// Schedule the inventory once at boot, so the first screen does not pay for
+/// the walk or wait for GGUF header enrichment.
 ///
 /// Measured on the captain's machine with the slices on an external volume: the
 /// very first `/api/ui/models` took **11,9 s**, and the deploy screen's own
 /// `/api/ui/cluster/models` took 13,2 s cold against 0,15 s once that scan had
-/// happened — the fan-out to eleven peers was never the cost, the local walk
+/// happened - the fan-out to eleven peers was never the cost, the local walk
 /// was. Nothing else changes: the same cache, the same TTL, the same
 /// stale-while-revalidate. What moves is *when* the walk happens, from "the
 /// first person to open a screen" to "while the node is still starting up".
 ///
 /// Deliberately not awaited. A slow volume must not hold the gateway's port
-/// closed, and a request that lands mid-walk simply waits on the same scan it
-/// would have started itself.
+/// closed, and a request that lands mid-walk receives the placeholder from the
+/// same scan instead of starting another one.
 pub fn warm_catalog(state: GatewayState) {
     tokio::spawn(async move {
         let started = Instant::now();
@@ -5066,6 +5209,80 @@ mod advertise_addr_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrichment_survives_inventory_arc_swap_by_file_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-catalog-reconcile-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model_path = models.join("model.gguf");
+        std::fs::write(&model_path, crate::splitter::test_gguf_bytes(1)).unwrap();
+
+        let before_refresh = crate::catalog::discover_fast(std::slice::from_ref(&models), &shards);
+        let enriched = crate::catalog::enrich(before_refresh);
+        assert_eq!(enriched.models[0].architecture.as_deref(), Some("llama"));
+
+        // A refresh always creates a new Arc. The completed work must still be
+        // copied when the physical model has the same path, size and mtime.
+        let mut after_refresh =
+            crate::catalog::discover_fast(std::slice::from_ref(&models), &shards);
+        let applied = reconcile_enriched_catalog(&mut after_refresh, &enriched);
+
+        assert_eq!(applied, 1);
+        assert!(after_refresh.metadata_complete);
+        assert_eq!(
+            after_refresh.models[0].architecture.as_deref(),
+            Some("llama")
+        );
+        assert_eq!(after_refresh.models[0].path, model_path.to_string_lossy());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_refresh_claim_is_single_flight() {
+        let roots = (vec!["/models".into()], "/slices".into());
+        let empty = Arc::new(Catalog {
+            models: Vec::new(),
+            shard_sets: Vec::new(),
+            scanned: Vec::new(),
+            metadata_complete: false,
+        });
+        let mut cached = CachedCatalog {
+            at: Instant::now(),
+            roots: roots.clone(),
+            catalog: empty,
+            refreshing: None,
+            enriching: None,
+            pending_refresh: None,
+        };
+
+        assert!(claim_refresh(&mut cached, roots.clone()));
+        assert!(!claim_refresh(&mut cached, roots));
+
+        let roots = (vec!["/models".into()], "/slices".into());
+        assert!(claim_enrichment(&mut cached, roots.clone()));
+        assert!(!claim_enrichment(&mut cached, roots));
+    }
+
+    #[test]
+    fn catalog_roots_normalization_ignores_directory_order() {
+        let first = normalize_catalog_roots(
+            vec!["/models/b".into(), "/models/a".into()],
+            "/models/slices".into(),
+        );
+        let second = normalize_catalog_roots(
+            vec!["/models/a".into(), "/models/b".into()],
+            "/models/slices".into(),
+        );
+
+        assert_eq!(first, second);
+    }
 
     #[test]
     fn slice_folder_cannot_equal_or_nest_inside_a_whole_model_folder() {

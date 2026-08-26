@@ -16,6 +16,10 @@ transferência.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade.
+  Cada resultado enriquecido guarda apenas em memória a identidade
+  `path + size + mtime` do arquivo. O backend usa essa marca para reaproveitar
+  metadata quando um refresh cria outro inventário e para enriquecer somente
+  modelos novos ou alterados.
   Para uma fonte GGUF multipart, `enrich` lê os cabeçalhos e faz `stat` das
   partes por `multipart::catalog_metadata`, sem abrir o mapeamento completo de
   pesos; soma os bytes e expõe as partes físicas no catálogo. Uma declaração

@@ -59,6 +59,18 @@ impl ModelSource {
     }
 }
 
+/// Filesystem identity of the metadata generation already applied to a model.
+///
+/// This is deliberately not serialized. It only coordinates the in-process
+/// catalog cache across inventory generations; the strong source hash belongs
+/// to transfer verification, never to the metadata path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MetadataIdentity {
+    pub(crate) path: String,
+    pub(crate) size: u64,
+    pub(crate) mtime: u64,
+}
+
 /// One GGUF file found on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredModel {
@@ -86,6 +98,10 @@ pub struct DiscoveredModel {
     /// catálogo. Um modelo quebrado não impede os demais de aparecerem.
     #[serde(default)]
     pub metadata_error: Option<String>,
+    /// Identity of the file for which the metadata fields below were read.
+    /// Kept in memory so a refreshed inventory can reuse completed work.
+    #[serde(skip)]
+    pub(crate) metadata_identity: Option<MetadataIdentity>,
     pub architecture: Option<String>,
     /// True only when the GGUF header reports more than one expert.
     #[serde(default)]
@@ -537,6 +553,7 @@ fn describe(
         multipart_parts: Vec::new(),
         multipart_error: None,
         metadata_error: None,
+        metadata_identity: None,
         architecture: None,
         is_moe: false,
         total_layers,
@@ -566,6 +583,28 @@ fn file_mtime_fingerprint(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+fn metadata_identity(path: &Path, meta: &std::fs::Metadata) -> MetadataIdentity {
+    MetadataIdentity {
+        path: path.to_string_lossy().into_owned(),
+        size: meta.len(),
+        mtime: file_mtime_fingerprint(meta),
+    }
+}
+
+pub(crate) fn current_metadata_identity(model: &DiscoveredModel) -> Option<MetadataIdentity> {
+    let path = Path::new(&model.path);
+    let meta = std::fs::metadata(path).ok()?;
+    Some(metadata_identity(path, &meta))
+}
+
+/// Whether a model's metadata still describes the bytes currently on disk.
+pub(crate) fn metadata_is_current(model: &DiscoveredModel) -> bool {
+    model
+        .metadata_identity
+        .as_ref()
+        .is_some_and(|expected| current_metadata_identity(model).as_ref() == Some(expected))
+}
+
 enum EnrichResult {
     /// The header and optional capability evidence were read successfully.
     Ready,
@@ -580,9 +619,19 @@ enum EnrichResult {
 fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     let path = PathBuf::from(&model.path);
     let Some(meta) = std::fs::metadata(&path).ok() else {
+        model.metadata_identity = None;
         model.metadata_error = Some(format!("arquivo não encontrado: {}", path.display()));
         return EnrichResult::Failed;
     };
+    let identity = metadata_identity(&path, &meta);
+    if model
+        .metadata_identity
+        .as_ref()
+        .is_some_and(|previous| previous == &identity)
+    {
+        return EnrichResult::Ready;
+    }
+    model.metadata_identity = Some(identity);
     model.size_bytes = meta.len();
     if model.size_bytes < 1024 {
         model.metadata_error = Some(format!(
@@ -1224,6 +1273,12 @@ pub fn enrich(mut catalog: Catalog) -> Catalog {
     catalog
 }
 
+/// Rebuild the derived slice grouping after metadata from one generation is
+/// copied into another.
+pub(crate) fn rebuild_shard_sets(catalog: &mut Catalog) {
+    catalog.shard_sets = build_shard_sets(&catalog.models);
+}
+
 /// Full discovery for non-UI callers that still need a complete answer before
 /// continuing, such as transfer path resolution and existing tests.
 pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
@@ -1277,6 +1332,7 @@ mod tests {
             multipart_parts: Vec::new(),
             multipart_error: None,
             metadata_error: None,
+            metadata_identity: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -1313,6 +1369,7 @@ mod tests {
                 multipart_parts: Vec::new(),
                 multipart_error: None,
                 metadata_error: None,
+                metadata_identity: None,
             };
             if tensor_parallel {
                 model.name = format!("{id}-tp.gguf");
@@ -1439,6 +1496,7 @@ mod tests {
             multipart_parts: Vec::new(),
             multipart_error: None,
             metadata_error: None,
+            metadata_identity: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));

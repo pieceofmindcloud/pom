@@ -51,8 +51,11 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 0,18 s com o aquecimento). A primeira fase enumera e faz `stat`; a segunda lê
 somente os cabeçalhos necessários. Um erro terminal fica em `metadata_error` no
 modelo, sem impedir os demais, e a passagem publica `metadata_complete: true`.
-O resultado é reaproveitado nas requisições da interface; somente TTL ou
-invalidação cria uma nova geração.
+O backend mantém uma única varredura e um único enriquecimento em voo, inclusive
+quando a tela é recarregada ou a seleção muda. Um refresh pode trocar o
+inventário, mas preserva metadata por identidade `path + size + mtime`; somente
+modelo novo ou arquivo alterado volta a ler o cabeçalho. Hash integral continua
+restrito à fronteira de fatiamento ou transferência.
 
 ## 2. Leitura do GGUF: cabeçalho e tensor table
 

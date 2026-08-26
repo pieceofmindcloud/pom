@@ -16,7 +16,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
   and formatting functions. The slice screen has messages for pipeline and
   tensor-parallel modes, including grouped `1ofN` rank labels. Deploy metadata
   refusals are rendered from the backend's selection-specific `blocked` reason;
-  there is no second global catalog warning in this table.
+  there is no second global catalog warning in this table. Dashboard GPU
+  temperature badges and the Network thermal policy panel have keys in both
+  locale blocks.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou

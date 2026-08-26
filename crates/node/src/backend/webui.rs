@@ -20,6 +20,7 @@ use crate::network::PeerInfo;
 use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
 use crate::runtime::{NodeConfig, RuntimeStatus};
 use crate::sysmon::{self, SystemLoad};
+use crate::thermal::ThermalPolicy;
 use anyhow::Context;
 use axum::{
     body::Body,
@@ -130,6 +131,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/chat/telemetry", post(chat_telemetry))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
+        .route("/api/ui/thermal", get(get_thermal).post(save_thermal))
         .route(
             "/api/ui/cache-types",
             get(get_cache_types).post(save_cache_types),
@@ -219,6 +221,7 @@ pub struct NodeInfo {
     /// decidir entre interruptor e leitura; a checagem que vale é a do
     /// `save_tls`, no servidor.
     pub tls_authority: bool,
+    pub thermal: ThermalPolicy,
 }
 
 async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
@@ -228,7 +231,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         .as_ref()
         .map(|cfg| cfg.deployment_name.clone())
         .unwrap_or_default();
-    let (role, conn_key, advertise_addr, tls_required, tls_authority) = {
+    let (role, conn_key, advertise_addr, tls_required, tls_authority, thermal) = {
         let cfg = state.auth.read().await;
         (
             cfg.role.to_string(),
@@ -236,6 +239,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
             cfg.advertise_addr.clone(),
             cfg.tls_required,
             cfg.role == crate::config::Role::Principal,
+            cfg.thermal,
         )
     };
     Json(NodeInfo {
@@ -285,6 +289,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         effective_address: state.network.announce_addr(),
         tls_required,
         tls_authority,
+        thermal,
         system,
     })
 }
@@ -533,6 +538,37 @@ async fn get_paths(State(state): State<GatewayState>) -> impl IntoResponse {
             .iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
         "default_shard_dir": crate::config::default_shard_dir().to_string_lossy(),
     }))
+}
+
+async fn get_thermal(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Json<ThermalPolicy> {
+    Json(state.auth.read().await.thermal)
+}
+
+async fn save_thermal(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(policy): Json<ThermalPolicy>,
+) -> Response {
+    if let Err(error) = policy.validate() {
+        return bad_request(error.to_string());
+    }
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.thermal = policy;
+        if let Err(error) = cfg.save() {
+            return bad_request(format!("não deu para gravar pom.json: {error}"));
+        }
+    }
+    info!(
+        limit_c = policy.limit_c,
+        hysteresis_c = policy.hysteresis_c,
+        cooldown_secs = policy.cooldown_secs,
+        "política térmica atualizada pela interface"
+    );
+    Json(policy).into_response()
 }
 
 /// The KV cache representation is an installation setting, not a deployment

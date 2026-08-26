@@ -70,6 +70,12 @@ frame multi-item e sincronizacao de lotes no Tensor Parallelism).
 de manter os dados no `x_pom`, no `/health` e numa rota autenticada de RTT, sem
 mudar frame entre peers ou planner.
 
+## Proteção térmica da implantação
+
+`superpowers/specs/2026-08-26-protecao-termica-gpu-design.md` registra a
+política de temperatura e a máquina de histerese; o plano de implementação
+correspondente está em `superpowers/plans/2026-08-26-protecao-termica-gpu.md`.
+
 ## superpowers/plans/
 
 Planos de implementacao, task a task no estilo TDD: teste que falha →

@@ -2594,6 +2594,7 @@ pub(crate) mod testkit {
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
                 gpus: None,
+                thermal: Default::default(),
                 cache_type_k: crate::config::KvCacheType::F16,
                 cache_type_v: crate::config::KvCacheType::F16,
                 role: Role::Node,

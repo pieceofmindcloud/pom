@@ -294,6 +294,15 @@ aparecem assim.
    nada). Para uma parte por hash, o receptor busca e mescla o `.pom` antes dos
    bytes de peso. A checagem de disco da implantação conta a **união** das fatias mais o
    que falta - a máquina precisa de espaço para o modelo junto *e* para as partes.
+   O limite da pasta de fatias tolera subdiretórios filhos que o usuário do nó
+   não consegue ler: soma o que foi possível medir e registra cada entrada
+   ignorada em `debug`. Se a própria raiz não existe, não é diretório ou não
+   pode ser lida, o `apply` falha informando o caminho, a causa e a orientação
+   para corrigir a pasta ou suas permissões.
+   Como a soma pode subestimar bytes que ficaram inacessíveis, ela serve apenas
+   ao limite configurado da pasta; a capacidade física continua sendo conferida
+   pelo espaço livre do sistema no `survey` e novamente antes de cada cópia em
+   `transfer.rs`.
 4. Cada alvo recebe o `ApplyRequest` via `apply`/`launch` (detalhe na seção 6).
 5. `done` = "o modelo está atendendo na rede"; erro vira job `failed`.
 

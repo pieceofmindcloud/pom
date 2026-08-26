@@ -2,8 +2,10 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use tracing::debug;
 
 /// Espaço padrão reservado para fatias novas quando a configuração ainda não
 /// tem o campo introduzido nesta versão.
@@ -25,18 +27,65 @@ impl StorageUsage {
 }
 
 pub fn directory_bytes(root: &Path) -> std::io::Result<u64> {
-    if !root.is_dir() {
-        return Ok(0);
+    let metadata = fs::metadata(root)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            format!("{} não é um diretório", root.display()),
+        ));
     }
 
+    directory_bytes_inner(root)
+}
+
+fn directory_bytes_inner(root: &Path) -> std::io::Result<u64> {
     let mut total = 0u64;
     for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                debug!(
+                    path = %root.display(),
+                    error = %error,
+                    "ignorando entrada ilegível durante o cálculo de uso"
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        let ty = match entry.file_type() {
+            Ok(ty) => ty,
+            Err(error) => {
+                debug!(
+                    path = %path.display(),
+                    error = %error,
+                    "ignorando entrada cujo tipo não pôde ser lido durante o cálculo de uso"
+                );
+                continue;
+            }
+        };
         if ty.is_dir() {
-            total = total.saturating_add(directory_bytes(&entry.path())?);
+            match directory_bytes_inner(&path) {
+                Ok(bytes) => total = total.saturating_add(bytes),
+                Err(error) => {
+                    debug!(
+                        path = %path.display(),
+                        error = %error,
+                        "ignorando diretório ilegível durante o cálculo de uso"
+                    );
+                }
+            }
         } else if ty.is_file() {
-            total = total.saturating_add(entry.metadata()?.len());
+            match entry.metadata() {
+                Ok(metadata) => total = total.saturating_add(metadata.len()),
+                Err(error) => {
+                    debug!(
+                        path = %path.display(),
+                        error = %error,
+                        "ignorando arquivo cujo tamanho não pôde ser lido durante o cálculo de uso"
+                    );
+                }
+            }
         }
     }
     Ok(total)
@@ -44,7 +93,12 @@ pub fn directory_bytes(root: &Path) -> std::io::Result<u64> {
 
 pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut used = directory_bytes(root)
-        .with_context(|| format!("não deu para calcular o uso de {}", root.display()))?;
+        .with_context(|| {
+            format!(
+                "não foi possível calcular o uso de {}. Verifique se a pasta existe, é um diretório e se o nó tem permissão de leitura",
+                root.display()
+            )
+        })?;
     if used <= max_bytes {
         return Ok(Vec::new());
     }
@@ -54,13 +108,38 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
         .collect();
     let mut candidates = Vec::new();
-    if root.is_dir() {
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() || entry.file_name() == "recebidos" {
+    for entry in fs::read_dir(root).with_context(|| {
+        format!(
+            "não foi possível calcular o uso de {}. Verifique se a pasta existe e se o nó tem permissão de leitura",
+            root.display()
+        )
+    })? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    debug!(
+                        path = %root.display(),
+                        error = %error,
+                        "ignorando entrada ilegível durante a busca de fatias antigas"
+                    );
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    debug!(
+                        path = %path.display(),
+                        error = %error,
+                        "ignorando entrada cujo tipo não pôde ser lido durante a busca de fatias antigas"
+                    );
+                    continue;
+                }
+            };
+            if !file_type.is_dir() || entry.file_name() == "recebidos" {
                 continue;
             }
-            let path = entry.path();
             let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
             if canonical_protected
                 .iter()
@@ -68,8 +147,17 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
             {
                 continue;
             }
-            if directory_bytes(&path)? == 0 {
-                continue;
+            match directory_bytes(&path) {
+                Ok(0) => continue,
+                Ok(_) => {}
+                Err(error) => {
+                    debug!(
+                        path = %path.display(),
+                        error = %error,
+                        "ignorando fatia antiga ilegível durante a retenção"
+                    );
+                    continue;
+                }
             }
             let created = entry
                 .metadata()
@@ -77,8 +165,7 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
                 .and_then(|m| m.created().ok())
                 .or_else(|| entry.metadata().ok().and_then(|m| m.modified().ok()))
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            candidates.push((created, path));
-        }
+        candidates.push((created, path));
     }
 
     candidates.sort_by(|(a_time, a_path), (b_time, b_path)| {
@@ -90,7 +177,17 @@ pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Resu
         if used <= max_bytes {
             break;
         }
-        let bytes = directory_bytes(&path)?;
+        let bytes = match directory_bytes(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                debug!(
+                    path = %path.display(),
+                    error = %error,
+                    "ignorando fatia antiga que deixou de ser legível durante a retenção"
+                );
+                continue;
+            }
+        };
         fs::remove_dir_all(&path)
             .with_context(|| format!("não deu para remover fatia antiga {}", path.display()))?;
         used = used.saturating_sub(bytes);
@@ -128,6 +225,83 @@ mod tests {
 
         assert_eq!(directory_bytes(&root).unwrap(), 10);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sums_readable_files_when_nested_directory_is_inaccessible() {
+        let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+        if String::from_utf8_lossy(&uid.stdout).trim() == "0" {
+            eprintln!("skipped: permission test cannot exercise EACCES as root");
+            return;
+        }
+
+        let root = temp_root("inaccessible");
+        fs::write(root.join("readable.gguf"), vec![0u8; 7]).unwrap();
+        let inaccessible = root.join("inaccessible");
+        fs::create_dir(&inaccessible).unwrap();
+        fs::write(inaccessible.join("hidden.gguf"), vec![0u8; 11]).unwrap();
+
+        let mut permissions = fs::metadata(&inaccessible).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o000);
+        fs::set_permissions(&inaccessible, permissions).unwrap();
+
+        let measured = directory_bytes(&root);
+
+        let mut permissions = fs::metadata(&inaccessible).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        fs::set_permissions(&inaccessible, permissions).unwrap();
+
+        assert_eq!(measured.unwrap(), 7);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enforce_limit_ignores_unreadable_child() {
+        let uid = std::process::Command::new("id").arg("-u").output().unwrap();
+        if String::from_utf8_lossy(&uid.stdout).trim() == "0" {
+            eprintln!("skipped: permission test cannot exercise EACCES as root");
+            return;
+        }
+
+        let root = temp_root("inaccessible-limit");
+        fs::write(root.join("readable.gguf"), vec![0u8; 7]).unwrap();
+        let inaccessible = root.join("inaccessible");
+        fs::create_dir(&inaccessible).unwrap();
+        fs::write(inaccessible.join("hidden.gguf"), vec![0u8; 11]).unwrap();
+
+        let mut permissions = fs::metadata(&inaccessible).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o000);
+        fs::set_permissions(&inaccessible, permissions).unwrap();
+
+        let result = enforce_limit(&root, 7, &[]);
+
+        let mut permissions = fs::metadata(&inaccessible).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        fs::set_permissions(&inaccessible, permissions).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "unreadable child must not abort apply: {result:?}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_root_reports_path_cause_and_recovery_action() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-storage-missing-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = fs::remove_dir_all(&root);
+
+        let error = enforce_limit(&root, 1, &[]).unwrap_err().to_string();
+
+        assert!(error.contains(root.to_string_lossy().as_ref()));
+        assert!(error.contains("existe"));
+        assert!(error.contains("permissão"));
     }
 
     #[test]

@@ -40,9 +40,10 @@ transferência.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.
-- `storage.rs` - calcula uso recursivo da pasta de fatias e remove diretórios
-  gerados mais antigos quando o limite configurado seria excedido. A saída
-  atual e o modelo ativo são protegidos.
+- `storage.rs` - calcula uso recursivo da pasta de fatias, registra e ignora
+  filhos ilegíveis, e remove diretórios gerados mais antigos quando o limite
+  configurado seria excedido. Falha na raiz continua sendo erro acionável; a
+  saída atual e o modelo ativo são protegidos.
 - `provider.rs` - contrato `ModelProvider`, tipos comuns de descoberta,
   download, progresso, licença, armazenamento e manifesto.
 - `huggingface.rs` - implementação `HuggingFaceProvider` por HTTP nativo, com

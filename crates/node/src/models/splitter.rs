@@ -3,7 +3,10 @@
 //! Reads the source model with mmap (never loads weights into RAM), selects
 //! tensors for the assigned layer range, remaps `blk.(start+i).*` names to
 //! `blk.i.*`, injects a fake identity `output_norm.weight` on non-last slices,
-//! updates KV metadata, and streams the slice to disk.
+//! updates KV metadata, and streams the slice to disk. Architecture-specific
+//! output contracts are checked before the destination is created: the
+//! llama.cpp `deepseek4` head is copied only on a final slice, while a
+//! non-final slice is refused because its loader contract is not optional.
 //!
 //! Progress is reported via `on_progress(0.0..=100.0)` as bytes are written.
 
@@ -380,7 +383,7 @@ fn tensor_header_size(name: &str, dims: &[u64]) -> usize {
     + 8 // offset(u64)
 }
 
-fn want_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
+fn want_tensor(name: &str, architecture: &str, start: u32, end: u32, is_last: bool) -> bool {
     if let Some(rest) = name.strip_prefix("blk.") {
         let idx: u32 = rest
             .split('.')
@@ -391,7 +394,7 @@ fn want_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
     }
     match name {
         "token_embd.weight" => true,
-        "output_norm.weight" | "output_norm.bias" | "output.weight" => is_last,
+        _ if crate::gguf::is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
         _ => false,
     }
@@ -461,6 +464,32 @@ fn identity_bytes(hidden_dim: u32, dtype: u32) -> (u32, Vec<u8>) {
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+/// Validate the source tensors for one prospective slice without writing it.
+///
+/// This is used before reusing a path from an older manifest, so an existing
+/// invalid slice cannot bypass the current architecture contract.
+pub fn validate_slice_source(
+    src: &Path,
+    start_layer: u32,
+    end_layer: u32,
+    is_last: bool,
+) -> Result<()> {
+    let architecture = crate::gguf::read_info(src)?
+        .architecture
+        .unwrap_or_else(|| "llama".to_string());
+    let source = crate::multipart::GgufSource::open(src)?;
+    let tensor_names: HashSet<&str> = source
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect();
+    crate::gguf::validate_slice_tensors(&architecture, &tensor_names, is_last)?;
+    if start_layer > end_layer {
+        bail!("intervalo de camadas inválido L{start_layer}-{end_layer}");
+    }
+    Ok(())
+}
 
 /// Slice a GGUF model file.
 ///
@@ -557,6 +586,13 @@ pub fn split(
         .iter()
         .find(|entry| entry.key.ends_with(".block_count"))
         .and_then(|entry| source_scalar_u32(mm, entry));
+
+    let tensor_names: HashSet<&str> = source
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect();
+    crate::gguf::validate_slice_tensors(&arch, &tensor_names, is_last)?;
 
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
     let mut block_count_updated = false;
@@ -681,7 +717,7 @@ pub fn split(
     let selected: Vec<&TensorRecord> = source_read_order(&all_tensors)
         .into_iter()
         .map(|index| &all_tensors[index])
-        .filter(|t| want_tensor(&t.name, start_layer, end_layer, is_last))
+        .filter(|t| want_tensor(&t.name, &arch, start_layer, end_layer, is_last))
         .collect();
 
     if selected.is_empty() {
@@ -1627,6 +1663,12 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         }
     }
 
+    let tensor_names: HashSet<&str> = parsed
+        .iter()
+        .flat_map(|part| part.tensors.iter().map(|tensor| tensor.name.as_str()))
+        .collect();
+    crate::gguf::validate_slice_tensors(&arch, &tensor_names, true)?;
+
     let start_first = parts[0].start_layer;
     let end_last = parts[parts.len() - 1].end_layer;
     let total = end_last - start_first + 1;
@@ -1677,10 +1719,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         let is_last = pi == parts.len() - 1;
         for t in &p.tensors {
             let is_blk = t.name.starts_with("blk.");
-            let is_output = matches!(
-                t.name.as_str(),
-                "output_norm.weight" | "output_norm.bias" | "output.weight"
-            );
+            let is_output = crate::gguf::is_output_tensor(&arch, &t.name);
             // Blocks come from every slice; the head tensors (token embeddings,
             // position embeddings, rope) only from the first; the head outputs
             // only from the last — the middle slices carry a fake `output_norm`
@@ -2420,6 +2459,114 @@ mod tests {
             ..p.data_start + t.src_offset as usize + t.byte_size as usize]
     }
 
+    fn deepseek4_test_gguf_bytes(n_blocks: u32, with_output_head: bool) -> Vec<u8> {
+        let n = 4u64;
+        let f32v = |values: &[f32]| -> Vec<u8> {
+            values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect()
+        };
+        let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = vec![(
+            "token_embd.weight".into(),
+            vec![n, n],
+            T_F32,
+            f32v(&[0.5; 16]),
+        )];
+        for layer in 0..n_blocks {
+            tensors.push((
+                format!("blk.{layer}.attn_q.weight"),
+                vec![n, n],
+                T_F32,
+                f32v(&[layer as f32; 16]),
+            ));
+        }
+        tensors.push(("output_norm.weight".into(), vec![n], T_F32, f32v(&[2.0; 4])));
+        if with_output_head {
+            tensors.extend([
+                ("output.weight".into(), vec![n, n], T_F32, f32v(&[3.0; 16])),
+                (
+                    "output_hc_fn.weight".into(),
+                    vec![8, 2],
+                    T_F32,
+                    f32v(&[4.0; 16]),
+                ),
+                (
+                    "output_hc_base.weight".into(),
+                    vec![2],
+                    T_F32,
+                    f32v(&[5.0; 2]),
+                ),
+                (
+                    "output_hc_scale.weight".into(),
+                    vec![1],
+                    T_F32,
+                    f32v(&[6.0; 1]),
+                ),
+            ]);
+        }
+
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let string_kv = |key: &str, value: &str| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_STR.to_le_bytes());
+            bytes.extend_from_slice(&string(value));
+            bytes
+        };
+        let u32_kv = |key: &str, value: u32| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_U32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        let kv = vec![
+            string_kv("general.architecture", "deepseek4"),
+            u32_kv("deepseek4.embedding_length", n as u32),
+            u32_kv("deepseek4.block_count", n_blocks),
+            u32_kv("deepseek4.vocab_size", n as u32),
+            u32_kv("deepseek4.dsv4_hc_mult", 2),
+            u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
+        ];
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+        for entry in &kv {
+            bytes.extend_from_slice(entry);
+        }
+
+        let mut offset = 0u64;
+        let offsets: Vec<u64> = tensors
+            .iter()
+            .map(|(_, _, _, data)| {
+                let current = offset;
+                offset = align_up(offset + data.len() as u64);
+                current
+            })
+            .collect();
+        for ((name, dims, dtype, _), offset) in tensors.iter().zip(offsets) {
+            bytes.extend_from_slice(&string(name));
+            bytes.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+            for dim in dims {
+                bytes.extend_from_slice(&dim.to_le_bytes());
+            }
+            bytes.extend_from_slice(&dtype.to_le_bytes());
+            bytes.extend_from_slice(&offset.to_le_bytes());
+        }
+        bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        for (_, _, _, data) in tensors {
+            bytes.extend_from_slice(&data);
+            bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        }
+        bytes
+    }
+
     #[test]
     fn per_layer_array_slice_uses_absolute_layer_indices() {
         let values = vec![0u32, 0, 4, 128, 4, 128, 4, 128, 4, 0, 0];
@@ -2741,6 +2888,94 @@ mod tests {
             None,
             "modelo sem ssm_conv1d não deve ganhar essa chave"
         );
+    }
+
+    #[test]
+    fn deepseek4_non_final_slice_is_refused_before_output_file_creation() {
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-mid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("mid.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(4, true)).unwrap();
+
+        let error = split(&whole, &output, 0, 1, true, false, |_| {}).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("deepseek4"), "{message}");
+        assert!(message.contains("output_hc_fn.weight"), "{message}");
+        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_final_slice_carries_the_complete_output_head() {
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-final-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("final.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, true)).unwrap();
+
+        split(&whole, &output, 0, 1, true, true, |_| {}).unwrap();
+        let parsed = parse_merged_src(&std::fs::read(&output).unwrap()).unwrap();
+        let names: HashSet<&str> = parsed
+            .tensors
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect();
+        for required in [
+            "output_norm.weight",
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert!(names.contains(required), "faltou {required}: {names:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_layout_rejects_intermediate_ranges_and_prices_the_final_head() {
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("final.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, true)).unwrap();
+
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        let error = layout.validate_slice_ranges(&[(0, 0)]).unwrap_err();
+        assert!(error.to_string().contains("faixa não final"));
+        split(&whole, &output, 0, 1, true, true, |_| {}).unwrap();
+        assert_eq!(
+            layout.slice_bytes(0, 1, true),
+            std::fs::metadata(&output).unwrap().len()
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_final_slice_reports_all_missing_output_tensors() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-deepseek4-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("final.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, false)).unwrap();
+
+        let error = split(&whole, &output, 0, 1, true, true, |_| {}).unwrap_err();
+
+        let message = error.to_string();
+        for required in [
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert!(message.contains(required), "faltou {required}: {message}");
+        }
+        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// `merge` reconstrói o array híbrido para a numeração 0-based do arquivo

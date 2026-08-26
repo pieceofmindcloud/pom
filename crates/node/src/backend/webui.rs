@@ -3429,6 +3429,7 @@ fn single_range_plan(
         anyhow::bail!(error);
     }
     let is_last = range.end_layer + 1 >= layout.layer_count();
+    layout.validate_slice_ranges(&[(range.start_layer, range.end_layer)])?;
     let bytes = layout.slice_bytes(range.start_layer, range.end_layer, is_last);
     Ok(plan::SizePlan {
         total_layers: layout.layer_count(),
@@ -4129,6 +4130,14 @@ pub(crate) async fn materialize_slice_ranges(
             ));
         }
     }
+    let requested_ranges = req
+        .ranges
+        .iter()
+        .map(|range| (range.start_layer, range.end_layer))
+        .collect::<Vec<_>>();
+    layout
+        .validate_slice_ranges(&requested_ranges)
+        .map_err(|error| error.to_string())?;
     let source = source;
     let shard_dir = state.shard_dir().await;
     let scratch = crate::pom::scratch_dir(&shard_dir);

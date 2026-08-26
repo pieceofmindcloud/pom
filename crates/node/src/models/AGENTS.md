@@ -32,7 +32,10 @@ transferência.
   fronteira de fatiamento ou transferência.
 - `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
   chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
-  `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa.
+  `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa. O
+  plano valida o contrato de tensores de saída da arquitetura antes de oferecer
+  ou gerar uma faixa; se um loader não aceitar fatias parciais, o erro aparece
+  antes de criar o arquivo.
 - `gguf.rs` - lê a geometria de KV escalar ou por camada
   (`attention.head_count_kv`, `key_length` e `value_length`) e a evidência de
   MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos. Também
@@ -44,7 +47,10 @@ transferência.
   valida os dtypes contra a tabela GGML suportada, descarta essa informação após
   a validação, usa offsets físicos para o custo dos tensores e calcula o tamanho
   serializado de cada fatia, incluindo cabeçalho, globais, alinhamento e
-  duplicações. read_layout usa a tabela unificada de multipart.rs, então o
+  duplicações e cabeças específicas da arquitetura. `validate_slice_ranges`
+  compartilha a decisão com o fatiador. `deepseek4` exige seis tensores
+  não-bloco, não aceita fallback para `token_embd` e recusa faixas não finais.
+  `read_layout` usa a tabela unificada de multipart.rs, então o
   primeiro arquivo de um GGUF multipart, mesmo sem tensores, representa o
   conjunto inteiro.
 - multipart.rs - mapeia um GGUF simples ou todas as partes declaradas por
@@ -60,8 +66,12 @@ transferência.
 - `splitter.rs` - mapeia a fonte para ler o cabeçalho e os pesos sem manter fd
   de GGUF aberto. A tabela lógica não é uma ordem de armazenamento: os payloads
   selecionados são ordenados por `(part_index, src_offset)` antes da cópia para
-  evitar page faults regressivos em fonte maior que a RAM. A estimativa TP soma
-  a replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
+  evitar page faults regressivos em fonte maior que a RAM. Antes da saída, o
+  fatiador confere a lista de tensores obrigatórios que o loader cria para a
+  arquitetura. Para `deepseek4`, a cabeça completa só entra na faixa final;
+  uma faixa intermediária é recusada sem criar um GGUF parcial. A estimativa TP
+  soma a replicação de tensores compartilhados por rank e reserva o cabeçalho
+  gerado.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.

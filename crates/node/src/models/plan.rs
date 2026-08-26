@@ -231,6 +231,12 @@ fn plan_split_impl(
         ));
     }
 
+    let ranges = shards
+        .iter()
+        .map(|shard| (shard.start_layer, shard.end_layer))
+        .collect::<Vec<_>>();
+    layout.validate_slice_ranges(&ranges)?;
+
     Ok(SplitPlan {
         model_path: model_path.to_string(),
         base_name,
@@ -397,13 +403,37 @@ pub async fn extract_shard(
     is_last: bool,
     on_progress: impl Fn(f64) + Send + Sync + 'static,
 ) -> Result<SliceOutcome> {
+    let src = std::path::PathBuf::from(source_model);
+    // A manifest may point at a stale file already present in the content
+    // addressed directory. Validate that candidate, or the source when there
+    // is no candidate yet, before reusing or writing it. Otherwise an old
+    // invalid DeepSeek4 slice would bypass the new contract forever.
+    let existing_path = expected_sha256
+        .and_then(|sha| crate::pom::part_path(output_dir, sha).ok())
+        .filter(|path| path.is_file());
+    let preflight_path = existing_path.or_else(|| src.is_file().then_some(src.clone()));
+    if expected_sha256.is_some() {
+        if let Some(preflight_path) = preflight_path {
+            let preflight_src = preflight_path;
+            tokio::task::spawn_blocking(move || {
+                crate::splitter::validate_slice_source(
+                    &preflight_src,
+                    start_layer,
+                    end_layer,
+                    is_last,
+                )
+            })
+            .await
+            .context("preflight do GGUF antes de reaproveitar a fatia")??;
+        }
+    }
+
     // Reuse an existing slice: these files are gigabytes and rebuilding one is
     // minutes of I/O for an identical result.
     if let Some(pronta) = expected_sha256.and_then(|sha| ja_tenho(output_dir, sha)) {
         return Ok(pronta);
     }
 
-    let src = std::path::PathBuf::from(source_model);
     write_then_name(output_dir, move |dst| {
         tokio::task::spawn_blocking(move || {
             crate::splitter::split(
@@ -688,6 +718,13 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         .filter(|range| !range.empty)
         .map(|range| range.bytes)
         .sum();
+
+    let validation_ranges = ranges
+        .iter()
+        .filter(|range| !range.empty)
+        .map(|range| (range.start_layer, range.end_layer))
+        .collect::<Vec<_>>();
+    layout.validate_slice_ranges(&validation_ranges)?;
 
     Ok(SizePlan {
         total_layers,

@@ -461,6 +461,10 @@ impressão digital é só modelo + conjunto de faixas.
   incompleta, o motivo vindo de `split.count`, `split.no` ou da parte
   ausente aparece no painel e o botão de fatiar fica desabilitado; o operador
   precisa colocar o conjunto completo junto e deixar o POM gerar as fatias.
+  A prévia e o início do job repetem o preflight do GGUF para a cabeça exigida
+  pelo loader. Em `deepseek4`, uma faixa intermediária é recusada com a lista
+  de tensores obrigatórios, enquanto a faixa final só é oferecida quando a
+  tabela de tensores contém a cabeça completa.
 - **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.

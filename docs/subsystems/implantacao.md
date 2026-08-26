@@ -122,6 +122,15 @@ destino, ela permanece na lista de camadas disponíveis e não há slider para
 ela. Falha ou ausência de leitura do GGUF é uma recusa nominal, com o motivo
 visível no inspetor.
 
+O preflight também confere o contrato de saída que o loader exige. Para a
+arquitetura `deepseek4`, `llama.cpp` exige `token_embd.weight`,
+`output_norm.weight`, `output.weight`, `output_hc_fn.weight`,
+`output_hc_base.weight` e `output_hc_scale.weight` em uma instância carregável;
+como ele não conhece `pom.start_layer`, `pom.end_layer` nem fatias parciais,
+uma implantação pipeline é recusada antes de gerar uma faixa não final. A
+falha não é reparável alterando somente metadata de uma fatia antiga, e
+acrescentar descritores ao GGUF exigiria reescrever o payload já gravado.
+
 ## 1.2 Tensor parallel: grupo de ranks
 
 O caminho TP prefere a rodada já fatiada em `shard_sets[].tp_parts`. Cada

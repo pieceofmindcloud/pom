@@ -8,7 +8,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -688,7 +688,8 @@ pub struct GgufLayout {
     pub layer_bytes: Vec<u64>,
     /// `token_embd.weight` — every slice carries it (see `split_model.py`).
     pub embedding_bytes: u64,
-    /// `output.weight` + `output_norm.weight` — only the last slice carries them.
+    /// Tensors de saída, incluindo cabeças específicas da arquitetura; só a
+    /// fatia final carrega esse grupo.
     pub head_bytes: u64,
     /// Tensors belonging to none of the above.
     pub other_bytes: u64,
@@ -838,6 +839,89 @@ impl GgufLayout {
             .unwrap_or(0);
         layers + self.embedding_bytes + if is_last { self.head_bytes } else { 0 }
     }
+
+    /// Valida a cabeça arquitetural antes de oferecer ou escrever faixas. O
+    /// layout já contém a tensor table completa, então a checagem é barata e
+    /// não toca nos payloads dos tensores.
+    pub fn validate_slice_ranges(&self, ranges: &[(u32, u32)]) -> Result<()> {
+        let Some(serialized) = &self.serialized else {
+            return Ok(());
+        };
+        let tensor_names: HashSet<&str> = serialized
+            .tensors
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect();
+        let total_layers = self.layer_count();
+        for &(start, end) in ranges {
+            if start > end || end >= total_layers {
+                bail!("intervalo de camadas inválido L{start}-{end}");
+            }
+            let is_last = end.checked_add(1) == Some(total_layers);
+            validate_slice_tensors(&serialized.architecture, &tensor_names, is_last)?;
+        }
+        Ok(())
+    }
+}
+
+/// Tensores que o llama.cpp cria fora de `blk.N.*` para esta arquitetura.
+///
+/// Os nomes vêm de `models/deepseek4.cpp`, onde todos são criados com flags
+/// obrigatórias. Em particular, os tensores HC são uma transformação
+/// arquitetural antes de `output_norm`, não uma projeção de saída opcional.
+pub(crate) fn required_output_tensors(architecture: &str) -> &'static [&'static str] {
+    match architecture {
+        "deepseek4" => &[
+            "token_embd.weight",
+            "output_norm.weight",
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ],
+        _ => &[],
+    }
+}
+
+pub(crate) fn is_output_tensor(architecture: &str, name: &str) -> bool {
+    matches!(
+        name,
+        "output_norm.weight" | "output_norm.bias" | "output.weight"
+    ) || required_output_tensors(architecture)
+        .iter()
+        .any(|required| *required == name && *required != "token_embd.weight")
+}
+
+/// Verifica o contrato exato do loader para uma fatia candidata.
+pub(crate) fn validate_slice_tensors(
+    architecture: &str,
+    tensor_names: &HashSet<&str>,
+    is_last: bool,
+) -> Result<()> {
+    let required = required_output_tensors(architecture);
+    if required.is_empty() {
+        return Ok(());
+    }
+
+    if !is_last {
+        bail!(
+            "fatiamento da arquitetura '{architecture}' recusado para faixa não final: o llama.cpp exige os tensores {} em toda instância e não conhece metadados POM de fatia parcial; use uma fatia única ou suporte arquitetural específico",
+            required.join(", ")
+        );
+    }
+
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|name| !tensor_names.contains(name))
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "fatiamento da arquitetura '{architecture}' recusado: a fatia final exige os tensores não-bloco {}, mas a origem não os contém",
+            missing.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn gcd_u32(mut left: u32, mut right: u32) -> u32 {
@@ -876,13 +960,19 @@ fn layout_block_index(name: &str) -> Option<u32> {
     rest[..dot].parse().ok()
 }
 
-fn layout_wants_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
+fn layout_wants_tensor(
+    name: &str,
+    architecture: &str,
+    start: u32,
+    end: u32,
+    is_last: bool,
+) -> bool {
     if let Some(index) = layout_block_index(name) {
         return (start..=end).contains(&index);
     }
     match name {
         "token_embd.weight" => true,
-        "output_norm.weight" | "output_norm.bias" | "output.weight" => is_last,
+        _ if is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
         _ => false,
     }
@@ -964,7 +1054,7 @@ impl SerializedLayout {
         let mut has_output_norm = false;
 
         for tensor in &self.tensors {
-            if !layout_wants_tensor(&tensor.name, start, end, is_last) {
+            if !layout_wants_tensor(&tensor.name, &self.architecture, start, end, is_last) {
                 continue;
             }
             headers +=
@@ -1099,7 +1189,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
             max_layer = max_layer.max(n as i64);
         } else if tensor.name == "token_embd.weight" {
             layout.embedding_bytes += bytes;
-        } else if tensor.name == "output.weight" || tensor.name == "output_norm.weight" {
+        } else if is_output_tensor(&architecture, &tensor.name) {
             layout.head_bytes += bytes;
         } else {
             layout.other_bytes += bytes;

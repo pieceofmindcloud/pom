@@ -79,7 +79,17 @@ restrito à fronteira de fatiamento ou transferência.
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml
   desconhecido recusa o layout em vez de inventar. Para multipart, a tabela
-  vem de `multipart::GgufSource` e inclui todos os tensores do conjunto.
+  vem de `multipart::GgufSource` e inclui todos os tensores do conjunto. O
+  `head_bytes` inclui os tensores de saída específicos da arquitetura quando
+  conhecidos.
+- `validate_slice_ranges`/`validate_slice_tensors` - conferem o contrato que o
+  loader realmente aplica, pela arquitetura e pela tabela de tensores. Para
+  `deepseek4`, `deepseek4.cpp` exige `token_embd.weight`,
+  `output_norm.weight`, `output.weight`, `output_hc_fn.weight`,
+  `output_hc_base.weight` e `output_hc_scale.weight`; não há fallback para
+  `token_embd` nem flag de tensor opcional. Por isso uma faixa não final é
+  recusada antes de gerar o arquivo, e a final só é aceita quando todos os
+  seis tensores existem.
 - `arch_boundaries`/`snap_end_layer` - modelos híbridos (Mamba + Attention) não
   são pilha de blocos iguais; o corte só acontece em fronteira de tipo, senão o
   bloco renumera para o tipo errado (`missing tensor` ou resposta errada
@@ -99,7 +109,8 @@ restrito à fronteira de fatiamento ou transferência.
   `splitter::split`/`merge` corrigem isso escrevendo o array explícito, derivado
   da presença real do tensor no arquivo fonte (não da fórmula) - ver §4.
 - `slice_bytes(start, end, is_last)` - bytes de uma fatia: camadas + `token_embd`
-  (toda fatia) + output head (só a última). É o que o plano soma.
+  (toda fatia) + output head (só a última). Para `deepseek4`, o cálculo inclui
+  também a cabeça HC na fatia final. É o que o plano soma.
 - `ggml_type_info` + `ggml_type_table_matches_ggml` - a tabela de tipos é
   conferida contra a `GGML_TRUTH` no mesmo arquivo (teste de build quebra se
   divergirem; números escritos lendo o llama.cpp - `ggml.h` para os códigos,
@@ -255,6 +266,25 @@ como `L0-7` e `L0-3`. O mesmo manifesto contém `parts` para pipeline e
 O merge é protegido por lock por `pom_id` e grava o manifesto atomicamente.
 Não há compatibilidade com outro formato de manifesto.
 
+### Contrato de saída e reparo de fatias antigas
+
+O contrato de saída é uma propriedade da arquitetura, não do nome do modelo.
+`gemma3` e `gemma4`, por exemplo, marcam `output.weight` como opcional no
+llama.cpp e fazem fallback explícito para `token_embd.weight`; é por isso que a
+regra existente de cabeça funciona para elas. `deepseek4.cpp` cria todos os
+seis tensores listados acima com flags obrigatórias. `output_hc_fn.weight` não é
+uma cabeça de vocabulário substituível: transforma o estado HC antes da norma,
+enquanto `output.weight` projeta para o vocabulário.
+
+As fatias DeepSeek4 já geradas sem esses tensores não podem ser consertadas só
+com metadata. O loader não consulta `pom.*` para relaxar a exigência. Também
+não existe acréscimo barato ao fim do GGUF: os descritores dos novos tensores
+ficam antes do payload, e ampliar a tabela desloca os dados existentes. Um
+reparo teria de reescrever a fatia inteira e ainda obter os pesos reais da
+cabeça; fabricar uma identidade para `output.weight` não preservaria o modelo.
+O fatiador, portanto, recusa cedo a arquitetura em pipeline e não promete uma
+ferramenta de reparo que produza outro arquivo recusado pelo loader.
+
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):
 
@@ -266,9 +296,13 @@ Não há compatibilidade com outro formato de manifesto.
    produziria um arquivo corrompido. Rank implausível também é recusa.
 3. Seleciona tensores da faixa (`want_tensor`), remapeia `blk.(start+i).*` ->
    `blk.i.*`.
-4. Fatia não-final injeta `output_norm.weight` identidade (o llama.cpp precisa
-   dele para ler a fatia); zera `nextn_predict_layers` fora da última; atualiza
-   `{arch}.block_count`.
+4. Valida o contrato de saída antes de criar o destino. Fatia não-final injeta
+   `output_norm.weight` identidade nas arquiteturas em que essa adaptação é
+   suficiente (o llama.cpp precisa dele para ler a fatia); zera
+   `nextn_predict_layers` fora da última; atualiza `{arch}.block_count`. Para
+   `deepseek4`, a validação recusa qualquer faixa não final, porque o loader
+   exige toda a cabeça HC e `output.weight` sem conhecer fatias parciais. A
+   faixa final copia os cinco tensores de saída mais `token_embd.weight`.
 5. Modelo híbrido (qualquer tensor `blk.N.ssm_conv1d.weight` na tabela): grava
    `{arch}.attention.recurrent_layers` explícito, sizado e indexado para a
    fatia, a partir de quais camadas **absolutas** realmente têm o tensor -

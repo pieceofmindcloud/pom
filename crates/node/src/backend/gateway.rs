@@ -22,7 +22,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Tokens `/api/generate` will produce before stopping on its own.
-const DEFAULT_MAX_TOKENS: u32 = 512;
+pub const DEFAULT_MAX_TOKENS: u32 = 512;
 /// A peer that cannot answer its inference health endpoint is not eligible for
 /// a new pipeline. UDP discovery is deliberately lightweight and may still
 /// hear an isolated or old node, so it is not sufficient proof of a usable hop.
@@ -460,6 +460,95 @@ pub struct GenerateRequest {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub stop: Option<StopInput>,
+}
+
+/// The output budget visible to a protocol adapter after applying the selected
+/// deployment and the remaining context window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct OutputTokenLimit {
+    #[serde(rename = "requested_max_tokens")]
+    pub requested: u32,
+    #[serde(rename = "effective_max_tokens")]
+    pub effective: u32,
+    #[serde(rename = "deployment_max_tokens")]
+    pub deployment: Option<u32>,
+    #[serde(rename = "context_available_tokens")]
+    pub context_available: Option<u32>,
+}
+
+impl OutputTokenLimit {
+    pub fn was_clamped(self) -> bool {
+        self.effective < self.requested
+    }
+
+    pub fn rejection_reason(self) -> Option<String> {
+        if self.effective > 0 {
+            return None;
+        }
+
+        if self.context_available == Some(0) {
+            Some(
+                "o prompt ocupa todo o contexto disponível; não há espaço para tokens de saída"
+                    .into(),
+            )
+        } else if self.deployment == Some(0) {
+            Some("max_new_tokens da implantação precisa ser maior que zero".into())
+        } else {
+            Some("não há tokens de saída disponíveis para esta requisição".into())
+        }
+    }
+}
+
+/// Resolve one request's output budget. The deployment's `max_new_tokens` is
+/// the operator-controlled ceiling; when a runtime context is available, the
+/// prompt consumes part of it and the remainder is the only technical ceiling.
+/// No protocol adapter should duplicate this calculation.
+pub fn output_token_limit(
+    requested: u32,
+    deployment: Option<u32>,
+    context_length: Option<u32>,
+    prompt_tokens: u32,
+) -> OutputTokenLimit {
+    let requested = requested.max(1);
+    let context_available = context_length.map(|context| context.saturating_sub(prompt_tokens));
+    let effective = [Some(requested), deployment, context_available]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(0);
+
+    OutputTokenLimit {
+        requested,
+        effective,
+        deployment,
+        context_available,
+    }
+}
+
+impl GatewayState {
+    /// Resolve an adapter request against the live deployment configuration.
+    pub async fn request_output_limit(&self, requested: u32, prompt: &str) -> OutputTokenLimit {
+        let runtime = self.runtime.config().await;
+        output_token_limit(
+            requested,
+            runtime.as_ref().map(|cfg| cfg.max_new_tokens),
+            runtime.as_ref().map(|cfg| cfg.n_ctx),
+            estimate_tokens(prompt),
+        )
+    }
+}
+
+pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
+    if limit.was_clamped() {
+        info!(
+            route,
+            requested_max_tokens = limit.requested,
+            effective_max_tokens = limit.effective,
+            deployment_max_tokens = ?limit.deployment,
+            context_available_tokens = ?limit.context_available,
+            "limite de saída reduzido pela implantação ou pelo contexto"
+        );
+    }
 }
 
 fn resolve_request_max_tokens(
@@ -2432,6 +2521,44 @@ mod tests {
 mod budget_tests {
     use super::*;
     use crate::runtime::NodeConfig;
+
+    #[test]
+    fn output_limit_uses_the_deployment_ceiling_and_remaining_context() {
+        let limit = output_token_limit(50_000, Some(32_768), Some(100_000), 2_000);
+        assert_eq!(limit.requested, 50_000);
+        assert_eq!(limit.deployment, Some(32_768));
+        assert_eq!(limit.context_available, Some(98_000));
+        assert_eq!(limit.effective, 32_768);
+        assert!(limit.was_clamped());
+    }
+
+    #[test]
+    fn output_limit_allows_the_context_remainder_above_the_old_four_kib_ceiling() {
+        let limit = output_token_limit(50_000, Some(32_768), Some(100_000), 1_000);
+        assert_eq!(limit.effective, 32_768);
+
+        let context_limited = output_token_limit(50_000, Some(100_000), Some(40_000), 1_000);
+        assert_eq!(context_limited.effective, 39_000);
+        assert!(context_limited.was_clamped());
+    }
+
+    #[test]
+    fn output_limit_preserves_the_requested_value_when_no_deployment_is_loaded() {
+        let limit = output_token_limit(8_192, None, None, 0);
+        assert_eq!(limit.effective, 8_192);
+        assert!(!limit.was_clamped());
+    }
+
+    #[test]
+    fn output_limit_reports_no_capacity_when_the_prompt_fills_the_context() {
+        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000);
+        assert_eq!(limit.effective, 0);
+        assert!(limit.was_clamped());
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("todo o contexto"));
+    }
 
     fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
         NodeConfig {

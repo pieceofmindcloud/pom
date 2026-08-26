@@ -82,18 +82,28 @@ prompt do seguinte, sem o que o cache de prefixo nunca acertaria na transição
 1→2. Texto cru, sem rótulo, é o que `/v1/completions` e `POST /api/generate`
 entregam. `usage.prompt_tokens_details.cached_tokens` informa quantos tokens de
 prompt o pipeline não reprocessou; é medida do executado, não da escolha do
-cache (ver `inferencia.md`, seção 3.1). `DEFAULT_MAX_TOKENS`
-512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Antes de abrir o
-SSE em `/v1/chat/completions`, o adaptador faz a mesma guarda de orçamento de
-prompt do gateway e responde
-HTTP 413 quando o texto não cabe em `n_ctx - max_new_tokens`; isso evita que
-clientes que enviam erro como evento SSE, como OpenCode, fiquem presos numa
-resposta 200 sem conteúdo. Todas as respostas válidas levam a extensão `x_pom`
-(fora do schema) com a prova de execução distribuída. O campo OpenAI `stop`
+cache (ver `inferencia.md`, seção 3.1). `DEFAULT_MAX_TOKENS` 512 é apenas o
+padrão quando o cliente não envia orçamento. Não há teto artificial no
+adaptador: o orçamento efetivo é o menor entre o pedido do cliente,
+`NodeConfig.max_new_tokens` da implantação selecionada e o espaço restante de
+`n_ctx` depois do prompt. Se esse valor for reduzido, o gateway registra a
+redução e a devolve em `x_pom.output_limits`; se o contexto não deixar nenhum
+token, responde HTTP 413 antes de abrir o SSE. Assim, uma saída que esgota o
+orçamento efetivo recebe `finish_reason: "length"`, inclusive se contiver uma
+chamada de ferramenta já reconhecida. Todas as respostas válidas levam a
+extensão `x_pom` (fora do schema) com a prova de execução distribuída. O campo OpenAI `stop`
 (string ou lista) passa pelo matcher incremental do gateway: um sufixo que
 ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é
 enviada ao cliente. CORS `*` para harnesses
 de navegador.
+
+`GET /v1/models` e `GET /v1/models/{id}` anunciam os limites da implantação
+carregada: `context_length` é `n_ctx` e `top_provider.max_completion_tokens`
+é o máximo efetivo sem prompt, no formato convencional usado por gateways
+compatíveis. Esses campos vêm do
+`NodeConfig` em execução, e não de uma constante do adaptador. Quando não há
+configuração de runtime carregada, os limites aparecem como `null` porque o
+gateway não deve inventar capacidade.
 
 ### Anthropic (`/v1/messages`)
 
@@ -103,7 +113,8 @@ separados), `content_blocks` para `tool_use`/`tool_result`, `stop_reason`
 evento Anthropic. Também rotula todo turno, pelo mesmo motivo do OpenAI, e
 publica o reuso honrado em `usage.cache_read_input_tokens`. `stop_sequences` usa o mesmo matcher incremental e
 `stop_sequence` retorna a string que encerrou a saída. `tool_choice` continua
-parseado e ignorado. `x_pom` vai na resposta não-streaming.
+parseado e ignorado. `x_pom.output_limits` informa o orçamento pedido e o
+efetivo; uma saída cortada por esse orçamento usa `stop_reason: "max_tokens"`.
 
 ### `/admin/*`
 

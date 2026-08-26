@@ -12,7 +12,10 @@
 //! `POST /v1/chat/completions` (with `stream: true` SSE), `POST /v1/completions`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent, GenerationInput, StopInput};
+use crate::gateway::{
+    log_output_limit, GatewayState, GenEvent, GenerationInput, OutputTokenLimit, StopInput,
+    DEFAULT_MAX_TOKENS,
+};
 use crate::tool_call::{
     parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
 };
@@ -30,12 +33,6 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tracing::info;
-
-/// Tokens generated when the client does not ask for a limit.
-const DEFAULT_MAX_TOKENS: u32 = 512;
-/// Ceiling regardless of what the client asks for, so one request cannot pin
-/// the cluster indefinitely.
-const HARD_MAX_TOKENS: u32 = 4096;
 
 pub fn routes() -> Router<GatewayState> {
     Router::new()
@@ -238,7 +235,7 @@ impl ChatRequest {
         self.max_tokens
             .or(self.max_completion_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS)
-            .clamp(1, HARD_MAX_TOKENS)
+            .max(1)
     }
 }
 
@@ -349,6 +346,44 @@ struct ModelObject {
     object: &'static str,
     created: i64,
     owned_by: &'static str,
+    /// OpenRouter-compatible model capability metadata. `None` means this
+    /// gateway has no loaded deployment from which to read the limit.
+    context_length: Option<u32>,
+    top_provider: ModelProviderLimits,
+}
+
+#[derive(Debug, Serialize)]
+struct ModelProviderLimits {
+    context_length: Option<u32>,
+    max_completion_tokens: Option<u32>,
+}
+
+async fn model_limits(state: &GatewayState) -> (Option<u32>, Option<u32>) {
+    state
+        .runtime
+        .config()
+        .await
+        .map(|cfg| (Some(cfg.n_ctx), Some(cfg.n_ctx.min(cfg.max_new_tokens))))
+        .unwrap_or((None, None))
+}
+
+fn model_object(
+    id: String,
+    created: i64,
+    context_length: Option<u32>,
+    max_completion_tokens: Option<u32>,
+) -> ModelObject {
+    ModelObject {
+        id,
+        object: "model",
+        created,
+        owned_by: "pom",
+        context_length,
+        top_provider: ModelProviderLimits {
+            context_length,
+            max_completion_tokens,
+        },
+    }
 }
 
 /// Models this cluster can actually serve: whatever labels the peers advertise.
@@ -381,15 +416,11 @@ pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
 
 async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> impl IntoResponse {
     let created = chrono::Utc::now().timestamp();
+    let (context_length, max_completion_tokens) = model_limits(&state).await;
     let data: Vec<ModelObject> = model_ids(&state)
         .await
         .into_iter()
-        .map(|id| ModelObject {
-            id,
-            object: "model",
-            created,
-            owned_by: "pom",
-        })
+        .map(|id| model_object(id, created, context_length, max_completion_tokens))
         .collect();
 
     (
@@ -404,14 +435,15 @@ async fn get_model(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     if model_ids(&state).await.contains(&id) {
+        let (context_length, max_completion_tokens) = model_limits(&state).await;
         (
             cors_headers(),
-            Json(json!({
-                "id": id,
-                "object": "model",
-                "created": chrono::Utc::now().timestamp(),
-                "owned_by": "pom",
-            })),
+            Json(model_object(
+                id,
+                chrono::Utc::now().timestamp(),
+                context_length,
+                max_completion_tokens,
+            )),
         )
             .into_response()
     } else {
@@ -441,7 +473,7 @@ async fn chat_completions(
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
         _ => state.active_model().await,
     };
-    let max_tokens = req.max_tokens();
+    let requested_max_tokens = req.max_tokens();
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let tools: Vec<ToolDef> = req
         .tools
@@ -455,20 +487,23 @@ async fn chat_completions(
     let prompt_tokens = approx_tokens(&prompt);
     let caller = auth.into_caller();
 
-    if let Some(cfg) = state.runtime.config().await {
-        if let Some(error) = crate::gateway::prompt_budget_error(&cfg, &prompt) {
-            crate::gateway::record_rejected(
-                &state,
-                "/v1/chat/completions",
-                caller,
-                model.clone(),
-                prompt,
-                request_details,
-                error.clone(),
-            );
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
-        }
+    let output_limit = state
+        .request_output_limit(requested_max_tokens, &prompt)
+        .await;
+    log_output_limit("/v1/chat/completions", output_limit);
+    if let Some(error) = output_limit.rejection_reason() {
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/chat/completions",
+            caller,
+            model.clone(),
+            prompt,
+            request_details,
+            error.clone(),
+        );
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
     }
+    let max_tokens = output_limit.effective;
 
     info!(
         "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -495,6 +530,7 @@ async fn chat_completions(
             stops,
             Some(cache_key),
             request_details.clone(),
+            output_limit,
         )
     } else {
         blocking_response(
@@ -511,6 +547,7 @@ async fn chat_completions(
             stops,
             Some(cache_key),
             request_details,
+            output_limit,
         )
         .await
     }
@@ -525,13 +562,18 @@ async fn completions(
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
         _ => state.active_model().await,
     };
-    let max_tokens = req
-        .max_tokens
-        .unwrap_or(DEFAULT_MAX_TOKENS)
-        .clamp(1, HARD_MAX_TOKENS);
+    let requested_max_tokens = req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).max(1);
     let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let prompt_tokens = approx_tokens(&req.prompt);
+    let output_limit = state
+        .request_output_limit(requested_max_tokens, &req.prompt)
+        .await;
+    log_output_limit("/v1/completions", output_limit);
+    if let Some(error) = output_limit.rejection_reason() {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
+    }
+    let max_tokens = output_limit.effective;
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
     let created = chrono::Utc::now().timestamp();
 
@@ -550,6 +592,7 @@ async fn completions(
             // Completion crua não tem conversa: o prefixo é o próprio texto.
             None,
             request_details.clone(),
+            output_limit,
         )
     } else {
         blocking_response(
@@ -566,6 +609,7 @@ async fn completions(
             stops,
             None,
             request_details,
+            output_limit,
         )
         .await
     }
@@ -626,6 +670,7 @@ async fn blocking_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     request_details: serde_json::Value,
+    output_limit: OutputTokenLimit,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
         route,
@@ -695,6 +740,7 @@ async fn blocking_response(
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
+                        "output_limits": output_limit,
                     },
                 })),
             )
@@ -709,12 +755,12 @@ fn finish_reason(
     max_tokens: u32,
     saw_tool_call: bool,
 ) -> &'static str {
-    if saw_tool_call {
+    if summary.tokens_generated >= max_tokens {
+        "length"
+    } else if saw_tool_call {
         "tool_calls"
     } else if summary.finish_reason.as_deref() == Some("stop") {
         "stop"
-    } else if summary.tokens_generated >= max_tokens {
-        "length"
     } else {
         "stop"
     }
@@ -770,6 +816,7 @@ fn stream_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     request_details: serde_json::Value,
+    output_limit: OutputTokenLimit,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -788,7 +835,7 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, created, model, mode, max_tokens);
+    let stream = sse_stream(rx, id, created, model, mode, max_tokens, output_limit);
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -860,6 +907,7 @@ fn sse_stream(
     model: String,
     mode: Mode,
     max_tokens: u32,
+    output_limit: OutputTokenLimit,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     enum Phase {
         Opening,
@@ -875,6 +923,7 @@ fn sse_stream(
         model: String,
         mode: Mode,
         max_tokens: u32,
+        output_limit: OutputTokenLimit,
         queue: VecDeque<Event>,
         scanner: TagScanner,
         tool_call_index: u32,
@@ -889,6 +938,7 @@ fn sse_stream(
         model,
         mode,
         max_tokens,
+        output_limit,
         queue: VecDeque::new(),
         scanner: TagScanner::new(),
         tool_call_index: 0,
@@ -914,6 +964,7 @@ fn sse_stream(
                             json!({ "role": "assistant", "content": "" }),
                             None,
                             None,
+                            None,
                         );
                         s.queue.push_back(Event::default().data(chunk));
                     }
@@ -931,6 +982,7 @@ fn sse_stream(
                                     json!(text),
                                     None,
                                     None,
+                                    None,
                                 );
                                 s.queue.push_back(Event::default().data(chunk));
                             }
@@ -945,7 +997,7 @@ fn sse_stream(
                                 );
                                 for delta in deltas {
                                     let chunk = chunk_json(
-                                        &s.id, s.created, &s.model, s.mode, delta, None, None,
+                                        &s.id, s.created, &s.model, s.mode, delta, None, None, None,
                                     );
                                     s.queue.push_back(Event::default().data(chunk));
                                 }
@@ -966,7 +1018,7 @@ fn sse_stream(
                             );
                             for delta in deltas {
                                 let chunk = chunk_json(
-                                    &s.id, s.created, &s.model, s.mode, delta, None, None,
+                                    &s.id, s.created, &s.model, s.mode, delta, None, None, None,
                                 );
                                 s.queue.push_back(Event::default().data(chunk));
                             }
@@ -984,6 +1036,7 @@ fn sse_stream(
                             delta,
                             Some(reason),
                             Some(&summary),
+                            Some(&s.output_limit),
                         );
                         s.queue.push_back(Event::default().data(chunk));
                         s.queue.push_back(Event::default().data("[DONE]"));
@@ -1019,6 +1072,7 @@ fn chunk_json(
     delta: serde_json::Value,
     finish: Option<&str>,
     summary: Option<&crate::gateway::GenSummary>,
+    output_limit: Option<&OutputTokenLimit>,
 ) -> String {
     let choice = match mode {
         Mode::Chat => json!({ "index": 0, "delta": delta, "finish_reason": finish }),
@@ -1041,6 +1095,7 @@ fn chunk_json(
             "finish_reason": summary.finish_reason,
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
+            "output_limits": output_limit,
         });
     }
     payload.to_string()
@@ -1717,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_is_clamped_and_defaulted() {
+    fn max_tokens_is_defaulted_without_an_artificial_upper_bound() {
         let mk = |json: &str| -> ChatRequest { serde_json::from_str(json).unwrap() };
         assert_eq!(mk(r#"{"messages":[]}"#).max_tokens(), DEFAULT_MAX_TOKENS);
         assert_eq!(mk(r#"{"messages":[],"max_tokens":10}"#).max_tokens(), 10);
@@ -1731,8 +1786,30 @@ mod tests {
         );
         assert_eq!(
             mk(r#"{"messages":[],"max_tokens":999999}"#).max_tokens(),
-            HARD_MAX_TOKENS
+            999999
         );
+    }
+
+    #[tokio::test]
+    async fn model_metadata_comes_from_the_loaded_deployment() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let mut cfg = crate::gateway::testkit::spec_config();
+        cfg.n_ctx = 100_000;
+        cfg.max_new_tokens = 32_768;
+        state.runtime.seed_config_for_test(cfg).await;
+
+        let (context_length, max_completion_tokens) = model_limits(&state).await;
+        let value = serde_json::to_value(model_object(
+            "ornith".into(),
+            0,
+            context_length,
+            max_completion_tokens,
+        ))
+        .unwrap();
+
+        assert_eq!(value["context_length"], 100_000);
+        assert_eq!(value["top_provider"]["context_length"], 100_000);
+        assert_eq!(value["top_provider"]["max_completion_tokens"], 32_768);
     }
 
     #[test]
@@ -1747,9 +1824,19 @@ mod tests {
             stop_sequence: None,
             trace: None,
         };
-        assert_eq!(finish_reason(&summary(5), 100, false), "stop");
-        assert_eq!(finish_reason(&summary(100), 100, false), "length");
+        // Complete tool call within the budget: the model ended its turn by
+        // asking for the tool, so the protocol must preserve tool_calls.
         assert_eq!(finish_reason(&summary(5), 100, true), "tool_calls");
+        // A tool call being present does not override an exhausted budget. This
+        // covers both a complete call followed by more output and the streaming
+        // path's final scanner state.
+        assert_eq!(finish_reason(&summary(100), 100, true), "length");
+        // Plain text cut by the budget is length as well.
+        assert_eq!(finish_reason(&summary(100), 100, false), "length");
+        // Plain text that stopped before the budget is a normal stop.
+        let mut stopped = summary(5);
+        stopped.finish_reason = Some("stop".into());
+        assert_eq!(finish_reason(&stopped, 100, false), "stop");
     }
 
     // ── chat_message_json ────────────────────────────────────────────────────
@@ -1878,6 +1965,31 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_tool_call_stays_text_and_does_not_mark_a_call_in_openai_stream() {
+        let mut scanner = TagScanner::new();
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+
+        apply_scan_events_openai(
+            scanner.feed("<tool_call><function=write><parameter=content>\n<html>"),
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        apply_scan_events_openai(
+            scanner.finish(),
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+
+        assert!(!saw_tool_call);
+        assert_eq!(out.len(), 1);
+        assert!(out[0]["content"].as_str().unwrap().contains("<tool_call>"));
+    }
+
+    #[test]
     fn final_stream_chunk_carries_generation_summary() {
         let summary = crate::gateway::GenSummary {
             source: "pipeline:a→b".into(),
@@ -1900,6 +2012,7 @@ mod tests {
             json!({}),
             Some("stop"),
             Some(&summary),
+            None,
         ))
         .expect("JSON válido");
 

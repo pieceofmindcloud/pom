@@ -33,7 +33,10 @@
 //! `POST /v1/messages/count_tokens`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent, GenSummary, GenerationInput};
+use crate::gateway::{
+    log_output_limit, GatewayState, GenEvent, GenSummary, GenerationInput, OutputTokenLimit,
+    DEFAULT_MAX_TOKENS,
+};
 use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
 use crate::tool_call::{
     parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
@@ -53,13 +56,9 @@ use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tracing::info;
 
-/// Tokens generated when the client does not ask for a limit — Anthropic's
+/// Tokens generated when the client does not ask for a limit - Anthropic's
 /// real API makes `max_tokens` mandatory, but a lenient default costs
 /// nothing and keeps a hand-rolled test request from 400ing.
-const DEFAULT_MAX_TOKENS: u32 = 512;
-/// Ceiling regardless of what the client asks for, matching `openai.rs`.
-const HARD_MAX_TOKENS: u32 = 4096;
-
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/v1/messages", post(messages))
@@ -212,8 +211,8 @@ fn default_max_tokens() -> u32 {
 }
 
 impl MessagesRequest {
-    fn clamped_max_tokens(&self) -> u32 {
-        self.max_tokens.clamp(1, HARD_MAX_TOKENS)
+    fn requested_max_tokens(&self) -> u32 {
+        self.max_tokens.max(1)
     }
 }
 
@@ -362,9 +361,21 @@ async fn messages(
     let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
     // Ver `conversation_cache_key`: a chave do cache vem das mensagens.
     let cache_key = conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
-    let max_tokens = req.clamped_max_tokens();
+    let requested_max_tokens = req.requested_max_tokens();
     let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);
+    let output_limit = state
+        .request_output_limit(requested_max_tokens, &prompt)
+        .await;
+    log_output_limit("/v1/messages", output_limit);
+    if let Some(error) = output_limit.rejection_reason() {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "invalid_request_error",
+            error,
+        );
+    }
+    let max_tokens = output_limit.effective;
 
     info!(
         "🤖 /v1/messages model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -388,6 +399,7 @@ async fn messages(
             stops,
             Some(cache_key),
             request_details.clone(),
+            output_limit,
         )
     } else {
         blocking_response(
@@ -401,6 +413,7 @@ async fn messages(
             stops,
             Some(cache_key),
             request_details,
+            output_limit,
         )
         .await
     }
@@ -416,12 +429,12 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
 }
 
 fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
-    if saw_tool_call {
+    if summary.tokens_generated >= max_tokens {
+        "max_tokens"
+    } else if saw_tool_call {
         "tool_use"
     } else if summary.finish_reason.as_deref() == Some("stop") {
         "stop_sequence"
-    } else if summary.tokens_generated >= max_tokens {
-        "max_tokens"
     } else {
         "end_turn"
     }
@@ -438,6 +451,7 @@ async fn blocking_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     request_details: serde_json::Value,
+    output_limit: OutputTokenLimit,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
         "/v1/messages",
@@ -491,6 +505,7 @@ async fn blocking_response(
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
+                        "output_limits": output_limit,
                     },
                 })),
             )
@@ -511,6 +526,7 @@ fn stream_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     request_details: serde_json::Value,
+    output_limit: OutputTokenLimit,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -529,7 +545,7 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, model, max_tokens, input_tokens);
+    let stream = sse_stream(rx, id, model, max_tokens, input_tokens, output_limit);
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -644,6 +660,7 @@ fn sse_stream(
     model: String,
     max_tokens: u32,
     input_tokens: u32,
+    output_limit: OutputTokenLimit,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     enum Phase {
         Opening,
@@ -658,6 +675,7 @@ fn sse_stream(
         model: String,
         max_tokens: u32,
         input_tokens: u32,
+        output_limit: OutputTokenLimit,
         /// Holds events a single generator event expanded into (e.g. `Done`
         /// becomes several: content_block_stop, message_delta, message_stop).
         queue: VecDeque<Event>,
@@ -679,6 +697,7 @@ fn sse_stream(
         model,
         max_tokens,
         input_tokens,
+        output_limit,
         queue: VecDeque::new(),
         scanner: TagScanner::new(),
         text_open: None,
@@ -770,6 +789,7 @@ fn sse_stream(
                                     "stop_sequence": summary.stop_sequence,
                                 },
                                 "usage": { "output_tokens": summary.tokens_generated },
+                                "x_pom": { "output_limits": s.output_limit },
                             }),
                         ));
                         s.queue
@@ -988,15 +1008,15 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_is_clamped() {
+    fn max_tokens_has_no_artificial_upper_bound() {
         let mk = |json: &str| -> MessagesRequest { serde_json::from_str(json).unwrap() };
         assert_eq!(
-            mk(r#"{"messages":[],"max_tokens":10}"#).clamped_max_tokens(),
+            mk(r#"{"messages":[],"max_tokens":10}"#).requested_max_tokens(),
             10
         );
         assert_eq!(
-            mk(r#"{"messages":[],"max_tokens":999999}"#).clamped_max_tokens(),
-            HARD_MAX_TOKENS
+            mk(r#"{"messages":[],"max_tokens":999999}"#).requested_max_tokens(),
+            999999
         );
         assert_eq!(mk(r#"{"messages":[]}"#).max_tokens, DEFAULT_MAX_TOKENS);
     }
@@ -1013,9 +1033,17 @@ mod tests {
             stop_sequence: None,
             trace: None,
         };
-        assert_eq!(stop_reason(&summary(5), 100, false), "end_turn");
-        assert_eq!(stop_reason(&summary(100), 100, false), "max_tokens");
+        // Complete tool call within the budget remains tool_use.
         assert_eq!(stop_reason(&summary(5), 100, true), "tool_use");
+        // Exhausting the budget wins over a parsed call in both blocking and
+        // streaming responses.
+        assert_eq!(stop_reason(&summary(100), 100, true), "max_tokens");
+        // Plain text cut by the budget reports max_tokens.
+        assert_eq!(stop_reason(&summary(100), 100, false), "max_tokens");
+        // Plain text ending before the budget uses the normal stop sequence.
+        let mut stopped = summary(5);
+        stopped.finish_reason = Some("stop".into());
+        assert_eq!(stop_reason(&stopped, 100, false), "stop_sequence");
     }
 
     // ── content_blocks ───────────────────────────────────────────────────────
@@ -1141,5 +1169,36 @@ mod tests {
         assert_eq!(out[0].0, "content_block_delta");
         assert_eq!(out[0].1["index"], 0); // same block, no index bump
         assert_eq!(out[0].1["delta"]["text"], "<tool_call>bad</tool_call>");
+    }
+
+    #[test]
+    fn incomplete_tool_call_stays_text_and_does_not_mark_a_call_in_messages_stream() {
+        let mut scanner = TagScanner::new();
+        let mut text_open = Some(0u32);
+        let mut next_index = 1u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+
+        apply_scan_events(
+            scanner.feed("<tool_call><function=write><parameter=content>\n<html>"),
+            &mut text_open,
+            &mut next_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        apply_scan_events(
+            scanner.finish(),
+            &mut text_open,
+            &mut next_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+
+        assert!(!saw_tool_call);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].1["delta"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<tool_call>"));
     }
 }

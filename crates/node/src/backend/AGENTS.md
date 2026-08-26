@@ -89,11 +89,18 @@ behind an auth extractor.
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
-- `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path;
-  streaming chat requests that exceed the configured prompt budget are rejected with
-  HTTP 413 before the SSE response starts, so clients such as OpenCode do not
-  hang on an error event inside an otherwise successful stream.
-- `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
+- `openai.rs` - OpenAI-compatible `/v1/*` on top of the generation path;
+  `max_tokens` uses the selected deployment's `NodeConfig.max_new_tokens` and
+  the remaining `n_ctx` after the prompt, with `DEFAULT_MAX_TOKENS=512` only as
+  the absent-request fallback. A reduction is logged and returned in the
+  `x_pom.output_limits` extension. Streaming and blocking paths use the same
+  finish-reason ordering, so an exhausted budget is `length` even when a tool
+  call was parsed. `/v1/models` exposes `context_length` and the
+  OpenRouter-compatible `top_provider.max_completion_tokens` from the live
+  deployment.
+- `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
+  and finish-reason rules, with `x_pom.output_limits` on blocking responses and
+  the final streaming `message_delta`.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` (185) - operator control plane: nodes, block/unblock, keys.
@@ -175,7 +182,10 @@ behind an auth extractor.
 - `gateway.rs` - `/api/generate` aceita `max_tokens` opcional (padrão 512),
   valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
   prefill no orçamento total, sem o overshoot histórico de 513 tokens;
-- `openai.rs` - `DEFAULT_MAX_TOKENS=512`, `HARD_MAX_TOKENS=4096`;
+- `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
+  client omits its output budget; there is no backend hard cap. The effective
+  request budget is the minimum of the client request, deployment
+  `max_new_tokens` and the remaining `n_ctx` after the prompt;
   `render_prompt` flattens the conversation into one user message, labelling
   **every** turn including the first, so one turn's prompt is an exact prefix of
   the next one's - the property the prefix cache rests on; raw, unlabelled text

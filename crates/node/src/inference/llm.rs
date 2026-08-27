@@ -25,7 +25,10 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
 use std::ops::Range;
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use std::time::Instant;
 use tracing::warn;
 
@@ -57,10 +60,78 @@ struct MoeCallbackTelemetry {
     executors: Vec<crate::moe::runtime::MoeExecutorKind>,
 }
 
+const MOE_ROUTE_DIAGNOSTICS_ENV: &str = "POM_MOE_ROUTE_DIAGNOSTICS";
+
+#[derive(Debug, PartialEq)]
+struct MoeRouteDiagnosticSample {
+    slot: usize,
+    source_offset_elements: usize,
+    expert: i32,
+    weight: f32,
+}
+
+#[derive(Debug, PartialEq)]
+struct MoeRouteDiagnostic {
+    llama_declared_route_elements: usize,
+    pom_expected_route_elements: usize,
+    selected_read_elements: usize,
+    weights_read_elements: usize,
+    raw_nan_count: usize,
+    raw_non_finite_count: usize,
+    token_zero_samples: Vec<MoeRouteDiagnosticSample>,
+}
+
+fn collect_moe_route_diagnostic(
+    selected_experts: &[i32],
+    weights: &[f32],
+    n_tokens: usize,
+    expert_count_used: usize,
+) -> MoeRouteDiagnostic {
+    let declared_route_elements = n_tokens
+        .checked_mul(expert_count_used)
+        .unwrap_or(usize::MAX);
+    let token_zero_samples = if n_tokens == 0 {
+        Vec::new()
+    } else {
+        (0..expert_count_used.min(4))
+            .filter_map(|slot| {
+                let source_offset_elements = slot.checked_mul(n_tokens)?;
+                Some(MoeRouteDiagnosticSample {
+                    slot,
+                    source_offset_elements,
+                    expert: *selected_experts.get(source_offset_elements)?,
+                    weight: *weights.get(source_offset_elements)?,
+                })
+            })
+            .collect()
+    };
+
+    MoeRouteDiagnostic {
+        llama_declared_route_elements: declared_route_elements,
+        pom_expected_route_elements: declared_route_elements,
+        selected_read_elements: selected_experts.len(),
+        weights_read_elements: weights.len(),
+        raw_nan_count: weights.iter().filter(|weight| weight.is_nan()).count(),
+        raw_non_finite_count: weights.iter().filter(|weight| !weight.is_finite()).count(),
+        token_zero_samples,
+    }
+}
+
+fn moe_route_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var(MOE_ROUTE_DIAGNOSTICS_ENV).ok().as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        )
+    })
+}
+
 struct MoeCallbackState {
     runtime: Arc<crate::moe::runtime::MoeRuntime>,
     telemetry: Mutex<MoeCallbackTelemetry>,
     error: Mutex<Option<String>>,
+    route_diagnostic_emitted: AtomicBool,
 }
 
 impl MoeCallbackState {
@@ -73,6 +144,14 @@ impl MoeCallbackState {
             .telemetry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = MoeCallbackTelemetry::default();
+        self.route_diagnostic_emitted
+            .store(false, Ordering::Relaxed);
+    }
+
+    fn claim_route_diagnostic(&self, layer: i32) -> bool {
+        layer == 1
+            && moe_route_diagnostics_enabled()
+            && !self.route_diagnostic_emitted.swap(true, Ordering::Relaxed)
     }
 
     fn fail(&self, message: String) {
@@ -153,6 +232,22 @@ unsafe extern "C" fn moe_ffn_callback(
             .to_string_lossy()
             .into_owned()
     };
+    let emit_route_diagnostic = state.claim_route_diagnostic(descriptor.layer);
+    if emit_route_diagnostic {
+        log_moe_route_input_diagnostic(
+            &architecture,
+            descriptor,
+            hidden,
+            selected_experts,
+            weights,
+            n_tokens,
+            hidden_width,
+            expected,
+            route_len,
+            used,
+            output,
+        );
+    }
     let (selected_experts, weights) = match normalize_moe_route(
         &architecture,
         descriptor.layer,
@@ -167,6 +262,9 @@ unsafe extern "C" fn moe_ffn_callback(
             return false;
         }
     };
+    if emit_route_diagnostic {
+        log_moe_route_post_diagnostic(descriptor.layer, &selected_experts, &weights, used);
+    }
     if descriptor.gate_up_bias.present != 0
         || descriptor.gate_bias.present != 0
         || descriptor.up_bias.present != 0
@@ -301,6 +399,119 @@ unsafe extern "C" fn moe_ffn_callback(
     true
 }
 
+fn diagnostic_tensor_name(tensor: &sys::llama_moe_tensor_descriptor) -> String {
+    let end = tensor
+        .name
+        .iter()
+        .position(|&character| character == 0)
+        .unwrap_or(tensor.name.len());
+    let bytes = tensor.name[..end]
+        .iter()
+        .map(|&character| character as u8)
+        .collect::<Vec<_>>();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn log_moe_route_input_diagnostic(
+    architecture: &str,
+    descriptor: &sys::llama_moe_ffn_descriptor,
+    hidden: &[f32],
+    selected_experts: &[i32],
+    weights: &[f32],
+    n_tokens: usize,
+    hidden_width: usize,
+    hidden_elements: usize,
+    route_elements: usize,
+    expert_count_used: usize,
+    output: *mut f32,
+) {
+    let diagnostic =
+        collect_moe_route_diagnostic(selected_experts, weights, n_tokens, expert_count_used);
+    let selected_bytes = route_elements.saturating_mul(std::mem::size_of::<i32>());
+    let weights_bytes = route_elements.saturating_mul(std::mem::size_of::<f32>());
+    let hidden_bytes = hidden_elements.saturating_mul(std::mem::size_of::<f32>());
+    let output_bytes = hidden_bytes;
+
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS input architecture={architecture} layer={} token=0 selected_ptr={:p} selected_bytes={selected_bytes} weights_ptr={:p} weights_bytes={weights_bytes} hidden_ptr={:p} hidden_bytes={hidden_bytes} output_ptr={:p} output_bytes={output_bytes} hidden_width={hidden_width} n_tokens={n_tokens} llama_declared_expert_count={} llama_declared_expert_count_used={} llama_declared_route_elements={} pom_expected_route_elements={} selected_read_elements={} weights_read_elements={}",
+        descriptor.layer,
+        selected_experts.as_ptr(),
+        weights.as_ptr(),
+        hidden.as_ptr(),
+        output,
+        descriptor.expert_count,
+        descriptor.expert_count_used,
+        diagnostic.llama_declared_route_elements,
+        diagnostic.pom_expected_route_elements,
+        diagnostic.selected_read_elements,
+        diagnostic.weights_read_elements,
+    );
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS raw route_dtype_assumed=i32 selected_dtype_assumed=i32 weight_dtype_assumed=f32 hidden_dtype_assumed=f32 output_dtype_assumed=f32 raw_has_nan={} raw_nan_count={} raw_has_non_finite={} raw_non_finite_count={} raw_token_zero_slots={:?}",
+        diagnostic.raw_nan_count > 0,
+        diagnostic.raw_nan_count,
+        diagnostic.raw_non_finite_count > 0,
+        diagnostic.raw_non_finite_count,
+        diagnostic.token_zero_samples,
+    );
+
+    for (role, tensor) in [
+        ("gate_up", &descriptor.gate_up),
+        ("gate", &descriptor.gate),
+        ("up", &descriptor.up),
+        ("down", &descriptor.down),
+        ("gate_up_bias", &descriptor.gate_up_bias),
+        ("gate_bias", &descriptor.gate_bias),
+        ("up_bias", &descriptor.up_bias),
+        ("down_bias", &descriptor.down_bias),
+        ("gate_scale", &descriptor.gate_scale),
+        ("up_scale", &descriptor.up_scale),
+        ("down_scale", &descriptor.down_scale),
+    ] {
+        tracing::warn!(
+            target: "moe.route_diagnostic",
+            "POM_MOE_ROUTE_DIAGNOSTICS tensor role={role} present={} dtype={} n_dims={} ne={:?} name={}",
+            tensor.present,
+            tensor.dtype,
+            tensor.n_dims,
+            tensor.ne,
+            diagnostic_tensor_name(tensor),
+        );
+    }
+}
+
+fn log_moe_route_post_diagnostic(
+    layer: i32,
+    selected_experts: &[i32],
+    weights: &[f32],
+    expert_count_used: usize,
+) {
+    let post_nan_count = weights.iter().filter(|weight| weight.is_nan()).count();
+    let post_non_finite_count = weights.iter().filter(|weight| !weight.is_finite()).count();
+    let token_zero_weights = weights
+        .iter()
+        .take(expert_count_used.min(4))
+        .copied()
+        .collect::<Vec<_>>();
+
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS after_pom_route_normalization layer={layer} normalized_selected_ptr={:p} normalized_weights_ptr={:p} normalized_selected_elements={} normalized_weight_elements={} normalized_weight_dtype=f32 post_pom_has_nan={} post_pom_nan_count={} post_pom_has_non_finite={} post_pom_non_finite_count={} normalized_token_zero_experts={:?} normalized_token_zero_weights={:?}",
+        selected_experts.as_ptr(),
+        weights.as_ptr(),
+        selected_experts.len(),
+        weights.len(),
+        post_nan_count > 0,
+        post_nan_count,
+        post_non_finite_count > 0,
+        post_non_finite_count,
+        selected_experts.iter().take(expert_count_used.min(4)).copied().collect::<Vec<_>>(),
+        token_zero_weights,
+    );
+}
+
 fn normalize_moe_route(
     architecture: &str,
     layer: i32,
@@ -373,6 +584,36 @@ mod moe_route_tests {
         assert!(error.contains("slot 0"));
         assert!(error.contains("expert 13"));
         assert!(error.contains("infinito"));
+    }
+
+    #[test]
+    fn diagnostico_da_rota_registra_entrada_bruta_e_layout_de_token_zero() {
+        let selected_experts = [10, 11, 12, 20, 21, 22];
+        let weights = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+
+        let diagnostic = collect_moe_route_diagnostic(&selected_experts, &weights, 3, 2);
+
+        assert_eq!(diagnostic.llama_declared_route_elements, 6);
+        assert_eq!(diagnostic.pom_expected_route_elements, 6);
+        assert_eq!(diagnostic.raw_nan_count, 0);
+        assert_eq!(diagnostic.raw_non_finite_count, 0);
+        assert_eq!(
+            diagnostic.token_zero_samples,
+            vec![
+                MoeRouteDiagnosticSample {
+                    slot: 0,
+                    source_offset_elements: 0,
+                    expert: 10,
+                    weight: 0.1,
+                },
+                MoeRouteDiagnosticSample {
+                    slot: 1,
+                    source_offset_elements: 3,
+                    expert: 20,
+                    weight: 0.4,
+                },
+            ]
+        );
     }
 }
 
@@ -985,6 +1226,7 @@ impl LlmEngine {
             runtime,
             telemetry: Mutex::new(MoeCallbackTelemetry::default()),
             error: Mutex::new(None),
+            route_diagnostic_emitted: AtomicBool::new(false),
         });
         unsafe {
             sys::llama_set_moe_ffn_callback(

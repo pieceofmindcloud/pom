@@ -295,6 +295,16 @@ CPUReference, depois da prova diferencial dos três dtypes na GPU real. A
 prova física desse GGUF ainda não foi executada neste worktree, portanto a
 telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
+Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute
+o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. O callback registra somente uma
+amostra da camada 1: valores crus de token 0, slot e deslocamento expert-major,
+ponteiros e bytes das regiões lidas, quantidade de elementos declarada pelo
+llama.cpp versus esperada pelo POM, dtypes da metadata de gate/up/down e os
+dtypes assumidos nos argumentos do callback. Depois da normalização, registra
+novamente a amostra e as contagens de NaN. A variável é opt-in, fica desligada
+por padrão e não altera a execução; ainda não há resultado de campo registrado
+para essa medição.
+
 ### Fase 5.1: ponte CUDA por dtype
 
 Esta foi a fase formal da ponte por dtype. O executor CUDA cobre NVFP4 (40),

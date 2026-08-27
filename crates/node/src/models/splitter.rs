@@ -4,9 +4,9 @@
 //! tensors for the assigned layer range, remaps `blk.(start+i).*` names to
 //! `blk.i.*`, injects a fake identity `output_norm.weight` on non-last slices,
 //! updates KV metadata, and streams the slice to disk. Architecture-specific
-//! output contracts are checked before the destination is created: the
-//! llama.cpp `deepseek4` head is copied only on a final slice, while a
-//! non-final slice is refused because its loader contract is not optional.
+//! output contracts are checked before the destination is created: required
+//! head tensors are copied from the source into every slice that needs them,
+//! including non-final slices.
 //!
 //! Progress is reported via `on_progress(0.0..=100.0)` as bytes are written.
 
@@ -246,14 +246,40 @@ fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
 
 fn source_scalar_u32(mm: &[u8], entry: &KvSource) -> Option<u32> {
     match entry.vtype {
+        T_U8 => mm.get(entry.value_start).copied().map(u32::from),
+        T_I8 => mm
+            .get(entry.value_start)
+            .copied()
+            .map(|value| i8::from_le_bytes([value]))
+            .and_then(|value| u32::try_from(value).ok()),
+        T_U16 => mm
+            .get(entry.value_start..entry.value_start + 2)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u16::from_le_bytes)
+            .map(u32::from),
+        T_I16 => mm
+            .get(entry.value_start..entry.value_start + 2)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(i16::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
         T_U32 => mm
             .get(entry.value_start..entry.value_start + 4)
             .and_then(|bytes| bytes.try_into().ok())
             .map(u32::from_le_bytes),
+        T_I32 => mm
+            .get(entry.value_start..entry.value_start + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(i32::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
         T_U64 => mm
             .get(entry.value_start..entry.value_start + 8)
             .and_then(|bytes| bytes.try_into().ok())
             .map(u64::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
+        T_I64 => mm
+            .get(entry.value_start..entry.value_start + 8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(i64::from_le_bytes)
             .and_then(|value| u32::try_from(value).ok()),
         _ => None,
     }
@@ -606,13 +632,26 @@ pub fn split(
         {
             continue;
         }
-        if key.ends_with(".nextn_predict_layers") {
-            kv_out.push(if is_last {
-                KvOut::Raw(entry.start, entry.end)
-            } else {
-                KvOut::Encoded(encode_kv_u32(key, 0))
-            });
-            continue;
+        match crate::gguf::layer_count_semantics(key) {
+            Some(crate::gguf::LayerCountSemantics::FromStart) => {
+                let original = source_scalar_u32(mm, entry).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "metadata '{key}' conta camadas desde o início, mas não é um inteiro escalar não negativo que caiba em u32"
+                    )
+                })?;
+                let local = original.saturating_sub(start_layer).min(n_split);
+                kv_out.push(KvOut::Encoded(encode_kv_u32(key, local)));
+                continue;
+            }
+            Some(crate::gguf::LayerCountSemantics::FromEnd) => {
+                kv_out.push(if is_last {
+                    KvOut::Raw(entry.start, entry.end)
+                } else {
+                    KvOut::Encoded(encode_kv_u32(key, 0))
+                });
+                continue;
+            }
+            None => {}
         }
         if key.ends_with(".block_count") {
             kv_out.push(KvOut::Encoded(encode_kv_u32(key, n_split)));
@@ -2531,6 +2570,9 @@ mod tests {
             u32_kv("deepseek4.block_count", n_blocks),
             u32_kv("deepseek4.vocab_size", n as u32),
             u32_kv("deepseek4.dsv4_hc_mult", 2),
+            u32_kv("deepseek4.hash_layer_count", 3),
+            u32_kv("deepseek4.leading_dense_block_count", 3),
+            u32_kv("deepseek4.n_deepstack_layers", 3),
             u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
         ];
 
@@ -2577,7 +2619,7 @@ mod tests {
             slice_layer_values(&values, 8, 2, 4).unwrap(),
             vec![4, 128, 4, 128]
         );
-        assert_eq!(slice_layer_values(&values, 8, 7, 1).unwrap(), vec![4]);
+        assert_eq!(slice_layer_values(&values, 8, 7, 1).unwrap(), vec![128]);
     }
 
     #[test]
@@ -2954,6 +2996,57 @@ mod tests {
         ] {
             assert!(names.contains(required), "faltou {required}: {names:?}");
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn layer_counts_from_model_start_are_rebased_for_offset_slices() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-layer-counts-offset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let prefix = dir.join("prefix.gguf");
+        let output = dir.join("tail.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(4, true)).unwrap();
+
+        split(&whole, &prefix, 0, 1, true, false, |_| {}).unwrap();
+        let prefix_bytes = std::fs::read(&prefix).unwrap();
+        for key in [
+            "deepseek4.hash_layer_count",
+            "deepseek4.leading_dense_block_count",
+            "deepseek4.n_deepstack_layers",
+        ] {
+            assert_eq!(
+                kv_u32(&prefix_bytes, key),
+                Some(2),
+                "a contagem desde o início deve ser limitada ao tamanho da fatia: {key}"
+            );
+        }
+
+        split(&whole, &output, 2, 3, false, true, |_| {}).unwrap();
+        let bytes = std::fs::read(&output).unwrap();
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        assert_eq!(
+            layout.slice_bytes(2, 3, true),
+            std::fs::metadata(&output).unwrap().len(),
+            "a estimativa precisa acompanhar a reserialização da metadata rebased"
+        );
+        for key in [
+            "deepseek4.hash_layer_count",
+            "deepseek4.leading_dense_block_count",
+            "deepseek4.n_deepstack_layers",
+        ] {
+            assert_eq!(
+                kv_u32(&bytes, key),
+                Some(1),
+                "a contagem relativa ao início precisa ser local para a fatia: {key}"
+            );
+        }
+
+        let tail = dir.join("empty-start-count.gguf");
+        split(&whole, &tail, 3, 3, false, true, |_| {}).unwrap();
+        let tail_bytes = std::fs::read(&tail).unwrap();
+        assert_eq!(kv_u32(&tail_bytes, "deepseek4.hash_layer_count"), Some(0));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3352,18 +3445,15 @@ mod tests {
         let source = Path::new(&source);
         let dir = std::env::temp_dir().join(format!("pom-deepseek4-slice-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let out = dir.join("deepseek4-0-0.gguf");
+        let out = dir.join("deepseek4-15-28.gguf");
 
         let layout = crate::gguf::read_layout(source).unwrap();
-        assert!(
-            layout.layer_count() > 1,
-            "o GGUF real precisa de uma camada final distinta"
-        );
+        assert!(layout.layer_count() > 28, "o GGUF real precisa da camada 28");
         assert!(
             layout.required_head_bytes() > 0,
             "a cabeça DeepSeek4 deve estar na fonte"
         );
-        split(source, &out, 0, 0, true, false, |_| {}).unwrap();
+        split(source, &out, 15, 28, false, false, |_| {}).unwrap();
 
         unsafe { llama_cpp_sys_2::llama_backend_init() };
         let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();

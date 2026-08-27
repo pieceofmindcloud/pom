@@ -265,6 +265,14 @@ struct LayoutKv {
     array: Option<ArrayShape>,
 }
 
+/// How llama.cpp interprets a metadata count when it chooses tensors or
+/// graph branches by the local zero-based layer index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerCountSemantics {
+    FromStart,
+    FromEnd,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ArrayShape {
     element_type: u32,
@@ -1042,7 +1050,18 @@ impl SerializedLayout {
                 had_recurrent_key = true;
                 continue;
             }
-            if entry.key.ends_with(".nextn_predict_layers") && !is_last {
+            if matches!(
+                layer_count_semantics(&entry.key),
+                Some(LayerCountSemantics::FromStart)
+            ) {
+                bytes += Self::encoded_u32_size(&entry.key);
+                continue;
+            }
+            if matches!(
+                layer_count_semantics(&entry.key),
+                Some(LayerCountSemantics::FromEnd)
+            ) && !is_last
+            {
                 bytes += Self::encoded_u32_size(&entry.key);
                 continue;
             }
@@ -1174,6 +1193,15 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
                 });
             }
             _ => scalar_u32 = r.value_as_u32(vtype)?,
+        }
+        if matches!(
+            layer_count_semantics(&key),
+            Some(LayerCountSemantics::FromStart)
+        ) && scalar_u32.is_none()
+        {
+            bail!(
+                "metadata '{key}' conta camadas desde o início, mas não é um inteiro escalar não negativo que caiba em u32"
+            );
         }
         if is_nextn_predict_layers_key(&key) {
             layout.nextn_predict_layers = scalar_u32.unwrap_or(0);
@@ -1307,7 +1335,30 @@ pub fn read_capability_evidence(path: &Path) -> Result<ModelCapabilityEvidence> 
 }
 
 fn is_nextn_predict_layers_key(key: &str) -> bool {
-    key == "nextn_predict_layers" || key.ends_with(".nextn_predict_layers")
+    matches!(
+        layer_count_semantics(key),
+        Some(LayerCountSemantics::FromEnd)
+    )
+}
+
+pub(crate) fn layer_count_semantics(key: &str) -> Option<LayerCountSemantics> {
+    if is_metadata_key(key, "nextn_predict_layers") {
+        Some(LayerCountSemantics::FromEnd)
+    } else if is_metadata_key(key, "leading_dense_block_count")
+        || is_metadata_key(key, "hash_layer_count")
+        || is_metadata_key(key, "n_deepstack_layers")
+    {
+        Some(LayerCountSemantics::FromStart)
+    } else {
+        None
+    }
+}
+
+fn is_metadata_key(key: &str, suffix: &str) -> bool {
+    key == suffix
+        || key
+            .strip_suffix(suffix)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 /// `blk.17.attn_q.weight` → `Some(17)`.
@@ -1430,6 +1481,7 @@ mod tests {
             }
             b.extend_from_slice(v);
         }
+        b.resize((b.len() + 31) & !31, 0);
         b
     }
 
@@ -1438,14 +1490,14 @@ mod tests {
         let nonce = uuid::Uuid::new_v4().simple();
         let path = std::env::temp_dir().join(format!("pom-signed-gguf-{nonce}.gguf"));
         let bytes = header_only_gguf(&[
-            ("split.tensors.count", T_INT32, 4i32.to_le_bytes().to_vec()),
+            ("split.tensors.count", T_INT32, 0i32.to_le_bytes().to_vec()),
             ("llama.block_count", T_INT32, 32i32.to_le_bytes().to_vec()),
         ]);
         std::fs::write(&path, bytes).unwrap();
 
         let info = read_info(&path).unwrap();
 
-        assert_eq!(info.split_tensors_count, Some(4));
+        assert_eq!(info.split_tensors_count, Some(0));
         assert_eq!(info.block_count, Some(32));
         let layout = read_layout(&path).unwrap();
         assert_eq!(layout.serialized.as_ref().unwrap().original_block_count, 32);
@@ -1672,6 +1724,39 @@ mod tests {
         let layout = read_layout(&q).unwrap();
         assert_eq!(layout.nextn_predict_layers, 0);
         let _ = std::fs::remove_file(&q);
+    }
+
+    #[test]
+    fn classifies_layer_count_origins_by_metadata_suffix() {
+        for key in [
+            "alpha.leading_dense_block_count",
+            "beta.hash_layer_count",
+            "gamma.n_deepstack_layers",
+        ] {
+            assert_eq!(
+                layer_count_semantics(key),
+                Some(LayerCountSemantics::FromStart),
+                "a contagem usada com índice local deve ser rebased: {key}"
+            );
+        }
+        assert_eq!(
+            layer_count_semantics("delta.nextn_predict_layers"),
+            Some(LayerCountSemantics::FromEnd)
+        );
+        assert_eq!(layer_count_semantics("epsilon.block_count"), None);
+    }
+
+    #[test]
+    fn rejects_non_scalar_from_start_layer_count_metadata() {
+        let nonce = uuid::Uuid::new_v4().simple();
+        let path = std::env::temp_dir().join(format!("pom-layer-count-{nonce}.gguf"));
+        let bytes = header_only_gguf(&[("deepseek4.hash_layer_count", T_STRING, b"3".to_vec())]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = read_layout(&path).unwrap_err().to_string();
+        assert!(error.contains("deepseek4.hash_layer_count"), "{error}");
+        assert!(error.contains("inteiro escalar"), "{error}");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

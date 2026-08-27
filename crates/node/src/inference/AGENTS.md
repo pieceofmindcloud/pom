@@ -182,6 +182,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   primeiro token/slot contra leitura não inicializada. `qwen35moe` mantém
   `ffn_*_shexp` fora do inventário: o callback recebe apenas `ffn_*_exps`, e o
   expert compartilhado continua no `build_ffn` nativo.
+  Na carga do primeiro `LoadedModel` do processo, o servidor registra uma vez,
+  no target padrão, o valor bruto de `POM_MOE_ROUTE_DIAGNOSTICS` e o booleano
+  efetivo do gate, antes de qualquer callback MoE. O teste ignorado
+  `callback_global_emite_diagnostico_em_thread_externa_e_registra_gate` instala
+  o mesmo dispatcher global, cria uma thread fora do Tokio e exige as linhas
+  default e `moe.route_diagnostic` no mesmo sink.
   Os testes `expert_shared_nao_entra_no_inventario_de_rota` e
   `inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` verificam que somente
   os quatro nomes exps terminados em `.weight` entram na classificação, sem

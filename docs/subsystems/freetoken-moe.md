@@ -311,8 +311,18 @@ elementos declarada pelo
 llama.cpp versus esperada pelo POM, dtypes da metadata de gate/up/down e os
 dtypes assumidos nos argumentos do callback. Depois da normalização, registra
 novamente a amostra e as contagens de NaN. A variável é opt-in, fica desligada
-por padrão e não altera a execução; ainda não há resultado de campo registrado
-para essa medição.
+por padrão e não altera a execução. Na carga do primeiro `LoadedModel` do
+processo, uma linha adicional no target padrão registra uma vez o valor bruto
+da variável e o booleano efetivo do gate. Assim o log do próximo deploy mostra
+se o `OnceLock` reconheceu o ambiente, antes da primeira rota.
+
+O teste ignorado
+`llm::moe_route_tests::callback_global_emite_diagnostico_em_thread_externa_e_registra_gate`
+instala o dispatcher global com `.init` equivalente, cria uma thread
+`std::thread` fora do runtime Tokio e exige no mesmo sink a configuração, o
+`callback_entry_default`, o `callback_entry` com target MoE e o `callback_exit`.
+Ele passou localmente com `RUST_LOG=info`; isso prova o transporte no processo de
+teste, mas não substitui a confirmação no binário implantado.
 
 O callback do `llama.cpp` recebe a rota na ordem token-major que resulta do
 `ggml_get_rows` com dimensões `[1, experts_usados, tokens]`: slot é o índice

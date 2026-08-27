@@ -134,6 +134,16 @@ fn moe_route_diagnostics_enabled() -> bool {
     })
 }
 
+fn log_moe_route_diagnostics_configuration() {
+    static LOGGED: OnceLock<()> = OnceLock::new();
+    if LOGGED.set(()).is_err() {
+        return;
+    }
+    let raw = std::env::var(MOE_ROUTE_DIAGNOSTICS_ENV).unwrap_or_else(|_| "<unset>".to_owned());
+    let enabled = moe_route_diagnostics_enabled();
+    warn!("POM_MOE_ROUTE_DIAGNOSTICS configuration raw={raw:?} enabled={enabled}");
+}
+
 fn route_diagnostic_should_emit(first_callback: bool, raw_non_finite: bool) -> bool {
     first_callback || raw_non_finite
 }
@@ -834,6 +844,60 @@ mod moe_route_tests {
         });
 
         let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("callback_entry_default"), "{output}");
+        assert!(output.contains("callback_entry raw_args=1"), "{output}");
+        assert!(
+            output.contains("callback_exit reason=null_callback_argument"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    #[ignore = "prova do dispatcher global requer POM_MOE_ROUTE_DIAGNOSTICS=1"]
+    fn callback_global_emite_diagnostico_em_thread_externa_e_registra_gate() {
+        std::env::set_var(MOE_ROUTE_DIAGNOSTICS_ENV, "1");
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(SharedLogWriter(bytes.clone()))
+            .init();
+
+        log_moe_route_diagnostics_configuration();
+        log_moe_route_diagnostics_configuration();
+        let join = std::thread::spawn(|| unsafe {
+            moe_ffn_callback(
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                1,
+                4096,
+                ptr::null_mut(),
+            )
+        });
+        assert!(!join
+            .join()
+            .expect("thread do callback não pode entrar em pânico"));
+
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            output
+                .matches("POM_MOE_ROUTE_DIAGNOSTICS configuration")
+                .count(),
+            1,
+            "{output}"
+        );
+        assert!(
+            output.contains("POM_MOE_ROUTE_DIAGNOSTICS configuration"),
+            "{output}"
+        );
+        assert!(output.contains("enabled=true"), "{output}");
         assert!(output.contains("callback_entry_default"), "{output}");
         assert!(output.contains("callback_entry raw_args=1"), "{output}");
         assert!(
@@ -1543,6 +1607,7 @@ impl Drop for LlmEngine {
 impl LoadedModel {
     /// Lê os pesos do disco. Uma vez por arquivo, não por contexto.
     fn load(model_path: &str, plan: &FitPlan) -> Result<Arc<Self>> {
+        log_moe_route_diagnostics_configuration();
         // llama_backend_init is idempotent; call it on every load.
         unsafe { sys::llama_backend_init() };
 

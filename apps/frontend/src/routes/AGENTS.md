@@ -247,6 +247,10 @@ Per-file list:
   `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices` or
   `range`. `SlicingJobsPanel` keeps running, completed and failed jobs visible,
   including named phase, bytes and partial output paths.
+  For architectures with a required non-final head, the plan includes
+  `required_head_bytes`, and the preview identifies the real payload repeated
+  in each intermediate slice. `asPlan` keeps this field optional for older
+  nodes and for tensor-parallel plans.
   `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
   can be sliced. Multipart models show the summed physical size, every
   declared part and an explicit instruction to keep the set together before

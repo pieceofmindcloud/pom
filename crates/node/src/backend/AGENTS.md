@@ -71,8 +71,9 @@ behind an auth extractor.
   preserved and a matching file is reused only after SHA-256 verification.
   The same preflight checks architecture-specific output contracts before a
   plan or job is accepted. `deepseek4` requires its complete output head in a
-  final slice and is refused for non-final pipeline ranges; this refusal names
-  the required tensors before writing any payload.
+  final slice; non-final ranges repeat the real required head weights, and the
+  plan exposes their per-slice disk cost. If the source is missing any tensor
+  that must be copied, the refusal names it before writing any payload.
   Slicing does not invoke automatic retention, so it cannot silently remove an
   older range. Jobs report named phases, source bytes read, current file, rate,
   ETA when measurable, terminal errors and partial outputs.

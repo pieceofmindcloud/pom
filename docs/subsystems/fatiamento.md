@@ -87,9 +87,10 @@ restrito à fronteira de fatiamento ou transferência.
   `deepseek4`, `deepseek4.cpp` exige `token_embd.weight`,
   `output_norm.weight`, `output.weight`, `output_hc_fn.weight`,
   `output_hc_base.weight` e `output_hc_scale.weight`; não há fallback para
-  `token_embd` nem flag de tensor opcional. Por isso uma faixa não final é
-  recusada antes de gerar o arquivo, e a final só é aceita quando todos os
-  seis tensores existem.
+  `token_embd` nem flag de tensor opcional. A faixa não final copia da origem
+  os tensores reais que não são sintetizados, e é recusada antes de gerar o
+  arquivo se algum deles faltar. A final só é aceita quando os seis tensores
+  existem.
 - `arch_boundaries`/`snap_end_layer` - modelos híbridos (Mamba + Attention) não
   são pilha de blocos iguais; o corte só acontece em fronteira de tipo, senão o
   bloco renumera para o tipo errado (`missing tensor` ou resposta errada
@@ -109,8 +110,13 @@ restrito à fronteira de fatiamento ou transferência.
   `splitter::split`/`merge` corrigem isso escrevendo o array explícito, derivado
   da presença real do tensor no arquivo fonte (não da fórmula) - ver §4.
 - `slice_bytes(start, end, is_last)` - bytes de uma fatia: camadas + `token_embd`
-  (toda fatia) + output head (só a última). Para `deepseek4`, o cálculo inclui
-  também a cabeça HC na fatia final. É o que o plano soma.
+  (toda fatia) + cabeças exigidas pela arquitetura. Para `deepseek4`,
+  `output.weight` e os três tensores `output_hc_*` reais também entram nas
+  faixas intermediárias; `output_norm.weight` continua sendo a identidade
+  sintética do tronco e a cabeça completa fica na faixa final. O método
+  `required_head_bytes` informa o payload real adicional repetido em cada faixa
+  intermediária. No DeepSeek-V4-Flash medido, esse adicional fica perto de
+  0,44 GB por faixa. É o que o plano soma e a interface mostra.
 - `ggml_type_info` + `ggml_type_table_matches_ggml` - a tabela de tipos é
   conferida contra a `GGML_TRUTH` no mesmo arquivo (teste de build quebra se
   divergirem; números escritos lendo o llama.cpp - `ggml.h` para os códigos,
@@ -205,6 +211,9 @@ alvo pedido, a faixa que saiu e o tamanho real.
   incluindo embeddings repetidos, tensores globais, cabeçalho, tabela de
   tensores, alinhamento e o norm sintético das fatias não finais.
   `source_model_bytes` conserva o tamanho do GGUF de origem para comparação.
+  `required_head_bytes`, quando presente, é o payload de pesos reais da cabeça
+  repetido por cada faixa não final. O total de cada faixa continua incluindo
+  também cabeçalho, tabela, alinhamento e os demais bytes de serialização.
   O custo recusa nominalmente qualquer dtype GGML desconhecido; nenhum tipo
   desconhecido entra como zero na prévia.
 
@@ -282,8 +291,10 @@ não existe acréscimo barato ao fim do GGUF: os descritores dos novos tensores
 ficam antes do payload, e ampliar a tabela desloca os dados existentes. Um
 reparo teria de reescrever a fatia inteira e ainda obter os pesos reais da
 cabeça; fabricar uma identidade para `output.weight` não preservaria o modelo.
-O fatiador, portanto, recusa cedo a arquitetura em pipeline e não promete uma
-ferramenta de reparo que produza outro arquivo recusado pelo loader.
+O fatiador continua recusando cedo uma fonte que não tenha os pesos reais para
+a cópia exigida na faixa intermediária; quando eles existem, a nova fatia é
+gerada já com os descritores e payloads corretos. Ele não promete uma ferramenta
+de reparo que fabrique outro arquivo recusado pelo loader.
 
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):
@@ -298,11 +309,11 @@ ferramenta de reparo que produza outro arquivo recusado pelo loader.
    `blk.i.*`.
 4. Valida o contrato de saída antes de criar o destino. Fatia não-final injeta
    `output_norm.weight` identidade nas arquiteturas em que essa adaptação é
-   suficiente (o llama.cpp precisa dele para ler a fatia); zera
-   `nextn_predict_layers` fora da última; atualiza `{arch}.block_count`. Para
-   `deepseek4`, a validação recusa qualquer faixa não final, porque o loader
-   exige toda a cabeça HC e `output.weight` sem conhecer fatias parciais. A
-   faixa final copia os cinco tensores de saída mais `token_embd.weight`.
+   suficiente (o llama.cpp precisa dele para ler a fatia), copia os tensores
+   obrigatórios reais da origem e zera `nextn_predict_layers` fora da última;
+   também atualiza `{arch}.block_count`. Para `deepseek4`, `output.weight` e
+   `output_hc_*` são copiados para cada faixa intermediária, nunca inventados.
+   A faixa final mantém a cabeça completa mais `token_embd.weight`.
 5. Modelo híbrido (qualquer tensor `blk.N.ssm_conv1d.weight` na tabela): grava
    `{arch}.attention.recurrent_layers` explícito, sizado e indexado para a
    fatia, a partir de quais camadas **absolutas** realmente têm o tensor -

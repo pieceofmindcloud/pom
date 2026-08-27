@@ -462,9 +462,11 @@ impressão digital é só modelo + conjunto de faixas.
   ausente aparece no painel e o botão de fatiar fica desabilitado; o operador
   precisa colocar o conjunto completo junto e deixar o POM gerar as fatias.
   A prévia e o início do job repetem o preflight do GGUF para a cabeça exigida
-  pelo loader. Em `deepseek4`, uma faixa intermediária é recusada com a lista
-  de tensores obrigatórios, enquanto a faixa final só é oferecida quando a
-  tabela de tensores contém a cabeça completa.
+  pelo loader. Em `deepseek4`, uma faixa intermediária copia os pesos reais da
+  cabeça que o loader exige, e a prévia mostra o payload adicional repetido em
+  cada uma; se a tabela de tensores não permitir a cópia, a recusa lista o
+  motivo concreto. A faixa final só é oferecida quando a tabela contém a
+  cabeça completa.
 - **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.

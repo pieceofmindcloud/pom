@@ -546,16 +546,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   libera a string (`llama_rs_string_free`, nunca `free` nem
   `CString::from_raw`).
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
-  `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
-  Mutex global e disputava com decodes paralelos). `accumulate_capture` junta um
-  disparo por **microlote**: o llama.cpp parte o lote em pedaços de `n_ubatch` e
-  chama a captura uma vez por pedaço, então substituir em vez de acumular
-  guardava só o último - com `fit_memory=true` (padrão, `n_ubatch` limitado a
-  128), um chunk de 512 tokens perdia 3/4 e o peer seguinte recusava com "got
-  655360 floats, expected 2621440". Todo caminho de decode chama
-  `reset_capture_slot` antes, senão a sobra de uma requisição entraria
-  concatenada na próxima. A ordem depende do `split_simple` - ver Defeitos
-  anotados.
+  `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data`; o
+  DeepSeek4 chama a mesma fronteira de `l_last-<N>`, e o callback aceita os dois
+  nomes. A cabeça que vem depois pode executar, mas não altera o residual já
+  copiado. `accumulate_capture` junta um disparo por **microlote**: o llama.cpp
+  parte o lote em pedaços de `n_ubatch` e chama a captura uma vez por pedaço,
+  então substituir em vez de acumular guardava só o último - com
+  `fit_memory=true` (padrão, `n_ubatch` limitado a 128), um chunk de 512 tokens
+  perdia 3/4 e o peer seguinte recusava com "got 655360 floats, expected
+  2621440". Todo caminho de decode chama `reset_capture_slot` antes, senão a
+  sobra de uma requisição entraria concatenada na próxima. A ordem depende do
+  `split_simple` - ver Defeitos anotados.
 - `profile_backend_sync_enabled` - perfil do backend síncrono, `POM_PROFILE_SYNC`
   (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
   `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os

@@ -49,7 +49,11 @@ transferência.
   serializado de cada fatia, incluindo cabeçalho, globais, alinhamento e
   duplicações e cabeças específicas da arquitetura. `validate_slice_ranges`
   compartilha a decisão com o fatiador. `deepseek4` exige seis tensores
-  não-bloco, não aceita fallback para `token_embd` e recusa faixas não finais.
+  não-bloco, não aceita fallback para `token_embd`; faixas não finais copiam da
+  origem os tensores reais da cabeça que o loader exige e mantêm o norm de
+  identidade já usado pelo tronco. Se a origem não tiver um tensor copiável, a
+  recusa nomeia os tensores ausentes. `GgufLayout::required_head_bytes` mede o
+  payload real repetido por fatia intermediária.
   `read_layout` usa a tabela unificada de multipart.rs, então o
   primeiro arquivo de um GGUF multipart, mesmo sem tensores, representa o
   conjunto inteiro.
@@ -68,10 +72,11 @@ transferência.
   selecionados são ordenados por `(part_index, src_offset)` antes da cópia para
   evitar page faults regressivos em fonte maior que a RAM. Antes da saída, o
   fatiador confere a lista de tensores obrigatórios que o loader cria para a
-  arquitetura. Para `deepseek4`, a cabeça completa só entra na faixa final;
-  uma faixa intermediária é recusada sem criar um GGUF parcial. A estimativa TP
-  soma a replicação de tensores compartilhados por rank e reserva o cabeçalho
-  gerado.
+  arquitetura. Para `deepseek4`, a faixa final carrega a cabeça completa e cada
+  faixa intermediária copia os pesos obrigatórios reais, sem fabricar
+  `output.weight` nem tensores HC. A estimativa de tamanho inclui essa
+  repetição e o plano expõe o custo adicional. A estimativa TP soma a
+  replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.

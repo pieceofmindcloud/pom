@@ -593,10 +593,13 @@ receptor mantém o comportamento de executar a fatia inteira.
 
 O handler confere a sub-faixa contra a faixa carregada antes de enfileirar o
 trabalho. Quando `exec_start` coincide com `start_layer`, `exec_end` menor que
-`end_layer` reposiciona a captura de residual para o bloco local correspondente
-e o callback do llama.cpp interrompe o grafo depois dele. Quando o pedido chega
-até `end_layer`, a captura normal da fatia inteira é usada. Uma sub-faixa
-invertida ou fora da fatia recebe HTTP 400; começar acima de `start_layer`
+`end_layer` reposiciona a captura de residual para o bloco local correspondente.
+O callback copia o residual antes das operações seguintes e deixa o grafo
+continuar; portanto uma cabeça obrigatória pode ser executada depois da captura
+sem alterar o estado oculto enviado ao próximo peer. No DeepSeek4, o grafo chama
+essa fronteira `l_last-N`; o alias `l_out-N` continua aceito pelo POM. Quando o
+pedido chega até `end_layer`, a captura normal da fatia inteira é usada. Uma
+sub-faixa invertida ou fora da fatia recebe HTTP 400; começar acima de `start_layer`
 também é recusado explicitamente, porque o motor atual sempre entra pelo
 primeiro bloco da fatia e não consegue pular a cabeça já carregada.
 

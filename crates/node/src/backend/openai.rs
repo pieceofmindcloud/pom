@@ -1182,7 +1182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_endpoint_delivers_the_template_mode_with_the_user_prompt() {
+    async fn chat_endpoint_structures_the_audited_tool_call_and_keeps_intro() {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1206,7 +1206,7 @@ mod tests {
                                 "done": true,
                                 "more_chunks": false,
                                 "token_id": 1,
-                                "text": "ok"
+                                "text": "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>"
                             });
                             let bytes = crate::wire::encode_batch_single(
                                 &response,
@@ -1251,21 +1251,59 @@ mod tests {
                 model: Some("lab".into()),
                 messages: vec![msg("user", "Oi, teste")],
                 stream: false,
-                max_tokens: Some(1),
+                max_tokens: Some(128),
                 max_completion_tokens: None,
-                tools: Vec::new(),
+                tools: vec![ChatToolDef {
+                    function: ChatFunctionDef {
+                        name: "skill".into(),
+                        description: Some("Load a skill".into()),
+                        parameters: json!({
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}}
+                        }),
+                    },
+                }],
                 stop: None,
             }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
 
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n"
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"][0]["type"],
+            "function"
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "skill"
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            r#"{"name":"brainstorming"}"#
+        );
+        assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+
         let meta = seen
             .lock()
             .unwrap()
             .clone()
             .expect("the chat request reached the inference head");
-        assert_eq!(meta["prompt"], "User: Oi, teste");
+        assert!(meta["prompt"]
+            .as_str()
+            .unwrap()
+            .ends_with("User: Oi, teste"));
         assert_eq!(meta["chat_template"], true);
     }
 
@@ -1829,17 +1867,17 @@ mod tests {
         };
         // Complete tool call within the budget: the model ended its turn by
         // asking for the tool, so the protocol must preserve tool_calls.
-        assert_eq!(finish_reason(&summary(5), 100, true), "tool_calls");
+        assert_eq!(finish_reason(&summary(3640), 4000, true), "tool_calls");
         // A tool call being present does not override an exhausted budget. This
         // covers both a complete call followed by more output and the streaming
         // path's final scanner state.
-        assert_eq!(finish_reason(&summary(100), 100, true), "length");
+        assert_eq!(finish_reason(&summary(4000), 4000, true), "length");
         // Plain text cut by the budget is length as well.
-        assert_eq!(finish_reason(&summary(100), 100, false), "length");
+        assert_eq!(finish_reason(&summary(4000), 4000, false), "length");
         // Plain text that stopped before the budget is a normal stop.
-        let mut stopped = summary(5);
+        let mut stopped = summary(3640);
         stopped.finish_reason = Some("stop".into());
-        assert_eq!(finish_reason(&stopped, 100, false), "stop");
+        assert_eq!(finish_reason(&stopped, 4000, false), "stop");
     }
 
     // ── chat_message_json ────────────────────────────────────────────────────
@@ -1871,6 +1909,25 @@ mod tests {
         assert_eq!(calls[0]["function"]["name"], "Bash");
         // arguments re-serialized back to a JSON string, OpenAI's convention.
         assert_eq!(calls[0]["function"]["arguments"], r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn audited_tool_call_becomes_structured_openai_message_without_losing_intro() {
+        let raw = "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>";
+        let (message, saw_tool_call) = chat_message_json(&parse_output(raw));
+
+        assert!(saw_tool_call);
+        assert_eq!(
+            message["content"],
+            "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n"
+        );
+        assert_eq!(message["tool_calls"].as_array().unwrap().len(), 1);
+        assert_eq!(message["tool_calls"][0]["type"], "function");
+        assert_eq!(message["tool_calls"][0]["function"]["name"], "skill");
+        assert_eq!(
+            message["tool_calls"][0]["function"]["arguments"],
+            r#"{"name":"brainstorming"}"#
+        );
     }
 
     #[test]
@@ -1990,6 +2047,52 @@ mod tests {
         assert!(!saw_tool_call);
         assert_eq!(out.len(), 1);
         assert!(out[0]["content"].as_str().unwrap().contains("<tool_call>"));
+    }
+
+    #[test]
+    fn audited_tool_call_stream_emits_intro_and_structured_deltas_after_split_tags() {
+        let raw = "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>";
+        let mut scanner = TagScanner::new();
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+
+        for chunk in raw.as_bytes().chunks(7) {
+            let chunk = std::str::from_utf8(chunk).expect("fixture is UTF-8");
+            apply_scan_events_openai(
+                scanner.feed(chunk),
+                &mut tool_call_index,
+                &mut saw_tool_call,
+                &mut out,
+            );
+        }
+        apply_scan_events_openai(
+            scanner.finish(),
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+
+        assert!(saw_tool_call);
+        let content = out
+            .iter()
+            .filter_map(|delta| delta["content"].as_str())
+            .collect::<String>();
+        assert_eq!(
+            content,
+            "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n"
+        );
+        let tool_deltas = out
+            .iter()
+            .filter(|delta| delta.get("tool_calls").is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_deltas.len(), 2);
+        assert_eq!(tool_deltas[0]["tool_calls"][0]["index"], 0);
+        assert_eq!(tool_deltas[0]["tool_calls"][0]["function"]["name"], "skill");
+        assert_eq!(
+            tool_deltas[1]["tool_calls"][0]["function"]["arguments"],
+            r#"{"name":"brainstorming"}"#
+        );
     }
 
     #[test]

@@ -96,8 +96,14 @@ adaptador: o orçamento efetivo é o menor entre o pedido do cliente,
 redução e a devolve em `x_pom.output_limits`; se o contexto não deixar nenhum
 token, responde HTTP 413 antes de abrir o SSE. Assim, uma saída que esgota o
 orçamento efetivo recebe `finish_reason: "length"`, inclusive se contiver uma
-chamada de ferramenta já reconhecida. Todas as respostas válidas levam a
-extensão `x_pom` (fora do schema) com a prova de execução distribuída e o
+chamada de ferramenta já reconhecida, e a auditoria registra esse término como
+`incomplete` (`partial` fica reservado para falha de transporte com texto
+salvo). O scanner compartilhado reconhece os marcadores declarados em
+`CALL_FORMATS`, preserva texto anterior à chamada, transforma todas as chamadas
+completas em `tool_calls` e, no SSE, em deltas indexados. Um marcador incompleto
+no fim da resposta volta como conteúdo literal para não desaparecer. Todas as
+respostas válidas levam a extensão `x_pom` (fora do schema) com a prova de
+execução distribuída e o
 objeto próprio `timings`; o campo OpenAI `stop`
 (string ou lista) passa pelo matcher incremental do gateway: um sufixo que
 ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é

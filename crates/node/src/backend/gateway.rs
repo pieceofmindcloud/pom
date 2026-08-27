@@ -575,6 +575,37 @@ fn remaining_generation_steps(max_tokens: u32, tokens_generated: u32) -> u32 {
     max_tokens.saturating_sub(tokens_generated)
 }
 
+/// Decide whether a generation step has a terminal reason. The budget is
+/// checked first because the backend may report EOS on the same step that
+/// consumed the last permitted token; the public API must call that result
+/// `length`, not a normal stop.
+fn generation_finish_reason(
+    max_tokens: u32,
+    tokens_generated: u32,
+    model_done: bool,
+) -> Option<&'static str> {
+    if tokens_generated >= max_tokens {
+        Some("length")
+    } else if model_done {
+        Some("stop")
+    } else {
+        None
+    }
+}
+
+/// Audit has a distinct state for a response cut by its effective output
+/// budget. Transport failures remain `partial`, even when they happened to
+/// produce the same amount of text.
+fn audit_status_for_summary(summary: &GenSummary) -> &'static str {
+    if summary.finish_reason.as_deref() == Some("length") {
+        "incomplete"
+    } else if summary.partial {
+        "partial"
+    } else {
+        "ok"
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct GenerateResponse {
     pub response: String,
@@ -1313,6 +1344,22 @@ async fn generate_stream_inner(
             }
             StopSend::Continue => {}
         }
+        if generation_finish_reason(max_tokens, tokens_generated, first.done) == Some("length") {
+            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                return;
+            }
+            send_length_summary(
+                &tx,
+                &plan,
+                request_started,
+                first_token_at,
+                tokens_generated,
+                trace,
+            )
+            .await;
+            return;
+        }
+
         if first.done {
             if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                 return;
@@ -1328,22 +1375,6 @@ async fn generate_stream_inner(
                 None,
             );
             let _ = tx.send(GenEvent::Done(summary)).await;
-            return;
-        }
-
-        if remaining_generation_steps(max_tokens, tokens_generated) == 0 {
-            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                return;
-            }
-            send_length_summary(
-                &tx,
-                &plan,
-                request_started,
-                first_token_at,
-                tokens_generated,
-                trace,
-            )
-            .await;
             return;
         }
 
@@ -1519,9 +1550,12 @@ async fn generate_stream_inner(
                     }
                 }
 
-                let finished =
-                    (step.done && !truncated_by_budget) || tokens_generated >= max_tokens;
-                if finished {
+                let finish_reason = generation_finish_reason(
+                    max_tokens,
+                    tokens_generated,
+                    step.done && !truncated_by_budget,
+                );
+                if finish_reason.is_some() {
                     if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                         return;
                     }
@@ -1532,7 +1566,7 @@ async fn generate_stream_inner(
                         tokens_generated,
                         trace,
                         false,
-                        None,
+                        (finish_reason == Some("length")).then(|| "length".to_string()),
                         None,
                     );
                     info!(
@@ -1648,9 +1682,13 @@ async fn generate_stream_inner(
                         }
                         StopSend::Continue => {}
                     }
-                    let done = step.done;
+                    let finish_reason = generation_finish_reason(
+                        max_tokens,
+                        tokens_generated,
+                        step.done,
+                    );
 
-                    if done || remaining_generation_steps(max_tokens, tokens_generated) == 0 {
+                    if finish_reason.is_some() {
                         if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                             return;
                         }
@@ -1661,7 +1699,7 @@ async fn generate_stream_inner(
                             tokens_generated,
                             trace,
                             false,
-                            (!done).then(|| "length".to_string()),
+                            (finish_reason == Some("length")).then(|| "length".to_string()),
                             None,
                         );
                         info!(
@@ -2030,7 +2068,7 @@ pub fn spawn_logged_generation_with_stops(
                     .collect(),
                 Some(s.tokens_generated),
                 Some(s.duration_ms),
-                if s.partial { "partial" } else { "ok" },
+                audit_status_for_summary(&s),
                 None,
             ),
             Some(Err(e)) => (
@@ -2489,6 +2527,38 @@ mod tests {
         assert_eq!(remaining_generation_steps(64, 64), 0);
     }
 
+    #[test]
+    fn generation_finish_reason_prioritizes_the_effective_limit() {
+        assert_eq!(generation_finish_reason(4000, 4000, true), Some("length"));
+        assert_eq!(generation_finish_reason(4000, 3640, true), Some("stop"));
+        assert_eq!(generation_finish_reason(4000, 3640, false), None);
+    }
+
+    #[test]
+    fn audit_status_distinguishes_length_from_transport_partial() {
+        let summary = |finish_reason: Option<&str>, partial: bool| GenSummary {
+            source: "pipeline:node-a".into(),
+            tokens_generated: 4000,
+            tokens_per_sec: 1.0,
+            duration_ms: 1,
+            timings: timing_metrics(1, 1, 1, 1, 4000),
+            partial,
+            finish_reason: finish_reason.map(str::to_owned),
+            stop_sequence: None,
+            trace: None,
+        };
+
+        assert_eq!(
+            audit_status_for_summary(&summary(Some("length"), false)),
+            "incomplete"
+        );
+        assert_eq!(audit_status_for_summary(&summary(None, true)), "partial");
+        assert_eq!(
+            audit_status_for_summary(&summary(Some("stop"), false)),
+            "ok"
+        );
+    }
+
     /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
     /// dentro de `next_hops`, e um hop noutro site que receba `192.168.x.y`
     /// disca um endereco que nao existe para ele - a requisicao morre sem
@@ -2673,6 +2743,15 @@ mod budget_tests {
         assert_eq!(limit.context_available, Some(98_000));
         assert_eq!(limit.effective, 32_768);
         assert!(limit.was_clamped());
+    }
+
+    #[test]
+    fn requested_client_limit_is_effective_when_deployment_has_room() {
+        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000);
+        assert_eq!(limit.requested, 4_000);
+        assert_eq!(limit.effective, 4_000);
+        assert_eq!(limit.deployment, Some(32_768));
+        assert!(!limit.was_clamped());
     }
 
     #[test]

@@ -152,20 +152,44 @@ enum CallKind {
 }
 
 impl CallKind {
+    fn format(self) -> &'static CallFormat {
+        CALL_FORMATS
+            .iter()
+            .find(|format| format.kind == self)
+            .expect("every call kind has a registered format")
+    }
+
     fn open(self) -> &'static str {
-        match self {
-            CallKind::Wrapped => TOOL_CALL_OPEN,
-            CallKind::BareFunction => BARE_FUNCTION_OPEN,
-        }
+        self.format().open
     }
 
     fn close(self) -> &'static str {
-        match self {
-            CallKind::Wrapped => TOOL_CALL_CLOSE,
-            CallKind::BareFunction => BARE_FUNCTION_CLOSE,
-        }
+        self.format().close
     }
 }
+
+/// Textual boundaries accepted by the shared scanner. Keep this registry
+/// declarative: add a pair only after verifying it in the active GGUF's
+/// `tokenizer.chat_template`, never because a model name happens to suggest
+/// one. The first entry wins when two markers begin at the same byte.
+struct CallFormat {
+    kind: CallKind,
+    open: &'static str,
+    close: &'static str,
+}
+
+const CALL_FORMATS: &[CallFormat] = &[
+    CallFormat {
+        kind: CallKind::Wrapped,
+        open: TOOL_CALL_OPEN,
+        close: TOOL_CALL_CLOSE,
+    },
+    CallFormat {
+        kind: CallKind::BareFunction,
+        open: BARE_FUNCTION_OPEN,
+        close: BARE_FUNCTION_CLOSE,
+    },
+];
 
 /// One classified span of raw model output.
 #[derive(Debug, Clone, PartialEq)]
@@ -213,16 +237,18 @@ impl TagScanner {
         loop {
             match &self.state {
                 ScanState::Outside => {
-                    // Two candidate openers; earliest wins, ties favor the
-                    // real wrapper (higher-confidence sighting).
-                    let tool_call_pos = self.pending.find(TOOL_CALL_OPEN);
-                    let function_pos = self.pending.find(BARE_FUNCTION_OPEN);
-                    let chosen = match (tool_call_pos, function_pos) {
-                        (Some(a), Some(b)) if b < a => Some((b, CallKind::BareFunction)),
-                        (Some(a), _) => Some((a, CallKind::Wrapped)),
-                        (None, Some(b)) => Some((b, CallKind::BareFunction)),
-                        (None, None) => None,
-                    };
+                    // Earliest opener wins; the registry order breaks ties in
+                    // favour of the real wrapper (higher-confidence sighting).
+                    let chosen = CALL_FORMATS
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(priority, format)| {
+                            self.pending
+                                .find(format.open)
+                                .map(|position| (position, priority, format.kind))
+                        })
+                        .min_by_key(|(position, priority, _)| (*position, *priority))
+                        .map(|(position, _, kind)| (position, kind));
                     match chosen {
                         Some((i, kind)) => {
                             let head = self.pending[..i].to_string();
@@ -236,8 +262,11 @@ impl TagScanner {
                         None => {
                             // Hold back whatever could still complete *either*
                             // candidate tag once more input arrives.
-                            let hold = longest_prefix_overlap(&self.pending, TOOL_CALL_OPEN)
-                                .max(longest_prefix_overlap(&self.pending, BARE_FUNCTION_OPEN));
+                            let hold = CALL_FORMATS
+                                .iter()
+                                .map(|format| longest_prefix_overlap(&self.pending, format.open))
+                                .max()
+                                .unwrap_or(0);
                             let flush_len = self.pending.len() - hold;
                             if flush_len > 0 {
                                 events.push(ScanEvent::Text(self.pending[..flush_len].to_string()));
@@ -331,13 +360,29 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
                 Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
                     Some(name) if !name.is_empty() => Ok((
                         name.to_string(),
-                        v.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                        decode_json_arguments(
+                            v.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                        ),
                     )),
                     _ => Err(fallback()),
                 },
                 Err(_) => Err(fallback()),
             }
         }
+    }
+}
+
+/// Hermes-style templates normally emit `arguments` as an object, but some
+/// templates serialize that object once more inside a JSON string. Decode that
+/// extra layer when it is valid JSON; a non-JSON string remains a string so an
+/// unrecognized model output is never silently discarded or turned into a
+/// different call.
+fn decode_json_arguments(arguments: serde_json::Value) -> serde_json::Value {
+    match arguments {
+        serde_json::Value::String(raw) => {
+            serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw))
+        }
+        other => other,
     }
 }
 
@@ -670,6 +715,36 @@ mod tests {
             }
             other => panic!("expected a tool call, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_output_reproduces_the_audited_call_with_text_before_it() {
+        let raw = "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(
+            parse_output(raw),
+            vec![
+                OutputPart::Text(
+                    "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n".into()
+                ),
+                OutputPart::ToolCall {
+                    name: "skill".into(),
+                    arguments: json!({"name": "brainstorming"}),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_output_decodes_json_encoded_arguments() {
+        let raw =
+            r#"<tool_call>{"name":"skill","arguments":"{\"name\":\"brainstorming\"}"}</tool_call>"#;
+        assert_eq!(
+            parse_output(raw),
+            vec![OutputPart::ToolCall {
+                name: "skill".into(),
+                arguments: json!({"name": "brainstorming"}),
+            }]
+        );
     }
 
     #[test]

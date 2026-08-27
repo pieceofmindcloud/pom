@@ -116,9 +116,10 @@ behind an auth extractor.
   the absent-request fallback. A reduction is logged and returned in the
   `x_pom.output_limits` extension. Streaming and blocking paths use the same
   finish-reason ordering, so an exhausted budget is `length` even when a tool
-  call was parsed. `/v1/models` exposes `context_length` and the
-  OpenRouter-compatible `top_provider.max_completion_tokens` from the live
-  deployment.
+  call was parsed; the audit row for that result is `incomplete`, while a
+  transport failure remains `partial`. `/v1/models` exposes `context_length`
+  and the OpenRouter-compatible `top_provider.max_completion_tokens` from the
+  live deployment.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
   and finish-reason rules, with `x_pom.output_limits` on blocking responses and
   the final streaming `message_delta`.
@@ -212,7 +213,9 @@ behind an auth extractor.
   valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
   prefill no orçamento total, sem o overshoot histórico de 513 tokens; a
   resposta separa TTFT, velocidade do prefill, velocidade da geração e total
-  em `timings`.
+  em `timings`. `generation_finish_reason` testa o orçamento antes do EOS em
+  cada ramo de decodificação; `audit_status_for_summary` registra `length` como
+  `incomplete`, e reserva `partial` para falha de transporte com texto salvo.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective
   request budget is the minimum of the client request, deployment
@@ -470,13 +473,17 @@ behind an auth extractor.
   `render_tool_call` (`<tool_call><function=NAME><parameter=P>...</parameter>`,
   string args raw, others re-serialized). `TagScanner` incrementally splits a
   token stream into text / tool-call spans tolerating tags split across chunk
-  boundaries (`longest_prefix_overlap`); `CallKind::Wrapped` (the real
-  `<tool_call>` convention) vs `CallKind::BareFunction` (a tolerated
-  wrapper-less `<function>NAME</function>` fallback, name-only, whitespace
-  guard). `parse_call_body` accepts the nested `<function=...>` XML form or
-  the legacy Hermes JSON-object form; malformed spans degrade to literal text.
-  `parse_output` = scanner over the whole text -> `Vec<OutputPart>`
-  (`Text` | `ToolCall { name, arguments }`), adjacent text merged.
+  boundaries (`CALL_FORMATS` + `longest_prefix_overlap`); the registry is
+  extended only with markers verified in the active GGUF's
+  `tokenizer.chat_template`. `CallKind::Wrapped` (the real `<tool_call>`
+  convention) vs `CallKind::BareFunction` (a tolerated wrapper-less
+  `<function>NAME</function>` fallback, name-only, whitespace guard).
+  `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
+  Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
+  malformed spans and incomplete calls degrade to literal text. `parse_output`
+  is the scanner over the whole text -> `Vec<OutputPart>` (`Text` |
+  `ToolCall { name, arguments }`), with adjacent text merged. The same scanner
+  feeds the blocking OpenAI message and its streaming tool-call deltas.
 - `webapp.rs` - `API_PREFIXES = ["api/", "v1/", "admin/", "peers", "health",
   "generate"]`; `routes<S>()` serves `GET /` (index) and `GET /*path`. A miss
   under an API prefix is a JSON 404, a miss with a file extension is "asset

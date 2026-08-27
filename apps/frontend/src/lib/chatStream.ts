@@ -33,6 +33,7 @@ export interface RequestTrace {
   prefill_overlap_enabled?: boolean;
   prefill_max_inflight_chunks?: number;
   prefill_overlapped_chunks?: number;
+  prefill_pipeline_depth_max?: number;
 }
 
 export interface TransportSummaryEntry {

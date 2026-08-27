@@ -268,6 +268,17 @@ Se mais de um eixo tiver a contagem de tokens, o menor eixo que também fecha os
 strides contíguos é escolhido de forma determinística. Geometria ou stride que
 não fecha essa regra é recusado com o shape no erro.
 
+Na recepção, a validação usa `n_embd_inp` para a forma 2D e para dimensões
+extras singleton. Quando há um eixo extra não singleton, a largura efetiva é
+`n_embd_out`, que o llama.cpp calcula a partir da arquitetura e que já
+representa a largura física produzida pelo callback. A contagem de fluxos da
+metadata descreve a geometria, mas não é multiplicada novamente pelo receptor.
+Assim, uma forma `[tokens, n_embd, fluxos...]` só passa quando o produto das
+features coincide com a largura expandida reportada; uma largura incompatível
+continua sendo recusada com a forma no erro. `decode_hidden` e
+`decode_hidden_batch` usam essa mesma largura validada para reservar o batch
+Rust, evitando aceitar uma forma que depois estoure a cópia para o buffer.
+
 Quando existe uma dimensão de fluxo extra, o residual precisa carregar cada
 fluxo. Não há uma fronteira genérica em que uma largura `n_embd` combinada seja
 matematicamente equivalente: os ops de pré-combinação e pós-combinação mantêm
@@ -647,6 +658,16 @@ com a largura de saída da metadata, que pode ser maior que o tensor materializa
 no grafo e provocar um `GGML_ASSERT` de leitura fora dos limites. O callback de
 `l_out`/`l_last` continua sendo o único caminho de captura usado pelo POM.
 
+O caminho de entrada mantém a forma do residual até `llama_decode`: a recepção
+valida o shape, o relay preserva os eixos, e o `llama_batch` Rust é alocado com
+a largura efetiva. A auditoria do fork local do llama.cpp também encontrou uma
+fronteira independente: o `llama_context::decode` ainda inicializa o seu
+`llama_batch_allocr` com `hparams.n_embd_inp()`, e o grafo normal de DeepSeek4
+recria a entrada base antes de repetir os fluxos. Portanto, esse fork ainda
+precisa de uma entrada de grafo própria para consumir um residual expandido;
+alocar o batch Rust maior evita corrupção de memória, mas não substitui essa
+alteração no llama.cpp.
+
 Por isso o planejador só escolhe uma faixa que começa exatamente na posição
 executada. Faixas sobrepostas no inventário podem formar entradas alternativas,
 mas cada caminho de uma requisição avança por sub-faixas contíguas. Quando há
@@ -817,6 +838,11 @@ requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
 O bloco `nextn` recebe o estado oculto do tronco na posição `p` com o embedding
 do token de `p+1` e prevê o token de `p+2`. É a cabeça de rascunho que o LM
 Studio liga quando oferece "MTP".
+
+O buffer `h` do contexto MTP usa `n_embd_out`, a largura física reportada pelo
+llama.cpp. Em arquiteturas com eixos de fluxo, usar apenas `n_embd` perderia
+parte do estado antes de chamar `llama_decode`; em modelos sem expansão os dois
+valores são iguais.
 
 - **O motor embarcado já sabe executá-lo.** `llama-cpp-sys-2` 0.1.154 traz
   `LLAMA_CONTEXT_TYPE_MTP` e `llama_model_n_layer_nextn` nos bindings. As
@@ -1040,6 +1066,13 @@ aquele salto não deu.
   do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
   Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
   pom é expectativa, não fato.
+- **Entrada expandida no llama.cpp**: a validação do receptor e o batch Rust
+  já usam a largura física de `n_embd_out`, mas a implementação normal do
+  `llama_context::decode` continua usando `n_embd_inp()` no allocator interno e
+  o grafo DeepSeek4 normal ainda repete a entrada base. O fork externo precisa
+  aceitar explicitamente o residual com eixos de fluxo para que os valores
+  adicionais cheguem ao modelo; o POM não pode comprimir esses eixos sem
+  alterar a matemática.
 
 ## Nota de versão
 

@@ -72,15 +72,18 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
   A captura identifica o eixo de tokens pela quantidade conhecida de tokens do
-  microlote físico e pela forma do tensor. `n_embd_inp` valida o hidden state de
-  entrada, mas não participa dessa identificação: todos os eixos anteriores ao
-  eixo de tokens são features e são preservados na ordem física, publicando o
-  shape canônico `[tokens, features...]`. Eixos posteriores maiores que 1 são
-  recusados e eixos posteriores singleton são ignorados. Se mais de um eixo
-  ainda for candidato, o menor eixo que fecha os strides contíguos é escolhido
-  deterministicamente. A acumulação continua anexando microlotes na ordem
-  produzida com `kv_unified=true`. Shape ou stride que não fecha essa geometria
-  é recusado com diagnóstico explícito.
+  microlote físico e pela forma do tensor. `n_embd_inp` valida a forma 2D ou
+  com eixos extras singleton; quando há um eixo extra não singleton,
+  `n_embd_out` valida a largura física expandida reportada pelo llama.cpp. Essas
+  larguras não participam da identificação do eixo: todos os eixos anteriores
+  ao eixo de tokens são features e são preservados na ordem física, publicando
+  o shape canônico `[tokens, features...]`. Eixos posteriores maiores que 1
+  são recusados e eixos posteriores singleton são ignorados. Se mais de um
+  eixo ainda for candidato, o menor eixo que fecha os strides contíguos é
+  escolhido deterministicamente. A acumulação continua anexando microlotes na
+  ordem produzida com `kv_unified=true`. Shape ou stride que não fecha essa
+  geometria é recusado com diagnóstico explícito. `decode_hidden` e
+  `decode_hidden_batch` usam a largura validada para dimensionar o batch Rust.
   `decode_tokens_batch` e `decode_hidden_batch`
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.
@@ -92,7 +95,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `mtp.rs` (445) - predição multi-token (MTP): contexto de rascunho
   `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
   `observe`/`accept`/`draft` portado de `common_speculative_impl_draft_mtp` do
-  llama.cpp.
+  llama.cpp. O buffer `h` acompanha `n_embd_out`, porque o contexto MTP expõe a
+  largura física de saída quando a arquitetura tem eixos de fluxo.
 - `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
   `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do
@@ -912,7 +916,11 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 ## Defeitos anotados
 
-Nenhum no momento.
+- A validação e o batch Rust aceitam a largura expandida de `n_embd_out`, mas
+  o `llama_context::decode` do fork local ainda inicializa o allocator interno
+  com `n_embd_inp()` e o grafo normal de DeepSeek4 repete a entrada base. O
+  fork precisa de uma entrada própria para consumir todos os fluxos; o detalhe
+  e a localização estão em `docs/subsystems/inferencia.md`.
 
 O que estava anotado aqui - "a captura do residual assume a ordem do
 `split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o

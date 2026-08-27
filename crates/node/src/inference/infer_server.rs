@@ -4451,6 +4451,7 @@ fn prefill_batch_blocking(
                         n_tokens,
                         s.engine.n_embd,
                         s.engine.n_embd_inp,
+                        s.engine.n_embd_out,
                         &format!("hidden state de {sid_key}"),
                     )?;
                     (
@@ -4881,6 +4882,7 @@ fn step_batch_blocking(
                     n_tokens,
                     s.engine.n_embd,
                     s.engine.n_embd_inp,
+                    s.engine.n_embd_out,
                     &format!("hidden state de {sid_key}"),
                 )?;
                 PreparedStepInput::Hidden {

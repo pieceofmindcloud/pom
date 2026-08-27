@@ -86,6 +86,7 @@ pub(crate) fn validate_hidden_tensor(
     n_tokens: usize,
     n_embd: usize,
     n_embd_inp: usize,
+    n_embd_out: usize,
     item: &str,
 ) -> Result<usize> {
     if shape.len() < 2 {
@@ -114,12 +115,22 @@ pub(crate) fn validate_hidden_tensor(
         .iter()
         .try_fold(1usize, |width, &dimension| width.checked_mul(dimension))
         .ok_or_else(|| anyhow::anyhow!("{item}: largura do hidden state excede o limite"))?;
-    if feature_width != n_embd_inp {
+    // A forma 2D continua usando a entrada base. Quando o emissor preserva
+    // eixos de fluxo, llama.cpp reporta em n_embd_out a largura física que
+    // aparece no residual. A contagem de fluxos da metadata é estrutural e
+    // não deve ser multiplicada aqui em paralelo com essa fonte autoritativa.
+    let has_non_singleton_extra_axis = shape[2..].iter().any(|&dimension| dimension > 1);
+    let expected_width = if !has_non_singleton_extra_axis {
+        n_embd_inp
+    } else {
+        n_embd_out
+    };
+    if feature_width != expected_width {
         bail!(
             "{item}: hidden state shape {:?} tem largura de entrada {}, esperado {} a partir da metadata",
             shape,
             feature_width,
-            n_embd_inp
+            expected_width
         );
     }
     let expected_values = shape
@@ -1703,6 +1714,7 @@ pub struct LlmEngine {
     ctx: *mut sys::llama_context,
     pub n_embd: usize,
     pub n_embd_inp: usize,
+    pub n_embd_out: usize,
     pub n_vocab: usize,
     /// Whether the residual capture callback was successfully installed.
     capture_ok: bool,
@@ -2201,7 +2213,7 @@ impl LlmEngine {
         // O contexto de rascunho MTP vem depois do alvo de propósito: ele
         // precisa do `ctx` já criado para ligar a saída do estado oculto nele.
         let mtp = if cfg.mtp {
-            match crate::mtp::MtpDrafter::attach(model, ctx, cfg, n_embd, n_vocab) {
+            match crate::mtp::MtpDrafter::attach(model, ctx, cfg, n_embd_out, n_vocab) {
                 Ok(d) => {
                     if d.is_none() {
                         tracing::info!(
@@ -2227,6 +2239,7 @@ impl LlmEngine {
             ctx,
             n_embd,
             n_embd_inp,
+            n_embd_out,
             n_vocab,
             capture_ok,
             capture,
@@ -2704,15 +2717,29 @@ impl LlmEngine {
         let descriptors: Vec<BatchEntry> = entries.iter().map(|e| e.descriptor.clone()).collect();
         let layout = BatchLayout::new(&descriptors)?;
         let mut feature_shape: Option<&[usize]> = None;
+        let mut input_width = None;
         for entry in entries {
-            validate_hidden_tensor(
+            let entry_width = validate_hidden_tensor(
                 entry.hidden.len(),
                 &entry.shape,
                 entry.descriptor.tokens,
                 self.n_embd,
                 self.n_embd_inp,
+                self.n_embd_out,
                 &format!("item {}", entry.descriptor.item_id),
             )?;
+            if let Some(expected_width) = input_width {
+                if expected_width != entry_width {
+                    bail!(
+                        "item {} tem largura {}, mas o batch usa {}",
+                        entry.descriptor.item_id,
+                        entry_width,
+                        expected_width
+                    );
+                }
+            } else {
+                input_width = Some(entry_width);
+            }
             if let Some(expected_shape) = feature_shape {
                 if *expected_shape != entry.shape[1..] {
                     bail!(
@@ -2729,17 +2756,18 @@ impl LlmEngine {
 
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
-        let input_width = i32::try_from(self.n_embd_inp)
+        let input_width = input_width.expect("entries não vazio garante largura de entrada");
+        let input_width_i32 = i32::try_from(input_width)
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
         let enqueue_started = Instant::now();
         self.reset_capture_slot(layout.total_tokens());
-        let mut batch = unsafe { sys::llama_batch_init(n, input_width, 1) };
+        let mut batch = unsafe { sys::llama_batch_init(n, input_width_i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut();
         let mut row = 0usize;
         unsafe {
             for entry in entries {
-                let start = row * self.n_embd_inp;
+                let start = row * input_width;
                 let end = start + entry.hidden.len();
                 std::ptr::copy_nonoverlapping(
                     entry.hidden.as_ptr(),
@@ -2979,19 +3007,20 @@ impl LlmEngine {
         // residual de outra requisição concatenado ao desta.
         self.reset_capture_slot(n_tokens);
         let enqueue_started = Instant::now();
-        validate_hidden_tensor(
+        let input_width = validate_hidden_tensor(
             hidden.len(),
             shape,
             n_tokens,
             self.n_embd,
             self.n_embd_inp,
+            self.n_embd_out,
             "hidden state",
         )?;
         let n = i32::try_from(n_tokens)
             .map_err(|_| anyhow::anyhow!("hidden state excede o limite de tokens do llama.cpp"))?;
-        let input_width = i32::try_from(self.n_embd_inp)
+        let input_width_i32 = i32::try_from(input_width)
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
-        let mut batch = unsafe { sys::llama_batch_init(n, input_width, 1) };
+        let mut batch = unsafe { sys::llama_batch_init(n, input_width_i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut(); // signals embedding mode
 
@@ -4188,6 +4217,106 @@ fn token_sequence_ends_with(tokens: &[i32], suffix: &[i32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receptor_aceita_hidden_state_com_fluxos_expandidos() {
+        let shape = vec![11, 4096, 4];
+        let values_len = 11 * 4096 * 4;
+
+        validate_hidden_tensor(values_len, &shape, 11, 4096, 4096, 16_384, "hidden state")
+            .expect("a largura expandida do eixo de fluxos deve ser aceita");
+    }
+
+    #[test]
+    fn receptor_aceita_hidden_state_sem_fluxos() {
+        let shape = vec![3, 8];
+
+        validate_hidden_tensor(3 * 8, &shape, 3, 8, 8, 32, "hidden state")
+            .expect("o modelo sem fluxos deve manter a validação atual");
+    }
+
+    #[test]
+    fn receptor_mantem_singletons_de_um_modelo_sem_fluxos() {
+        let shape = vec![3, 8, 1];
+
+        validate_hidden_tensor(3 * 8, &shape, 3, 8, 8, 32, "hidden state")
+            .expect("dimensões singleton não devem virar um eixo de fluxo");
+    }
+
+    #[test]
+    fn receptor_recusa_largura_de_hidden_state_incompativel_nomeando_shape() {
+        let shape = vec![11, 4096, 3];
+
+        let error = validate_hidden_tensor(
+            11 * 4096 * 3,
+            &shape,
+            11,
+            4096,
+            4096,
+            16_384,
+            "hidden state",
+        )
+        .expect_err("uma largura de fluxo incompatível deve continuar recusada")
+        .to_string();
+
+        assert!(error.contains("[11, 4096, 3]"), "erro inesperado: {error}");
+        assert!(
+            error.contains("largura de entrada 12288"),
+            "erro inesperado: {error}"
+        );
+    }
+
+    #[test]
+    fn residual_do_emissor_via_wire_e_aceito_pelo_receptor() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            expected_tokens: 11,
+            max_microbatch_tokens: 11,
+            n_embd: 4096,
+            expected_floats: None,
+            layout: None,
+            error: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
+            copy_us: 0,
+        };
+        let values = (0..(11 * 4096 * 4))
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [4096, 4, 11, 1],
+            [4, 16_384, 65_536, 720_896],
+            values.len() * 4,
+            values,
+        )
+        .unwrap();
+        let emitted = take_captured_residual(&mut slot).unwrap();
+
+        let frame = crate::wire::encode(
+            &serde_json::json!({"session_id": "round-trip"}),
+            Some((&emitted.values, emitted.shape.clone())),
+            crate::wire::WireDtype::F32,
+        )
+        .unwrap();
+        let (_, received) = crate::wire::decode(&frame).unwrap();
+        let (received_values, received_shape) = received.unwrap();
+
+        let width = validate_hidden_tensor(
+            received_values.len(),
+            &received_shape,
+            11,
+            4096,
+            4096,
+            16_384,
+            "hidden state",
+        )
+        .expect("o receptor deve aceitar exatamente a forma emitida");
+        assert_eq!(received_shape, vec![11, 4096, 4]);
+        assert_eq!(width, 16_384);
+    }
 
     #[test]
     fn capture_target_accepts_an_alternate_last_layer_alias() {

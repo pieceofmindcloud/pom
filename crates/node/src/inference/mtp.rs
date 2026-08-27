@@ -75,7 +75,7 @@ extern "C" {
 pub struct MtpDrafter {
     /// O contexto que roda o grafo `DECODER_MTP`. Dono: liberado no `Drop`.
     ctx: *mut sys::llama_context,
-    n_embd: usize,
+    hidden_width: usize,
     n_vocab: usize,
 
     /// O `h` que a próxima chamada precisa parear com o primeiro token dela.
@@ -130,7 +130,7 @@ impl MtpDrafter {
         model: *mut sys::llama_model,
         ctx_tgt: *mut sys::llama_context,
         cfg: &crate::llm::EngineConfig,
-        n_embd: usize,
+        hidden_width: usize,
         n_vocab: usize,
     ) -> Result<Option<Self>> {
         if nextn_layers(model) <= 0 {
@@ -184,9 +184,9 @@ impl MtpDrafter {
 
         Ok(Some(MtpDrafter {
             ctx,
-            n_embd,
+            hidden_width,
             n_vocab,
-            pending_h: vec![0.0; n_embd],
+            pending_h: vec![0.0; hidden_width],
             verify_h: Vec::new(),
             verify_rows: 0,
         }))
@@ -236,7 +236,7 @@ impl MtpDrafter {
         // então o vetor de tokens é nosso e o ponteiro é devolvido ao que era
         // antes de `llama_batch_free` - que libera `token` se ele não for
         // nulo, e liberar memória do Rust ali seria corrupção de heap.
-        let mut batch = unsafe { sys::llama_batch_init(n as i32, self.n_embd as i32, 1) };
+        let mut batch = unsafe { sys::llama_batch_init(n as i32, self.hidden_width as i32, 1) };
         let mut owned_tokens: Vec<i32> = tokens.to_vec();
         let restore_token = batch.token;
         batch.n_tokens = n as i32;
@@ -251,7 +251,7 @@ impl MtpDrafter {
             }
             // Linha 0: o `h` que sobrou da chamada anterior. Linhas 1..n: o `h`
             // que o alvo acabou de produzir para as posições 0..n-1.
-            ptr::copy_nonoverlapping(self.pending_h.as_ptr(), batch.embd, self.n_embd);
+            ptr::copy_nonoverlapping(self.pending_h.as_ptr(), batch.embd, self.hidden_width);
             let mut faltou = None;
             for i in 1..n {
                 let src = pom_llama_get_embeddings_nextn_ith(ctx_tgt, (i - 1) as i32);
@@ -259,7 +259,11 @@ impl MtpDrafter {
                     faltou = Some(i - 1);
                     break;
                 }
-                ptr::copy_nonoverlapping(src, batch.embd.add(i * self.n_embd), self.n_embd);
+                ptr::copy_nonoverlapping(
+                    src,
+                    batch.embd.add(i * self.hidden_width),
+                    self.hidden_width,
+                );
             }
             if let Some(i) = faltou {
                 batch.token = restore_token;
@@ -278,7 +282,7 @@ impl MtpDrafter {
 
         // 2. Guarda as linhas do alvo para a escolha de `accept`.
         self.verify_h.clear();
-        self.verify_h.reserve(n * self.n_embd);
+        self.verify_h.reserve(n * self.hidden_width);
         for i in 0..n {
             let src = unsafe { pom_llama_get_embeddings_nextn_ith(ctx_tgt, i as i32) };
             if src.is_null() {
@@ -286,11 +290,11 @@ impl MtpDrafter {
                 bail!("llama_get_embeddings_nextn_ith devolveu NULL para i={i}");
             }
             self.verify_h
-                .extend_from_slice(unsafe { std::slice::from_raw_parts(src, self.n_embd) });
+                .extend_from_slice(unsafe { std::slice::from_raw_parts(src, self.hidden_width) });
         }
         self.verify_rows = n;
         self.pending_h
-            .copy_from_slice(&self.verify_h[(n - 1) * self.n_embd..n * self.n_embd]);
+            .copy_from_slice(&self.verify_h[(n - 1) * self.hidden_width..n * self.hidden_width]);
         Ok(())
     }
 
@@ -306,8 +310,9 @@ impl MtpDrafter {
             return;
         }
         let row = accepted.min(self.verify_rows - 1);
-        self.pending_h
-            .copy_from_slice(&self.verify_h[row * self.n_embd..(row + 1) * self.n_embd]);
+        self.pending_h.copy_from_slice(
+            &self.verify_h[row * self.hidden_width..(row + 1) * self.hidden_width],
+        );
     }
 
     /// Rascunha até `k` tokens a partir do último token confirmado.
@@ -366,7 +371,7 @@ impl MtpDrafter {
         seq_id: u32,
         h: &[f32],
     ) -> Option<(i32, f32, Vec<f32>)> {
-        let mut batch = unsafe { sys::llama_batch_init(1, self.n_embd as i32, 1) };
+        let mut batch = unsafe { sys::llama_batch_init(1, self.hidden_width as i32, 1) };
         // Ver `observe`: o ponteiro de tokens é nosso e volta ao original
         // antes do `llama_batch_free`.
         let mut owned = [token];
@@ -379,7 +384,7 @@ impl MtpDrafter {
             *batch.n_seq_id = 1;
             *(*batch.seq_id).add(0) = seq_id as i32;
             *batch.logits = 1;
-            ptr::copy_nonoverlapping(h.as_ptr(), batch.embd, self.n_embd);
+            ptr::copy_nonoverlapping(h.as_ptr(), batch.embd, self.hidden_width);
             let rc = sys::llama_decode(self.ctx, batch);
             batch.token = restore_token;
             sys::llama_batch_free(batch);
@@ -401,7 +406,7 @@ impl MtpDrafter {
         if next_h.is_null() {
             return None;
         }
-        let next_h = unsafe { std::slice::from_raw_parts(next_h, self.n_embd) }.to_vec();
+        let next_h = unsafe { std::slice::from_raw_parts(next_h, self.hidden_width) }.to_vec();
         Some((id, p, next_h))
     }
 }

@@ -1087,7 +1087,11 @@ fn main() {
     config
         .profile(&profile)
         .very_verbose(std::env::var("CMAKE_VERBOSE").is_ok()) // Not verbose by default
-        .always_configure(false);
+        // The llama.cpp fork collects model sources with CMake's GLOB. The
+        // target directory is deliberately cacheable (including in Docker),
+        // so reusing a CMakeCache without configuring can leave a newly
+        // checked-out model source out of libllama.a.
+        .always_configure(true);
 
     let build_dir = config.build();
 

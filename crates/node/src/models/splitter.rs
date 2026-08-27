@@ -3448,7 +3448,10 @@ mod tests {
         let out = dir.join("deepseek4-15-28.gguf");
 
         let layout = crate::gguf::read_layout(source).unwrap();
-        assert!(layout.layer_count() > 28, "o GGUF real precisa da camada 28");
+        assert!(
+            layout.layer_count() > 28,
+            "o GGUF real precisa da camada 28"
+        );
         assert!(
             layout.required_head_bytes() > 0,
             "a cabeça DeepSeek4 deve estar na fonte"

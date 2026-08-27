@@ -192,6 +192,11 @@ offload no primeiro clique.
   com cache mounts (registry/git/target). Runtime é a base CUDA 13.0.3 com
   `LD_LIBRARY_PATH` incluindo `compat/` e `POM_HOME=/app`. O `ARG
   POM_BUILD_COMMIT` recebe o commit do host.
+- O cache de `target/` também pode conservar um `CMakeCache.txt` do
+  `llama.cpp`. Como o fork coleta `src/models/*.cpp` por `file(GLOB ...)`, o
+  `build.rs` do `llama-cpp-sys-2` força o reconfigure do CMake em cada execução;
+  sem isso, uma árvore nativa gerada antes de um arquivo de modelo existir pode
+  produzir `libllama.a` sem o objeto correspondente e falhar só no link Rust.
 - **`scripts/build-docker.sh`**: leia o commit **no host** (`git rev-parse
   --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), exporta
   `POM_BUILD_COMMIT`, roda `npm run build` e `docker compose build`.

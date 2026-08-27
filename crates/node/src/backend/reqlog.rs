@@ -90,6 +90,7 @@ pub struct AuditCompletion {
     pub completed_at: String,
     pub result: Option<String>,
     pub telemetry: Option<JsonValue>,
+    pub timings: Option<crate::gateway::GenerationTimings>,
     pub source: String,
     pub hops: Vec<String>,
     pub prompt_tokens: Option<u32>,
@@ -114,6 +115,7 @@ pub struct Entry {
     pub request_details: JsonValue,
     pub result: Option<String>,
     pub telemetry: JsonValue,
+    pub timings: Option<crate::gateway::GenerationTimings>,
     pub hops: Vec<String>,
     pub source: String,
     pub prompt_tokens: Option<u32>,
@@ -287,7 +289,7 @@ impl AuditDb {
         let transaction = self.connection.transaction()?;
         let updated = transaction.execute(
             "UPDATE audit_requests SET
-                completed_at = ?, result = ?, telemetry = ?, source = ?, hops = ?,
+                completed_at = ?, result = ?, telemetry = ?, timings = ?, source = ?, hops = ?,
                 prompt_tokens = ?, completion_tokens = ?, duration_ms = ?,
                 status = ?, error = ?
              WHERE id = ?",
@@ -296,6 +298,11 @@ impl AuditDb {
                 &completion.result,
                 completion
                     .telemetry
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+                completion
+                    .timings
                     .as_ref()
                     .map(serde_json::to_string)
                     .transpose()?,
@@ -411,7 +418,7 @@ impl AuditDb {
         let mut stmt = self.connection.prepare(&format!(
             "SELECT id, received_at, completed_at, route, model, api_key_id,
                     api_key_label, api_key_node_id, entry_node_id, prompt,
-                    request_details, result, telemetry, hops, source,
+                    request_details, result, telemetry, timings, hops, source,
                     prompt_tokens, completion_tokens, duration_ms, status, error
              FROM audit_requests WHERE {where_sql}
              ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
@@ -455,6 +462,7 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             request_details TEXT NOT NULL DEFAULT '{}',
             result TEXT,
             telemetry TEXT,
+            timings TEXT,
             hops TEXT NOT NULL DEFAULT '[]',
             source TEXT NOT NULL DEFAULT 'none',
             prompt_tokens INTEGER,
@@ -486,6 +494,14 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         PRAGMA user_version = 1;",
     )?;
+    let timings_exists = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('audit_requests') WHERE name = 'timings'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? > 0;
+    if !timings_exists {
+        connection.execute("ALTER TABLE audit_requests ADD COLUMN timings TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -560,6 +576,14 @@ fn entry_from_row(row: &Row<'_>) -> rusqlite::Result<Entry> {
         let raw: String = row.get(column)?;
         Ok(serde_json::from_str(&raw).unwrap_or_default())
     };
+    let parse_timings =
+        |column: usize| -> rusqlite::Result<Option<crate::gateway::GenerationTimings>> {
+            let raw: Option<String> = row.get(column)?;
+            raw.as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|_| rusqlite::Error::InvalidQuery)
+        };
     Ok(Entry {
         id: row.get(0)?,
         received_at: row.get(1)?,
@@ -574,13 +598,14 @@ fn entry_from_row(row: &Row<'_>) -> rusqlite::Result<Entry> {
         request_details: parse_json(10)?,
         result: row.get(11)?,
         telemetry: parse_json(12)?,
-        hops: parse_hops(13)?,
-        source: row.get(14)?,
-        prompt_tokens: row.get::<_, Option<i64>>(15)?.map(|value| value as u32),
-        completion_tokens: row.get::<_, Option<i64>>(16)?.map(|value| value as u32),
-        duration_ms: row.get::<_, Option<i64>>(17)?.map(|value| value as u64),
-        status: row.get(18)?,
-        error: row.get(19)?,
+        timings: parse_timings(13)?,
+        hops: parse_hops(14)?,
+        source: row.get(15)?,
+        prompt_tokens: row.get::<_, Option<i64>>(16)?.map(|value| value as u32),
+        completion_tokens: row.get::<_, Option<i64>>(17)?.map(|value| value as u32),
+        duration_ms: row.get::<_, Option<i64>>(18)?.map(|value| value as u64),
+        status: row.get(19)?,
+        error: row.get(20)?,
     })
 }
 
@@ -657,6 +682,7 @@ mod tests {
             completed_at: "2026-08-26T12:00:01Z".into(),
             result: Some("resposta exata".into()),
             telemetry: Some(json!({ "tokens_per_sec": 12.5 })),
+            timings: Some(crate::gateway::timing_metrics(1000, 250, 200, 10, 3)),
             source: "pipeline:node-a→node-b".into(),
             hops: vec!["node-a".into(), "node-b".into()],
             prompt_tokens: Some(5),
@@ -686,6 +712,15 @@ mod tests {
         assert_eq!(after.entries[0].status, "ok");
         assert_eq!(after.entries[0].result.as_deref(), Some("resposta exata"));
         assert_eq!(after.entries[0].telemetry["tokens_per_sec"], 12.5);
+        assert_eq!(after.entries[0].timings.as_ref().unwrap().ttft_ms, 250);
+        assert_eq!(
+            after.entries[0]
+                .timings
+                .as_ref()
+                .unwrap()
+                .generation_tokens_per_sec,
+            Some(4.0)
+        );
         assert_eq!(after.entries[0].hops, ["node-a", "node-b"]);
         assert_eq!(
             after.entries[0].completed_at.as_deref(),

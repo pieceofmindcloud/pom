@@ -60,6 +60,11 @@ fit-memory and KV offload are separate from the per-peer `POM_PROFILE_SYNC`
 state labels. The footnote explains the measurements but does not claim a fixed
 environment value.
 
+Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
+velocidade de pré-processamento do prompt, velocidade de geração da saída,
+tempo total, tokens/s e o rótulo explícito de taxa não mensurável usado para
+prefill de zero token ou resposta de um token.
+
 The slice locale group also covers multipart part lists, summed-size loading
 state and explicit incomplete-set errors in both languages.
 

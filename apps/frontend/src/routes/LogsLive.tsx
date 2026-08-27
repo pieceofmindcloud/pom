@@ -27,6 +27,10 @@ import { useCluster, useRequestLog } from "../lib/queries";
 import type { RequestLogEntry } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
+function rateText(value: number | null, unavailable: string, unit: string) {
+  return value == null ? unavailable : `${num(value, 1)} ${unit}`;
+}
+
 export function LogsLive() {
   const { t } = useI18n();
   const [live, setLive] = useState(true);
@@ -105,6 +109,11 @@ export function LogsLive() {
                     <Mono className="shrink-0 text-muted">
                       {num(e.completion_tokens ?? 0)} tok · {ms(e.duration_ms)}
                     </Mono>
+                    {e.timings && (
+                      <span className="w-full pl-0 font-mono text-[0.68rem] text-faint md:pl-[calc(12rem+1rem)]">
+                        {t("liveLogs.totalShort", { value: ms(e.timings.total_ms) })} · {t("liveLogs.ttftShort", { value: ms(e.timings.ttft_ms) })} · {t("liveLogs.prefillShort", { value: rateText(e.timings.prefill_tokens_per_sec, t("liveLogs.rateUnavailable"), t("liveLogs.tokensPerSecondUnit")) })} · {t("liveLogs.generationShort", { value: rateText(e.timings.generation_tokens_per_sec, t("liveLogs.rateUnavailable"), t("liveLogs.tokensPerSecondUnit")) })}
+                      </span>
+                    )}
                     {e.error && (
                       <p className="break-path w-full text-[0.75rem] text-rose">{e.error}</p>
                     )}

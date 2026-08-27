@@ -31,6 +31,49 @@ describe("chat stream parsing", () => {
     expect(state.durationMs).toBe(16956);
   });
 
+  it("stores split request timings without treating total throughput as generation speed", () => {
+    const state = finishChatStream(emptyChatStream(), {
+      tokens_per_sec: 2,
+      tokens_generated: 20,
+      duration_ms: 10000,
+      timings: {
+        ttft_ms: 2400,
+        prefill_ms: 2000,
+        prefill_tokens: 100,
+        prefill_tokens_per_sec: 50,
+        generation_ms: 7600,
+        generation_tokens: 20,
+        generation_tokens_per_sec: 20 / 7.6,
+        total_ms: 10000,
+        total_tokens_per_sec: 2,
+      },
+    });
+
+    expect(state.timings?.ttft_ms).toBe(2400);
+    expect(state.timings?.prefill_tokens_per_sec).toBe(50);
+    expect(state.timings?.generation_tokens_per_sec).toBe(20 / 7.6);
+    expect(state.timings?.total_tokens_per_sec).toBe(2);
+  });
+
+  it("keeps unavailable rates unavailable for zero prefill and one output token", () => {
+    const state = finishChatStream(emptyChatStream(), {
+      timings: {
+        ttft_ms: 1200,
+        prefill_ms: 800,
+        prefill_tokens: 0,
+        prefill_tokens_per_sec: null,
+        generation_ms: 0,
+        generation_tokens: 1,
+        generation_tokens_per_sec: null,
+        total_ms: 1200,
+        total_tokens_per_sec: 1 / 1.2,
+      },
+    });
+
+    expect(state.timings?.prefill_tokens_per_sec).toBeNull();
+    expect(state.timings?.generation_tokens_per_sec).toBeNull();
+  });
+
   it("keeps the final distributed trace for the debug view", () => {
     const state = finishChatStream(emptyChatStream(), {
       trace: { model: "qwen", input_tokens: 12, output_tokens: 4, prefill_ms: 90, total_bytes_sent: 10, total_bytes_received: 20, hops: [] },

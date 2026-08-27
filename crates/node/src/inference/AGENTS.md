@@ -355,7 +355,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
   como botão. O fixture não anuncia batching, pois o endpoint falso atende
-  frames unitários.
+  frames unitários. Os cenários também conferem que a resposta real do gateway
+  traz `GenerationTimings` agregados, inclusive no limite de um token.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
   lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o

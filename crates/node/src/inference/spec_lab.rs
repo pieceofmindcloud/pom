@@ -443,6 +443,7 @@ struct Visto {
     texto: String,
     tokens: u32,
     partial: bool,
+    timings: Option<crate::gateway::GenerationTimings>,
     /// `decode.calls` de cada hop do trace — o número que o captain leu no
     /// `x_pom` e viu zerado nos dois.
     decode_calls: Vec<u32>,
@@ -548,6 +549,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
         texto: String::new(),
         tokens: 0,
         partial: false,
+        timings: None,
         decode_calls: Vec::new(),
         step_calls: Vec::new(),
         direct_steps: Vec::new(),
@@ -559,6 +561,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
             crate::gateway::GenEvent::Done(sum) => {
                 visto.tokens = sum.tokens_generated;
                 visto.partial = sum.partial;
+                visto.timings = Some(sum.timings);
                 visto.decode_calls = sum
                     .trace
                     .as_ref()
@@ -599,6 +602,10 @@ async fn quem_rascunha_no_anel_gera_o_texto_inteiro() {
     assert_eq!(visto.tokens, 5);
     assert!(!visto.partial);
     assert_eq!(visto.texto, "ABCDE");
+    let timings = visto.timings.expect("a resposta deve trazer os tempos");
+    assert_eq!(timings.generation_tokens, visto.tokens);
+    assert!(timings.ttft_ms >= timings.prefill_ms);
+    assert!(timings.prefill_tokens_per_sec.is_some());
     assert!(
         visto.direct_steps.iter().all(|c| *c == 0),
         "sem resposta direta negociada, nenhum passo pode sair por ali: {:?}",
@@ -616,11 +623,27 @@ async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
     assert_eq!(visto.tokens, 5);
     assert!(!visto.partial);
     assert_eq!(visto.texto, "ABCDE");
+    let timings = visto.timings.expect("a resposta deve trazer os tempos");
+    assert_eq!(timings.generation_tokens, visto.tokens);
+    assert!(timings.ttft_ms >= timings.prefill_ms);
+    assert!(timings.prefill_tokens_per_sec.is_some());
     assert_eq!(
         visto.direct_steps[0], 0,
         "toda rodada especulou, então nenhuma podia sair pelo caminho direto"
     );
     assert!(visto.decode_calls.iter().all(|c| *c > 0));
+}
+
+#[tokio::test]
+async fn resposta_de_um_token_mantem_as_taxas_finitas() {
+    let visto = gerar(false, 1, 512).await;
+
+    assert_eq!(visto.falhou, None);
+    assert_eq!(visto.tokens, 1);
+    let timings = visto.timings.expect("a resposta deve trazer os tempos");
+    assert_eq!(timings.generation_tokens, 1);
+    assert!(timings.total_tokens_per_sec.is_finite());
+    assert!(timings.generation_tokens_per_sec.is_none_or(f64::is_finite));
 }
 
 /// `n_batch=512` limita apenas a largura de uma rodada no motor, não o

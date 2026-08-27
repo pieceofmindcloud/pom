@@ -43,9 +43,9 @@ import {
   type ChatMessage,
   type ChatSession,
 } from "../lib/chatStore";
-import { bytes, since } from "../lib/format";
+import { bytes, ms, num, since } from "../lib/format";
 import { isPhasedHop } from "../lib/chatStream";
-import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
+import type { GenerationTimings, LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useCluster,
@@ -88,6 +88,29 @@ function EventMark({ message }: { message: ChatMessage }) {
 function ModelIntroMark({ model }: { model: string }) {
   const { t } = useI18n();
   return <EventMark message={{ id: "model-at-start", role: "event", content: t("chat.modelAtStart", { model }), at: "" }} />;
+}
+
+function metricRate(
+  value: number | null | undefined,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  return value == null ? t("chat.rateUnavailable") : `${num(value, 1)} ${t("chat.tokensPerSecondUnit")}`;
+}
+
+function TimingSummary({ timings }: { timings: GenerationTimings }) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-2 grid max-w-[38rem] grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[0.68rem]">
+      <span className="text-faint">{t("chat.generationSpeed")}</span>
+      <span className="font-mono text-muted">{metricRate(timings.generation_tokens_per_sec, t)} · {timings.generation_tokens} {t("chat.tokensUnit")}</span>
+      <span className="text-faint">{t("chat.prefillSpeed")}</span>
+      <span className="font-mono text-muted">{metricRate(timings.prefill_tokens_per_sec, t)} · {timings.prefill_tokens} {t("chat.promptTokensUnit")}</span>
+      <span className="text-faint">{t("chat.ttft")}</span>
+      <span className="font-mono text-muted">{ms(timings.ttft_ms)}</span>
+      <span className="text-faint">{t("chat.totalTime")}</span>
+      <span className="font-mono text-muted">{ms(timings.total_ms)} · {num(timings.total_tokens_per_sec, 1)} {t("chat.tokensPerSecondUnit")}</span>
+    </div>
+  );
 }
 
 export interface ExecutionTelemetryEnvironment {
@@ -334,15 +357,18 @@ function Bubble({
           {message.source && (
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
           )}
-          {message.tokensPerSecond != null && (
+          {message.timings ? (
+            <TimingSummary timings={message.timings} />
+          ) : message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
-              <span>{message.tokensPerSecond.toFixed(1)} {t("chat.speedUnit")}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${t("chat.timeUnit")}`}</span>
+              <span>{t("chat.legacyTotalSpeed", { value: num(message.tokensPerSecond, 1) })}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${ms(message.durationMs)}`}</span>
             </div>
           )}
           {message.trace && (
             <div className="mt-2">
               <ExecutionTelemetry
                 trace={message.trace}
+                timings={message.timings}
                 source={message.source}
                 environment={telemetryEnvironment}
                 onAnalyze={onAnalyze}
@@ -363,12 +389,14 @@ function Bubble({
  */
 export function ExecutionTelemetry({
   trace,
+  timings,
   source,
   environment,
   onAnalyze,
   analyzeDisabled = false,
 }: {
   trace: RequestTrace;
+  timings?: GenerationTimings;
   source?: string;
   environment?: ExecutionTelemetryEnvironment;
   onAnalyze?: (trace: RequestTrace) => void;
@@ -389,6 +417,7 @@ export function ExecutionTelemetry({
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
     <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}{trace.prefix_match_tokens != null ? <span>{t("chat.telemetry.prefixCandidate", { count: trace.prefix_match_tokens })}</span> : null}{trace.prompt_tokens_transmitted != null ? <span>{t("chat.telemetry.tokensTransmitted", { count: trace.prompt_tokens_transmitted })}</span> : null}{trace.prefix_reuse_status ? <span>{t("chat.telemetry.prefixStatus", { status: trace.prefix_reuse_status })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    {timings && <TimingSummary timings={timings} />}
     {trace.prefill_overlap_enabled && <p className="mt-1 font-mono text-[0.68rem] text-faint">{t("chat.telemetry.overlap", { chunks: trace.prefill_overlapped_chunks ?? 0, limit: trace.prefill_max_inflight_chunks ?? 2 })}</p>}
     {trace.transport_trace_complete === false && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>
@@ -1007,6 +1036,7 @@ export function Chat() {
               tokensPerSecond: streamed.tokensPerSecond,
               tokensGenerated: streamed.tokensGenerated,
               durationMs: streamed.durationMs,
+              timings: streamed.timings,
               trace: streamed.trace,
               source: typeof metrics.source === "string" ? metrics.source : undefined,
             });

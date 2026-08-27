@@ -893,7 +893,9 @@ inteiro.
   llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de
   verdade. Como os hops falsos implementam frames unitários, o fixture só
   anuncia capabilities compatíveis e não entra no `BatchCoordinator`; só o
-  llama.cpp faz isso, ver o doc do módulo para o que mudou em 2026-08-16.
+  llama.cpp faz isso, ver o doc do módulo para o que mudou em 2026-08-16. Ela
+  também confere o resumo agregado `GenerationTimings` no caminho de geração do
+  gateway, incluindo uma resposta de um token.
 
 ## 9. Limite de prompt
 

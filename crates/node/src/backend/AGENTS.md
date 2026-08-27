@@ -181,7 +181,10 @@ behind an auth extractor.
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
-  /`Failed`; `generate_blocking_with_stops` collapses it. The terminal event
+  /`Failed`; `GenSummary` also carries `GenerationTimings` aggregated over the
+  full pipeline: TTFT, prompt-token prefill speed, output-token generation
+  speed from the first token, and end-to-end total. The historical
+  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
   the next turn the instant the stream closes and used to arrive in the middle
@@ -207,7 +210,9 @@ behind an auth extractor.
   JSON body (used by the transfer, deploy and webui tests).
 - `gateway.rs` - `/api/generate` aceita `max_tokens` opcional (padrão 512),
   valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
-  prefill no orçamento total, sem o overshoot histórico de 513 tokens;
+  prefill no orçamento total, sem o overshoot histórico de 513 tokens; a
+  resposta separa TTFT, velocidade do prefill, velocidade da geração e total
+  em `timings`.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective
   request budget is the minimum of the client request, deployment

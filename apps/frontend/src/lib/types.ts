@@ -710,6 +710,19 @@ export interface ApiKey {
   created_at: string;
 }
 
+/** Request-level performance, aggregated over the whole inference pipeline. */
+export interface GenerationTimings {
+  ttft_ms: number;
+  prefill_ms: number;
+  prefill_tokens: number;
+  prefill_tokens_per_sec: number | null;
+  generation_ms: number;
+  generation_tokens: number;
+  generation_tokens_per_sec: number | null;
+  total_ms: number;
+  total_tokens_per_sec: number;
+}
+
 /** One inference request, as the node recorded it. `src/reqlog.rs`. */
 export interface RequestLogEntry {
   id: string;
@@ -739,6 +752,7 @@ export interface RequestLogEntry {
   prompt_tokens: number | null;
   completion_tokens: number | null;
   duration_ms: number | null;
+  timings?: GenerationTimings | null;
   status: "in_progress" | "ok" | "partial" | "error" | "abandoned" | "incomplete" | string;
   error: string | null;
 }

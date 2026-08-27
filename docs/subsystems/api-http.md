@@ -51,7 +51,13 @@ haver chave.
 - **`POST /api/generate`** - `{ model?, prompt, max_tokens?, stop? }`; resposta `GenerateResponse`
   com `response`, `source` (`"pipeline:<cadeia>"`, `"local"`,
   `"peer:<node_id>"` ou `"none"`/`"error"`), `tokens_generated`,
-  `tokens_per_sec`, `duration_ms`, `trace`. Corpo aceito como bytes crus (não
+  `tokens_per_sec`, `duration_ms`, `timings`, `trace`. `timings` agrega o
+  pipeline inteiro e separa `ttft_ms` (fila + prefill até o primeiro token),
+  `prefill_ms`/`prefill_tokens_per_sec` (tokens efetivamente processados, após
+  reuso de prefixo), `generation_ms`/`generation_tokens_per_sec` (saída desde
+  o primeiro token) e `total_ms`/`total_tokens_per_sec`. Uma taxa sem tokens ou
+  sem intervalo mensurável é `null`; `tokens_per_sec` continua como alias do
+  total para não quebrar clientes. Corpo aceito como bytes crus (não
   exige `Content-Type: application/json`). `max_tokens` é o orçamento total da
   saída, incluindo o primeiro token que o prefill devolve; sem o campo, o
   padrão é 512. O pedido precisa ser maior que zero e não pode exceder o
@@ -91,7 +97,8 @@ redução e a devolve em `x_pom.output_limits`; se o contexto não deixar nenhum
 token, responde HTTP 413 antes de abrir o SSE. Assim, uma saída que esgota o
 orçamento efetivo recebe `finish_reason: "length"`, inclusive se contiver uma
 chamada de ferramenta já reconhecida. Todas as respostas válidas levam a
-extensão `x_pom` (fora do schema) com a prova de execução distribuída. O campo OpenAI `stop`
+extensão `x_pom` (fora do schema) com a prova de execução distribuída e o
+objeto próprio `timings`; o campo OpenAI `stop`
 (string ou lista) passa pelo matcher incremental do gateway: um sufixo que
 ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é
 enviada ao cliente. CORS `*` para harnesses
@@ -114,7 +121,8 @@ evento Anthropic. Também rotula todo turno, pelo mesmo motivo do OpenAI, e
 publica o reuso honrado em `usage.cache_read_input_tokens`. `stop_sequences` usa o mesmo matcher incremental e
 `stop_sequence` retorna a string que encerrou a saída. `tool_choice` continua
 parseado e ignorado. `x_pom.output_limits` informa o orçamento pedido e o
-efetivo; uma saída cortada por esse orçamento usa `stop_reason: "max_tokens"`.
+efetivo; `x_pom.timings` usa a mesma convenção do OpenAI; uma saída cortada por
+esse orçamento usa `stop_reason: "max_tokens"`.
 
 ### `/admin/*`
 
@@ -289,6 +297,12 @@ A mesma string que o log de requisições guarda como `source`: `"pipeline:<id1>
 chunk do SSE, e como `source` no `reqlog`. `"none"` marca erro/abandono. É o
 único jeito de um harness saber que a inferência foi conjunta: `source`
 começando com `pipeline:` e com **dois** hops é a prova.
+
+`x_pom.timings` é extensão própria, tanto no último chunk do SSE quanto nas
+respostas não-streaming. O formato compatível com OpenAI continua intacto:
+clientes que ignoram `x_pom` continuam lendo `usage`, `choices` e os demais
+campos padrão. A auditoria em `GET /api/ui/requests` devolve esse mesmo objeto
+em `timings`, separado do `telemetry` por hop.
 
 ## 5. Testes de rota - o andaime é um só (`gateway::testkit`)
 

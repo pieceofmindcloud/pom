@@ -138,7 +138,8 @@ ausente é livre. Hoje `/implantar`, `/implantacoes` e `/logs` (com a filha
 `LogsByToken` consulta `GET /api/ui/requests` com a chave de conexão do
 operador. A tela filtra por identidade não secreta da API key, texto do prompt,
 nó e período, lista primeiro as entradas mais recentes e abre cada linha para
-mostrar o prompt exato, detalhes da requisição, resultado, telemetria e erro.
+mostrar o prompt exato, detalhes da requisição, resultado, telemetria por hop,
+tempos agregados e erro.
 Prompts longos ficam em blocos monoespaçados com quebra e rolagem internas.
 `in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais
 distintos. A identidade exibida é o id e o rótulo configurados para a chave;
@@ -328,7 +329,11 @@ guarda além das falas:
   primeira mensagem de sobrescrever o nome escolhido).
 
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
-entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
+entre pedaços; `finishChatStream` grava o resumo de TTFT, velocidade de
+pré-processamento do prompt, velocidade de geração da saída e total ponta a
+ponta, além do trace por hop. O Chat mostra essas quatro linhas no resumo da
+resposta e deixa explícito quando uma taxa não é mensurável, como no reuso total
+do prefixo ou numa resposta de um token.
 Cada fase também mostra os bytes de estado oculto enviados e recebidos na
 travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
 Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para

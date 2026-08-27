@@ -10,7 +10,8 @@
 //! enters the next block's attention) to its successor. `llama_get_embeddings_ith`
 //! returns the post-output_norm value instead, so we install a
 //! `ggml_backend_sched_eval_callback` that fires when the last block's output
-//! tensor (`l_out-<N>`, or DeepSeek4's equivalent `l_last-<N>`) is computed
+//! tensor (`l_out-<N>`, or an equivalent last-layer name used by the graph) is
+//! computed
 //! and copies it before the output head sees it. The graph keeps running after
 //! the copy, so a required output head may cost compute without changing the
 //! residual already exported to the next peer. If `n_embd_out` differs from
@@ -27,6 +28,7 @@
 //! request would carry the other's residual - no error, just a wrong answer.
 
 use crate::config::KvCacheType;
+use crate::wire::TensorShape;
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
@@ -54,11 +56,85 @@ use llama_cpp_sys_2 as sys;
 struct CaptureSlot {
     want: Option<CString>,
     buf: Option<Vec<f32>>,
+    expected_tokens: usize,
+    n_embd: usize,
+    input_width: usize,
     expected_floats: Option<usize>,
+    layout: Option<ResidualCaptureLayout>,
+    error: Option<String>,
     last_shape: Option<[i64; 4]>,
     last_strides: Option<[usize; 4]>,
     last_nbytes: Option<usize>,
     copy_us: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResidualCaptureLayout {
+    feature_shape: Vec<usize>,
+    token_axis: usize,
+}
+
+pub(crate) fn validate_hidden_tensor(
+    values_len: usize,
+    shape: &TensorShape,
+    n_tokens: usize,
+    n_embd: usize,
+    n_embd_inp: usize,
+    item: &str,
+) -> Result<usize> {
+    if shape.len() < 2 {
+        bail!(
+            "{item}: hidden state shape {:?} não suportado, esperado [tokens, n_embd, ...]",
+            shape
+        );
+    }
+    if shape[0] != n_tokens {
+        bail!(
+            "{item}: hidden state declara {} tokens no shape {:?}, esperado {}",
+            shape[0],
+            shape,
+            n_tokens
+        );
+    }
+    if shape[1] != n_embd {
+        bail!(
+            "{item}: dimensão base {} no hidden state {:?} diverge de n_embd {}",
+            shape[1],
+            shape,
+            n_embd
+        );
+    }
+    let feature_width = shape[1..]
+        .iter()
+        .try_fold(1usize, |width, &dimension| width.checked_mul(dimension))
+        .ok_or_else(|| anyhow::anyhow!("{item}: largura do hidden state excede o limite"))?;
+    if feature_width != n_embd_inp {
+        bail!(
+            "{item}: hidden state shape {:?} tem largura de entrada {}, esperado {} a partir da metadata",
+            shape,
+            feature_width,
+            n_embd_inp
+        );
+    }
+    let expected_values = shape
+        .iter()
+        .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+        .ok_or_else(|| anyhow::anyhow!("{item}: tamanho do hidden state excede o limite"))?;
+    if values_len != expected_values {
+        bail!(
+            "{item}: hidden state tem {} floats, esperado {} para shape {:?}",
+            values_len,
+            expected_values,
+            shape
+        );
+    }
+    Ok(feature_width)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CapturedResidual {
+    pub(crate) values: Vec<f32>,
+    pub(crate) shape: TensorShape,
 }
 
 #[derive(Default)]
@@ -977,14 +1053,19 @@ unsafe extern "C" fn capture_callback(
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     if floats.len() == n_floats {
-        accumulate_capture(&mut slot, floats);
+        if let Err(error) = record_capture(&mut slot, tensor_shape, tensor_strides, n_bytes, floats)
+        {
+            if slot.error.is_none() {
+                slot.error = Some(error.to_string());
+            }
+        }
     }
     slot.copy_us += copy_started.elapsed().as_micros() as u64;
     true
 }
 
-/// DeepSeek4 names the residual immediately before its output head `l_last-N`;
-/// older llama.cpp graphs and the POM capture API use `l_out-N` for the same
+/// Some graph variants name the residual immediately before the output head
+/// `l_last-N`; older graphs and the POM capture API use `l_out-N` for the same
 /// boundary. The target remains `l_out-N` so existing callers keep working.
 fn capture_target_matches(name: &str, target: &CStr) -> bool {
     let Ok(target) = target.to_str() else {
@@ -1031,6 +1112,170 @@ fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
         Some(acumulado) => acumulado.extend_from_slice(&floats),
         None => slot.buf = Some(floats),
     }
+}
+
+fn residual_capture_layout(
+    tensor_shape: [i64; 4],
+    tensor_strides: [usize; 4],
+    n_embd: usize,
+    input_width: usize,
+) -> Result<ResidualCaptureLayout> {
+    if input_width == 0 {
+        bail!("residual capture: metadata de largura de entrada vazia");
+    }
+    let dims = tensor_shape
+        .into_iter()
+        .map(|dim| {
+            usize::try_from(dim)
+                .map_err(|_| anyhow::anyhow!("residual capture: dimensão negativa {dim}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if dims[0] != n_embd {
+        bail!(
+            "residual capture: dimensão 0 é {}, esperada n_embd {}",
+            dims[0],
+            n_embd
+        );
+    }
+
+    let mut feature_width = 1usize;
+    for token_axis in 1..dims.len() {
+        feature_width = feature_width
+            .checked_mul(dims[token_axis - 1])
+            .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+        if feature_width != input_width {
+            continue;
+        }
+        if dims[token_axis + 1..].iter().any(|&dim| dim != 1) {
+            bail!(
+                "residual capture: shape {:?} tem dimensões posteriores ao eixo de tokens não suportadas",
+                tensor_shape
+            );
+        }
+        let expected_stride = input_width
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| anyhow::anyhow!("residual capture: stride excede o limite"))?;
+        if tensor_strides[token_axis] != expected_stride {
+            bail!(
+                "residual capture: shape {:?} não é contígua por token (stride {} != {})",
+                tensor_shape,
+                tensor_strides[token_axis],
+                expected_stride
+            );
+        }
+        let mut stride = std::mem::size_of::<f32>();
+        for axis in 0..=token_axis {
+            if tensor_strides[axis] != stride {
+                bail!(
+                    "residual capture: shape {:?} tem stride não suportado no eixo {} ({} != {})",
+                    tensor_shape,
+                    axis,
+                    tensor_strides[axis],
+                    stride
+                );
+            }
+            stride = stride
+                .checked_mul(dims[axis])
+                .ok_or_else(|| anyhow::anyhow!("residual capture: stride excede o limite"))?;
+        }
+        return Ok(ResidualCaptureLayout {
+            feature_shape: dims[..token_axis].to_vec(),
+            token_axis,
+        });
+    }
+
+    bail!(
+        "residual capture: shape {:?} não expõe a largura de entrada {} após n_embd {}",
+        tensor_shape,
+        input_width,
+        n_embd
+    )
+}
+
+fn record_capture(
+    slot: &mut CaptureSlot,
+    tensor_shape: [i64; 4],
+    tensor_strides: [usize; 4],
+    n_bytes: usize,
+    floats: Vec<f32>,
+) -> Result<()> {
+    let layout =
+        residual_capture_layout(tensor_shape, tensor_strides, slot.n_embd, slot.input_width)?;
+    let captured_bytes = floats
+        .len()
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| anyhow::anyhow!("residual capture: tamanho excede o limite"))?;
+    if captured_bytes != n_bytes {
+        bail!(
+            "residual capture: tensor shape {:?} declara {} bytes, mas a cópia tem {}",
+            tensor_shape,
+            n_bytes,
+            captured_bytes
+        );
+    }
+    if let Some(existing) = &slot.layout {
+        if existing != &layout {
+            bail!("residual capture: layout mudou entre microlotes ({existing:?} vs {layout:?})");
+        }
+    } else {
+        let feature_values = layout
+            .feature_shape
+            .iter()
+            .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+            .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+        let expected = slot
+            .expected_tokens
+            .checked_mul(feature_values)
+            .ok_or_else(|| anyhow::anyhow!("residual capture: tamanho esperado excede o limite"))?;
+        slot.expected_floats = Some(expected);
+        slot.layout = Some(layout);
+    }
+    let expected = slot.expected_floats.unwrap_or(0);
+    let current = slot.buf.as_ref().map_or(0, Vec::len);
+    if current >= expected {
+        return Ok(());
+    }
+    let Some(end) = current.checked_add(floats.len()) else {
+        bail!("residual capture: tamanho do microlote excede o limite numérico");
+    };
+    if end > expected {
+        bail!(
+            "residual capture: microlote excede o batch esperado ({} + {} > {})",
+            current,
+            floats.len(),
+            expected
+        );
+    }
+    accumulate_capture(slot, floats);
+    Ok(())
+}
+
+fn take_captured_residual(slot: &mut CaptureSlot) -> Result<CapturedResidual> {
+    if let Some(error) = slot.error.take() {
+        bail!(error);
+    }
+    let expected = slot
+        .expected_floats
+        .ok_or_else(|| anyhow::anyhow!("residual capture did not observe a tensor"))?;
+    let values = slot
+        .buf
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("residual capture did not fire"))?;
+    if values.len() != expected {
+        bail!(
+            "residual capture: got {} floats, expected {}",
+            values.len(),
+            expected
+        );
+    }
+    let layout = slot
+        .layout
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("residual capture did not record a layout"))?;
+    let mut shape = Vec::with_capacity(layout.feature_shape.len() + 1);
+    shape.push(slot.expected_tokens);
+    shape.extend_from_slice(&layout.feature_shape);
+    Ok(CapturedResidual { values, shape })
 }
 
 // ── Ponte de diagnóstico ─────────────────────────────────────────────────────
@@ -1178,9 +1423,8 @@ const CHAT_TEMPLATE_INITIAL_BUF: usize = 65536;
 ///   `n_seq_max`), porque estado de prompt e estado de geração são estados
 ///   diferentes - não há como um modelo Mamba/GDN reter o prompt sem guardar o
 ///   estado dele em separado;
-/// - o cache DSV4, que hoje ignora o pedido de unificação
-///   (`llama-kv-cache-dsv4.h`, `unified_raw = false`) e mantém um stream por
-///   sequência.
+/// - o cache de estados com múltiplos fluxos, que hoje ignora o pedido de
+///   unificação (`unified_raw = false`) e mantém um stream por sequência.
 ///
 /// Em ambos os casos o `fit_memory` (`llama_rs_fit_params`, que recebe estes
 /// mesmos `cparams`) dimensiona o contexto já contando as duas sequências, e
@@ -1364,6 +1608,7 @@ pub struct LlmEngine {
     loaded: Arc<LoadedModel>,
     ctx: *mut sys::llama_context,
     pub n_embd: usize,
+    pub n_embd_inp: usize,
     pub n_vocab: usize,
     /// Whether the residual capture callback was successfully installed.
     capture_ok: bool,
@@ -1777,6 +2022,11 @@ impl LlmEngine {
     pub fn with_model(loaded: Arc<LoadedModel>, cfg: &EngineConfig) -> Result<Self> {
         let model = loaded.model;
         let n_embd = loaded.n_embd;
+        let n_embd_inp = usize::try_from(unsafe { sys::llama_model_n_embd_inp(model) })
+            .map_err(|_| anyhow::anyhow!("llama_model_n_embd_inp retornou valor inválido"))?;
+        if n_embd_inp == 0 {
+            bail!("llama_model_n_embd_inp retornou largura vazia");
+        }
         let n_embd_out = unsafe { sys::llama_model_n_embd_out(model) } as usize;
         let n_vocab = loaded.n_vocab;
 
@@ -1800,7 +2050,12 @@ impl LlmEngine {
         let capture: Box<Mutex<CaptureSlot>> = Box::new(Mutex::new(CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 0,
+            n_embd,
+            input_width: n_embd_inp,
             expected_floats: None,
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -1877,6 +2132,7 @@ impl LlmEngine {
             loaded,
             ctx,
             n_embd,
+            n_embd_inp,
             n_vocab,
             capture_ok,
             capture,
@@ -2353,29 +2609,43 @@ impl LlmEngine {
         }
         let descriptors: Vec<BatchEntry> = entries.iter().map(|e| e.descriptor.clone()).collect();
         let layout = BatchLayout::new(&descriptors)?;
+        let mut feature_shape: Option<&[usize]> = None;
         for entry in entries {
-            let expected = entry.descriptor.tokens.saturating_mul(self.n_embd);
-            if entry.hidden.len() != expected {
-                bail!(
-                    "item {} tem hidden state com {} floats, esperado {}",
-                    entry.descriptor.item_id,
-                    entry.hidden.len(),
-                    expected
-                );
+            validate_hidden_tensor(
+                entry.hidden.len(),
+                &entry.shape,
+                entry.descriptor.tokens,
+                self.n_embd,
+                self.n_embd_inp,
+                &format!("item {}", entry.descriptor.item_id),
+            )?;
+            if let Some(expected_shape) = feature_shape {
+                if *expected_shape != entry.shape[1..] {
+                    bail!(
+                        "item {} tem layout {:?}, mas o batch usa {:?}",
+                        entry.descriptor.item_id,
+                        &entry.shape[1..],
+                        expected_shape
+                    );
+                }
+            } else {
+                feature_shape = Some(&entry.shape[1..]);
             }
         }
 
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
+        let input_width = i32::try_from(self.n_embd_inp)
+            .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
         let enqueue_started = Instant::now();
         self.reset_capture_slot(layout.total_tokens());
-        let mut batch = unsafe { sys::llama_batch_init(n, self.n_embd as i32, 1) };
+        let mut batch = unsafe { sys::llama_batch_init(n, input_width, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut();
         let mut row = 0usize;
         unsafe {
             for entry in entries {
-                let start = row * self.n_embd;
+                let start = row * self.n_embd_inp;
                 let end = start + entry.hidden.len();
                 std::ptr::copy_nonoverlapping(
                     entry.hidden.as_ptr(),
@@ -2408,7 +2678,10 @@ impl LlmEngine {
     fn reset_capture_slot(&self, n_tokens: usize) {
         let mut capture = self.capture.lock().unwrap();
         capture.buf = None;
-        capture.expected_floats = n_tokens.checked_mul(self.n_embd);
+        capture.expected_tokens = n_tokens;
+        capture.expected_floats = None;
+        capture.layout = None;
+        capture.error = None;
         capture.last_shape = None;
         capture.last_strides = None;
         capture.last_nbytes = None;
@@ -2439,6 +2712,11 @@ impl LlmEngine {
         } else {
             None
         };
+        let residual_shape = residual
+            .as_ref()
+            .map(|captured| captured.shape.clone())
+            .unwrap_or_else(|| vec![0, self.n_embd]);
+        let residual = residual.map(|captured| captured.values);
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
@@ -2454,6 +2732,7 @@ impl LlmEngine {
             BatchDecodeOutput {
                 layout,
                 residual,
+                residual_shape,
                 n_embd: self.n_embd,
             },
             timings,
@@ -2593,6 +2872,7 @@ impl LlmEngine {
     pub fn decode_hidden(
         &mut self,
         hidden: &[f32],
+        shape: &TensorShape,
         n_tokens: usize,
         pos_offset: u32,
         seq_id: u32,
@@ -2605,16 +2885,19 @@ impl LlmEngine {
         // residual de outra requisição concatenado ao desta.
         self.reset_capture_slot(n_tokens);
         let enqueue_started = Instant::now();
-        if hidden.len() != n_tokens * self.n_embd {
-            bail!(
-                "hidden state length {} != n_tokens {} × n_embd {}",
-                hidden.len(),
-                n_tokens,
-                self.n_embd
-            );
-        }
-        let n = n_tokens as i32;
-        let mut batch = unsafe { sys::llama_batch_init(n, self.n_embd as i32, 1) };
+        validate_hidden_tensor(
+            hidden.len(),
+            shape,
+            n_tokens,
+            self.n_embd,
+            self.n_embd_inp,
+            "hidden state",
+        )?;
+        let n = i32::try_from(n_tokens)
+            .map_err(|_| anyhow::anyhow!("hidden state excede o limite de tokens do llama.cpp"))?;
+        let input_width = i32::try_from(self.n_embd_inp)
+            .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
+        let mut batch = unsafe { sys::llama_batch_init(n, input_width, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut(); // signals embedding mode
 
@@ -2701,26 +2984,22 @@ impl LlmEngine {
     /// Consume the residual captured during the last `decode_*` call.
     ///
     /// Must be called exactly once per decode when `need_embeddings` is true.
-    pub fn take_residual(&self, n_tokens: usize) -> Result<Vec<f32>> {
+    pub fn take_residual(&self, n_tokens: usize) -> Result<CapturedResidual> {
         if self.capture_ok {
             let mut capture = self.capture.lock().unwrap();
-            let shape = capture.last_shape;
-            let strides = capture.last_strides;
-            let nbytes = capture.last_nbytes;
-            let buf = capture.buf.take();
-            match buf {
-                Some(v) if v.len() == n_tokens * self.n_embd => Ok(v),
-                Some(v) => bail!(
-                    "residual capture: got {} floats, expected {} ({}×{}), tensor shape={shape:?} strides={strides:?} nbytes={nbytes:?}",
-                    v.len(),
-                    n_tokens * self.n_embd,
+            let captured = take_captured_residual(&mut capture)?;
+            if captured.shape.first().copied() != Some(n_tokens) {
+                bail!(
+                    "residual capture: captured {} tokens, expected {} (shape {:?}, last tensor shape {:?}, strides {:?}, nbytes {:?})",
+                    captured.shape.first().copied().unwrap_or(0),
                     n_tokens,
-                    self.n_embd
-                ),
-                None => bail!(
-                    "residual capture did not fire — refusing to fall back to the post-norm state"
-                ),
+                    captured.shape,
+                    capture.last_shape,
+                    capture.last_strides,
+                    capture.last_nbytes
+                );
             }
+            Ok(captured)
         } else {
             // Fallback: post-output_norm embeddings. Only correct when the
             // slice's output_norm is all-ones (shallow cuts are wrong with this).
@@ -2734,7 +3013,10 @@ impl LlmEngine {
                     out.extend_from_slice(std::slice::from_raw_parts(ptr, self.n_embd));
                 }
             }
-            Ok(out)
+            Ok(CapturedResidual {
+                values: out,
+                shape: vec![n_tokens, self.n_embd],
+            })
         }
     }
 
@@ -2929,6 +3211,7 @@ pub struct TokenBatchEntry {
 pub struct HiddenBatchEntry {
     pub descriptor: BatchEntry,
     pub hidden: Vec<f32>,
+    pub shape: TensorShape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2998,6 +3281,7 @@ impl BatchLayout {
 pub struct BatchDecodeOutput {
     pub layout: BatchLayout,
     residual: Option<Vec<f32>>,
+    residual_shape: TensorShape,
     n_embd: usize,
 }
 
@@ -3007,11 +3291,12 @@ impl BatchDecodeOutput {
         Self {
             layout,
             residual: Some(residual),
+            residual_shape: vec![0, n_embd],
             n_embd,
         }
     }
 
-    pub fn residual_for(&self, item_id: &str, n_embd: usize) -> Result<Vec<f32>> {
+    pub fn residual_for(&self, item_id: &str, n_embd: usize) -> Result<(Vec<f32>, TensorShape)> {
         let range = self
             .layout
             .range(item_id)
@@ -3027,20 +3312,30 @@ impl BatchDecodeOutput {
                 self.n_embd
             );
         }
+        let feature_width = self
+            .residual_shape
+            .get(1..)
+            .ok_or_else(|| anyhow::anyhow!("shape do residual ausente no resultado"))?
+            .iter()
+            .try_fold(1usize, |width, &dimension| width.checked_mul(dimension))
+            .ok_or_else(|| anyhow::anyhow!("largura de residual excede o limite numérico"))?;
         let start = range
             .rows
             .start
-            .checked_mul(n_embd)
+            .checked_mul(feature_width)
             .ok_or_else(|| anyhow::anyhow!("offset de residual excede o limite numérico"))?;
         let end = range
             .rows
             .end
-            .checked_mul(n_embd)
+            .checked_mul(feature_width)
             .ok_or_else(|| anyhow::anyhow!("fim de residual excede o limite numérico"))?;
-        residual
+        let values = residual
             .get(start..end)
-            .map(|values| values.to_vec())
-            .ok_or_else(|| anyhow::anyhow!("residual incompleto para item {item_id}"))
+            .ok_or_else(|| anyhow::anyhow!("residual incompleto para item {item_id}"))?
+            .to_vec();
+        let mut shape = self.residual_shape.clone();
+        shape[0] = range.rows.len();
+        Ok((values, shape))
     }
 }
 
@@ -3093,8 +3388,14 @@ mod batch_layout_tests {
         let layout = BatchLayout::new(&entries).unwrap();
         let output = BatchDecodeOutput::test(layout, vec![1.0, 2.0, 3.0], 1);
 
-        assert_eq!(output.residual_for("a", 1).unwrap(), vec![1.0, 2.0]);
-        assert_eq!(output.residual_for("b", 1).unwrap(), vec![3.0]);
+        assert_eq!(
+            output.residual_for("a", 1).unwrap(),
+            (vec![1.0, 2.0], vec![2, 1])
+        );
+        assert_eq!(
+            output.residual_for("b", 1).unwrap(),
+            (vec![3.0], vec![1, 1])
+        );
         assert!(output.residual_for("missing", 1).is_err());
     }
 }
@@ -3165,7 +3466,12 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 0,
+            n_embd: 0,
+            input_width: 0,
             expected_floats: None,
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -3202,7 +3508,12 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 0,
+            n_embd: 0,
+            input_width: 0,
             expected_floats: None,
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -3219,7 +3530,12 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 1,
+            n_embd: 4,
+            input_width: 4,
             expected_floats: Some(4),
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -3230,6 +3546,111 @@ mod pool_tests {
         accumulate_capture(&mut slot, vec![5.0, 6.0, 7.0, 8.0]);
 
         assert_eq!(slot.buf.as_deref(), Some(&[1.0, 2.0, 3.0, 4.0][..]));
+    }
+
+    fn capture_slot_for_test(
+        expected_tokens: usize,
+        n_embd: usize,
+        input_width: usize,
+    ) -> CaptureSlot {
+        CaptureSlot {
+            want: None,
+            buf: None,
+            expected_tokens,
+            n_embd,
+            input_width,
+            expected_floats: None,
+            layout: None,
+            error: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
+            copy_us: 0,
+        }
+    }
+
+    #[test]
+    fn residual_capture_without_extra_dimension_keeps_the_current_wire_shape() {
+        let mut slot = capture_slot_for_test(2, 4, 4);
+        record_capture(
+            &mut slot,
+            [4, 2, 1, 1],
+            [4, 16, 32, 32],
+            2 * 4 * 4,
+            (0..8).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![2, 4]);
+        assert_eq!(
+            captured.values,
+            (0..8).map(|value| value as f32).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn residual_capture_preserves_extra_stream_dimensions() {
+        let mut slot = capture_slot_for_test(11, 4096, 16_384);
+        record_capture(
+            &mut slot,
+            [4096, 4, 11, 1],
+            [4, 16_384, 65_536, 720_896],
+            720_896,
+            (0..180_224).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![11, 4096, 4]);
+        assert_eq!(captured.values.len(), 180_224);
+    }
+
+    #[test]
+    fn residual_capture_accumulates_extra_dimensions_in_microbatch_order() {
+        let mut slot = capture_slot_for_test(5, 4, 8);
+        record_capture(
+            &mut slot,
+            [4, 2, 2, 1],
+            [4, 16, 32, 64],
+            2 * 8 * 4,
+            (0..16).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+        record_capture(
+            &mut slot,
+            [4, 2, 3, 1],
+            [4, 16, 32, 96],
+            3 * 8 * 4,
+            (100..124).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![5, 4, 2]);
+        let expected = (0..16)
+            .map(|value| value as f32)
+            .chain((100..124).map(|value| value as f32))
+            .collect::<Vec<_>>();
+        assert_eq!(captured.values, expected);
+    }
+
+    #[test]
+    fn residual_capture_names_unsupported_trailing_dimensions() {
+        let mut slot = capture_slot_for_test(2, 4, 8);
+        let error = record_capture(
+            &mut slot,
+            [4, 2, 2, 3],
+            [4, 16, 32, 64],
+            2 * 3 * 8 * 4,
+            vec![0.0; 2 * 3 * 8],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("dimensões posteriores"),
+            "erro inesperado: {error}"
+        );
     }
 
     #[test]
@@ -3575,7 +3996,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capture_target_accepts_the_deepseek4_last_layer_alias() {
+    fn capture_target_accepts_an_alternate_last_layer_alias() {
         let target = CString::new("l_out-19").unwrap();
         assert!(capture_target_matches("l_out-19", &target));
         assert!(capture_target_matches("l_last-19", &target));
@@ -3849,15 +4270,23 @@ mod tests {
             .map(|i| ((i % 97) as f32 - 48.0) / 48.0)
             .collect();
         engine
-            .decode_hidden(&hidden, n_tokens, 0, 0, true, None)
+            .decode_hidden(
+                &hidden,
+                &vec![n_tokens, engine.n_embd],
+                n_tokens,
+                0,
+                0,
+                true,
+                None,
+            )
             .expect("decode of an injected hidden state succeeds");
 
         let residual = engine
             .take_residual(n_tokens)
             .expect("the capture callback must fire on the hidden-state path too");
-        assert_eq!(residual.len(), n_tokens * engine.n_embd);
+        assert_eq!(residual.values.len(), n_tokens * engine.n_embd);
         assert!(
-            residual.iter().any(|v| *v != 0.0 && v.is_finite()),
+            residual.values.iter().any(|v| *v != 0.0 && v.is_finite()),
             "residual is all zeros or non-finite — the graph did not run"
         );
     }
@@ -3956,7 +4385,15 @@ mod tests {
             .map(|index| ((index % 127) as f32 - 63.0) / 63.0)
             .collect();
         native
-            .decode_hidden(&hidden, n_tokens, 0, 0, true, None)
+            .decode_hidden(
+                &hidden,
+                &vec![n_tokens, native.n_embd],
+                n_tokens,
+                0,
+                0,
+                true,
+                None,
+            )
             .expect("o caminho nativo deve decodificar");
         let native_residual = native
             .take_residual(n_tokens)
@@ -3988,7 +4425,15 @@ mod tests {
             .set_moe_runtime(runtime)
             .expect("o callback MoE deve instalar");
         let timings = external
-            .decode_hidden(&hidden, n_tokens, 0, 0, true, None)
+            .decode_hidden(
+                &hidden,
+                &vec![n_tokens, external.n_embd],
+                n_tokens,
+                0,
+                0,
+                true,
+                None,
+            )
             .expect("a rota externa deve decodificar sem NaN");
         let external_residual = external
             .take_residual(n_tokens)
@@ -4008,16 +4453,22 @@ mod tests {
             timings.moe_executors
         );
         assert!(
-            external_residual.iter().all(|value| value.is_finite()),
+            external_residual
+                .values
+                .iter()
+                .all(|value| value.is_finite()),
             "o residual externo contém valor não finito"
         );
-        assert_eq!(native_residual.len(), external_residual.len());
+        assert_eq!(native_residual.values.len(), external_residual.values.len());
 
         let mut max_abs = 0.0f32;
         let mut max_relative = 0.0f32;
         let mut max_index = 0usize;
-        for (index, (&expected, &actual)) in
-            native_residual.iter().zip(&external_residual).enumerate()
+        for (index, (&expected, &actual)) in native_residual
+            .values
+            .iter()
+            .zip(&external_residual.values)
+            .enumerate()
         {
             assert!(
                 expected.is_finite(),
@@ -4075,10 +4526,10 @@ mod tests {
         let residual = engine
             .take_residual(toks.len())
             .expect("the capture callback must have fired");
-        assert_eq!(residual.len(), toks.len() * engine.n_embd);
+        assert_eq!(residual.values.len(), toks.len() * engine.n_embd);
         // An abandoned graph leaves the buffer zeroed; a real residual does not.
         assert!(
-            residual.iter().any(|v| *v != 0.0 && v.is_finite()),
+            residual.values.iter().any(|v| *v != 0.0 && v.is_finite()),
             "residual is all zeros or non-finite — the graph did not run"
         );
     }

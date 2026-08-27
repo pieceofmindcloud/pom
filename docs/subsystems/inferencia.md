@@ -254,6 +254,40 @@ codificação em trânsito. Formato:
   pedida não pode ser usada. O número observado, e não uma estimativa de
   transporte, é a medida para comparar f16 e f8.
 
+### Forma do residual e custo por token
+
+O residual capturado não é assumido como uma matriz de duas dimensões. A
+captura encontra, pela forma física do tensor e pela metadata do modelo, o eixo
+de tokens depois da largura `n_embd_inp`; todos os eixos anteriores são
+preservados. O wire normaliza isso para `[tokens, features...]`, e o receptor
+valida que a primeira dimensão é o número de tokens, a segunda é `n_embd` e o
+produto das dimensões restantes é `n_embd_inp`. Geometria ou stride que não
+fecha essa regra é recusado com o shape no erro.
+
+Quando existe uma dimensão de fluxo extra, o residual precisa carregar cada
+fluxo. Não há uma fronteira genérica em que uma largura `n_embd` combinada seja
+matematicamente equivalente: os ops de pré-combinação e pós-combinação mantêm
+os fluxos, e o op de combinação só mistura fontes em destinos. A combinação
+observada depois das camadas é uma saída auxiliar, não a entrada equivalente
+para o próximo peer. Portanto, para essa arquitetura, o caminho correto é
+transportar todos os fluxos; o planner não comprime o tensor por heurística de
+nome de família.
+
+O custo abaixo é o payload do tensor, medido pelo mesmo cálculo de
+`tensor_payload_len`; não inclui o header JSON nem o transporte. Para `n_embd =
+4096` e quatro fluxos, o custo por token é:
+
+| Representação | Quatro fluxos | Uma largura combinada |
+|---|---:|---:|
+| f16 | 32.768 bytes | 8.192 bytes |
+| f32 | 65.536 bytes | 16.384 bytes |
+| f8 | 16.384 bytes | 4.096 bytes |
+
+A coluna de uma largura é apenas o limite teórico de uma compressão equivalente;
+ela não é usada quando a arquitetura não fornece essa fronteira. A ordem dos
+microlotes não muda com a dimensão extra: `CaptureSlot` acumula cada bloco na
+ordem entregue pelo `split_simple`, habilitado por `kv_unified=true`.
+
 Medido com `tcpdump` no peer 2 (requisição de 35 tokens de prompt + 34
 gerados): 565.336 bytes de estado oculto da cabeça para a cauda, 6.715 bytes de
 tokens amostrados na volta. 565.336 / 69 tokens = **8.192 bytes por token por

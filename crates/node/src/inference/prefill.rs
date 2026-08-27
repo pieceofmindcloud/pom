@@ -21,7 +21,7 @@
 use crate::infer_server::Speculate;
 use crate::infer_tunnel::TunnelOutboundSender;
 use crate::pipeline::PipelinePlan;
-use crate::wire::{FrameEncoding, WireDtype};
+use crate::wire::{FrameEncoding, TensorShape, WireDtype};
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::json;
@@ -1538,7 +1538,7 @@ pub async fn run_with_options(
     let mut trace = RequestTrace::from_plan(model, plan);
     trace.prefill_overlap_enabled = overlap_window.max_inflight_chunks() > 1 && n_peers > 1;
     trace.prefill_max_inflight_chunks = overlap_window.max_inflight_chunks() as u32;
-    let mut pending_head: Option<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> = None;
+    let mut pending_head: Option<(serde_json::Value, Option<(Vec<f32>, TensorShape)>)> = None;
 
     loop {
         check_cancelled(cancellation)?;
@@ -1720,7 +1720,7 @@ async fn forward_hub_chunk(
     chunk_start_pos: u32,
     chunk_stable_len: Option<u64>,
     mut meta: serde_json::Value,
-    mut tensor: Option<(Vec<f32>, [usize; 2])>,
+    mut tensor: Option<(Vec<f32>, TensorShape)>,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
@@ -1728,7 +1728,7 @@ async fn forward_hub_chunk(
     cancellation: &Cancellation,
 ) -> Result<(
     serde_json::Value,
-    Option<(Vec<f32>, [usize; 2])>,
+    Option<(Vec<f32>, TensorShape)>,
     RequestTrace,
 )> {
     let mut trace = RequestTrace::from_plan("prefill", plan);
@@ -2281,7 +2281,7 @@ async fn send_chunk(
     step: &crate::pipeline::PipelineStep,
     tunnel: Option<&TunnelOutboundSender>,
     meta: &serde_json::Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     chunk_index: u32,
@@ -2289,7 +2289,7 @@ async fn send_chunk(
     hop: usize,
     phase: Phase,
     cancellation: &Cancellation,
-) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
+) -> Result<(serde_json::Value, Option<(Vec<f32>, TensorShape)>)> {
     check_cancelled(cancellation)?;
     let node_id = &step.node_id;
     let peer_label = format!("{node_id} (pedaço {chunk_index})");
@@ -2381,7 +2381,7 @@ pub async fn step(
     // credencial e telemetria iguais ao anel, isso permite agrupar chamadas
     // concorrentes que chegam ao mesmo hop.
     let n_peers = plan.steps.len();
-    let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
+    let mut tensor: Option<(Vec<f32>, TensorShape)> = None;
     let mut meta = serde_json::Value::Null;
     let mut trace = RequestTrace::from_plan(model, plan);
 
@@ -2431,7 +2431,7 @@ pub async fn step(
             &body_meta,
             payload
                 .as_ref()
-                .map(|(values, shape)| (values.as_slice(), *shape)),
+                .map(|(values, shape)| (values.as_slice(), shape.clone())),
             dtype,
             dtype.frame_encoding(),
             1,
@@ -2702,7 +2702,7 @@ async fn step_speculative_hub(
     tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {
     let n_peers = plan.steps.len();
-    let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
+    let mut tensor: Option<(Vec<f32>, TensorShape)> = None;
     let mut meta = serde_json::Value::Null;
     let mut trace = RequestTrace::from_plan(model, plan);
 
@@ -2735,7 +2735,7 @@ async fn step_speculative_hub(
         };
 
         let payload = tensor.take();
-        let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), *s));
+        let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), s.clone()));
         let peer_label = format!("{} (especulativo)", peer.node_id);
         let sent = crate::relay::send_frame_or_tunnel(
             http,

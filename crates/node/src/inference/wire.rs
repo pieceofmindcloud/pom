@@ -42,6 +42,12 @@ pub const MAX_BATCH_PAYLOAD_BYTES: usize = MAX_FRAME_PAYLOAD_BYTES
     .saturating_sub(MAX_BATCH_HEADER_BYTES)
     .saturating_sub(4);
 
+/// Shape carried by an inference tensor. The first axis is the token count;
+/// the remaining axes preserve the feature layout required by the receiving
+/// model. A normal residual is `[tokens, n_embd]`; a model with additional
+/// streams may carry `[tokens, n_embd, stream, ...]`.
+pub type TensorShape = Vec<usize>;
+
 /// Marker retained at call boundaries while all inference traffic uses the
 /// canonical batch frame. Its variant selects the tensor precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +112,7 @@ impl WireDtype {
 pub struct BatchItem {
     pub item_id: String,
     pub session_id: String,
-    pub shape: [usize; 2],
+    pub shape: TensorShape,
     pub dtype: String,
     pub offset: usize,
     pub len: usize,
@@ -134,7 +140,7 @@ pub struct BatchPayloadItem {
     pub item_id: String,
     pub session_id: String,
     pub meta: Value,
-    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub tensor: Option<(Vec<f32>, TensorShape)>,
     pub dtype: WireDtype,
 }
 
@@ -144,7 +150,7 @@ pub struct BatchPayloadItem {
 pub struct DecodedBatchItem {
     pub item_id: String,
     pub meta: Value,
-    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub tensor: Option<(Vec<f32>, TensorShape)>,
     pub dtype: WireDtype,
 }
 
@@ -304,14 +310,12 @@ pub fn encode_batch_item(batch: &BatchFrame, item: &BatchItem) -> Result<Vec<u8>
 /// requests therefore share exactly the same protocol and validation path.
 pub fn encode_batch_single(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<Vec<u8>> {
     let (shape, payload) = match tensor {
         Some((values, shape)) => {
-            let expected_values = shape[0]
-                .checked_mul(shape[1])
-                .ok_or_else(|| anyhow!("shape excede o limite"))?;
+            let expected_values = checked_tensor_values(&shape)?;
             if values.len() != expected_values {
                 return Err(anyhow!(
                     "tensor com {} valores não bate com shape {:?}",
@@ -319,10 +323,10 @@ pub fn encode_batch_single(
                     shape
                 ));
             }
-            let payload = encode_values(values, shape, dtype)?;
+            let payload = encode_values(values, &shape, dtype)?;
             (shape, payload)
         }
-        None => ([0, 0], Vec::new()),
+        None => (vec![0, 0], Vec::new()),
     };
     let item_id = meta
         .get("item_id")
@@ -358,7 +362,7 @@ pub fn encode_batch_single(
 
 /// Decode a one-item frame for call sites that need the convenient historical
 /// `(meta, tensor)` shape. Multi-item receivers use `decode_batch_items`.
-pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     let batch = decode_batch(buf)?;
     if batch.items.len() != 1 {
         return Err(anyhow!(
@@ -371,7 +375,7 @@ pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usiz
 
 /// Decode the canonical inference request. All inference traffic is a batch
 /// frame, including a request carrying only one item.
-pub fn decode_inference_request(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+pub fn decode_inference_request(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     decode_batch_single(buf)
 }
 
@@ -412,7 +416,7 @@ fn validate_batch(batch: &BatchFrame) -> Result<()> {
             return Err(anyhow!("item_id duplicado: {}", item.item_id));
         }
         let dtype = WireDtype::parse(&item.dtype)?;
-        let expected_len = checked_tensor_bytes(item.shape, dtype)?;
+        let expected_len = checked_tensor_bytes(&item.shape, dtype)?;
         if item.len != expected_len {
             return Err(anyhow!(
                 "item {} declara {} bytes, esperado {} para shape {:?} em {}",
@@ -443,15 +447,13 @@ fn validate_batch(batch: &BatchFrame) -> Result<()> {
 }
 
 fn encode_tensor_payload(
-    tensor: Option<&(Vec<f32>, [usize; 2])>,
+    tensor: Option<&(Vec<f32>, TensorShape)>,
     dtype: WireDtype,
-) -> Result<([usize; 2], Vec<u8>)> {
+) -> Result<(TensorShape, Vec<u8>)> {
     let Some((values, shape)) = tensor else {
-        return Ok(([0, 0], Vec::new()));
+        return Ok((vec![0, 0], Vec::new()));
     };
-    let expected_values = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected_values = checked_tensor_values(shape)?;
     if values.len() != expected_values {
         return Err(anyhow!(
             "tensor com {} valores não bate com shape {:?}",
@@ -459,15 +461,15 @@ fn encode_tensor_payload(
             shape
         ));
     }
-    let payload = encode_values(values, *shape, dtype)?;
-    checked_tensor_bytes(*shape, dtype)?;
-    Ok((*shape, payload))
+    let payload = encode_values(values, shape, dtype)?;
+    checked_tensor_bytes(shape, dtype)?;
+    Ok((shape.clone(), payload))
 }
 
 fn decode_batch_item(
     batch: &BatchFrame,
     item: &BatchItem,
-) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     let end = item
         .offset
         .checked_add(item.len)
@@ -477,7 +479,7 @@ fn decode_batch_item(
         return Err(anyhow!("meta do item batch não é um objeto JSON"));
     }
     meta["dtype"] = Value::from(item.dtype.clone());
-    meta["shape"] = Value::from(vec![item.shape[0], item.shape[1]]);
+    meta["shape"] = Value::from(item.shape.clone());
     meta["frame_version"] = Value::from(BATCH_FRAME_VERSION);
     meta["batch_id"] = Value::from(batch.batch_id.clone());
     meta["item_id"] = Value::from(item.item_id.clone());
@@ -488,7 +490,7 @@ fn decode_batch_item(
 /// internal paths that do not need to coalesce with another request.
 pub fn encode(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<Vec<u8>> {
     encode_batch_single(meta, tensor, dtype)
@@ -499,7 +501,7 @@ pub fn encode(
 /// through `frame/v1-batch`.
 pub fn encode_with_encoding(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     encoding: FrameEncoding,
 ) -> Result<Vec<u8>> {
     let dtype = match encoding {
@@ -533,14 +535,14 @@ fn frame_bytes(head: Vec<u8>, payload: Vec<u8>) -> Result<Vec<u8>> {
 
 /// Inverse of [`encode`]. The tensor always comes back as f32 - reduced
 /// precision is a property of the wire, never of the maths.
-pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     decode_batch_single(buf)
 }
 
 fn decode_tensor_payload(
     meta: &Value,
     payload: &[u8],
-) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     if payload.is_empty() {
         return Ok((meta.clone(), None));
     }
@@ -551,16 +553,19 @@ fn decode_tensor_payload(
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|x| x.as_u64().map(|n| n as usize))
-                .collect()
+                .map(|x| {
+                    x.as_u64()
+                        .map(|n| n as usize)
+                        .ok_or_else(|| anyhow!("dimensão de shape não é um inteiro: {x}"))
+                })
+                .collect::<Result<Vec<_>>>()
         })
+        .transpose()?
         .unwrap_or_default();
-    if shape.len() != 2 {
+    if shape.len() < 2 {
         return Err(anyhow!("shape inválido: {:?}", shape));
     }
-    let expected = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected = checked_tensor_values(&shape)?;
     let expected_bytes = expected
         .checked_mul(dtype.bytes_per_value())
         .ok_or_else(|| anyhow!("shape excede o limite"))?;
@@ -598,13 +603,22 @@ fn decode_tensor_payload(
             values.len()
         ));
     }
-    Ok((meta.clone(), Some((values, [shape[0], shape[1]]))))
+    Ok((meta.clone(), Some((values, shape))))
 }
 
-fn checked_tensor_bytes(shape: [usize; 2], dtype: WireDtype) -> Result<usize> {
-    let values = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+fn checked_tensor_values(shape: &[usize]) -> Result<usize> {
+    if shape.len() < 2 {
+        return Err(anyhow!("shape inválido: {:?}", shape));
+    }
+    shape.iter().try_fold(1usize, |values, &dimension| {
+        values
+            .checked_mul(dimension)
+            .ok_or_else(|| anyhow!("shape excede o limite"))
+    })
+}
+
+fn checked_tensor_bytes(shape: &[usize], dtype: WireDtype) -> Result<usize> {
+    let values = checked_tensor_values(shape)?;
     let bytes = values
         .checked_mul(dtype.bytes_per_value())
         .ok_or_else(|| anyhow!("shape excede o limite"))?;
@@ -620,13 +634,14 @@ fn checked_tensor_bytes(shape: [usize; 2], dtype: WireDtype) -> Result<usize> {
 /// Number of bytes an owned tensor occupies after wire conversion, without
 /// allocating the converted payload. The relay uses this to split a
 /// multi-item frame before encoding it.
-pub fn tensor_payload_len(tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype) -> Result<usize> {
+pub fn tensor_payload_len(
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+) -> Result<usize> {
     let Some((values, shape)) = tensor else {
         return Ok(0);
     };
-    let expected_values = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected_values = checked_tensor_values(&shape)?;
     if values.len() != expected_values {
         return Err(anyhow!(
             "tensor com {} valores não bate com shape {:?}",
@@ -634,13 +649,11 @@ pub fn tensor_payload_len(tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype
             shape
         ));
     }
-    checked_tensor_bytes(shape, dtype)
+    checked_tensor_bytes(&shape, dtype)
 }
 
-fn encode_values(values: &[f32], shape: [usize; 2], dtype: WireDtype) -> Result<Vec<u8>> {
-    let expected_values = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+fn encode_values(values: &[f32], shape: &[usize], dtype: WireDtype) -> Result<Vec<u8>> {
+    let expected_values = checked_tensor_values(shape)?;
     if values.len() != expected_values {
         return Err(anyhow!(
             "tensor com {} valores não bate com shape {:?}",
@@ -813,7 +826,7 @@ mod tests {
         let values = vec![0.25_f32; 8];
         let single = encode_with_encoding(
             &serde_json::json!({"session_id": "single"}),
-            Some((&values, [1, 8])),
+            Some((&values, vec![1, 8])),
             FrameEncoding::F16,
         )
         .unwrap();
@@ -827,11 +840,11 @@ mod tests {
     fn a_tensor_survives_a_round_trip_in_f32() {
         let values = vec![0.0f32, 1.5, -2.25, 1e-8, 1e8];
         let meta = serde_json::json!({ "session_id": "abc" });
-        let framed = encode(&meta, Some((&values, [1, 5])), WireDtype::F32).unwrap();
+        let framed = encode(&meta, Some((&values, vec![1, 5])), WireDtype::F32).unwrap();
         let (back_meta, tensor) = decode(&framed).unwrap();
         assert_eq!(back_meta["session_id"], "abc");
         let (back, shape) = tensor.unwrap();
-        assert_eq!(shape, [1, 5]);
+        assert_eq!(shape, vec![1, 5]);
         assert_eq!(back, values);
     }
 
@@ -842,7 +855,7 @@ mod tests {
     fn f16_round_trip_stays_close_for_activation_sized_values() {
         let values: Vec<f32> = vec![0.0, 1.0, -1.0, 0.5, -0.125, 12.5, -37.75, 0.001];
         let meta = serde_json::json!({});
-        let framed = encode(&meta, Some((&values, [1, 8])), WireDtype::F16).unwrap();
+        let framed = encode(&meta, Some((&values, vec![1, 8])), WireDtype::F16).unwrap();
         let (_, tensor) = decode(&framed).unwrap();
         let (back, _) = tensor.unwrap();
         for (a, b) in values.iter().zip(back.iter()) {
@@ -855,8 +868,8 @@ mod tests {
     fn f16_halves_the_bytes_on_the_wire() {
         let values = vec![1.0f32; 1024];
         let meta = serde_json::json!({});
-        let as_f32 = encode(&meta, Some((&values, [1, 1024])), WireDtype::F32).unwrap();
-        let as_f16 = encode(&meta, Some((&values, [1, 1024])), WireDtype::F16).unwrap();
+        let as_f32 = encode(&meta, Some((&values, vec![1, 1024])), WireDtype::F32).unwrap();
+        let as_f16 = encode(&meta, Some((&values, vec![1, 1024])), WireDtype::F16).unwrap();
         // Headers differ by a couple of bytes; the payload is what matters.
         assert_eq!(as_f32.len() - as_f16.len(), 1024 * 2);
     }
@@ -866,14 +879,14 @@ mod tests {
         let values: Vec<f32> = vec![0.0, 1.0, -1.0, 0.5, -0.125, 12.5, -37.75, 0.001];
         let framed = encode(
             &serde_json::json!({}),
-            Some((&values, [1, 8])),
+            Some((&values, vec![1, 8])),
             WireDtype::F8,
         )
         .unwrap();
         let (meta, tensor) = decode(&framed).unwrap();
         assert_eq!(meta["dtype"], "f8");
         let (back, shape) = tensor.unwrap();
-        assert_eq!(shape, [1, 8]);
+        assert_eq!(shape, vec![1, 8]);
         assert!(back.iter().all(|value| value.is_finite()));
         for (original, decoded) in values.iter().zip(back.iter()) {
             let tolerance = original.abs() * 0.2 + 0.002;
@@ -888,12 +901,50 @@ mod tests {
     fn f8_uses_one_byte_per_value() {
         let values = vec![1.0_f32; 1024];
         assert_eq!(
-            tensor_payload_len(Some((&values, [1, 1024])), WireDtype::F8).unwrap(),
+            tensor_payload_len(Some((&values, vec![1, 1024])), WireDtype::F8).unwrap(),
             1024
         );
         assert_eq!(
-            tensor_payload_len(Some((&values, [1, 1024])), WireDtype::F16).unwrap(),
+            tensor_payload_len(Some((&values, vec![1, 1024])), WireDtype::F16).unwrap(),
             1024 * 2
+        );
+    }
+
+    #[test]
+    fn extra_feature_axes_survive_a_round_trip() {
+        let values: Vec<f32> = (0..24).map(|value| value as f32).collect();
+        let shape = vec![2, 4, 3];
+        let framed = encode(
+            &serde_json::json!({}),
+            Some((&values, shape.clone())),
+            WireDtype::F16,
+        )
+        .unwrap();
+        let (_, tensor) = decode(&framed).unwrap();
+        let (decoded, decoded_shape) = tensor.unwrap();
+        assert_eq!(decoded_shape, shape);
+        assert_eq!(decoded.len(), values.len());
+        assert!(decoded
+            .iter()
+            .zip(values)
+            .all(|(actual, expected)| (actual - expected).abs() < 0.01));
+    }
+
+    #[test]
+    fn residual_payload_cost_is_measured_per_token_and_feature_width() {
+        let shape = vec![1, 4096, 4];
+        let values = vec![1.0_f32; shape.iter().product()];
+        assert_eq!(
+            tensor_payload_len(Some((&values, shape.clone())), WireDtype::F16).unwrap(),
+            4 * 4096 * 2
+        );
+        assert_eq!(
+            tensor_payload_len(Some((&values, shape.clone())), WireDtype::F32).unwrap(),
+            4 * 4096 * 4
+        );
+        assert_eq!(
+            tensor_payload_len(Some((&values, shape)), WireDtype::F8).unwrap(),
+            4 * 4096
         );
     }
 
@@ -902,7 +953,7 @@ mod tests {
         for value in [f32::NAN, f32::INFINITY, -f32::INFINITY, 449.0] {
             let error = encode(
                 &serde_json::json!({}),
-                Some((&[value], [1, 1])),
+                Some((&[value], vec![1, 1])),
                 WireDtype::F8,
             )
             .unwrap_err()
@@ -920,7 +971,7 @@ mod tests {
             items: vec![BatchItem {
                 item_id: "item".into(),
                 session_id: "session".into(),
-                shape: [1, 1],
+                shape: vec![1, 1],
                 dtype: "f8".into(),
                 offset: 0,
                 len: 1,
@@ -954,7 +1005,7 @@ mod tests {
         let values = vec![1.0f32; 4];
         let mut framed = encode(
             &serde_json::json!({}),
-            Some((&values, [1, 4])),
+            Some((&values, vec![1, 4])),
             WireDtype::F16,
         )
         .unwrap();
@@ -971,7 +1022,7 @@ mod tests {
                 BatchItem {
                     item_id: "item-a".into(),
                     session_id: "session-a".into(),
-                    shape: [1, 2],
+                    shape: vec![1, 2],
                     dtype: "f16".into(),
                     offset: 0,
                     len: 4,
@@ -980,7 +1031,7 @@ mod tests {
                 BatchItem {
                     item_id: "item-b".into(),
                     session_id: "session-b".into(),
-                    shape: [1, 2],
+                    shape: vec![1, 2],
                     dtype: "f16".into(),
                     offset: 4,
                     len: 4,
@@ -1019,12 +1070,13 @@ mod tests {
             "chunk_index": 2,
         });
         let values = vec![0.5_f32, -1.25];
-        let framed = encode_batch_single(&meta, Some((&values, [1, 2])), WireDtype::F16).unwrap();
+        let framed =
+            encode_batch_single(&meta, Some((&values, vec![1, 2])), WireDtype::F16).unwrap();
         let (decoded_meta, decoded_tensor) = decode_inference_request(&framed).unwrap();
         assert_eq!(decoded_meta["session_id"], "session-single");
         assert_eq!(decoded_meta["frame_version"], BATCH_FRAME_VERSION);
         let (decoded_values, shape) = decoded_tensor.unwrap();
-        assert_eq!(shape, [1, 2]);
+        assert_eq!(shape, vec![1, 2]);
         assert!((decoded_values[0] - values[0]).abs() < 0.001);
         assert!((decoded_values[1] - values[1]).abs() < 0.001);
     }
@@ -1075,7 +1127,7 @@ mod tests {
     #[test]
     fn batch_frame_rejects_payload_larger_than_the_wire_limit() {
         let mut frame = sample_batch();
-        frame.items[0].shape = [1, MAX_FRAME_PAYLOAD_BYTES / 2 + 1];
+        frame.items[0].shape = vec![1, MAX_FRAME_PAYLOAD_BYTES / 2 + 1];
         frame.items[0].len = MAX_FRAME_PAYLOAD_BYTES + 2;
         frame.items[1].offset = frame.items[0].len;
         frame.items[1].len = 0;

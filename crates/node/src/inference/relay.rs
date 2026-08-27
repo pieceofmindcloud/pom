@@ -9,7 +9,7 @@
 //! encode/decode path instead of drifting apart.
 
 use crate::infer_tunnel::{TunnelOutbound, TunnelOutboundSender, TunnelRequest};
-use crate::wire::{self, FrameEncoding, WireDtype};
+use crate::wire::{self, FrameEncoding, TensorShape, WireDtype};
 use anyhow::{anyhow, Result};
 use axum::body::Bytes;
 use libp2p::PeerId;
@@ -108,7 +108,7 @@ impl InferenceTransport {
 /// `prefill.rs`, or a `hop_timings` array entry in `infer_server.rs`).
 pub struct SentFrame {
     pub meta: Value,
-    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub tensor: Option<(Vec<f32>, TensorShape)>,
     pub round_trip_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
@@ -159,7 +159,7 @@ struct BatchCall {
     local: Option<LocalInference>,
     path: String,
     meta: Value,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     dtype: WireDtype,
     attempts: u32,
     peer_label: String,
@@ -225,7 +225,7 @@ impl BatchCoordinator {
         local: Option<LocalInference>,
         path: &str,
         meta: &Value,
-        tensor: Option<(&[f32], [usize; 2])>,
+        tensor: Option<(&[f32], TensorShape)>,
         dtype: WireDtype,
         attempts: u32,
         peer_label: &str,
@@ -291,7 +291,7 @@ impl BatchCoordinator {
                 wire::tensor_payload_len(
                     call.tensor
                         .as_ref()
-                        .map(|(values, shape)| (values.as_slice(), *shape)),
+                        .map(|(values, shape)| (values.as_slice(), shape.clone())),
                     call.dtype,
                 )
                 .unwrap_or(wire::MAX_BATCH_PAYLOAD_BYTES.saturating_add(1))
@@ -362,14 +362,14 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
             let hidden_state_bytes_sent = hidden_state_bytes(
                 call.tensor
                     .as_ref()
-                    .map(|(values, shape)| (values.as_slice(), *shape)),
+                    .map(|(values, shape)| (values.as_slice(), shape.clone())),
                 call.dtype,
             )?;
             let hidden_state_bytes_received = received_hidden_state_bytes(
                 &item.meta,
                 item.tensor
                     .as_ref()
-                    .map(|(values, shape)| (values.as_slice(), *shape)),
+                    .map(|(values, shape)| (values.as_slice(), shape.clone())),
                 call.dtype,
                 &call.peer_label,
             )?;
@@ -545,7 +545,7 @@ pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
 /// larger than the wire limit even when every request was tiny. Ring frames
 /// already carry their downstream route and return metadata, so they remain
 /// safe to coalesce; hub frames without a tensor are sent one at a time.
-fn can_coalesce_frame(path: &str, meta: &Value, tensor: Option<(&[f32], [usize; 2])>) -> bool {
+fn can_coalesce_frame(path: &str, meta: &Value, tensor: Option<(&[f32], TensorShape)>) -> bool {
     let hidden_response = tensor.is_none()
         && matches!(path, "/v1/prefill" | "/v1/step")
         && meta.get("is_last").and_then(Value::as_bool) == Some(false)
@@ -598,7 +598,7 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 /// idempotency protection against being redecoded).
 fn encode_frame_body(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     _encoding: FrameEncoding,
     use_batch_frame: bool,
@@ -610,13 +610,13 @@ fn encode_frame_body(
     }
 }
 
-fn hidden_state_bytes(tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype) -> Result<u64> {
+fn hidden_state_bytes(tensor: Option<(&[f32], TensorShape)>, dtype: WireDtype) -> Result<u64> {
     Ok(wire::tensor_payload_len(tensor, dtype)? as u64)
 }
 
 fn received_hidden_state_bytes(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     expected_dtype: WireDtype,
     peer_label: &str,
 ) -> Result<u64> {
@@ -642,14 +642,14 @@ async fn send_frame_in_process(
     local: LocalInference,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     use_batch_frame: bool,
     peer_label: &str,
 ) -> Result<SentFrame> {
     debug!(peer = peer_label, path, "inferência em processo");
-    let hidden_state_bytes_sent = hidden_state_bytes(tensor, dtype)?;
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
@@ -671,7 +671,7 @@ async fn send_frame_in_process(
         &meta,
         tensor
             .as_ref()
-            .map(|(values, shape)| (values.as_slice(), *shape)),
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
         dtype,
         peer_label,
     )?;
@@ -708,7 +708,7 @@ pub async fn send_frame(
     base_url: &str,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     attempts: u32,
@@ -729,7 +729,7 @@ async fn send_frame_with_protocol(
     base_url: &str,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     use_batch_frame: bool,
@@ -742,7 +742,7 @@ async fn send_frame_with_protocol(
     // certificado esperado deste destino, e o pinning é o que distingue o peer
     // de quem se põe no meio dele.
     let http = &clients.for_peer(peer_id)?;
-    let hidden_state_bytes_sent = hidden_state_bytes(tensor, dtype)?;
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
@@ -786,7 +786,7 @@ async fn send_frame_with_protocol(
                     &meta,
                     tensor
                         .as_ref()
-                        .map(|(values, shape)| (values.as_slice(), *shape)),
+                        .map(|(values, shape)| (values.as_slice(), shape.clone())),
                     dtype,
                     peer_label,
                 )?;
@@ -1264,7 +1264,7 @@ pub async fn send_frame_or_tunnel(
     tunnel: Option<&TunnelOutboundSender>,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     attempts: u32,
@@ -1281,7 +1281,7 @@ pub async fn send_frame_or_tunnel(
     } else {
         None
     };
-    let can_batch = can_coalesce_frame(path, meta, tensor)
+    let can_batch = can_coalesce_frame(path, meta, tensor.clone())
         && step.supports(crate::pipeline::CAP_FRAME_BATCH)
         && !meta.get("reply_to").is_some_and(|value| !value.is_null())
         && meta.get("speculate").is_none()
@@ -1322,7 +1322,7 @@ pub async fn send_frame_or_tunnel(
             local,
             path,
             meta,
-            tensor,
+            tensor.clone(),
             dtype,
             encoding,
             step.supports(crate::pipeline::CAP_FRAME_BATCH),
@@ -1353,7 +1353,7 @@ pub async fn send_frame_or_tunnel(
             &step.libp2p_addr_candidates,
             path,
             meta,
-            tensor,
+            tensor.clone(),
             dtype,
             encoding,
             use_batch_frame,
@@ -1448,7 +1448,7 @@ pub async fn send_frame_via_tunnel(
     peer_id: PeerId,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     peer_label: &str,
@@ -1475,14 +1475,14 @@ async fn send_frame_via_tunnel_with_auth(
     addr_candidates: &[String],
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     _encoding: FrameEncoding,
     use_batch_frame: bool,
     peer_label: &str,
     auth_token: Option<String>,
 ) -> Result<SentFrame> {
-    let hidden_state_bytes_sent = hidden_state_bytes(tensor, dtype)?;
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let body = if use_batch_frame {
         wire::encode_batch_single(meta, tensor, dtype)?
@@ -1533,7 +1533,7 @@ async fn send_frame_via_tunnel_with_auth(
         &meta,
         tensor
             .as_ref()
-            .map(|(values, shape)| (values.as_slice(), *shape)),
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
         dtype,
         peer_label,
     )?;
@@ -1610,7 +1610,7 @@ mod tests {
         let values = vec![1.0_f32; 2];
         let error = received_hidden_state_bytes(
             &json!({"dtype": "f16"}),
-            Some((&values, [1, 2])),
+            Some((&values, vec![1, 2])),
             WireDtype::F8,
             "old-peer",
         )
@@ -2322,7 +2322,7 @@ mod tests {
             None,
             "/v1/step",
             &json!({"session_id": "session-v3"}),
-            Some((&[0.25_f32, -0.5], [1, 2])),
+            Some((&[0.25_f32, -0.5], vec![1, 2])),
             WireDtype::F16,
             FrameEncoding::F16,
             1,

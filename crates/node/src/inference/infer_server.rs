@@ -16,7 +16,7 @@
 use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, ModelCache, SamplingConfig};
 use crate::pipeline::PipelineStep;
 use crate::runtime::NodeConfig;
-use crate::wire::{self, WireDtype};
+use crate::wire::{self, TensorShape, WireDtype};
 use anyhow::{bail, Result};
 use axum::{
     body::Bytes,
@@ -317,7 +317,7 @@ struct PrefillJob {
     wire_dtype: WireDtype,
     prompt: Option<String>,
     chat_template: Option<bool>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     chunk_tokens: Option<Vec<i32>>,
     queued_at: Instant,
 }
@@ -327,7 +327,7 @@ struct StepJob {
     is_last: bool,
     wire_dtype: WireDtype,
     token_id: Option<i32>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     /// Bloco local onde parar, quando o remetente pediu menos que a fatia
     /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
     capture_block: Option<u32>,
@@ -1289,7 +1289,7 @@ mod relay_tests {
             &hops,
             "/v1/step",
             json!({"session_id": "sess-1"}),
-            (&residual, [1, 8]),
+            (&residual, vec![1, 8]),
             WireDtype::F16,
             1,
             json!(7),
@@ -1335,7 +1335,7 @@ mod relay_tests {
             &hops,
             "/v1/step",
             json!({"session_id": "sess-1"}),
-            (&residual, [1, 8]),
+            (&residual, vec![1, 8]),
             WireDtype::F16,
             1,
             json!(7),
@@ -3518,7 +3518,7 @@ async fn handle_prefill(
     let inbound_hidden_state_bytes = match wire::tensor_payload_len(
         tensor
             .as_ref()
-            .map(|(values, shape)| (values.as_slice(), *shape)),
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
         wire_dtype,
     ) {
         Ok(bytes) => bytes,
@@ -3621,7 +3621,7 @@ async fn handle_prefill(
         let outbound_hidden_state_bytes = match wire::tensor_payload_len(
             local_tensor
                 .as_ref()
-                .map(|(values, shape)| (values.as_slice(), *shape)),
+                .map(|(values, shape)| (values.as_slice(), shape.clone())),
             wire_dtype,
         ) {
             Ok(bytes) => bytes,
@@ -3720,7 +3720,9 @@ async fn handle_prefill(
     if !should_relay {
         return match wire::encode_batch_single(
             &local_meta,
-            local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
+            local_tensor
+                .as_ref()
+                .map(|(v, s)| (v.as_slice(), s.clone())),
             wire_dtype,
         ) {
             Ok(bytes) => (
@@ -3940,7 +3942,7 @@ fn prefill_blocking(
     wire_dtype: WireDtype,
     prompt: Option<String>,
     chat_template: Option<bool>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
     // wire. Só tem sentido no branch de estado oculto (a cabeça tokeniza o
@@ -4087,6 +4089,7 @@ fn prefill_blocking(
         n_tokens = shape[0];
         engine_timing = s.engine.decode_hidden(
             &hidden,
+            &shape,
             n_tokens,
             n_past,
             seq_id,
@@ -4109,7 +4112,7 @@ fn prefill_blocking(
         && !s.engine.moe_hook_enabled()
     {
         let residual = s.engine.take_residual(n_tokens)?;
-        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        let _ = s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;
     }
     timings.merge_engine_moe(&engine_timing);
@@ -4257,11 +4260,11 @@ fn prefill_blocking(
     let residual_started = Instant::now();
     let mut residual = s.engine.take_residual(n_tokens)?;
     if !input_was_hidden {
-        residual = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        residual.values =
+            s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
     }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
-    let n_embd = s.engine.n_embd;
     let mut reply_meta = json!({
         "done": false,
         "more_chunks": more,
@@ -4298,7 +4301,7 @@ fn prefill_blocking(
     let encode_started = Instant::now();
     let bytes = wire::encode(
         &reply_meta,
-        Some((&residual, [n_tokens, n_embd])),
+        Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;
@@ -4333,7 +4336,10 @@ struct PreparedPrefill {
 
 enum PreparedPrefillInput {
     Tokens(Vec<i32>),
-    Hidden(Vec<f32>),
+    Hidden {
+        values: Vec<f32>,
+        shape: TensorShape,
+    },
 }
 
 fn prefill_batch_blocking(
@@ -4438,28 +4444,23 @@ fn prefill_batch_blocking(
             let (seq_id, n_past, prompt_tokens, input, n_tokens) = {
                 let session = &s.sessions[&sid_key];
                 if let Some((hidden, shape)) = tensor {
-                    if shape[0] == 0 || shape[1] != s.engine.n_embd {
-                        bail!(
-                            "hidden state de {} tem shape {:?}, esperado [tokens, {}]",
-                            sid_key,
-                            shape,
-                            s.engine.n_embd
-                        );
-                    }
-                    let n_tokens = shape[0];
-                    if hidden.len() != n_tokens.saturating_mul(s.engine.n_embd) {
-                        bail!(
-                            "hidden state de {} tem {} floats, esperado {}",
-                            sid_key,
-                            hidden.len(),
-                            n_tokens.saturating_mul(s.engine.n_embd)
-                        );
-                    }
+                    let n_tokens = shape.first().copied().unwrap_or(0);
+                    crate::llm::validate_hidden_tensor(
+                        hidden.len(),
+                        &shape,
+                        n_tokens,
+                        s.engine.n_embd,
+                        s.engine.n_embd_inp,
+                        &format!("hidden state de {sid_key}"),
+                    )?;
                     (
                         session.seq_id(),
                         session.n_past,
                         Vec::new(),
-                        PreparedPrefillInput::Hidden(hidden),
+                        PreparedPrefillInput::Hidden {
+                            values: hidden,
+                            shape,
+                        },
                         n_tokens,
                     )
                 } else {
@@ -4554,15 +4555,15 @@ fn prefill_batch_blocking(
     let mut transform_error = None;
     let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
     for (_, item) in &mut prepared {
-        if let PreparedPrefillInput::Hidden(hidden) = &mut item.input {
+        if let PreparedPrefillInput::Hidden { values, .. } = &mut item.input {
             let mut transform_timings = NodeTimings::default();
             match s.apply_moe_hidden(
-                std::mem::take(hidden),
+                std::mem::take(values),
                 item.n_tokens,
                 capture_block,
                 &mut transform_timings,
             ) {
-                Ok(transformed) => *hidden = transformed,
+                Ok(transformed) => *values = transformed,
                 Err(error) => {
                     transform_error = Some(error);
                     break;
@@ -4595,13 +4596,13 @@ fn prefill_batch_blocking(
                     },
                     tokens: match &item.input {
                         PreparedPrefillInput::Tokens(tokens) => tokens.clone(),
-                        PreparedPrefillInput::Hidden(_) => Vec::new(),
+                        PreparedPrefillInput::Hidden { .. } => Vec::new(),
                     },
                 })
                 .collect();
             s.engine.decode_tokens_batch(&entries, need_residual)
         }
-        PreparedPrefillInput::Hidden(_) => {
+        PreparedPrefillInput::Hidden { .. } => {
             let entries: Vec<crate::llm::HiddenBatchEntry> = prepared
                 .iter()
                 .map(|(_, item)| crate::llm::HiddenBatchEntry {
@@ -4613,7 +4614,11 @@ fn prefill_batch_blocking(
                         want_logits: item.is_last,
                     },
                     hidden: match &item.input {
-                        PreparedPrefillInput::Hidden(hidden) => hidden.clone(),
+                        PreparedPrefillInput::Hidden { values, .. } => values.clone(),
+                        PreparedPrefillInput::Tokens(_) => Vec::new(),
+                    },
+                    shape: match &item.input {
+                        PreparedPrefillInput::Hidden { shape, .. } => shape.clone(),
                         PreparedPrefillInput::Tokens(_) => Vec::new(),
                     },
                 })
@@ -4761,8 +4766,9 @@ fn prefill_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let input_was_hidden = matches!(&item.input, PreparedPrefillInput::Hidden(_));
-            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let input_was_hidden = matches!(&item.input, PreparedPrefillInput::Hidden { .. });
+            let (mut residual, residual_shape) =
+                output.residual_for(&item.sid_key, s.engine.n_embd)?;
             if !input_was_hidden {
                 residual =
                     s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
@@ -4792,11 +4798,7 @@ fn prefill_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let started = Instant::now();
-            let bytes = wire::encode(
-                &meta,
-                Some((&residual, [item.n_tokens, s.engine.n_embd])),
-                item.wire_dtype,
-            )?;
+            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
             timings.encode_us = started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();
@@ -4872,24 +4874,19 @@ fn step_batch_blocking(
             let seq_id = session.seq_id();
             let n_past = session.n_past;
             let input = if let Some((hidden, shape)) = tensor {
-                if shape[0] == 0 || shape[1] != s.engine.n_embd {
-                    bail!(
-                        "hidden state de {} tem shape {:?}, esperado [tokens, {}]",
-                        sid_key,
-                        shape,
-                        s.engine.n_embd
-                    );
+                let n_tokens = shape.first().copied().unwrap_or(0);
+                crate::llm::validate_hidden_tensor(
+                    hidden.len(),
+                    &shape,
+                    n_tokens,
+                    s.engine.n_embd,
+                    s.engine.n_embd_inp,
+                    &format!("hidden state de {sid_key}"),
+                )?;
+                PreparedStepInput::Hidden {
+                    values: hidden,
+                    shape,
                 }
-                let n_tokens = shape[0];
-                if hidden.len() != n_tokens.saturating_mul(s.engine.n_embd) {
-                    bail!(
-                        "hidden state de {} tem {} floats, esperado {}",
-                        sid_key,
-                        hidden.len(),
-                        n_tokens.saturating_mul(s.engine.n_embd)
-                    );
-                }
-                PreparedStepInput::Hidden { hidden, n_tokens }
             } else {
                 let token =
                     token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
@@ -4902,7 +4899,7 @@ fn step_batch_blocking(
             };
             let n_tokens = match &input {
                 PreparedStepInput::Tokens { .. } => 1,
-                PreparedStepInput::Hidden { n_tokens, .. } => *n_tokens,
+                PreparedStepInput::Hidden { shape, .. } => shape[0],
             };
             Ok(PreparedStep {
                 sid_key,
@@ -4954,15 +4951,15 @@ fn step_batch_blocking(
     let mut transform_error = None;
     let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
     for (_, item) in &mut prepared {
-        if let PreparedStepInput::Hidden { hidden, n_tokens } = &mut item.input {
+        if let PreparedStepInput::Hidden { values, shape } = &mut item.input {
             let mut transform_timings = NodeTimings::default();
             match s.apply_moe_hidden(
-                std::mem::take(hidden),
-                *n_tokens,
+                std::mem::take(values),
+                shape[0],
                 capture_block,
                 &mut transform_timings,
             ) {
-                Ok(transformed) => *hidden = transformed,
+                Ok(transformed) => *values = transformed,
                 Err(error) => {
                     transform_error = Some(error);
                     break;
@@ -5013,7 +5010,11 @@ fn step_batch_blocking(
                         want_logits: item.is_last,
                     },
                     hidden: match &item.input {
-                        PreparedStepInput::Hidden { hidden, .. } => hidden.clone(),
+                        PreparedStepInput::Hidden { values, .. } => values.clone(),
+                        PreparedStepInput::Tokens { .. } => Vec::new(),
+                    },
+                    shape: match &item.input {
+                        PreparedStepInput::Hidden { shape, .. } => shape.clone(),
                         PreparedStepInput::Tokens { .. } => Vec::new(),
                     },
                 })
@@ -5113,7 +5114,8 @@ fn step_batch_blocking(
 
             let residual_started = Instant::now();
             let input_was_hidden = matches!(&item.input, PreparedStepInput::Hidden { .. });
-            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (mut residual, residual_shape) =
+                output.residual_for(&item.sid_key, s.engine.n_embd)?;
             if !input_was_hidden {
                 residual =
                     s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
@@ -5128,11 +5130,7 @@ fn step_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let encode_started = Instant::now();
-            let bytes = wire::encode(
-                &meta,
-                Some((&residual, [item.n_tokens, s.engine.n_embd])),
-                item.wire_dtype,
-            )?;
+            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
             timings.encode_us = encode_started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();
@@ -5154,8 +5152,13 @@ struct PreparedStep {
 }
 
 enum PreparedStepInput {
-    Tokens { token: i32 },
-    Hidden { hidden: Vec<f32>, n_tokens: usize },
+    Tokens {
+        token: i32,
+    },
+    Hidden {
+        values: Vec<f32>,
+        shape: TensorShape,
+    },
 }
 
 // ── /v1/step ─────────────────────────────────────────────────────────────────
@@ -5263,7 +5266,7 @@ async fn handle_step(
     let inbound_hidden_state_bytes = match wire::tensor_payload_len(
         tensor
             .as_ref()
-            .map(|(values, shape)| (values.as_slice(), *shape)),
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
         wire_dtype,
     ) {
         Ok(bytes) => bytes,
@@ -5352,7 +5355,7 @@ async fn handle_step(
         let outbound_hidden_state_bytes = match wire::tensor_payload_len(
             local_tensor
                 .as_ref()
-                .map(|(values, shape)| (values.as_slice(), *shape)),
+                .map(|(values, shape)| (values.as_slice(), shape.clone())),
             wire_dtype,
         ) {
             Ok(bytes) => bytes,
@@ -5409,7 +5412,9 @@ async fn handle_step(
     if !should_relay {
         return match wire::encode_batch_single(
             &local_meta,
-            local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
+            local_tensor
+                .as_ref()
+                .map(|(v, s)| (v.as_slice(), s.clone())),
             wire_dtype,
         ) {
             Ok(bytes) => (
@@ -5506,7 +5511,7 @@ async fn relay_and_bubble(
     hops: &[PipelineStep],
     path: &str,
     mut base_meta: Value,
-    tensor: (&[f32], [usize; 2]),
+    tensor: (&[f32], TensorShape),
     dtype: WireDtype,
     attempts: u32,
     local_processing_ms: Value,
@@ -5615,7 +5620,7 @@ pub(crate) async fn forward_direct(
     path: &'static str,
     base_meta: Value,
     residual: Vec<f32>,
-    shape: [usize; 2],
+    shape: TensorShape,
     dtype: WireDtype,
     attempts: u32,
     reply_to: Value,
@@ -5632,7 +5637,7 @@ async fn forward_direct_ordered(
     path: &'static str,
     mut base_meta: Value,
     residual: Vec<f32>,
-    shape: [usize; 2],
+    shape: TensorShape,
     dtype: WireDtype,
     attempts: u32,
     reply_to: Value,
@@ -6116,7 +6121,7 @@ fn step_blocking(
     is_last: bool,
     wire_dtype: WireDtype,
     token_id: Option<i32>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
     // Present only for the head — everyone else either forwards
     // `incoming_draft` untouched (not the tail) or verifies against it (the
@@ -6205,6 +6210,7 @@ fn step_blocking(
         let logits_all = incoming_draft.is_some() || !is_last;
         engine_timing = s.engine.decode_hidden(
             &hidden,
+            &shape,
             n_tokens,
             n_past,
             seq_id,
@@ -6289,7 +6295,7 @@ fn step_blocking(
         && !s.engine.moe_hook_enabled()
     {
         let residual = s.engine.take_residual(n_tokens)?;
-        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        let _ = s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;
     }
     timings.merge_engine_moe(&engine_timing);
@@ -6537,7 +6543,8 @@ fn step_blocking(
     let residual_started = Instant::now();
     let mut residual = s.engine.take_residual(n_tokens)?;
     if !input_was_hidden {
-        residual = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        residual.values =
+            s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
     }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let mut reply_meta = json!({"done": false});
@@ -6560,7 +6567,7 @@ fn step_blocking(
     let encode_started = Instant::now();
     let bytes = wire::encode(
         &reply_meta,
-        Some((&residual, [n_tokens, s.engine.n_embd])),
+        Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;

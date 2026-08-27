@@ -40,7 +40,7 @@
 #![cfg(test)]
 
 use crate::openai::{ChatMessage, Content};
-use crate::wire::{self, WireDtype};
+use crate::wire::{self, TensorShape, WireDtype};
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::{
@@ -140,7 +140,7 @@ fn tokenize(prompt: &str) -> Vec<i32> {
         .collect()
 }
 
-fn frame(meta: &Value, tensor: Option<(&[f32], [usize; 2])>) -> Response {
+fn frame(meta: &Value, tensor: Option<(&[f32], TensorShape)>) -> Response {
     match wire::encode(meta, tensor, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
@@ -167,7 +167,7 @@ async fn fake_rollback() -> impl IntoResponse {
 struct Incoming {
     meta: Value,
     inbound_bytes: usize,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     next_hops: Vec<crate::pipeline::PipelineStep>,
     is_last: bool,
     reply_to: Option<Value>,
@@ -200,7 +200,7 @@ async fn bubble(
     hops: &[crate::pipeline::PipelineStep],
     path: &str,
     mut base_meta: Value,
-    tensor: (&[f32], [usize; 2]),
+    tensor: (&[f32], TensorShape),
 ) -> Result<Value, Response> {
     let next = &hops[0];
     let remaining = &hops[1..];
@@ -441,7 +441,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     .await;
 
     let residual = vec![0.0f32; n_tokens * HIDDEN_DIM];
-    let shape = [n_tokens, HIDDEN_DIM];
+    let shape = vec![n_tokens, HIDDEN_DIM];
 
     // ── Resposta direta ─────────────────────────────────────────────────────
     if let Some(reply_to) = inc.reply_to {
@@ -551,7 +551,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         local["text"] = json!(if done { "" } else { "x" });
     }
     let residual = vec![0.0f32; HIDDEN_DIM];
-    let shape = [1usize, HIDDEN_DIM];
+    let shape = vec![1usize, HIDDEN_DIM];
 
     if let Some(reply_to) = inc.reply_to {
         let hop_timings = crate::direct::accumulate(

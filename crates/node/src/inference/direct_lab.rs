@@ -24,7 +24,7 @@
 #![cfg(test)]
 
 use crate::pipeline::{PipelinePlan, PipelineStep};
-use crate::wire::{self, WireDtype};
+use crate::wire::{self, TensorShape, WireDtype};
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::{
@@ -85,7 +85,7 @@ impl Hop {
     }
 }
 
-fn frame(meta: &Value, tensor: Option<(&[f32], [usize; 2])>) -> Response {
+fn frame(meta: &Value, tensor: Option<(&[f32], TensorShape)>) -> Response {
     match wire::encode(meta, tensor, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
@@ -141,7 +141,7 @@ async fn bubble(
     hops: &[PipelineStep],
     path: &str,
     mut base_meta: Value,
-    tensor: (&[f32], [usize; 2]),
+    tensor: (&[f32], TensorShape),
     local_processing_ms: u64,
 ) -> Result<Value, Response> {
     let next = &hops[0];
@@ -239,7 +239,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     }
 
     let residual = vec![0.0f32; n_tokens * HIDDEN_DIM];
-    let shape = [n_tokens, HIDDEN_DIM];
+    let shape = vec![n_tokens, HIDDEN_DIM];
     let progress = hop
         .is_head
         .then(|| crate::infer_server::prompt_progress_for_forward(&inc.meta, &local));
@@ -331,7 +331,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         local["done"] = json!(false);
     }
     let residual = vec![0.0f32; HIDDEN_DIM];
-    let shape = [1usize, HIDDEN_DIM];
+    let shape = vec![1usize, HIDDEN_DIM];
 
     if let Some(reply_to) = inc.reply_to {
         let hop_timings = crate::direct::accumulate(

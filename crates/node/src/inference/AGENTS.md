@@ -71,6 +71,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
+  A captura identifica o eixo de tokens pela forma física e pela metadata
+  `n_embd`/`n_embd_inp`, preserva todos os eixos de features e publica o shape
+  canônico `[tokens, features...]`; a acumulação continua anexando microlotes
+  na ordem produzida com `kv_unified=true`. Shape ou stride que não fecha essa
+  geometria é recusado com diagnóstico explícito.
   `decode_tokens_batch` e `decode_hidden_batch`
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.

@@ -158,10 +158,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
   Q6_K (14) e IQ3_S (21), IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa
   descritores por papel e dtype para Q4_K/Q6_K e esses três IQ, sem converter a
-  combinação para um dtype global. O hook comum recebe a rota do llama.cpp em
-  `[expert_slot, token]`; `llm.rs` a transpõe para `[token, expert_slot]` antes
-  do runtime. A ponte escalar reutiliza o payload de
-  `format_plain.rs` e valida o cabeçalho antes do kernel.
+  combinação para um dtype global. O hook comum recebe a rota do llama.cpp já
+  em ordem token-major, a ordem física produzida por `ggml_get_rows`; `llm.rs`
+  valida e preserva essa ordem antes do runtime. A ponte escalar reutiliza o
+  payload de `format_plain.rs` e valida o cabeçalho antes do kernel.
   K-quants e IQ-quants validam a convenção GGUF
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
   antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML
@@ -182,6 +182,23 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   primeiro token/slot contra leitura não inicializada. `qwen35moe` mantém
   `ffn_*_shexp` fora do inventário: o callback recebe apenas `ffn_*_exps`, e o
   expert compartilhado continua no `build_ffn` nativo.
+  Os testes `expert_shared_nao_entra_no_inventario_de_rota` e
+  `inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` verificam que somente
+  os quatro nomes exps terminados em `.weight` entram na classificação, sem
+  contar `shexp` nem sidecars. O teste
+  `sidecars_fundidos_usam_componente_e_fallback_separado_corretos` verifica os
+  nomes canônicos e a associação componente 0/1 do fundido, além do fallback
+  para gate/up separados. Essas provas não encontraram a origem do NaN do
+  Ornith.
+  A prova diferencial CUDA do Ornith ainda depende de um GGUF completo fora do
+  worktree. O comando preparado, sem execução local ou remota nesta etapa, é:
+  `POM_MOE_NUMERIC_MODEL=/caminho/absoluto/Ornith-1.5-35B-Q4_K_M.gguf`
+  `POM_MOE_NUMERIC_GPU_LAYERS=99 CUDAARCHS=120`
+  `CUDACXX=/usr/local/cuda-12/bin/nvcc CCACHE=ccache RUSTC_WRAPPER=ccache`
+  `CARGO_TARGET_DIR=/data/ftk-cuda-target cargo test -p node --features cuda --bin pom`
+  `inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer`
+  `-- --ignored --nocapture`. O caminho do GGUF é um placeholder explícito,
+  porque o arquivo real não está neste worktree e a ksia não foi consultada.
   A prova E2E isolada é:
   `POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf POM_MOE_NUMERIC_GPU_LAYERS=99`
   `cargo test -p node --features cuda --bin pom`

@@ -1037,6 +1037,16 @@ escalares finitos, carregados no payload/descriptor e aplicados nos produtos
 gate, up e down. O tensor compartilhado `ffn_*_shexp` continua fora desse
 inventário.
 
+Os testes `expert_shared_nao_entra_no_inventario_de_rota` e
+`inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` confirmam que somente
+os quatro tensores `*_exps.weight` são classificados como rota: `*_shexp` e
+`.scale`/`.input_scale` ficam fora. O teste
+`sidecars_fundidos_usam_componente_e_fallback_separado_corretos` confirma a
+associação do componente 0/1 nos sidecars do tensor fundido e o fallback para
+os sidecars de gate/up separados. As hipóteses de expert compartilhado contado
+e sidecar associado ao componente errado não explicam, portanto, o NaN
+observado no Ornith.
+
 O descriptor CUDA heterogêneo é uma estrutura C compatível com `#[repr(C)]`:
 `data` fica no offset 0, `bytes` no 8, `dtype` no 16, `scale` no 20,
 `input_scale` no 24, `secondary_scale` no 28 e `secondary_input_scale` no 32;
@@ -1148,6 +1158,27 @@ satisfazer `abs <= 5e-2 + 2e-2 * max(abs(native), 1)`. Essa combinação prova
 que a rota foi materializada e lida sem NaN, que o callback realmente usou
 CUDA e que o resultado externo acompanha o bloco nativo. O comando exige a
 feature CUDA e não deve ser substituído por `cargo test` sem `--ignored`.
+
+Para a prova do Ornith-1.5-35B-Q4_K_M, usar o GGUF completo real, não uma
+fatia, no valor de `POM_MOE_NUMERIC_MODEL`. O caminho exato não está neste
+worktree e não foi consultado na ksia nesta etapa, então permanece um
+placeholder explícito:
+
+```bash
+POM_MOE_NUMERIC_MODEL=/caminho/absoluto/Ornith-1.5-35B-Q4_K_M.gguf \
+POM_MOE_NUMERIC_GPU_LAYERS=99 \
+CUDAARCHS=120 \
+CUDACXX=/usr/local/cuda-12/bin/nvcc \
+CCACHE=ccache \
+RUSTC_WRAPPER=ccache \
+CARGO_TARGET_DIR=/data/ftk-cuda-target \
+cargo test -p node --features cuda --bin pom \
+  inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer \
+  -- --ignored --nocapture
+```
+
+Essa prova não foi executada: aguarda autorização explícita para gastar
+CPU/GPU na ksia.
 
 Pronto quando a telemetria de uma requisição MoE mostrar o callback executado,
 `executed_engine=MoE`, sem divergência, e a medição isolada comparar prefill e
@@ -1335,9 +1366,10 @@ da rota mista está no teste
 tolerância absoluta de `1e-4` e relatório também da diferença relativa; ela deve
 ser executada com CUDA real antes de declarar a combinação provada.
 
-O callback comum do llama.cpp entrega `selected_experts` e `weights` no layout
-`[expert_slot, token]`, enquanto o runtime Rust agrupa lotes como
-`[token, expert_slot]`. A fronteira em `llm.rs` faz a transposição explícita
+O callback comum do llama.cpp entrega `selected_experts` e `weights` na ordem
+token-major produzida por `ggml_get_rows` para `[1, experts_usados, tokens]`,
+enquanto o runtime Rust também agrupa lotes como `[token, expert_slot]`. A
+fronteira em `llm.rs` valida e preserva essa ordem, sem transposição adicional,
 antes de chamar o runtime. A validação de finitude permanece antes do upload e
 identifica `ffn_moe_weights`, arquitetura, camada, token, slot e expert no erro.
 Isso é importante para `qwen35moe`, que usa o mesmo `build_moe_ffn` genérico

@@ -875,6 +875,55 @@ fn gelu(value: f32) -> f32 {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::io::Write;
+
+    fn test_source_with_scalar_data(
+        tensors: Vec<TensorSpec>,
+        values: &[f32],
+    ) -> HeterogeneousMoeSource {
+        let path = std::env::temp_dir().join(format!(
+            "pom-ftk-heterogeneous-sidecars-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        for value in values {
+            file.write_all(&value.to_le_bytes()).unwrap();
+        }
+        drop(file);
+        let file = std::fs::File::open(&path).unwrap();
+        // SAFETY: the mapping owns the file contents independently after the
+        // descriptor is closed; the test removes only its unique path.
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        std::fs::remove_file(path).unwrap();
+        HeterogeneousMoeSource {
+            mmap,
+            data_start: 0,
+            experts: 2,
+            tensors,
+            layers: Vec::new(),
+        }
+    }
+
+    fn scalar_tensor_with_len(name: &str, offset: usize, elements: usize) -> TensorSpec {
+        TensorSpec {
+            name: name.to_owned(),
+            dims: vec![elements as u64],
+            dtype: 0,
+            offset: (offset * std::mem::size_of::<f32>()) as u64,
+        }
+    }
+
+    fn scalar_tensor(name: &str, offset: usize) -> TensorSpec {
+        scalar_tensor_with_len(name, offset, 2)
+    }
+
+    fn test_expert_tensor(spec_index: usize, role: TensorRole) -> ExpertTensor {
+        ExpertTensor {
+            spec_index,
+            decoder: TensorDecoder::Q4_0,
+            role,
+        }
+    }
 
     #[test]
     fn expert_shared_nao_entra_no_inventario_de_rota() {
@@ -889,6 +938,139 @@ mod tests {
         assert_eq!(role_for_name("blk.1.ffn_gate_shexp.weight"), None);
         assert_eq!(role_for_name("blk.1.ffn_up_shexp.weight"), None);
         assert_eq!(role_for_name("blk.1.ffn_down_shexp.weight"), None);
+    }
+
+    #[test]
+    fn inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars() {
+        let names = [
+            "blk.1.ffn_gate_up_exps.weight",
+            "blk.1.ffn_gate_exps.weight",
+            "blk.1.ffn_up_exps.weight",
+            "blk.1.ffn_down_exps.weight",
+            "blk.1.ffn_gate_shexp.weight",
+            "blk.1.ffn_up_shexp.weight",
+            "blk.1.ffn_down_shexp.weight",
+            "blk.1.ffn_gate_exps.weight.scale",
+            "blk.1.ffn_gate_exps.weight.input_scale",
+        ];
+
+        let routed = names
+            .iter()
+            .filter(|name| role_for_name(name).is_some())
+            .copied()
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            routed,
+            vec![
+                "blk.1.ffn_gate_up_exps.weight",
+                "blk.1.ffn_gate_exps.weight",
+                "blk.1.ffn_up_exps.weight",
+                "blk.1.ffn_down_exps.weight",
+            ]
+        );
+        for role in [
+            TensorRole::GateUp,
+            TensorRole::Gate,
+            TensorRole::Up,
+            TensorRole::Down,
+        ] {
+            assert_eq!(
+                routed
+                    .iter()
+                    .filter_map(|name| role_for_name(name))
+                    .filter(|found| *found == role)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn sidecars_fundidos_usam_componente_e_fallback_separado_corretos() {
+        let tensors = vec![
+            scalar_tensor("blk.0.ffn_gate_up_exps.weight", 0),
+            scalar_tensor_with_len("blk.0.ffn_gate_up_exps.scale", 0, 4),
+            scalar_tensor_with_len("blk.0.ffn_gate_up_exps.input_scale", 8, 4),
+            scalar_tensor("blk.0.ffn_gate_exps.weight", 0),
+            scalar_tensor("blk.0.ffn_up_exps.weight", 0),
+            scalar_tensor("blk.0.ffn_gate_exps.scale", 4),
+            scalar_tensor("blk.0.ffn_up_exps.scale", 6),
+            scalar_tensor("blk.0.ffn_gate_exps.input_scale", 8),
+            scalar_tensor("blk.0.ffn_up_exps.input_scale", 10),
+        ];
+        let source = test_source_with_scalar_data(
+            tensors,
+            &[
+                1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 300.0, 400.0,
+            ],
+        );
+        let fused = test_expert_tensor(0, TensorRole::GateUp);
+
+        assert_eq!(
+            source.sidecar_scale(fused, "scale", 1, 0, None).unwrap(),
+            2.0
+        );
+        assert_eq!(
+            source.sidecar_scale(fused, "scale", 1, 1, None).unwrap(),
+            4.0
+        );
+        assert_eq!(
+            source
+                .sidecar_scale(fused, "input_scale", 1, 0, None)
+                .unwrap(),
+            200.0
+        );
+        assert_eq!(
+            source
+                .sidecar_scale(fused, "input_scale", 1, 1, None)
+                .unwrap(),
+            400.0
+        );
+
+        let fallback_tensors = vec![
+            scalar_tensor("blk.0.ffn_gate_up_exps.weight", 0),
+            scalar_tensor("blk.0.ffn_gate_exps.weight", 0),
+            scalar_tensor("blk.0.ffn_up_exps.weight", 0),
+            scalar_tensor("blk.0.ffn_gate_exps.scale", 4),
+            scalar_tensor("blk.0.ffn_up_exps.scale", 6),
+            scalar_tensor("blk.0.ffn_gate_exps.input_scale", 8),
+            scalar_tensor("blk.0.ffn_up_exps.input_scale", 10),
+        ];
+        let fallback_source = test_source_with_scalar_data(
+            fallback_tensors,
+            &[
+                0.0, 0.0, 0.0, 0.0, 10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 300.0, 400.0,
+            ],
+        );
+        let fallback_fused = test_expert_tensor(0, TensorRole::GateUp);
+        let fallback_gate = test_expert_tensor(1, TensorRole::Gate);
+        let fallback_up = test_expert_tensor(2, TensorRole::Up);
+
+        assert_eq!(
+            fallback_source
+                .sidecar_scale(fallback_fused, "scale", 1, 0, Some(fallback_gate))
+                .unwrap(),
+            20.0
+        );
+        assert_eq!(
+            fallback_source
+                .sidecar_scale(fallback_fused, "scale", 1, 1, Some(fallback_up))
+                .unwrap(),
+            40.0
+        );
+        assert_eq!(
+            fallback_source
+                .sidecar_scale(fallback_fused, "input_scale", 1, 0, Some(fallback_gate))
+                .unwrap(),
+            200.0
+        );
+        assert_eq!(
+            fallback_source
+                .sidecar_scale(fallback_fused, "input_scale", 1, 1, Some(fallback_up))
+                .unwrap(),
+            400.0
+        );
     }
 
     #[test]

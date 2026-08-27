@@ -274,6 +274,10 @@ pub(crate) struct CudaHeterogeneousTensor {
     pub data: *const u8,
     pub bytes: usize,
     pub dtype: u32,
+    pub scale: f32,
+    pub input_scale: f32,
+    pub secondary_scale: f32,
+    pub secondary_input_scale: f32,
 }
 
 impl Default for CudaHeterogeneousTensor {
@@ -282,6 +286,10 @@ impl Default for CudaHeterogeneousTensor {
             data: std::ptr::null(),
             bytes: 0,
             dtype: 0,
+            scale: 1.0,
+            input_scale: 1.0,
+            secondary_scale: 1.0,
+            secondary_input_scale: 1.0,
         }
     }
 }
@@ -1035,6 +1043,15 @@ fn validate_heterogeneous_tensor(
     columns: usize,
     label: &str,
 ) -> Result<(), CudaMoeError> {
+    if !tensor.scale.is_finite()
+        || !tensor.input_scale.is_finite()
+        || !tensor.secondary_scale.is_finite()
+        || !tensor.secondary_input_scale.is_finite()
+    {
+        return Err(CudaMoeError::Payload(format!(
+            "{label} contém escala não finita"
+        )));
+    }
     let row_bytes = match tensor.dtype {
         12 => 144,
         14 => 210,
@@ -1560,9 +1577,12 @@ mod tests {
         };
         let gate_up = matrix(2 * intermediate, hidden);
         let down = matrix(hidden, intermediate);
-        let mut payload = Vec::with_capacity(8 + gate_up.len() + down.len());
+        let mut payload = Vec::with_capacity(32 + gate_up.len() + down.len());
         payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
         payload.extend_from_slice(&(down.len() as u32).to_le_bytes());
+        for _ in 0..6 {
+            payload.extend_from_slice(&1.0f32.to_le_bytes());
+        }
         payload.extend_from_slice(&gate_up);
         payload.extend_from_slice(&down);
         payload
@@ -1853,16 +1873,19 @@ mod tests {
                 data: gate_lease.handle() as *const u8,
                 bytes: gate.len(),
                 dtype: 12,
+                ..CudaHeterogeneousTensor::default()
             },
             up: CudaHeterogeneousTensor {
                 data: up_lease.handle() as *const u8,
                 bytes: up.len(),
                 dtype: 14,
+                ..CudaHeterogeneousTensor::default()
             },
             down: CudaHeterogeneousTensor {
                 data: down_lease.handle() as *const u8,
                 bytes: down.len(),
                 dtype: 12,
+                ..CudaHeterogeneousTensor::default()
             },
             ..CudaHeterogeneousExpert::default()
         };
@@ -2169,16 +2192,19 @@ mod tests {
                 data: gate_lease.handle() as *const u8,
                 bytes: gate.len(),
                 dtype: 21,
+                ..CudaHeterogeneousTensor::default()
             },
             up: CudaHeterogeneousTensor {
                 data: up_lease.handle() as *const u8,
                 bytes: up.len(),
                 dtype: 22,
+                ..CudaHeterogeneousTensor::default()
             },
             down: CudaHeterogeneousTensor {
                 data: down_lease.handle() as *const u8,
                 bytes: down.len(),
                 dtype: 23,
+                ..CudaHeterogeneousTensor::default()
             },
             ..CudaHeterogeneousExpert::default()
         };

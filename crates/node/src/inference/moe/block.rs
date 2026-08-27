@@ -1105,7 +1105,12 @@ impl HeterogeneousMoeBlock {
                 .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
             let mut descriptor = CudaHeterogeneousExpert::default();
             for payload in payloads {
-                let HeterogeneousTensorPayload { role, dtype, bytes } = payload;
+                let HeterogeneousTensorPayload {
+                    role,
+                    dtype,
+                    bytes,
+                    scales,
+                } = payload;
                 let key = ExpertKey::new(
                     &self.model,
                     self.layer,
@@ -1122,6 +1127,10 @@ impl HeterogeneousMoeBlock {
                     data: lease.handle() as *const u8,
                     bytes: bytes.len(),
                     dtype,
+                    scale: scales.primary,
+                    input_scale: scales.input_primary,
+                    secondary_scale: scales.secondary,
+                    secondary_input_scale: scales.input_secondary,
                 };
                 match role {
                     TensorRole::GateUp if descriptor.gate_up.data.is_null() => {

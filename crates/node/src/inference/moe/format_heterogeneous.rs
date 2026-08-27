@@ -13,7 +13,7 @@ use super::format_legacy_quants::{decode_row as legacy_decode_row, LegacyQuantFo
 use super::format_low_bits::{decode_row as low_bit_decode_row, LowBitFormat};
 use super::format_plain::PlainFormat;
 use super::format_q4_0::{
-    decode_row as q4_decode_row, parse_tensor_table, Q4LoadError, TensorSpec,
+    decode_row as q4_decode_row, parse_tensor_table, read_scalar_vector, Q4LoadError, TensorSpec,
 };
 use memmap2::Mmap;
 use std::fmt;
@@ -163,6 +163,25 @@ struct ExpertTensor {
     role: TensorRole,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TensorScales {
+    pub(crate) primary: f32,
+    pub(crate) secondary: f32,
+    pub(crate) input_primary: f32,
+    pub(crate) input_secondary: f32,
+}
+
+impl Default for TensorScales {
+    fn default() -> Self {
+        Self {
+            primary: 1.0,
+            secondary: 1.0,
+            input_primary: 1.0,
+            input_secondary: 1.0,
+        }
+    }
+}
+
 struct LayerInventory {
     gate_up: Option<ExpertTensor>,
     gate: Option<ExpertTensor>,
@@ -182,6 +201,7 @@ pub(crate) struct HeterogeneousTensorPayload {
     pub role: TensorRole,
     pub dtype: u32,
     pub bytes: Vec<u8>,
+    pub scales: TensorScales,
 }
 
 pub struct HeterogeneousMoeSource {
@@ -236,11 +256,6 @@ impl HeterogeneousMoeSource {
             let gate = find(TensorRole::Gate);
             let up = find(TensorRole::Up);
             let down = find(TensorRole::Down);
-            if gate_up.is_some() && (gate.is_some() || up.is_some()) {
-                return Err(Q4LoadError::InvalidTensor(
-                    "convenções fundida e separada de experts misturadas",
-                ));
-            }
             let (hidden, intermediate) = if let Some(entry) = gate_up {
                 let tensor = &tensors[entry.spec_index];
                 if tensor.dims.len() != 3
@@ -346,7 +361,10 @@ impl HeterogeneousMoeSource {
             .layers
             .iter()
             .flat_map(|layer| {
-                [layer.gate_up, layer.gate, layer.up, layer.down]
+                let gate_up = layer.gate_up;
+                let gate = if gate_up.is_none() { layer.gate } else { None };
+                let up = if gate_up.is_none() { layer.up } else { None };
+                [gate_up, gate, up, layer.down]
                     .into_iter()
                     .flatten()
                     .map(|tensor| tensor.decoder.dtype())
@@ -407,42 +425,71 @@ impl HeterogeneousMoeSource {
             .ok_or(Q4LoadError::InvalidTensor(
                 "camada MoE fora do inventário heterogêneo",
             ))?;
-        let entries = [
-            (
-                TensorRole::GateUp,
-                inventory.gate_up,
-                2 * inventory.intermediate,
-                inventory.hidden,
-            ),
-            (
-                TensorRole::Gate,
-                inventory.gate,
-                inventory.intermediate,
-                inventory.hidden,
-            ),
-            (
-                TensorRole::Up,
-                inventory.up,
-                inventory.intermediate,
-                inventory.hidden,
-            ),
-            (
-                TensorRole::Down,
-                inventory.down,
-                inventory.hidden,
-                inventory.intermediate,
-            ),
-        ];
+        let entries = if inventory.gate_up.is_some() {
+            vec![
+                (
+                    TensorRole::GateUp,
+                    inventory.gate_up,
+                    2 * inventory.intermediate,
+                    inventory.hidden,
+                ),
+                (
+                    TensorRole::Down,
+                    inventory.down,
+                    inventory.hidden,
+                    inventory.intermediate,
+                ),
+            ]
+        } else {
+            vec![
+                (
+                    TensorRole::Gate,
+                    inventory.gate,
+                    inventory.intermediate,
+                    inventory.hidden,
+                ),
+                (
+                    TensorRole::Up,
+                    inventory.up,
+                    inventory.intermediate,
+                    inventory.hidden,
+                ),
+                (
+                    TensorRole::Down,
+                    inventory.down,
+                    inventory.hidden,
+                    inventory.intermediate,
+                ),
+            ]
+        };
         entries
             .into_iter()
             .filter_map(|(role, entry, rows, columns)| {
                 entry.map(|entry| (role, entry, rows, columns))
             })
             .map(|(role, entry, rows, columns)| {
+                let scales = if role == TensorRole::GateUp {
+                    let gate = inventory.gate;
+                    let up = inventory.up;
+                    TensorScales {
+                        primary: self.sidecar_scale(entry, "scale", expert, 0, gate)?,
+                        secondary: self.sidecar_scale(entry, "scale", expert, 1, up)?,
+                        input_primary: self.sidecar_scale(entry, "input_scale", expert, 0, gate)?,
+                        input_secondary: self.sidecar_scale(entry, "input_scale", expert, 1, up)?,
+                    }
+                } else {
+                    TensorScales {
+                        primary: self.sidecar_scale(entry, "scale", expert, 0, None)?,
+                        secondary: 1.0,
+                        input_primary: self.sidecar_scale(entry, "input_scale", expert, 0, None)?,
+                        input_secondary: 1.0,
+                    }
+                };
                 Ok(HeterogeneousTensorPayload {
                     role,
                     dtype: entry.decoder.dtype(),
                     bytes: self.tensor_slice(entry, expert, rows, columns)?,
+                    scales,
                 })
             })
             .collect()
@@ -496,6 +543,59 @@ impl HeterogeneousMoeSource {
             ));
         }
         Ok(self.mmap[start..end].to_vec())
+    }
+
+    fn sidecar_scale(
+        &self,
+        tensor: ExpertTensor,
+        suffix: &str,
+        expert: u32,
+        component: usize,
+        fallback: Option<ExpertTensor>,
+    ) -> Result<f32, Q4LoadError> {
+        if let Some(value) = self.sidecar_value(tensor, suffix, expert, component)? {
+            return Ok(value);
+        }
+        if let Some(entry) = fallback {
+            if let Some(value) = self.sidecar_value(entry, suffix, expert, 0)? {
+                return Ok(value);
+            }
+        }
+        Ok(1.0)
+    }
+
+    fn sidecar_value(
+        &self,
+        entry: ExpertTensor,
+        suffix: &str,
+        expert: u32,
+        component: usize,
+    ) -> Result<Option<f32>, Q4LoadError> {
+        let tensor = &self.tensors[entry.spec_index];
+        let stem = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
+        let name = format!("{stem}.{suffix}");
+        let Some(sidecar) = self.tensors.iter().find(|candidate| candidate.name == name) else {
+            return Ok(None);
+        };
+        let values = read_scalar_vector(&self.mmap, self.data_start, sidecar)?;
+        let experts = self.experts as usize;
+        let index = if values.len() == experts {
+            expert as usize
+        } else if values.len() == 2 * experts {
+            component
+                .checked_mul(experts)
+                .and_then(|offset| offset.checked_add(expert as usize))
+                .ok_or(Q4LoadError::InvalidTensor("índice da escala excede usize"))?
+        } else {
+            return Err(Q4LoadError::InvalidTensor(
+                "escala de expert tem geometria errada",
+            ));
+        };
+        values
+            .get(index)
+            .copied()
+            .map(Some)
+            .ok_or(Q4LoadError::InvalidTensor("escala de expert ausente"))
     }
 
     fn matrix(
@@ -564,7 +664,7 @@ impl HeterogeneousMoeSource {
                 hidden_width
             ));
         }
-        let (gate, up) = if let Some(entry) = inventory.gate_up {
+        let (gate, up): (Vec<f32>, Vec<f32>) = if let Some(entry) = inventory.gate_up {
             let values = self.matrix(
                 cache,
                 model,
@@ -574,13 +674,45 @@ impl HeterogeneousMoeSource {
                 2 * intermediate,
                 hidden_width,
             )?;
+            let scales = TensorScales {
+                primary: self
+                    .sidecar_scale(entry, "scale", expert, 0, inventory.gate)
+                    .map_err(|error| error.to_string())?,
+                secondary: self
+                    .sidecar_scale(entry, "scale", expert, 1, inventory.up)
+                    .map_err(|error| error.to_string())?,
+                input_primary: self
+                    .sidecar_scale(entry, "input_scale", expert, 0, inventory.gate)
+                    .map_err(|error| error.to_string())?,
+                input_secondary: self
+                    .sidecar_scale(entry, "input_scale", expert, 1, inventory.up)
+                    .map_err(|error| error.to_string())?,
+            };
             (
-                values[..intermediate].to_vec(),
-                values[intermediate..].to_vec(),
+                values[..intermediate]
+                    .iter()
+                    .map(|value| value * scales.primary * scales.input_primary)
+                    .collect(),
+                values[intermediate..]
+                    .iter()
+                    .map(|value| value * scales.secondary * scales.input_secondary)
+                    .collect(),
             )
         } else {
             let gate_entry = inventory.gate.ok_or("gate ausente")?;
             let up_entry = inventory.up.ok_or("up ausente")?;
+            let gate_scale = self
+                .sidecar_scale(gate_entry, "scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
+            let up_scale = self
+                .sidecar_scale(up_entry, "scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
+            let gate_input_scale = self
+                .sidecar_scale(gate_entry, "input_scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
+            let up_input_scale = self
+                .sidecar_scale(up_entry, "input_scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
             (
                 mat_vec(
                     &self.matrix(
@@ -595,7 +727,10 @@ impl HeterogeneousMoeSource {
                     intermediate,
                     hidden_width,
                     hidden,
-                ),
+                )
+                .into_iter()
+                .map(|value| value * gate_scale * gate_input_scale)
+                .collect(),
                 mat_vec(
                     &self.matrix(
                         cache,
@@ -609,7 +744,10 @@ impl HeterogeneousMoeSource {
                     intermediate,
                     hidden_width,
                     hidden,
-                ),
+                )
+                .into_iter()
+                .map(|value| value * up_scale * up_input_scale)
+                .collect(),
             )
         };
         let gated = gate
@@ -633,7 +771,16 @@ impl HeterogeneousMoeSource {
             hidden_width,
             intermediate,
         )?;
-        Ok(mat_vec(&down_matrix, hidden_width, intermediate, &gated))
+        let down_scale = self
+            .sidecar_scale(down, "scale", expert, 0, None)
+            .map_err(|error| error.to_string())?;
+        let down_input_scale = self
+            .sidecar_scale(down, "input_scale", expert, 0, None)
+            .map_err(|error| error.to_string())?;
+        Ok(mat_vec(&down_matrix, hidden_width, intermediate, &gated)
+            .into_iter()
+            .map(|value| value * down_scale * down_input_scale)
+            .collect())
     }
 
     pub fn run_from_source_with_route(

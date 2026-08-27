@@ -869,6 +869,48 @@ fn decode_scalar(encoded: &[u8], dtype: u32) -> f32 {
     }
 }
 
+pub(crate) fn read_scalar_vector(
+    mmap: &[u8],
+    data_start: usize,
+    tensor: &TensorSpec,
+) -> Result<Vec<f32>, Q4LoadError> {
+    let count = tensor
+        .dims
+        .iter()
+        .try_fold(1u64, |total, dimension| total.checked_mul(*dimension))
+        .ok_or(Q4LoadError::InvalidTensor(
+            "overflow nas dimensões escalares",
+        ))?;
+    let count =
+        usize::try_from(count).map_err(|_| Q4LoadError::InvalidTensor("escala excede usize"))?;
+    let element_bytes = match tensor.dtype {
+        0 => 4,
+        1 | 30 => 2,
+        dtype => return Err(Q4LoadError::UnsupportedTensorType(dtype)),
+    };
+    let bytes = count
+        .checked_mul(element_bytes)
+        .ok_or(Q4LoadError::InvalidTensor("bytes da escala excedem usize"))?;
+    let offset = usize::try_from(tensor.offset)
+        .ok()
+        .and_then(|value| data_start.checked_add(value))
+        .ok_or(Q4LoadError::InvalidTensor("offset GGUF inválido"))?;
+    let end = offset
+        .checked_add(bytes)
+        .ok_or(Q4LoadError::InvalidTensor("escala excede usize"))?;
+    let raw = mmap
+        .get(offset..end)
+        .ok_or(Q4LoadError::InvalidTensor("escala excede o arquivo"))?;
+    let values = raw
+        .chunks_exact(element_bytes)
+        .map(|encoded| decode_scalar(encoded, tensor.dtype))
+        .collect::<Vec<_>>();
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(Q4LoadError::InvalidTensor("escala não finita"));
+    }
+    Ok(values)
+}
+
 fn validate_tensor(
     tensor: &TensorSpec,
     experts: u32,

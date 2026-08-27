@@ -1012,6 +1012,17 @@ grafo nativo, inclusive para modelos densos. Arquitetura, geometria, ativação
 ou dtype que o executor não consiga atender devem produzir recusa nominal no
 limite de decode, nunca executar o bloco nativo como fallback silencioso.
 
+O inventário segue a mesma prioridade do llama.cpp quando um GGUF traz
+`ffn_gate_up_exps.weight` fundido junto com `ffn_gate_exps.weight` e
+`ffn_up_exps.weight`: o tensor fundido é a representação ativa e os split
+duplicados são ignorados. Isso evita transformar cópias do mesmo expert em
+papéis concorrentes no descriptor. Nos caminhos K e heterogêneo, cada tensor
+ativo também procura os sidecars canônicos removendo `.weight` do nome base e
+anexando `.scale` ou `.input_scale`. Os valores por expert são validados como
+escalares finitos, carregados no payload/descriptor e aplicados nos produtos
+gate, up e down. O tensor compartilhado `ffn_*_shexp` continua fora desse
+inventário.
+
 O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los.
 Como esses buffers cruzam do backend que calcula top-k/gather para o custom op
 CPU, o stride aparentemente contíguo não prova que a alocação do produtor já

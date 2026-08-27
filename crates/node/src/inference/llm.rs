@@ -3611,6 +3611,18 @@ mod tests {
             Some("qwen35moe"),
             "o teste é específico para a rota do qwen35moe"
         );
+        assert_eq!(
+            crate::moe::format_q4_0::detect_expert_format(&path)
+                .expect("o formato dos experts deve ser detectável"),
+            crate::moe::format_q4_0::ExpertFormat::Heterogeneous,
+            "o Ornith deve passar pelo inventário heterogêneo Q4_K/Q6_K"
+        );
+        let expert_dtypes = crate::moe::format_q4_0::detect_expert_dtypes(&path)
+            .expect("os dtypes dos experts devem ser detectáveis");
+        assert!(
+            expert_dtypes.contains(&12) && expert_dtypes.contains(&14),
+            "a prova precisa incluir Q4_K e Q6_K: {expert_dtypes:?}"
+        );
         let experts = info
             .expert_count
             .expect("qwen35moe deve declarar expert_count");

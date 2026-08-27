@@ -171,6 +171,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
   uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  Quando `ffn_gate_up_exps.weight` e os tensores split coexistem, o inventário
+  segue a prioridade do llama.cpp e usa somente o fundido, sem contar os
+  duplicados como uma segunda rota. Os loaders K e heterogêneo resolvem os
+  sidecars canônicos `.scale` e `.input_scale` por expert, carregam os valores
+  no payload/descriptor e aplicam as escalas nos estágios gate, up e down.
   O helper `llama_moe_reshape_route_2d` do fork materializa sempre a rota com
   `ggml_cont` antes do reshape: `ggml_is_contiguous` sozinho não prova que a
   área do produtor já está pronta para a cópia entre backends. Isso protege o

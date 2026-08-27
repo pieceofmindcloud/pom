@@ -87,6 +87,10 @@ function JsonBlock({ value }: { value: unknown }) {
   );
 }
 
+function rateText(value: number | null | undefined, unavailable: string, unit: string) {
+  return value == null ? unavailable : `${num(value, 1)} ${unit}`;
+}
+
 function AuditDetails({ entry, name }: { entry: RequestLogEntry; name: (id: string) => string }) {
   const { t } = useI18n();
   return (
@@ -142,6 +146,27 @@ function AuditDetails({ entry, name }: { entry: RequestLogEntry; name: (id: stri
             </p>
             <JsonBlock value={entry.telemetry ?? t("tokenLogs.noTelemetry")} />
           </div>
+          {entry.timings && (
+            <div className="rounded-lg border border-line/70 bg-surface/30 p-3 text-[0.72rem] text-muted">
+              <p className="mb-1.5 font-medium uppercase tracking-[0.12em] text-faint">
+                {t("tokenLogs.performance")}
+              </p>
+              <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono">
+                <span>{t("chat.ttft")}</span>
+                <span>{ms(entry.timings.ttft_ms)}</span>
+                <span>{t("chat.prefillSpeed")}</span>
+                <span>{rateText(entry.timings.prefill_tokens_per_sec, t("tokenLogs.rateUnavailable"), t("tokenLogs.tokensPerSecondUnit"))}</span>
+                <span>{t("chat.promptTokensUnit")}</span>
+                <span>{entry.timings.prefill_tokens}</span>
+                <span>{t("chat.generationSpeed")}</span>
+                <span>{rateText(entry.timings.generation_tokens_per_sec, t("tokenLogs.rateUnavailable"), t("tokenLogs.tokensPerSecondUnit"))}</span>
+                <span>{t("chat.tokensUnit")}</span>
+                <span>{entry.timings.generation_tokens}</span>
+                <span>{t("chat.totalTime")}</span>
+                <span>{ms(entry.timings.total_ms)} · {num(entry.timings.total_tokens_per_sec, 1)} {t("tokenLogs.tokensPerSecondUnit")}</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       {entry.error && (
@@ -313,6 +338,7 @@ export function LogsByToken() {
                         t("tokenLogs.path"),
                         t("tokenLogs.tokens"),
                         t("tokenLogs.duration"),
+                        t("tokenLogs.performance"),
                         t("tokenLogs.status"),
                         "",
                       ].map((h) => (
@@ -352,6 +378,15 @@ export function LogsByToken() {
                             <Mono className="text-muted">{ms(e.duration_ms)}</Mono>
                           </td>
                           <td className="px-4 py-2.5">
+                            {e.timings ? (
+                              <div className="space-y-0.5 font-mono text-[0.68rem] text-muted">
+                                <div>{t("tokenLogs.ttft", { value: ms(e.timings.ttft_ms) })}</div>
+                                <div>{t("tokenLogs.prefill", { value: rateText(e.timings.prefill_tokens_per_sec, t("tokenLogs.rateUnavailable"), t("tokenLogs.tokensPerSecondUnit")) })}</div>
+                                <div>{t("tokenLogs.generation", { value: rateText(e.timings.generation_tokens_per_sec, t("tokenLogs.rateUnavailable"), t("tokenLogs.tokensPerSecondUnit")) })}</div>
+                              </div>
+                            ) : <span className="text-faint">-</span>}
+                          </td>
+                          <td className="px-4 py-2.5">
                             <Badge tone={statusTone(e.status)}>{statusLabel(e.status, t)}</Badge>
                           </td>
                           <td className="px-4 py-2.5">
@@ -359,7 +394,7 @@ export function LogsByToken() {
                           </td>
                         </tr>
                         <tr className="border-b border-line last:border-0">
-                          <td colSpan={8} className="px-4 py-2.5">
+                          <td colSpan={9} className="px-4 py-2.5">
                             <AuditDetails entry={e} name={name} />
                           </td>
                         </tr>

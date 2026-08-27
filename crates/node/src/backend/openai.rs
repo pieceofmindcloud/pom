@@ -736,6 +736,7 @@ async fn blocking_response(
                         "source": summary.source,
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
+                        "timings": summary.timings,
                         "partial": summary.partial,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
@@ -1091,6 +1092,7 @@ fn chunk_json(
             "tokens_per_sec": summary.tokens_per_sec,
             "tokens_generated": summary.tokens_generated,
             "duration_ms": summary.duration_ms,
+            "timings": summary.timings,
             "partial": summary.partial,
             "finish_reason": summary.finish_reason,
             "stop_sequence": summary.stop_sequence,
@@ -1819,6 +1821,7 @@ mod tests {
             tokens_generated: n,
             tokens_per_sec: 1.0,
             duration_ms: 10,
+            timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
             partial: false,
             finish_reason: None,
             stop_sequence: None,
@@ -1996,6 +1999,7 @@ mod tests {
             tokens_generated: 12,
             tokens_per_sec: 4.5,
             duration_ms: 2666,
+            timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
             partial: false,
             finish_reason: None,
             stop_sequence: None,
@@ -2018,6 +2022,8 @@ mod tests {
 
         assert_eq!(payload["x_pom"]["tokens_per_sec"], 4.5);
         assert_eq!(payload["x_pom"]["tokens_generated"], 12);
+        assert_eq!(payload["x_pom"]["timings"]["ttft_ms"], 900);
+        assert!(payload["x_pom"]["timings"]["generation_tokens_per_sec"].is_number());
         assert_eq!(payload["x_pom"]["trace"]["model"], "qwen35");
     }
 }

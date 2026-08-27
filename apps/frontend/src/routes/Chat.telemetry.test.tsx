@@ -8,7 +8,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
 import { LocaleProvider } from "../i18n/provider";
-import type { PhaseTrace, RequestTrace } from "../lib/chatStream";
+import type { GenerationTimings, PhaseTrace, RequestTrace } from "../lib/chatStream";
 
 function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
   return {
@@ -122,6 +122,27 @@ describe("ExecutionTelemetry", () => {
     const details = container.querySelector("details");
     expect(details).toBeTruthy();
     expect(details!.open).toBe(false);
+  });
+
+  it("shows request-level TTFT, prefill speed, generation speed and total time", () => {
+    const timings: GenerationTimings = {
+      ttft_ms: 2400,
+      prefill_ms: 2000,
+      prefill_tokens: 100,
+      prefill_tokens_per_sec: 50,
+      generation_ms: 7600,
+      generation_tokens: 20,
+      generation_tokens_per_sec: 20 / 7.6,
+      total_ms: 10000,
+      total_tokens_per_sec: 2,
+    };
+
+    mount(<ExecutionTelemetry trace={trace} timings={timings} />);
+
+    expect(screen.getByText("Primeiro token (TTFT)")).toBeTruthy();
+    expect(screen.getByText("50,0 tokens/s · 100 tokens do prompt")).toBeTruthy();
+    expect(screen.getByText("2,6 tokens/s · 20 tokens")).toBeTruthy();
+    expect(screen.getByText("10,0 s · 2,0 tokens/s")).toBeTruthy();
   });
 
   it("gives each hop one prefill row and one decode row", () => {

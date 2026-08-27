@@ -583,6 +583,7 @@ pub struct GenerateResponse {
     pub tokens_generated: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
+    pub timings: Option<GenerationTimings>,
     pub stop_sequence: Option<String>,
     pub trace: Option<crate::prefill::RequestTrace>,
 }
@@ -658,6 +659,7 @@ pub struct GenSummary {
     pub tokens_generated: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
+    pub timings: GenerationTimings,
     /// True when a peer failed mid-generation but some text was salvaged.
     pub partial: bool,
     /// "stop" when a server-side stop sequence ended the generation.
@@ -666,6 +668,21 @@ pub struct GenSummary {
     pub stop_sequence: Option<String>,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
+}
+
+/// Resumo de desempenho de uma requisição, agregado sobre o pipeline inteiro.
+/// Cada taxa usa seu próprio relógio e conjunto de tokens.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GenerationTimings {
+    pub ttft_ms: u64,
+    pub prefill_ms: u64,
+    pub prefill_tokens: u32,
+    pub prefill_tokens_per_sec: Option<f64>,
+    pub generation_ms: u64,
+    pub generation_tokens: u32,
+    pub generation_tokens_per_sec: Option<f64>,
+    pub total_ms: u64,
+    pub total_tokens_per_sec: f64,
 }
 
 /// OpenAI's `stop` accepts either one string or a list. Keeping this parser in
@@ -818,53 +835,114 @@ async fn flush_stop_matcher(tx: &mpsc::Sender<GenEvent>, matcher: &mut StopMatch
     tail.is_empty() || tx.send(GenEvent::Token(tail)).await.is_ok()
 }
 
+fn rate_if_measurable(tokens: u32, milliseconds: u64) -> Option<f64> {
+    (tokens > 0 && milliseconds > 0).then(|| tokens as f64 / (milliseconds as f64 / 1000.0))
+}
+
+/// Calcula taxas com relógios que não se misturam. `generation_ms` começa no
+/// primeiro token e, portanto, não varia com o tamanho do prompt.
+pub(crate) fn timing_metrics(
+    total_ms: u64,
+    ttft_ms: u64,
+    prefill_ms: u64,
+    prefill_tokens: u32,
+    generation_tokens: u32,
+) -> GenerationTimings {
+    let generation_ms = total_ms.saturating_sub(ttft_ms);
+    GenerationTimings {
+        ttft_ms,
+        prefill_ms,
+        prefill_tokens,
+        prefill_tokens_per_sec: rate_if_measurable(prefill_tokens, prefill_ms),
+        generation_ms,
+        generation_tokens,
+        generation_tokens_per_sec: rate_if_measurable(generation_tokens, generation_ms),
+        total_ms,
+        total_tokens_per_sec: rate(generation_tokens, total_ms as f64 / 1000.0),
+    }
+}
+
+fn summary_for(
+    plan: &PipelinePlan,
+    request_started: Instant,
+    first_token_at: Instant,
+    tokens_generated: u32,
+    mut trace: crate::prefill::RequestTrace,
+    partial: bool,
+    finish_reason: Option<String>,
+    stop_sequence: Option<String>,
+) -> GenSummary {
+    let total_ms = request_started.elapsed().as_millis() as u64;
+    let ttft_ms = first_token_at
+        .saturating_duration_since(request_started)
+        .as_millis() as u64;
+    trace.output_tokens = tokens_generated;
+    trace.complete = !partial;
+    let timings = timing_metrics(
+        total_ms,
+        ttft_ms,
+        trace.prefill_ms,
+        trace.input_tokens.saturating_sub(trace.cached_tokens),
+        tokens_generated,
+    );
+    GenSummary {
+        source: format!(
+            "pipeline:{}{}",
+            plan.hop_chain(),
+            if partial { " (partial)" } else { "" }
+        ),
+        tokens_generated,
+        tokens_per_sec: timings.total_tokens_per_sec,
+        duration_ms: timings.total_ms,
+        timings,
+        partial,
+        finish_reason,
+        stop_sequence,
+        trace: Some(trace),
+    }
+}
+
 async fn send_stopped_summary(
     tx: &mpsc::Sender<GenEvent>,
     plan: &PipelinePlan,
-    gen_start: Instant,
+    request_started: Instant,
+    first_token_at: Instant,
     tokens_generated: u32,
-    mut trace: crate::prefill::RequestTrace,
+    trace: crate::prefill::RequestTrace,
     stop_sequence: String,
 ) {
-    let elapsed = gen_start.elapsed();
-    trace.output_tokens = tokens_generated;
-    trace.complete = true;
-    let _ = tx
-        .send(GenEvent::Done(GenSummary {
-            source: format!("pipeline:{}", plan.hop_chain()),
-            tokens_generated,
-            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-            duration_ms: elapsed.as_millis() as u64,
-            partial: false,
-            finish_reason: Some("stop".to_string()),
-            stop_sequence: Some(stop_sequence),
-            trace: Some(trace),
-        }))
-        .await;
+    let summary = summary_for(
+        plan,
+        request_started,
+        first_token_at,
+        tokens_generated,
+        trace,
+        false,
+        Some("stop".to_string()),
+        Some(stop_sequence),
+    );
+    let _ = tx.send(GenEvent::Done(summary)).await;
 }
 
 async fn send_length_summary(
     tx: &mpsc::Sender<GenEvent>,
     plan: &PipelinePlan,
-    gen_start: Instant,
+    request_started: Instant,
+    first_token_at: Instant,
     tokens_generated: u32,
-    mut trace: crate::prefill::RequestTrace,
+    trace: crate::prefill::RequestTrace,
 ) {
-    let elapsed = gen_start.elapsed();
-    trace.output_tokens = tokens_generated;
-    trace.complete = true;
-    let _ = tx
-        .send(GenEvent::Done(GenSummary {
-            source: format!("pipeline:{}", plan.hop_chain()),
-            tokens_generated,
-            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-            duration_ms: elapsed.as_millis() as u64,
-            partial: false,
-            finish_reason: Some("length".to_string()),
-            stop_sequence: None,
-            trace: Some(trace),
-        }))
-        .await;
+    let summary = summary_for(
+        plan,
+        request_started,
+        first_token_at,
+        tokens_generated,
+        trace,
+        false,
+        Some("length".to_string()),
+        None,
+    );
+    let _ = tx.send(GenEvent::Done(summary)).await;
 }
 
 /// Run one generation, emitting each token as it is decoded.
@@ -891,6 +969,7 @@ async fn generate_stream_inner(
     tx: mpsc::Sender<GenEvent>,
     cancellation: crate::prefill::Cancellation,
 ) {
+    let request_started = Instant::now();
     let GenerationInput {
         state,
         model,
@@ -1031,7 +1110,6 @@ async fn generate_stream_inner(
         },
     );
 
-    let gen_start = Instant::now();
     let mut tokens_generated: u32 = 0;
     let max_tokens = max_tokens.max(1);
     let mut retained_prefix_tokens: Option<u32> = None;
@@ -1039,7 +1117,6 @@ async fn generate_stream_inner(
     // escolha do cache, é o que o pipeline executou - ver
     // `PrefillOutcome::cached_tokens`. Sai no `GenSummary` e daí para
     // `usage.prompt_tokens_details.cached_tokens`.
-    let mut honored_cached_tokens: u32 = 0;
 
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
@@ -1188,10 +1265,9 @@ async fn generate_stream_inner(
                     o.prompt_tokens,
                     o.chunks,
                     o.cached_tokens,
-                    gen_start.elapsed().as_secs_f64(),
+                    request_started.elapsed().as_secs_f64(),
                 );
                 retained_prefix_tokens = Some(o.retained_tokens);
-                honored_cached_tokens = o.cached_tokens;
                 o
             }
             Err(e) if crate::prefill::is_cancelled(&e) => {
@@ -1213,6 +1289,7 @@ async fn generate_stream_inner(
             }
         };
 
+        let first_token_at = Instant::now();
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         tokens_generated += 1;
@@ -1225,7 +1302,8 @@ async fn generate_stream_inner(
                 send_stopped_summary(
                     &tx,
                     &plan,
-                    gen_start,
+                    request_started,
+                    first_token_at,
                     tokens_generated,
                     trace,
                     stop_sequence,
@@ -1239,21 +1317,17 @@ async fn generate_stream_inner(
             if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                 return;
             }
-            let elapsed = gen_start.elapsed();
-            trace.output_tokens = tokens_generated;
-            trace.complete = true;
-            let _ = tx
-                .send(GenEvent::Done(GenSummary {
-                    source: format!("pipeline:{}", plan.hop_chain()),
-                    tokens_generated,
-                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                    duration_ms: elapsed.as_millis() as u64,
-                    partial: false,
-                    finish_reason: None,
-                    stop_sequence: None,
-                    trace: Some(trace),
-                }))
-                .await;
+            let summary = summary_for(
+                &plan,
+                request_started,
+                first_token_at,
+                tokens_generated,
+                trace,
+                false,
+                None,
+                None,
+            );
+            let _ = tx.send(GenEvent::Done(summary)).await;
             return;
         }
 
@@ -1261,7 +1335,15 @@ async fn generate_stream_inner(
             if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                 return;
             }
-            send_length_summary(&tx, &plan, gen_start, tokens_generated, trace).await;
+            send_length_summary(
+                &tx,
+                &plan,
+                request_started,
+                first_token_at,
+                tokens_generated,
+                trace,
+            )
+            .await;
             return;
         }
 
@@ -1350,24 +1432,19 @@ async fn generate_stream_inner(
                             "rodada de decodificação"
                         };
                         warn!("Erro na {rodada} (token {tokens_generated}): {e}");
-                        let elapsed = gen_start.elapsed();
                         if tokens_generated > 0 {
                             info!("devolvendo {tokens_generated} tokens parciais");
-                            let _ = tx
-                                .send(GenEvent::Done(GenSummary {
-                                    source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                                    tokens_generated,
-                                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                    duration_ms: elapsed.as_millis() as u64,
-                                    partial: true,
-                                    finish_reason: None,
-                                    stop_sequence: None,
-                                    trace: {
-                                        trace.output_tokens = tokens_generated;
-                                        Some(trace)
-                                    },
-                                }))
-                                .await;
+                            let summary = summary_for(
+                                &plan,
+                                request_started,
+                                first_token_at,
+                                tokens_generated,
+                                trace,
+                                true,
+                                None,
+                                None,
+                            );
+                            let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(format!(
@@ -1429,7 +1506,8 @@ async fn generate_stream_inner(
                             send_stopped_summary(
                                 &tx,
                                 &plan,
-                                gen_start,
+                                request_started,
+                                first_token_at,
                                 tokens_generated,
                                 trace,
                                 stop_sequence,
@@ -1447,9 +1525,16 @@ async fn generate_stream_inner(
                     if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                         return;
                     }
-                    let elapsed = gen_start.elapsed();
-                    trace.output_tokens = tokens_generated;
-                    trace.complete = true;
+                    let summary = summary_for(
+                        &plan,
+                        request_started,
+                        first_token_at,
+                        tokens_generated,
+                        trace,
+                        false,
+                        None,
+                        None,
+                    );
                     info!(
                         "✅ Pipeline completo ({}): {} tokens em {:.1}s ({:.1} tok/s)",
                         if especulando {
@@ -1458,21 +1543,10 @@ async fn generate_stream_inner(
                             "sem especulação"
                         },
                         tokens_generated,
-                        elapsed.as_secs_f64(),
-                        rate(tokens_generated, elapsed.as_secs_f64())
+                        summary.timings.total_ms as f64 / 1000.0,
+                        summary.timings.total_tokens_per_sec
                     );
-                    let _ = tx
-                        .send(GenEvent::Done(GenSummary {
-                            source: format!("pipeline:{}", plan.hop_chain()),
-                            tokens_generated,
-                            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                            duration_ms: elapsed.as_millis() as u64,
-                            partial: false,
-                            finish_reason: None,
-                            stop_sequence: None,
-                            trace: Some(trace),
-                        }))
-                        .await;
+                    let _ = tx.send(GenEvent::Done(summary)).await;
                     return;
                 }
 
@@ -1505,23 +1579,18 @@ async fn generate_stream_inner(
                              {tokens_generated} tokens: encerrando a geração \
                              em vez de arriscar cache contaminado"
                         );
-                        let elapsed = gen_start.elapsed();
                         if tokens_generated > 0 {
-                            let _ = tx
-                                .send(GenEvent::Done(GenSummary {
-                                    source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                                    tokens_generated,
-                                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                    duration_ms: elapsed.as_millis() as u64,
-                                    partial: true,
-                                    finish_reason: None,
-                                    stop_sequence: None,
-                                    trace: {
-                                        trace.output_tokens = tokens_generated;
-                                        Some(trace)
-                                    },
-                                }))
-                                .await;
+                            let summary = summary_for(
+                                &plan,
+                                request_started,
+                                first_token_at,
+                                tokens_generated,
+                                trace,
+                                true,
+                                None,
+                                None,
+                            );
+                            let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(
@@ -1568,7 +1637,8 @@ async fn generate_stream_inner(
                             send_stopped_summary(
                                 &tx,
                                 &plan,
-                                gen_start,
+                                request_started,
+                                first_token_at,
                                 tokens_generated,
                                 trace,
                                 stop_sequence,
@@ -1584,51 +1654,42 @@ async fn generate_stream_inner(
                         if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                             return;
                         }
-                        let elapsed = gen_start.elapsed();
-                        trace.output_tokens = tokens_generated;
-                        trace.complete = true;
+                        let summary = summary_for(
+                            &plan,
+                            request_started,
+                            first_token_at,
+                            tokens_generated,
+                            trace,
+                            false,
+                            (!done).then(|| "length".to_string()),
+                            None,
+                        );
                         info!(
                             "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
                             tokens_generated,
-                            elapsed.as_secs_f64(),
-                            rate(tokens_generated, elapsed.as_secs_f64())
+                            summary.timings.total_ms as f64 / 1000.0,
+                            summary.timings.total_tokens_per_sec
                         );
-                        let _ = tx
-                            .send(GenEvent::Done(GenSummary {
-                                source: format!("pipeline:{}", plan.hop_chain()),
-                                tokens_generated,
-                                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                duration_ms: elapsed.as_millis() as u64,
-                                partial: false,
-                                finish_reason: (!done).then(|| "length".to_string()),
-                                stop_sequence: None,
-                                trace: Some(trace),
-                            }))
-                            .await;
+                        let _ = tx.send(GenEvent::Done(summary)).await;
                         return;
                     }
                 }
                 Err(e) => {
                     warn!("Erro no passo {tokens_generated} do pipeline: {e}");
-                    let elapsed = gen_start.elapsed();
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
                         info!("devolvendo {tokens_generated} tokens parciais");
-                        let _ = tx
-                            .send(GenEvent::Done(GenSummary {
-                                source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                                tokens_generated,
-                                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                duration_ms: elapsed.as_millis() as u64,
-                                partial: true,
-                                finish_reason: None,
-                                stop_sequence: None,
-                                trace: {
-                                    trace.output_tokens = tokens_generated;
-                                    Some(trace)
-                                },
-                            }))
-                            .await;
+                        let summary = summary_for(
+                            &plan,
+                            request_started,
+                            first_token_at,
+                            tokens_generated,
+                            trace,
+                            true,
+                            None,
+                            None,
+                        );
+                        let _ = tx.send(GenEvent::Done(summary)).await;
                     } else {
                         let _ = tx
                             .send(GenEvent::Failed(format!(
@@ -1949,6 +2010,9 @@ pub fn spawn_logged_generation_with_stops(
                 .and_then(|summary| summary.trace.clone())
                 .and_then(|trace| serde_json::to_value(trace).ok())
         });
+        let timings = outcome
+            .as_ref()
+            .and_then(|outcome| outcome.as_ref().ok().map(|summary| summary.timings.clone()));
         let prompt_tokens = outcome
             .as_ref()
             .and_then(|outcome| outcome.as_ref().ok())
@@ -2000,6 +2064,7 @@ pub fn spawn_logged_generation_with_stops(
                 completed_at: chrono::Utc::now().to_rfc3339(),
                 result: (!result.is_empty()).then_some(result),
                 telemetry,
+                timings,
                 source,
                 hops,
                 prompt_tokens,
@@ -2040,6 +2105,7 @@ pub(crate) fn record_rejected(
             completed_at: chrono::Utc::now().to_rfc3339(),
             result: None,
             telemetry: None,
+            timings: None,
             source: "none".into(),
             hops: Vec::new(),
             prompt_tokens: None,
@@ -2168,6 +2234,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     tokens_generated: 0,
                     tokens_per_sec: 0.0,
                     duration_ms: 0,
+                    timings: None,
                     stop_sequence: None,
                     trace: None,
                 }),
@@ -2209,6 +2276,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     tokens_generated: 0,
                     tokens_per_sec: 0.0,
                     duration_ms: 0,
+                    timings: None,
                     stop_sequence: None,
                     trace: None,
                 }),
@@ -2252,6 +2320,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: summary.tokens_generated,
                 tokens_per_sec: summary.tokens_per_sec,
                 duration_ms: summary.duration_ms,
+                timings: Some(summary.timings),
                 stop_sequence: summary.stop_sequence,
                 trace: summary.trace,
             }),
@@ -2267,6 +2336,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: 0,
                 tokens_per_sec: 0.0,
                 duration_ms: 0,
+                timings: None,
                 stop_sequence: None,
                 trace: None,
             }),
@@ -2533,6 +2603,60 @@ mod tests {
     fn rate_is_zero_for_an_instant_generation() {
         assert_eq!(rate(10, 0.0), 0.0);
         assert!((rate(10, 2.0) - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn timing_metrics_separates_normal_prefill_from_generation_and_total() {
+        let timings = timing_metrics(2_000, 1_200, 1_000, 500, 20);
+
+        assert_eq!(timings.ttft_ms, 1_200);
+        assert_eq!(timings.prefill_ms, 1_000);
+        assert_eq!(timings.prefill_tokens, 500);
+        assert_eq!(timings.generation_ms, 800);
+        assert_eq!(timings.generation_tokens, 20);
+        assert_eq!(timings.prefill_tokens_per_sec, Some(500.0));
+        assert_eq!(timings.generation_tokens_per_sec, Some(25.0));
+        assert_eq!(timings.total_ms, 2_000);
+        assert_eq!(timings.total_tokens_per_sec, 10.0);
+    }
+
+    #[test]
+    fn timing_metrics_does_not_divide_by_zero_after_full_prefix_reuse() {
+        let timings = timing_metrics(1_000, 400, 0, 0, 12);
+
+        assert_eq!(timings.prefill_tokens_per_sec, None);
+        assert_eq!(timings.generation_ms, 600);
+        assert_eq!(timings.generation_tokens_per_sec, Some(20.0));
+    }
+
+    #[test]
+    fn timing_metrics_uses_the_aggregate_prefill_for_multiple_chunks() {
+        let timings = timing_metrics(3_500, 2_000, 1_800, 900, 30);
+
+        assert_eq!(timings.prefill_tokens, 900);
+        assert_eq!(timings.prefill_ms, 1_800);
+        assert_eq!(timings.prefill_tokens_per_sec, Some(500.0));
+    }
+
+    #[test]
+    fn timing_metrics_keeps_a_single_output_token_unmeasurable_when_instant() {
+        let timings = timing_metrics(900, 900, 700, 100, 1);
+
+        assert_eq!(timings.generation_ms, 0);
+        assert_eq!(timings.generation_tokens_per_sec, None);
+    }
+
+    #[test]
+    fn generation_speed_does_not_change_with_prompt_size() {
+        let short_prompt = timing_metrics(1_000, 700, 650, 20, 14);
+        let long_prompt = timing_metrics(2_000, 1_700, 1_650, 2_000, 14);
+
+        assert_eq!(short_prompt.generation_ms, long_prompt.generation_ms);
+        assert_eq!(
+            short_prompt.generation_tokens_per_sec,
+            long_prompt.generation_tokens_per_sec
+        );
+        assert_ne!(short_prompt.prefill_tokens, long_prompt.prefill_tokens);
     }
 }
 

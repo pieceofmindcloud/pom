@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { getActiveLocale } from "../i18n/locales";
-import type { RequestTrace } from "./chatStream";
+import type { GenerationTimings, RequestTrace } from "./chatStream";
 import { storageKey } from "./brand";
 
 export interface ChatMessage {
@@ -36,6 +36,8 @@ export interface ChatMessage {
   tokensPerSecond?: number;
   tokensGenerated?: number;
   durationMs?: number;
+  /** Request-level TTFT, prefill, generation and total timings. */
+  timings?: GenerationTimings;
   /** Detailed execution trace returned only after a completed request. */
   trace?: RequestTrace;
   at: string;

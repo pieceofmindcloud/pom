@@ -1,11 +1,13 @@
-import type { ExecutionEngine, WireDtype } from "./types";
+import type { ExecutionEngine, GenerationTimings, WireDtype } from "./types";
 
 export type { ExecutionEngine } from "./types";
+export type { GenerationTimings } from "./types";
 
 export interface StreamMetrics {
   tokens_per_sec?: number;
   tokens_generated?: number;
   duration_ms?: number;
+  timings?: GenerationTimings;
   trace?: RequestTrace;
 }
 
@@ -213,6 +215,7 @@ export interface ChatStreamState {
   tokensPerSecond?: number;
   tokensGenerated?: number;
   durationMs?: number;
+  timings?: GenerationTimings;
   trace?: RequestTrace;
 }
 
@@ -267,6 +270,7 @@ export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetr
   if (metrics?.tokens_per_sec != null) state = { ...state, tokensPerSecond: metrics.tokens_per_sec };
   if (metrics?.tokens_generated != null) state = { ...state, tokensGenerated: metrics.tokens_generated };
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
+  if (metrics?.timings) state = { ...state, timings: metrics.timings };
   if (metrics?.trace) state = { ...state, trace: metrics.trace };
   return state;
 }

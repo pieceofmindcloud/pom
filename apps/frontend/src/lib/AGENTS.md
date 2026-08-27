@@ -18,7 +18,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, hidden-state bytes/dtype, bounded `transport_summary` and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, hidden-state bytes/dtype, bounded `transport_summary` and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; derives the observed execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
@@ -163,7 +163,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
-- `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records tokens/sec, duration and trace.
+- `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records the legacy total rate, separated TTFT/prefill/generation/total timings and trace.
 - `isPhasedHop(hop)` - discriminates `PhasedHopTrace` (split prefill/decode) from `LegacyHopTrace` so the telemetry table can render both shapes.
 - Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry
   contract from `inference/prefill.rs`/gateway. `PhaseTrace.selected_path` is

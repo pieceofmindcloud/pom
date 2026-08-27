@@ -212,12 +212,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
   política do cache.
   Para investigar a origem de uma rota inválida, `POM_MOE_ROUTE_DIAGNOSTICS=1`
-  habilita uma única amostra do callback na camada 1. O log registra os
-  valores crus de token 0 e seus deslocamentos na rota expert-major, contagens
-  declaradas pelo llama.cpp e esperadas pelo POM, endereços e bytes lidos,
-  dtypes da metadata de cada tensor e os dtypes assumidos pelos argumentos do
-  callback. Também registra a mesma amostra depois da normalização Rust. Sem a
-  variável, o instrumento fica desligado e não altera o caminho de execução.
+  habilita uma linha de entrada por callback antes das validações, sem filtro
+  de camada. A primeira chamada de cada requisição recebe a amostra detalhada;
+  qualquer chamada com rota não finita também recebe essa amostra, mesmo que
+  outra já tenha sido registrada. O log registra os valores crus de token 0 e
+  seus deslocamentos na rota expert-major, contagens declaradas pelo llama.cpp
+  e esperadas pelo POM, endereços e bytes lidos, dtypes da metadata de cada
+  tensor e os dtypes assumidos pelos argumentos do callback. Também registra a
+  mesma amostra depois da normalização Rust. Sem a variável, o instrumento fica
+  desligado e não altera o caminho de execução.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
   acumulação inteira por subbloco NVFP4 e decodificação direta dos superblocos
   Q4_K/Q6_K com SiLU no caminho K. O

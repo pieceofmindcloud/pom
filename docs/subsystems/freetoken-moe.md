@@ -296,14 +296,23 @@ prova física desse GGUF ainda não foi executada neste worktree, portanto a
 telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
 Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute
-o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. O callback registra somente uma
-amostra da camada 1: valores crus de token 0, slot e deslocamento expert-major,
+o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. Cada entrada do callback ganha uma
+linha antes das validações; a primeira chamada de cada requisição e qualquer
+rota não finita ganham a amostra detalhada, sem depender do índice da camada.
+Ela registra valores crus de token 0, slot e deslocamento expert-major,
 ponteiros e bytes das regiões lidas, quantidade de elementos declarada pelo
 llama.cpp versus esperada pelo POM, dtypes da metadata de gate/up/down e os
 dtypes assumidos nos argumentos do callback. Depois da normalização, registra
 novamente a amostra e as contagens de NaN. A variável é opt-in, fica desligada
 por padrão e não altera a execução; ainda não há resultado de campo registrado
 para essa medição.
+
+As mensagens `resolve_fused_ops: ... enabled` não provam que uma operação
+fundida foi usada: a sonda também imprime `enabled` quando não encontra nenhum
+nó daquele tipo. No `qwen35moe.cpp`, o FFN MoE continua passando pelo builder
+genérico e o expert compartilhado passa separadamente por `build_ffn`; a
+presença real de HC fundido precisa ser demonstrada pelos nós da reserva ou
+pelos logs da entrada do callback.
 
 ### Fase 5.1: ponte CUDA por dtype
 

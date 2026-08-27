@@ -127,6 +127,10 @@ fn moe_route_diagnostics_enabled() -> bool {
     })
 }
 
+fn route_diagnostic_should_emit(first_callback: bool, raw_non_finite: bool) -> bool {
+    first_callback || raw_non_finite
+}
+
 struct MoeCallbackState {
     runtime: Arc<crate::moe::runtime::MoeRuntime>,
     telemetry: Mutex<MoeCallbackTelemetry>,
@@ -148,9 +152,8 @@ impl MoeCallbackState {
             .store(false, Ordering::Relaxed);
     }
 
-    fn claim_route_diagnostic(&self, layer: i32) -> bool {
-        layer == 1
-            && moe_route_diagnostics_enabled()
+    fn claim_route_diagnostic(&self) -> bool {
+        moe_route_diagnostics_enabled()
             && !self.route_diagnostic_emitted.swap(true, Ordering::Relaxed)
     }
 
@@ -182,6 +185,31 @@ impl MoeCallbackState {
     }
 }
 
+fn log_moe_callback_entry(
+    user_data: *mut c_void,
+    descriptor: *const sys::llama_moe_ffn_descriptor,
+    hidden: *const f32,
+    selected_experts: *const i32,
+    weights: *const f32,
+    n_tokens: usize,
+    hidden_width: usize,
+    output: *mut f32,
+) {
+    let descriptor_layer = unsafe { descriptor.as_ref() }
+        .map(|descriptor| descriptor.layer)
+        .map_or_else(|| "null".to_string(), |layer| layer.to_string());
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS callback_entry descriptor_ptr={:p} user_data_ptr={:p} descriptor_layer={descriptor_layer} hidden_ptr={:p} selected_ptr={:p} weights_ptr={:p} output_ptr={:p} n_tokens={n_tokens} hidden_width={hidden_width}",
+        descriptor,
+        user_data,
+        hidden,
+        selected_experts,
+        weights,
+        output,
+    );
+}
+
 unsafe extern "C" fn moe_ffn_callback(
     user_data: *mut c_void,
     descriptor: *const sys::llama_moe_ffn_descriptor,
@@ -192,6 +220,18 @@ unsafe extern "C" fn moe_ffn_callback(
     hidden_width: usize,
     output: *mut f32,
 ) -> bool {
+    if moe_route_diagnostics_enabled() {
+        log_moe_callback_entry(
+            user_data,
+            descriptor,
+            hidden,
+            selected_experts,
+            weights,
+            n_tokens,
+            hidden_width,
+            output,
+        );
+    }
     if user_data.is_null()
         || descriptor.is_null()
         || hidden.is_null()
@@ -232,7 +272,9 @@ unsafe extern "C" fn moe_ffn_callback(
             .to_string_lossy()
             .into_owned()
     };
-    let emit_route_diagnostic = state.claim_route_diagnostic(descriptor.layer);
+    let raw_non_finite = weights.iter().any(|weight| !weight.is_finite());
+    let emit_route_diagnostic = state.claim_route_diagnostic()
+        || (moe_route_diagnostics_enabled() && route_diagnostic_should_emit(false, raw_non_finite));
     if emit_route_diagnostic {
         log_moe_route_input_diagnostic(
             &architecture,
@@ -614,6 +656,13 @@ mod moe_route_tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn diagnostico_captura_primeira_chamada_e_rota_nao_finita_em_qualquer_camada() {
+        assert!(route_diagnostic_should_emit(true, false));
+        assert!(route_diagnostic_should_emit(false, true));
+        assert!(!route_diagnostic_should_emit(false, false));
     }
 }
 

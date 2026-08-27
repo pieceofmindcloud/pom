@@ -1146,7 +1146,7 @@ fn residual_capture_layout(
         if feature_width != input_width {
             continue;
         }
-        if dims[token_axis + 1..].iter().any(|&dim| dim != 1) {
+        if dims[token_axis + 1..].iter().any(|&dim| dim > 1) {
             bail!(
                 "residual capture: shape {:?} tem dimensões posteriores ao eixo de tokens não suportadas",
                 tensor_shape
@@ -3590,20 +3590,61 @@ mod pool_tests {
     }
 
     #[test]
-    fn residual_capture_preserves_extra_stream_dimensions() {
-        let mut slot = capture_slot_for_test(11, 4096, 16_384);
+    fn residual_capture_accepts_the_classic_ggml_shape_with_trailing_singletons() {
+        let mut slot = capture_slot_for_test(3, 4096, 4096);
+        let values = (0..(3 * 4096))
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
         record_capture(
             &mut slot,
-            [4096, 4, 11, 1],
-            [4, 16_384, 65_536, 720_896],
-            720_896,
-            (0..180_224).map(|value| value as f32).collect(),
+            [4096, 3, 1, 1],
+            [4, 16_384, 49_152, 49_152],
+            values.len() * 4,
+            values.clone(),
         )
         .unwrap();
 
         let captured = take_captured_residual(&mut slot).unwrap();
-        assert_eq!(captured.shape, vec![11, 4096, 4]);
-        assert_eq!(captured.values.len(), 180_224);
+        assert_eq!(captured.shape, vec![3, 4096]);
+        assert_eq!(captured.values, values);
+    }
+
+    #[test]
+    fn residual_capture_accepts_a_model_without_hyperconnection_streams() {
+        let mut slot = capture_slot_for_test(4, 8, 8);
+        let values = (0..32).map(|value| value as f32).collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [8, 4, 1, 1],
+            [4, 32, 128, 128],
+            values.len() * 4,
+            values.clone(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![4, 8]);
+        assert_eq!(captured.values, values);
+    }
+
+    #[test]
+    fn residual_capture_preserves_extra_stream_dimensions() {
+        let mut slot = capture_slot_for_test(13, 4096, 16_384);
+        let values = (0..(13 * 4096 * 4))
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [4096, 4, 13, 1],
+            [4, 16_384, 65_536, 851_968],
+            values.len() * 4,
+            values.clone(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![13, 4096, 4]);
+        assert_eq!(captured.values, values);
     }
 
     #[test]
@@ -3644,6 +3685,24 @@ mod pool_tests {
             [4, 16, 32, 64],
             2 * 3 * 8 * 4,
             vec![0.0; 2 * 3 * 8],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("dimensões posteriores"),
+            "erro inesperado: {error}"
+        );
+    }
+
+    #[test]
+    fn residual_capture_does_not_ignore_an_internal_singleton_before_tokens() {
+        let mut slot = capture_slot_for_test(2, 4, 4);
+        let error = record_capture(
+            &mut slot,
+            [4, 1, 2, 1],
+            [4, 16, 16, 32],
+            2 * 4 * 4,
+            vec![0.0; 2 * 4],
         )
         .unwrap_err()
         .to_string();

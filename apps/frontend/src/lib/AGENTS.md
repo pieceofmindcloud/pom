@@ -163,6 +163,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
+- `streamErrorMessage(payload)` / `consumeChatError(previous, error)` - leem a mensagem real de um frame de erro compatível com OpenAI dentro do stream SSE e a mantêm junto do conteúdo já renderizado.
 - `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records the legacy total rate, separated TTFT/prefill/generation/total timings and trace.
 - `isPhasedHop(hop)` - discriminates `PhasedHopTrace` (split prefill/decode) from `LegacyHopTrace` so the telemetry table can render both shapes.
 - Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry

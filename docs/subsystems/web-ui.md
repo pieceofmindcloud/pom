@@ -334,6 +334,11 @@ pré-processamento do prompt, velocidade de geração da saída e total ponta a
 ponta, além do trace por hop. O Chat mostra essas quatro linhas no resumo da
 resposta e deixa explícito quando uma taxa não é mensurável, como no reuso total
 do prefixo ou numa resposta de um token.
+Se `/v1/chat/completions` enviar um frame SSE com o envelope de erro OpenAI,
+`streamErrorMessage` preserva a mensagem real mesmo quando já há texto na
+resposta; ela aparece em um bloco que quebra linhas, permite seleção e oferece
+um botão de cópia. A mensagem genérica de resposta vazia só aparece quando o
+stream termina sem tokens e sem erro.
 Cada fase também mostra os bytes de estado oculto enviados e recebidos na
 travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
 Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para

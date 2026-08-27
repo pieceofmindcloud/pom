@@ -65,6 +65,10 @@ velocidade de pré-processamento do prompt, velocidade de geração da saída,
 tempo total, tokens/s e o rótulo explícito de taxa não mensurável usado para
 prefill de zero token ou resposta de um token.
 
+O Chat também traduz o rótulo de erro vindo dentro do stream, o controle para
+copiar a mensagem e o estado de cópia. O texto do servidor é preservado sem
+passar pelo fallback de idioma, para que o diagnóstico real não seja perdido.
+
 The slice locale group also covers multipart part lists, summed-size loading
 state and explicit incomplete-set errors in both languages.
 

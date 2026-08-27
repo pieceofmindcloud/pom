@@ -6,7 +6,7 @@
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
+import { ChatError, ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
 import { LocaleProvider } from "../i18n/provider";
 import type { GenerationTimings, PhaseTrace, RequestTrace } from "../lib/chatStream";
 
@@ -279,6 +279,21 @@ describe("ExecutionTelemetry", () => {
     // ...and the row says why there is no prefill/decode split, rather than
     // printing one total twice under two labels.
     expect(screen.getByText(/telemetria antiga/i)).toBeTruthy();
+  });
+});
+
+describe("ChatError", () => {
+  afterEach(cleanup);
+
+  it("shows a streamed server message in a readable, copyable block", () => {
+    const message = "peer error: ".concat("x".repeat(180));
+    mount(<ChatError message={message} />);
+
+    expect(screen.getByText("Erro do servidor")).toBeTruthy();
+    const errorText = screen.getByText(message);
+    expect(errorText.className).toContain("whitespace-pre-wrap");
+    expect(errorText.className).toContain("select-text");
+    expect(screen.getByRole("button", { name: "Copiar erro" })).toBeTruthy();
   });
 });
 

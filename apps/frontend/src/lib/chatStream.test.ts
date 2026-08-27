@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { consumeChatDelta, emptyChatStream, finishChatStream } from "./chatStream";
+import {
+  consumeChatDelta,
+  consumeChatError,
+  emptyChatStream,
+  finishChatStream,
+  streamErrorMessage,
+} from "./chatStream";
 
 describe("chat stream parsing", () => {
   it("separates a think block split across streaming chunks", () => {
@@ -17,6 +23,22 @@ describe("chat stream parsing", () => {
 
     expect(state.content).toBe("Use <thing> como exemplo.");
     expect(state.reasoning).toBe("");
+  });
+
+  it("reads the real message from an OpenAI error frame in the stream", () => {
+    expect(
+      streamErrorMessage({
+        error: { message: "pipeline indisponível: camada 17 não respondeu", type: "server_error" },
+      }),
+    ).toBe("pipeline indisponível: camada 17 não respondeu");
+  });
+
+  it("keeps rendered text when a later stream frame reports an error", () => {
+    let state = consumeChatDelta(emptyChatStream(), "Parte já renderizada");
+    state = consumeChatError(state, "o peer caiu durante a geração");
+
+    expect(state.content).toBe("Parte já renderizada");
+    expect(state.error).toBe("o peer caiu durante a geração");
   });
 
   it("stores metrics emitted on the final SSE chunk", () => {

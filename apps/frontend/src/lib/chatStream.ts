@@ -217,6 +217,7 @@ export interface ChatStreamState {
   durationMs?: number;
   timings?: GenerationTimings;
   trace?: RequestTrace;
+  error?: string;
 }
 
 const OPEN = "<think>";
@@ -262,6 +263,21 @@ export function consumeChatDelta(previous: ChatStreamState, delta: string): Chat
   }
 
   return state;
+}
+
+/** Reads the message from an OpenAI-compatible error envelope sent in SSE. */
+export function streamErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === "string") return error.trim() ? error : undefined;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" && message.trim() ? message : undefined;
+}
+
+/** Stores a server error without discarding content already rendered. */
+export function consumeChatError(previous: ChatStreamState, error: string): ChatStreamState {
+  return error ? { ...previous, error } : previous;
 }
 
 /** Flushes an incomplete delimiter as literal text and records final metrics. */

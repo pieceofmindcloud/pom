@@ -12,7 +12,7 @@ Per-file list:
 
 - `Chat.tsx` — The test chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage),
-  `../lib/chatStream` (SSE delta + metrics parsing), `../lib/chatScroll`
+  `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
   (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,
   `useServableModels`), `../components/Markdown`,
@@ -26,7 +26,11 @@ Per-file list:
   Missing snapshots stay visible as missing data. Phase rows also render
   hidden-state bytes sent/received and the effective f16/f8 dtype. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
-  resolution retain those ids.
+  resolution retain those ids. Um frame de erro compatível com OpenAI dentro
+  do stream fica junto de qualquer resposta parcial e mostra a mensagem exata
+  do servidor; o texto genérico de resposta vazia só é usado quando nenhum
+  erro foi enviado. Erros longos quebram linha, continuam selecionáveis e têm
+  um controle de cópia localizado.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

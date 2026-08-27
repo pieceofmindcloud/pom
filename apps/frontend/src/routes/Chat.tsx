@@ -11,7 +11,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
   Boxes,
+  Check,
   ChevronDown,
+  Copy,
   MessagesSquare,
   Pencil,
   Plus,
@@ -25,7 +27,13 @@ import { Markdown } from "../components/Markdown";
 import { Badge, Button, Empty } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
-import { consumeChatDelta, emptyChatStream, finishChatStream } from "../lib/chatStream";
+import {
+  consumeChatDelta,
+  consumeChatError,
+  emptyChatStream,
+  finishChatStream,
+  streamErrorMessage,
+} from "../lib/chatStream";
 import {
   analyzeTelemetry,
   buildTelemetryAnalysisPrompt,
@@ -56,7 +64,6 @@ import {
 import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 import type { ChatTelemetryNetwork, ClusterView, ExecutionEngine, PeerRuntime } from "../lib/types";
 
 /**
@@ -308,6 +315,48 @@ function ExecutionEnvironment({
   );
 }
 
+export function ChatError({ message }: { message: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // The message remains selectable when the browser denies clipboard access.
+    }
+  };
+
+  return (
+    <div
+      role="alert"
+      className="mt-2 min-w-0 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
+          <p className="text-[0.82rem] font-medium text-fg">{t("chat.serverError")}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void copy()}
+          aria-label={t("chat.copyError")}
+          className="flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-[0.7rem] text-muted transition-colors hover:text-fg"
+        >
+          {copied ? <Check className="h-3 w-3 text-aqua" /> : <Copy className="h-3 w-3" />}
+          {copied ? t("chat.errorCopied") : t("chat.copyError")}
+        </button>
+      </div>
+      <p className="break-path mt-2 max-h-72 overflow-auto whitespace-pre-wrap select-text rounded-md border border-rose/20 bg-ink/40 px-2.5 py-2 text-[0.82rem] leading-relaxed text-muted">
+        {message}
+      </p>
+    </div>
+  );
+}
+
 function Bubble({
   message,
   streaming,
@@ -321,7 +370,7 @@ function Bubble({
   analysisDisabled?: boolean;
   telemetryEnvironment?: ExecutionTelemetryEnvironment;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
   return (
@@ -347,12 +396,7 @@ function Bubble({
           )}
           {message.content && <Markdown>{message.content}</Markdown>}
           {message.error && (
-            <div className="mt-2 flex items-start gap-2.5 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5">
-              <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
-              <p className="break-path text-[0.82rem] leading-relaxed text-muted">
-                {localizeServerText(locale, message.error)}
-              </p>
-            </div>
+            <ChatError message={message.error} />
           )}
           {message.source && (
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
@@ -1022,6 +1066,12 @@ export function Chat() {
         if (data === "[DONE]") break;
         try {
           const chunk = JSON.parse(data);
+          const streamError = streamErrorMessage(chunk);
+          if (streamError) {
+            streamed = consumeChatError(streamed, streamError);
+            patchReply({ error: streamed.error });
+            continue;
+          }
           const delta = chunk?.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta) {
             streamed = consumeChatDelta(streamed, delta);
@@ -1050,7 +1100,7 @@ export function Chat() {
       if (streamed.trace) {
         setTelemetryCapture({ messageId: reply.id, trace: streamed.trace, cluster: cluster.data ?? null });
       }
-      if (!streamed.content && !streamed.reasoning) {
+      if (!streamed.content && !streamed.reasoning && !streamed.error) {
         patchReply({
           error:
             t("chat.emptyResponse"),

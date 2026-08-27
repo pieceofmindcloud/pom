@@ -50,11 +50,21 @@ ARG POM_BUILD_COMMIT=""
 ENV POM_BUILD_COMMIT=$POM_BUILD_COMMIT
 ENV CMAKE_CUDA_ARCHITECTURES="86;120"
 
+# Short commit of the vendored llama.cpp fork, passed from the host by
+# scripts/build-docker.sh. The fork's src/CMakeLists.txt collects model
+# sources with a plain file(GLOB) (no CONFIGURE_DEPENDS), so a /build/target
+# cache produced against an older checkout can link a libllama.a that is
+# missing a model .cpp added since — the "undefined symbol: vtable for
+# llama_model_*" link failure. Keying the target cache id to this commit
+# gives every fork checkout its own clean native tree; stale ids are dropped
+# by `docker builder prune`.
+ARG LLAMA_CPP_COMMIT="unknown"
+
 # Cache mounts persist the registry, git checkouts, and incremental build
 # artifacts across builds, so unchanged dependencies aren't recompiled.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_COMMIT} \
     cargo build --release --features cuda && \
     cp target/release/pom /build/pom
 

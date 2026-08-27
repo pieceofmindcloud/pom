@@ -192,14 +192,25 @@ offload no primeiro clique.
   com cache mounts (registry/git/target). Runtime é a base CUDA 13.0.3 com
   `LD_LIBRARY_PATH` incluindo `compat/` e `POM_HOME=/app`. O `ARG
   POM_BUILD_COMMIT` recebe o commit do host.
-- O cache de `target/` também pode conservar um `CMakeCache.txt` do
-  `llama.cpp`. Como o fork coleta `src/models/*.cpp` por `file(GLOB ...)`, o
-  `build.rs` do `llama-cpp-sys-2` força o reconfigure do CMake em cada execução;
-  sem isso, uma árvore nativa gerada antes de um arquivo de modelo existir pode
-  produzir `libllama.a` sem o objeto correspondente e falhar só no link Rust.
+- O cache de `target/` também conserva o `CMakeCache.txt` e a árvore nativa do
+  `llama.cpp`. Como o fork coleta `src/models/*.cpp` por `file(GLOB ...)` sem
+  `CONFIGURE_DEPENDS`, uma árvore gerada antes de um arquivo de modelo existir
+  produz `libllama.a` sem o objeto correspondente e falha só no link Rust
+  (`undefined symbol: vtable for llama_model_*`). O `build.rs` do
+  `llama-cpp-sys-2` chama `always_configure(true)`, mas isso só age quando o
+  Cargo reexecuta o build script - com o cache mount persistente e o `COPY . .`
+  do Docker ele não reexecuta, e a `libllama.a` velha é relinkada a cada build.
+  Por isso o `Dockerfile` chaveia o `id` do cache mount de `/build/target` em
+  `pom-target-${LLAMA_CPP_COMMIT}`: cada checkout do fork ganha uma árvore
+  nativa limpa. Ids antigos ficam ocupando espaço até um
+  `docker builder prune` (`--filter type=exec.cachemount` limpa só os mounts).
+  `docker compose build --no-cache` **não** resolve: cache mounts sobrevivem ao
+  `--no-cache`.
 - **`scripts/build-docker.sh`**: leia o commit **no host** (`git rev-parse
   --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), exporta
-  `POM_BUILD_COMMIT`, roda `npm run build` e `docker compose build`.
+  `POM_BUILD_COMMIT` e `LLAMA_CPP_COMMIT` (`git -C llama.cpp rev-parse --short
+  HEAD`, chaveia o cache mount acima), roda `npm run build` e
+  `docker compose build`.
   Construa a imagem por este script; `docker compose build` na mão carimba
   "desconhecido" em todo container, de propósito.
 - **`scripts/run-docker.sh`**: `docker compose down` + `docker compose up -d`

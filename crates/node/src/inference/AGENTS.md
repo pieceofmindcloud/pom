@@ -574,7 +574,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data`; o
   DeepSeek4 chama a mesma fronteira de `l_last-<N>`, e o callback aceita os dois
   nomes. A cabeça que vem depois pode executar, mas não altera o residual já
-  copiado. `accumulate_capture` junta um disparo por **microlote**: o llama.cpp
+  copiado. Quando `llama_model_n_embd_out` diverge de `llama_model_n_embd`,
+  `cparams.embeddings` fica desligado para impedir que a cópia genérica do
+  llama.cpp peça mais bytes que o tensor real; o callback continua sendo a
+  saída usada pelo POM. `accumulate_capture` junta um disparo por **microlote**: o llama.cpp
   parte o lote em pedaços de `n_ubatch` e chama a captura uma vez por pedaço,
   então substituir em vez de acumular guardava só o último - com
   `fit_memory=true` (padrão, `n_ubatch` limitado a 128), um chunk de 512 tokens

@@ -603,6 +603,12 @@ sub-faixa invertida ou fora da fatia recebe HTTP 400; começar acima de `start_l
 também é recusado explicitamente, porque o motor atual sempre entra pelo
 primeiro bloco da fatia e não consegue pular a cabeça já carregada.
 
+Quando `llama_model_n_embd_out` é diferente de `llama_model_n_embd`, o contexto
+não liga `cparams.embeddings`. A extração genérica do llama.cpp calcula a leitura
+com a largura de saída da metadata, que pode ser maior que o tensor materializado
+no grafo e provocar um `GGML_ASSERT` de leitura fora dos limites. O callback de
+`l_out`/`l_last` continua sendo o único caminho de captura usado pelo POM.
+
 Por isso o planejador só escolhe uma faixa que começa exatamente na posição
 executada. Faixas sobrepostas no inventário podem formar entradas alternativas,
 mas cada caminho de uma requisição avança por sub-faixas contíguas. Quando há

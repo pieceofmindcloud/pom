@@ -13,7 +13,11 @@
 //! tensor (`l_out-<N>`, or DeepSeek4's equivalent `l_last-<N>`) is computed
 //! and copies it before the output head sees it. The graph keeps running after
 //! the copy, so a required output head may cost compute without changing the
-//! residual already exported to the next peer.
+//! residual already exported to the next peer. If `n_embd_out` differs from
+//! `n_embd`, generic llama.cpp embedding extraction stays disabled: that path
+//! sizes its backend read from the metadata width, which may exceed the real
+//! output tensor. The callback remains the only embedding-like output used by
+//! the POM in that case.
 //!
 //! The callback is an `extern "C"` fn with no closure environment, so the
 //! capture state travels in llama.cpp's own `cb_eval_user_data`: each context
@@ -1153,6 +1157,14 @@ fn load_mtp_weights(cfg: &EngineConfig) -> bool {
     cfg.mtp
 }
 
+/// O POM exporta o residual pelo callback, mas o llama.cpp também pode tentar
+/// copiar o resultado de embeddings. Essa cópia usa `n_embd_out` como se fosse
+/// a largura real do tensor; quando as duas larguras divergem, o pedido pode
+/// ultrapassar `ggml_nbytes(tensor)` antes de o callback ser consumido.
+fn generic_embeddings_compatible(need_embeddings: bool, n_embd: usize, n_embd_out: usize) -> bool {
+    need_embeddings && n_embd == n_embd_out
+}
+
 fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
@@ -1700,6 +1712,7 @@ impl LlmEngine {
     pub fn with_model(loaded: Arc<LoadedModel>, cfg: &EngineConfig) -> Result<Self> {
         let model = loaded.model;
         let n_embd = loaded.n_embd;
+        let n_embd_out = unsafe { sys::llama_model_n_embd_out(model) } as usize;
         let n_vocab = loaded.n_vocab;
 
         // ── Context params ───────────────────────────────────────────────────
@@ -1711,7 +1724,7 @@ impl LlmEngine {
         cparams.kv_unified = true;
         cparams.offload_kqv = cfg.offload_kqv;
         apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
-        cparams.embeddings = cfg.need_embeddings;
+        cparams.embeddings = generic_embeddings_compatible(cfg.need_embeddings, n_embd, n_embd_out);
         cparams.n_rs_seq = cfg.rs_seq_window;
         if cfg.n_threads > 0 {
             cparams.n_threads = cfg.n_threads;
@@ -3503,6 +3516,13 @@ mod tests {
         assert!(capture_target_matches("l_last-19", &target));
         assert!(!capture_target_matches("l_last-18", &target));
         assert!(!capture_target_matches("output-19", &target));
+    }
+
+    #[test]
+    fn output_width_mismatch_disables_unsafe_generic_embedding_copy() {
+        assert!(!generic_embeddings_compatible(true, 4096, 16384));
+        assert!(generic_embeddings_compatible(true, 4096, 4096));
+        assert!(!generic_embeddings_compatible(false, 4096, 4096));
     }
 
     const GEMMA4_TEMPLATE_FIXTURE: &str = r#"

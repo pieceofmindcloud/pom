@@ -297,9 +297,12 @@ telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
 Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute
 o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. Cada entrada do callback ganha uma
-linha antes das validações; a primeira chamada de cada requisição e qualquer
-rota não finita ganham a amostra detalhada, sem depender do índice da camada.
-Ela registra valores crus de token 0, slot e deslocamento expert-major,
+linha `callback_entry` como primeira ação, antes das validações. Ela registra
+os ponteiros e contagens crus; cada retorno `false` ganha ainda uma linha
+`callback_exit` com o motivo do caminho que abortou, inclusive argumentos
+nulos, geometria, normalização, metadata e forward. A primeira chamada de cada
+requisição e qualquer rota não finita ganham a amostra detalhada, sem depender
+do índice da camada. Ela registra valores crus de token 0, slot e deslocamento expert-major,
 ponteiros e bytes das regiões lidas, quantidade de elementos declarada pelo
 llama.cpp versus esperada pelo POM, dtypes da metadata de gate/up/down e os
 dtypes assumidos nos argumentos do callback. Depois da normalização, registra

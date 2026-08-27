@@ -217,8 +217,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
   política do cache.
   Para investigar a origem de uma rota inválida, `POM_MOE_ROUTE_DIAGNOSTICS=1`
-  habilita uma linha de entrada por callback antes das validações, sem filtro
-  de camada. A primeira chamada de cada requisição recebe a amostra detalhada;
+  habilita a linha `callback_entry` como primeira ação do callback, antes de
+  qualquer validação e sem filtro de camada. Essa linha registra os ponteiros
+  e contagens crus recebidos. Todo retorno `false` também emite
+  `callback_exit` com o motivo estável do caminho que abortou, inclusive
+  argumentos nulos, geometria, normalização, metadata e forward. A primeira
+  chamada de cada requisição recebe a amostra detalhada;
   qualquer chamada com rota não finita também recebe essa amostra, mesmo que
   outra já tenha sido registrada. O log registra os valores crus de token 0 e
   seus deslocamentos na rota expert-major, contagens declaradas pelo llama.cpp

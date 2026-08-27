@@ -195,18 +195,67 @@ fn log_moe_callback_entry(
     hidden_width: usize,
     output: *mut f32,
 ) {
-    let descriptor_layer = unsafe { descriptor.as_ref() }
-        .map(|descriptor| descriptor.layer)
-        .map_or_else(|| "null".to_string(), |layer| layer.to_string());
     tracing::warn!(
         target: "moe.route_diagnostic",
-        "POM_MOE_ROUTE_DIAGNOSTICS callback_entry descriptor_ptr={:p} user_data_ptr={:p} descriptor_layer={descriptor_layer} hidden_ptr={:p} selected_ptr={:p} weights_ptr={:p} output_ptr={:p} n_tokens={n_tokens} hidden_width={hidden_width}",
+        "POM_MOE_ROUTE_DIAGNOSTICS callback_entry raw_args=1 descriptor_ptr={:p} user_data_ptr={:p} hidden_ptr={:p} selected_ptr={:p} weights_ptr={:p} output_ptr={:p} n_tokens={n_tokens} hidden_width={hidden_width}",
         descriptor,
         user_data,
         hidden,
         selected_experts,
         weights,
         output,
+    );
+}
+
+#[derive(Debug, PartialEq)]
+struct MoeCallbackExitDiagnostic {
+    reason: &'static str,
+    raw_pointers: [usize; 6],
+    n_tokens: usize,
+    hidden_width: usize,
+}
+
+fn build_moe_callback_exit_diagnostic(
+    reason: &'static str,
+    user_data: *mut c_void,
+    descriptor: *const sys::llama_moe_ffn_descriptor,
+    hidden: *const f32,
+    selected_experts: *const i32,
+    weights: *const f32,
+    n_tokens: usize,
+    hidden_width: usize,
+    output: *mut f32,
+) -> MoeCallbackExitDiagnostic {
+    MoeCallbackExitDiagnostic {
+        reason,
+        raw_pointers: [
+            user_data as usize,
+            descriptor as usize,
+            hidden as usize,
+            selected_experts as usize,
+            weights as usize,
+            output as usize,
+        ],
+        n_tokens,
+        hidden_width,
+    }
+}
+
+fn log_moe_callback_exit(diagnostic: &MoeCallbackExitDiagnostic) {
+    let [user_data, descriptor, hidden, selected_experts, weights, output] =
+        diagnostic.raw_pointers;
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS callback_exit reason={} user_data_ptr=0x{user_data:x} descriptor_ptr=0x{descriptor:x} hidden_ptr=0x{hidden:x} selected_ptr=0x{selected_experts:x} weights_ptr=0x{weights:x} output_ptr=0x{output:x} n_tokens={} hidden_width={} null_args=user_data:{} descriptor:{} hidden:{} selected:{} weights:{} output:{}",
+        diagnostic.reason,
+        diagnostic.n_tokens,
+        diagnostic.hidden_width,
+        user_data == 0,
+        descriptor == 0,
+        hidden == 0,
+        selected_experts == 0,
+        weights == 0,
+        output == 0,
     );
 }
 
@@ -220,7 +269,8 @@ unsafe extern "C" fn moe_ffn_callback(
     hidden_width: usize,
     output: *mut f32,
 ) -> bool {
-    if moe_route_diagnostics_enabled() {
+    let diagnostics_enabled = moe_route_diagnostics_enabled();
+    if diagnostics_enabled {
         log_moe_callback_entry(
             user_data,
             descriptor,
@@ -232,6 +282,27 @@ unsafe extern "C" fn moe_ffn_callback(
             output,
         );
     }
+
+    macro_rules! diagnostic_return {
+        ($reason:literal) => {{
+            if diagnostics_enabled {
+                let diagnostic = build_moe_callback_exit_diagnostic(
+                    $reason,
+                    user_data,
+                    descriptor,
+                    hidden,
+                    selected_experts,
+                    weights,
+                    n_tokens,
+                    hidden_width,
+                    output,
+                );
+                log_moe_callback_exit(&diagnostic);
+            }
+            return false;
+        }};
+    }
+
     if user_data.is_null()
         || descriptor.is_null()
         || hidden.is_null()
@@ -239,7 +310,7 @@ unsafe extern "C" fn moe_ffn_callback(
         || weights.is_null()
         || output.is_null()
     {
-        return false;
+        diagnostic_return!("null_callback_argument");
     }
     let state = unsafe { &*(user_data as *const MoeCallbackState) };
     let descriptor = unsafe { &*descriptor };
@@ -247,21 +318,21 @@ unsafe extern "C" fn moe_ffn_callback(
         Ok(used) if used > 0 => used,
         _ => {
             state.fail("descriptor MoE sem quantidade válida de experts ativos".to_string());
-            return false;
+            diagnostic_return!("invalid_expert_count_used");
         }
     };
     let expected = match n_tokens.checked_mul(hidden_width) {
         Some(expected) => expected,
         None => {
             state.fail("overflow na geometria hidden do hook".to_string());
-            return false;
+            diagnostic_return!("hidden_geometry_overflow");
         }
     };
     let route_len = match n_tokens.checked_mul(used) {
         Some(length) => length,
         None => {
             state.fail("overflow na geometria da rota do hook".to_string());
-            return false;
+            diagnostic_return!("route_geometry_overflow");
         }
     };
     let hidden = unsafe { std::slice::from_raw_parts(hidden, expected) };
@@ -274,7 +345,7 @@ unsafe extern "C" fn moe_ffn_callback(
     };
     let raw_non_finite = weights.iter().any(|weight| !weight.is_finite());
     let emit_route_diagnostic = state.claim_route_diagnostic()
-        || (moe_route_diagnostics_enabled() && route_diagnostic_should_emit(false, raw_non_finite));
+        || (diagnostics_enabled && route_diagnostic_should_emit(false, raw_non_finite));
     if emit_route_diagnostic {
         log_moe_route_input_diagnostic(
             &architecture,
@@ -301,7 +372,7 @@ unsafe extern "C" fn moe_ffn_callback(
         Ok(route) => route,
         Err(error) => {
             state.fail(error.to_string());
-            return false;
+            diagnostic_return!("route_normalization_failed");
         }
     };
     if emit_route_diagnostic {
@@ -315,7 +386,7 @@ unsafe extern "C" fn moe_ffn_callback(
         state.fail(format!(
             "arquitetura {architecture} usa bias de experts não suportado pelo hook"
         ));
-        return false;
+        diagnostic_return!("unsupported_expert_bias");
     }
     if descriptor.down.present == 0
         || (descriptor.gate_up.present == 0
@@ -324,7 +395,7 @@ unsafe extern "C" fn moe_ffn_callback(
         state.fail(format!(
             "arquitetura {architecture} não forneceu metadata completa de gate/up/down"
         ));
-        return false;
+        diagnostic_return!("incomplete_expert_metadata");
     }
     let mut metadata_owned = Vec::new();
     for (role, tensor) in [
@@ -363,7 +434,7 @@ unsafe extern "C" fn moe_ffn_callback(
             Ok(name) => name,
             Err(error) => {
                 state.fail(format!("arquitetura {architecture}: {error}"));
-                return false;
+                diagnostic_return!("invalid_tensor_name");
             }
         };
         let dtype = match u32::try_from(tensor.dtype) {
@@ -373,7 +444,7 @@ unsafe extern "C" fn moe_ffn_callback(
                     "arquitetura {architecture}: tensor {name} tem dtype negativo {}",
                     tensor.dtype
                 ));
-                return false;
+                diagnostic_return!("negative_tensor_dtype");
             }
         };
         metadata_owned.push((role, name, dtype));
@@ -387,7 +458,7 @@ unsafe extern "C" fn moe_ffn_callback(
         .validate_callback_metadata(descriptor.layer as u32, &metadata)
     {
         state.fail(format!("arquitetura {architecture}: {error}"));
-        return false;
+        diagnostic_return!("callback_metadata_validation_failed");
     }
     let expert_count = match usize::try_from(descriptor.expert_count) {
         Ok(count) => count,
@@ -395,7 +466,7 @@ unsafe extern "C" fn moe_ffn_callback(
             state.fail(format!(
                 "arquitetura {architecture}: quantidade de experts excede usize"
             ));
-            return false;
+            diagnostic_return!("expert_count_overflow");
         }
     };
     let started = Instant::now();
@@ -419,11 +490,11 @@ unsafe extern "C" fn moe_ffn_callback(
                 "hook MoE devolveu {} floats, esperado {expected}",
                 values.len()
             ));
-            return false;
+            diagnostic_return!("forward_output_geometry_mismatch");
         }
         Err(error) => {
             state.fail(format!("arquitetura {architecture}: {error}"));
-            return false;
+            diagnostic_return!("forward_failed");
         }
     };
     unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), output, expected) };
@@ -663,6 +734,29 @@ mod moe_route_tests {
         assert!(route_diagnostic_should_emit(true, false));
         assert!(route_diagnostic_should_emit(false, true));
         assert!(!route_diagnostic_should_emit(false, false));
+    }
+
+    #[test]
+    fn diagnostico_de_saida_preserva_argumentos_crus_e_motivo_do_retorno() {
+        let diagnostic = build_moe_callback_exit_diagnostic(
+            "null_callback_argument",
+            0x11usize as *mut c_void,
+            0x22usize as *const sys::llama_moe_ffn_descriptor,
+            0x33usize as *const f32,
+            0x44usize as *const i32,
+            0x55usize as *const f32,
+            7,
+            4096,
+            0x66usize as *mut f32,
+        );
+
+        assert_eq!(diagnostic.reason, "null_callback_argument");
+        assert_eq!(
+            diagnostic.raw_pointers,
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+        );
+        assert_eq!(diagnostic.n_tokens, 7);
+        assert_eq!(diagnostic.hidden_width, 4096);
     }
 }
 

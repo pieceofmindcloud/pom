@@ -660,13 +660,13 @@ no grafo e provocar um `GGML_ASSERT` de leitura fora dos limites. O callback de
 
 O caminho de entrada mantém a forma do residual até `llama_decode`: a recepção
 valida o shape, o relay preserva os eixos, e o `llama_batch` Rust é alocado com
-a largura efetiva. A auditoria do fork local do llama.cpp também encontrou uma
-fronteira independente: o `llama_context::decode` ainda inicializa o seu
-`llama_batch_allocr` com `hparams.n_embd_inp()`, e o grafo normal de DeepSeek4
-recria a entrada base antes de repetir os fluxos. Portanto, esse fork ainda
-precisa de uma entrada de grafo própria para consumir um residual expandido;
-alocar o batch Rust maior evita corrupção de memória, mas não substitui essa
-alteração no llama.cpp.
+a largura efetiva. O fork publicado em `pom-tensor-parallel` também carrega
+essa largura explícita pelo allocator e pelo input do grafo. Para uma entrada
+expandida, o grafo normal usa a largura física reportada por `n_embd_out` e a
+reinterpreta diretamente como `[n_embd, fluxos, tokens]`, sem repetir a primeira
+faixa. Para a entrada canônica, o allocator e o grafo continuam usando
+`n_embd_inp`; uma largura que não seja canônica nem a expandida reportada é
+recusada com a geometria no erro.
 
 Por isso o planejador só escolhe uma faixa que começa exatamente na posição
 executada. Faixas sobrepostas no inventário podem formar entradas alternativas,
@@ -1066,14 +1066,6 @@ aquele salto não deu.
   do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
   Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
   pom é expectativa, não fato.
-- **Entrada expandida no llama.cpp**: a validação do receptor e o batch Rust
-  já usam a largura física de `n_embd_out`, mas a implementação normal do
-  `llama_context::decode` continua usando `n_embd_inp()` no allocator interno e
-  o grafo DeepSeek4 normal ainda repete a entrada base. O fork externo precisa
-  aceitar explicitamente o residual com eixos de fluxo para que os valores
-  adicionais cheguem ao modelo; o POM não pode comprimir esses eixos sem
-  alterar a matemática.
-
 ## Nota de versão
 
 Documentado a partir dos fontes na branch `fm/pom-linha-2` (2026-08-15):

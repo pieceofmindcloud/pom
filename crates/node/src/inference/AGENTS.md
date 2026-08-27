@@ -916,11 +916,7 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 ## Defeitos anotados
 
-- A validação e o batch Rust aceitam a largura expandida de `n_embd_out`, mas
-  o `llama_context::decode` do fork local ainda inicializa o allocator interno
-  com `n_embd_inp()` e o grafo normal de DeepSeek4 repete a entrada base. O
-  fork precisa de uma entrada própria para consumir todos os fluxos; o detalhe
-  e a localização estão em `docs/subsystems/inferencia.md`.
+Nenhum defeito ativo nesta fronteira.
 
 O que estava anotado aqui - "a captura do residual assume a ordem do
 `split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o

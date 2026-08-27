@@ -40,6 +40,15 @@ O cálculo de tamanho serializado usa exatamente a mesma seleção do fatiador.
 Assim, a prévia e o job exibem o custo real, incluindo aproximadamente 0,44 GB
 por fatia intermediária no arquivo medido do DeepSeek-V4-Flash.
 
+Metadata que o llama.cpp compara com o índice local do bloco também precisa
+acompanhar a renumeração `blk.(start+i)` para `blk.i`. O fatiador classifica
+essas chaves por semântica: `leading_dense_block_count`, `hash_layer_count` e
+`n_deepstack_layers` contam desde o início e são calculadas como
+`min(max(original - start_layer, 0), blocos_da_fatia)`; `nextn_predict_layers`
+conta desde o fim e continua zero nas faixas não finais. Um valor relativo ao
+início que não seja inteiro escalar não negativo representável em `u32` causa
+recusa nominal, sem copiar metadata ambígua.
+
 ## Invariantes
 
 - A tabela e os payloads dos tensores de cabeça vêm da fonte, nunca de zeros ou

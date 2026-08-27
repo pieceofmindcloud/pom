@@ -4,7 +4,7 @@
 
 **Goal:** impedir que o fatiador escreva fatias que o carregador llama.cpp não aceita por faltar a cabeça específica da arquitetura, e manter uma fatia final DeepSeek4 estruturalmente completa quando os tensores existirem na origem.
 
-**Architecture:** o contrato de tensores não-bloco obrigatórios de `deepseek4` fica explícito no fatiador. A validação acontece antes de criar o arquivo de destino: fatias não finais são recusadas porque o loader exige `output.weight`, `output_norm.weight`, `output_hc_fn.weight`, `output_hc_base.weight` e `output_hc_scale.weight` sem fallback ou flag opcional; a fatia final copia esses tensores. O planejador e a execução local usam o mesmo preflight, e o cálculo de tamanho usa a mesma seleção.
+**Architecture:** o contrato de tensores não-bloco obrigatórios de `deepseek4` fica explícito no fatiador. A validação acontece antes de criar o arquivo de destino: fatias não finais copiam da origem `output.weight`, `output_norm.weight`, `output_hc_fn.weight`, `output_hc_base.weight` e `output_hc_scale.weight`, sem fallback ou tensor sintético; a fatia final copia os mesmos tensores. O planejador e a execução local usam o mesmo preflight, e o cálculo de tamanho usa a mesma seleção.
 
 **Tech Stack:** Rust, GGUF, llama.cpp, Tokio/Axum, testes unitários e documentação Markdown em pt-BR.
 
@@ -17,15 +17,15 @@ opcionais os tensores obrigatórios. Também não há reparo barato por anexar o
 tensores ao fim do arquivo: os descritores GGUF ficam antes do payload, então
 adicionar descritores desloca a seção de dados e exige reescrever os cerca de
 40 GB da fatia. `output.weight` ainda é uma projeção real de vocabulário e não
-pode ser trocada por uma identidade sintética correta. As fatias inválidas
-devem ser preservadas até a decisão de escopo e depois refeitas a partir da
-origem se DeepSeek4 vier a ser suportado em pipeline.
+pode ser trocada por uma identidade sintética correta. Fatias antigas sem a
+cabeça devem ser refeitas a partir da origem, enquanto novas fatias são aceitas
+quando os pesos reais existem.
 
 ## Invariantes
 
 - A decisão é baseada em `general.architecture` e na tabela de tensores, nunca no nome do modelo.
 - `deepseek4` não ganha tensores sintéticos para a cabeça: `output_hc_fn`, `output_hc_base`, `output_hc_scale` e `output.weight` têm semântica real e são grandes ou arquiteturalmente específicos.
-- Uma faixa não final de `deepseek4` falha antes de abrir o arquivo de saída, com uma mensagem que lista os tensores obrigatórios e explica que o loader não conhece fatias parciais.
+- Uma faixa não final de `deepseek4` sem os pesos obrigatórios falha antes de abrir o arquivo de saída, com uma mensagem que lista os tensores ausentes; com a origem completa, a faixa copia esses pesos reais.
 - Uma faixa final de `deepseek4` só é escrita se todos os tensores obrigatórios estiverem na origem; eles entram no arquivo e no orçamento previsto.
 - A compilação Rust deve ser comparada à linha de base conhecida dos bindings `llama-cpp-sys-2`; nenhum erro preexistente é tratado como parte desta tarefa.
 - Não editar `CHANGELOG.md` nem `apps/frontend/src/docs/`, que é gerado.
@@ -42,10 +42,21 @@ origem se DeepSeek4 vier a ser suportado em pipeline.
 ### Task 2: implementar seleção e preflight
 
 - [x] Implementar a lista de saída obrigatória e a validação estrutural no `splitter`.
-- [x] Fazer `want_tensor` incluir a cabeça completa apenas no final e manter a recusa para fatias intermediárias.
+- [x] Fazer `want_tensor` incluir a cabeça completa também nas faixas intermediárias quando os pesos reais existem, mantendo a recusa quando a cópia é impossível.
 - [x] Espelhar a seleção no `gguf::read_layout` e em `slice_bytes`.
 - [x] Fazer o planner e os endpoints de prévia e execução recusarem antes de iniciar o corte.
 - [x] Ajustar o merge e os mapas de classificação para não descartar tensores HC.
+
+### Atualização: metadata de contagem por posição
+
+- [x] Classificar pela semântica as contagens comparadas ao índice local do
+  bloco, rebaseando as contagens desde o início e tratando `nextn` como contagem
+  desde o fim.
+- [x] Rejeitar metadata relativa ao início que não seja um inteiro escalar
+  não negativo que caiba em `u32` e manter a estimativa de tamanho alinhada à
+  serialização.
+- [x] Cobrir as contagens no prefixo, no meio e no fim da faixa, além do teste
+  de loader real para a faixa deslocada 15-28.
 
 ### Task 3: documentação e entrega
 

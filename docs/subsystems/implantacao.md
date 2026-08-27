@@ -126,10 +126,12 @@ O preflight também confere o contrato de saída que o loader exige. Para a
 arquitetura `deepseek4`, `llama.cpp` exige `token_embd.weight`,
 `output_norm.weight`, `output.weight`, `output_hc_fn.weight`,
 `output_hc_base.weight` e `output_hc_scale.weight` em uma instância carregável;
-como ele não conhece `pom.start_layer`, `pom.end_layer` nem fatias parciais,
-uma implantação pipeline é recusada antes de gerar uma faixa não final. A
-falha não é reparável alterando somente metadata de uma fatia antiga, e
-acrescentar descritores ao GGUF exigiria reescrever o payload já gravado.
+como ele não conhece `pom.start_layer` nem `pom.end_layer`, a origem copia os
+pesos reais da cabeça para cada faixa não final antes de iniciar a implantação.
+O preflight recusa somente quando a origem não permite essa cópia, listando o
+tensor ausente ou a causa concreta. Contagens de camadas que o loader compara
+com o índice local também são rebaseadas para a faixa; `nextn_predict_layers`,
+que conta a partir do fim, fica zerada fora da faixa final.
 
 ## 1.2 Tensor parallel: grupo de ranks
 

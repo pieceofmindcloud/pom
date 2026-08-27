@@ -98,6 +98,14 @@ restrito à fronteira de fatiamento ou transferência.
 - `nextn_predict_layers` - MTP/Qwen3.5+: o bloco nextn vive só na última camada;
   fatia que não termina no fim do modelo precisa zerar o hiperparâmetro ou o
   llama.cpp aborta o load procurando `blk.<last>.nextn.*`.
+- `LayerCountSemantics` - metadata que o llama.cpp compara com o índice local
+  do bloco é classificada pela semântica, não pelo nome de uma arquitetura.
+  Contagens desde o início (`leading_dense_block_count`, `hash_layer_count` e
+  `n_deepstack_layers`) são rebaseadas por `start_layer` e limitadas ao número
+  de blocos da fatia. A contagem desde o fim (`nextn_predict_layers`) é zerada
+  fora da faixa final e preservada nela. Uma contagem relativa ao início que
+  não seja um inteiro escalar não negativo que caiba em `u32` recusa o layout
+  com a chave e a causa, sem copiar um valor ambíguo.
 - `attention.recurrent_layers` - modelo híbrido attention/SSM,
   como o Qwen3.8-27B): na ausência de um array explícito com essa chave, o
   llama.cpp decide sozinho quais camadas são recorrentes (levam
@@ -311,8 +319,11 @@ de reparo que fabrique outro arquivo recusado pelo loader.
    `output_norm.weight` identidade nas arquiteturas em que essa adaptação é
    suficiente (o llama.cpp precisa dele para ler a fatia), copia os tensores
    obrigatórios reais da origem e zera `nextn_predict_layers` fora da última;
-   também atualiza `{arch}.block_count`. Para `deepseek4`, `output.weight` e
-   `output_hc_*` são copiados para cada faixa intermediária, nunca inventados.
+   também atualiza `{arch}.block_count`. Metadata classificada como contagem
+   desde o início é rebaseada por `start_layer` e limitada ao tamanho da faixa;
+   metadata desde o fim só é preservada na faixa final. Para `deepseek4`,
+   `output.weight` e `output_hc_*` são copiados para cada faixa intermediária,
+   nunca inventados.
    A faixa final mantém a cabeça completa mais `token_embd.weight`.
 5. Modelo híbrido (qualquer tensor `blk.N.ssm_conv1d.weight` na tabela): grava
    `{arch}.attention.recurrent_layers` explícito, sizado e indexado para a

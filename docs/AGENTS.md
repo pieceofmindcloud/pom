@@ -37,7 +37,9 @@ gated e a licença antes do download.
 
 ## subsystems/
 
-Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`
+Os guias permanentes do runtime ficam em `docs/subsystems/`. `fatiamento.md`
+documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas
+e o rebase de metadata de camadas para a numeração local. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `inferencia.md` e `web-ui.md` também
 documentam o RTT observado do Chat, o RTT direcional por aresta e a leitura

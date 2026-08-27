@@ -34,8 +34,8 @@ transferência.
   chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
   `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa. O
   plano valida o contrato de tensores de saída da arquitetura antes de oferecer
-  ou gerar uma faixa; se um loader não aceitar fatias parciais, o erro aparece
-  antes de criar o arquivo.
+  ou gerar uma faixa; cabeças obrigatórias são cobradas e copiadas da origem
+  quando o loader exige sua presença em faixas parciais.
 - `gguf.rs` - lê a geometria de KV escalar ou por camada
   (`attention.head_count_kv`, `key_length` e `value_length`) e a evidência de
   MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos. Também
@@ -52,8 +52,13 @@ transferência.
   não-bloco, não aceita fallback para `token_embd`; faixas não finais copiam da
   origem os tensores reais da cabeça que o loader exige e mantêm o norm de
   identidade já usado pelo tronco. Se a origem não tiver um tensor copiável, a
-  recusa nomeia os tensores ausentes. `GgufLayout::required_head_bytes` mede o
-  payload real repetido por fatia intermediária.
+  recusa nomeia os tensores ausentes. `LayerCountSemantics` classifica metadata
+  que o llama.cpp compara com o índice local: contagens desde o início são
+  rebaseadas por `start_layer` e limitadas ao tamanho da fatia, enquanto a
+  contagem desde o fim do NextN é zerada fora da última faixa. Valor não escalar
+  ou que não caiba em `u32` recusa o layout com a chave e a causa.
+  `GgufLayout::required_head_bytes` mede o payload real repetido por fatia
+  intermediária.
   `read_layout` usa a tabela unificada de multipart.rs, então o
   primeiro arquivo de um GGUF multipart, mesmo sem tensores, representa o
   conjunto inteiro.
@@ -74,8 +79,10 @@ transferência.
   fatiador confere a lista de tensores obrigatórios que o loader cria para a
   arquitetura. Para `deepseek4`, a faixa final carrega a cabeça completa e cada
   faixa intermediária copia os pesos obrigatórios reais, sem fabricar
-  `output.weight` nem tensores HC. A estimativa de tamanho inclui essa
-  repetição e o plano expõe o custo adicional. A estimativa TP soma a
+  `output.weight` nem tensores HC. Metadata de contagem relativa ao início é
+  reescrita para a numeração local da faixa; metadata relativa ao fim conserva
+  o valor somente na faixa final. A estimativa de tamanho inclui a repetição
+  e o plano expõe o custo adicional. A estimativa TP soma a
   replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer

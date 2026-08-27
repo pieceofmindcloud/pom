@@ -6,7 +6,7 @@
 //! deixou de reprocessar, turno a turno, pelo mesmo caminho que a tela de chat
 //! e um cliente OpenAI usam (`openai::render_prompt`,
 //! `openai::conversation_cache_key`, `gateway::generate_stream_with_stops`,
-//! `prefill::run`, `/v1/prefill`, `/v1/step`, `/v1/session/rewind`,
+//! `prefill::run_with_options`, `/v1/prefill`, `/v1/step`, `/v1/session/rewind`,
 //! `/v1/session/release`). Era exatamente aí que o sistema informava "sessão
 //! reusada" e executava outra coisa: em 100% dos turnos medidos em produção,
 //! `cached_tokens` aproveitado era zero.
@@ -698,6 +698,10 @@ struct Turno {
     cached_tokens: u32,
     prompt_tokens: u32,
     first_word_us: u128,
+    /// Maior profundidade do pipeline de prefill observada e o teto efetivo.
+    pipeline_depth: u32,
+    max_inflight: u32,
+    overlap_enabled: bool,
     falhou: Option<String>,
 }
 
@@ -843,6 +847,9 @@ async fn conversa_com_hops_fault(
             cached_tokens: 0,
             prompt_tokens: 0,
             first_word_us: 0,
+            pipeline_depth: 0,
+            max_inflight: 0,
+            overlap_enabled: false,
             falhou: None,
         };
         let started = std::time::Instant::now();
@@ -861,6 +868,9 @@ async fn conversa_com_hops_fault(
                     if let Some(trace) = &s.trace {
                         medido.cached_tokens = trace.cached_tokens;
                         medido.prompt_tokens = trace.input_tokens;
+                        medido.pipeline_depth = trace.prefill_pipeline_depth_max;
+                        medido.max_inflight = trace.prefill_max_inflight_chunks;
+                        medido.overlap_enabled = trace.prefill_overlap_enabled;
                     }
                     true
                 }
@@ -1020,6 +1030,53 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
             }
         }
     }
+}
+
+/// O prefill de um prompt de vários pedaços tem que **encher o pipeline**: com
+/// a cadeia mais lenta que a cabeça, a bomba da cabeça corre à frente e vários
+/// pedaços ficam em voo ao mesmo tempo. O modo anel continua serializado.
+#[tokio::test]
+async fn prefill_multi_pedaco_enche_o_pipeline() {
+    // 4 hops: o downstream (3 hops) é ~3x o custo da cabeça, então a bomba da
+    // cabeça enche a janela. O prompt frio do turno 0 tem vários pedaços de 4
+    // tokens.
+    for transporte in [Transporte::Hub, Transporte::Direto] {
+        let medida = conversa_com_hops(transporte, 1, true, 4).await;
+        let t = &medida.turnos[0];
+        assert!(t.falhou.is_none(), "[{transporte:?}] turno falhou: {:?}", t.falhou);
+        assert!(
+            t.pedacos >= 2,
+            "[{transporte:?}] o prompt frio tinha que ter mais de um pedaço: {}",
+            t.pedacos
+        );
+        assert!(
+            t.overlap_enabled,
+            "[{transporte:?}] a sobreposição devia estar ligada num plano de vários hops"
+        );
+        assert!(
+            t.pipeline_depth >= 2,
+            "[{transporte:?}] o pipeline não encheu: profundidade {} (teto {})",
+            t.pipeline_depth,
+            t.max_inflight
+        );
+        assert!(
+            t.pipeline_depth <= t.max_inflight,
+            "[{transporte:?}] profundidade {} acima do teto {}",
+            t.pipeline_depth,
+            t.max_inflight
+        );
+    }
+
+    // O anel não sobrepõe: profundidade sempre 1, sobreposição desligada.
+    let anel = conversa_com_hops(Transporte::Anel, 1, true, 4).await;
+    let t = &anel.turnos[0];
+    assert!(t.falhou.is_none(), "[Anel] turno falhou: {:?}", t.falhou);
+    assert!(!t.overlap_enabled, "[Anel] a sobreposição não vale no anel");
+    assert!(
+        t.pipeline_depth <= 1,
+        "[Anel] o anel não devia sobrepor pedaços: profundidade {}",
+        t.pipeline_depth
+    );
 }
 
 /// Um peer pode perder o estado entre dois chunks de um prefill frio. O

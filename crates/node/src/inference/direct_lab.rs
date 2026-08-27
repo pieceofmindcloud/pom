@@ -518,7 +518,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     let routes = crate::route::RouteTable::new();
     let session = uuid::Uuid::new_v4().to_string();
 
-    let first = crate::prefill::run(
+    let first = crate::prefill::run_with_options(
         &plan,
         "lab",
         &session,
@@ -532,6 +532,8 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         None,
         &crate::prefill::Cancellation::new(),
         reuse_prefix,
+        crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS,
+        None,
     )
     .await
     .expect("prefill");

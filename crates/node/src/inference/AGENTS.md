@@ -102,9 +102,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do
   `llama-cpp-sys-2` (o `wrapper.h` dele só inclui `llama.h`). Compilada pelo
   `crates/node/build.rs`.
-- `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
-  `step_speculative`, as duas formas de resposta da especulação, traço de fases
-  por requisição. `Cancellation` cancela a operação do gateway quando o
+- `prefill.rs` - `run_with_options` (hub) / `run_ring` (anel) / `run_direct`
+  (direto), `step_speculative`, as duas formas de resposta da especulação, traço
+  de fases por requisição. `Cancellation` cancela a operação do gateway quando o
   consumidor desaparece, antes do próximo chunk ou hop e também durante a
   espera HTTP; um frame já aceito pelo peer não recebe um novo header de fio.
   O prefill de continuação carrega `reuse_prefix` no primeiro chunk e
@@ -121,13 +121,20 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
   não foram reprocessados; `retained_tokens` devolve a fronteira estável que
   ficou na `prompt_seq` e que o gateway confirma no rewind. Hub e resposta
-  direta sobrepõem cálculo e transmissão com `PrefillOverlapWindow`, limitada
-  a 2 pedaços em voo por padrão e configurável por
-  `prefill_max_inflight_chunks`; a janela cancela o par em erro, preserva a
-  ordem e interrompe envios em voo quando o pedido é cancelado. O modo anel
-  continua serializado pelo contrato aninhado. A telemetria também registra
-  `prefix_match_tokens`, `prefix_reuse_status`, `prompt_tokens_transmitted` e
-  transporte por travessia.
+  direta rodam o prefill como um pipeline em ordem: uma bomba da cabeça
+  despacha os pedaços em série e uma bomba de downstream (`FuturesOrdered`)
+  os leva pelos hops restantes, até `W` em voo. `PrefillOverlapWindow` limita
+  por contagem (`prefill_max_inflight_chunks`, efetivo 1..8, padrão 8) e por
+  bytes de estado oculto em RAM no gateway (`INFLIGHT_BYTE_BUDGET`, 512 MiB);
+  o permit de cada limite viaja com o pedaço. A janela cancela as futures em
+  voo no erro ou no cancelamento e preserva a ordem do resultado. Um pedaço
+  `k>0` que falha depois de a cadeia aceitar os anteriores anexa um
+  `PrefillResumable` ao erro, e o gateway retoma do pedaço `k` em vez de
+  reenviar o prompt (sessão perdida vai para o retry frio). O modo anel
+  continua serializado pelo contrato aninhado e ignora a janela. A telemetria
+  também registra `prefix_match_tokens`, `prefix_reuse_status`,
+  `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
+  travessia.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
@@ -627,12 +634,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   da sessão. Mistura de token e hidden state fica em lanes distintas.
 
 `prefill.rs`:
-- `run`/`step` - dispatch em três níveis: `run_direct`/`step_direct` quando
-  `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
-  `supports_relay_chain()`, senão hub.
-- `run_direct` - mesmo loop chunk a chunk do ring, mas cada chunk é despachado
-  **uma vez** para a cabeça com `reply_to`; a cauda entrega o resultado direto
-  ao gateway (`await_result` no ticket). `is_last` é sempre `false` na cabeça
+- `run_with_options`/`step` - dispatch em três níveis: `run_direct`/`step_direct`
+  quando `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
+  `supports_relay_chain()`, senão o pipeline hub. `run_with_options` recebe
+  `max_inflight_chunks` e um `resume: Option<PrefillResumable>` (retomada).
+- hub e `run_direct` - pipeline em ordem, não par travado: `head_pump`
+  (despacho serial à cabeça, lê `next_pos` do ACK) e um `drain` com
+  `FuturesOrdered` que leva cada estado oculto pelos hops restantes, até `W`
+  em voo. `run_direct` despacha cada chunk **uma vez** para a cabeça com
+  `reply_to`; a cauda entrega o resultado direto ao gateway
+  (`await_result_with_ack` no ticket). `is_last` é sempre `false` na cabeça
   (o modo direto exige >= 2 hops).
 - `step_direct` - o gêmeo de decode: uma chamada de saída (para a cabeça), uma
   espera no ticket. É a diferença entre `2N` travessias (anel) e `N+1` (direto),

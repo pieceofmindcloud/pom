@@ -1248,7 +1248,7 @@ async fn generate_stream_inner(
         // este gateway acha que ele guarda; nesse caso a primeira tentativa
         // morre com posições fora de ordem. A segunda vai fria, que é
         // exatamente o comportamento de antes desta funcionalidade existir.
-        let prefill_attempt = |reuse: bool| {
+        let prefill_attempt = |reuse: bool, resume: Option<crate::prefill::PrefillResumable>| {
             crate::prefill::run_with_options(
                 &plan,
                 model,
@@ -1264,26 +1264,45 @@ async fn generate_stream_inner(
                 &cancellation,
                 reuse,
                 max_inflight_chunks,
+                resume,
             )
         };
-        let mut prefill_result = prefill_attempt(reuse_prefix).await;
+        let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
         let mut unknown_session_recovery_attempted = false;
         if let Err(e) = &prefill_result {
-            let unknown_session = crate::relay::is_unknown_session_error(e);
+            let original_unknown_session = crate::relay::is_unknown_session_error(e);
             if crate::relay::is_frame_size_error(e) {
                 warn!(
                     "prefill falhou por limite de frame ({e}); \
                      não é recuperável repetindo o mesmo chunk"
                 );
-            } else if !crate::prefill::is_cancelled(e)
-                && (reuse_prefix || unknown_session)
-            {
-                unknown_session_recovery_attempted = unknown_session;
-                warn!(
-                    "prefill falhou com estado de sessão incompatível ({e}); \
-                     reconstruindo o prefill inteiro a frio uma vez"
-                );
-                prefill_result = prefill_attempt(false).await;
+            } else if !crate::prefill::is_cancelled(e) {
+                // 1ª recuperação: retomar do pedaço que falhou. Os peers refazem
+                // o próprio KV a partir daquela posição; nada do prompt já
+                // ingerido volta pela rede.
+                if let Some(rp) = crate::prefill::resume_point(e) {
+                    warn!(
+                        "prefill falhou no pedaço {} ({e}); retomando da posição {}",
+                        rp.from_chunk, rp.start_pos
+                    );
+                    prefill_result = prefill_attempt(reuse_prefix, Some(rp)).await;
+                }
+                // 2ª recuperação: refazer o prefill inteiro a frio, uma vez -
+                // é o comportamento de antes destas funcionalidades. Cobre o
+                // motor recorrente que recusa recuar o KV e a sessão que o peer
+                // perdeu.
+                if let Err(e2) = &prefill_result {
+                    let unknown_session =
+                        original_unknown_session || crate::relay::is_unknown_session_error(e2);
+                    if reuse_prefix || unknown_session {
+                        unknown_session_recovery_attempted = unknown_session;
+                        warn!(
+                            "prefill falhou com estado de sessão incompatível ({e2}); \
+                             reconstruindo o prefill inteiro a frio uma vez"
+                        );
+                        prefill_result = prefill_attempt(false, None).await;
+                    }
+                }
             }
         }
         let first = match prefill_result {

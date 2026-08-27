@@ -352,27 +352,47 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
   libera as sessões dos peers alcançados.
 
-**Sobreposição H1.** Nos caminhos hub e resposta direta, quando há mais de um
-hop, o gateway calcula o pedaço seguinte enquanto o estado oculto do pedaço
-atual atravessa os hops. `PrefillOverlapWindow` limita a dois pedaços em voo
-por requisição por padrão, preserva a ordem dos resultados e aceita
-`prefill_max_inflight_chunks` em `pom.json` ou `--prefill-max-inflight-chunks`.
-O valor efetivo é limitado a 1 ou 2: 1 desliga a sobreposição e 2 é a janela
-atual máxima. Uma falha cancela o par inteiro e uma desconexão do cliente
-interrompe as duas operações; no modo direto, uma sequência UUID e uma fila
-por peer também impedem que um repasse posterior chegue antes do anterior.
-No modo direto, o ACK da cabeça carrega a decisão de chunking dentro de
-`prompt_progress`; o gateway lê dali o `next_pos` absoluto para despachar o
-próximo chunk em voo. A posição nunca é inferida pela ordem de conclusão ou
-chegada dos pedidos.
-O modo anel permanece serializado pelo contrato de resposta aninhada, para não
-abrir uma segunda requisição na mesma sessão sem a confirmação da anterior.
+**Pipeline de prefill (H1).** Nos caminhos hub e resposta direta, quando há
+mais de um hop, o prefill roda como um pipeline em ordem, não como um par
+travado. Duas rotinas concorrentes na mesma task do gateway (`prefill.rs`,
+`run`/`run_direct`): a **bomba da cabeça** despacha os pedaços em série - cada
+um é uma perna de rede + o decode da cabeça - e a **bomba de downstream** leva
+cada estado oculto pelos hops restantes, mantendo até `W` pedaços em voo ao
+mesmo tempo e colhendo os resultados na ordem de envio (`FuturesOrdered`). É
+isso que mantém todos os enlaces e todas as GPUs ocupados em paralelo, em vez
+de um estágio só.
 
-H1 reduz o tempo até o primeiro token ao esconder parte da transmissão atrás
-de cálculo que já aconteceria. Ela **não reduz os bytes**: os 126 MB de um
-prompt de 30.000 tokens continuam atravessando cada fronteira. O ganho esperado
-é aproximadamente `max(cálculo, transmissão)`, não uma compressão ou economia
-de rede.
+`PrefillOverlapWindow` impõe dois limites: a **contagem** de pedaços em voo
+(`prefill_max_inflight_chunks` em `pom.json` ou `--prefill-max-inflight-chunks`,
+efetivo entre 1 e 8, padrão 8; 1 desliga a sobreposição) e um **orçamento de
+bytes** de estado oculto em RAM no gateway (`INFLIGHT_BYTE_BUDGET`, 512 MiB
+fixo, que só morde com `n_embd` grande ou janela alta). O permit de cada limite
+viaja com o pedaço e só é solto quando o downstream dele termina. Uma falha ou
+a desconexão do cliente cancela as futures em voo; no modo direto, uma
+sequência UUID e uma fila por peer (`DirectForwardSequence`) mantêm o repasse
+hop a hop em ordem. O ACK da cabeça carrega o `next_pos` absoluto dentro de
+`prompt_progress`, e é dali que a bomba da cabeça despacha o pedaço seguinte
+sem esperar o resultado do anterior. A posição nunca é inferida pela ordem de
+conclusão ou chegada.
+
+**Retomada.** Se um pedaço `k > 0` falha depois de a cadeia já ter aceitado os
+anteriores, o erro carrega um `PrefillResumable { from_chunk, start_pos, ... }`
+e o gateway repete o prefill **a partir de `k`** em vez de reenviar o prompt
+inteiro: cada peer refaz o próprio KV pela reentrada de pedaço que
+`prefill_blocking` já trata (`kv_remove` da cauda; motor recorrente que recusa
+cai no retry frio total, que continua sendo a segunda recuperação). Sessão
+perdida no peer não é retomável - vai direto para o retry frio.
+
+O modo anel permanece serializado pelo contrato de resposta aninhada, para não
+abrir uma segunda requisição na mesma sessão sem a confirmação da anterior; ele
+ignora a janela.
+
+H1 aproxima o prefill do regime limitado por transmissão: com `K` pedaços e o
+pipeline cheio, o tempo tende a `K · max(perna, cálculo)` mais o enchimento, em
+vez de `K · (pernas + cálculo)`. Ela **não reduz os bytes**: os 126 MB de um
+prompt de 30.000 tokens continuam atravessando cada fronteira. O trace publica
+`prefill_pipeline_depth_max`, `prefill_overlapped_chunks` e
+`prefill_max_inflight_chunks`.
 
 ### 3.1 Cache de prefixo entre turnos
 

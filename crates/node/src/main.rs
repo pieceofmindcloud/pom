@@ -255,8 +255,9 @@ struct Args {
     #[arg(long, default_value = "512")]
     prefill_chunk_tokens: u32,
 
-    /// Máximo de pedaços do prefill em voo durante a sobreposição.
-    #[arg(long, default_value = "2")]
+    /// Profundidade do pipeline de prefill: pedaços mantidos em voo pela cadeia
+    /// ao mesmo tempo. Efetivo entre 1 (sem sobreposição) e 8.
+    #[arg(long, default_value = "8")]
     prefill_max_inflight_chunks: u32,
 
     /// Predição multi-token pelo bloco `nextn` do modelo (MTP), quando ele

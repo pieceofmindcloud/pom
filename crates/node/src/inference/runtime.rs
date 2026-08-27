@@ -117,9 +117,10 @@ pub struct NodeConfig {
     /// Prompt tokens pushed through the pipeline per round trip.
     #[serde(default = "default_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
-    /// Máximo de pedaços de prefill mantidos em voo durante a sobreposição.
-    /// O runtime limita o valor efetivo a dois para conter memória em enlaces
-    /// lentos; dois é o padrão que habilita uma etapa de lookahead segura.
+    /// Profundidade do pipeline de prefill: pedaços mantidos em voo pela cadeia
+    /// ao mesmo tempo. O runtime limita o valor efetivo a oito e a um orçamento
+    /// de bytes de estado oculto; oito é o padrão, que enche o pipeline num
+    /// cluster de poucos hops. Um desliga a sobreposição.
     #[serde(default = "default_prefill_max_inflight_chunks")]
     pub prefill_max_inflight_chunks: u32,
     pub max_new_tokens: u32,

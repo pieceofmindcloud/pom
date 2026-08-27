@@ -280,6 +280,17 @@ pub(crate) struct CudaHeterogeneousTensor {
     pub secondary_input_scale: f32,
 }
 
+const _: () = {
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, data) == 0);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, bytes) == 8);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, dtype) == 16);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, scale) == 20);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, input_scale) == 24);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_scale) == 28);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_input_scale) == 32);
+    assert!(std::mem::size_of::<CudaHeterogeneousTensor>() == 40);
+};
+
 impl Default for CudaHeterogeneousTensor {
     fn default() -> Self {
         Self {

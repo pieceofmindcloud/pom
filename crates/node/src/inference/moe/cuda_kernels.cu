@@ -63,7 +63,21 @@ struct CudaHeterogeneousExpert {
     CudaHeterogeneousTensor down;
 };
 
-static_assert(sizeof(CudaHeterogeneousTensor) == 32,
+static_assert(offsetof(CudaHeterogeneousTensor, data) == 0,
+    "CudaHeterogeneousTensor.data ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, bytes) == 8,
+    "CudaHeterogeneousTensor.bytes ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, dtype) == 16,
+    "CudaHeterogeneousTensor.dtype ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, scale) == 20,
+    "CudaHeterogeneousTensor.scale ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, input_scale) == 24,
+    "CudaHeterogeneousTensor.input_scale ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, secondary_scale) == 28,
+    "CudaHeterogeneousTensor.secondary_scale ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, secondary_input_scale) == 32,
+    "CudaHeterogeneousTensor.secondary_input_scale ABI offset differs from Rust");
+static_assert(sizeof(CudaHeterogeneousTensor) == 40,
     "CudaHeterogeneousTensor ABI must match its Rust descriptor");
 
 using Clock = std::chrono::steady_clock;

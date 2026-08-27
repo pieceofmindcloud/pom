@@ -240,6 +240,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   também publica `runtime_forward_ms`, `host_batch_prepare_ms`,
   `host_result_copy_ms` e `host_aggregation_ms` para fechar a conta do forward
   MoE sem somar relógios sobrepostos.
+  Alterações em `cuda_kernels.cu` só são validadas com compilação CUDA na
+  máquina que tem `nvcc`; compilar o crate Rust no macOS não compila esse
+  arquivo. O descriptor `CudaHeterogeneousTensor` mantém offsets ABI
+  explícitos para `data`, `bytes`, `dtype`, `scale`, `input_scale`,
+  `secondary_scale` e `secondary_input_scale`, além de asserções de offset e
+  tamanho nas duas pontas.
   A descompactação NVFP4 e K-quant ainda ocorre no kernel a cada uso, mas os bytes quantizados
   do expert ficam residentes no device entre usos quando a ponte CUDA e o
   orçamento medido permitem. O cache frio de RAM e o cache quente de device têm

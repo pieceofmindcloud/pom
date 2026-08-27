@@ -1023,6 +1023,13 @@ escalares finitos, carregados no payload/descriptor e aplicados nos produtos
 gate, up e down. O tensor compartilhado `ffn_*_shexp` continua fora desse
 inventário.
 
+O descriptor CUDA heterogêneo é uma estrutura C compatível com `#[repr(C)]`:
+`data` fica no offset 0, `bytes` no 8, `dtype` no 16, `scale` no 20,
+`input_scale` no 24, `secondary_scale` no 28 e `secondary_input_scale` no 32;
+o tamanho final é 40 bytes. Asserções de offset e tamanho existem no Rust e no
+`cuda_kernels.cu`. Essa parte não é coberta pela compilação local no macOS:
+qualquer mudança no kernel precisa de build com `nvcc` na ksia.
+
 O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los.
 Como esses buffers cruzam do backend que calcula top-k/gather para o custom op
 CPU, o stride aparentemente contíguo não prova que a alocação do produtor já

@@ -257,12 +257,16 @@ codificação em trânsito. Formato:
 ### Forma do residual e custo por token
 
 O residual capturado não é assumido como uma matriz de duas dimensões. A
-captura encontra, pela forma física do tensor e pela metadata do modelo, o eixo
-de tokens depois da largura `n_embd_inp`; todos os eixos anteriores são
-preservados. O wire normaliza isso para `[tokens, features...]`, e o receptor
-valida que a primeira dimensão é o número de tokens, a segunda é `n_embd` e o
-produto das dimensões restantes é `n_embd_inp`. Geometria ou stride que não
-fecha essa regra é recusado com o shape no erro.
+captura encontra, pela quantidade conhecida de tokens do microlote físico e
+pela forma do tensor, o eixo de tokens. `n_embd_inp` descreve a largura do
+hidden state de entrada e não é usado para localizar esse eixo: em arquiteturas
+com fluxos, as features anteriores podem fazer o produto ultrapassar essa
+largura. Todos os eixos anteriores ao eixo de tokens são preservados na ordem
+física. O wire normaliza isso para `[tokens, features...]`. Dimensões posteriores
+maiores que 1 são recusadas; dimensões posteriores iguais a 1 são ignoradas.
+Se mais de um eixo tiver a contagem de tokens, o menor eixo que também fecha os
+strides contíguos é escolhido de forma determinística. Geometria ou stride que
+não fecha essa regra é recusado com o shape no erro.
 
 Quando existe uma dimensão de fluxo extra, o residual precisa carregar cada
 fluxo. Não há uma fronteira genérica em que uma largura `n_embd` combinada seja

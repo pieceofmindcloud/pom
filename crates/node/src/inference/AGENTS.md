@@ -71,11 +71,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
-  A captura identifica o eixo de tokens pela forma física e pela metadata
-  `n_embd`/`n_embd_inp`, preserva todos os eixos de features e publica o shape
-  canônico `[tokens, features...]`; a acumulação continua anexando microlotes
-  na ordem produzida com `kv_unified=true`. Shape ou stride que não fecha essa
-  geometria é recusado com diagnóstico explícito.
+  A captura identifica o eixo de tokens pela quantidade conhecida de tokens do
+  microlote físico e pela forma do tensor. `n_embd_inp` valida o hidden state de
+  entrada, mas não participa dessa identificação: todos os eixos anteriores ao
+  eixo de tokens são features e são preservados na ordem física, publicando o
+  shape canônico `[tokens, features...]`. Eixos posteriores maiores que 1 são
+  recusados e eixos posteriores singleton são ignorados. Se mais de um eixo
+  ainda for candidato, o menor eixo que fecha os strides contíguos é escolhido
+  deterministicamente. A acumulação continua anexando microlotes na ordem
+  produzida com `kv_unified=true`. Shape ou stride que não fecha essa geometria
+  é recusado com diagnóstico explícito.
   `decode_tokens_batch` e `decode_hidden_batch`
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.
@@ -589,14 +594,20 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   copiado. Quando `llama_model_n_embd_out` diverge de `llama_model_n_embd`,
   `cparams.embeddings` fica desligado para impedir que a cópia genérica do
   llama.cpp peça mais bytes que o tensor real; o callback continua sendo a
-  saída usada pelo POM. `accumulate_capture` junta um disparo por **microlote**: o llama.cpp
-  parte o lote em pedaços de `n_ubatch` e chama a captura uma vez por pedaço,
-  então substituir em vez de acumular guardava só o último - com
-  `fit_memory=true` (padrão, `n_ubatch` limitado a 128), um chunk de 512 tokens
-  perdia 3/4 e o peer seguinte recusava com "got 655360 floats, expected
-  2621440". Todo caminho de decode chama `reset_capture_slot` antes, senão a
-  sobra de uma requisição entraria concatenada na próxima. A ordem depende do
-  `split_simple` - ver Defeitos anotados.
+  saída usada pelo POM. O eixo de tokens é localizado pela contagem conhecida
+  do microlote atual e pela forma física, nunca pelo produto até
+  `n_embd_inp`; assim, eixos de fluxo ou outras features anteriores são
+  preservados. Depois do eixo, dimensões maiores que 1 são recusadas e
+  dimensões 1 são ignoradas; em caso ambíguo, o menor eixo fisicamente contíguo
+  vence de forma determinística. `accumulate_capture` junta um disparo por
+  **microlote**: o llama.cpp parte o lote em pedaços de `n_ubatch` e chama a
+  captura uma vez por pedaço, então substituir em vez de acumular guardava só o
+  último - com `fit_memory=true` (padrão, `n_ubatch` limitado a 128), um chunk de
+  512 tokens perdia 3/4 e o peer seguinte recusava com "got 655360 floats,
+  expected 2621440". Todo caminho de decode chama `reset_capture_slot` antes,
+  senão a sobra de uma requisição entraria concatenada na próxima. A ordem
+  depende do `split_simple` - ver Defeitos anotados, e `kv_unified=true` mantém
+  essa ordem para o transporte do residual.
 - `profile_backend_sync_enabled` - perfil do backend síncrono, `POM_PROFILE_SYNC`
   (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
   `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os

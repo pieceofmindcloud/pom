@@ -20,6 +20,12 @@
 //! output tensor. The callback remains the only embedding-like output used by
 //! the POM in that case.
 //!
+//! The callback identifies the token axis from the known token count of the
+//! current physical microbatch and the tensor shape. It never uses
+//! `n_embd_inp` to find that axis: dimensions before it are features and are
+//! preserved in their physical order. Trailing singleton dimensions are
+//! ignored, while trailing dimensions greater than one are rejected.
+//!
 //! The callback is an `extern "C"` fn with no closure environment, so the
 //! capture state travels in llama.cpp's own `cb_eval_user_data`: each context
 //! owns a `CaptureSlot` and the callback is handed its address. It used to be
@@ -57,8 +63,8 @@ struct CaptureSlot {
     want: Option<CString>,
     buf: Option<Vec<f32>>,
     expected_tokens: usize,
+    max_microbatch_tokens: usize,
     n_embd: usize,
-    input_width: usize,
     expected_floats: Option<usize>,
     layout: Option<ResidualCaptureLayout>,
     error: Option<String>,
@@ -1117,11 +1123,11 @@ fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
 fn residual_capture_layout(
     tensor_shape: [i64; 4],
     tensor_strides: [usize; 4],
+    n_tokens: usize,
     n_embd: usize,
-    input_width: usize,
 ) -> Result<ResidualCaptureLayout> {
-    if input_width == 0 {
-        bail!("residual capture: metadata de largura de entrada vazia");
+    if n_tokens == 0 {
+        bail!("residual capture: quantidade de tokens vazia");
     }
     let dims = tensor_shape
         .into_iter()
@@ -1138,58 +1144,115 @@ fn residual_capture_layout(
         );
     }
 
-    let mut feature_width = 1usize;
+    let mut saw_token_axis = false;
+    let mut saw_unsupported_trailing = false;
+    let mut saw_invalid_stride = false;
     for token_axis in 1..dims.len() {
-        feature_width = feature_width
-            .checked_mul(dims[token_axis - 1])
-            .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
-        if feature_width != input_width {
+        if dims[token_axis] != n_tokens {
             continue;
         }
+        saw_token_axis = true;
         if dims[token_axis + 1..].iter().any(|&dim| dim > 1) {
-            bail!(
-                "residual capture: shape {:?} tem dimensões posteriores ao eixo de tokens não suportadas",
-                tensor_shape
-            );
+            saw_unsupported_trailing = true;
+            continue;
         }
-        let expected_stride = input_width
+        let feature_width = dims[..token_axis]
+            .iter()
+            .try_fold(1usize, |width, &dimension| width.checked_mul(dimension))
+            .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+        let expected_stride = feature_width
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| anyhow::anyhow!("residual capture: stride excede o limite"))?;
         if tensor_strides[token_axis] != expected_stride {
-            bail!(
-                "residual capture: shape {:?} não é contígua por token (stride {} != {})",
-                tensor_shape,
-                tensor_strides[token_axis],
-                expected_stride
-            );
+            saw_invalid_stride = true;
+            continue;
         }
         let mut stride = std::mem::size_of::<f32>();
+        let mut contiguous = true;
         for axis in 0..=token_axis {
             if tensor_strides[axis] != stride {
-                bail!(
-                    "residual capture: shape {:?} tem stride não suportado no eixo {} ({} != {})",
-                    tensor_shape,
-                    axis,
-                    tensor_strides[axis],
-                    stride
-                );
+                contiguous = false;
+                break;
             }
             stride = stride
                 .checked_mul(dims[axis])
                 .ok_or_else(|| anyhow::anyhow!("residual capture: stride excede o limite"))?;
         }
+        if !contiguous {
+            saw_invalid_stride = true;
+            continue;
+        }
+        // The scan is intentionally from low to high axes. When more than one
+        // axis has the token count (most notably a one-token batch), the
+        // lowest axis that satisfies the physical layout wins. This is
+        // deterministic and avoids absorbing trailing singleton dimensions
+        // into the canonical shape.
         return Ok(ResidualCaptureLayout {
             feature_shape: dims[..token_axis].to_vec(),
             token_axis,
         });
     }
 
+    if saw_unsupported_trailing {
+        bail!(
+            "residual capture: shape {:?} tem dimensões posteriores ao eixo de tokens não suportadas",
+            tensor_shape
+        );
+    }
+    if saw_token_axis && saw_invalid_stride {
+        bail!(
+            "residual capture: shape {:?} não é contígua no eixo de tokens {}",
+            tensor_shape,
+            n_tokens
+        );
+    }
     bail!(
-        "residual capture: shape {:?} não expõe a largura de entrada {} após n_embd {}",
+        "residual capture: shape {:?} não expõe o número de tokens {}",
         tensor_shape,
-        input_width,
-        n_embd
+        n_tokens
     )
+}
+
+fn capture_microbatch_tokens(slot: &CaptureSlot) -> Result<usize> {
+    // `expected_tokens` is the batch count supplied by the decode caller. The
+    // callback sees only the tensor, so after the first capture the accumulated
+    // feature rows tell us how many tokens already arrived; the next physical
+    // microbatch is the remaining count capped by `n_ubatch`.
+    if slot.expected_tokens == 0 {
+        bail!("residual capture: quantidade esperada de tokens vazia");
+    }
+    if slot.max_microbatch_tokens == 0 {
+        bail!("residual capture: limite de microlote vazio");
+    }
+    let captured_tokens = match &slot.layout {
+        Some(layout) => {
+            let feature_values = layout
+                .feature_shape
+                .iter()
+                .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+                .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+            if feature_values == 0 {
+                bail!("residual capture: largura de features vazia");
+            }
+            let current = slot.buf.as_ref().map_or(0, Vec::len);
+            if current % feature_values != 0 {
+                bail!(
+                    "residual capture: buffer acumulado de {} floats não fecha a largura de features {}",
+                    current,
+                    feature_values
+                );
+            }
+            current / feature_values
+        }
+        None => 0,
+    };
+    let remaining = slot
+        .expected_tokens
+        .checked_sub(captured_tokens)
+        .ok_or_else(|| {
+            anyhow::anyhow!("residual capture: microlotes excederam o batch esperado")
+        })?;
+    Ok(remaining.min(slot.max_microbatch_tokens))
 }
 
 fn record_capture(
@@ -1199,8 +1262,15 @@ fn record_capture(
     n_bytes: usize,
     floats: Vec<f32>,
 ) -> Result<()> {
+    if let Some(expected) = slot.expected_floats {
+        let current = slot.buf.as_ref().map_or(0, Vec::len);
+        if current >= expected {
+            return Ok(());
+        }
+    }
+    let microbatch_tokens = capture_microbatch_tokens(slot)?;
     let layout =
-        residual_capture_layout(tensor_shape, tensor_strides, slot.n_embd, slot.input_width)?;
+        residual_capture_layout(tensor_shape, tensor_strides, microbatch_tokens, slot.n_embd)?;
     let captured_bytes = floats
         .len()
         .checked_mul(std::mem::size_of::<f32>())
@@ -1229,6 +1299,30 @@ fn record_capture(
             .ok_or_else(|| anyhow::anyhow!("residual capture: tamanho esperado excede o limite"))?;
         slot.expected_floats = Some(expected);
         slot.layout = Some(layout);
+    }
+    let feature_shape = slot
+        .layout
+        .as_ref()
+        .map(|layout| layout.feature_shape.as_slice())
+        .ok_or_else(|| anyhow::anyhow!("residual capture: layout não definido"))?;
+    let feature_values = feature_shape
+        .iter()
+        .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+        .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+    if feature_values == 0 {
+        bail!("residual capture: largura de features vazia");
+    }
+    let expected_microbatch = microbatch_tokens
+        .checked_mul(feature_values)
+        .ok_or_else(|| anyhow::anyhow!("residual capture: tamanho do microlote excede o limite"))?;
+    if floats.len() != expected_microbatch {
+        bail!(
+            "residual capture: microlote tem {} floats, esperado {} para {} tokens e features {:?}",
+            floats.len(),
+            expected_microbatch,
+            microbatch_tokens,
+            feature_shape
+        );
     }
     let expected = slot.expected_floats.unwrap_or(0);
     let current = slot.buf.as_ref().map_or(0, Vec::len);
@@ -2051,8 +2145,8 @@ impl LlmEngine {
             want: None,
             buf: None,
             expected_tokens: 0,
+            max_microbatch_tokens: effective_n_ubatch(cfg) as usize,
             n_embd,
-            input_width: n_embd_inp,
             expected_floats: None,
             layout: None,
             error: None,
@@ -3467,8 +3561,8 @@ mod pool_tests {
             want: None,
             buf: None,
             expected_tokens: 0,
+            max_microbatch_tokens: 0,
             n_embd: 0,
-            input_width: 0,
             expected_floats: None,
             layout: None,
             error: None,
@@ -3509,8 +3603,8 @@ mod pool_tests {
             want: None,
             buf: None,
             expected_tokens: 0,
+            max_microbatch_tokens: 0,
             n_embd: 0,
-            input_width: 0,
             expected_floats: None,
             layout: None,
             error: None,
@@ -3531,8 +3625,8 @@ mod pool_tests {
             want: None,
             buf: None,
             expected_tokens: 1,
+            max_microbatch_tokens: 1,
             n_embd: 4,
-            input_width: 4,
             expected_floats: Some(4),
             layout: None,
             error: None,
@@ -3551,14 +3645,14 @@ mod pool_tests {
     fn capture_slot_for_test(
         expected_tokens: usize,
         n_embd: usize,
-        input_width: usize,
+        max_microbatch_tokens: usize,
     ) -> CaptureSlot {
         CaptureSlot {
             want: None,
             buf: None,
             expected_tokens,
+            max_microbatch_tokens,
             n_embd,
-            input_width,
             expected_floats: None,
             layout: None,
             error: None,
@@ -3629,27 +3723,27 @@ mod pool_tests {
 
     #[test]
     fn residual_capture_preserves_extra_stream_dimensions() {
-        let mut slot = capture_slot_for_test(13, 4096, 16_384);
-        let values = (0..(13 * 4096 * 4))
+        let mut slot = capture_slot_for_test(11, 4096, 4096);
+        let values = (0..(11 * 4096 * 4))
             .map(|value| value as f32)
             .collect::<Vec<_>>();
         record_capture(
             &mut slot,
-            [4096, 4, 13, 1],
-            [4, 16_384, 65_536, 851_968],
+            [4096, 4, 11, 1],
+            [4, 16_384, 65_536, 720_896],
             values.len() * 4,
             values.clone(),
         )
         .unwrap();
 
         let captured = take_captured_residual(&mut slot).unwrap();
-        assert_eq!(captured.shape, vec![13, 4096, 4]);
+        assert_eq!(captured.shape, vec![11, 4096, 4]);
         assert_eq!(captured.values, values);
     }
 
     #[test]
     fn residual_capture_accumulates_extra_dimensions_in_microbatch_order() {
-        let mut slot = capture_slot_for_test(5, 4, 8);
+        let mut slot = capture_slot_for_test(5, 4, 2);
         record_capture(
             &mut slot,
             [4, 2, 2, 1],
@@ -3660,19 +3754,24 @@ mod pool_tests {
         .unwrap();
         record_capture(
             &mut slot,
-            [4, 2, 3, 1],
-            [4, 16, 32, 96],
-            3 * 8 * 4,
-            (100..124).map(|value| value as f32).collect(),
+            [4, 2, 2, 1],
+            [4, 16, 32, 64],
+            2 * 8 * 4,
+            (16..32).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+        record_capture(
+            &mut slot,
+            [4, 2, 1, 1],
+            [4, 16, 32, 32],
+            8 * 4,
+            (32..40).map(|value| value as f32).collect(),
         )
         .unwrap();
 
         let captured = take_captured_residual(&mut slot).unwrap();
         assert_eq!(captured.shape, vec![5, 4, 2]);
-        let expected = (0..16)
-            .map(|value| value as f32)
-            .chain((100..124).map(|value| value as f32))
-            .collect::<Vec<_>>();
+        let expected = (0..40).map(|value| value as f32).collect::<Vec<_>>();
         assert_eq!(captured.values, expected);
     }
 
@@ -3695,21 +3794,57 @@ mod pool_tests {
     }
 
     #[test]
-    fn residual_capture_does_not_ignore_an_internal_singleton_before_tokens() {
+    fn residual_capture_preserves_an_internal_singleton_before_tokens() {
         let mut slot = capture_slot_for_test(2, 4, 4);
-        let error = record_capture(
+        record_capture(
             &mut slot,
             [4, 1, 2, 1],
             [4, 16, 16, 32],
             2 * 4 * 4,
             vec![0.0; 2 * 4],
         )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            error.contains("dimensões posteriores"),
-            "erro inesperado: {error}"
-        );
+        .unwrap();
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![2, 4, 1]);
+        assert_eq!(captured.values, vec![0.0; 2 * 4]);
+    }
+
+    #[test]
+    fn residual_capture_does_not_use_n_embd_in_to_find_the_token_axis() {
+        // The surrounding model may have n_embd=4 and n_embd_inp=8. The
+        // residual is still identified from its physical shape and token
+        // count, not from that input-only metadata.
+        let mut slot = capture_slot_for_test(3, 4, 3);
+        let values = (0..12).map(|value| value as f32).collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [4, 3, 1, 1],
+            [4, 16, 48, 48],
+            values.len() * 4,
+            values.clone(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![3, 4]);
+        assert_eq!(captured.values, values);
+    }
+
+    #[test]
+    fn residual_capture_resolves_ambiguous_single_token_axis_deterministically() {
+        let mut slot = capture_slot_for_test(1, 4, 1);
+        record_capture(
+            &mut slot,
+            [4, 1, 1, 1],
+            [4, 16, 16, 16],
+            4 * 4,
+            vec![1.0, 2.0, 3.0, 4.0],
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![1, 4]);
+        assert_eq!(captured.values, vec![1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]

@@ -296,19 +296,30 @@ prova física desse GGUF ainda não foi executada neste worktree, portanto a
 telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
 Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute
-o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. Cada entrada do callback ganha uma
-linha `callback_entry` como primeira ação, antes das validações. Ela registra
-os ponteiros e contagens crus; cada retorno `false` ganha ainda uma linha
+o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. Cada entrada do callback ganha
+duas linhas adjacentes, `callback_entry_default` no target padrão e
+`callback_entry` no target `moe.route_diagnostic`, como primeira ação, antes
+das validações. A dupla testa o sink e um eventual filtro por target no mesmo
+ponto do callback. Ambas registram os ponteiros e contagens crus; cada retorno
+`false` ganha ainda uma linha
 `callback_exit` com o motivo do caminho que abortou, inclusive argumentos
 nulos, geometria, normalização, metadata e forward. A primeira chamada de cada
 requisição e qualquer rota não finita ganham a amostra detalhada, sem depender
-do índice da camada. Ela registra valores crus de token 0, slot e deslocamento expert-major,
-ponteiros e bytes das regiões lidas, quantidade de elementos declarada pelo
+do índice da camada. Ela registra valores crus de token 0, slot e deslocamento
+na ordem token-major, ponteiros e bytes das regiões lidas, quantidade de
+elementos declarada pelo
 llama.cpp versus esperada pelo POM, dtypes da metadata de gate/up/down e os
 dtypes assumidos nos argumentos do callback. Depois da normalização, registra
 novamente a amostra e as contagens de NaN. A variável é opt-in, fica desligada
 por padrão e não altera a execução; ainda não há resultado de campo registrado
 para essa medição.
+
+O callback do `llama.cpp` recebe a rota na ordem token-major que resulta do
+`ggml_get_rows` com dimensões `[1, experts_usados, tokens]`: slot é o índice
+mais rápido dentro de cada token. A normalização Rust valida e preserva essa
+ordem, sem transposição. O teste unitário
+`llm::moe_route_tests::rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major`
+fixa o contrato contra a sequência física produzida pelo builder C++.
 
 As mensagens `resolve_fused_ops: ... enabled` não provam que uma operação
 fundida foi usada: a sonda também imprime `enabled` quando não encontra nenhum

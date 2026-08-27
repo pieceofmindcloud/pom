@@ -217,19 +217,27 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
   política do cache.
   Para investigar a origem de uma rota inválida, `POM_MOE_ROUTE_DIAGNOSTICS=1`
-  habilita a linha `callback_entry` como primeira ação do callback, antes de
-  qualquer validação e sem filtro de camada. Essa linha registra os ponteiros
-  e contagens crus recebidos. Todo retorno `false` também emite
+  habilita duas linhas adjacentes, `callback_entry_default` no target padrão e
+  `callback_entry` no target `moe.route_diagnostic`, como primeira ação do
+  callback, antes de qualquer validação e sem filtro de camada. A dupla existe
+  para provar no mesmo ponto se o evento chega ao sink e se um filtro por target
+  o remove. Ambas registram os ponteiros e contagens crus recebidos. Todo
+  retorno `false` também emite
   `callback_exit` com o motivo estável do caminho que abortou, inclusive
   argumentos nulos, geometria, normalização, metadata e forward. A primeira
   chamada de cada requisição recebe a amostra detalhada;
   qualquer chamada com rota não finita também recebe essa amostra, mesmo que
   outra já tenha sido registrada. O log registra os valores crus de token 0 e
-  seus deslocamentos na rota expert-major, contagens declaradas pelo llama.cpp
-  e esperadas pelo POM, endereços e bytes lidos, dtypes da metadata de cada
-  tensor e os dtypes assumidos pelos argumentos do callback. Também registra a
+  seus deslocamentos na ordem token-major produzida por `ggml_get_rows`,
+  contagens declaradas pelo llama.cpp e esperadas pelo POM, endereços e bytes
+  lidos, dtypes da metadata de cada tensor e os dtypes assumidos pelos
+  argumentos do callback. Também registra a
   mesma amostra depois da normalização Rust. Sem a variável, o instrumento fica
-  desligado e não altera o caminho de execução.
+  desligado e não altera o caminho de execução. A normalização valida e
+  preserva essa ordem; não deve transpor a rota novamente. O teste ignorado
+  `llm::moe_route_tests::callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink`
+  executa o callback real com o mesmo `EnvFilter` do processo e deve ser rodado
+  com `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
   acumulação inteira por subbloco NVFP4 e decodificação direta dos superblocos
   Q4_K/Q6_K com SiLU no caminho K. O

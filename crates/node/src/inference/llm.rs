@@ -98,7 +98,7 @@ fn collect_moe_route_diagnostic(
     } else {
         (0..expert_count_used.min(4))
             .filter_map(|slot| {
-                let source_offset_elements = slot.checked_mul(n_tokens)?;
+                let source_offset_elements = slot;
                 Some(MoeRouteDiagnosticSample {
                     slot,
                     source_offset_elements,
@@ -198,6 +198,15 @@ fn log_moe_callback_entry(
     hidden_width: usize,
     output: *mut f32,
 ) {
+    tracing::warn!(
+        "POM_MOE_ROUTE_DIAGNOSTICS callback_entry_default raw_args=1 descriptor_ptr={:p} user_data_ptr={:p} hidden_ptr={:p} selected_ptr={:p} weights_ptr={:p} output_ptr={:p} n_tokens={n_tokens} hidden_width={hidden_width}",
+        descriptor,
+        user_data,
+        hidden,
+        selected_experts,
+        weights,
+        output,
+    );
     tracing::warn!(
         target: "moe.route_diagnostic",
         "POM_MOE_ROUTE_DIAGNOSTICS callback_entry raw_args=1 descriptor_ptr={:p} user_data_ptr={:p} hidden_ptr={:p} selected_ptr={:p} weights_ptr={:p} output_ptr={:p} n_tokens={n_tokens} hidden_width={hidden_width}",
@@ -649,25 +658,24 @@ fn normalize_moe_route(
 
     let mut selected = Vec::with_capacity(expected);
     let mut normalized = Vec::with_capacity(expected);
-    for token in 0..n_tokens {
-        for slot in 0..expert_count_used {
-            let source = slot * n_tokens + token;
-            let expert = selected_experts[source];
-            if expert < 0 {
-                bail!(
-                    "tensor ffn_moe_selected_experts da arquitetura {architecture}, camada {layer}, token {token}, slot {slot} tem expert negativo {expert}"
-                );
-            }
-            let weight = weights[source];
-            if !weight.is_finite() {
-                let kind = if weight.is_nan() { "NaN" } else { "infinito" };
-                bail!(
-                    "tensor ffn_moe_weights da arquitetura {architecture}, camada {layer}, token {token}, slot {slot}, expert {expert} tem valor não finito ({kind})"
-                );
-            }
-            selected.push(expert);
-            normalized.push(weight);
+    for source in 0..expected {
+        let token = source / expert_count_used;
+        let slot = source % expert_count_used;
+        let expert = selected_experts[source];
+        if expert < 0 {
+            bail!(
+                "tensor ffn_moe_selected_experts da arquitetura {architecture}, camada {layer}, token {token}, slot {slot} tem expert negativo {expert}"
+            );
         }
+        let weight = weights[source];
+        if !weight.is_finite() {
+            let kind = if weight.is_nan() { "NaN" } else { "infinito" };
+            bail!(
+                "tensor ffn_moe_weights da arquitetura {architecture}, camada {layer}, token {token}, slot {slot}, expert {expert} tem valor não finito ({kind})"
+            );
+        }
+        selected.push(expert);
+        normalized.push(weight);
     }
     Ok((selected, normalized))
 }
@@ -677,15 +685,19 @@ mod moe_route_tests {
     use super::*;
 
     #[test]
-    fn rota_do_llama_cpp_expert_major_vira_token_major() {
-        let selected_experts = [10, 11, 12, 20, 21, 22];
-        let weights = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+    fn rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major() {
+        // `ggml_get_rows` writes the [1, used, tokens] result with slot as
+        // the fastest-changing dimension. After the C++ reshape to
+        // [used, tokens], the callback therefore receives
+        // [token0/slot0, token0/slot1, token1/slot0, ...].
+        let selected_experts = [10, 20, 11, 21, 12, 22];
+        let weights = [0.1, 0.4, 0.2, 0.5, 0.3, 0.6];
 
         let (selected, normalized) =
             normalize_moe_route("qwen35moe", 7, &selected_experts, &weights, 3, 2).unwrap();
 
-        assert_eq!(selected, vec![10, 20, 11, 21, 12, 22]);
-        assert_eq!(normalized, vec![0.1, 0.4, 0.2, 0.5, 0.3, 0.6]);
+        assert_eq!(selected, selected_experts);
+        assert_eq!(normalized, weights);
     }
 
     #[test]
@@ -704,8 +716,8 @@ mod moe_route_tests {
 
     #[test]
     fn diagnostico_da_rota_registra_entrada_bruta_e_layout_de_token_zero() {
-        let selected_experts = [10, 11, 12, 20, 21, 22];
-        let weights = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let selected_experts = [10, 20, 11, 21, 12, 22];
+        let weights = [0.1, 0.4, 0.2, 0.5, 0.3, 0.6];
 
         let diagnostic = collect_moe_route_diagnostic(&selected_experts, &weights, 3, 2);
 
@@ -724,7 +736,7 @@ mod moe_route_tests {
                 },
                 MoeRouteDiagnosticSample {
                     slot: 1,
-                    source_offset_elements: 3,
+                    source_offset_elements: 1,
                     expert: 20,
                     weight: 0.4,
                 },
@@ -760,6 +772,70 @@ mod moe_route_tests {
         );
         assert_eq!(diagnostic.n_tokens, 7);
         assert_eq!(diagnostic.hidden_width, 4096);
+    }
+
+    #[derive(Clone)]
+    struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("writer mutex poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogWriter {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    #[ignore = "prova do callback requer POM_MOE_ROUTE_DIAGNOSTICS=1"]
+    fn callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(SharedLogWriter(bytes.clone()))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let accepted = unsafe {
+                moe_ffn_callback(
+                    ptr::null_mut(),
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    1,
+                    4096,
+                    ptr::null_mut(),
+                )
+            };
+            assert!(!accepted);
+        });
+
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("callback_entry_default"), "{output}");
+        assert!(output.contains("callback_entry raw_args=1"), "{output}");
+        assert!(
+            output.contains("callback_exit reason=null_callback_argument"),
+            "{output}"
+        );
     }
 }
 

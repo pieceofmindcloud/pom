@@ -840,6 +840,25 @@ impl GgufLayout {
         layers + self.embedding_bytes + if is_last { self.head_bytes } else { 0 }
     }
 
+    /// Bytes of real architecture-required head tensors repeated in each
+    /// non-final slice. The synthetic identity norm is intentionally excluded:
+    /// this reports the extra source payload an operator must keep on disk.
+    pub fn required_head_bytes(&self) -> u64 {
+        self.serialized
+            .as_ref()
+            .map(|serialized| {
+                serialized
+                    .tensors
+                    .iter()
+                    .filter(|tensor| {
+                        is_required_non_final_tensor(&serialized.architecture, &tensor.name)
+                    })
+                    .map(|tensor| align_up_layout(tensor.bytes))
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
     /// Valida a cabeça arquitetural antes de oferecer ou escrever faixas. O
     /// layout já contém a tensor table completa, então a checagem é barata e
     /// não toca nos payloads dos tensores.
@@ -892,6 +911,17 @@ pub(crate) fn is_output_tensor(architecture: &str, name: &str) -> bool {
         .any(|required| *required == name && *required != "token_embd.weight")
 }
 
+/// Real required tensors copied into every non-final slice. `token_embd` is
+/// selected by the common embedding rule, while `output_norm` keeps the
+/// established synthetic identity used by trunk slices.
+pub(crate) fn is_required_non_final_tensor(architecture: &str, name: &str) -> bool {
+    name != "token_embd.weight"
+        && name != "output_norm.weight"
+        && required_output_tensors(architecture)
+            .iter()
+            .any(|required| *required == name)
+}
+
 /// Verifica o contrato exato do loader para uma fatia candidata.
 pub(crate) fn validate_slice_tensors(
     architecture: &str,
@@ -904,10 +934,18 @@ pub(crate) fn validate_slice_tensors(
     }
 
     if !is_last {
-        bail!(
-            "fatiamento da arquitetura '{architecture}' recusado para faixa não final: o llama.cpp exige os tensores {} em toda instância e não conhece metadados POM de fatia parcial; use uma fatia única ou suporte arquitetural específico",
-            required.join(", ")
-        );
+        let missing: Vec<&str> = required
+            .iter()
+            .copied()
+            .filter(|name| *name != "output_norm.weight" && !tensor_names.contains(name))
+            .collect();
+        if !missing.is_empty() {
+            bail!(
+                "fatiamento da arquitetura '{architecture}' recusado para faixa não final: não foi possível copiar da origem os tensores obrigatórios {}",
+                missing.join(", ")
+            );
+        }
+        return Ok(());
     }
 
     let missing: Vec<&str> = required
@@ -972,6 +1010,7 @@ fn layout_wants_tensor(
     }
     match name {
         "token_embd.weight" => true,
+        _ if is_required_non_final_tensor(architecture, name) => true,
         _ if is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
         _ => false,

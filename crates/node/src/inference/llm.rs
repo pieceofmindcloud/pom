@@ -10,7 +10,10 @@
 //! enters the next block's attention) to its successor. `llama_get_embeddings_ith`
 //! returns the post-output_norm value instead, so we install a
 //! `ggml_backend_sched_eval_callback` that fires when the last block's output
-//! tensor (`l_out-<N>`) is computed and copies it before output_norm sees it.
+//! tensor (`l_out-<N>`, or DeepSeek4's equivalent `l_last-<N>`) is computed
+//! and copies it before the output head sees it. The graph keeps running after
+//! the copy, so a required output head may cost compute without changing the
+//! residual already exported to the next peer.
 //!
 //! The callback is an `extern "C"` fn with no closure environment, so the
 //! capture state travels in llama.cpp's own `cb_eval_user_data`: each context
@@ -784,10 +787,11 @@ unsafe extern "C" fn capture_callback(
     if name.is_null() {
         return true;
     }
-    let matches = slot
-        .want
-        .as_deref()
-        .is_some_and(|target| unsafe { CStr::from_ptr(name) } == target);
+    let matches = slot.want.as_deref().is_some_and(|target| {
+        unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .is_ok_and(|name| capture_target_matches(name, target))
+    });
 
     // The two phases mean different things, and the return value means something
     // different in each — see `ggml_backend_sched_compute_splits`:
@@ -833,6 +837,19 @@ unsafe extern "C" fn capture_callback(
     }
     slot.copy_us += copy_started.elapsed().as_micros() as u64;
     true
+}
+
+/// DeepSeek4 names the residual immediately before its output head `l_last-N`;
+/// older llama.cpp graphs and the POM capture API use `l_out-N` for the same
+/// boundary. The target remains `l_out-N` so existing callers keep working.
+fn capture_target_matches(name: &str, target: &CStr) -> bool {
+    let Ok(target) = target.to_str() else {
+        return false;
+    };
+    name == target
+        || target
+            .strip_prefix("l_out-")
+            .is_some_and(|layer| name == format!("l_last-{layer}"))
 }
 
 /// Junta o `l_out` de mais um microlote ao residual deste decode.
@@ -1781,13 +1798,12 @@ impl LlmEngine {
         unsafe { sys::llama_model_n_layer(self.loaded.model) as u32 }
     }
 
-    /// Em qual bloco desta fatia a próxima decodificação deve parar.
+    /// Em qual bloco desta fatia a próxima decodificação deve ser capturada.
     ///
-    /// `None` volta ao normal: captura no último bloco, grafo inteiro. Com
-    /// `Some(k)` a captura passa a mirar `l_out-k`, e o retorno `false` do
-    /// callback na fase de compute **abandona o resto do grafo** - é isso que
-    /// faz a execução ser de fato parcial, e não o grafo inteiro com o
-    /// resultado de um bloco do meio.
+    /// `None` volta ao normal: captura no último bloco. Com `Some(k)` a captura
+    /// passa a mirar `l_out-k`. O callback copia o residual e deixa o restante
+    /// do grafo continuar; isso é necessário para que cabeças obrigatórias
+    /// possam ser executadas sem contaminar o residual exportado.
     ///
     /// Vale só para a próxima decodificação porque quem a chama já segura o
     /// mesmo lock que serializa as decodificações deste contexto.
@@ -3403,6 +3419,15 @@ fn token_sequence_ends_with(tokens: &[i32], suffix: &[i32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_target_accepts_the_deepseek4_last_layer_alias() {
+        let target = CString::new("l_out-19").unwrap();
+        assert!(capture_target_matches("l_out-19", &target));
+        assert!(capture_target_matches("l_last-19", &target));
+        assert!(!capture_target_matches("l_last-18", &target));
+        assert!(!capture_target_matches("output-19", &target));
+    }
 
     const GEMMA4_TEMPLATE_FIXTURE: &str = r#"
         {{- bos_token -}}

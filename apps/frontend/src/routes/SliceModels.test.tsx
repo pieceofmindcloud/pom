@@ -185,6 +185,60 @@ describe("SliceModels", () => {
     );
   });
 
+  it("shows the real required head cost for intermediate slices", async () => {
+    post.mockResolvedValue({
+      total_layers: 10,
+      model_bytes: 3_440_000_000,
+      required_head_bytes: 440 * 1024 * 1024,
+      ranges: [
+        {
+          index: 0,
+          start_layer: 0,
+          end_layer: 4,
+          layers: 5,
+          bytes: 1_940_000_000,
+          target_mb: 1940,
+          is_rest: false,
+          is_last: false,
+          too_small: false,
+          empty: false,
+        },
+        {
+          index: 1,
+          start_layer: 5,
+          end_layer: 9,
+          layers: 5,
+          bytes: 1_500_000_000,
+          target_mb: null,
+          is_rest: true,
+          is_last: true,
+          too_small: false,
+          empty: false,
+        },
+      ],
+      covered_layers: 10,
+      complete: true,
+      missing_range: null,
+      missing_bytes: 0,
+      blocked: false,
+      warnings: [],
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/modelos/fatiar"]}>
+        <LocaleProvider initialLocale="pt-BR">
+          <SliceModels />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText(
+        "Cada fatia intermediária repete 440 MB de pesos reais da cabeça obrigatória.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows the active slicing progress on the model slicing screen", async () => {
     render(
       <MemoryRouter

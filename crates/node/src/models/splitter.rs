@@ -394,6 +394,7 @@ fn want_tensor(name: &str, architecture: &str, start: u32, end: u32, is_last: bo
     }
     match name {
         "token_embd.weight" => true,
+        _ if crate::gguf::is_required_non_final_tensor(architecture, name) => true,
         _ if crate::gguf::is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
         _ => false,
@@ -1720,10 +1721,11 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         for t in &p.tensors {
             let is_blk = t.name.starts_with("blk.");
             let is_output = crate::gguf::is_output_tensor(&arch, &t.name);
-            // Blocks come from every slice; the head tensors (token embeddings,
-            // position embeddings, rope) only from the first; the head outputs
-            // only from the last — the middle slices carry a fake `output_norm`
-            // that would shadow the real one.
+            // Blocks come from every slice; the shared inputs only from the
+            // first; the final output head only from the last. Intermediate
+            // slices may carry real required head tensors for their loader,
+            // but their copy must not shadow the final head. They also carry a
+            // fake `output_norm` that would shadow the real one.
             let keep = is_blk || (is_output && is_last) || (pi == 0 && !is_output);
             if !keep {
                 continue;
@@ -2891,19 +2893,40 @@ mod tests {
     }
 
     #[test]
-    fn deepseek4_non_final_slice_is_refused_before_output_file_creation() {
+    fn deepseek4_non_final_slice_carries_the_required_output_head() {
         let dir = std::env::temp_dir().join(format!("pom-deepseek4-mid-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("deepseek4.gguf");
         let output = dir.join("mid.gguf");
         std::fs::write(&whole, deepseek4_test_gguf_bytes(4, true)).unwrap();
 
-        let error = split(&whole, &output, 0, 1, true, false, |_| {}).unwrap_err();
+        let source_bytes = std::fs::read(&whole).unwrap();
+        let source = parse_merged_src(&source_bytes).unwrap();
+        split(&whole, &output, 0, 1, true, false, |_| {}).unwrap();
 
-        let message = error.to_string();
-        assert!(message.contains("deepseek4"), "{message}");
-        assert!(message.contains("output_hc_fn.weight"), "{message}");
-        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        let output_bytes = std::fs::read(&output).unwrap();
+        let parsed = parse_merged_src(&output_bytes).unwrap();
+        let names: HashSet<&str> = parsed
+            .tensors
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect();
+        for required in crate::gguf::required_output_tensors("deepseek4") {
+            assert!(names.contains(required), "faltou {required}: {names:?}");
+        }
+        for copied in [
+            "token_embd.weight",
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert_eq!(
+                tensor_data(&source_bytes, &source, copied),
+                tensor_data(&output_bytes, &parsed, copied),
+                "a fatia intermediária deve copiar os bytes reais de {copied}"
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2935,22 +2958,64 @@ mod tests {
     }
 
     #[test]
-    fn deepseek4_layout_rejects_intermediate_ranges_and_prices_the_final_head() {
+    fn deepseek4_layout_prices_the_required_head_in_intermediate_ranges() {
         let dir = std::env::temp_dir().join(format!("pom-deepseek4-layout-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("deepseek4.gguf");
+        let mid = dir.join("mid.gguf");
         let output = dir.join("final.gguf");
         std::fs::write(&whole, deepseek4_test_gguf_bytes(2, true)).unwrap();
 
         let layout = crate::gguf::read_layout(&whole).unwrap();
-        let error = layout.validate_slice_ranges(&[(0, 0)]).unwrap_err();
-        assert!(error.to_string().contains("faixa não final"));
+        layout.validate_slice_ranges(&[(0, 0)]).unwrap();
+        split(&whole, &mid, 0, 0, true, false, |_| {}).unwrap();
+        assert_eq!(
+            layout.slice_bytes(0, 0, false),
+            std::fs::metadata(&mid).unwrap().len()
+        );
         split(&whole, &output, 0, 1, true, true, |_| {}).unwrap();
         assert_eq!(
             layout.slice_bytes(0, 1, true),
             std::fs::metadata(&output).unwrap().len()
         );
+        assert!(layout.required_head_bytes() > 0);
+        let plan = crate::plan::plan_by_size(
+            &layout,
+            &[
+                crate::plan::SizedSlice {
+                    target_mb: Some(0.0),
+                },
+                crate::plan::SizedSlice { target_mb: None },
+            ],
+        )
+        .unwrap();
+        assert_eq!(plan.required_head_bytes, Some(layout.required_head_bytes()));
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_non_final_slice_reports_missing_output_head_tensors() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-deepseek4-mid-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("mid.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, false)).unwrap();
+
+        let error = split(&whole, &output, 0, 0, true, false, |_| {}).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("deepseek4"), "{message}");
+        for required in [
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert!(message.contains(required), "faltou {required}: {message}");
+        }
+        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3275,6 +3340,40 @@ mod tests {
         params.n_gpu_layers = 0;
         let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
         assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
+        unsafe { llama_cpp_sys_2::llama_model_free(model) };
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requer o GGUF real DeepSeek4 e vários GB livres em disco/RAM"]
+    fn real_deepseek4_intermediate_slice_copies_heads_and_loads() {
+        let source = std::env::var_os("POM_REAL_DEEPSEEK4_GGUF")
+            .expect("POM_REAL_DEEPSEEK4_GGUF deve apontar para o GGUF real");
+        let source = Path::new(&source);
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-slice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("deepseek4-0-0.gguf");
+
+        let layout = crate::gguf::read_layout(source).unwrap();
+        assert!(
+            layout.layer_count() > 1,
+            "o GGUF real precisa de uma camada final distinta"
+        );
+        assert!(
+            layout.required_head_bytes() > 0,
+            "a cabeça DeepSeek4 deve estar na fonte"
+        );
+        split(source, &out, 0, 0, true, false, |_| {}).unwrap();
+
+        unsafe { llama_cpp_sys_2::llama_backend_init() };
+        let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
+        let mut params = unsafe { llama_cpp_sys_2::llama_model_default_params() };
+        params.n_gpu_layers = 0;
+        let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        assert!(
+            !model.is_null(),
+            "uma fatia intermediária DeepSeek4 deveria carregar"
+        );
         unsafe { llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
     }

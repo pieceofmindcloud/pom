@@ -783,6 +783,8 @@ export interface SizePlan {
   model_bytes: number;
   /** Source GGUF size before embeddings and slice metadata are duplicated. */
   source_model_bytes?: number;
+  /** Real required head payload repeated by each non-final slice. */
+  required_head_bytes?: number;
   ranges: SizedRange[];
   covered_layers: number;
   complete: boolean;

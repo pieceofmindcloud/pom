@@ -539,6 +539,9 @@ pub struct SizePlan {
     pub model_bytes: u64,
     /// Size of the source GGUF payload before slice-only duplication.
     pub source_model_bytes: u64,
+    /// Real head payload repeated by every non-final slice, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_head_bytes: Option<u64>,
     pub ranges: Vec<SizedRange>,
     pub covered_layers: u32,
     pub complete: bool,
@@ -726,10 +729,17 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         .collect::<Vec<_>>();
     layout.validate_slice_ranges(&validation_ranges)?;
 
+    let required_head_bytes = ranges
+        .iter()
+        .any(|range| !range.empty && !range.is_last)
+        .then_some(layout.required_head_bytes())
+        .filter(|bytes| *bytes > 0);
+
     Ok(SizePlan {
         total_layers,
         model_bytes: planned_bytes,
         source_model_bytes: layout.source_file_bytes.max(layout.total_bytes),
+        required_head_bytes,
         ranges,
         covered_layers,
         complete,

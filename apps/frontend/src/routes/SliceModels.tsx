@@ -650,6 +650,14 @@ export function SliceModels() {
                   {planning && <span className="text-xs text-faint">{t("slice.recalculating")}</span>}
                 </div>
 
+                {plan.mode !== "tensor_parallel" && plan.required_head_bytes != null && (
+                  <div className="mx-5 mb-3 rounded-xl border border-iris/20 bg-iris/5 px-3.5 py-3">
+                    <p className="text-[0.75rem] leading-relaxed text-muted">
+                      {t("slice.requiredHead", { size: bytes(plan.required_head_bytes) })}
+                    </p>
+                  </div>
+                )}
+
                 {plan.space_status && (
                   <div
                     role={plan.space_status === "insufficient" ? "alert" : "status"}

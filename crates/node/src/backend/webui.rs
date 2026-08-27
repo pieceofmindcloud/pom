@@ -3431,10 +3431,14 @@ fn single_range_plan(
     let is_last = range.end_layer + 1 >= layout.layer_count();
     layout.validate_slice_ranges(&[(range.start_layer, range.end_layer)])?;
     let bytes = layout.slice_bytes(range.start_layer, range.end_layer, is_last);
+    let required_head_bytes = (!is_last)
+        .then_some(layout.required_head_bytes())
+        .filter(|bytes| *bytes > 0);
     Ok(plan::SizePlan {
         total_layers: layout.layer_count(),
         model_bytes: bytes,
         source_model_bytes: layout.source_file_bytes.max(layout.total_bytes),
+        required_head_bytes,
         ranges: vec![plan::SizedRange {
             index: 0,
             start_layer: range.start_layer,

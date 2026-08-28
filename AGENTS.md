@@ -161,6 +161,13 @@ quebra o produto inteiro.
   O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
   uma obrigação de suportar um protocolo legado; mudanças futuras devem
   evoluir esse contrato de forma explícita. → `inferencia.md`
+- **O `max_new_tokens` da implantação limita uma geração, não a requisição.**
+  Ele nunca foi teto do backend - o `infer_server` não o conhece. É o teto de
+  uma **perna** do laço de continuação do gateway, que atravessa a perna na
+  mesma sessão de KV e no mesmo SSE, sem reprefill e sem o cliente ver nada.
+  Quem limita a requisição é `max_output_tokens` do `pom.json`, e só ele produz
+  `finish_reason: "length"`. Vazar o `length` de uma perna fazia o harness largar
+  a chamada de ferramenta pela metade. → `inferencia.md` (9.1)
 - **A geração nunca acontece na sequência de KV do prompt.** Cada sessão de um
   peer tem duas sequências: o prefill escreve na do prompt, a geração numa cópia
   dela, e o fim do turno apaga a cópia inteira. Só remoção **total** de

@@ -537,7 +537,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
             model: "lab".into(),
             prompt: "um prompt qualquer para a bancada".into(),
             chat_template: true,
-            max_tokens,
+            budget: crate::gateway::OutputBudget::single(max_tokens),
             stops: Vec::new(),
             cache_key: None,
             request_details: serde_json::json!({}),

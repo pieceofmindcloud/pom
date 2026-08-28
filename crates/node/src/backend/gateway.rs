@@ -463,18 +463,62 @@ pub struct GenerateRequest {
     pub stop: Option<StopInput>,
 }
 
+/// Os dois orçamentos de uma geração, que nunca são o mesmo número.
+///
+/// `leg` é o que **uma** geração de backend pode produzir - o `max_new_tokens`
+/// da implantação, escolha do operador. `total` é o que a **requisição** pode
+/// produzir. Esgotar a perna não encerra a resposta: o laço de continuação
+/// abre a próxima e segue decodificando na mesma sessão e no mesmo fluxo SSE.
+/// Confundir os dois é o defeito que este orçamento existe para impedir - era
+/// exatamente ele que devolvia `finish_reason: "length"` ao cliente no meio de
+/// uma chamada de ferramenta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputBudget {
+    /// Teto da requisição inteira, somando todas as pernas.
+    pub total: u32,
+    /// Teto de uma perna.
+    pub leg: u32,
+}
+
+impl OutputBudget {
+    /// Um orçamento sem continuação: uma perna que já é a requisição inteira.
+    /// É o que os testes e as bancadas usam quando o laço não é o assunto.
+    pub fn single(total: u32) -> Self {
+        Self { total, leg: total }
+    }
+
+    /// Números utilizáveis: nunca zero, e a perna nunca maior que o total.
+    fn normalized(self) -> Self {
+        let total = self.total.max(1);
+        Self {
+            total,
+            leg: self.leg.clamp(1, total),
+        }
+    }
+}
+
 /// The output budget visible to a protocol adapter after applying the selected
-/// deployment and the remaining context window.
+/// deployment, the configured absolute ceiling and the remaining context window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct OutputTokenLimit {
     #[serde(rename = "requested_max_tokens")]
     pub requested: u32,
+    /// O que a requisição inteira vai poder gerar. É o total do orçamento.
     #[serde(rename = "effective_max_tokens")]
     pub effective: u32,
+    /// `max_new_tokens` da implantação. **Não** limita mais a requisição, só
+    /// uma perna do laço de continuação.
     #[serde(rename = "deployment_max_tokens")]
     pub deployment: Option<u32>,
     #[serde(rename = "context_available_tokens")]
     pub context_available: Option<u32>,
+    /// Teto absoluto configurável (`max_output_tokens` do `pom.json`), o freio
+    /// que impede um modelo em laço de ocupar o nó indefinidamente.
+    #[serde(rename = "absolute_max_tokens")]
+    pub absolute: u32,
+    /// Tokens que cabem numa perna: `min(deployment, effective)`.
+    #[serde(rename = "leg_max_tokens")]
+    pub leg: u32,
 }
 
 impl OutputTokenLimit {
@@ -482,8 +526,22 @@ impl OutputTokenLimit {
         self.effective < self.requested
     }
 
+    /// Os dois números que a geração precisa, sem o adaptador ter de escolher.
+    pub fn budget(self) -> OutputBudget {
+        OutputBudget {
+            total: self.effective,
+            leg: self.leg,
+        }
+    }
+
+    /// Esta requisição pode precisar de mais de uma perna. Não é promessa de
+    /// que vai precisar: o modelo pode parar antes.
+    pub fn continuation_possible(self) -> bool {
+        self.leg < self.effective
+    }
+
     pub fn rejection_reason(self) -> Option<String> {
-        if self.effective > 0 {
+        if self.effective > 0 && self.leg > 0 {
             return None;
         }
 
@@ -494,40 +552,53 @@ impl OutputTokenLimit {
             )
         } else if self.deployment == Some(0) {
             Some("max_new_tokens da implantação precisa ser maior que zero".into())
+        } else if self.absolute == 0 {
+            Some("max_output_tokens do pom.json precisa ser maior que zero".into())
         } else {
             Some("não há tokens de saída disponíveis para esta requisição".into())
         }
     }
 }
 
-/// Resolve one request's output budget. The deployment's `max_new_tokens` is
-/// the operator-controlled ceiling; when a runtime context is available, the
-/// prompt consumes part of it and the remainder is the only technical ceiling.
-/// No protocol adapter should duplicate this calculation.
+/// Resolve one request's output budget.
+///
+/// Dois números saem daqui, e é de propósito. O **total** da requisição é
+/// `min(pedido, teto absoluto, contexto que sobrou)`: o `max_new_tokens` da
+/// implantação **não** entra nele, porque ele nunca foi limite do backend -
+/// sempre foi um corte do gateway, e cortar aí calado é o defeito. O que ele
+/// vira é o teto de **uma perna**, que o laço de continuação atravessa quantas
+/// vezes o total permitir. Nenhum adaptador de protocolo duplica esta conta.
 pub fn output_token_limit(
     requested: u32,
     deployment: Option<u32>,
     context_length: Option<u32>,
     prompt_tokens: u32,
+    absolute: u32,
 ) -> OutputTokenLimit {
     let requested = requested.max(1);
     let context_available = context_length.map(|context| context.saturating_sub(prompt_tokens));
-    let effective = [Some(requested), deployment, context_available]
+    let effective = [Some(requested), Some(absolute), context_available]
         .into_iter()
         .flatten()
         .min()
         .unwrap_or(0);
+    // A perna nunca passa do total: pedir 10 com implantação de 1000 continua
+    // sendo uma perna de 10, e o laço nem abre.
+    let leg = deployment.unwrap_or(effective).min(effective);
 
     OutputTokenLimit {
         requested,
         effective,
         deployment,
         context_available,
+        absolute,
+        leg,
     }
 }
 
 impl GatewayState {
-    /// Resolve an adapter request against the live deployment configuration.
+    /// Resolve an adapter request against the live deployment configuration
+    /// and the operator's absolute output ceiling.
     pub async fn request_output_limit(&self, requested: u32, prompt: &str) -> OutputTokenLimit {
         let runtime = self.runtime.config().await;
         output_token_limit(
@@ -535,7 +606,14 @@ impl GatewayState {
             runtime.as_ref().map(|cfg| cfg.max_new_tokens),
             runtime.as_ref().map(|cfg| cfg.n_ctx),
             estimate_tokens(prompt),
+            self.absolute_output_ceiling().await,
         )
+    }
+
+    /// `max_output_tokens` do `pom.json`. Zero na config nunca vira zero aqui
+    /// por acidente: `rejection_reason` é quem recusa, com mensagem.
+    pub async fn absolute_output_ceiling(&self) -> u32 {
+        self.auth.read().await.max_output_tokens
     }
 }
 
@@ -545,27 +623,40 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
             route,
             requested_max_tokens = limit.requested,
             effective_max_tokens = limit.effective,
-            deployment_max_tokens = ?limit.deployment,
+            absolute_max_tokens = limit.absolute,
             context_available_tokens = ?limit.context_available,
-            "limite de saída reduzido pela implantação ou pelo contexto"
+            "limite de saída reduzido pelo teto absoluto ou pelo contexto"
+        );
+    }
+    if limit.continuation_possible() {
+        info!(
+            route,
+            effective_max_tokens = limit.effective,
+            leg_max_tokens = limit.leg,
+            deployment_max_tokens = ?limit.deployment,
+            "saída maior que uma geração da implantação: o laço de continuação \
+             costura as pernas no mesmo fluxo"
         );
     }
 }
 
-fn resolve_request_max_tokens(
-    requested: Option<u32>,
-    configured_limit: u32,
-) -> Result<u32, String> {
+/// `/api/generate` recusa em vez de cortar - foi sempre assim, e continua
+/// sendo, com um detalhe: o teto que ela confere agora é o **absoluto**
+/// (`max_output_tokens` do `pom.json`), não o `max_new_tokens` da implantação.
+/// Este último passou a ser o teto de uma perna do laço de continuação, e
+/// recusar por causa dele obrigaria o operador a levantar a implantação para
+/// escrever uma resposta longa - exatamente o que a decisão do produto proíbe.
+fn resolve_request_max_tokens(requested: Option<u32>, absolute_limit: u32) -> Result<u32, String> {
     let max_tokens = requested.unwrap_or(DEFAULT_MAX_TOKENS);
     if max_tokens == 0 {
         return Err("max_tokens deve ser maior que zero".to_string());
     }
-    if configured_limit == 0 {
-        return Err("max_new_tokens configurado deve ser maior que zero".to_string());
+    if absolute_limit == 0 {
+        return Err("max_output_tokens configurado deve ser maior que zero".to_string());
     }
-    if max_tokens > configured_limit {
+    if max_tokens > absolute_limit {
         return Err(format!(
-            "max_tokens solicitado ({max_tokens}) excede max_new_tokens configurado ({configured_limit})"
+            "max_tokens solicitado ({max_tokens}) excede max_output_tokens configurado ({absolute_limit})"
         ));
     }
     Ok(max_tokens)
@@ -666,7 +757,9 @@ pub(crate) struct GenerationInput {
     pub(crate) model: String,
     pub(crate) prompt: String,
     pub(crate) chat_template: bool,
-    pub(crate) max_tokens: u32,
+    /// Os dois tetos desta requisição: o da perna e o do total. Ver
+    /// [`OutputBudget`].
+    pub(crate) budget: OutputBudget,
     pub(crate) stops: Vec<String>,
     /// Como o cache de prefixo reconhece que esta requisição continua a
     /// anterior. `None` usa o próprio prompt.
@@ -697,6 +790,11 @@ pub struct GenSummary {
     pub finish_reason: Option<String>,
     /// The exact stop sequence that was matched, when one ended the stream.
     pub stop_sequence: Option<String>,
+    /// Quantas pernas do laço de continuação a resposta costurou. `1` é uma
+    /// geração só - nenhuma costura. Maior que `1` quer dizer que a saída
+    /// passou do `max_new_tokens` da implantação sem que ele fosse alterado, e
+    /// é o que torna a costura inspecionável de fora.
+    pub legs: u32,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
 }
@@ -893,11 +991,13 @@ pub(crate) fn timing_metrics(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn summary_for(
     plan: &PipelinePlan,
     request_started: Instant,
     first_token_at: Instant,
     tokens_generated: u32,
+    legs: u32,
     mut trace: crate::prefill::RequestTrace,
     partial: bool,
     finish_reason: Option<String>,
@@ -929,16 +1029,39 @@ fn summary_for(
         partial,
         finish_reason,
         stop_sequence,
+        legs,
         trace: Some(trace),
     }
 }
 
+/// Contabiliza um token confirmado contra o orçamento de perna.
+///
+/// A perna é o teto de **uma** geração de backend (`max_new_tokens` da
+/// implantação). Fechá-la não encerra a resposta: o laço de continuação abre a
+/// seguinte e segue decodificando na mesma sessão de KV e no mesmo fluxo SSE,
+/// então nada disso é observável do lado do cliente. Só o total encerra, e só
+/// ele vira `finish_reason: "length"`.
+fn note_leg_boundary(budget: OutputBudget, tokens_generated: u32, legs: &mut u32) {
+    if tokens_generated.is_multiple_of(budget.leg) && tokens_generated < budget.total {
+        *legs += 1;
+        info!(
+            legs = *legs,
+            tokens_generated,
+            leg_max_tokens = budget.leg,
+            total_max_tokens = budget.total,
+            "perna esgotada: continuando a mesma geração na perna seguinte"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn send_stopped_summary(
     tx: &mpsc::Sender<GenEvent>,
     plan: &PipelinePlan,
     request_started: Instant,
     first_token_at: Instant,
     tokens_generated: u32,
+    legs: u32,
     trace: crate::prefill::RequestTrace,
     stop_sequence: String,
 ) {
@@ -947,6 +1070,7 @@ async fn send_stopped_summary(
         request_started,
         first_token_at,
         tokens_generated,
+        legs,
         trace,
         false,
         Some("stop".to_string()),
@@ -961,6 +1085,7 @@ async fn send_length_summary(
     request_started: Instant,
     first_token_at: Instant,
     tokens_generated: u32,
+    legs: u32,
     trace: crate::prefill::RequestTrace,
 ) {
     let summary = summary_for(
@@ -968,6 +1093,7 @@ async fn send_length_summary(
         request_started,
         first_token_at,
         tokens_generated,
+        legs,
         trace,
         false,
         Some("length".to_string()),
@@ -1006,11 +1132,12 @@ async fn generate_stream_inner(
         model,
         prompt,
         chat_template,
-        max_tokens,
+        budget,
         stops,
         cache_key,
         request_details: _,
     } = input;
+    let budget = budget.normalized();
     if cancellation.is_cancelled() {
         return;
     }
@@ -1127,11 +1254,12 @@ async fn generate_stream_inner(
     );
 
     info!(
-        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} resposta={}",
+        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",
         plan.steps.len(),
         plan.hop_chain(),
         &session_id[..8],
-        max_tokens,
+        budget.total,
+        budget.leg,
         if direct.is_some() && plan.supports_direct_reply() {
             "direta"
         } else if plan.supports_relay_chain() {
@@ -1142,7 +1270,8 @@ async fn generate_stream_inner(
     );
 
     let mut tokens_generated: u32 = 0;
-    let max_tokens = max_tokens.max(1);
+    // Pernas costuradas até agora. Começa em 1: toda resposta tem uma.
+    let mut legs: u32 = 1;
     let mut retained_prefix_tokens: Option<u32> = None;
     // Quantos tokens do prompt a cabeça de fato não reprocessou. Não é a
     // escolha do cache, é o que o pipeline executou - ver
@@ -1343,6 +1472,7 @@ async fn generate_stream_inner(
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         tokens_generated += 1;
+        note_leg_boundary(budget, tokens_generated, &mut legs);
         match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
             StopSend::Disconnected => {
                 info!("cliente desconectou logo após o prompt");
@@ -1355,6 +1485,7 @@ async fn generate_stream_inner(
                     request_started,
                     first_token_at,
                     tokens_generated,
+                    legs,
                     trace,
                     stop_sequence,
                 )
@@ -1363,7 +1494,7 @@ async fn generate_stream_inner(
             }
             StopSend::Continue => {}
         }
-        if generation_finish_reason(max_tokens, tokens_generated, first.done) == Some("length") {
+        if generation_finish_reason(budget.total, tokens_generated, first.done) == Some("length") {
             if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                 return;
             }
@@ -1373,6 +1504,7 @@ async fn generate_stream_inner(
                 request_started,
                 first_token_at,
                 tokens_generated,
+                legs,
                 trace,
             )
             .await;
@@ -1388,6 +1520,7 @@ async fn generate_stream_inner(
                 request_started,
                 first_token_at,
                 tokens_generated,
+                legs,
                 trace,
                 false,
                 None,
@@ -1416,7 +1549,7 @@ async fn generate_stream_inner(
             // recusa da cabeça é esperada) das seguintes (o rascunho foi
             // mandado — ignorado aí é motivo para parar).
             let mut stored_draft: Option<Vec<i32>> = None;
-            while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
+            while remaining_generation_steps(budget.total, tokens_generated) > 0 {
                 if cancellation.is_cancelled() {
                     return;
                 }
@@ -1489,6 +1622,7 @@ async fn generate_stream_inner(
                                 request_started,
                                 first_token_at,
                                 tokens_generated,
+                                legs,
                                 trace,
                                 true,
                                 None,
@@ -1540,13 +1674,14 @@ async fn generate_stream_inner(
                 // stream only what fits, and note it so `step.done` (which
                 // may refer to a position we never even looked at) isn't
                 // trusted past the cut.
-                let remaining = remaining_generation_steps(max_tokens, tokens_generated) as usize;
+                let remaining = remaining_generation_steps(budget.total, tokens_generated) as usize;
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
+                    note_leg_boundary(budget, tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
                             info!("cliente desconectou após {tokens_generated} tokens");
@@ -1559,6 +1694,7 @@ async fn generate_stream_inner(
                                 request_started,
                                 first_token_at,
                                 tokens_generated,
+                                legs,
                                 trace,
                                 stop_sequence,
                             )
@@ -1570,7 +1706,7 @@ async fn generate_stream_inner(
                 }
 
                 let finish_reason = generation_finish_reason(
-                    max_tokens,
+                    budget.total,
                     tokens_generated,
                     step.done && !truncated_by_budget,
                 );
@@ -1583,6 +1719,7 @@ async fn generate_stream_inner(
                         request_started,
                         first_token_at,
                         tokens_generated,
+                        legs,
                         trace,
                         false,
                         (finish_reason == Some("length")).then(|| "length".to_string()),
@@ -1638,6 +1775,7 @@ async fn generate_stream_inner(
                                 request_started,
                                 first_token_at,
                                 tokens_generated,
+                                legs,
                                 trace,
                                 true,
                                 None,
@@ -1658,7 +1796,7 @@ async fn generate_stream_inner(
             return;
         }
 
-        while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
+        while remaining_generation_steps(budget.total, tokens_generated) > 0 {
             let res = crate::prefill::step(
                 &plan,
                 model,
@@ -1680,6 +1818,7 @@ async fn generate_stream_inner(
                     let (token_id, text) = &step.accepted[0];
                     next_token = *token_id;
                     tokens_generated += 1;
+                    note_leg_boundary(budget, tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
                             // Client hung up; stop burning GPU time on a dead request.
@@ -1693,6 +1832,7 @@ async fn generate_stream_inner(
                                 request_started,
                                 first_token_at,
                                 tokens_generated,
+                                legs,
                                 trace,
                                 stop_sequence,
                             )
@@ -1701,11 +1841,8 @@ async fn generate_stream_inner(
                         }
                         StopSend::Continue => {}
                     }
-                    let finish_reason = generation_finish_reason(
-                        max_tokens,
-                        tokens_generated,
-                        step.done,
-                    );
+                    let finish_reason =
+                        generation_finish_reason(budget.total, tokens_generated, step.done);
 
                     if finish_reason.is_some() {
                         if !flush_stop_matcher(&tx, &mut stop_matcher).await {
@@ -1716,6 +1853,7 @@ async fn generate_stream_inner(
                             request_started,
                             first_token_at,
                             tokens_generated,
+                            legs,
                             trace,
                             false,
                             (finish_reason == Some("length")).then(|| "length".to_string()),
@@ -1741,6 +1879,7 @@ async fn generate_stream_inner(
                             request_started,
                             first_token_at,
                             tokens_generated,
+                            legs,
                             trace,
                             true,
                             None,
@@ -2305,13 +2444,14 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         Some(m) => m.to_string(),
         None => state.active_model().await,
     };
-    let configured_limit = state
+    let absolute_limit = state.absolute_output_ceiling().await;
+    let leg_limit = state
         .runtime
         .config()
         .await
         .map(|cfg| cfg.max_new_tokens)
         .unwrap_or(DEFAULT_MAX_TOKENS);
-    let max_tokens = match resolve_request_max_tokens(req.max_tokens, configured_limit) {
+    let max_tokens = match resolve_request_max_tokens(req.max_tokens, absolute_limit) {
         Ok(value) => value,
         Err(error) => {
             let error_for_audit = error.clone();
@@ -2359,7 +2499,10 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
             model,
             prompt: req.prompt,
             chat_template: true,
-            max_tokens,
+            budget: OutputBudget {
+                total: max_tokens,
+                leg: leg_limit.min(max_tokens),
+            },
             stops,
             request_details,
             // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
@@ -2512,8 +2655,10 @@ mod tests {
         assert_eq!(many.into_vec(), vec!["END", "DONE"]);
     }
 
+    /// O teto conferido aqui é o **absoluto** do `pom.json`. O `max_new_tokens`
+    /// da implantação não recusa mais nada: ele limita uma perna do laço.
     #[test]
-    fn api_generate_max_tokens_defaults_accepts_and_rejects_by_configured_limit() {
+    fn api_generate_max_tokens_defaults_accepts_and_rejects_by_the_absolute_ceiling() {
         let absent: GenerateRequest = serde_json::from_str(r#"{"prompt":"oi"}"#).unwrap();
         let requested: GenerateRequest =
             serde_json::from_str(r#"{"prompt":"oi","max_tokens":64}"#).unwrap();
@@ -2527,7 +2672,13 @@ mod tests {
         );
         assert_eq!(
             resolve_request_max_tokens(excessive.max_tokens, 512),
-            Err("max_tokens solicitado (513) excede max_new_tokens configurado (512)".into())
+            Err("max_tokens solicitado (513) excede max_output_tokens configurado (512)".into())
+        );
+        // E o mesmo pedido passa quando o teto absoluto o comporta, mesmo que
+        // a implantação gere bem menos que isso por vez.
+        assert_eq!(
+            resolve_request_max_tokens(excessive.max_tokens, 8_192),
+            Ok(513)
         );
     }
 
@@ -2564,6 +2715,7 @@ mod tests {
             partial,
             finish_reason: finish_reason.map(str::to_owned),
             stop_sequence: None,
+            legs: 1,
             trace: None,
         };
 
@@ -2754,51 +2906,135 @@ mod budget_tests {
     use super::*;
     use crate::runtime::NodeConfig;
 
+    /// A reprodução do defeito, em forma de conta: a implantação **não** pode
+    /// mais decidir quanto a requisição inteira gera. Era exatamente isto que
+    /// devolvia 1000 tokens a quem pediu 4000, calado.
     #[test]
-    fn output_limit_uses_the_deployment_ceiling_and_remaining_context() {
-        let limit = output_token_limit(50_000, Some(32_768), Some(100_000), 2_000);
-        assert_eq!(limit.requested, 50_000);
-        assert_eq!(limit.deployment, Some(32_768));
-        assert_eq!(limit.context_available, Some(98_000));
-        assert_eq!(limit.effective, 32_768);
+    fn the_deployment_ceiling_bounds_a_leg_and_no_longer_bounds_the_request() {
+        let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18, 8_192);
+        assert_eq!(limit.requested, 4_000);
+        assert_eq!(limit.deployment, Some(1_000));
+        assert_eq!(limit.effective, 4_000, "o cliente recebe o que pediu");
+        assert_eq!(limit.leg, 1_000, "uma geração de backend continua em 1000");
+        assert!(!limit.was_clamped());
+        assert!(limit.continuation_possible());
+        assert_eq!(limit.effective.div_ceil(limit.leg), 4, "quatro pernas");
+    }
+
+    #[test]
+    fn the_absolute_ceiling_is_what_clamps_a_runaway_request() {
+        let limit = output_token_limit(50_000, Some(1_000), Some(200_000), 2_000, 8_192);
+        assert_eq!(limit.effective, 8_192);
+        assert_eq!(limit.absolute, 8_192);
         assert!(limit.was_clamped());
     }
 
     #[test]
-    fn requested_client_limit_is_effective_when_deployment_has_room() {
-        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000);
+    fn the_remaining_context_still_clamps_below_the_absolute_ceiling() {
+        let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000, 100_000);
+        assert_eq!(limit.context_available, Some(1_000));
+        assert_eq!(limit.effective, 1_000);
+        assert_eq!(limit.leg, 1_000, "a perna nunca passa do total");
+        assert!(!limit.continuation_possible());
+        assert!(limit.was_clamped());
+    }
+
+    #[test]
+    fn requested_client_limit_is_effective_when_it_fits_under_every_ceiling() {
+        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000, 8_192);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.effective, 4_000);
-        assert_eq!(limit.deployment, Some(32_768));
+        assert_eq!(limit.leg, 4_000);
+        assert!(!limit.continuation_possible());
         assert!(!limit.was_clamped());
     }
 
     #[test]
-    fn output_limit_allows_the_context_remainder_above_the_old_four_kib_ceiling() {
-        let limit = output_token_limit(50_000, Some(32_768), Some(100_000), 1_000);
-        assert_eq!(limit.effective, 32_768);
-
-        let context_limited = output_token_limit(50_000, Some(100_000), Some(40_000), 1_000);
-        assert_eq!(context_limited.effective, 39_000);
-        assert!(context_limited.was_clamped());
-    }
-
-    #[test]
     fn output_limit_preserves_the_requested_value_when_no_deployment_is_loaded() {
-        let limit = output_token_limit(8_192, None, None, 0);
+        let limit = output_token_limit(8_192, None, None, 0, 8_192);
         assert_eq!(limit.effective, 8_192);
+        assert_eq!(limit.leg, 8_192);
         assert!(!limit.was_clamped());
     }
 
     #[test]
     fn output_limit_reports_no_capacity_when_the_prompt_fills_the_context() {
-        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000);
+        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000, 8_192);
         assert_eq!(limit.effective, 0);
         assert!(limit.was_clamped());
         assert!(limit
             .rejection_reason()
             .unwrap()
             .contains("todo o contexto"));
+    }
+
+    #[test]
+    fn a_deployment_that_cannot_generate_is_still_a_refusal_not_a_silent_cut() {
+        let limit = output_token_limit(4_000, Some(0), Some(100_000), 10, 8_192);
+        assert_eq!(limit.leg, 0);
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("max_new_tokens"));
+    }
+
+    #[test]
+    fn an_absolute_ceiling_of_zero_is_refused_by_name() {
+        let limit = output_token_limit(4_000, Some(1_000), Some(100_000), 10, 0);
+        assert_eq!(limit.effective, 0);
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("max_output_tokens"));
+    }
+
+    /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não
+    /// divide o total, e a perna nunca pode ser zero (divisão por zero no
+    /// `note_leg_boundary`).
+    #[test]
+    fn the_budget_normalizes_to_usable_numbers() {
+        assert_eq!(
+            OutputBudget { total: 0, leg: 0 }.normalized(),
+            OutputBudget { total: 1, leg: 1 }
+        );
+        assert_eq!(
+            OutputBudget {
+                total: 10,
+                leg: 1_000
+            }
+            .normalized(),
+            OutputBudget { total: 10, leg: 10 }
+        );
+        assert_eq!(OutputBudget::single(7).normalized(), OutputBudget { total: 7, leg: 7 });
+    }
+
+    /// A contagem de pernas é o que torna a costura inspecionável. Ela avança
+    /// ao fechar a perna, e **não** avança na última - `legs` é quantas
+    /// pernas a resposta usou, não quantas caberiam.
+    #[test]
+    fn legs_are_counted_as_the_loop_crosses_each_deployment_budget() {
+        let budget = OutputBudget {
+            total: 10,
+            leg: 4,
+        };
+        let mut legs = 1;
+        let mut observed = Vec::new();
+        for tokens in 1..=10u32 {
+            note_leg_boundary(budget, tokens, &mut legs);
+            observed.push(legs);
+        }
+        assert_eq!(observed, vec![1, 1, 1, 2, 2, 2, 2, 3, 3, 3]);
+        assert_eq!(legs, 3);
+    }
+
+    #[test]
+    fn a_generation_that_fits_one_leg_reports_a_single_leg() {
+        let budget = OutputBudget { total: 100, leg: 100 };
+        let mut legs = 1;
+        for tokens in 1..=100u32 {
+            note_leg_boundary(budget, tokens, &mut legs);
+        }
+        assert_eq!(legs, 1, "acabar o total não abre perna nenhuma");
     }
 
     fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
@@ -3075,6 +3311,7 @@ pub(crate) mod testkit {
                 model_dirs: None,
                 shard_dir: None,
                 shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+                max_output_tokens: crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
             })),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),

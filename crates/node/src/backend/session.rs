@@ -128,6 +128,7 @@ mod tests {
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+            max_output_tokens: crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
         }))
     }
 

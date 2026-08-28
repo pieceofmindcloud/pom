@@ -179,6 +179,17 @@ pub struct Config {
     /// devolve pela API: a interface recebe apenas estado e máscara.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
+    /// Teto absoluto de tokens de saída por requisição, somando todas as
+    /// pernas do laço de continuação do gateway.
+    ///
+    /// O `max_new_tokens` da implantação continua limitando **uma** geração de
+    /// backend; este número limita a **requisição inteira**, que o gateway
+    /// costura de várias pernas na mesma conexão (ver
+    /// `gateway::output_token_limit`). Sem ele um modelo que entra em laço
+    /// ocuparia o nó indefinidamente: é o único freio que sobra depois que a
+    /// perna deixou de encerrar a resposta.
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
 }
 
 impl fmt::Debug for Config {
@@ -226,6 +237,19 @@ fn default_p2p_port() -> u16 {
 
 fn default_shard_max_gb() -> f64 {
     crate::storage::DEFAULT_SHARD_MAX_GB
+}
+
+/// Teto absoluto padrão de saída por requisição.
+///
+/// Conservador de propósito: é grande o bastante para a chamada de ferramenta
+/// que escreve um arquivo inteiro - o caso que motivou o laço de continuação -
+/// e pequeno o bastante para um modelo em laço soltar o nó em minutos, não em
+/// horas. O operador levanta em `pom.json` (`max_output_tokens`) quando o
+/// trabalho dele pede mais.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
+
+fn default_max_output_tokens() -> u32 {
+    DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 /// Put a peer address the operator typed into the form the resolver accepts.
@@ -517,6 +541,7 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            max_output_tokens: default_max_output_tokens(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -546,6 +571,7 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            max_output_tokens: default_max_output_tokens(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -643,6 +669,7 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             node_name: None,
             huggingface_token: Some("hf_super_secret".into()),
+            max_output_tokens: default_max_output_tokens(),
         };
 
         std::fs::write(&path, b"old config").unwrap();
@@ -737,6 +764,7 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            max_output_tokens: default_max_output_tokens(),
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

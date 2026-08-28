@@ -61,8 +61,10 @@ haver chave.
   exige `Content-Type: application/json`). `max_tokens` é o orçamento total da
   saída, incluindo o primeiro token que o prefill devolve; sem o campo, o
   padrão é 512. O pedido precisa ser maior que zero e não pode exceder o
-  `max_new_tokens` da configuração do nó. Exceder esse limite responde 400
-  com o valor pedido e o valor configurado, nunca trunca em silêncio.
+  `max_output_tokens` do `pom.json` - o teto absoluto da requisição, não o
+  `max_new_tokens` da implantação, que hoje limita só uma perna do laço de
+  continuação. Exceder esse limite responde 400 com o valor pedido e o valor
+  configurado, nunca trunca em silêncio.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).
@@ -90,15 +92,23 @@ entregam. `usage.prompt_tokens_details.cached_tokens` informa quantos tokens de
 prompt o pipeline não reprocessou; é medida do executado, não da escolha do
 cache (ver `inferencia.md`, seção 3.1). `DEFAULT_MAX_TOKENS` 512 é apenas o
 padrão quando o cliente não envia orçamento. Não há teto artificial no
-adaptador: o orçamento efetivo é o menor entre o pedido do cliente,
-`NodeConfig.max_new_tokens` da implantação selecionada e o espaço restante de
-`n_ctx` depois do prompt. Se esse valor for reduzido, o gateway registra a
-redução e a devolve em `x_pom.output_limits`; se o contexto não deixar nenhum
-token, responde HTTP 413 antes de abrir o SSE. Assim, uma saída que esgota o
-orçamento efetivo recebe `finish_reason: "length"`, inclusive se contiver uma
-chamada de ferramenta já reconhecida, e a auditoria registra esse término como
-`incomplete` (`partial` fica reservado para falha de transporte com texto
-salvo). O scanner compartilhado reconhece os marcadores declarados em
+adaptador: o orçamento **total** da requisição é o menor entre o pedido do
+cliente, o `max_output_tokens` do `pom.json` e o espaço restante de `n_ctx`
+depois do prompt. O `max_new_tokens` da implantação **não** entra nessa conta:
+ele é o teto de uma **perna** do laço de continuação, que o gateway atravessa
+sem fechar o SSE (ver `inferencia.md`, seção 9.1). Se o total for reduzido, o
+gateway registra a redução e a devolve em `x_pom.output_limits`
+(`requested_max_tokens`, `effective_max_tokens`, `deployment_max_tokens`,
+`context_available_tokens`, `absolute_max_tokens`, `leg_max_tokens`); se o
+contexto não deixar nenhum token, responde HTTP 413 antes de abrir o SSE.
+`x_pom.continuation_legs` diz quantas pernas a resposta costurou - `1` é uma
+geração só. Assim, uma saída que esgota o orçamento **total** recebe
+`finish_reason: "length"`, inclusive se contiver uma chamada de ferramenta já
+reconhecida, e a auditoria registra esse término como `incomplete` (`partial`
+fica reservado para falha de transporte com texto salvo). Uma perna esgotada
+nunca produz `length`: o cliente não tem como distinguir a costura, e era
+justamente esse `length` intermediário que fazia um harness largar a chamada de
+ferramenta pela metade. O scanner compartilhado reconhece os marcadores declarados em
 `CALL_FORMATS`, preserva texto anterior à chamada, transforma todas as chamadas
 completas em `tool_calls` e, no SSE, em deltas indexados. Um marcador incompleto
 no fim da resposta volta como conteúdo literal para não desaparecer. Todas as
@@ -112,9 +122,11 @@ de navegador.
 
 `GET /v1/models` e `GET /v1/models/{id}` anunciam os limites da implantação
 carregada: `context_length` é `n_ctx` e `top_provider.max_completion_tokens`
-é o máximo efetivo sem prompt, no formato convencional usado por gateways
-compatíveis. Esses campos vêm do
-`NodeConfig` em execução, e não de uma constante do adaptador. Quando não há
+é o máximo efetivo sem prompt - `min(n_ctx, max_output_tokens)`, o teto da
+**requisição**, no formato convencional usado por gateways compatíveis.
+Anunciar o `max_new_tokens` da implantação aqui faria o cliente pedir menos do
+que o nó entrega. Esses campos vêm do
+`NodeConfig` em execução e do `pom.json`, e não de uma constante do adaptador. Quando não há
 configuração de runtime carregada, os limites aparecem como `null` porque o
 gateway não deve inventar capacidade.
 
@@ -126,9 +138,11 @@ separados), `content_blocks` para `tool_use`/`tool_result`, `stop_reason`
 evento Anthropic. Também rotula todo turno, pelo mesmo motivo do OpenAI, e
 publica o reuso honrado em `usage.cache_read_input_tokens`. `stop_sequences` usa o mesmo matcher incremental e
 `stop_sequence` retorna a string que encerrou a saída. `tool_choice` continua
-parseado e ignorado. `x_pom.output_limits` informa o orçamento pedido e o
-efetivo; `x_pom.timings` usa a mesma convenção do OpenAI; uma saída cortada por
-esse orçamento usa `stop_reason: "max_tokens"`.
+parseado e ignorado. `x_pom.output_limits` informa o orçamento pedido, o
+efetivo e o de uma perna; `x_pom.continuation_legs`, quantas pernas foram
+costuradas; `x_pom.timings` usa a mesma convenção do OpenAI; uma saída cortada
+pelo orçamento **total** usa `stop_reason: "max_tokens"`, e uma perna esgotada
+nunca.
 
 ### `/admin/*`
 

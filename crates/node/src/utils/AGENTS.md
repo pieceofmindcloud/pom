@@ -48,6 +48,12 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   lista **vazia** = não procure em lugar nenhum; `shard_dir` em branco cai para
   `<project_root>/models`. `shard_max_gb` limita somente a pasta de fatias e
   assume 100 GB quando falta em um `pom.json` antigo.
+- `max_output_tokens` (`DEFAULT_MAX_OUTPUT_TOKENS = 8192`) - teto **absoluto**
+  de tokens de saída de uma requisição, somando todas as pernas do laço de
+  continuação do gateway. Não é o `max_new_tokens` da implantação, que limita
+  só uma geração de backend; é o freio que impede um modelo em laço de ocupar o
+  nó depois que a perna deixou de encerrar a resposta. Ver
+  `docs/subsystems/inferencia.md`, seção 9.1.
 - `cache_type_k`/`cache_type_v` - tipo numérico do cache K/V para todos os
   contextos llama.cpp desta instalação. O padrão é `f16`; os valores aceitos
   são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e

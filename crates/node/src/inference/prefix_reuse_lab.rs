@@ -832,7 +832,7 @@ async fn conversa_com_hops_fault(
                 model: "lab".into(),
                 prompt,
                 chat_template: true,
-                max_tokens: 8,
+                budget: crate::gateway::OutputBudget::single(8),
                 stops: Vec::new(),
                 cache_key: Some(cache_key),
                 request_details: serde_json::json!({}),

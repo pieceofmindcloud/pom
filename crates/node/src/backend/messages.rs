@@ -375,7 +375,7 @@ async fn messages(
             error,
         );
     }
-    let max_tokens = output_limit.effective;
+    let budget = output_limit.budget();
 
     info!(
         "🤖 /v1/messages model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -393,7 +393,7 @@ async fn messages(
             auth.into_caller(),
             model,
             prompt,
-            max_tokens,
+            budget,
             id,
             input_tokens,
             stops,
@@ -407,7 +407,7 @@ async fn messages(
             auth.into_caller(),
             model,
             prompt,
-            max_tokens,
+            budget,
             id,
             input_tokens,
             stops,
@@ -428,6 +428,8 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
         .into_response()
 }
 
+/// `max_tokens` aqui é o **total** da requisição, não o teto de uma perna do
+/// laço de continuação: perna esgotada é meio de resposta, não fim de turno.
 fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
     if summary.tokens_generated >= max_tokens {
         "max_tokens"
@@ -445,7 +447,7 @@ async fn blocking_response(
     caller: crate::reqlog::Caller,
     model: String,
     prompt: String,
-    max_tokens: u32,
+    budget: crate::gateway::OutputBudget,
     id: String,
     input_tokens: u32,
     stops: Vec<String>,
@@ -461,7 +463,7 @@ async fn blocking_response(
             model: model.clone(),
             prompt,
             chat_template: true,
-            max_tokens,
+            budget,
             stops,
             cache_key,
             request_details,
@@ -471,7 +473,7 @@ async fn blocking_response(
     {
         Ok((text, summary)) => {
             let (content, saw_tool_call) = content_blocks(&parse_output(&text));
-            let reason = stop_reason(&summary, max_tokens, saw_tool_call);
+            let reason = stop_reason(&summary, budget.total, saw_tool_call);
             (
                 cors_headers(),
                 Json(json!({
@@ -507,6 +509,9 @@ async fn blocking_response(
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                         "output_limits": output_limit,
+                        // Quantas gerações de backend a resposta costurou.
+                        // `1` é uma só - ver `GenSummary::legs`.
+                        "continuation_legs": summary.legs,
                     },
                 })),
             )
@@ -521,7 +526,7 @@ fn stream_response(
     caller: crate::reqlog::Caller,
     model: String,
     prompt: String,
-    max_tokens: u32,
+    budget: crate::gateway::OutputBudget,
     id: String,
     input_tokens: u32,
     stops: Vec<String>,
@@ -538,7 +543,7 @@ fn stream_response(
             model: model.clone(),
             prompt,
             chat_template: true,
-            max_tokens,
+            budget,
             stops,
             cache_key,
             request_details,
@@ -546,7 +551,7 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, model, max_tokens, input_tokens, output_limit);
+    let stream = sse_stream(rx, id, model, budget.total, input_tokens, output_limit);
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -790,7 +795,10 @@ fn sse_stream(
                                     "stop_sequence": summary.stop_sequence,
                                 },
                                 "usage": { "output_tokens": summary.tokens_generated },
-                                "x_pom": { "output_limits": s.output_limit },
+                                "x_pom": {
+                                    "output_limits": s.output_limit,
+                                    "continuation_legs": summary.legs,
+                                },
                             }),
                         ));
                         s.queue
@@ -1033,6 +1041,7 @@ mod tests {
             partial: false,
             finish_reason: None,
             stop_sequence: None,
+            legs: 1,
             trace: None,
         };
         // Complete tool call within the budget remains tool_use.

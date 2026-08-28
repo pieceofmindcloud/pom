@@ -358,12 +358,19 @@ struct ModelProviderLimits {
     max_completion_tokens: Option<u32>,
 }
 
+/// O que um cliente pode pedir, anunciado em `/v1/models`.
+///
+/// `max_completion_tokens` é o teto da **requisição**, não o de uma geração de
+/// backend: o `max_new_tokens` da implantação virou o teto de uma perna do laço
+/// de continuação e já não limita a resposta. Anunciá-lo aqui faria o cliente
+/// pedir menos do que este nó entrega.
 async fn model_limits(state: &GatewayState) -> (Option<u32>, Option<u32>) {
+    let ceiling = state.absolute_output_ceiling().await;
     state
         .runtime
         .config()
         .await
-        .map(|cfg| (Some(cfg.n_ctx), Some(cfg.n_ctx.min(cfg.max_new_tokens))))
+        .map(|cfg| (Some(cfg.n_ctx), Some(cfg.n_ctx.min(ceiling))))
         .unwrap_or((None, None))
 }
 
@@ -503,7 +510,7 @@ async fn chat_completions(
         );
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
     }
-    let max_tokens = output_limit.effective;
+    let budget = output_limit.budget();
 
     info!(
         "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -523,7 +530,7 @@ async fn chat_completions(
             "/v1/chat/completions",
             model,
             prompt,
-            max_tokens,
+            budget,
             id,
             created,
             Mode::Chat,
@@ -539,7 +546,7 @@ async fn chat_completions(
             "/v1/chat/completions",
             model,
             prompt,
-            max_tokens,
+            budget,
             id,
             created,
             prompt_tokens,
@@ -573,7 +580,7 @@ async fn completions(
     if let Some(error) = output_limit.rejection_reason() {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
     }
-    let max_tokens = output_limit.effective;
+    let budget = output_limit.budget();
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
     let created = chrono::Utc::now().timestamp();
 
@@ -584,7 +591,7 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
-            max_tokens,
+            budget,
             id,
             created,
             Mode::Completion,
@@ -601,7 +608,7 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
-            max_tokens,
+            budget,
             id,
             created,
             prompt_tokens,
@@ -662,7 +669,7 @@ async fn blocking_response(
     route: &'static str,
     model: String,
     prompt: String,
-    max_tokens: u32,
+    budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
     prompt_tokens: u32,
@@ -680,7 +687,7 @@ async fn blocking_response(
             model: model.clone(),
             prompt,
             chat_template: mode.applies_chat_template(),
-            max_tokens,
+            budget,
             stops,
             cache_key,
             request_details,
@@ -693,7 +700,7 @@ async fn blocking_response(
                 Mode::Chat => chat_message_json(&parse_output(&text)),
                 Mode::Completion => (json!(text), false),
             };
-            let finish = finish_reason(&summary, max_tokens, saw_tool_call);
+            let finish = finish_reason(&summary, budget.total, saw_tool_call);
             let choice = match mode {
                 Mode::Chat => json!({
                     "index": 0,
@@ -742,6 +749,10 @@ async fn blocking_response(
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                         "output_limits": output_limit,
+                        // Quantas gerações de backend esta resposta costurou.
+                        // `1` é uma só; maior que `1` diz que a saída passou do
+                        // `max_new_tokens` da implantação sem que ele mudasse.
+                        "continuation_legs": summary.legs,
                     },
                 })),
             )
@@ -751,6 +762,11 @@ async fn blocking_response(
     }
 }
 
+/// `max_tokens` aqui é o **total** da requisição, nunca o teto de uma perna do
+/// laço de continuação: uma perna esgotada não é `length`, é o meio da
+/// resposta. Vazar o `length` intermediário para o cliente era o defeito - o
+/// harness lê `max_tokens` como condição terminal e larga a chamada de
+/// ferramenta pela metade.
 fn finish_reason(
     summary: &crate::gateway::GenSummary,
     max_tokens: u32,
@@ -810,7 +826,7 @@ fn stream_response(
     route: &'static str,
     model: String,
     prompt: String,
-    max_tokens: u32,
+    budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
     mode: Mode,
@@ -828,7 +844,7 @@ fn stream_response(
             model: model.clone(),
             prompt,
             chat_template: mode.applies_chat_template(),
-            max_tokens,
+            budget,
             stops,
             cache_key,
             request_details,
@@ -836,7 +852,7 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, created, model, mode, max_tokens, output_limit);
+    let stream = sse_stream(rx, id, created, model, mode, budget.total, output_limit);
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -1098,6 +1114,7 @@ fn chunk_json(
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
             "output_limits": output_limit,
+            "continuation_legs": summary.legs,
         });
     }
     payload.to_string()
@@ -1830,13 +1847,17 @@ mod tests {
         );
     }
 
+    /// `context_length` vem da implantação; `max_completion_tokens` vem do teto
+    /// da **requisição**. Anunciar o `max_new_tokens` (aqui, 1000) faria um
+    /// cliente pedir mil quando o nó entrega o teto absoluto inteiro.
     #[tokio::test]
-    async fn model_metadata_comes_from_the_loaded_deployment() {
+    async fn model_metadata_advertises_the_request_ceiling_not_the_leg() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let mut cfg = crate::gateway::testkit::spec_config();
         cfg.n_ctx = 100_000;
-        cfg.max_new_tokens = 32_768;
+        cfg.max_new_tokens = 1_000;
         state.runtime.seed_config_for_test(cfg).await;
+        state.auth.write().await.max_output_tokens = 32_768;
 
         let (context_length, max_completion_tokens) = model_limits(&state).await;
         let value = serde_json::to_value(model_object(
@@ -1863,6 +1884,7 @@ mod tests {
             partial: false,
             finish_reason: None,
             stop_sequence: None,
+            legs: 1,
             trace: None,
         };
         // Complete tool call within the budget: the model ended its turn by
@@ -2106,6 +2128,7 @@ mod tests {
             partial: false,
             finish_reason: None,
             stop_sequence: None,
+            legs: 1,
             trace: Some(crate::prefill::RequestTrace::new(
                 "qwen35",
                 &[("no1", 0, 15)],

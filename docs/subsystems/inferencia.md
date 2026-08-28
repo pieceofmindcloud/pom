@@ -1004,10 +1004,11 @@ resposta válida e mostravam apenas uma execução sem resposta. Requisições q
 cabem no orçamento mantêm o SSE e o caminho distribuído inalterados.
 
 O `POST /api/generate` aceita `max_tokens` opcional. Na ausência, usa 512;
-quando presente, exige valor maior que zero e no máximo o `max_new_tokens`
-configurado no nó, recusando 400 com os dois valores quando excede. O limite é
-o total de tokens de saída: o primeiro token devolvido pelo prefill já conta,
-portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de decode.
+quando presente, exige valor maior que zero e no máximo o `max_output_tokens`
+do `pom.json` (ver 9.1), recusando 400 com os dois valores quando excede. O
+limite é o total de tokens de saída: o primeiro token devolvido pelo prefill já
+conta, portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de
+decode.
 
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes
@@ -1021,6 +1022,58 @@ portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de decode.
   `stream_options.include_usage`. Config que fez funcionar para o agente padrão:
   `--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 32512
   tokens; sem uma janela compatível o nó responde HTTP 413 antes do SSE.
+
+### 9.1 Os dois orçamentos de saída e o laço de continuação
+
+O `max_new_tokens` da implantação **nunca foi limite do backend**. O
+`infer_server` não o conhece: ele decodifica enquanto o gateway pedir `/v1/step`.
+Ele sempre foi um corte do gateway - e cortar ali, calado, era o defeito. Medido
+no cluster em 2026-08-27, `max_tokens: 4000` contra uma implantação de 1000
+devolvia 1000 tokens e `finish_reason: "length"`, sem erro nenhum; com uma
+ferramenta declarada, o corte caía **dentro** do `<tool_call>` e a resposta
+voltava sem `tool_calls`, com a chamada inacabada degradada em texto solto. Um
+harness que trate `max_tokens` como condição terminal - o opencode trata - larga
+o turno aí e o arquivo fica pela metade.
+
+Hoje são **dois números**, e nunca um só (`gateway::OutputBudget`):
+
+| | quem decide | o que limita |
+|---|---|---|
+| **perna** (`leg`) | `NodeConfig.max_new_tokens` da implantação | **uma** geração de backend |
+| **total** (`total`) | `min(pedido, max_output_tokens, n_ctx - prompt)` | a **requisição inteira** |
+
+Esgotar a perna não encerra a resposta. `gateway::note_leg_boundary` conta a
+perna e o laço segue decodificando na **mesma** sessão de KV, na mesma conexão,
+no mesmo fluxo SSE: nada é reprefilado, nada é reenviado, o cliente não tem como
+distinguir a costura. Só o **total** encerra, e só ele produz
+`finish_reason: "length"`. O `x_pom.continuation_legs` diz quantas pernas a
+resposta usou - `1` é uma geração só.
+
+Isso vale para `stream: true` e `stream: false` pelo mesmo caminho: o
+`stream: false` costura internamente e devolve uma resposta única. A análise da
+chamada de ferramenta acontece sobre a saída **completa** nos dois - o
+`TagScanner` só é fechado (`finish()`) no fim de verdade -, porque um pedaço
+intermediário é tag inacabada por construção.
+
+**O teto absoluto é obrigatório.** Sem ele um modelo em laço ocuparia o nó
+indefinidamente, já que a perna deixou de encerrar a resposta.
+`max_output_tokens` no `pom.json` (padrão `DEFAULT_MAX_OUTPUT_TOKENS = 8192`) é
+esse freio, e é ele que aparece como `absolute_max_tokens` no
+`x_pom.output_limits`. Zero ali é recusa nomeada, não corte.
+
+**Por que não há reprefill.** O laço não reabre geração: ele continua a que já
+está aberta. A alternativa - encerrar a perna, reabrir com o texto gerado como
+prefixo e contar com o cache de prefixo - custaria reprefill do que já saiu, a
+cada perna, e ocuparia exatamente o mesmo KV no fim. Não há vantagem nenhuma em
+pagar por ela.
+
+**Limite conhecido.** `context_available` usa `cfg.n_ctx`, que é a capacidade
+total do contexto; com um pool (`max_sessions > 1`) cada contexto recebe
+`n_ctx / n`, então esse número é otimista. É imprecisão anterior a esta
+funcionalidade, e o `max_output_tokens` conservador é o que a mantém inofensiva
+na prática.
+
+A bancada é `crates/node/src/backend/continuation_lab.rs`.
 
 ## 10. O canal de cada salto na telemetria
 

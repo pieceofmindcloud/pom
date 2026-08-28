@@ -111,18 +111,30 @@ behind an auth extractor.
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
 - `openai.rs` - OpenAI-compatible `/v1/*` on top of the generation path;
-  `max_tokens` uses the selected deployment's `NodeConfig.max_new_tokens` and
-  the remaining `n_ctx` after the prompt, with `DEFAULT_MAX_TOKENS=512` only as
-  the absent-request fallback. A reduction is logged and returned in the
-  `x_pom.output_limits` extension. Streaming and blocking paths use the same
-  finish-reason ordering, so an exhausted budget is `length` even when a tool
-  call was parsed; the audit row for that result is `incomplete`, while a
-  transport failure remains `partial`. `/v1/models` exposes `context_length`
-  and the OpenRouter-compatible `top_provider.max_completion_tokens` from the
-  live deployment.
+  `max_tokens` da requisição é `min(pedido, max_output_tokens do pom.json,
+  n_ctx restante)`, com `DEFAULT_MAX_TOKENS=512` só como padrão de quem não
+  pede. O `max_new_tokens` da implantação **não** entra nessa conta: ele é o
+  teto de uma **perna** do laço de continuação (ver `gateway.rs` abaixo). A
+  redução é registrada e devolvida em `x_pom.output_limits`
+  (`requested`/`effective`/`deployment`/`context_available`/`absolute`/`leg`),
+  e `x_pom.continuation_legs` diz quantas pernas a resposta costurou.
+  Streaming e blocking usam a mesma ordem de finish-reason, então orçamento
+  **total** esgotado é `length` mesmo com chamada de ferramenta lida; perna
+  esgotada nunca é. A linha de auditoria desse resultado é `incomplete`,
+  enquanto falha de transporte continua `partial`. `/v1/models` expõe
+  `context_length` e o `top_provider.max_completion_tokens`
+  compatível com OpenRouter, que é o teto da **requisição**
+  (`min(n_ctx, max_output_tokens)`), não o de uma perna.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
-  and finish-reason rules, with `x_pom.output_limits` on blocking responses and
-  the final streaming `message_delta`.
+  and finish-reason rules, with `x_pom.output_limits` and
+  `x_pom.continuation_legs` on blocking responses and the final streaming
+  `message_delta`.
+- `continuation_lab.rs` (`#[cfg(test)]`) - bancada do laço de continuação: dois
+  hops falsos, as rotas `/v1` de verdade num socket TCP e `reqwest` do outro
+  lado, inclusive lendo o SSE byte a byte. Prova que a saída volta inteira, que
+  a costura não aparece como `finish_reason` intermediário nem como segundo
+  `[DONE]`, que a chamada de ferramenta chega com JSON completo, e que o teto
+  absoluto para um modelo em laço.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` (185) - operator control plane: nodes, block/unblock, keys.
@@ -211,17 +223,30 @@ behind an auth extractor.
   touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
   `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
   JSON body (used by the transfer, deploy and webui tests).
-- `gateway.rs` - `/api/generate` aceita `max_tokens` opcional (padrão 512),
-  valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
-  prefill no orçamento total, sem o overshoot histórico de 513 tokens; a
-  resposta separa TTFT, velocidade do prefill, velocidade da geração e total
-  em `timings`. `generation_finish_reason` testa o orçamento antes do EOS em
-  cada ramo de decodificação; `audit_status_for_summary` registra `length` como
-  `incomplete`, e reserva `partial` para falha de transporte com texto salvo.
+- `gateway.rs` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
+  número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
+  de backend, escolha do operador, que a decisão do produto proíbe levantar.
+  `total` é o teto da **requisição**: `min(pedido, max_output_tokens do
+  pom.json, n_ctx restante)`. Esgotar a perna não encerra a resposta -
+  `note_leg_boundary` conta a perna e o laço segue decodificando na **mesma**
+  sessão de KV, no mesmo fluxo SSE, sem reprefill e sem o cliente ver nada
+  (`GenSummary::legs` é o que torna a costura inspecionável). O
+  `max_new_tokens` nunca foi limite do backend - o `infer_server` não o conhece;
+  sempre foi um corte do gateway, e cortar aí calado era o defeito. Só `total`
+  produz `finish_reason: "length"`. `/api/generate` aceita `max_tokens`
+  opcional (padrão 512) e o recusa quando passa do `max_output_tokens` - recusa,
+  não corte -, e conta o primeiro token do prefill no orçamento, sem o overshoot
+  histórico de 513 tokens; a resposta separa TTFT, velocidade do prefill,
+  velocidade da geração e total em `timings`. `generation_finish_reason` testa o
+  orçamento total antes do EOS em cada ramo de decodificação;
+  `audit_status_for_summary` registra `length` como `incomplete`, e reserva
+  `partial` para falha de transporte com texto salvo.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective
-  request budget is the minimum of the client request, deployment
-  `max_new_tokens` and the remaining `n_ctx` after the prompt;
+  request budget is the minimum of the client request, the configured
+  `max_output_tokens` ceiling and the remaining `n_ctx` after the prompt - the
+  deployment's `max_new_tokens` bounds one leg of the continuation loop, not the
+  request;
   `render_prompt` flattens the conversation into one user message, labelling
   **every** turn including the first, so one turn's prompt is an exact prefix of
   the next one's - the property the prefix cache rests on; raw, unlabelled text

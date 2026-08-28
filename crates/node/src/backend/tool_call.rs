@@ -231,6 +231,15 @@ impl TagScanner {
         }
     }
 
+    /// `true` enquanto uma chamada de ferramenta está aberta e não fechou.
+    ///
+    /// É o que deixa o teto de saída ser conferido em **ponto seguro**: o
+    /// gateway não encerra a resposta aqui dentro, porque encerrar aqui é o
+    /// que produzia uma chamada pela metade.
+    pub(crate) fn inside_call(&self) -> bool {
+        matches!(self.state, ScanState::Inside(_, _))
+    }
+
     pub(crate) fn feed(&mut self, chunk: &str) -> Vec<ScanEvent> {
         self.pending.push_str(chunk);
         let mut events = Vec::new();
@@ -313,9 +322,13 @@ impl TagScanner {
         events
     }
 
-    /// Whatever never resolved into a complete tag by the time generation
-    /// ends — a dangling `<tool_c` fragment, or a whole tool call cut off by
-    /// `max_tokens` before its closing tag arrived. Nothing is dropped.
+    /// Whatever never resolved into a complete tag by the time the **model**
+    /// stopped — a dangling `<tool_c` fragment, or a call the model abandoned
+    /// before closing. Nothing is dropped: o modelo escolheu parar ali, e o
+    /// texto que ele produziu é a resposta dele.
+    ///
+    /// Para o fim que não é escolha do modelo - o orçamento acabou - use
+    /// [`TagScanner::finish_truncated`], que descarta em vez de degradar.
     pub(crate) fn finish(self) -> Vec<ScanEvent> {
         match self.state {
             ScanState::Outside if self.pending.is_empty() => Vec::new(),
@@ -325,6 +338,29 @@ impl TagScanner {
                 kind.open(),
                 self.pending
             ))],
+        }
+    }
+
+    /// Como [`TagScanner::finish`], mas para o fim imposto de fora: o teto de
+    /// saída se esgotou no meio da geração.
+    ///
+    /// Com uma chamada **aberta e não fechada**, o fragmento é descartado: o
+    /// scanner recua até antes da abertura, que é o único ponto que ele conhece
+    /// com certeza. Degradar o fragmento em texto entregaria ao cliente
+    /// `<tool_call><function=…>` cru como se fosse a resposta do assistente -
+    /// e o cliente não teria como distinguir isso de prosa. Prever se a chamada
+    /// caberia no orçamento é impossível; saber onde ela começou, não.
+    ///
+    /// Nada é descartado calado: o `bool` de retorno é `true` quando houve
+    /// descarte, e é o que faz `x_pom.partial` dizer a verdade.
+    ///
+    /// Fora de uma chamada nada muda - texto truncado continua sendo texto, e
+    /// um prefixo pendente de tag (`<tool_c`) nunca chegou a abrir chamada
+    /// nenhuma.
+    pub(crate) fn finish_truncated(self) -> (Vec<ScanEvent>, bool) {
+        match self.state {
+            ScanState::Inside(_, _) => (Vec::new(), true),
+            _ => (self.finish(), false),
         }
     }
 }
@@ -496,6 +532,18 @@ pub(crate) fn parse_output(text: &str) -> Vec<OutputPart> {
     let mut events = scanner.feed(text);
     events.extend(scanner.finish());
     merge_adjacent_text(events_to_parts(events))
+}
+
+/// [`parse_output`] para uma saída cortada pelo teto de tokens, e não pelo
+/// modelo: uma chamada aberta e não fechada é descartada em vez de degradar em
+/// texto. O `bool` diz se houve descarte - ver
+/// [`TagScanner::finish_truncated`].
+pub(crate) fn parse_output_truncated(text: &str) -> (Vec<OutputPart>, bool) {
+    let mut scanner = TagScanner::new();
+    let mut events = scanner.feed(text);
+    let (tail, discarded) = scanner.finish_truncated();
+    events.extend(tail);
+    (merge_adjacent_text(events_to_parts(events)), discarded)
 }
 
 #[cfg(test)]

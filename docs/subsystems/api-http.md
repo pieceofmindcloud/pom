@@ -99,7 +99,8 @@ ele é o teto de uma **perna** do laço de continuação, que o gateway atravess
 sem fechar o SSE (ver `inferencia.md`, seção 9.1). Se o total for reduzido, o
 gateway registra a redução e a devolve em `x_pom.output_limits`
 (`requested_max_tokens`, `effective_max_tokens`, `deployment_max_tokens`,
-`context_available_tokens`, `absolute_max_tokens`, `leg_max_tokens`); se o
+`context_available_tokens`, `absolute_max_tokens`, `leg_max_tokens`,
+`tool_call_grace_max_tokens`); se o
 contexto não deixar nenhum token, responde HTTP 413 antes de abrir o SSE.
 `x_pom.continuation_legs` diz quantas pernas a resposta costurou - `1` é uma
 geração só. Assim, uma saída que esgota o orçamento **total** recebe
@@ -108,10 +109,19 @@ reconhecida, e a auditoria registra esse término como `incomplete` (`partial`
 fica reservado para falha de transporte com texto salvo). Uma perna esgotada
 nunca produz `length`: o cliente não tem como distinguir a costura, e era
 justamente esse `length` intermediário que fazia um harness largar a chamada de
-ferramenta pela metade. O scanner compartilhado reconhece os marcadores declarados em
+ferramenta pela metade. O total, por sua vez, nunca corta **dentro** de uma
+chamada de ferramenta: enquanto ela está aberta o gateway continua o laço,
+gastando no máximo `tool_call_grace_tokens`, e `x_pom.tool_call_grace_tokens`
+diz quanto disso foi usado. Chamada que fecha na folga é `tool_calls`; folga
+esgotada sem fechar é `length` com `x_pom.discarded_tool_call: true` e o
+conteúdo cortado antes da abertura da tag. Nos dois casos `x_pom.partial` é
+`true`, porque o orçamento pedido foi ultrapassado. O scanner compartilhado
+reconhece os marcadores declarados em
 `CALL_FORMATS`, preserva texto anterior à chamada, transforma todas as chamadas
 completas em `tool_calls` e, no SSE, em deltas indexados. Um marcador incompleto
-no fim da resposta volta como conteúdo literal para não desaparecer. Todas as
+que o **modelo** deixou pela metade volta como conteúdo literal para não
+desaparecer; um que o **teto** cortou é descartado, e é essa a diferença entre
+`TagScanner::finish` e `finish_truncated`. Todas as
 respostas válidas levam a extensão `x_pom` (fora do schema) com a prova de
 execução distribuída e o
 objeto próprio `timings`; o campo OpenAI `stop`

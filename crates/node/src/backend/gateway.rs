@@ -478,13 +478,21 @@ pub struct OutputBudget {
     pub total: u32,
     /// Teto de uma perna.
     pub leg: u32,
+    /// Tokens extras liberados **só** para fechar uma chamada de ferramenta
+    /// que já estava aberta quando `total` se esgotou. Ver
+    /// `ToolCallGate::ceiling`.
+    pub grace: u32,
 }
 
 impl OutputBudget {
     /// Um orçamento sem continuação: uma perna que já é a requisição inteira.
     /// É o que os testes e as bancadas usam quando o laço não é o assunto.
     pub fn single(total: u32) -> Self {
-        Self { total, leg: total }
+        Self {
+            total,
+            leg: total,
+            grace: 0,
+        }
     }
 
     /// Números utilizáveis: nunca zero, e a perna nunca maior que o total.
@@ -493,6 +501,44 @@ impl OutputBudget {
         Self {
             total,
             leg: self.leg.clamp(1, total),
+            grace: self.grace,
+        }
+    }
+}
+
+/// Onde o teto de saída pode ser conferido sem estragar a resposta.
+///
+/// O gateway acompanha a saída com o **mesmo** `TagScanner` que os adaptadores
+/// usam, então os dois nunca discordam sobre onde uma chamada de ferramenta
+/// começa. Enquanto uma chamada está aberta o teto não encerra nada: o laço
+/// segue até ela fechar, gastando no máximo `budget.grace` tokens a mais.
+/// Esgotar a folga com a chamada ainda aberta é o único caso em que o corte
+/// acontece lá dentro - e aí o adaptador recua até antes da abertura em vez de
+/// entregar marcação crua (ver `TagScanner::finish_truncated`).
+struct ToolCallGate {
+    scanner: crate::tool_call::TagScanner,
+}
+
+impl ToolCallGate {
+    fn new() -> Self {
+        Self {
+            scanner: crate::tool_call::TagScanner::new(),
+        }
+    }
+
+    /// Contabiliza o texto de um token confirmado. Os eventos são descartados:
+    /// aqui só interessa em que estado o scanner ficou.
+    fn observe(&mut self, text: &str) {
+        let _ = self.scanner.feed(text);
+    }
+
+    /// O teto que vale agora: o total, ou o total mais a folga enquanto uma
+    /// chamada de ferramenta estiver aberta.
+    fn ceiling(&self, budget: OutputBudget) -> u32 {
+        if self.scanner.inside_call() {
+            budget.total.saturating_add(budget.grace)
+        } else {
+            budget.total
         }
     }
 }
@@ -519,6 +565,11 @@ pub struct OutputTokenLimit {
     /// Tokens que cabem numa perna: `min(deployment, effective)`.
     #[serde(rename = "leg_max_tokens")]
     pub leg: u32,
+    /// Folga concedida só para fechar uma chamada de ferramenta já aberta
+    /// (`tool_call_grace_tokens` do `pom.json`). Não entra no `effective`:
+    /// nenhuma requisição a gasta sem ter aberto uma chamada.
+    #[serde(rename = "tool_call_grace_max_tokens")]
+    pub tool_call_grace: u32,
 }
 
 impl OutputTokenLimit {
@@ -531,6 +582,7 @@ impl OutputTokenLimit {
         OutputBudget {
             total: self.effective,
             leg: self.leg,
+            grace: self.tool_call_grace,
         }
     }
 
@@ -574,6 +626,7 @@ pub fn output_token_limit(
     context_length: Option<u32>,
     prompt_tokens: u32,
     absolute: u32,
+    tool_call_grace: u32,
 ) -> OutputTokenLimit {
     let requested = requested.max(1);
     let context_available = context_length.map(|context| context.saturating_sub(prompt_tokens));
@@ -586,6 +639,13 @@ pub fn output_token_limit(
     // sendo uma perna de 10, e o laço nem abre.
     let leg = deployment.unwrap_or(effective).min(effective);
 
+    // A folga nunca ultrapassa o contexto que sobrou: prometer tokens que não
+    // cabem no KV seria trocar um corte por um erro de contexto.
+    let tool_call_grace = match context_available {
+        Some(disponivel) => tool_call_grace.min(disponivel.saturating_sub(effective)),
+        None => tool_call_grace,
+    };
+
     OutputTokenLimit {
         requested,
         effective,
@@ -593,6 +653,7 @@ pub fn output_token_limit(
         context_available,
         absolute,
         leg,
+        tool_call_grace,
     }
 }
 
@@ -607,6 +668,7 @@ impl GatewayState {
             runtime.as_ref().map(|cfg| cfg.n_ctx),
             estimate_tokens(prompt),
             self.absolute_output_ceiling().await,
+            self.auth.read().await.tool_call_grace_tokens,
         )
     }
 
@@ -1041,14 +1103,14 @@ fn summary_for(
 /// seguinte e segue decodificando na mesma sessão de KV e no mesmo fluxo SSE,
 /// então nada disso é observável do lado do cliente. Só o total encerra, e só
 /// ele vira `finish_reason: "length"`.
-fn note_leg_boundary(budget: OutputBudget, tokens_generated: u32, legs: &mut u32) {
-    if tokens_generated.is_multiple_of(budget.leg) && tokens_generated < budget.total {
+fn note_leg_boundary(budget: OutputBudget, ceiling: u32, tokens_generated: u32, legs: &mut u32) {
+    if tokens_generated.is_multiple_of(budget.leg) && tokens_generated < ceiling {
         *legs += 1;
         info!(
             legs = *legs,
             tokens_generated,
             leg_max_tokens = budget.leg,
-            total_max_tokens = budget.total,
+            total_max_tokens = ceiling,
             "perna esgotada: continuando a mesma geração na perna seguinte"
         );
     }
@@ -1272,6 +1334,9 @@ async fn generate_stream_inner(
     let mut tokens_generated: u32 = 0;
     // Pernas costuradas até agora. Começa em 1: toda resposta tem uma.
     let mut legs: u32 = 1;
+    // Onde o teto de saída pode ser conferido sem cortar uma chamada de
+    // ferramenta ao meio.
+    let mut gate = ToolCallGate::new();
     let mut retained_prefix_tokens: Option<u32> = None;
     // Quantos tokens do prompt a cabeça de fato não reprocessou. Não é a
     // escolha do cache, é o que o pipeline executou - ver
@@ -1472,7 +1537,8 @@ async fn generate_stream_inner(
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         tokens_generated += 1;
-        note_leg_boundary(budget, tokens_generated, &mut legs);
+        gate.observe(&first.text);
+        note_leg_boundary(budget, gate.ceiling(budget), tokens_generated, &mut legs);
         match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
             StopSend::Disconnected => {
                 info!("cliente desconectou logo após o prompt");
@@ -1494,7 +1560,9 @@ async fn generate_stream_inner(
             }
             StopSend::Continue => {}
         }
-        if generation_finish_reason(budget.total, tokens_generated, first.done) == Some("length") {
+        if generation_finish_reason(gate.ceiling(budget), tokens_generated, first.done)
+            == Some("length")
+        {
             if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                 return;
             }
@@ -1549,7 +1617,7 @@ async fn generate_stream_inner(
             // recusa da cabeça é esperada) das seguintes (o rascunho foi
             // mandado — ignorado aí é motivo para parar).
             let mut stored_draft: Option<Vec<i32>> = None;
-            while remaining_generation_steps(budget.total, tokens_generated) > 0 {
+            while remaining_generation_steps(gate.ceiling(budget), tokens_generated) > 0 {
                 if cancellation.is_cancelled() {
                     return;
                 }
@@ -1674,14 +1742,16 @@ async fn generate_stream_inner(
                 // stream only what fits, and note it so `step.done` (which
                 // may refer to a position we never even looked at) isn't
                 // trusted past the cut.
-                let remaining = remaining_generation_steps(budget.total, tokens_generated) as usize;
+                let remaining =
+                    remaining_generation_steps(gate.ceiling(budget), tokens_generated) as usize;
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
-                    note_leg_boundary(budget, tokens_generated, &mut legs);
+                    gate.observe(text);
+                    note_leg_boundary(budget, gate.ceiling(budget), tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
                             info!("cliente desconectou após {tokens_generated} tokens");
@@ -1706,7 +1776,7 @@ async fn generate_stream_inner(
                 }
 
                 let finish_reason = generation_finish_reason(
-                    budget.total,
+                    gate.ceiling(budget),
                     tokens_generated,
                     step.done && !truncated_by_budget,
                 );
@@ -1796,7 +1866,7 @@ async fn generate_stream_inner(
             return;
         }
 
-        while remaining_generation_steps(budget.total, tokens_generated) > 0 {
+        while remaining_generation_steps(gate.ceiling(budget), tokens_generated) > 0 {
             let res = crate::prefill::step(
                 &plan,
                 model,
@@ -1818,7 +1888,8 @@ async fn generate_stream_inner(
                     let (token_id, text) = &step.accepted[0];
                     next_token = *token_id;
                     tokens_generated += 1;
-                    note_leg_boundary(budget, tokens_generated, &mut legs);
+                    gate.observe(text);
+                    note_leg_boundary(budget, gate.ceiling(budget), tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
                             // Client hung up; stop burning GPU time on a dead request.
@@ -1842,7 +1913,7 @@ async fn generate_stream_inner(
                         StopSend::Continue => {}
                     }
                     let finish_reason =
-                        generation_finish_reason(budget.total, tokens_generated, step.done);
+                        generation_finish_reason(gate.ceiling(budget), tokens_generated, step.done);
 
                     if finish_reason.is_some() {
                         if !flush_stop_matcher(&tx, &mut stop_matcher).await {
@@ -2445,6 +2516,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         None => state.active_model().await,
     };
     let absolute_limit = state.absolute_output_ceiling().await;
+    let state_grace = state.auth.read().await.tool_call_grace_tokens;
     let leg_limit = state
         .runtime
         .config()
@@ -2502,6 +2574,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
             budget: OutputBudget {
                 total: max_tokens,
                 leg: leg_limit.min(max_tokens),
+                grace: state_grace,
             },
             stops,
             request_details,
@@ -2911,7 +2984,7 @@ mod budget_tests {
     /// devolvia 1000 tokens a quem pediu 4000, calado.
     #[test]
     fn the_deployment_ceiling_bounds_a_leg_and_no_longer_bounds_the_request() {
-        let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18, 8_192);
+        let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18, 8_192, 0);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.deployment, Some(1_000));
         assert_eq!(limit.effective, 4_000, "o cliente recebe o que pediu");
@@ -2923,7 +2996,7 @@ mod budget_tests {
 
     #[test]
     fn the_absolute_ceiling_is_what_clamps_a_runaway_request() {
-        let limit = output_token_limit(50_000, Some(1_000), Some(200_000), 2_000, 8_192);
+        let limit = output_token_limit(50_000, Some(1_000), Some(200_000), 2_000, 8_192, 0);
         assert_eq!(limit.effective, 8_192);
         assert_eq!(limit.absolute, 8_192);
         assert!(limit.was_clamped());
@@ -2931,7 +3004,7 @@ mod budget_tests {
 
     #[test]
     fn the_remaining_context_still_clamps_below_the_absolute_ceiling() {
-        let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000, 100_000);
+        let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000, 100_000, 0);
         assert_eq!(limit.context_available, Some(1_000));
         assert_eq!(limit.effective, 1_000);
         assert_eq!(limit.leg, 1_000, "a perna nunca passa do total");
@@ -2941,7 +3014,7 @@ mod budget_tests {
 
     #[test]
     fn requested_client_limit_is_effective_when_it_fits_under_every_ceiling() {
-        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000, 8_192);
+        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000, 8_192, 0);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.effective, 4_000);
         assert_eq!(limit.leg, 4_000);
@@ -2951,7 +3024,7 @@ mod budget_tests {
 
     #[test]
     fn output_limit_preserves_the_requested_value_when_no_deployment_is_loaded() {
-        let limit = output_token_limit(8_192, None, None, 0, 8_192);
+        let limit = output_token_limit(8_192, None, None, 0, 8_192, 0);
         assert_eq!(limit.effective, 8_192);
         assert_eq!(limit.leg, 8_192);
         assert!(!limit.was_clamped());
@@ -2959,7 +3032,7 @@ mod budget_tests {
 
     #[test]
     fn output_limit_reports_no_capacity_when_the_prompt_fills_the_context() {
-        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000, 8_192);
+        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000, 8_192, 0);
         assert_eq!(limit.effective, 0);
         assert!(limit.was_clamped());
         assert!(limit
@@ -2970,7 +3043,7 @@ mod budget_tests {
 
     #[test]
     fn a_deployment_that_cannot_generate_is_still_a_refusal_not_a_silent_cut() {
-        let limit = output_token_limit(4_000, Some(0), Some(100_000), 10, 8_192);
+        let limit = output_token_limit(4_000, Some(0), Some(100_000), 10, 8_192, 0);
         assert_eq!(limit.leg, 0);
         assert!(limit
             .rejection_reason()
@@ -2980,7 +3053,7 @@ mod budget_tests {
 
     #[test]
     fn an_absolute_ceiling_of_zero_is_refused_by_name() {
-        let limit = output_token_limit(4_000, Some(1_000), Some(100_000), 10, 0);
+        let limit = output_token_limit(4_000, Some(1_000), Some(100_000), 10, 0, 0);
         assert_eq!(limit.effective, 0);
         assert!(limit
             .rejection_reason()
@@ -2994,18 +3067,39 @@ mod budget_tests {
     #[test]
     fn the_budget_normalizes_to_usable_numbers() {
         assert_eq!(
-            OutputBudget { total: 0, leg: 0 }.normalized(),
-            OutputBudget { total: 1, leg: 1 }
+            OutputBudget {
+                total: 0,
+                leg: 0,
+                grace: 0
+            }
+            .normalized(),
+            OutputBudget {
+                total: 1,
+                leg: 1,
+                grace: 0
+            }
         );
         assert_eq!(
             OutputBudget {
                 total: 10,
-                leg: 1_000
+                leg: 1_000,
+                grace: 5
             }
             .normalized(),
-            OutputBudget { total: 10, leg: 10 }
+            OutputBudget {
+                total: 10,
+                leg: 10,
+                grace: 5
+            }
         );
-        assert_eq!(OutputBudget::single(7).normalized(), OutputBudget { total: 7, leg: 7 });
+        assert_eq!(
+            OutputBudget::single(7).normalized(),
+            OutputBudget {
+                total: 7,
+                leg: 7,
+                grace: 0
+            }
+        );
     }
 
     /// A contagem de pernas é o que torna a costura inspecionável. Ela avança
@@ -3016,11 +3110,12 @@ mod budget_tests {
         let budget = OutputBudget {
             total: 10,
             leg: 4,
+            grace: 0,
         };
         let mut legs = 1;
         let mut observed = Vec::new();
         for tokens in 1..=10u32 {
-            note_leg_boundary(budget, tokens, &mut legs);
+            note_leg_boundary(budget, budget.total, tokens, &mut legs);
             observed.push(legs);
         }
         assert_eq!(observed, vec![1, 1, 1, 2, 2, 2, 2, 3, 3, 3]);
@@ -3029,10 +3124,14 @@ mod budget_tests {
 
     #[test]
     fn a_generation_that_fits_one_leg_reports_a_single_leg() {
-        let budget = OutputBudget { total: 100, leg: 100 };
+        let budget = OutputBudget {
+            total: 100,
+            leg: 100,
+            grace: 0,
+        };
         let mut legs = 1;
         for tokens in 1..=100u32 {
-            note_leg_boundary(budget, tokens, &mut legs);
+            note_leg_boundary(budget, budget.total, tokens, &mut legs);
         }
         assert_eq!(legs, 1, "acabar o total não abre perna nenhuma");
     }
@@ -3292,6 +3391,7 @@ pub(crate) mod testkit {
             audit: crate::reqlog::AuditLog::new(std::path::PathBuf::from(":memory:")),
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
+                tool_call_grace_tokens: crate::config::DEFAULT_TOOL_CALL_GRACE_TOKENS,
                 gpus: None,
                 thermal: Default::default(),
                 cache_type_k: crate::config::KvCacheType::F16,

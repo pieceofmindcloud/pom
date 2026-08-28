@@ -39,7 +39,8 @@ use crate::gateway::{
 };
 use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
 use crate::tool_call::{
-    parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
+    parse_output, parse_output_truncated, render_tool_call, render_tools_block, OutputPart,
+    ScanEvent, TagScanner, ToolDef,
 };
 use axum::{
     extract::State,
@@ -430,8 +431,21 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
 
 /// `max_tokens` aqui é o **total** da requisição, não o teto de uma perna do
 /// laço de continuação: perna esgotada é meio de resposta, não fim de turno.
-fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
-    if summary.tokens_generated >= max_tokens {
+/// Mesmo raciocínio de `openai::finish_reason`, no vocabulário da Anthropic:
+/// a folga só é gasta com uma chamada aberta, então passar do teto com a
+/// chamada fechada quer dizer que o turno terminou na chamada; recuo por folga
+/// esgotada é `max_tokens`, porque o que acabou foi o orçamento.
+fn stop_reason(
+    summary: &GenSummary,
+    max_tokens: u32,
+    saw_tool_call: bool,
+    discarded_tool_call: bool,
+) -> &'static str {
+    if discarded_tool_call {
+        "max_tokens"
+    } else if saw_tool_call && summary.tokens_generated > max_tokens {
+        "tool_use"
+    } else if summary.tokens_generated >= max_tokens {
         "max_tokens"
     } else if saw_tool_call {
         "tool_use"
@@ -472,8 +486,16 @@ async fn blocking_response(
     .await
     {
         Ok((text, summary)) => {
-            let (content, saw_tool_call) = content_blocks(&parse_output(&text));
-            let reason = stop_reason(&summary, budget.total, saw_tool_call);
+            // Mesmo recuo do adaptador OpenAI: teto esgotado com uma chamada
+            // aberta descarta o fragmento em vez de degradá-lo em texto cru.
+            let truncated = summary.finish_reason.as_deref() == Some("length");
+            let (parts, discarded_tool_call) = if truncated {
+                parse_output_truncated(&text)
+            } else {
+                (parse_output(&text), false)
+            };
+            let (content, saw_tool_call) = content_blocks(&parts);
+            let reason = stop_reason(&summary, budget.total, saw_tool_call, discarded_tool_call);
             (
                 cors_headers(),
                 Json(json!({
@@ -504,7 +526,11 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "timings": summary.timings,
-                        "partial": summary.partial,
+                        // Folga gasta e descarte deliberado também são
+                        // resposta parcial - ver `openai::blocking_response`.
+                        "partial": summary.partial
+                            || discarded_tool_call
+                            || summary.tokens_generated > budget.total,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
@@ -512,6 +538,10 @@ async fn blocking_response(
                         // Quantas gerações de backend a resposta costurou.
                         // `1` é uma só - ver `GenSummary::legs`.
                         "continuation_legs": summary.legs,
+                        "discarded_tool_call": discarded_tool_call,
+                        "tool_call_grace_tokens": summary
+                            .tokens_generated
+                            .saturating_sub(budget.total),
                     },
                 })),
             )
@@ -767,7 +797,12 @@ fn sse_stream(
                     }
                     Some(GenEvent::Done(summary)) => {
                         let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
-                        let finish_events = scanner.finish();
+                        let (finish_events, discarded_tool_call) =
+                            if summary.finish_reason.as_deref() == Some("length") {
+                                scanner.finish_truncated()
+                            } else {
+                                (scanner.finish(), false)
+                            };
                         let mut pairs = Vec::new();
                         apply_scan_events(
                             finish_events,
@@ -785,7 +820,12 @@ fn sse_stream(
                                 json!({ "type": "content_block_stop", "index": idx }),
                             ));
                         }
-                        let reason = stop_reason(&summary, s.max_tokens, s.saw_tool_call);
+                        let reason = stop_reason(
+                            &summary,
+                            s.max_tokens,
+                            s.saw_tool_call,
+                            discarded_tool_call,
+                        );
                         s.queue.push_back(ev(
                             "message_delta",
                             json!({
@@ -798,6 +838,10 @@ fn sse_stream(
                                 "x_pom": {
                                     "output_limits": s.output_limit,
                                     "continuation_legs": summary.legs,
+                                    "discarded_tool_call": discarded_tool_call,
+                                    "tool_call_grace_tokens": summary
+                                        .tokens_generated
+                                        .saturating_sub(s.output_limit.effective),
                                 },
                             }),
                         ));
@@ -1045,16 +1089,20 @@ mod tests {
             trace: None,
         };
         // Complete tool call within the budget remains tool_use.
-        assert_eq!(stop_reason(&summary(5), 100, true), "tool_use");
+        assert_eq!(stop_reason(&summary(5), 100, true, false), "tool_use");
         // Exhausting the budget wins over a parsed call in both blocking and
         // streaming responses.
-        assert_eq!(stop_reason(&summary(100), 100, true), "max_tokens");
+        assert_eq!(stop_reason(&summary(100), 100, true, false), "max_tokens");
         // Plain text cut by the budget reports max_tokens.
-        assert_eq!(stop_reason(&summary(100), 100, false), "max_tokens");
+        assert_eq!(stop_reason(&summary(100), 100, false, false), "max_tokens");
         // Plain text ending before the budget uses the normal stop sequence.
         let mut stopped = summary(5);
         stopped.finish_reason = Some("stop".into());
-        assert_eq!(stop_reason(&stopped, 100, false), "stop_sequence");
+        assert_eq!(stop_reason(&stopped, 100, false, false), "stop_sequence");
+        // Ver `openai::finish_reason_reflects_the_limit_and_tool_calls`: os
+        // dois adaptadores decidem igual, em vocabulários diferentes.
+        assert_eq!(stop_reason(&summary(110), 100, true, false), "tool_use");
+        assert_eq!(stop_reason(&summary(150), 100, false, true), "max_tokens");
     }
 
     // ── content_blocks ───────────────────────────────────────────────────────

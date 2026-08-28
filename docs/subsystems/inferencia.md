@@ -1061,6 +1061,33 @@ indefinidamente, já que a perna deixou de encerrar a resposta.
 esse freio, e é ele que aparece como `absolute_max_tokens` no
 `x_pom.output_limits`. Zero ali é recusa nomeada, não corte.
 
+**O teto absoluto não corta dentro de uma chamada de ferramenta.** Fechada a
+fronteira da perna, o mesmo defeito reaparecia na de fora: o orçamento total
+acabava com um `<tool_call>` aberto e o fragmento voltava degradado em texto
+solto, sem `tool_calls`. O teto passou a ser conferido em **ponto seguro**.
+`gateway::ToolCallGate` acompanha a saída com o mesmo `TagScanner` dos
+adaptadores - então gateway e adaptador nunca discordam sobre onde uma chamada
+começa - e enquanto ela está aberta o teto não encerra nada: o laço segue,
+gastando no máximo `tool_call_grace_tokens` do `pom.json` (padrão
+`DEFAULT_TOOL_CALL_GRACE_TOKENS = 2048`).
+
+São três desfechos, e a bancada cobre os três nos dois modos:
+
+| situação | o cliente recebe |
+|---|---|
+| chamada fecha dentro da folga | a chamada **completa**, `finish_reason: "tool_calls"`, `x_pom.partial: true` |
+| folga esgota com a chamada aberta | conteúdo até **antes** da abertura, `finish_reason: "length"`, `x_pom.discarded_tool_call: true` |
+| nenhuma chamada aberta | inalterado: o teto corta no token exato, folga intocada |
+
+A folga **não** é aumento de teto: ela só é gasta com uma chamada aberta, e
+nunca ultrapassa o contexto que sobrou. O recuo do segundo caso
+(`TagScanner::finish_truncated`) só é possível porque o scanner segura o corpo
+da chamada até a tag fechar - `ToolCallOpen` e `ToolCallChunk` não viram delta
+nenhum -, então em streaming não há nada para desenviar. `x_pom` conta a
+verdade: `tool_call_grace_tokens` diz quanto da folga foi gasto,
+`discarded_tool_call` diz se houve descarte, e `partial` é `true` sempre que o
+orçamento pedido foi ultrapassado ou conteúdo foi descartado.
+
 **Por que não há reprefill.** O laço não reabre geração: ele continua a que já
 está aberta. A alternativa - encerrar a perna, reabrir com o texto gerado como
 prefixo e contar com o cache de prefixo - custaria reprefill do que já saiu, a

@@ -109,6 +109,7 @@ mod tests {
 
     fn make_state(key: &str, blocked: Vec<String>) -> AuthState {
         Arc::new(RwLock::new(Config {
+            tool_call_grace_tokens: crate::config::DEFAULT_TOOL_CALL_GRACE_TOKENS,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,

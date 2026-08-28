@@ -17,7 +17,8 @@ use crate::gateway::{
     DEFAULT_MAX_TOKENS,
 };
 use crate::tool_call::{
-    parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
+    parse_output, parse_output_truncated, render_tool_call, render_tools_block, OutputPart,
+    ScanEvent, TagScanner, ToolDef,
 };
 use axum::{
     extract::{Path, State},
@@ -696,11 +697,32 @@ async fn blocking_response(
     .await
     {
         Ok((text, summary)) => {
-            let (message_or_text, saw_tool_call): (serde_json::Value, bool) = match mode {
-                Mode::Chat => chat_message_json(&parse_output(&text)),
-                Mode::Completion => (json!(text), false),
+            // Quem encerrou foi o teto, não o modelo: uma chamada ainda aberta
+            // aqui já gastou a folga inteira sem fechar, então o fragmento é
+            // descartado em vez de virar texto cru. Ver
+            // `TagScanner::finish_truncated` e `gateway::ToolCallGate`.
+            let truncated = summary.finish_reason.as_deref() == Some("length");
+            let (message_or_text, saw_tool_call, discarded_tool_call): (
+                serde_json::Value,
+                bool,
+                bool,
+            ) = match mode {
+                Mode::Chat => {
+                    let (parts, discarded) = if truncated {
+                        parse_output_truncated(&text)
+                    } else {
+                        (parse_output(&text), false)
+                    };
+                    let (message, saw) = chat_message_json(&parts);
+                    (message, saw, discarded)
+                }
+                Mode::Completion => (json!(text), false, false),
             };
-            let finish = finish_reason(&summary, budget.total, saw_tool_call);
+            let finish = finish_reason(&summary, budget.total, saw_tool_call, discarded_tool_call);
+            // Tokens gastos além do que a requisição pediu. Só uma chamada de
+            // ferramenta aberta faz o laço passar do teto, então isto é
+            // exatamente quanto da folga a resposta usou.
+            let grace_tokens = summary.tokens_generated.saturating_sub(budget.total);
             let choice = match mode {
                 Mode::Chat => json!({
                     "index": 0,
@@ -744,15 +766,28 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "timings": summary.timings,
-                        "partial": summary.partial,
+                        // `partial` é `true` sempre que o orçamento pedido foi
+                        // ultrapassado (a folga foi gasta) ou conteúdo foi
+                        // descartado de propósito (o recuo). Dizer `false` em
+                        // qualquer um dos dois seria mentir sobre a resposta.
+                        "partial": summary.partial || discarded_tool_call || grace_tokens > 0,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                         "output_limits": output_limit,
+                        // `true` quando uma chamada de ferramenta foi aberta,
+                        // não coube no orçamento e o fragmento foi descartado.
+                        // É o que torna o recuo inspecionável de fora.
+                        "discarded_tool_call": discarded_tool_call,
                         // Quantas gerações de backend esta resposta costurou.
                         // `1` é uma só; maior que `1` diz que a saída passou do
                         // `max_new_tokens` da implantação sem que ele mudasse.
                         "continuation_legs": summary.legs,
+                        // Quantos tokens da folga esta resposta gastou para
+                        // fechar uma chamada de ferramenta. `0` é o normal;
+                        // maior que zero diz que o teto foi conferido em ponto
+                        // seguro em vez de cortar dentro da chamada.
+                        "tool_call_grace_tokens": grace_tokens,
                     },
                 })),
             )
@@ -771,13 +806,21 @@ fn finish_reason(
     summary: &crate::gateway::GenSummary,
     max_tokens: u32,
     saw_tool_call: bool,
+    discarded_tool_call: bool,
 ) -> &'static str {
-    if summary.tokens_generated >= max_tokens {
+    if discarded_tool_call {
+        // Nem a folga fechou a chamada: o gateway recuou e o cliente não tem
+        // chamada nenhuma para executar. O que acabou foi o orçamento.
+        "length"
+    } else if saw_tool_call && summary.tokens_generated > max_tokens {
+        // Passou do teto **só** porque a folga existe, e a folga só é gasta
+        // com uma chamada aberta. Ela fechou: o fim do turno é a chamada, não
+        // o teto - é isso que o cliente precisa ler para executá-la.
+        "tool_calls"
+    } else if summary.tokens_generated >= max_tokens {
         "length"
     } else if saw_tool_call {
         "tool_calls"
-    } else if summary.finish_reason.as_deref() == Some("stop") {
-        "stop"
     } else {
         "stop"
     }
@@ -945,6 +988,9 @@ fn sse_stream(
         scanner: TagScanner,
         tool_call_index: u32,
         saw_tool_call: bool,
+        /// `true` quando o teto cortou uma chamada aberta e o fragmento foi
+        /// descartado. Vai para o `x_pom` do quadro final.
+        discarded_tool_call: bool,
     }
 
     let state = S {
@@ -960,6 +1006,7 @@ fn sse_stream(
         scanner: TagScanner::new(),
         tool_call_index: 0,
         saw_tool_call: false,
+        discarded_tool_call: false,
     };
 
     futures::stream::unfold(state, |mut s| async move {
@@ -1025,7 +1072,18 @@ fn sse_stream(
                     Some(GenEvent::Done(summary)) => {
                         if s.mode == Mode::Chat {
                             let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
-                            let finish_events = scanner.finish();
+                            // O recuo é possível aqui porque nada de dentro da
+                            // tag foi transmitido: `apply_scan_events_openai`
+                            // engole `ToolCallOpen` e `ToolCallChunk`, e o
+                            // scanner segura o corpo até a tag fechar. Só o
+                            // buffer é descartado - não há como desenviar.
+                            let (finish_events, discarded) =
+                                if summary.finish_reason.as_deref() == Some("length") {
+                                    scanner.finish_truncated()
+                                } else {
+                                    (scanner.finish(), false)
+                                };
+                            s.discarded_tool_call = discarded;
                             let mut deltas = Vec::new();
                             apply_scan_events_openai(
                                 finish_events,
@@ -1040,12 +1098,17 @@ fn sse_stream(
                                 s.queue.push_back(Event::default().data(chunk));
                             }
                         }
-                        let reason = finish_reason(&summary, s.max_tokens, s.saw_tool_call);
+                        let reason = finish_reason(
+                            &summary,
+                            s.max_tokens,
+                            s.saw_tool_call,
+                            s.discarded_tool_call,
+                        );
                         let delta = match s.mode {
                             Mode::Chat => json!({}),
                             Mode::Completion => json!(""),
                         };
-                        let chunk = chunk_json(
+                        let chunk = chunk_json_final(
                             &s.id,
                             s.created,
                             &s.model,
@@ -1054,6 +1117,7 @@ fn sse_stream(
                             Some(reason),
                             Some(&summary),
                             Some(&s.output_limit),
+                            s.discarded_tool_call,
                         );
                         s.queue.push_back(Event::default().data(chunk));
                         s.queue.push_back(Event::default().data("[DONE]"));
@@ -1091,6 +1155,33 @@ fn chunk_json(
     summary: Option<&crate::gateway::GenSummary>,
     output_limit: Option<&OutputTokenLimit>,
 ) -> String {
+    chunk_json_final(
+        id,
+        created,
+        model,
+        mode,
+        delta,
+        finish,
+        summary,
+        output_limit,
+        false,
+    )
+}
+
+/// [`chunk_json`] com o único dado que só o quadro final conhece: se o teto
+/// descartou um fragmento de chamada de ferramenta.
+#[allow(clippy::too_many_arguments)]
+fn chunk_json_final(
+    id: &str,
+    created: i64,
+    model: &str,
+    mode: Mode,
+    delta: serde_json::Value,
+    finish: Option<&str>,
+    summary: Option<&crate::gateway::GenSummary>,
+    output_limit: Option<&OutputTokenLimit>,
+    discarded_tool_call: bool,
+) -> String {
     let choice = match mode {
         Mode::Chat => json!({ "index": 0, "delta": delta, "finish_reason": finish }),
         Mode::Completion => json!({ "index": 0, "text": delta, "finish_reason": finish }),
@@ -1103,18 +1194,25 @@ fn chunk_json(
         "choices": [choice],
     });
     if let Some(summary) = summary {
+        let grace_tokens = summary
+            .tokens_generated
+            .saturating_sub(output_limit.map(|l| l.effective).unwrap_or(u32::MAX));
         payload["x_pom"] = json!({
             "source": summary.source,
             "tokens_per_sec": summary.tokens_per_sec,
             "tokens_generated": summary.tokens_generated,
             "duration_ms": summary.duration_ms,
             "timings": summary.timings,
-            "partial": summary.partial,
+            // Ver o mesmo campo no caminho não-streaming: folga gasta e
+            // descarte deliberado também são resposta parcial.
+            "partial": summary.partial || discarded_tool_call || grace_tokens > 0,
             "finish_reason": summary.finish_reason,
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
             "output_limits": output_limit,
             "continuation_legs": summary.legs,
+            "discarded_tool_call": discarded_tool_call,
+            "tool_call_grace_tokens": grace_tokens,
         });
     }
     payload.to_string()
@@ -1889,17 +1987,29 @@ mod tests {
         };
         // Complete tool call within the budget: the model ended its turn by
         // asking for the tool, so the protocol must preserve tool_calls.
-        assert_eq!(finish_reason(&summary(3640), 4000, true), "tool_calls");
+        assert_eq!(
+            finish_reason(&summary(3640), 4000, true, false),
+            "tool_calls"
+        );
         // A tool call being present does not override an exhausted budget. This
         // covers both a complete call followed by more output and the streaming
         // path's final scanner state.
-        assert_eq!(finish_reason(&summary(4000), 4000, true), "length");
+        assert_eq!(finish_reason(&summary(4000), 4000, true, false), "length");
         // Plain text cut by the budget is length as well.
-        assert_eq!(finish_reason(&summary(4000), 4000, false), "length");
+        assert_eq!(finish_reason(&summary(4000), 4000, false, false), "length");
         // Plain text that stopped before the budget is a normal stop.
         let mut stopped = summary(3640);
         stopped.finish_reason = Some("stop".into());
-        assert_eq!(finish_reason(&stopped, 4000, false), "stop");
+        assert_eq!(finish_reason(&stopped, 4000, false, false), "stop");
+        // Passar do teto só acontece gastando a folga, e a folga só é gasta
+        // com uma chamada aberta. Ela fechou: o turno terminou na chamada.
+        assert_eq!(
+            finish_reason(&summary(4050), 4000, true, false),
+            "tool_calls"
+        );
+        // Nem a folga fechou a chamada: o gateway recuou, não há chamada, e o
+        // que acabou foi o orçamento.
+        assert_eq!(finish_reason(&summary(6048), 4000, false, true), "length");
     }
 
     // ── chat_message_json ────────────────────────────────────────────────────

@@ -167,7 +167,11 @@ quebra o produto inteiro.
   mesma sessão de KV e no mesmo SSE, sem reprefill e sem o cliente ver nada.
   Quem limita a requisição é `max_output_tokens` do `pom.json`, e só ele produz
   `finish_reason: "length"`. Vazar o `length` de uma perna fazia o harness largar
-  a chamada de ferramenta pela metade. → `inferencia.md` (9.1)
+  a chamada de ferramenta pela metade. E o total **nunca corta dentro de uma
+  chamada de ferramenta**: com a tag aberta o laço segue até fechá-la, gastando
+  no máximo `tool_call_grace_tokens`; se nem a folga fechar, o gateway recua
+  até antes da abertura - markup cru no `content` nunca é resposta.
+  → `inferencia.md` (9.1)
 - **A geração nunca acontece na sequência de KV do prompt.** Cada sessão de um
   peer tem duas sequências: o prefill escreve na do prompt, a geração numa cópia
   dela, e o fim do turno apaga a cópia inteira. Só remoção **total** de

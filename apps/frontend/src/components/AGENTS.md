@@ -53,8 +53,8 @@ Per-file list:
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and hover/focus flyout menus for
   sections with children. `SidebarBrand` is the header and, on desktop, the
-  lockup itself is the accessible expand/collapse button: click or touch toggles
-  it, while a deliberate mouse hover closes an open sidebar after a short delay.
+  lockup itself is the accessible expand/collapse button: only an explicit click
+  or touch toggles it.
   In the mobile drawer it remains a passive lockup. The menu below it keeps a
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
   a multi-machine cluster "which build is that?" is unanswerable without a
@@ -121,7 +121,11 @@ Per-file list:
   with `isControlTarget` (a click that lands on a `button`/`a`/`input`/etc is
   not a click on the card), and `detailNodeId` stores the `node_id`, not a peer
   copy, so the window shows fresh numbers when the cluster list refreshes
-  under it. Exports `edgeStyle` and `isControlTarget`.
+  under it. Exports `edgeStyle` and `isControlTarget`. The graph also renders
+  directional RTT badges using the same label component as the deploy map.
+- `RouteRttLabel.tsx` - selo visual de RTT direcional compartilhado pelo mapa
+  do Painel e pelo mapa de implantação. O texto e as classes são os mesmos nos
+  dois contextos, inclusive quando a medição ainda não existe (`RTT -`).
 - `PeerDetailCard.tsx` — The card of one machine, in the same drawing for every
   machine. It lives outside `Dashboard` because it shows in two places: the
   details tab stacks one card per machine (`networkPeers` splits the whole

@@ -61,6 +61,7 @@ import {
   usePeerRuntimes,
   useServableModels,
 } from "../lib/queries";
+import { useStableRecord } from "../lib/stableRecord";
 import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -943,21 +944,33 @@ export function Chat() {
   );
   const telemetryNetwork = useChatTelemetryNetwork(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
   const runtimeQueries = usePeerRuntimes(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
-  const runtimeByNode = useMemo(
-    () => Object.fromEntries(telemetryNodeIds.map((nodeId, index) => [nodeId, runtimeQueries[index]?.data])) as Record<string, PeerRuntime | undefined>,
-    [runtimeQueries, telemetryNodeIds],
+  const runtimeByNode = useStableRecord(
+    Object.fromEntries(
+      telemetryNodeIds.map((nodeId, index) => [nodeId, runtimeQueries[index]?.data]),
+    ) as Record<string, PeerRuntime | undefined>,
   );
-  const telemetryEnvironment: ExecutionTelemetryEnvironment | undefined = telemetryCapture
-    ? {
-        snapshotCaptured: true,
-        cluster: telemetryCapture.cluster,
-        network: telemetryNetwork.data,
-        networkLoading: telemetryNetwork.isLoading,
-        networkError: telemetryNetwork.isError,
-        runtimes: runtimeByNode,
-        runtimesLoading: runtimeQueries.some((query) => query.isLoading),
-      }
-    : undefined;
+  const runtimesLoading = runtimeQueries.some((query) => query.isLoading);
+  const telemetryEnvironment = useMemo<ExecutionTelemetryEnvironment | undefined>(
+    () => telemetryCapture
+      ? {
+          snapshotCaptured: true,
+          cluster: telemetryCapture.cluster,
+          network: telemetryNetwork.data,
+          networkLoading: telemetryNetwork.isLoading,
+          networkError: telemetryNetwork.isError,
+          runtimes: runtimeByNode,
+          runtimesLoading,
+        }
+      : undefined,
+    [
+      telemetryCapture,
+      telemetryNetwork.data,
+      telemetryNetwork.isLoading,
+      telemetryNetwork.isError,
+      runtimeByNode,
+      runtimesLoading,
+    ],
+  );
 
   useEffect(() => {
     if (!telemetryCapture || !telemetryEnvironment) return;

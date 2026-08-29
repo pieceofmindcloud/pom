@@ -69,6 +69,7 @@ export const keys = {
   requests: ["requests"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
+  networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
   remoteModels: (query: string, ggufOnly: boolean, page: number) =>
@@ -186,6 +187,19 @@ export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, exe
     enabled: enabled && nodeIds.length > 1,
     retry: false,
     staleTime: Infinity,
+  });
+}
+
+/** RTT direcional da topologia atual, para o mapa do Painel. */
+export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
+  return useQuery({
+    queryKey: keys.networkRtt(nodeIds),
+    queryFn: () =>
+      api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", { node_ids: nodeIds }),
+    enabled: enabled && nodeIds.length > 1,
+    retry: false,
+    refetchInterval: 15000,
+    staleTime: 10000,
   });
 }
 

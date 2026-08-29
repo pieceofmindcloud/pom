@@ -23,6 +23,8 @@ Per-file list:
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
   from the explicit per-peer health field; health shows the selected path,
   while the request trace shows the executed engine and mixed/mismatch flags.
+  The runtime record keeps stable identity between unchanged polls so the
+  telemetry snapshot cannot trigger a render loop that freezes navigation.
   Missing snapshots stay visible as missing data. Phase rows also render
   hidden-state bytes sent/received and the effective f16/f8 dtype. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
@@ -89,7 +91,9 @@ Per-file list:
   "Adicionar nó" there is a `UndeployPipeline` button when a model is live -
   `undeployTargets` is the list the confirmation shows (peers on `group` with
   `total_layers > 0`, sorted by start layer); the node re-scans the cluster
-  before acting, so the list is just the preview.
+  before acting, so the list is just the preview. The flow canvas receives the
+  directional RTT measurements for its adjacent routing edges from
+  `useNetworkRtt`, with the same badge presentation used by deployment.
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
   Simple/Complete strategy, central peer map, compact property inspector and
@@ -198,7 +202,8 @@ Per-file list:
   então continua ancorada na altura da tela durante rolagem e resize; ao fechar,
   o controle de reabertura permanece na coluna compacta existente.
 - `Deployments.tsx` - lista as implantações registradas no cluster via
-  `useDeployments`, diferencia "no ar" de "padrão" e permite reimplantar só
+  `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
+  criação mais recente e mostra a coluna "Criada". Permite reimplantar só
   parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.
 - `Keys.tsx` — Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses — `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.

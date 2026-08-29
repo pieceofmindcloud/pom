@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
 import { LocaleProvider } from "../i18n/provider";
-import type { ClusterView } from "../lib/types";
+import type { ChatTelemetryRtt, ClusterView } from "../lib/types";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer } from "../test/fixtures";
 import { deploymentLayoutKey, writePositions } from "../lib/networkLayout";
 
@@ -32,16 +32,43 @@ describe("edgeStyle", () => {
 
 const cluster = fakeCluster([fakeSlicePeer("a", 0, 15), fakeSlicePeer("b", 16, 31)]);
 
-function mount(view: ClusterView = cluster) {
+function mount(view: ClusterView = cluster, rttMeasurements: ChatTelemetryRtt[] = []) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-        <ModelNetworkCanvas cluster={view} />
+      <ModelNetworkCanvas cluster={view} rttMeasurements={rttMeasurements} />
       </LocaleProvider>
     </QueryClientProvider>,
   );
 }
+
+describe("ModelNetworkCanvas: RTT das arestas", () => {
+  afterEach(cleanup);
+
+  it("mostra o RTT direcional no mesmo selo do mapa de implantação", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+    ]);
+    view.routing_edges = [{
+      from_node_id: "a",
+      to_node_id: "b",
+      model_id: "qwen35",
+      from_end_layer: 15,
+      to_start_layer: 16,
+    }];
+
+    mount(view, [{
+      from_node_id: "a",
+      to_node_id: "b",
+      rtt_ms: 7.4,
+      transport: "libp2p",
+    }]);
+
+    expect(screen.getByText("RTT 7.4 ms")).toBeTruthy();
+  });
+});
 
 /**
  * Quantas camadas foram parar na CPU tem que aparecer no próprio card.

@@ -12,21 +12,25 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it } from "vitest";
 import { Dashboard } from "./Dashboard";
 import { LocaleProvider } from "../i18n/provider";
-import { fakeCluster } from "../test/fixtures";
+import { fakeCluster, fakeSlicePeer } from "../test/fixtures";
 import { keys } from "../lib/queries";
 
-function mount() {
+function mount(cluster = fakeCluster([], "qwen35"), rttMeasurements?: { from_node_id: string; to_node_id: string; rtt_ms: number; transport: string }[]) {
   // active_model is set, but there are no peers: the estendida view shows
   // "Nenhuma maquina na rede" in its panel.
-  const cluster = fakeCluster([], "qwen35");
-  cluster.total_layers = 0;
-  cluster.covered_layers = 0;
-  cluster.complete = false;
+  if (cluster.peers.length === 0) {
+    cluster.total_layers = 0;
+    cluster.covered_layers = 0;
+    cluster.complete = false;
+  }
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchInterval: false } },
   });
   // useQuery will read from the cache immediately.
   client.setQueryData(keys.cluster, cluster);
+  if (rttMeasurements) {
+    client.setQueryData(keys.networkRtt(["a", "b"]), { measurements: rttMeasurements });
+  }
   client.setQueryData(keys.node, {
     node_id: "no-0", short_id: "no-0", hostname: "no-0",
     role: "peer" as const, connection_key: "",
@@ -73,5 +77,28 @@ describe("Dashboard", () => {
 
     // The absolute overlay that used to render alongside the panel is gone.
     expect(screen.queryByText("A rede esta vazia")).toBeNull();
+  });
+
+  it("mostra no fluxo do Painel o RTT das arestas da implantação", async () => {
+    const cluster = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+    ], "qwen35");
+    cluster.routing_edges = [{
+      from_node_id: "a",
+      to_node_id: "b",
+      model_id: "qwen35",
+      from_end_layer: 15,
+      to_start_layer: 16,
+    }];
+
+    mount(cluster, [{
+      from_node_id: "a",
+      to_node_id: "b",
+      rtt_ms: 7.4,
+      transport: "libp2p",
+    }]);
+
+    await waitFor(() => expect(screen.getByText("RTT 7.4 ms")).toBeTruthy());
   });
 });

@@ -55,6 +55,15 @@ const KIND_TONE: Record<DeploymentKind, "iris" | "aqua" | "sky"> = {
   tensor_parallel: "sky",
 };
 
+function createdAtLabel(iso: string, locale: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "-";
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
 /**
  * A caixa de reimplantar: os parâmetros comuns mais os dois botões que são de
  * verdade por máquina.
@@ -213,7 +222,7 @@ function RedeployDialog({
 }
 
 function Row({ row }: { row: DeploymentRow }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const toast = useToast();
   const invalidate = useInvalidate();
   const [redeploying, setRedeploying] = useState(false);
@@ -231,17 +240,20 @@ function Row({ row }: { row: DeploymentRow }) {
 
   return (
     <tr className="border-t border-line align-top">
-      <td className="py-3 pr-4">
+      <td className="whitespace-nowrap px-5 py-3">
         <Mono>{d.deploy_id}</Mono>
       </td>
-      <td className="py-3 pr-4">{d.model.label}</td>
-      <td className="py-3 pr-4">
+      <td className="px-5 py-3">{d.model.label}</td>
+      <td className="px-5 py-3">
         <Badge tone={KIND_TONE[d.kind]}>{t("deployments.kind." + d.kind)}</Badge>
       </td>
-      <td className="py-3 pr-4 text-muted">
+      <td className="whitespace-nowrap px-5 py-3 text-muted">
         {t("deployments.nodeCount", { count: d.nodes.length })}
       </td>
-      <td className="py-3 pr-4">
+      <td className="whitespace-nowrap px-5 py-3 text-muted">
+        <time dateTime={d.created_at}>{createdAtLabel(d.created_at, locale)}</time>
+      </td>
+      <td className="px-5 py-3">
         <div className="flex flex-wrap gap-1.5">
           {row.serving ? (
             <Badge tone="lime">{t("deployments.serving")}</Badge>
@@ -251,7 +263,7 @@ function Row({ row }: { row: DeploymentRow }) {
           {row.is_default && <Badge tone="amber">{t("deployments.default")}</Badge>}
         </div>
       </td>
-      <td className="py-3">
+      <td className="px-5 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="ghost"
@@ -295,7 +307,14 @@ function Row({ row }: { row: DeploymentRow }) {
 export function Deployments() {
   const { t } = useI18n();
   const { data, isLoading } = useDeployments();
-  const rows = data?.deployments ?? [];
+  const rows = [...(data?.deployments ?? [])].sort((a, b) => {
+    const aTime = Date.parse(a.deployment.created_at);
+    const bTime = Date.parse(b.deployment.created_at);
+    if (Number.isNaN(aTime) && Number.isNaN(bTime)) return 0;
+    if (Number.isNaN(aTime)) return 1;
+    if (Number.isNaN(bTime)) return -1;
+    return bTime - aTime;
+  });
 
   return (
     <div className="space-y-6">
@@ -321,15 +340,16 @@ export function Deployments() {
           </Empty>
         ) : (
           <ScrollX>
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[72rem] text-sm">
               <thead>
                 <tr className="text-left text-xs text-faint">
                   <th className="px-5 py-2">{t("deployments.id")}</th>
-                  <th className="py-2 pr-4">{t("deployments.model")}</th>
-                  <th className="py-2 pr-4">{t("deployments.kindLabel")}</th>
-                  <th className="py-2 pr-4">{t("deployments.machines")}</th>
-                  <th className="py-2 pr-4">{t("deployments.state")}</th>
-                  <th className="py-2">{t("deployments.actions")}</th>
+                  <th className="px-5 py-2">{t("deployments.model")}</th>
+                  <th className="px-5 py-2">{t("deployments.kindLabel")}</th>
+                  <th className="px-5 py-2">{t("deployments.machines")}</th>
+                  <th className="px-5 py-2">{t("deployments.created")}</th>
+                  <th className="px-5 py-2">{t("deployments.state")}</th>
+                  <th className="px-5 py-2">{t("deployments.actions")}</th>
                 </tr>
               </thead>
               <tbody>

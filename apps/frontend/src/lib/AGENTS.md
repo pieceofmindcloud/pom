@@ -41,6 +41,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
   RTT snapshot after a chat stream, and `usePeerRuntimes` reads `/health` for
   the peers in that trace without polling the whole cluster.
+  `useNetworkRtt` asks the same authenticated telemetry route for the current
+  deployment edges shown on the Dashboard and refreshes them every 15 s.
+- `stableRecord.ts` - preserves the identity of a shallow record while its
+  values remain unchanged. It prevents effects that capture `useQueries` data
+  from writing state on every render; the Chat regression test covers this
+  navigation freeze.
 - `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`): tipo, provider,
   `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
   desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia

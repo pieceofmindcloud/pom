@@ -17,6 +17,17 @@ describe("navigation structure", () => {
       (child) => child.to === "/fatias/andamento",
     )).toBe(false);
   });
+
+  it("nests network deployment and history under Deployments", () => {
+    const deployments = NAV.find((section) => section.labelKey === "nav.deployments");
+
+    expect(deployments?.to).toBeUndefined();
+    expect(deployments?.children?.map((child) => [child.labelKey, child.to])).toEqual([
+      ["nav.deploy", "/implantar"],
+      ["nav.history", "/implantacoes"],
+    ]);
+    expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
+  });
 });
 
 describe("navForProfile", () => {

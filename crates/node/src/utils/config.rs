@@ -93,6 +93,7 @@ pub struct ApiKey {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub role: Role,
     #[serde(default)]
@@ -179,22 +180,6 @@ pub struct Config {
     /// devolve pela API: a interface recebe apenas estado e máscara.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
-    /// Capacidade de saída do nó: quantos tokens uma requisição pode pedir,
-    /// somando todas as pernas do laço de continuação do gateway.
-    ///
-    /// O `max_new_tokens` da implantação continua limitando **uma** geração de
-    /// backend; este número é o teto da **requisição inteira**, que o gateway
-    /// costura de várias pernas na mesma conexão (ver
-    /// `gateway::output_token_limit`). Sem ele um modelo que entra em laço
-    /// ocuparia o nó indefinidamente: é o único freio que sobra depois que a
-    /// perna deixou de encerrar a resposta.
-    ///
-    /// Ele é **capacidade declarada**, não corte silencioso: `/v1/models` o
-    /// anuncia como `max_completion_tokens` e um pedido acima dele é recusado
-    /// com erro de validação, como fazem OpenAI e Anthropic. Ver
-    /// `gateway::OutputTokenLimit::exceeds_declared_capacity`.
-    #[serde(default = "default_max_output_tokens")]
-    pub max_output_tokens: u32,
 }
 
 impl fmt::Debug for Config {
@@ -242,19 +227,6 @@ fn default_p2p_port() -> u16 {
 
 fn default_shard_max_gb() -> f64 {
     crate::storage::DEFAULT_SHARD_MAX_GB
-}
-
-/// Teto absoluto padrão de saída por requisição.
-///
-/// Conservador de propósito: é grande o bastante para a chamada de ferramenta
-/// que escreve um arquivo inteiro - o caso que motivou o laço de continuação -
-/// e pequeno o bastante para um modelo em laço soltar o nó em minutos, não em
-/// horas. O operador levanta em `pom.json` (`max_output_tokens`) quando o
-/// trabalho dele pede mais.
-pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
-
-fn default_max_output_tokens() -> u32 {
-    DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 /// Put a peer address the operator typed into the form the resolver accepts.
@@ -546,12 +518,36 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
-            max_output_tokens: default_max_output_tokens(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.role, Role::Principal);
         assert_eq!(parsed.connection_key, "test-key");
+    }
+
+    /// Configurações legadas não podem reintroduzir uma capacidade absoluta
+    /// silenciosamente.
+    #[test]
+    fn removed_output_capacity_field_is_rejected_explicitly() {
+        let legacy_field = ["max", "output", "tokens"].join("_");
+        let mut value = serde_json::json!({"role": "principal", "connection_key": "k"});
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert(legacy_field.clone(), serde_json::json!(32000));
+        let result: Result<Config, _> = serde_json::from_value(value);
+        let error = result.expect_err("campo removido não pode ser aceito silenciosamente");
+        assert!(error.to_string().contains(&legacy_field));
+    }
+
+    #[test]
+    fn reference_config_has_no_absolute_output_capacity_field() {
+        let cfg: Config = serde_json::from_str(include_str!("../../pom.json")).unwrap();
+        let value = serde_json::to_value(cfg).unwrap();
+        assert!(!value
+            .as_object()
+            .unwrap()
+            .contains_key(&["max", "output", "tokens"].join("_")));
     }
 
     #[test]
@@ -576,7 +572,6 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
-            max_output_tokens: default_max_output_tokens(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -674,7 +669,6 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             node_name: None,
             huggingface_token: Some("hf_super_secret".into()),
-            max_output_tokens: default_max_output_tokens(),
         };
 
         std::fs::write(&path, b"old config").unwrap();
@@ -769,7 +763,6 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
-            max_output_tokens: default_max_output_tokens(),
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

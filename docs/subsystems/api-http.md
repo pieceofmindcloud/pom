@@ -60,18 +60,18 @@ haver chave.
   total para não quebrar clientes. Corpo aceito como bytes crus (não
   exige `Content-Type: application/json`). `max_tokens` é o orçamento total da
   saída, incluindo o primeiro token que o prefill devolve; sem o campo, o
-  padrão é 512. O pedido precisa ser maior que zero e não pode exceder o
-  `max_output_tokens` do `pom.json` - o teto absoluto da requisição, não o
-  `max_new_tokens` da implantação, que hoje limita só uma perna do laço de
-  continuação. Exceder esse limite responde 400 com o valor pedido e o valor
-  configurado, nunca trunca em silêncio.
+  padrão é 512. O pedido precisa ser maior que zero. A capacidade efetiva vem
+  do `n_ctx` confirmado pelo runtime e pelo menor valor entre os peers vivos;
+  o `max_new_tokens` da implantação limita apenas uma perna do laço de
+  continuação. Se o prompt ocupar todo o contexto, a rota responde 413 antes
+  de abrir o SSE.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (com `inference_port`), `default_model` e
-  `runtime_capacity` (`n_ctx`, `max_new_tokens`, `max_output_tokens`) quando
-  o runtime local já respondeu `model_loaded`.
+  `runtime_capacity` (`n_ctx`, `max_new_tokens`) quando o runtime local já
+  respondeu `model_loaded`.
 - **`POST /handshake`** - corpo `{ node_id, pubkey, connection_key }`; 403
   `invalid_key`, `identity_mismatch` (o `node_id` não é o `SHA256` da `pubkey`,
   ou a chave é malformada) ou `blocked`; 200 com `approved` + `peer_id`.
@@ -101,17 +101,15 @@ prompt o pipeline não reprocessou; é medida do executado, não da escolha do
 cache (ver `inferencia.md`, seção 3.1). `DEFAULT_MAX_TOKENS` 512 é apenas o
 padrão quando o cliente não envia orçamento. Não há teto artificial no
 adaptador: o orçamento **total** da requisição é o menor entre o pedido do
-cliente, o `max_output_tokens` do `pom.json` e o espaço restante de `n_ctx`
-depois do prompt. O `max_new_tokens` da implantação **não** entra nessa conta:
+cliente e o espaço restante de `n_ctx` depois do prompt. O `max_new_tokens` da
+implantação **não** entra nessa conta:
 ele é o teto de uma **perna** do laço de continuação, que o gateway atravessa
 sem fechar o SSE (ver `inferencia.md`, seção 9.1). Se o total for reduzido, o
 gateway registra a redução e a devolve em `x_pom.output_limits`
 (`requested_max_tokens`, `effective_max_tokens`, `deployment_max_tokens`,
-`context_available_tokens`, `absolute_max_tokens`, `leg_max_tokens`); se o
-contexto não deixar nenhum token, responde HTTP 413 antes de abrir o SSE. Um
-pedido **acima** do `max_output_tokens` é recusado com HTTP 400 - ele é a
-capacidade que `/v1/models` anuncia como `max_completion_tokens`, e atender
-calado com menos é o que esse erro substitui.
+`context_available_tokens`, `leg_max_tokens`); se o contexto não deixar nenhum
+token, responde HTTP 413 antes de abrir o SSE. A capacidade publicada em
+`/v1/models` é derivada do `n_ctx` efetivo, nunca de um teto absoluto oculto.
 `x_pom.continuation_legs` diz quantas pernas a resposta costurou - `1` é uma
 geração só. Assim, uma saída que esgota o orçamento **total** recebe
 `finish_reason: "length"`, inclusive se contiver uma chamada de ferramenta já
@@ -151,10 +149,9 @@ campos compatíveis com os dois clientes: `type: "model"`, `created_at`,
 `context_length` e `top_provider.max_completion_tokens` para OpenAI. O campo
 `created_at` usa o epoch RFC 3339 quando a data de release local é desconhecida.
 
-Os limites vêm do runtime efetivo e do `pom.json`: `context_length` e
-`max_input_tokens` são o menor `n_ctx` entre todos os peers vivos que servem o
-modelo/implantação, enquanto `max_tokens` e
-`top_provider.max_completion_tokens` são `min(n_ctx, max_output_tokens)`, a
+Os limites vêm do runtime efetivo e da rede: `context_length`,
+`max_input_tokens`, `max_tokens` e `top_provider.max_completion_tokens` são o
+menor `n_ctx` entre todos os peers vivos que servem o modelo/implantação, a
 capacidade da **requisição**, não o teto de uma perna. Anunciar o
 `max_new_tokens` da implantação aqui faria o cliente pedir menos do que o nó
 entrega. O mesmo mínimo de peers é usado pela validação de cada requisição.

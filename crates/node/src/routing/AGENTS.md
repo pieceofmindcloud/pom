@@ -64,7 +64,7 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   `plan_pipeline` até cobertura de equivalência).
 - `PeerInfo::runtime_capacity` não participa da escolha greedy de camadas: o
   gateway agrega essa capacidade antes de validar a requisição, mantendo o
-  `max_new_tokens` por perna separado do teto absoluto.
+  `max_new_tokens` por perna separado do orçamento total derivado do contexto.
 - `PipelinePlan::hop_chain` - "abc123→def456", a prova de execução distribuída
   que o gateway põe em `source`.
 

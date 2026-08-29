@@ -34,13 +34,11 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
 
 /// Converte a prova de prontidão do servidor numa capacidade publicável.
 /// `n_ctx_per_session` é a janela que o llama.cpp conseguiu reservar de fato;
-/// `max_new_tokens` continua sendo apenas o tamanho de uma perna; e o teto
-/// absoluto vem da configuração do gateway. Nenhum desses números é derivado
-/// silenciosamente de outro.
+/// `max_new_tokens` continua sendo apenas o tamanho de uma perna. A capacidade
+/// publicada é derivada somente desses valores efetivos do runtime.
 fn runtime_capacity_from_health(
     body: &serde_json::Value,
     config: &NodeConfig,
-    max_output_tokens: u32,
 ) -> crate::network::RuntimeCapacity {
     let n_ctx = body
         .get("n_ctx_per_session")
@@ -50,7 +48,6 @@ fn runtime_capacity_from_health(
     crate::network::RuntimeCapacity {
         n_ctx,
         max_new_tokens: config.max_new_tokens,
-        max_output_tokens,
     }
 }
 
@@ -1104,7 +1101,6 @@ impl NodeRuntime {
         };
         let assignment = self.assignment.clone();
         let net = self.net.clone();
-        let auth = self.auth.clone();
         let gen_rx = self.generation.subscribe();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -1139,13 +1135,9 @@ impl NodeRuntime {
                     continue;
                 }
 
-                let max_output_tokens = match &auth {
-                    Some(auth) => auth.read().await.max_output_tokens,
-                    None => crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
-                };
                 net.set_runtime_capacity_for_generation(
                     generation,
-                    Some(runtime_capacity_from_health(&body, &cfg, max_output_tokens)),
+                    Some(runtime_capacity_from_health(&body, &cfg)),
                 );
 
                 let reported = body
@@ -1532,7 +1524,7 @@ mod tests {
         antes.cache_type_v = crate::config::KvCacheType::Bf16;
 
         let mut p = crate::webui::RuntimeParams::default();
-        p.n_ctx = 65536;
+        p.n_ctx = 100_000;
         p.max_new_tokens = 32000;
         p.n_gpu_layers = 7;
         p.temperature = 1.25;
@@ -1541,7 +1533,7 @@ mod tests {
         let depois = antes.with_params(&p);
 
         // O que tinha que mudar, mudou.
-        assert_eq!(depois.n_ctx, 65536);
+        assert_eq!(depois.n_ctx, 100_000);
         assert_eq!(depois.max_new_tokens, 32000);
         assert_eq!(depois.n_gpu_layers, 7);
         assert_eq!(depois.temperature, 1.25);
@@ -1576,12 +1568,10 @@ mod tests {
                 "n_ctx_per_session": 100_000,
             }),
             &config,
-            32_000,
         );
 
         assert_eq!(capacity.n_ctx, 100_000);
         assert_eq!(capacity.max_new_tokens, 32_000);
-        assert_eq!(capacity.max_output_tokens, 32_000);
     }
 
     #[test]

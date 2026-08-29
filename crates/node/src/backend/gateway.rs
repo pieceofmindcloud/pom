@@ -402,7 +402,6 @@ impl GatewayState {
         Some(RuntimeCapacity {
             n_ctx: runtime.n_ctx,
             max_new_tokens: runtime.max_new_tokens,
-            max_output_tokens: self.auth.read().await.max_output_tokens,
         })
     }
 
@@ -470,7 +469,6 @@ fn runtime_capacity_from_peers(peers: &[PeerInfo], model: &str) -> (Option<Runti
         capacities.into_iter().reduce(|a, b| RuntimeCapacity {
             n_ctx: a.n_ctx.min(b.n_ctx),
             max_new_tokens: a.max_new_tokens.min(b.max_new_tokens),
-            max_output_tokens: a.max_output_tokens.min(b.max_output_tokens),
         }),
         false,
     )
@@ -580,7 +578,7 @@ impl OutputBudget {
 }
 
 /// The output budget visible to a protocol adapter after applying the selected
-/// deployment, the configured absolute ceiling and the remaining context window.
+/// deployment and the remaining context window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct OutputTokenLimit {
     #[serde(rename = "requested_max_tokens")]
@@ -594,10 +592,6 @@ pub struct OutputTokenLimit {
     pub deployment: Option<u32>,
     #[serde(rename = "context_available_tokens")]
     pub context_available: Option<u32>,
-    /// Teto absoluto configurável (`max_output_tokens` do `pom.json`), o freio
-    /// que impede um modelo em laço de ocupar o nó indefinidamente.
-    #[serde(rename = "absolute_max_tokens")]
-    pub absolute: u32,
     /// Tokens que cabem numa perna: `min(deployment, effective)`.
     #[serde(rename = "leg_max_tokens")]
     pub leg: u32,
@@ -631,25 +625,6 @@ impl OutputTokenLimit {
         self.capacity_pending
     }
 
-    /// A capacidade declarada do nó foi excedida.
-    ///
-    /// `max_output_tokens` do `pom.json` deixou de cortar em silêncio: ele é
-    /// capacidade anunciada em `/v1/models` como `max_completion_tokens`, e
-    /// pedir mais do que o nó declara é erro de validação, como nos dois
-    /// provedores. Atender calado com menos é a mentira que este erro
-    /// substitui. O contexto que sobrou continua apertando o teto sem recusar,
-    /// porque ele sai de uma **estimativa** de tokens do prompt
-    /// (`estimate_tokens`) - recusar por estimativa rejeitaria pedido válido.
-    pub fn exceeds_declared_capacity(self) -> Option<String> {
-        (self.absolute > 0 && self.requested > self.absolute).then(|| {
-            format!(
-                "max_tokens solicitado ({}) excede a capacidade de saída deste nó ({}); \
-                 o valor é anunciado em /v1/models como max_completion_tokens",
-                self.requested, self.absolute
-            )
-        })
-    }
-
     pub fn rejection_reason(self) -> Option<String> {
         if self.capacity_pending {
             return Some(
@@ -667,8 +642,6 @@ impl OutputTokenLimit {
             )
         } else if self.deployment == Some(0) {
             Some("max_new_tokens da implantação precisa ser maior que zero".into())
-        } else if self.absolute == 0 {
-            Some("max_output_tokens do pom.json precisa ser maior que zero".into())
         } else {
             Some("não há tokens de saída disponíveis para esta requisição".into())
         }
@@ -678,8 +651,8 @@ impl OutputTokenLimit {
 /// Resolve one request's output budget.
 ///
 /// Dois números saem daqui, e é de propósito. O **total** da requisição é
-/// `min(pedido, teto absoluto, contexto que sobrou)`: o `max_new_tokens` da
-/// implantação **não** entra nele, porque ele nunca foi limite do backend -
+/// `min(pedido, contexto que sobrou)`: o `max_new_tokens` da implantação
+/// **não** entra no total, porque ele nunca foi limite do backend -
 /// sempre foi um corte do gateway, e cortar aí calado é o defeito. O que ele
 /// vira é o teto de **uma perna**, que o laço de continuação atravessa quantas
 /// vezes o total permitir. Nenhum adaptador de protocolo duplica esta conta.
@@ -688,11 +661,10 @@ pub fn output_token_limit(
     deployment: Option<u32>,
     context_length: Option<u32>,
     prompt_tokens: u32,
-    absolute: u32,
 ) -> OutputTokenLimit {
     let requested = requested.max(1);
     let context_available = context_length.map(|context| context.saturating_sub(prompt_tokens));
-    let effective = [Some(requested), Some(absolute), context_available]
+    let effective = [Some(requested), context_available]
         .into_iter()
         .flatten()
         .min()
@@ -706,7 +678,6 @@ pub fn output_token_limit(
         effective,
         deployment,
         context_available,
-        absolute,
         leg,
         capacity_pending: false,
     }
@@ -714,15 +685,15 @@ pub fn output_token_limit(
 
 impl GatewayState {
     /// Resolve an adapter request against the live deployment configuration
-    /// and the operator's absolute output ceiling.
+    /// and the remaining context reported by the active runtime.
     pub async fn request_output_limit(&self, requested: u32, prompt: &str) -> OutputTokenLimit {
         self.request_output_limit_for_model(None, requested, prompt)
             .await
     }
 
     /// Resolve the request against the capacity of every live peer serving the
-    /// selected model. The deployment leg remains separate from the absolute
-    /// request ceiling.
+    /// selected model. The deployment leg remains separate from the request's
+    /// context-derived total.
     pub async fn request_output_limit_for_model(
         &self,
         model: Option<&str>,
@@ -737,7 +708,6 @@ impl GatewayState {
                 effective: 0,
                 deployment: None,
                 context_available: None,
-                absolute: 0,
                 leg: 0,
                 capacity_pending: true,
             };
@@ -751,9 +721,6 @@ impl GatewayState {
                 .map(|current| current.n_ctx)
                 .or_else(|| runtime.as_ref().map(|cfg| cfg.n_ctx)),
             estimate_tokens(prompt),
-            capacity
-                .map(|current| current.max_output_tokens)
-                .unwrap_or(self.absolute_output_ceiling().await),
         )
     }
 
@@ -787,16 +754,7 @@ impl GatewayState {
         let context = capacity
             .map(|current| current.n_ctx)
             .or_else(|| runtime.as_ref().map(|cfg| cfg.n_ctx));
-        let absolute = capacity
-            .map(|current| current.max_output_tokens)
-            .unwrap_or(self.absolute_output_ceiling().await);
-        (context, context.map(|length| length.min(absolute)))
-    }
-
-    /// `max_output_tokens` do `pom.json`. Zero na config nunca vira zero aqui
-    /// por acidente: `rejection_reason` é quem recusa, com mensagem.
-    pub async fn absolute_output_ceiling(&self) -> u32 {
-        self.auth.read().await.max_output_tokens
+        (context, context)
     }
 }
 
@@ -813,9 +771,8 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
             route,
             requested_max_tokens = limit.requested,
             effective_max_tokens = limit.effective,
-            absolute_max_tokens = limit.absolute,
             context_available_tokens = ?limit.context_available,
-            "limite de saída reduzido pelo teto absoluto ou pelo contexto"
+            "limite de saída reduzido pelo contexto"
         );
     }
     if limit.continuation_possible() {
@@ -830,24 +787,12 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
     }
 }
 
-/// `/api/generate` recusa em vez de cortar - foi sempre assim, e continua
-/// sendo, com um detalhe: o teto que ela confere agora é o **absoluto**
-/// (`max_output_tokens` do `pom.json`), não o `max_new_tokens` da implantação.
-/// Este último passou a ser o teto de uma perna do laço de continuação, e
-/// recusar por causa dele obrigaria o operador a levantar a implantação para
-/// escrever uma resposta longa - exatamente o que a decisão do produto proíbe.
-fn resolve_request_max_tokens(requested: Option<u32>, absolute_limit: u32) -> Result<u32, String> {
+/// `/api/generate` valida apenas o orçamento pedido. A capacidade do runtime é
+/// resolvida depois, a partir do contexto efetivo e da implantação ativa.
+fn resolve_request_max_tokens(requested: Option<u32>) -> Result<u32, String> {
     let max_tokens = requested.unwrap_or(DEFAULT_MAX_TOKENS);
     if max_tokens == 0 {
         return Err("max_tokens deve ser maior que zero".to_string());
-    }
-    if absolute_limit == 0 {
-        return Err("max_output_tokens configurado deve ser maior que zero".to_string());
-    }
-    if max_tokens > absolute_limit {
-        return Err(format!(
-            "max_tokens solicitado ({max_tokens}) excede max_output_tokens configurado ({absolute_limit})"
-        ));
     }
     Ok(max_tokens)
 }
@@ -2640,14 +2585,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         Some(m) => m.to_string(),
         None => state.active_model().await,
     };
-    let absolute_limit = state.absolute_output_ceiling().await;
-    let leg_limit = state
-        .runtime
-        .config()
-        .await
-        .map(|cfg| cfg.max_new_tokens)
-        .unwrap_or(DEFAULT_MAX_TOKENS);
-    let max_tokens = match resolve_request_max_tokens(req.max_tokens, absolute_limit) {
+    let requested_max_tokens = match resolve_request_max_tokens(req.max_tokens) {
         Ok(value) => value,
         Err(error) => {
             let error_for_audit = error.clone();
@@ -2678,6 +2616,39 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         }
     };
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
+    let output_limit = state
+        .request_output_limit_for_model(Some(&model), requested_max_tokens, &req.prompt)
+        .await;
+    log_output_limit("/api/generate", output_limit);
+    if let Some(error) = output_limit.rejection_reason() {
+        record_rejected(
+            &state,
+            "/api/generate",
+            crate::reqlog::Caller::anonymous(),
+            model.clone(),
+            req.prompt.clone(),
+            request_details.clone(),
+            error.clone(),
+        );
+        return (
+            if output_limit.capacity_pending() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::PAYLOAD_TOO_LARGE
+            },
+            Json(GenerateResponse {
+                response: error,
+                source: "error".to_string(),
+                tokens_generated: 0,
+                tokens_per_sec: 0.0,
+                duration_ms: 0,
+                timings: None,
+                stop_sequence: None,
+                trace: None,
+            }),
+        )
+            .into_response();
+    }
 
     info!(
         "📨 /api/generate model={} prompt_len={}",
@@ -2695,10 +2666,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
             model,
             prompt: req.prompt,
             chat_template: true,
-            budget: OutputBudget {
-                total: max_tokens,
-                leg: leg_limit.min(max_tokens),
-            },
+            budget: output_limit.budget(),
             stops,
             request_details,
             // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
@@ -2852,37 +2820,25 @@ mod tests {
         assert_eq!(many.into_vec(), vec!["END", "DONE"]);
     }
 
-    /// O teto conferido aqui é o **absoluto** do `pom.json`. O `max_new_tokens`
-    /// da implantação não recusa mais nada: ele limita uma perna do laço.
+    /// O orçamento pedido pelo cliente é validado aqui; capacidade e contexto
+    /// efetivos são resolvidos a partir do runtime ativo.
     #[test]
-    fn api_generate_max_tokens_defaults_accepts_and_rejects_by_the_absolute_ceiling() {
+    fn api_generate_max_tokens_defaults_accepts_and_rejects_zero_only() {
         let absent: GenerateRequest = serde_json::from_str(r#"{"prompt":"oi"}"#).unwrap();
         let requested: GenerateRequest =
             serde_json::from_str(r#"{"prompt":"oi","max_tokens":64}"#).unwrap();
         let excessive: GenerateRequest =
             serde_json::from_str(r#"{"prompt":"oi","max_tokens":513}"#).unwrap();
 
-        assert_eq!(resolve_request_max_tokens(absent.max_tokens, 512), Ok(512));
-        assert_eq!(
-            resolve_request_max_tokens(requested.max_tokens, 512),
-            Ok(64)
-        );
-        assert_eq!(
-            resolve_request_max_tokens(excessive.max_tokens, 512),
-            Err("max_tokens solicitado (513) excede max_output_tokens configurado (512)".into())
-        );
-        // E o mesmo pedido passa quando o teto absoluto o comporta, mesmo que
-        // a implantação gere bem menos que isso por vez.
-        assert_eq!(
-            resolve_request_max_tokens(excessive.max_tokens, 8_192),
-            Ok(513)
-        );
+        assert_eq!(resolve_request_max_tokens(absent.max_tokens), Ok(512));
+        assert_eq!(resolve_request_max_tokens(requested.max_tokens), Ok(64));
+        assert_eq!(resolve_request_max_tokens(excessive.max_tokens), Ok(513));
     }
 
     #[test]
     fn api_generate_max_tokens_rejects_zero_instead_of_silently_clamping() {
         assert_eq!(
-            resolve_request_max_tokens(Some(0), 512),
+            resolve_request_max_tokens(Some(0)),
             Err("max_tokens deve ser maior que zero".into())
         );
     }
@@ -3108,7 +3064,7 @@ mod budget_tests {
     /// devolvia 1000 tokens a quem pediu 4000, calado.
     #[test]
     fn the_deployment_ceiling_bounds_a_leg_and_no_longer_bounds_the_request() {
-        let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18, 8_192);
+        let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.deployment, Some(1_000));
         assert_eq!(limit.effective, 4_000, "o cliente recebe o que pediu");
@@ -3118,46 +3074,13 @@ mod budget_tests {
         assert_eq!(limit.effective.div_ceil(limit.leg), 4, "quatro pernas");
     }
 
-    /// A capacidade declarada do nó **recusa**, não corta em silêncio: pedir
-    /// mais do que `/v1/models` anuncia é erro de validação, como nos dois
-    /// provedores. Atender calado com menos era a mentira que este erro
-    /// substitui.
-    #[test]
-    fn asking_above_the_declared_capacity_is_a_validation_error_not_a_quiet_cut() {
-        let limit = output_token_limit(50_000, Some(1_000), Some(200_000), 2_000, 8_192);
-        assert_eq!(limit.absolute, 8_192);
-        let erro = limit
-            .exceeds_declared_capacity()
-            .expect("pedir acima da capacidade tem de recusar");
-        assert!(erro.contains("50000") && erro.contains("8192"), "{erro}");
-        assert!(erro.contains("max_completion_tokens"), "{erro}");
-    }
-
-    /// E abaixo dela nada é recusado: o teto declarado só fala de quem o
-    /// ultrapassa.
-    #[test]
-    fn asking_at_or_below_the_declared_capacity_is_never_refused() {
-        for pedido in [1, 4_000, 8_192] {
-            let limit = output_token_limit(pedido, Some(1_000), Some(200_000), 2_000, 8_192);
-            assert!(
-                limit.exceeds_declared_capacity().is_none(),
-                "pedido de {pedido} foi recusado sem motivo"
-            );
-            assert_eq!(limit.effective, pedido, "e o cliente recebe o que pediu");
-        }
-    }
-
     /// O contexto que sobrou continua apertando sem recusar - ele sai de uma
     /// **estimativa** do prompt, e recusar por estimativa rejeitaria pedido
     /// válido. O `x_pom` conta a verdade (`was_clamped`), que é o canal certo
     /// para um número aproximado.
     #[test]
     fn the_remaining_context_still_clamps_because_it_is_an_estimate() {
-        let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000, 100_000);
-        assert!(
-            limit.exceeds_declared_capacity().is_none(),
-            "o contexto não é capacidade declarada"
-        );
+        let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000);
         assert_eq!(limit.context_available, Some(1_000));
         assert_eq!(limit.effective, 1_000);
         assert_eq!(limit.leg, 1_000, "a perna nunca passa do total");
@@ -3167,7 +3090,7 @@ mod budget_tests {
 
     #[test]
     fn requested_client_limit_is_effective_when_it_fits_under_every_ceiling() {
-        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000, 8_192);
+        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000);
         assert_eq!(limit.requested, 4_000);
         assert_eq!(limit.effective, 4_000);
         assert_eq!(limit.leg, 4_000);
@@ -3177,15 +3100,26 @@ mod budget_tests {
 
     #[test]
     fn output_limit_preserves_the_requested_value_when_no_deployment_is_loaded() {
-        let limit = output_token_limit(8_192, None, None, 0, 8_192);
+        let limit = output_token_limit(8_192, None, None, 0);
         assert_eq!(limit.effective, 8_192);
         assert_eq!(limit.leg, 8_192);
         assert!(!limit.was_clamped());
     }
 
     #[test]
+    fn output_limit_contract_has_no_removed_absolute_capacity_field() {
+        let limit = output_token_limit(32_000, Some(32_000), Some(100_000), 0);
+        let value = serde_json::to_value(limit).unwrap();
+        let fields = value.as_object().expect("limites de saída serializados");
+        let legacy_field = ["absolute", "max", "tokens"].join("_");
+
+        assert_eq!(fields.len(), 5);
+        assert!(!fields.contains_key(&legacy_field));
+    }
+
+    #[test]
     fn output_limit_reports_no_capacity_when_the_prompt_fills_the_context() {
-        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000, 8_192);
+        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000);
         assert_eq!(limit.effective, 0);
         assert!(limit.was_clamped());
         assert!(limit
@@ -3196,19 +3130,9 @@ mod budget_tests {
 
     #[test]
     fn a_deployment_that_cannot_generate_is_still_a_refusal_not_a_silent_cut() {
-        let limit = output_token_limit(4_000, Some(0), Some(100_000), 10, 8_192);
+        let limit = output_token_limit(4_000, Some(0), Some(100_000), 10);
         assert_eq!(limit.leg, 0);
         assert!(limit.rejection_reason().unwrap().contains("max_new_tokens"));
-    }
-
-    #[test]
-    fn an_absolute_ceiling_of_zero_is_refused_by_name() {
-        let limit = output_token_limit(4_000, Some(1_000), Some(100_000), 10, 0);
-        assert_eq!(limit.effective, 0);
-        assert!(limit
-            .rejection_reason()
-            .unwrap()
-            .contains("max_output_tokens"));
     }
 
     #[test]
@@ -3218,7 +3142,6 @@ mod budget_tests {
             effective: 0,
             deployment: None,
             context_available: None,
-            absolute: 0,
             leg: 0,
             capacity_pending: true,
         };
@@ -3538,7 +3461,6 @@ pub(crate) mod testkit {
             runtime_capacity: Some(RuntimeCapacity {
                 n_ctx: 8_192,
                 max_new_tokens: 256,
-                max_output_tokens: 8_192,
             }),
         }
     }
@@ -3602,7 +3524,6 @@ pub(crate) mod testkit {
                 model_dirs: None,
                 shard_dir: None,
                 shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
-                max_output_tokens: crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
             })),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),

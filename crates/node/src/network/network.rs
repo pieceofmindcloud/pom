@@ -99,21 +99,13 @@ pub struct TpMember {
 
 /// Capacidade efetiva anunciada por um servidor de inferência pronto.
 ///
-/// `max_new_tokens` é o tamanho de uma perna do backend. `max_output_tokens`
-/// é o teto absoluto de uma requisição, configurado no `pom.json`. Os dois
-/// precisam viajar separados: elevar o primeiro nunca autoriza o gateway a
-/// ultrapassar o segundo.
+/// `max_new_tokens` é o tamanho de uma perna do backend. `n_ctx` é a janela
+/// efetiva que limita a soma de prompt e saída neste peer.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeCapacity {
     pub n_ctx: u32,
     pub max_new_tokens: u32,
-    pub max_output_tokens: u32,
-}
-
-impl RuntimeCapacity {
-    pub fn max_completion_tokens(self) -> u32 {
-        self.n_ctx.min(self.max_output_tokens)
-    }
 }
 
 #[derive(Debug, Default)]
@@ -1902,13 +1894,27 @@ mod tests {
         net.set_runtime_capacity(Some(RuntimeCapacity {
             n_ctx: 100_000,
             max_new_tokens: 32_000,
-            max_output_tokens: 32_000,
         }));
 
         let wire: serde_json::Value = serde_json::to_value(net.self_announce(None)).unwrap();
-        assert_eq!(wire["runtime_capacity"]["n_ctx"], 100_000);
-        assert_eq!(wire["runtime_capacity"]["max_new_tokens"], 32_000);
-        assert_eq!(wire["runtime_capacity"]["max_output_tokens"], 32_000);
+        assert_eq!(
+            wire["runtime_capacity"],
+            serde_json::json!({"n_ctx": 100_000, "max_new_tokens": 32_000})
+        );
+    }
+
+    #[test]
+    fn removed_capacity_field_is_rejected_from_peer_wire_contract() {
+        let legacy_field = ["max", "output", "tokens"].join("_");
+        let mut value = serde_json::json!({"n_ctx": 100_000, "max_new_tokens": 32_000});
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert(legacy_field.clone(), serde_json::json!(8_192));
+
+        let result: Result<RuntimeCapacity, _> = serde_json::from_value(value);
+        let error = result.expect_err("campo removido não pode ser ignorado no wire");
+        assert!(error.to_string().contains(&legacy_field));
     }
 
     #[tokio::test]
@@ -1931,7 +1937,6 @@ mod tests {
             Some(RuntimeCapacity {
                 n_ctx: 8_192,
                 max_new_tokens: 8_192,
-                max_output_tokens: 8_192,
             }),
         );
         assert_eq!(net.runtime_capacity(), None);
@@ -1941,7 +1946,6 @@ mod tests {
             Some(RuntimeCapacity {
                 n_ctx: 100_000,
                 max_new_tokens: 32_000,
-                max_output_tokens: 32_000,
             }),
         );
         net.set_runtime_capacity_for_generation(1, None);
@@ -1950,7 +1954,6 @@ mod tests {
             Some(RuntimeCapacity {
                 n_ctx: 100_000,
                 max_new_tokens: 32_000,
-                max_output_tokens: 32_000,
             })
         );
     }

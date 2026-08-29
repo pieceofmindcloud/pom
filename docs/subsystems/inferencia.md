@@ -1009,9 +1009,8 @@ resposta válida e mostravam apenas uma execução sem resposta. Requisições q
 cabem no orçamento mantêm o SSE e o caminho distribuído inalterados.
 
 O `POST /api/generate` aceita `max_tokens` opcional. Na ausência, usa 512;
-quando presente, exige valor maior que zero e no máximo o `max_output_tokens`
-do `pom.json` (ver 9.1), recusando 400 com os dois valores quando excede. O
-limite é o total de tokens de saída: o primeiro token devolvido pelo prefill já
+quando presente, exige valor maior que zero. O limite efetivo é o menor entre o
+pedido e o espaço restante de `n_ctx` depois do prompt. O primeiro token devolvido pelo prefill já
 conta, portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de
 decode.
 
@@ -1045,7 +1044,7 @@ Hoje são **dois números**, e nunca um só (`gateway::OutputBudget`):
 | | quem decide | o que limita |
 |---|---|---|
 | **perna** (`leg`) | `NodeConfig.max_new_tokens` da implantação | **uma** geração de backend |
-| **total** (`total`) | `min(pedido, max_output_tokens, n_ctx - prompt)` | a **requisição inteira** |
+| **total** (`total`) | `min(pedido, n_ctx - prompt)` | a **requisição inteira** |
 
 Esgotar a perna não encerra a resposta. `gateway::note_leg_boundary` conta a
 perna e o laço segue decodificando na **mesma** sessão de KV, na mesma conexão,
@@ -1069,19 +1068,18 @@ conhecimento", e ao ser atingido a saída "trunca no meio e exige nova
 tentativa". Não existe continuação, folga ou transbordo em nenhuma das duas
 APIs.
 
-Houve aqui uma folga (`tool_call_grace_tokens`, padrão 2048) que deixava a
-geração passar do teto para fechar uma chamada aberta. Ela foi **removida**: o
+Houve aqui uma folga que deixava a geração passar do teto para fechar uma
+chamada aberta. Ela foi **removida**: o
 que os provedores oferecem no lugar do transbordo é o [orçamento de
 tarefa](api-http.md#orçamento-de-tarefa), que avisa o modelo em vez de esticar
 o teto.
 
-**A capacidade do nó é declarada, não um corte silencioso.**
-`max_output_tokens` no `pom.json` (padrão `DEFAULT_MAX_OUTPUT_TOKENS = 8192`) é
-o freio contra o modelo em laço, aparece como `absolute_max_tokens` no
-`x_pom.output_limits` e é anunciado em `/v1/models` como
-`max_completion_tokens`. Um pedido **acima** dele é recusado com erro de
-validação (400), como os provedores fazem quando se pede mais do que o modelo
-suporta - nunca atendido calado com menos. Zero ali é recusa nomeada.
+**A capacidade do nó é derivada do runtime, não é um corte silencioso.**
+O `n_ctx` efetivo confirmado pelo `/health` é anunciado em `/v1/models` como
+`context_length` e `max_completion_tokens`. O gateway usa o menor contexto
+confirmado entre os peers vivos do modelo e reduz o orçamento somente quando o
+prompt ocupa parte dessa janela. Não há uma capacidade absoluta adicional no
+arquivo de configuração.
 
 O contexto que sobrou continua apertando o teto **sem** recusar, e isso é
 deliberado: ele sai de uma estimativa de tokens do prompt (`estimate_tokens`),
@@ -1129,8 +1127,7 @@ pagar por ela.
 **Capacidade de todos os peers.** Depois que o `/health` prova o carregamento,
 `runtime::spawn_health_watch` publica em `Announce.runtime_capacity` o
 `n_ctx` efetivo por sessão retornado pelo `/health` (o total do engine dividido
-por `max_sessions`), o `max_new_tokens` da perna e o
-`max_output_tokens` do `pom.json`. O gateway usa o menor valor entre todos os
+por `max_sessions`), e o `max_new_tokens` da perna. O gateway usa o menor valor entre todos os
 peers vivos do modelo/implantação tanto em `/v1/models` quanto na validação da
 requisição. Apply, erro, stop e unload térmico limpam o anúncio antes do
 restart, então uma capacidade antiga não fica no catálogo. Sem peer
@@ -1140,8 +1137,8 @@ indisponível até todos confirmarem o runtime, sem esconder um estágio antigo.
 
 **Limite conhecido.** `context_available` ainda usa a janela por sessão; com
 um pool (`max_sessions > 1`) cada contexto recebe `n_ctx / n`, então esse
-número é otimista. É imprecisão anterior a esta funcionalidade, e o
-`max_output_tokens` conservador é o que a mantém inofensiva na prática.
+número é otimista. A capacidade publicada deve ser lida novamente depois de
+qualquer restart ou alteração da implantação.
 
 A bancada é `crates/node/src/backend/continuation_lab.rs`.
 

@@ -62,6 +62,12 @@ como `primary` na config de inferência montada pela linha de comando),
 `--pkarr-peers`, `--public-addr`, `--relay-peers`, `--serve-relay`,
 `--no-default-relays`, `--no-discovery`.
 
+Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
+derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os
+peers vivos; `max_new_tokens` continua sendo apenas o tamanho de uma perna.
+Consulte `/v1/models` depois de todos os peers confirmarem o runtime. O passo
+operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
+
 **Fluxo (`main`):**
 1. `respawn::remember_argv` + tracing.
 2. Sem `pom.json` → `start_setup_mode`: só `/api/setup/key`, `/api/setup/save`

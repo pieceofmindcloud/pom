@@ -91,9 +91,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
   um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
   queda não anunciam capacidade de inferência. `runtime_capacity` só entra
-  depois de `/health` confirmar o modelo carregado e leva `n_ctx`,
-  `max_new_tokens` (perna) e `max_output_tokens` (teto absoluto); apply, erro,
-  stop e thermal unload limpam o campo antes de anunciar. Não existe anúncio ou fallback
+  depois de `/health` confirmar o modelo carregado e leva `n_ctx` e
+  `max_new_tokens` (perna); apply, erro, stop e thermal unload limpam o campo
+  antes de anunciar. Não existe anúncio ou fallback
   para formatos de frame anteriores, porque o produto ainda não foi lançado.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`

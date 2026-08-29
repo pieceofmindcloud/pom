@@ -563,12 +563,6 @@ async fn messages(
         .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
         .await;
     log_output_limit("/v1/messages", output_limit);
-    // Capacidade declarada: pedir mais do que o nó anuncia é erro de
-    // validação, nunca uma resposta calada e menor. Ver
-    // `OutputTokenLimit::exceeds_declared_capacity`.
-    if let Some(error) = output_limit.exceeds_declared_capacity() {
-        return error_response(StatusCode::BAD_REQUEST, "invalid_request_error", error);
-    }
     if let Some(error) = output_limit.rejection_reason() {
         let status = if output_limit.capacity_pending() {
             StatusCode::SERVICE_UNAVAILABLE
@@ -1221,6 +1215,14 @@ fn sse_stream(
                                 },
                                 "usage": { "output_tokens": summary.tokens_generated },
                                 "x_pom": {
+                                    "source": summary.source,
+                                    "tokens_per_sec": summary.tokens_per_sec,
+                                    "duration_ms": summary.duration_ms,
+                                    "timings": summary.timings,
+                                    "partial": summary.partial || truncated_tool_call,
+                                    "finish_reason": summary.finish_reason,
+                                    "stop_sequence": summary.stop_sequence,
+                                    "trace": summary.trace,
                                     "output_limits": s.output_limit,
                                     "continuation_legs": summary.legs,
                                     "truncated_tool_call": truncated_tool_call,

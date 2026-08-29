@@ -175,10 +175,10 @@ quebra o produto inteiro.
   avisa o modelo em vez de esticar o teto. Corte dentro de uma chamada devolve
   a chamada **estruturada e incompleta**, como os dois provedores: markup cru
   no `content` nunca é resposta, e descartar também não.
-  `max_output_tokens` do `pom.json` é **capacidade declarada** - anunciada em
-  `/v1/models` e recusada com 400 quando o pedido a excede, nunca atendida
-  calada com menos. A capacidade efetiva publicada e validada é a menor entre
-  os peers vivos da implantação, depois que cada `/health` confirma o runtime.
+  A capacidade de saída vem do `n_ctx` efetivo anunciado em `/health` e
+  agregado entre os peers vivos da implantação. Ela é publicada em
+  `/v1/models`; `max_new_tokens` continua sendo somente o tamanho de uma perna
+  do laço, e `max_tokens` continua sendo o orçamento pedido pelo cliente.
   Em streaming os argumentos de uma chamada saem em
   **fragmentos** conforme o modelo gera, e a concatenação deles é sempre a
   string que o caminho não-streaming produziria.

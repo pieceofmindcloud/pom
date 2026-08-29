@@ -107,7 +107,7 @@ fn tool_call_script() -> Vec<String> {
 /// A forma reduzida da reprodução do captain: 847 linhas de HTML, quebradas
 /// em pedaços pequenos como um tokenizer real faria. O número de linhas é
 /// deliberado - a bancada precisa atravessar tanto 8192 quanto 50000 tokens
-/// sem confundir tamanho do arquivo com a capacidade declarada do nó.
+/// sem confundir tamanho do arquivo com a capacidade de contexto do nó.
 fn large_html_tool_script() -> Vec<String> {
     let mut script = vec![
         "<tool_call>\n".to_string(),
@@ -413,34 +413,19 @@ impl No {
 
 /// Sobe dois hops falsos e um nó de verdade servindo `/v1` por HTTP.
 ///
-/// `deployment_max_new_tokens` é o teto de **uma** geração de backend - o
-/// número do captain, que a tarefa proíbe levantar. `absolute_ceiling` é o
-/// `max_output_tokens` do `pom.json`: a capacidade que o nó declara, anunciada
-/// em `/v1/models` e recusada quando o pedido a excede.
-async fn no(script: Vec<String>, deployment_max_new_tokens: u32, absolute_ceiling: u32) -> No {
-    no_with_context(script, deployment_max_new_tokens, absolute_ceiling, 8_192).await
+/// `deployment_max_new_tokens` é o teto de **uma** geração de backend. A
+/// capacidade total deriva do contexto efetivo, sem um teto absoluto separado.
+async fn no(script: Vec<String>, deployment_max_new_tokens: u32) -> No {
+    no_with_context(script, deployment_max_new_tokens, 8_192).await
 }
 
-async fn no_with_context(
-    script: Vec<String>,
-    deployment_max_new_tokens: u32,
-    absolute_ceiling: u32,
-    n_ctx: u32,
-) -> No {
-    no_with_peer_capacities(
-        script,
-        deployment_max_new_tokens,
-        absolute_ceiling,
-        n_ctx,
-        Vec::new(),
-    )
-    .await
+async fn no_with_context(script: Vec<String>, deployment_max_new_tokens: u32, n_ctx: u32) -> No {
+    no_with_peer_capacities(script, deployment_max_new_tokens, n_ctx, Vec::new()).await
 }
 
 async fn no_with_peer_capacities(
     script: Vec<String>,
     deployment_max_new_tokens: u32,
-    absolute_ceiling: u32,
     n_ctx: u32,
     capacities: Vec<crate::network::RuntimeCapacity>,
 ) -> No {
@@ -495,7 +480,6 @@ async fn no_with_peer_capacities(
                 crate::network::RuntimeCapacity {
                     n_ctx,
                     max_new_tokens: deployment_max_new_tokens,
-                    max_output_tokens: absolute_ceiling,
                 },
             ));
             p
@@ -510,7 +494,6 @@ async fn no_with_peer_capacities(
     state.runtime.seed_config_for_test(config).await;
     {
         let mut auth = state.auth.write().await;
-        auth.max_output_tokens = absolute_ceiling;
         auth.api_keys.push(crate::config::ApiKey {
             id: "claude-code-contract".into(),
             key: API_CHAVE.into(),
@@ -590,10 +573,7 @@ async fn post_messages(no: &No, body: Value) -> Value {
         .expect("corpo JSON")
 }
 
-/// O SSE da rota Anthropic, que tem nomes de evento próprios. Devolve os
-/// `partial_json` de `input_json_delta`, na ordem - é onde os argumentos da
-/// chamada de ferramenta chegam ali.
-async fn fragmentos_messages(no: &No, body: Value) -> Vec<String> {
+async fn eventos_messages(no: &No, body: Value) -> Vec<Value> {
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
         .bearer_auth(CHAVE)
@@ -605,7 +585,7 @@ async fn fragmentos_messages(no: &No, body: Value) -> Vec<String> {
 
     let mut bytes = resposta.bytes_stream();
     let mut buffer = String::new();
-    let mut fragmentos = Vec::new();
+    let mut eventos = Vec::new();
     while let Some(pedaco) = bytes.next().await {
         buffer.push_str(&String::from_utf8_lossy(&pedaco.expect("pedaço SSE")));
         while let Some(fim) = buffer.find("\n\n") {
@@ -614,16 +594,29 @@ async fn fragmentos_messages(no: &No, body: Value) -> Vec<String> {
                 let Some(dado) = linha.strip_prefix("data: ") else {
                     continue;
                 };
-                let v: Value = serde_json::from_str(dado).expect("evento JSON");
-                if v["delta"]["type"] == "input_json_delta" {
-                    fragmentos.push(
-                        v["delta"]["partial_json"]
-                            .as_str()
-                            .expect("partial_json")
-                            .to_string(),
-                    );
+                if dado != "[DONE]" {
+                    eventos.push(serde_json::from_str(dado).expect("evento JSON"));
                 }
             }
+        }
+    }
+    eventos
+}
+
+/// O SSE da rota Anthropic, que tem nomes de evento próprios. Devolve os
+/// `partial_json` de `input_json_delta`, na ordem - é onde os argumentos da
+/// chamada de ferramenta chegam ali.
+async fn fragmentos_messages(no: &No, body: Value) -> Vec<String> {
+    let eventos = eventos_messages(no, body).await;
+    let mut fragmentos = Vec::new();
+    for v in eventos {
+        if v["delta"]["type"] == "input_json_delta" {
+            fragmentos.push(
+                v["delta"]["partial_json"]
+                    .as_str()
+                    .expect("partial_json")
+                    .to_string(),
+            );
         }
     }
     fragmentos
@@ -762,7 +755,7 @@ async fn post_sse(no: &No, body: Value) -> Fluxo {
 async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
     let script = plain_script();
     let esperado: String = script.concat();
-    let no = no(script.clone(), 8, 8_192).await;
+    let no = no(script.clone(), 8).await;
 
     let corpo = post_json(&no, pedido(100, false, false)).await;
     let escolha = &corpo["choices"][0];
@@ -791,7 +784,7 @@ async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
 async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
     let script = plain_script();
     let esperado: String = script.concat();
-    let no = no(script.clone(), 8, 8_192).await;
+    let no = no(script.clone(), 8).await;
 
     let fluxo = post_sse(&no, pedido(100, true, false)).await;
 
@@ -814,7 +807,7 @@ async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
 #[tokio::test]
 async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
     let script = tool_call_script();
-    let no = no(script, 8, 8_192).await;
+    let no = no(script, 8).await;
 
     let corpo = post_json(&no, pedido(100, false, true)).await;
     let escolha = &corpo["choices"][0];
@@ -846,7 +839,7 @@ async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
 #[tokio::test]
 async fn the_streamed_tool_call_carries_complete_arguments() {
     let script = tool_call_script();
-    let no = no(script, 8, 8_192).await;
+    let no = no(script, 8).await;
 
     let fluxo = post_sse(&no, pedido(100, true, true)).await;
     assert_eq!(fluxo.finish_reasons(), vec!["tool_calls".to_string()]);
@@ -876,20 +869,16 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
     assert!(!fluxo.texto().contains("<tool_call>"), "{}", fluxo.texto());
 }
 
-/// A reprodução grande do caso do captain: com capacidade declarada de
-/// 50000, as 847 linhas cabem e a chamada chega completa mesmo atravessando
-/// várias pernas de 1024 tokens.
+/// A reprodução grande do caso do captain: com contexto efetivo suficiente,
+/// as 847 linhas cabem e a chamada chega completa mesmo atravessando várias
+/// pernas de 1024 tokens.
 #[tokio::test]
-async fn a_large_html_tool_call_fits_a_declared_50000_token_capacity() {
-    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+async fn a_large_html_tool_call_fits_the_context_capacity() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
     let corpo = post_json(&no, pedido(50_000, false, true)).await;
     let escolha = &corpo["choices"][0];
     assert_eq!(escolha["finish_reason"], "tool_calls");
-    assert_eq!(
-        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
-        50_000
-    );
     assert_eq!(corpo["x_pom"]["partial"], false);
 
     let bruto = escolha["message"]["tool_calls"][0]["function"]["arguments"]
@@ -908,7 +897,7 @@ async fn a_large_html_tool_call_fits_a_declared_50000_token_capacity() {
 /// pode sumir apenas porque atravessou várias pernas de 1024 tokens.
 #[tokio::test]
 async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
-    let no = no_with_context(large_html_tool_script(), 1_024, 32_000, 100_000).await;
+    let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
 
     let corpo = post_json(&no, pedido(32_000, false, true)).await;
     let escolha = &corpo["choices"][0];
@@ -918,10 +907,6 @@ async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
             .as_u64()
             .expect("completion_tokens")
             < 32_000
-    );
-    assert_eq!(
-        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
-        32_000
     );
     assert_eq!(corpo["x_pom"]["partial"], false);
 
@@ -939,7 +924,7 @@ async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
 /// concatenar os fragmentos de argumentos ainda produz a chamada inteira.
 #[tokio::test]
 async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
-    let no = no_with_context(large_html_tool_script(), 1_024, 32_000, 100_000).await;
+    let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
 
     let fluxo = post_sse(&no, pedido(32_000, true, true)).await;
 
@@ -963,16 +948,12 @@ async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
 /// argumentos ficam deliberadamente incompletos para não serem executados.
 #[tokio::test]
 async fn a_large_openai_tool_call_at_8192_is_structured_and_terminal() {
-    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
     let corpo = post_json(&no, pedido(8_192, false, true)).await;
     let escolha = &corpo["choices"][0];
     assert_eq!(escolha["finish_reason"], "length");
     assert_eq!(corpo["usage"]["completion_tokens"], 8_192);
-    assert_eq!(
-        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
-        50_000
-    );
     assert_eq!(corpo["x_pom"]["partial"], true);
     assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
 
@@ -987,7 +968,7 @@ async fn a_large_openai_tool_call_at_8192_is_structured_and_terminal() {
 
 #[tokio::test]
 async fn a_large_openai_tool_call_at_5000_is_structured_and_terminal_non_streaming() {
-    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
     let corpo = post_json(&no, pedido(5_000, false, true)).await;
     let escolha = &corpo["choices"][0];
@@ -1013,7 +994,7 @@ async fn a_large_openai_tool_call_at_5000_is_structured_and_terminal_non_streami
 /// pode fechar sem argumentos nem despejar `<tool_call>` em `content`.
 #[tokio::test]
 async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
-    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
     let fluxo = post_sse(&no, pedido(8_192, true, true)).await;
 
@@ -1045,7 +1026,7 @@ async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
 /// pelo Pi: não existe uma continuação escondida depois do evento terminal.
 #[tokio::test]
 async fn a_large_openai_tool_call_at_5000_has_one_recoverable_terminal_cut() {
-    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let no = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
 
     let fluxo = post_sse(&no, pedido(5_000, true, true)).await;
 
@@ -1071,7 +1052,7 @@ async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
         "input_schema": {"type": "object", "properties": {}},
     });
 
-    let completo = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let completo = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
     let corpo = post_messages(
         &completo,
         json!({
@@ -1083,16 +1064,12 @@ async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
     )
     .await;
     assert_eq!(corpo["stop_reason"], "tool_use");
-    assert_eq!(
-        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
-        50_000
-    );
     assert!(corpo["content"][0]["input"]["content"]
         .as_str()
         .expect("content")
         .contains("data-line=\"846\""));
 
-    let cortado = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let cortado = no_with_context(large_html_tool_script(), 1_024, 65_536).await;
     let corpo = post_messages(
         &cortado,
         json!({
@@ -1114,13 +1091,62 @@ async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
     assert!(!content.contains("data-line=\"846\""));
 }
 
+/// Reproduz o limite configurado pelo Pi na mesma rota que o Claude Code usa:
+/// `max_tokens: 5000` chega inteiro ao gateway, corta exatamente nesse total e
+/// ainda fecha o stream com um `tool_use` estruturado. O contexto de 100k não
+/// aumenta o teto de saída do cliente.
+#[tokio::test]
+async fn pi_5000_limit_is_forwarded_and_large_write_is_structured_when_cut() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 100_000).await;
+    let eventos = eventos_messages(&no, pedido_messages(5_000, Some(false))).await;
+
+    let delta = eventos
+        .iter()
+        .find(|evento| evento["type"] == "message_delta")
+        .expect("message_delta final");
+    assert_eq!(delta["delta"]["stop_reason"], "max_tokens");
+    assert_eq!(delta["usage"]["output_tokens"], 5_000);
+    assert_eq!(
+        delta["x_pom"]["output_limits"]["requested_max_tokens"],
+        5_000
+    );
+    assert_eq!(
+        delta["x_pom"]["output_limits"]["effective_max_tokens"],
+        5_000
+    );
+    assert_eq!(delta["x_pom"]["partial"], true);
+    assert_eq!(delta["x_pom"]["truncated_tool_call"], true);
+
+    let tool_start = eventos
+        .iter()
+        .find(|evento| evento["content_block"]["type"] == "tool_use")
+        .expect("content_block_start do tool_use");
+    assert_eq!(tool_start["content_block"]["name"], "write_file");
+
+    let argumentos: String = eventos
+        .iter()
+        .filter(|evento| evento["delta"]["type"] == "input_json_delta")
+        .filter_map(|evento| evento["delta"]["partial_json"].as_str())
+        .collect();
+    assert!(argumentos.starts_with(r#"{"path":"/tmp/index.html","content":"#));
+    assert!(serde_json::from_str::<Value>(&argumentos).is_err());
+    assert!(!argumentos.contains("data-line=\"846\""));
+    assert_eq!(
+        eventos
+            .iter()
+            .filter(|evento| evento["type"] == "message_stop")
+            .count(),
+        1
+    );
+}
+
 /// **O defeito do captain, virado do avesso.** Medido no ksia vivo: 2 pedaços,
 /// os dois aos 11,01 s - os 663 caracteres chegavam todos de uma vez, no fim,
 /// e o usuário encarava uma tela parada. Agora o primeiro fragmento chega
 /// muito antes do último.
 #[tokio::test]
 async fn the_first_argument_fragment_arrives_well_before_the_last() {
-    let no = no(tool_call_script(), 8, 8_192).await;
+    let no = no(tool_call_script(), 8).await;
 
     let fluxo = post_sse(&no, pedido(100, true, true)).await;
     let fragmentos = fluxo.fragmentos_de_argumento();
@@ -1144,13 +1170,12 @@ async fn the_first_argument_fragment_arrives_well_before_the_last() {
 /// resposta em pernas invisíveis, cinco delas aqui.
 #[tokio::test]
 async fn the_client_ceiling_stops_a_runaway_model_and_is_the_only_length() {
-    let no = no(runaway_script(), 8, 37).await;
+    let no = no(runaway_script(), 8).await;
 
     let corpo = post_json(&no, pedido(37, false, false)).await;
     let escolha = &corpo["choices"][0];
     assert_eq!(escolha["finish_reason"], "length");
     assert_eq!(corpo["usage"]["completion_tokens"], 37);
-    assert_eq!(corpo["x_pom"]["output_limits"]["absolute_max_tokens"], 37);
     assert_eq!(corpo["x_pom"]["output_limits"]["effective_max_tokens"], 37);
     assert_eq!(corpo["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
     assert_eq!(corpo["x_pom"]["finish_reason"], "length");
@@ -1161,7 +1186,7 @@ async fn the_client_ceiling_stops_a_runaway_model_and_is_the_only_length() {
 /// costura das cinco pernas segue invisível.
 #[tokio::test]
 async fn the_client_ceiling_ends_the_stream_exactly_once() {
-    let no = no(runaway_script(), 8, 37).await;
+    let no = no(runaway_script(), 8).await;
 
     let fluxo = post_sse(&no, pedido(37, true, false)).await;
     assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
@@ -1174,7 +1199,7 @@ async fn the_client_ceiling_ends_the_stream_exactly_once() {
 /// `length` continua sendo dito na hora certa.
 #[tokio::test]
 async fn a_request_that_fits_one_leg_is_untouched() {
-    let no = no(runaway_script(), 8, 8_192).await;
+    let no = no(runaway_script(), 8).await;
 
     let corpo = post_json(&no, pedido(5, false, false)).await;
     assert_eq!(corpo["choices"][0]["finish_reason"], "length");
@@ -1187,7 +1212,7 @@ async fn a_request_that_fits_one_leg_is_untouched() {
 /// da implantação faria o cliente pedir menos do que este nó entrega.
 #[tokio::test]
 async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
-    let no = no(runaway_script(), 8, 4_096).await;
+    let no = no(runaway_script(), 8).await;
 
     let corpo: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
@@ -1200,7 +1225,7 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
         .expect("corpo JSON");
 
     let modelo = &corpo["data"][0];
-    assert_eq!(modelo["top_provider"]["max_completion_tokens"], 4_096);
+    assert_eq!(modelo["top_provider"]["max_completion_tokens"], 8_192);
 }
 
 /// Anthropic SDKs can send both authentication headers. A bad Bearer header
@@ -1208,7 +1233,7 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
 /// surfaces. Two invalid credentials still remain a 403.
 #[tokio::test]
 async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
-    let no = no(plain_script(), 8, 8_192).await;
+    let no = no(plain_script(), 8).await;
     let client = reqwest::Client::new();
 
     let models = client
@@ -1278,7 +1303,7 @@ async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
 /// tempo. Os campos Anthropic extras são ignorados pelos clientes OpenAI.
 #[tokio::test]
 async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
-    let no = no_with_context(runaway_script(), 8, 50_000, 100_000).await;
+    let no = no_with_context(runaway_script(), 8, 100_000).await;
 
     let corpo: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
@@ -1296,32 +1321,28 @@ async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
     assert_eq!(modelo["id"], "lab");
     assert_eq!(modelo["type"], "model");
     assert_eq!(modelo["max_input_tokens"], 100_000);
-    assert_eq!(modelo["max_tokens"], 50_000);
+    assert_eq!(modelo["max_tokens"], 100_000);
     assert_eq!(modelo["context_length"], 100_000);
-    assert_eq!(modelo["top_provider"]["max_completion_tokens"], 50_000);
+    assert_eq!(modelo["top_provider"]["max_completion_tokens"], 100_000);
 }
 
-/// A capacidade da implantação é a capacidade do pipeline inteiro: um peer
-/// que ainda anuncia 8192 não pode ser escondido por outro que já reiniciou
-/// com 32000. A lista e a validação da requisição têm de usar o menor valor
-/// entre todos os peers vivos da implantação.
+/// A capacidade derivada da rede é a capacidade do pipeline inteiro: um peer
+/// com contexto 8192 não pode ser escondido por outro com contexto 100000.
+/// A lista usa o menor valor entre todos os peers vivos da implantação.
 #[tokio::test]
-async fn deployment_capacity_is_aggregated_across_all_live_peers() {
+async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
     let no = no_with_peer_capacities(
         plain_script(),
-        32_000,
         32_000,
         100_000,
         vec![
             crate::network::RuntimeCapacity {
                 n_ctx: 100_000,
                 max_new_tokens: 32_000,
-                max_output_tokens: 32_000,
             },
             crate::network::RuntimeCapacity {
                 n_ctx: 8_192,
                 max_new_tokens: 8_192,
-                max_output_tokens: 8_192,
             },
         ],
     )
@@ -1349,12 +1370,9 @@ async fn deployment_capacity_is_aggregated_across_all_live_peers() {
         .send()
         .await
         .expect("resposta HTTP");
-    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
-    let corpo: Value = resposta.json().await.expect("corpo JSON");
-    assert!(corpo["error"]["message"]
-        .as_str()
-        .expect("mensagem")
-        .contains("8192"));
+    let status = resposta.status();
+    let body = resposta.text().await.expect("corpo de erro");
+    assert_eq!(status, reqwest::StatusCode::OK, "{body}");
 }
 
 /// Depois que todos os peers reiniciam com a nova configuração, o gateway
@@ -1365,18 +1383,15 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
     let no = no_with_peer_capacities(
         plain_script(),
         32_000,
-        32_000,
         100_000,
         vec![
             crate::network::RuntimeCapacity {
                 n_ctx: 100_000,
                 max_new_tokens: 32_000,
-                max_output_tokens: 32_000,
             },
             crate::network::RuntimeCapacity {
                 n_ctx: 100_000,
                 max_new_tokens: 32_000,
-                max_output_tokens: 32_000,
             },
         ],
     )
@@ -1394,7 +1409,7 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
     assert_eq!(models["data"][0]["context_length"], 100_000);
     assert_eq!(
         models["data"][0]["top_provider"]["max_completion_tokens"],
-        32_000
+        100_000
     );
 
     let resposta = reqwest::Client::new()
@@ -1407,13 +1422,12 @@ async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
     assert_eq!(resposta.status(), reqwest::StatusCode::OK);
 }
 
-/// Reproduz exatamente o diagnóstico do captain: elevar `max_new_tokens` da
-/// implantação para 32000 não altera o `max_output_tokens` declarado como
-/// 8192 no nó. O primeiro é uma perna; o segundo é a capacidade publicada e
-/// imposta à requisição.
+/// Reproduz a configuração do captain: `max_new_tokens: 32000` continua sendo
+/// uma perna, enquanto a capacidade publicada vem do contexto efetivo do
+/// modelo e da rede, sem um segundo teto absoluto escondido.
 #[tokio::test]
-async fn a_32000_deployment_leg_does_not_hide_an_8192_node_capacity() {
-    let no = no_with_context(plain_script(), 32_000, 8_192, 100_000).await;
+async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
+    let no = no_with_context(plain_script(), 32_000, 100_000).await;
 
     let models: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
@@ -1427,7 +1441,7 @@ async fn a_32000_deployment_leg_does_not_hide_an_8192_node_capacity() {
     assert_eq!(models["data"][0]["context_length"], 100_000);
     assert_eq!(
         models["data"][0]["top_provider"]["max_completion_tokens"],
-        8_192
+        100_000
     );
 
     let resposta = reqwest::Client::new()
@@ -1437,12 +1451,7 @@ async fn a_32000_deployment_leg_does_not_hide_an_8192_node_capacity() {
         .send()
         .await
         .expect("resposta HTTP");
-    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
-    let corpo: Value = resposta.json().await.expect("corpo JSON");
-    assert!(corpo["error"]["message"]
-        .as_str()
-        .expect("mensagem")
-        .contains("8192"));
+    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
 }
 
 /// OpenCode envia o nome novo do limite e pode acrescentar campos opcionais
@@ -1450,7 +1459,7 @@ async fn a_32000_deployment_leg_does_not_hide_an_8192_node_capacity() {
 /// exigir que o cliente também mande o nome antigo.
 #[tokio::test]
 async fn openai_chat_completions_accepts_max_completion_tokens() {
-    let no = no(runaway_script(), 8, 8_192).await;
+    let no = no(runaway_script(), 8).await;
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
@@ -1476,8 +1485,8 @@ async fn openai_chat_completions_accepts_max_completion_tokens() {
 }
 
 #[tokio::test]
-async fn max_completion_tokens_above_the_50k_capacity_is_rejected() {
-    let no = no_with_context(runaway_script(), 8, 50_000, 100_000).await;
+async fn max_completion_tokens_above_the_former_50k_ceiling_is_accepted() {
+    let no = no_with_context(plain_script(), 8, 100_000).await;
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
@@ -1491,11 +1500,7 @@ async fn max_completion_tokens_above_the_50k_capacity_is_rejected() {
         .await
         .expect("resposta HTTP");
 
-    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
-    let corpo: Value = resposta.json().await.expect("corpo JSON");
-    let mensagem = corpo["error"]["message"].as_str().expect("mensagem");
-    assert!(mensagem.contains("50001"), "{mensagem}");
-    assert!(mensagem.contains("50000"), "{mensagem}");
+    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
 }
 
 // ── O teto do CLIENTE caindo dentro da chamada ───────────────────────────────
@@ -1536,14 +1541,14 @@ fn corte_cai_dentro_da_chamada() {
 
 /// **O teto do cliente é inviolável, inclusive com uma chamada aberta.**
 ///
-/// Era aqui que a folga (`tool_call_grace_tokens`, removida) deixava a geração
-/// ultrapassar o que o cliente pediu. Nenhum dos dois provedores faz isso:
+/// Era aqui que uma folga removida deixava a geração ultrapassar o que o
+/// cliente pediu. Nenhum dos dois provedores faz isso:
 /// `max_tokens` é teto por resposta imposto, atingi-lo é parada terminal, e a
 /// saída trunca no meio. O que eles oferecem no lugar do transbordo é o
 /// orçamento de tarefa, coberto mais abaixo.
 #[tokio::test]
 async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
-    let no = no(tool_call_script(), 8, 8_192).await;
+    let no = no(tool_call_script(), 8).await;
 
     let corpo = post_json(&no, pedido(TETO_DENTRO_DA_CHAMADA, false, true)).await;
 
@@ -1558,7 +1563,7 @@ async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
 /// a mais atravessou o fluxo.
 #[tokio::test]
 async fn the_streamed_client_ceiling_is_never_exceeded_with_an_open_tool_call() {
-    let no = no(tool_call_script(), 8, 8_192).await;
+    let no = no(tool_call_script(), 8).await;
 
     let fluxo = post_sse(&no, pedido(TETO_DENTRO_DA_CHAMADA, true, true)).await;
 
@@ -1582,7 +1587,7 @@ async fn the_streamed_client_ceiling_is_never_exceeded_with_an_open_tool_call() 
 /// marcação crua vazada como texto, e o descarte silencioso do fragmento.
 #[tokio::test]
 async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
-    let no = no(tool_call_script(), 8, 8_192).await;
+    let no = no(tool_call_script(), 8).await;
 
     let corpo = post_json(&no, pedido(TETO_DENTRO_DA_CHAMADA, false, true)).await;
     let escolha = &corpo["choices"][0];
@@ -1642,7 +1647,7 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
 /// o corpo até a tag fechar.
 #[tokio::test]
 async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete() {
-    let no = no(tool_call_script(), 8, 8_192).await;
+    let no = no(tool_call_script(), 8).await;
 
     let fluxo = post_sse(&no, pedido(TETO_DENTRO_DA_CHAMADA, true, true)).await;
 
@@ -1691,7 +1696,7 @@ async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete(
 /// precisa repetir o pedido com um teto maior.
 #[tokio::test]
 async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block() {
-    let no = no(tool_call_script(), 8, 8_192).await;
+    let no = no(tool_call_script(), 8).await;
 
     let corpo = post_messages(
         &no,
@@ -1738,18 +1743,14 @@ async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block
     assert_eq!(corpo["x_pom"]["partial"], true);
 }
 
-// ── Capacidade declarada do nó ───────────────────────────────────────────────
+// ── Capacidade derivada do runtime ──────────────────────────────────────────
 
-/// **Pedir mais do que o nó declara é recusado, não atendido com menos.**
-///
-/// `max_output_tokens` deixou de cortar em silêncio: ele é a capacidade que
-/// `/v1/models` anuncia como `max_completion_tokens`, e um pedido acima dela é
-/// erro de validação - o que os provedores fazem quando se pede mais do que o
-/// modelo suporta. Atender calado com menos era a mentira que este erro
-/// substitui.
+/// Não existe mais um teto absoluto paralelo ao deployment. Um pedido que
+/// ultrapassaria o antigo default 8192 continua válido quando o contexto
+/// efetivo comporta a saída; `max_new_tokens` só divide as pernas.
 #[tokio::test]
-async fn a_request_above_the_declared_capacity_is_refused_not_quietly_shrunk() {
-    let no = no(runaway_script(), 8, 37).await;
+async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
+    let no = no_with_context(plain_script(), 8, 100_000).await;
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
@@ -1759,70 +1760,22 @@ async fn a_request_above_the_declared_capacity_is_refused_not_quietly_shrunk() {
         .await
         .expect("resposta HTTP");
 
-    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
     let corpo: Value = resposta.json().await.expect("corpo JSON");
-    let mensagem = corpo["error"]["message"].as_str().expect("mensagem");
-    assert!(
-        mensagem.contains("100000") && mensagem.contains("37"),
-        "{mensagem}"
+    assert_eq!(
+        corpo["x_pom"]["output_limits"]["requested_max_tokens"],
+        100_000
     );
-    assert!(mensagem.contains("max_completion_tokens"), "{mensagem}");
-    // E nada foi gerado: a recusa acontece antes da geração.
-    assert!(corpo.get("choices").is_none(), "{corpo}");
-}
-
-/// A recusa vale igual no streaming, e antes de o SSE abrir: um stream que já
-/// começou não tem como recusar.
-#[tokio::test]
-async fn a_streaming_request_above_the_declared_capacity_is_refused_before_the_sse() {
-    let no = no(runaway_script(), 8, 37).await;
-
-    let resposta = reqwest::Client::new()
-        .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(CHAVE)
-        .json(&pedido(100_000, true, false))
-        .send()
-        .await
-        .expect("resposta HTTP");
-
-    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
-    let corpo = resposta.text().await.expect("corpo");
-    assert!(!corpo.contains("data:"), "o SSE chegou a abrir: {corpo}");
-}
-
-/// E o adaptador Anthropic recusa igual, no vocabulário dele.
-#[tokio::test]
-async fn the_anthropic_adapter_refuses_a_request_above_the_declared_capacity() {
-    let no = no(runaway_script(), 8, 37).await;
-
-    let resposta = reqwest::Client::new()
-        .post(format!("{}/v1/messages", no.base))
-        .bearer_auth(CHAVE)
-        .json(&json!({
-            "model": "lab",
-            "max_tokens": 100_000,
-            "messages": [{"role": "user", "content": "oi"}],
-        }))
-        .send()
-        .await
-        .expect("resposta HTTP");
-
-    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
-    let corpo: Value = resposta.json().await.expect("corpo JSON");
-    assert_eq!(corpo["error"]["type"], "invalid_request_error");
-}
-
-/// O outro lado da mesma regra: pedir **exatamente** o que o nó declara é
-/// atendido, e o teto do cliente é o que encerra.
-#[tokio::test]
-async fn a_request_at_the_declared_capacity_is_served_in_full() {
-    let no = no(runaway_script(), 8, 37).await;
-
-    let corpo = post_json(&no, pedido(37, false, false)).await;
-    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
-    assert_eq!(corpo["usage"]["completion_tokens"], 37);
-    assert_eq!(corpo["x_pom"]["output_limits"]["absolute_max_tokens"], 37);
-    assert_eq!(corpo["x_pom"]["partial"], false);
+    assert_eq!(
+        corpo["x_pom"]["output_limits"]["effective_max_tokens"],
+        99_992
+    );
+    assert_eq!(corpo["x_pom"]["output_limits"]["deployment_max_tokens"], 8);
+    let limites = corpo["x_pom"]["output_limits"]
+        .as_object()
+        .expect("limites de saída");
+    assert_eq!(limites.len(), 5);
+    assert!(limites.contains_key("context_available_tokens"));
 }
 
 // ── Orçamento de tarefa ──────────────────────────────────────────────────────
@@ -1837,7 +1790,7 @@ async fn a_request_at_the_declared_capacity_is_served_in_full() {
 /// recebe, que é onde o modelo de verdade o leria.
 #[tokio::test]
 async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
-    let no = no(plain_script(), 8, 8_192).await;
+    let no = no(plain_script(), 8).await;
 
     let corpo = post_messages(
         &no,
@@ -1874,7 +1827,7 @@ async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
 /// deste lado, já que o nó não guarda estado entre requisições.
 #[tokio::test]
 async fn a_carried_over_remaining_is_what_the_marker_announces() {
-    let no = no(plain_script(), 8, 8_192).await;
+    let no = no(plain_script(), 8).await;
 
     post_messages(
         &no,
@@ -1898,7 +1851,7 @@ async fn a_carried_over_remaining_is_what_the_marker_announces() {
 /// inventa orçamento nenhum.
 #[tokio::test]
 async fn without_a_task_budget_the_generation_is_untouched() {
-    let no = no(plain_script(), 8, 8_192).await;
+    let no = no(plain_script(), 8).await;
 
     let corpo = post_messages(
         &no,
@@ -1924,7 +1877,7 @@ async fn without_a_task_budget_the_generation_is_untouched() {
 /// orçamento pequeno demais para a tarefa faz o modelo recusar ou parar cedo.
 #[tokio::test]
 async fn a_task_budget_below_the_minimum_is_refused() {
-    let no = no(plain_script(), 8, 8_192).await;
+    let no = no(plain_script(), 8).await;
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
@@ -1950,7 +1903,7 @@ async fn a_task_budget_below_the_minimum_is_refused() {
 /// teríamos reinventado a folga que esta tarefa removeu.
 #[tokio::test]
 async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
-    let no = no(runaway_script(), 8, 8_192).await;
+    let no = no(runaway_script(), 8).await;
 
     let corpo = post_messages(
         &no,
@@ -1973,7 +1926,7 @@ async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
 /// Anthropic: campo opcional na definição da ferramenta, sem cabeçalho beta.
 #[tokio::test]
 async fn eager_input_streaming_on_a_tool_streams_the_argument_in_fragments() {
-    let no = no(tool_call_script(), 8, 8_192).await;
+    let no = no(tool_call_script(), 8).await;
 
     let fragmentos = fragmentos_messages(&no, pedido_messages(100, Some(true))).await;
 
@@ -1999,7 +1952,7 @@ async fn without_eager_input_streaming_each_parameter_arrives_whole() {
     for ausente in [None, Some(false)] {
         // Um nó por pedido: o motor falso tem um contador de tokens só, e ele
         // não volta ao começo entre requisições.
-        let no = no(tool_call_script(), 8, 8_192).await;
+        let no = no(tool_call_script(), 8).await;
         let fragmentos = fragmentos_messages(&no, pedido_messages(100, ausente)).await;
         assert_eq!(fragmentos.len(), 3, "{ausente:?}: {fragmentos:?}");
         let grande = fragmentos

@@ -539,21 +539,6 @@ async fn chat_completions(
         .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
         .await;
     log_output_limit("/v1/chat/completions", output_limit);
-    // Capacidade declarada: pedir mais do que o nó anuncia é erro de
-    // validação, nunca uma resposta calada e menor. Ver
-    // `OutputTokenLimit::exceeds_declared_capacity`.
-    if let Some(error) = output_limit.exceeds_declared_capacity() {
-        crate::gateway::record_rejected(
-            &state,
-            "/v1/chat/completions",
-            caller,
-            model.clone(),
-            prompt,
-            request_details,
-            error.clone(),
-        );
-        return error_response(StatusCode::BAD_REQUEST, error);
-    }
     if let Some(error) = output_limit.rejection_reason() {
         let status = if output_limit.capacity_pending() {
             StatusCode::SERVICE_UNAVAILABLE
@@ -638,9 +623,6 @@ async fn completions(
         .request_output_limit_for_model(Some(&model), requested_max_tokens, &req.prompt)
         .await;
     log_output_limit("/v1/completions", output_limit);
-    if let Some(error) = output_limit.exceeds_declared_capacity() {
-        return error_response(StatusCode::BAD_REQUEST, error);
-    }
     if let Some(error) = output_limit.rejection_reason() {
         let status = if output_limit.capacity_pending() {
             StatusCode::SERVICE_UNAVAILABLE
@@ -1913,16 +1895,11 @@ mod tests {
         .status()
     }
 
-    /// Pedir mais do que o nó declara é erro de **validação**, e ele é dado
-    /// antes de o SSE abrir: um stream que já começou não tem como recusar.
-    /// `max_output_tokens` padrão é 8192, então 32000 está acima da
-    /// capacidade que `/v1/models` anuncia.
+    /// A ausência de um teto absoluto artificial não transforma o pedido em
+    /// erro. O contexto efetivo é quem reduz o orçamento, se necessário.
     #[tokio::test]
-    async fn a_request_above_the_declared_capacity_is_rejected_before_sse_starts() {
-        assert_eq!(
-            streaming_chat_status(1, 32_000).await,
-            StatusCode::BAD_REQUEST
-        );
+    async fn a_request_above_the_old_absolute_default_is_not_rejected() {
+        assert_eq!(streaming_chat_status(1, 32_000).await, StatusCode::OK);
     }
 
     /// E a recusa por contexto cheio continua sendo 413, com o pedido dentro
@@ -2153,9 +2130,9 @@ mod tests {
         );
     }
 
-    /// `context_length` vem da implantação; `max_completion_tokens` vem do teto
-    /// da **requisição**. Anunciar o `max_new_tokens` (aqui, 1000) faria um
-    /// cliente pedir mil quando o nó entrega o teto absoluto inteiro.
+    /// `context_length` e `max_completion_tokens` vêm do contexto efetivo da
+    /// implantação. Anunciar o `max_new_tokens` (aqui, 1000) faria um cliente
+    /// confundir o tamanho de uma perna com o orçamento total.
     #[tokio::test]
     async fn model_metadata_advertises_the_request_ceiling_not_the_leg() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -2163,8 +2140,6 @@ mod tests {
         cfg.n_ctx = 100_000;
         cfg.max_new_tokens = 1_000;
         state.runtime.seed_config_for_test(cfg).await;
-        state.auth.write().await.max_output_tokens = 32_768;
-
         let (context_length, max_completion_tokens) =
             state.advertised_output_limits(Some("ornith")).await;
         let value = serde_json::to_value(model_object(
@@ -2177,7 +2152,7 @@ mod tests {
 
         assert_eq!(value["context_length"], 100_000);
         assert_eq!(value["top_provider"]["context_length"], 100_000);
-        assert_eq!(value["top_provider"]["max_completion_tokens"], 32_768);
+        assert_eq!(value["top_provider"]["max_completion_tokens"], 100_000);
     }
 
     #[tokio::test]
@@ -2186,7 +2161,6 @@ mod tests {
         let mut cfg = crate::gateway::testkit::spec_config();
         cfg.n_ctx = 100_000;
         state.runtime.seed_config_for_test(cfg).await;
-        state.auth.write().await.max_output_tokens = 50_000;
         let (context_length, max_completion_tokens) = state
             .advertised_output_limits(Some("Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"))
             .await;
@@ -2204,10 +2178,10 @@ mod tests {
         assert_eq!(value["display_name"], "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf");
         assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
         assert_eq!(value["max_input_tokens"], 100_000);
-        assert_eq!(value["max_tokens"], 50_000);
+        assert_eq!(value["max_tokens"], 100_000);
         assert!(value["capabilities"].is_null());
         assert_eq!(value["context_length"], 100_000);
-        assert_eq!(value["top_provider"]["max_completion_tokens"], 50_000);
+        assert_eq!(value["top_provider"]["max_completion_tokens"], 100_000);
     }
 
     #[test]

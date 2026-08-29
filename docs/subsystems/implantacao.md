@@ -36,6 +36,38 @@ Fatiar. O modo de modelo inteiro é a exceção controlada: quando o operador pe
 um prefixo para outro peer, o backend consulta as fronteiras reais do GGUF e
 materializa as faixas no peer que possui o arquivo.
 
+## 1.3 Capacidade de saída derivada do runtime
+
+O campo `max_new_tokens` dentro de `params` é o tamanho de uma perna do
+backend. Não existe um segundo teto absoluto no `pom.json`: o orçamento total
+da requisição vem de `max_tokens` do cliente e do espaço restante da janela
+`n_ctx` do runtime ativo. O gateway costura as pernas invisivelmente até o
+cliente parar, atingir seu orçamento ou o contexto não comportar mais saída.
+
+Passo operacional exato antes de testar uma implantação longa:
+
+1. Na tela de implantação, defina `n_ctx` e `max_new_tokens` em `params` para
+   os valores que o captain escolheu, por exemplo `n_ctx: 100000` e
+   `max_new_tokens: 32000`.
+2. Aplique a implantação e aguarde o `/health` de **cada peer** confirmar
+   `model_loaded` e `runtime_capacity`. Um peer que ainda está reiniciando não
+   entra na capacidade publicada.
+3. Consulte `/v1/models` autenticado e confirme
+   `context_length: 100000` e
+   `top_provider.max_completion_tokens: 100000` quando esse for o contexto
+   efetivo. Exemplo sem expor a chave:
+
+   ```bash
+   curl -fsS -H "x-api-key: ${POM_API_KEY}" \
+     http://ksia:8080/v1/models | jq '.data[] | {id, context_length, max_completion_tokens: .top_provider.max_completion_tokens}'
+   ```
+
+O gateway anuncia o menor `n_ctx` confirmado entre todos os peers vivos do
+modelo e mantém `max_new_tokens` apenas como tamanho de perna. O limite local
+do cliente, como `maxTokens: 5000` no Pi, continua independente dessa
+capacidade. Um `pom.json` legado que contenha o campo removido é recusado na
+leitura, em vez de ser aceito com um valor padrão escondido.
+
 Três regras saem da arquitetura, não do gosto:
 
 - **Ordem do pipeline = ordem das camadas.** Quem fica com a camada 0 recebe o
@@ -53,7 +85,7 @@ Três regras saem da arquitetura, não do gosto:
   são ignoradas na cobertura lógica e ficam disponíveis para o roteador. Uma
   atribuição válida precisa cobrir cada camada exigida exatamente uma vez.
 
-## 1.3 Proteção térmica da implantação
+## 1.4 Proteção térmica da implantação
 
 Cada nó grava `thermal` no `pom.json`, com `limit_c` padrão de 85 °C,
 `hysteresis_c` de 8 °C e `cooldown_secs` de 30 segundos. O monitor usa a mesma

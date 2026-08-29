@@ -1073,7 +1073,6 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         node_name: None,
         huggingface_token: None,
-        max_output_tokens: crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
     }));
 
     // The same interface the configured node serves, so setup is not a second

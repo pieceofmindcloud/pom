@@ -1012,6 +1012,9 @@ export interface DeployLoadDistribution {
  * decides the prompt chunks the gateway sends. Sampling only runs on the last
  * peer.
  * `n_gpu_layers` is the default a peer takes when it has no override of its own.
+ * `max_new_tokens` is the backend leg size only. The total output capacity is
+ * derived from the live runtime context and is read from `/v1/models`; there
+ * is no absolute output-capacity knob in this deployment shape.
  */
 export interface RuntimeParams {
   /** Engine preference; the runtime decides from GGUF metadata in auto mode. */

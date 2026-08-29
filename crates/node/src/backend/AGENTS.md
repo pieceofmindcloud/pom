@@ -113,12 +113,12 @@ behind an auth extractor.
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
 - `openai.rs` - OpenAI-compatible `/v1/*` on top of the generation path;
-  `max_tokens` da requisição é `min(pedido, max_output_tokens do pom.json,
-  n_ctx restante)`, com `DEFAULT_MAX_TOKENS=512` só como padrão de quem não
-  pede. O `max_new_tokens` da implantação **não** entra nessa conta: ele é o
-  teto de uma **perna** do laço de continuação (ver `gateway.rs` abaixo). A
-  redução é registrada e devolvida em `x_pom.output_limits`
-  (`requested`/`effective`/`deployment`/`context_available`/`absolute`/`leg`),
+  `max_tokens` da requisição é `min(pedido, n_ctx restante)`, com
+  `DEFAULT_MAX_TOKENS=512` só como padrão de quem não pede. O
+  `max_new_tokens` da implantação **não** entra nessa conta: ele é o teto de
+  uma **perna** do laço de continuação (ver `gateway.rs` abaixo). A redução é
+  registrada e devolvida em `x_pom.output_limits`
+  (`requested`/`effective`/`deployment`/`context_available`/`leg`),
   e `x_pom.continuation_legs` diz quantas pernas a resposta costurou.
   Streaming e blocking usam a mesma ordem de finish-reason, e ela não tem
   exceção: orçamento **total** esgotado é `length`/`max_tokens` mesmo com
@@ -128,10 +128,10 @@ behind an auth extractor.
   dois provedores devolvem - nunca markup cru, nunca descarte. A linha de
   auditoria desse resultado é `incomplete`,
   enquanto falha de transporte continua `partial`. `/v1/models` expõe
-  `context_length` e o `top_provider.max_completion_tokens`
-  compatível com OpenRouter, que é o teto da **requisição**
-  (`min(n_ctx, max_output_tokens)`), não o de uma perna - e é a capacidade que
-  um pedido maior faz o nó recusar com HTTP 400, em vez de atender com menos.
+  `context_length` e o `top_provider.max_completion_tokens` compatível com
+  OpenRouter, que é a capacidade da **requisição** derivada do `n_ctx`, não o
+  tamanho de uma perna. O contexto disponível reduz o orçamento quando o
+  prompt já ocupa parte da janela.
   `messages.rs` aceita `output_config.task_budget` (advisory, nunca corta) e
   injeta o marcador de contagem regressiva no prompt; ver `api-http.md`.
   **Os argumentos de uma chamada saem em fragmentos** (`CallArgsStreamer`),
@@ -245,24 +245,24 @@ behind an auth extractor.
 - `gateway.rs` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
   número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
   de backend, escolha do operador, que a decisão do produto proíbe levantar.
-  `total` é o teto da **requisição**: `min(pedido, max_output_tokens do
-  pom.json, n_ctx restante)`. Esgotar a perna não encerra a resposta -
+  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`. Esgotar a
+  perna não encerra a resposta -
   `note_leg_boundary` conta a perna e o laço segue decodificando na **mesma**
   sessão de KV, no mesmo fluxo SSE, sem reprefill e sem o cliente ver nada
   (`GenSummary::legs` é o que torna a costura inspecionável). O
   `max_new_tokens` nunca foi limite do backend - o `infer_server` não o conhece;
   sempre foi um corte do gateway, e cortar aí calado era o defeito. Só `total`
   produz `finish_reason: "length"`. `/api/generate` aceita `max_tokens`
-  opcional (padrão 512) e o recusa quando passa do `max_output_tokens` - recusa,
-  não corte -, e conta o primeiro token do prefill no orçamento, sem o overshoot
+  opcional (padrão 512), exige valor maior que zero e conta o primeiro token do
+  prefill no orçamento, sem o overshoot
   histórico de 513 tokens; a resposta separa TTFT, velocidade do prefill,
   velocidade da geração e total em `timings`. `generation_finish_reason` testa o
   orçamento total antes do EOS em cada ramo de decodificação;
   `audit_status_for_summary` registra `length` como `incomplete`, e reserva
   `partial` para falha de transporte com texto salvo.
   **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
-  aberta no token do corte - houve aqui uma folga que ultrapassava
-  (`tool_call_grace_tokens`), e ela foi removida porque nenhum dos dois
+  aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
+  ela foi removida porque nenhum dos dois
   provedores transborda. Quando o corte cai dentro de uma chamada, o adaptador
   a devolve estruturada e incompleta (`TagScanner::finish_truncated`), com os
   argumentos numa string JSON inacabada - possível porque o scanner segura o
@@ -270,10 +270,9 @@ behind an auth extractor.
   `docs/subsystems/inferencia.md` (9.1) e a bancada `continuation_lab.rs`.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective
-  request budget is the minimum of the client request, the configured
-  `max_output_tokens` ceiling and the remaining `n_ctx` after the prompt - the
-  deployment's `max_new_tokens` bounds one leg of the continuation loop, not the
-  request;
+  request budget is the minimum of the client request and the remaining `n_ctx`
+  after the prompt - the deployment's `max_new_tokens` bounds one leg of the
+  continuation loop, not the request;
   `render_prompt` flattens the conversation into one user message, labelling
   **every** turn including the first, so one turn's prompt is an exact prefix of
   the next one's - the property the prefix cache rests on; raw, unlabelled text

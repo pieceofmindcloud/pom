@@ -239,6 +239,11 @@ regressiva que só o modelo enxerga (`messages::task_budget_marker`), no fim do
 prompt renderizado, logo antes de o modelo começar a escrever. O marcador nunca
 aparece na resposta.
 
+Como o marcador faz parte do prompt, o caminho Anthropic inclui `type`, `total` e
+`remaining` na chave do cache de prefixo. Mudar qualquer um desses valores
+invalida o KV anterior. O marcador é final e é injetado a cada requisição, logo
+não coincide entre turnos, como na semântica documentada da Anthropic.
+
 **A forma do marcador é deste nó.** A Anthropic documenta que injeta um
 marcador server-side e que ele é visível só para o modelo; o texto literal não
 é publicado, então não há o que espelhar. O que é espelhado é o contrato.

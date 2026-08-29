@@ -138,7 +138,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
-  mensagens (`openai::conversation_cache_key`), não do prompt renderizado.
+  mensagens (`openai::conversation_cache_key`), não do prompt renderizado; no
+  caminho Anthropic, `conversation_cache_key_with_budget` também inclui a
+  identidade de `task_budget` para impedir que o KV de outro marcador seja
+  reutilizado.
 - `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
   **escolha**. A referência acompanha lookup, insert, busy, release e eviction;
   o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a

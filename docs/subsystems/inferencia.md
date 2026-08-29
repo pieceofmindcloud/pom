@@ -473,6 +473,11 @@ O prompt que o cache reconhece vem do **array de mensagens**
 rotula todo turno inclusive o primeiro: as duas coisas juntas garantem que o
 prompt de um turno seja prefixo exato do prompt do seguinte. Texto cru sem
 rótulo continua disponível em `/v1/completions` e `POST /api/generate`.
+No caminho Anthropic, quando há `output_config.task_budget`,
+`conversation_cache_key_with_budget` também prefixa `type`, `total` e
+`remaining`; trocar qualquer valor invalida o KV porque troca o marcador que o
+modelo enxerga. Como o marcador é final e muda a cada requisição, ele não
+coincide entre turnos, conforme a semântica documentada do provedor.
 
 ### Por que a sessão desaparece
 

@@ -340,17 +340,51 @@ pub struct CountTokensRequest {
 /// peer already applies the model's chat template once, so a second one here
 /// would nest inside it. A lone user message with no system prompt and no
 /// tools passes through untouched.
-/// Chave do cache de prefixo para uma conversa Anthropic.
+/// Chave do cache de prefixo para uma conversa Anthropic sem orçamento de
+/// tarefa.
 ///
 /// Mesma razão e mesma forma da versão OpenAI - ver
 /// `crate::openai::conversation_cache_key`, que documenta por que o texto
-/// renderizado não serve como chave.
+/// renderizado não serve como chave. Requisições com `task_budget` passam pela
+/// variante abaixo para que o valor que muda o prompt também invalide o cache.
 pub fn conversation_cache_key(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
     tools: &[ToolDef],
 ) -> String {
+    conversation_cache_key_with_budget(system, messages, tools, None)
+}
+
+/// Chave do cache de prefixo incluindo o orçamento de tarefa, quando houver.
+///
+/// O segmento do orçamento fica antes de ferramentas, sistema e mensagens.
+/// Assim, uma requisição com orçamento não reutiliza por engano uma entrada sem
+/// orçamento ou com outro `total`/`remaining`. O marcador é injetado no fim do
+/// prompt a cada requisição, e a posição segue a semântica documentada da
+/// Anthropic: ele não coincide entre requisições e mudar `task_budget` invalida
+/// o cache de prompt.
+pub fn conversation_cache_key_with_budget(
+    system: Option<&SystemPrompt>,
+    messages: &[AnthropicMessage],
+    tools: &[ToolDef],
+    task_budget: Option<&TaskBudget>,
+) -> String {
     let mut key = String::new();
+    if let Some(budget) = task_budget {
+        key.push_str("task_budget\u{1f}");
+        key.push_str(&budget.kind);
+        key.push('\u{1f}');
+        key.push_str(&budget.total.to_string());
+        key.push('\u{1f}');
+        match budget.remaining {
+            Some(remaining) => {
+                key.push_str("set\u{1f}");
+                key.push_str(&remaining.to_string());
+            }
+            None => key.push_str("unset"),
+        }
+        key.push('\u{1e}');
+    }
     for tool in tools {
         key.push_str("tool\u{1f}");
         key.push_str(&tool.name);
@@ -376,8 +410,8 @@ pub fn conversation_cache_key(
 }
 
 /// O prompt renderizado, sem orçamento de tarefa. Ver
-/// [`render_prompt_with_budget`] - a chave do cache de prefixo usa esta forma,
-/// porque o marcador muda a cada turno e não é conversa.
+/// [`render_prompt_with_budget`] - quando há orçamento, o handler também passa
+/// o mesmo valor para [`conversation_cache_key_with_budget`].
 pub fn render_prompt(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
@@ -509,14 +543,16 @@ async fn messages(
     if let Some(error) = task_budget.and_then(TaskBudget::validation_error) {
         return error_response(StatusCode::BAD_REQUEST, "invalid_request_error", error);
     }
-    let prompt = render_prompt_with_budget(
+    let prompt =
+        render_prompt_with_budget(req.system.as_ref(), &req.messages, &req.tools, task_budget);
+    // A chave acompanha o valor do marcador: orçamento diferente não pode
+    // reutilizar KV produzido para outro prompt.
+    let cache_key = conversation_cache_key_with_budget(
         req.system.as_ref(),
         &req.messages,
         &req.tools,
         task_budget,
     );
-    // Ver `conversation_cache_key`: a chave do cache vem das mensagens.
-    let cache_key = conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
     let requested_max_tokens = req.requested_max_tokens();
     let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);
@@ -1270,6 +1306,34 @@ mod tests {
         let k1 = conversation_cache_key(None, &turno1, &[]);
         let k2 = conversation_cache_key(None, &turno2, &[]);
         assert!(k2.starts_with(&k1));
+    }
+
+    #[test]
+    fn changing_task_budget_invalidates_the_prefix_cache_key() {
+        let messages = vec![msg("user", "planeje a tarefa")];
+        let first = TaskBudget {
+            kind: "tokens".into(),
+            total: 20_000,
+            remaining: None,
+        };
+        let second = TaskBudget {
+            kind: "tokens".into(),
+            total: 40_000,
+            remaining: None,
+        };
+        let changed_remaining = TaskBudget {
+            kind: "tokens".into(),
+            total: 20_000,
+            remaining: Some(19_999),
+        };
+
+        let first_key = conversation_cache_key_with_budget(None, &messages, &[], Some(&first));
+        let second_key = conversation_cache_key_with_budget(None, &messages, &[], Some(&second));
+        let changed_remaining_key =
+            conversation_cache_key_with_budget(None, &messages, &[], Some(&changed_remaining));
+
+        assert_ne!(first_key, second_key);
+        assert_ne!(first_key, changed_remaining_key);
     }
 
     #[test]

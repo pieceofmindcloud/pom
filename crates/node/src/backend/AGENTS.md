@@ -273,7 +273,11 @@ behind an auth extractor.
   the next one's - the property the prefix cache rests on; raw, unlabelled text
   is what `/v1/completions` and `/api/generate` are for.
   `conversation_cache_key` is what the prefix cache keys on (the message array,
-  not the rendered text) and travels as `GenerationInput::cache_key`.
+  not the rendered text) and travels as `GenerationInput::cache_key`; a versão
+  Anthropic, `conversation_cache_key_with_budget`, prefixa a identidade do
+  orçamento de tarefa para que uma entrada sem orçamento ou com marcador
+  diferente não seja reutilizada; o marcador final é injetado a cada pedido,
+  como na semântica do provedor.
   `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
   pipeline did not reprocess, read from the trace - the executed number, not the
   cache's choice; `approx_tokens` = chars/4; `model_ids` from peers + active

@@ -132,6 +132,12 @@ behind an auth extractor.
   um pedido maior faz o nó recusar com HTTP 400, em vez de atender com menos.
   `messages.rs` aceita `output_config.task_budget` (advisory, nunca corta) e
   injeta o marcador de contagem regressiva no prompt; ver `api-http.md`.
+  **Os argumentos de uma chamada saem em fragmentos** (`CallArgsStreamer`),
+  conforme o modelo gera: `eager_input_streaming` por ferramenta no
+  `/v1/messages`, sempre no `/v1/chat/completions` porque a OpenAI não tem
+  interruptor. A concatenação dos fragmentos é sempre a string que o caminho
+  não-streaming produziria, e o prefixo transmitido só cresce - não existe
+  desenviar um fragmento SSE.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
   and finish-reason rules, with `x_pom.output_limits` and
   `x_pom.continuation_legs` on blocking responses and the final streaming

@@ -43,6 +43,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tracing::warn;
 
 /// One entry from a request's `tools` array — name + description + JSON
 /// Schema parameters. Both Anthropic (`input_schema`) and OpenAI
@@ -54,6 +55,24 @@ pub(crate) struct ToolDef {
     pub description: Option<String>,
     #[serde(default)]
     pub input_schema: serde_json::Value,
+    /// Streaming de granularidade fina para **esta** ferramenta: entrega os
+    /// fragmentos do argumento conforme o modelo os gera, sem represar para
+    /// validar antes.
+    ///
+    /// Forma da Anthropic, verificada na documentação viva em 2026-08-29
+    /// (`platform.claude.com/docs/en/agents-and-tools/tool-use/fine-grained-tool-streaming`):
+    /// campo **opcional na definição da ferramenta**, sem cabeçalho beta - o
+    /// header legado `fine-grained-tool-streaming-2025-05-14` foi substituído
+    /// por ele. Ausente ou `false` mantém o represamento, que lá é **por valor
+    /// de parâmetro**, não pela chamada inteira.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eager_input_streaming: Option<bool>,
+}
+
+impl ToolDef {
+    pub(crate) fn streams_eagerly(&self) -> bool {
+        self.eager_input_streaming.unwrap_or(false)
+    }
 }
 
 /// Text block instructing the model on the tools it has and the exact
@@ -477,14 +496,25 @@ fn parse_partial_function_call_xml(raw: &str) -> Option<PartialCall> {
             break;
         };
         let pname = pname.trim().to_string();
-        match after_name.find("</parameter>") {
+        match after_name.find(PARAM_CLOSE) {
             Some(close) => {
                 let value_raw = after_name[..close].trim();
                 complete.push((pname, decode_parameter_value(value_raw)));
-                cursor = &after_name[close + "</parameter>".len()..];
+                cursor = &after_name[close + PARAM_CLOSE.len()..];
             }
             None => {
-                partial = Some((pname, after_name.trim_start().to_string()));
+                // O que ainda pode virar `</parameter>` não é conteúdo: sem
+                // este recuo, um corte no meio da tag entregaria `</paramet`
+                // dentro do valor. É o mesmo recuo de `open_parameter_prefix`,
+                // e é o que mantém a versão truncada sempre estendendo o que
+                // o streaming já transmitiu.
+                let hold = [PARAM_CLOSE, "</function>"]
+                    .iter()
+                    .map(|tag| longest_prefix_overlap(after_name, tag))
+                    .max()
+                    .unwrap_or(0);
+                let visible = &after_name[..after_name.len() - hold];
+                partial = Some((pname, visible.trim_start().to_string()));
                 break;
             }
         }
@@ -670,12 +700,282 @@ fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
         let after_open = cursor_trimmed.strip_prefix("<parameter=")?;
         let (pname, after_name) = after_open.split_once('>')?;
         let pname = pname.trim();
-        let close_idx = after_name.find("</parameter>")?;
+        let close_idx = after_name.find(PARAM_CLOSE)?;
         let value_raw = after_name[..close_idx].trim();
         args.insert(pname.to_string(), decode_parameter_value(value_raw));
-        cursor = &after_name[close_idx + "</parameter>".len()..];
+        cursor = &after_name[close_idx + PARAM_CLOSE.len()..];
     }
     Some((name.to_string(), serde_json::Value::Object(args)))
+}
+
+// ── Streaming incremental dos argumentos ─────────────────────────────────────
+
+/// A partir de quantos bytes um valor de parâmetro pode ser transmitido em
+/// fragmentos no modo ansioso.
+///
+/// O streaming de granularidade fina existe para "reduzir o tempo até o
+/// primeiro fragmento de um parâmetro **grande**". Um valor que coube em 64
+/// bytes não tinha latência para resolver, e represá-lo custa nada e preserva
+/// o tipo dele - que é o que separa `{"limit":5}` de `{"limit":"5"}`. A
+/// marcação do POM não carrega tipo, então este é o preço de transmitir sem
+/// esperar, e é por isso que ele só é pago onde há o que ganhar.
+const EAGER_MIN_VALUE_BYTES: usize = 64;
+
+/// Este valor de parâmetro vai ser transmitido em fragmentos?
+///
+/// **A resposta é estável enquanto o valor cresce**, e é disso que depende a
+/// monotonicidade de `streamable_arguments_prefix`: o comprimento só aumenta,
+/// e o primeiro caractere não muda. Um parâmetro que começou a ser transmitido
+/// continua sendo até fechar.
+///
+/// **Só é transmitido o valor que comprovadamente não pode ser JSON.** É essa
+/// a regra que faz o modo ansioso e o represado concordarem sobre o tipo: um
+/// valor que nunca vai parsear como JSON vira `String` nos dois caminhos, e
+/// `{"limit":5}` jamais degenera em `{"limit":"5"}`.
+///
+/// Acima do limiar, só estes primeiros caracteres ainda podem começar um JSON
+/// válido: `{` e `[` (contêineres), `"` (string literal), `-` e dígito
+/// (número). `true`/`false`/`null` são literais curtos, então uma letra num
+/// valor longo já garante que ele não é JSON - por isso letra passa.
+///
+/// Represar um arquivo que começa em `{` custa latência num caso raro; entregar
+/// um array virado em texto custa correção. A escolha é óbvia.
+fn streams_eagerly(eager: bool, value_seen: &str) -> bool {
+    if !eager {
+        return false;
+    }
+    let value = value_seen.trim_start();
+    if value.len() <= EAGER_MIN_VALUE_BYTES {
+        return false;
+    }
+    !matches!(
+        value.as_bytes().first(),
+        Some(b'{' | b'[' | b'"' | b'-' | b'+' | b'0'..=b'9')
+    )
+}
+
+/// O corpo de uma string JSON, já escapado, sem as aspas.
+fn json_string_body(raw: &str) -> String {
+    let quoted = serde_json::Value::String(raw.to_string()).to_string();
+    quoted[1..quoted.len() - 1].to_string()
+}
+
+/// O maior prefixo dos argumentos JSON que já pode ser transmitido, dado o
+/// corpo da chamada visto até agora.
+///
+/// **Invariante:** o resultado só cresce conforme `raw` cresce. Nada que sai
+/// daqui é retirado depois - não existe desenviar um fragmento SSE. Todo
+/// cuidado deste módulo (o recuo de espaço em branco, a retenção de prefixo de
+/// tag, a estabilidade de `streams_eagerly`) existe para sustentar isso.
+///
+/// `None` quer dizer "ainda não dá para dizer nada": o nome da função não
+/// fechou, ou o corpo não é a forma XML. A forma Hermes (`{"name":…}`) não é
+/// transcodificada ao vivo porque o nome mora dentro do próprio JSON que
+/// estaria sendo transmitido; ela sai inteira no fechamento, como antes.
+fn streamable_arguments_prefix(raw: &str, eager: bool) -> Option<String> {
+    let trimmed = raw.trim_start();
+    let rest = trimmed.strip_prefix("<function=")?;
+    let (name, mut cursor) = rest.split_once('>')?;
+    if name.trim().is_empty() {
+        return None;
+    }
+
+    let mut out = String::from("{");
+    let mut first = true;
+    loop {
+        let t = cursor.trim_start();
+        let Some(after_open) = t.strip_prefix("<parameter=") else {
+            break;
+        };
+        let Some((pname, after_name)) = after_open.split_once('>') else {
+            break;
+        };
+        let pname = pname.trim();
+        match after_name.find("</parameter>") {
+            Some(close) => {
+                let value_raw = after_name[..close].trim();
+                if !first {
+                    out.push(',');
+                }
+                first = false;
+                out.push_str(&serde_json::Value::String(pname.to_string()).to_string());
+                out.push(':');
+                // O parâmetro que foi transmitido em fragmentos fecha como
+                // string, porque foi assim que ele saiu. Os outros levam o
+                // tipo decodificado, igual ao caminho não-streaming.
+                if streams_eagerly(eager, value_raw) {
+                    out.push('"');
+                    out.push_str(&json_string_body(value_raw));
+                    out.push('"');
+                } else {
+                    out.push_str(&decode_parameter_value(value_raw).to_string());
+                }
+                cursor = &after_name[close + "</parameter>".len()..];
+            }
+            None => {
+                // Parâmetro ainda aberto. Só o modo ansioso emite algo dele, e
+                // só depois de o valor ficar grande o bastante.
+                if let Some(partial) = open_parameter_prefix(after_name, eager) {
+                    if !first {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::Value::String(pname.to_string()).to_string());
+                    out.push(':');
+                    out.push('"');
+                    out.push_str(&partial);
+                }
+                break;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// O pedaço já transmissível de um parâmetro que ainda não fechou, escapado.
+///
+/// Dois recuos, os dois pela monotonicidade:
+///
+/// - **prefixo de tag**: o que ainda pode virar `</parameter>` ou
+///   `</function>` fica retido, senão `</par` sairia como conteúdo e teria de
+///   ser retirado quando a tag se completasse.
+/// - **espaço em branco no fim**: o valor final é `trim()`ado, então espaço no
+///   fim do que se viu até agora pode ser o espaço que vai sumir. Ele só sai
+///   quando algo que não é espaço vem depois - e aí ele era conteúdo interno.
+fn open_parameter_prefix(value_seen: &str, eager: bool) -> Option<String> {
+    let hold = [PARAM_CLOSE, "</function>"]
+        .iter()
+        .map(|tag| longest_prefix_overlap(value_seen, tag))
+        .max()
+        .unwrap_or(0);
+    let visible = &value_seen[..value_seen.len() - hold];
+    if !streams_eagerly(eager, visible) {
+        return None;
+    }
+    let emittable = visible.trim_start().trim_end();
+    (!emittable.is_empty()).then(|| json_string_body(emittable))
+}
+
+const PARAM_CLOSE: &str = "</parameter>";
+
+/// O nome da ferramenta, assim que ele fecha - antes de a chamada terminar.
+///
+/// É o que permite anunciar `tool_calls[i].function.name` no primeiro
+/// fragmento, como a OpenAI faz: sem o nome, um índice aberto não serve para
+/// nada. `None` enquanto o `<function=NOME>` não fechou, ou na forma Hermes,
+/// que não é transcodificada ao vivo.
+pub(crate) fn peek_call_name(raw_body: &str) -> Option<String> {
+    let rest = raw_body.trim_start().strip_prefix("<function=")?;
+    let (name, _) = rest.split_once('>')?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Transmite os argumentos de **uma** chamada de ferramenta em fragmentos,
+/// conforme o modelo os gera.
+///
+/// O defeito que ela existe para consertar, medido no ksia vivo: os 663
+/// caracteres do argumento chegavam todos de uma vez, no fim da geração, em
+/// dois pedaços ambos aos 11,01 s. O leitor de tags acumulava o corpo inteiro
+/// e só descarregava quando a chamada fechava, então o usuário encarava uma
+/// tela parada e recebia o arquivo de supetão. Anthropic e OpenAI emitem os
+/// fragmentos conforme geram.
+///
+/// **Invariante central:** a concatenação de tudo que sai daqui é exatamente a
+/// string de argumentos que o caminho não-streaming produziria - inclusive
+/// quando o teto corta a chamada ao meio, caso em que ela é a string inacabada
+/// da Fase 1. `emitted` guarda o que já saiu justamente para que o fechamento
+/// emita só o que falta, e nunca repita o que o cliente já tem.
+pub(crate) struct CallArgsStreamer {
+    eager: bool,
+    emitted: String,
+}
+
+impl CallArgsStreamer {
+    pub(crate) fn new(eager: bool) -> Self {
+        Self {
+            eager,
+            emitted: String::new(),
+        }
+    }
+
+    /// Quanto já saiu. `0` quer dizer que o cliente ainda não viu argumento
+    /// nenhum desta chamada.
+    pub(crate) fn emitted_len(&self) -> usize {
+        self.emitted.len()
+    }
+
+    /// O próximo fragmento, dado o corpo da chamada visto até agora.
+    /// `None` quando não há nada novo a dizer.
+    pub(crate) fn advance(&mut self, raw_body_so_far: &str) -> Option<String> {
+        let prefix = streamable_arguments_prefix(raw_body_so_far, self.eager)?;
+        // A chave sozinha não é conteúdo: enquanto nenhum parâmetro fechou (ou
+        // começou a ser transmitido) esta chamada ainda não começou a sair.
+        // Isso é o que deixa uma chamada malformada continuar caindo em texto
+        // no fechamento, como antes - depois do primeiro fragmento não haveria
+        // como voltar atrás.
+        if self.emitted.is_empty() && prefix == "{" {
+            return None;
+        }
+        self.take_delta(prefix)
+    }
+
+    /// O fechamento de uma chamada que **completou**.
+    ///
+    /// A string sai do mesmo transcodificador que gerou os fragmentos, mais a
+    /// chave de fechamento - e não de `parsed.to_string()`. O motivo é
+    /// concreto: `serde_json::Map` é uma árvore ordenada, então
+    /// `parsed.to_string()` devolve as chaves em ordem **alfabética**,
+    /// enquanto os fragmentos saíram na ordem em que o modelo as escreveu.
+    /// Fechar com a versão ordenada não estenderia o que o cliente já
+    /// acumulou. O conteúdo é o mesmo; a ordem das chaves de um objeto JSON
+    /// não é semântica.
+    ///
+    /// `parsed` é o recurso da forma Hermes, que não é transcodificada ao vivo
+    /// e portanto não teve fragmento nenhum: ali a string inteira sai de uma
+    /// vez, como antes.
+    pub(crate) fn finish_complete(
+        &mut self,
+        raw_body: &str,
+        parsed: &serde_json::Value,
+    ) -> Option<String> {
+        match streamable_arguments_prefix(raw_body, self.eager) {
+            Some(mut prefix) => {
+                prefix.push('}');
+                self.take_delta(prefix)
+            }
+            None => self.take_delta(parsed.to_string()),
+        }
+    }
+
+    /// O fechamento de uma chamada que o teto **cortou**: `full` é a string
+    /// inacabada da Fase 1. Sai só o que ainda não tinha saído, para o cliente
+    /// não receber duas vezes o que já acumulou.
+    pub(crate) fn finish_truncated(&mut self, full: &str) -> Option<String> {
+        self.take_delta(full.to_string())
+    }
+
+    /// O delta, com a rede de segurança: se o novo prefixo não estende o que
+    /// já saiu, a monotonicidade foi quebrada em algum lugar. Emitir o delta
+    /// aí corromperia o JSON do cliente, então nada sai e o fragmento
+    /// divergente é registrado. Degradar para "não transmitiu" é sempre
+    /// melhor que transmitir errado.
+    fn take_delta(&mut self, prefix: String) -> Option<String> {
+        if !prefix.starts_with(&self.emitted) {
+            warn!(
+                emitido = self.emitted.len(),
+                novo = prefix.len(),
+                "prefixo de argumentos não estende o que já foi transmitido; \
+                 fragmento suprimido para não corromper o JSON do cliente"
+            );
+            return None;
+        }
+        if prefix.len() == self.emitted.len() {
+            return None;
+        }
+        let delta = prefix[self.emitted.len()..].to_string();
+        self.emitted = prefix;
+        Some(delta)
+    }
 }
 
 // ── Output parsing ───────────────────────────────────────────────────────────
@@ -760,6 +1060,7 @@ mod tests {
     #[test]
     fn render_tools_block_describes_each_tool() {
         let tools = vec![ToolDef {
+            eager_input_streaming: None,
             name: "Bash".into(),
             description: Some("Run a shell command".into()),
             input_schema: json!({"type": "object", "properties": {"command": {"type": "string"}}}),
@@ -1152,6 +1453,202 @@ mod tests {
         assert!(!cut_inside);
         assert!(matches!(&parts[0], OutputPart::ToolCall { name, .. } if name == "Bash"));
         assert_eq!(parts[1], OutputPart::Text("depois".into()));
+    }
+
+    // ── streaming incremental dos argumentos ────────────────────────────────
+
+    /// O roteiro do defeito medido no ksia: uma chamada com um argumento
+    /// grande, entregue token a token.
+    fn roteiro_chamada_longa() -> Vec<String> {
+        let mut script = vec![
+            "<tool_call>\n".to_string(),
+            "<function=write_file>\n".to_string(),
+            "<parameter=path>\n".to_string(),
+            "/tmp/calc.py".to_string(),
+            "\n</parameter>\n".to_string(),
+            "<parameter=content>\n".to_string(),
+        ];
+        for l in 0..40 {
+            script.push(format!("linha_{l} = {l} * 2\n"));
+        }
+        script.push("\n</parameter>\n".to_string());
+        script.push("</function>\n".to_string());
+        script.push("</tool_call>".to_string());
+        script
+    }
+
+    /// Alimenta o roteiro pedaço a pedaço e devolve os fragmentos emitidos.
+    /// `ate` corta a geração no meio, para o caso do teto.
+    fn fragmentos(eager: bool, ate: Option<usize>) -> Vec<String> {
+        let script = roteiro_chamada_longa();
+        let script = &script[..ate.unwrap_or(script.len())];
+        let mut sc = TagScanner::new();
+        let mut streamer = CallArgsStreamer::new(eager);
+        let mut body = String::new();
+        let mut out = Vec::new();
+        let mut parsed_final = None;
+        for chunk in script {
+            for ev in sc.feed(chunk) {
+                match ev {
+                    ScanEvent::ToolCallChunk(f) => {
+                        body.push_str(&f);
+                        if let Some(d) = streamer.advance(&body) {
+                            out.push(d);
+                        }
+                    }
+                    ScanEvent::ToolCallClose(Ok((_, args))) => parsed_final = Some(args),
+                    _ => {}
+                }
+            }
+        }
+        match (ate, parsed_final) {
+            (None, Some(args)) => {
+                if let Some(d) = streamer.finish_complete(&body, &args) {
+                    out.push(d);
+                }
+            }
+            _ => {
+                let (tail, _) = sc.finish_truncated();
+                if let Some(ScanEvent::ToolCallTruncated(p)) = tail.into_iter().next() {
+                    if let Some(d) = streamer.finish_truncated(&p.arguments) {
+                        out.push(d);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// **O defeito, virado do avesso.** Os argumentos saíam num pedaço só, no
+    /// fim; agora saem em muitos, e o primeiro chega muito antes do último.
+    #[test]
+    fn a_long_argument_streams_in_many_fragments_instead_of_one_blob() {
+        let frags = fragmentos(true, None);
+        assert!(
+            frags.len() > 5,
+            "os argumentos continuam represados: {} fragmento(s)",
+            frags.len()
+        );
+    }
+
+    /// **O invariante central:** concatenar os fragmentos na ordem reproduz
+    /// exatamente a string de argumentos, e ela é JSON válido com o mesmo
+    /// conteúdo do caminho não-streaming.
+    #[test]
+    fn concatenating_the_fragments_reproduces_the_final_argument_exactly() {
+        let inteiro: String = fragmentos(true, None).concat();
+        let json: serde_json::Value =
+            serde_json::from_str(&inteiro).expect("a concatenação é JSON válido");
+        assert_eq!(json["path"], "/tmp/calc.py");
+        assert!(json["content"]
+            .as_str()
+            .expect("content")
+            .ends_with("linha_39 = 39 * 2"));
+
+        // E é o mesmo objeto que o caminho não-streaming produz - só a ordem
+        // das chaves difere, porque `serde_json::Map` ordena e o modelo não.
+        let bruto: String = roteiro_chamada_longa().concat();
+        let OutputPart::ToolCall { arguments, .. } = &parse_output(&bruto)[0] else {
+            panic!("esperava chamada completa");
+        };
+        assert_eq!(&json, arguments);
+    }
+
+    /// **O modo represado preserva o comportamento antigo:** nada sai enquanto
+    /// o parâmetro grande não fecha. É o padrão da Anthropic - o represamento
+    /// é por valor de parâmetro, então o `path` sai cedo e o `content` só no
+    /// fim.
+    #[test]
+    fn buffered_mode_emits_nothing_until_each_parameter_closes() {
+        let frags = fragmentos(false, None);
+        // Um fragmento por parâmetro que fechou, mais a chave de fechamento.
+        assert_eq!(frags.len(), 3, "{frags:?}");
+        // O que importa: o parâmetro grande sai INTEIRO num fragmento só - é
+        // o comportamento antigo, e é o que o modo ansioso troca por latência.
+        let grande = frags
+            .iter()
+            .find(|f| f.contains("linha_39"))
+            .expect("o content saiu");
+        assert!(grande.contains("linha_0 = 0 * 2"), "{grande:?}");
+        let inteiro = frags.concat();
+        assert!(inteiro.starts_with(r#"{"path":"/tmp/calc.py""#), "{inteiro:?}");
+        let json: serde_json::Value = serde_json::from_str(&inteiro).expect("JSON válido");
+        assert!(json["content"].as_str().expect("content").contains("linha_39"));
+    }
+
+    /// **O corte do teto não se confunde com fragmento parcial.** O que já
+    /// tinha sido transmitido conta: o fechamento emite só o que falta, e a
+    /// concatenação é exatamente a string inacabada da Fase 1 - que não
+    /// parseia, de propósito.
+    #[test]
+    fn a_truncated_call_never_repeats_what_was_already_streamed() {
+        let bruto_cortado: String = roteiro_chamada_longa()[..20].concat();
+        let (parts, _) = parse_output_truncated(&bruto_cortado);
+        let OutputPart::ToolCallTruncated(esperado) = &parts[0] else {
+            panic!("esperava chamada cortada");
+        };
+
+        let inteiro: String = fragmentos(true, Some(20)).concat();
+        assert_eq!(
+            inteiro, esperado.arguments,
+            "a concatenação do streaming tem de bater com a da Fase 1"
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&inteiro).is_err(),
+            "argumentos de chamada cortada não podem parsear: {inteiro:?}"
+        );
+    }
+
+    /// Chamada curta continua correta e com o tipo intacto: um valor que coube
+    /// no limiar nunca é transmitido em fragmentos, então `5` continua número.
+    #[test]
+    fn a_short_call_keeps_its_argument_types_even_in_eager_mode() {
+        let bruto = "<function=Bash>\n<parameter=command>\nls -la\n</parameter>\n                     <parameter=limit>\n5\n</parameter>\n";
+        let prefixo = streamable_arguments_prefix(bruto, true).expect("transcodifica");
+        assert_eq!(prefixo, r#"{"command":"ls -la","limit":5"#);
+    }
+
+    /// Um valor grande que já é JSON estruturado fica represado mesmo no modo
+    /// ansioso: transmiti-lo como string trocaria o tipo dele em silêncio.
+    #[test]
+    fn a_long_structured_value_stays_buffered_so_its_type_survives() {
+        let array = format!("[{}]", (0..40).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        assert!(array.len() > EAGER_MIN_VALUE_BYTES);
+        assert!(!streams_eagerly(true, &array), "array longo não pode ser transmitido");
+        assert!(!streams_eagerly(true, &format!("{{\"a\": {array}}}")));
+        assert!(!streams_eagerly(true, &format!("\"{}\"", "x".repeat(80))));
+        // Já texto que não pode ser JSON, esse sim.
+        assert!(streams_eagerly(true, &"linha de codigo ".repeat(10)));
+    }
+
+    /// **Monotonicidade**, alimentando byte a byte: o prefixo transmissível
+    /// nunca encolhe nem diverge. Não existe desenviar um fragmento SSE, então
+    /// esta é a propriedade que o módulo inteiro protege.
+    #[test]
+    fn the_streamable_prefix_only_ever_grows_byte_by_byte() {
+        let bruto: String = roteiro_chamada_longa().concat();
+        for eager in [true, false] {
+            let mut sc = TagScanner::new();
+            let mut body = String::new();
+            let mut anterior = String::new();
+            for byte in bruto.as_bytes().chunks(1) {
+                let Ok(pedaco) = std::str::from_utf8(byte) else {
+                    continue;
+                };
+                for ev in sc.feed(pedaco) {
+                    if let ScanEvent::ToolCallChunk(f) = ev {
+                        body.push_str(&f);
+                        if let Some(p) = streamable_arguments_prefix(&body, eager) {
+                            assert!(
+                                p.starts_with(&anterior),
+                                "eager={eager}: o prefixo divergiu\nantes: {anterior:?}\ndepois: {p:?}"
+                            );
+                            anterior = p;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -157,6 +157,54 @@ costuradas; `x_pom.timings` usa a mesma convenção do OpenAI; uma saída cortad
 pelo orçamento **total** usa `stop_reason: "max_tokens"`, e uma perna esgotada
 nunca.
 
+#### Streaming incremental dos argumentos
+
+Os argumentos de uma chamada de ferramenta saem em **fragmentos, conforme o
+modelo os gera**. Medido no ksia antes disso: 663 caracteres num pedaço só, com
+o primeiro e o último quadro ambos aos 11,01 s - o leitor de tags acumulava o
+corpo inteiro e só descarregava quando a chamada fechava, então o usuário
+encarava uma tela parada e recebia o arquivo de supetão.
+
+`tool_call::CallArgsStreamer` transcodifica a marcação do modelo em JSON
+conforme ela chega. **A concatenação dos fragmentos é sempre exatamente a
+string de argumentos que o caminho não-streaming produziria** - inclusive
+quando o teto corta a chamada, caso em que ela é a string inacabada da seção
+9.1 de `inferencia.md`. O que já foi transmitido nunca é repetido no
+fechamento: um fragmento parcial normal e um truncamento terminal não se
+confundem na saída.
+
+O ajuste é `eager_input_streaming`, booleano **opcional na definição da
+ferramenta**, sem cabeçalho beta - forma da Anthropic, verificada na
+documentação viva em 2026-08-29
+(`platform.claude.com/docs/en/agents-and-tools/tool-use/fine-grained-tool-streaming`):
+
+| onde | comportamento |
+|---|---|
+| `/v1/messages`, `eager_input_streaming: true` na ferramenta | fragmentos conforme o modelo gera |
+| `/v1/messages`, ausente ou `false` | represado **por valor de parâmetro** (o padrão deles): o parâmetro sai inteiro quando fecha |
+| `/v1/chat/completions` | sempre em fragmentos - a OpenAI não tem interruptor para isso, e inventar um campo estenderia o schema dela |
+
+**O tipo do argumento nunca é perdido.** A marcação do POM não carrega tipo -
+`<parameter=limit>5</parameter>` só vira número porque `decode_parameter_value`
+tenta parsear o valor completo. Por isso o modo ansioso só transmite valor que
+**comprovadamente não pode ser JSON**: acima de `EAGER_MIN_VALUE_BYTES` (64) e
+começando com caractere que não pode abrir um JSON válido (`{`, `[`, `"`, `-`,
+`+` e dígito ficam represados; letra passa, porque `true`/`false`/`null` são
+literais curtos). Um arquivo que começa em `{` fica represado - custa latência
+num caso raro, e é o preço de nunca entregar um array virado em texto.
+
+O invariante que sustenta tudo é a **monotonicidade**: o prefixo transmissível
+só cresce, nunca encolhe nem diverge, porque não existe desenviar um fragmento
+SSE. Dela saem o recuo de espaço em branco no fim do valor, a retenção do que
+ainda pode virar `</parameter>`, e a ordem das chaves do fechamento (ordem do
+documento, não a alfabética de `serde_json::Map`). `CallArgsStreamer` ainda
+confere isso em tempo de execução e suprime o fragmento divergente em vez de
+corromper o JSON do cliente.
+
+**Limite declarado:** a forma Hermes (`<tool_call>{"name":…}`) não é
+transcodificada ao vivo - o nome mora dentro do próprio JSON que estaria sendo
+transmitido -, então ela sai inteira no fechamento, como antes.
+
 #### Orçamento de tarefa
 
 `output_config.task_budget` é o mecanismo que os provedores oferecem **no lugar

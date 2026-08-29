@@ -500,6 +500,65 @@ async fn post_messages(no: &No, body: Value) -> Value {
         .expect("corpo JSON")
 }
 
+/// O SSE da rota Anthropic, que tem nomes de evento próprios. Devolve os
+/// `partial_json` de `input_json_delta`, na ordem - é onde os argumentos da
+/// chamada de ferramenta chegam ali.
+async fn fragmentos_messages(no: &No, body: Value) -> Vec<String> {
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/messages", no.base))
+        .bearer_auth(CHAVE)
+        .json(&body)
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert!(resposta.status().is_success(), "{:?}", resposta.status());
+
+    let mut bytes = resposta.bytes_stream();
+    let mut buffer = String::new();
+    let mut fragmentos = Vec::new();
+    while let Some(pedaco) = bytes.next().await {
+        buffer.push_str(&String::from_utf8_lossy(&pedaco.expect("pedaço SSE")));
+        while let Some(fim) = buffer.find("\n\n") {
+            let evento: String = buffer.drain(..fim + 2).collect();
+            for linha in evento.lines() {
+                let Some(dado) = linha.strip_prefix("data: ") else {
+                    continue;
+                };
+                let v: Value = serde_json::from_str(dado).expect("evento JSON");
+                if v["delta"]["type"] == "input_json_delta" {
+                    fragmentos.push(
+                        v["delta"]["partial_json"]
+                            .as_str()
+                            .expect("partial_json")
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+    fragmentos
+}
+
+/// O pedido Anthropic da bancada, com a ferramenta declarada. `ansioso` liga
+/// `eager_input_streaming` nela.
+fn pedido_messages(max_tokens: u32, ansioso: Option<bool>) -> Value {
+    let mut ferramenta = json!({
+        "name": "write_file",
+        "description": "Escreve um arquivo",
+        "input_schema": {"type": "object", "properties": {}},
+    });
+    if let Some(v) = ansioso {
+        ferramenta["eager_input_streaming"] = json!(v);
+    }
+    json!({
+        "model": "lab",
+        "max_tokens": max_tokens,
+        "stream": true,
+        "messages": [{"role": "user", "content": "escreva o arquivo"}],
+        "tools": [ferramenta],
+    })
+}
+
 /// O que um cliente SSE vê: os quadros na ordem em que chegaram, num único
 /// fluxo. Nada aqui reabre conexão - se a costura fechasse o stream, o `while`
 /// abaixo terminaria cedo e os testes veriam menos texto.
@@ -508,6 +567,9 @@ struct Fluxo {
     chunks: Vec<Value>,
     /// Quantos `[DONE]` chegaram.
     done_sentinels: usize,
+    /// Em que instante cada quadro chegou, contado do começo do pedido. É o
+    /// que separa "chegou em vários pedaços" de "chegou cedo".
+    instantes: Vec<std::time::Duration>,
 }
 
 impl Fluxo {
@@ -536,6 +598,20 @@ impl Fluxo {
             .collect()
     }
 
+    /// Os fragmentos de argumento, na ordem, com o instante de cada um.
+    fn fragmentos_de_argumento(&self) -> Vec<(std::time::Duration, String)> {
+        self.chunks
+            .iter()
+            .zip(&self.instantes)
+            .filter_map(|(c, t)| {
+                c["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| (*t, s.to_string()))
+            })
+            .collect()
+    }
+
     fn ultimo_com_x_pom(&self) -> &Value {
         self.chunks
             .iter()
@@ -555,14 +631,17 @@ async fn post_sse(no: &No, body: Value) -> Fluxo {
         .expect("resposta HTTP");
     assert!(resposta.status().is_success(), "{:?}", resposta.status());
 
+    let comeco = std::time::Instant::now();
     let mut bytes = resposta.bytes_stream();
     let mut buffer = String::new();
     let mut fluxo = Fluxo {
         chunks: Vec::new(),
         done_sentinels: 0,
+        instantes: Vec::new(),
     };
     while let Some(pedaco) = bytes.next().await {
         buffer.push_str(&String::from_utf8_lossy(&pedaco.expect("pedaço SSE")));
+        let agora = comeco.elapsed();
         while let Some(fim) = buffer.find("\n\n") {
             let evento: String = buffer.drain(..fim + 2).collect();
             for linha in evento.lines() {
@@ -575,6 +654,7 @@ async fn post_sse(no: &No, body: Value) -> Fluxo {
                     fluxo
                         .chunks
                         .push(serde_json::from_str(dado).expect("chunk JSON"));
+                    fluxo.instantes.push(agora);
                 }
             }
         }
@@ -682,22 +762,53 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
     assert_eq!(fluxo.finish_reasons(), vec!["tool_calls".to_string()]);
 
     let deltas = fluxo.tool_call_deltas();
-    assert_eq!(deltas.len(), 2, "abertura e argumentos");
+    // A abertura traz o nome, e os argumentos vêm em MUITOS fragmentos.
     assert_eq!(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
     );
-    let bruto = deltas[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
-        .as_str()
-        .expect("arguments é string JSON");
-    let argumentos: Value = serde_json::from_str(bruto).expect("arguments é JSON válido");
+    let fragmentos = fluxo.fragmentos_de_argumento();
+    assert!(
+        fragmentos.len() > 5,
+        "os argumentos voltaram represados: {} fragmento(s)",
+        fragmentos.len()
+    );
+
+    // Concatenar reproduz o argumento inteiro e válido.
+    let inteiro: String = fragmentos.iter().map(|(_, s)| s.as_str()).collect();
+    let argumentos: Value = serde_json::from_str(&inteiro).expect("arguments é JSON válido");
     assert_eq!(argumentos["path"], "/tmp/calc.py");
     assert!(argumentos["content"]
         .as_str()
         .unwrap()
-        .contains("linha_39 = 39 * 2"));
+        .ends_with("linha_39 = 39 * 2"));
     // Nada do `<tool_call>` sobrou como texto solto.
     assert!(!fluxo.texto().contains("<tool_call>"), "{}", fluxo.texto());
+}
+
+/// **O defeito do captain, virado do avesso.** Medido no ksia vivo: 2 pedaços,
+/// os dois aos 11,01 s - os 663 caracteres chegavam todos de uma vez, no fim,
+/// e o usuário encarava uma tela parada. Agora o primeiro fragmento chega
+/// muito antes do último.
+#[tokio::test]
+async fn the_first_argument_fragment_arrives_well_before_the_last() {
+    let no = no(tool_call_script(), 8, 8_192).await;
+
+    let fluxo = post_sse(&no, pedido(100, true, true)).await;
+    let fragmentos = fluxo.fragmentos_de_argumento();
+
+    assert!(fragmentos.len() > 5, "{} fragmento(s)", fragmentos.len());
+    let primeiro = fragmentos.first().expect("primeiro").0;
+    let ultimo = fragmentos.last().expect("último").0;
+    assert!(
+        primeiro < ultimo,
+        "primeiro e último no mesmo instante ({primeiro:?}) - é o defeito de novo"
+    );
+    // E o primeiro chega na primeira metade do percurso, não no fim dele.
+    assert!(
+        primeiro.as_secs_f64() < ultimo.as_secs_f64() / 2.0,
+        "o primeiro fragmento chegou tarde demais: {primeiro:?} de {ultimo:?}"
+    );
 }
 
 /// O freio contra o modelo em laço: o teto que o cliente pediu é o único que
@@ -913,18 +1024,22 @@ async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete(
     assert_eq!(fluxo.done_sentinels, 1);
 
     let deltas = fluxo.tool_call_deltas();
-    assert_eq!(deltas.len(), 2, "abertura e argumentos");
     assert_eq!(
         deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
         "write_file"
     );
-    let bruto = deltas[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
-        .as_str()
-        .expect("arguments é string");
+    // Os fragmentos que já tinham sido transmitidos contam: o corte não
+    // repete o que o cliente já acumulou. A concatenação é a string inacabada.
+    let bruto: String = fluxo
+        .fragmentos_de_argumento()
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect();
     assert!(
-        serde_json::from_str::<Value>(bruto).is_err(),
+        serde_json::from_str::<Value>(&bruto).is_err(),
         "argumentos de uma chamada cortada não podem parsear: {bruto:?}"
     );
+    assert!(bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#), "{bruto:?}");
     assert!(bruto.ends_with(r"linha_12 = 12 * 2\n"), "{bruto:?}");
 
     let texto = fluxo.texto();
@@ -1211,4 +1326,51 @@ async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
 
     assert_eq!(corpo["stop_reason"], "max_tokens");
     assert_eq!(corpo["usage"]["output_tokens"], 30);
+}
+
+// ── `eager_input_streaming`, por ferramenta ─────────────────────────────────
+
+/// **Ligado, os fragmentos saem conforme o modelo gera.** É a forma da
+/// Anthropic: campo opcional na definição da ferramenta, sem cabeçalho beta.
+#[tokio::test]
+async fn eager_input_streaming_on_a_tool_streams_the_argument_in_fragments() {
+    let no = no(tool_call_script(), 8, 8_192).await;
+
+    let fragmentos = fragmentos_messages(&no, pedido_messages(100, Some(true))).await;
+
+    assert!(
+        fragmentos.len() > 5,
+        "os argumentos voltaram represados: {} fragmento(s)",
+        fragmentos.len()
+    );
+    let inteiro: String = fragmentos.concat();
+    let argumentos: Value = serde_json::from_str(&inteiro).expect("a concatenação é JSON válido");
+    assert_eq!(argumentos["path"], "/tmp/calc.py");
+    assert!(argumentos["content"]
+        .as_str()
+        .expect("content")
+        .ends_with("linha_39 = 39 * 2"));
+}
+
+/// **Ausente, o comportamento represado é preservado.** É o padrão da
+/// Anthropic, e o represamento é por **valor de parâmetro**: o parâmetro
+/// grande sai inteiro, num fragmento só.
+#[tokio::test]
+async fn without_eager_input_streaming_each_parameter_arrives_whole() {
+    for ausente in [None, Some(false)] {
+        // Um nó por pedido: o motor falso tem um contador de tokens só, e ele
+        // não volta ao começo entre requisições.
+        let no = no(tool_call_script(), 8, 8_192).await;
+        let fragmentos = fragmentos_messages(&no, pedido_messages(100, ausente)).await;
+        assert_eq!(fragmentos.len(), 3, "{ausente:?}: {fragmentos:?}");
+        let grande = fragmentos
+            .iter()
+            .find(|f| f.contains("linha_39"))
+            .expect("o content saiu");
+        assert!(grande.contains("linha_0 = 0 * 2"), "{grande:?}");
+
+        let inteiro: String = fragmentos.concat();
+        let argumentos: Value = serde_json::from_str(&inteiro).expect("JSON válido");
+        assert_eq!(argumentos["path"], "/tmp/calc.py");
+    }
 }

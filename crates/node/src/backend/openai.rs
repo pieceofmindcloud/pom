@@ -214,6 +214,11 @@ impl ChatToolDef {
             name: self.function.name,
             description: self.function.description,
             input_schema: self.function.parameters,
+            // A OpenAI não tem interruptor para isto: ela **sempre** transmite
+            // os argumentos em fragmentos, conforme gera. Não há campo a
+            // espelhar, e inventar um seria estender o schema dela. Quem
+            // decide nesta rota é `EAGER_STREAMING_OPENAI`.
+            eager_input_streaming: None,
         }
     }
 }
@@ -922,74 +927,148 @@ fn stream_response(
         .into_response()
 }
 
+/// A OpenAI **sempre** transmite os argumentos em fragmentos, conforme gera -
+/// não existe interruptor para isso na API dela, e por isso não há campo a
+/// espelhar em `ChatToolDef`. Esta rota é ansiosa sempre.
+const EAGER_STREAMING_OPENAI: bool = true;
+
+/// O estado de uma chamada de ferramenta sendo transmitida.
+///
+/// Ela nasce em `ToolCallOpen`, cresce a cada `ToolCallChunk` e morre no
+/// fechamento. Enquanto o nome não sai, nada é transmitido: um índice de
+/// `tool_calls` aberto sem nome não serve para nada ao cliente.
+struct ChamadaEmCurso {
+    /// O corpo cru visto até agora - é dele que o transcodificador vive.
+    body: String,
+    streamer: crate::tool_call::CallArgsStreamer,
+    /// O índice já anunciado ao cliente, quando a abertura já saiu.
+    index: Option<u32>,
+}
+
 /// Turns scanner events into OpenAI streaming `delta` values. Unlike
 /// Anthropic's content blocks, OpenAI's delta model has no block-index
 /// concept for plain text at all — just one implicit content stream, plus a
 /// separately-indexed `tool_calls` array (`tool_call_index`, bumped once per
-/// completed call). Synchronous and free of any axum/SSE type so it's
-/// directly unit-testable.
+/// call). Synchronous and free of any axum/SSE type so it's directly
+/// unit-testable.
 ///
-/// Tool-call arguments are emitted as a single delta carrying the whole JSON
-/// blob, not truly incrementally — same reasoning as the Anthropic adapter:
-/// the tool's name is only known once the entire `<tool_call>` tag closes,
-/// so there is nothing to stream before that point.
+/// **Os argumentos saem em fragmentos, conforme o modelo os gera.** Era aqui
+/// que eles ficavam represados: o corpo da chamada era acumulado e só virava
+/// delta quando a tag fechava, o que no ksia deu 663 caracteres num pedaço só,
+/// aos 11,01 s. `CallArgsStreamer` transcodifica a marcação em JSON conforme
+/// ela chega, e a concatenação dos fragmentos é exatamente a string que o
+/// caminho não-streaming produziria.
 fn apply_scan_events_openai(
     events: Vec<ScanEvent>,
     tool_call_index: &mut u32,
     saw_tool_call: &mut bool,
+    em_curso: &mut Option<ChamadaEmCurso>,
     out: &mut Vec<serde_json::Value>,
 ) {
+    /// A abertura: índice, id e nome, com os argumentos ainda vazios. Sai uma
+    /// vez só por chamada, no primeiro fragmento que houver.
+    fn abrir(
+        nome: &str,
+        tool_call_index: &mut u32,
+        em_curso: &mut ChamadaEmCurso,
+        out: &mut Vec<serde_json::Value>,
+    ) -> u32 {
+        if let Some(idx) = em_curso.index {
+            return idx;
+        }
+        let idx = *tool_call_index;
+        *tool_call_index += 1;
+        em_curso.index = Some(idx);
+        out.push(json!({
+            "tool_calls": [{
+                "index": idx,
+                "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
+                "type": "function",
+                "function": { "name": nome, "arguments": "" },
+            }]
+        }));
+        idx
+    }
+
+    fn fragmento(idx: u32, texto: String, out: &mut Vec<serde_json::Value>) {
+        out.push(json!({
+            "tool_calls": [{
+                "index": idx,
+                "function": { "arguments": texto },
+            }]
+        }));
+    }
+
     for e in events {
         match e {
             ScanEvent::Text(s) if !s.is_empty() => out.push(json!({ "content": s })),
-            ScanEvent::Text(_) | ScanEvent::ToolCallOpen | ScanEvent::ToolCallChunk(_) => {}
+            ScanEvent::Text(_) => {}
+            ScanEvent::ToolCallOpen => {
+                *em_curso = Some(ChamadaEmCurso {
+                    body: String::new(),
+                    streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
+                    index: None,
+                });
+            }
+            ScanEvent::ToolCallChunk(fragment) => {
+                let Some(chamada) = em_curso.as_mut() else {
+                    continue;
+                };
+                chamada.body.push_str(&fragment);
+                let corpo = chamada.body.clone();
+                if let Some(delta) = chamada.streamer.advance(&corpo) {
+                    let nome = crate::tool_call::peek_call_name(&corpo).unwrap_or_default();
+                    let idx = abrir(&nome, tool_call_index, chamada, out);
+                    fragmento(idx, delta, out);
+                }
+            }
             ScanEvent::ToolCallClose(Ok((name, arguments))) => {
                 *saw_tool_call = true;
-                let idx = *tool_call_index;
-                *tool_call_index += 1;
-                let id = format!("call_{}", uuid::Uuid::new_v4().simple());
-                out.push(json!({
-                    "tool_calls": [{
-                        "index": idx, "id": id, "type": "function",
-                        "function": { "name": name, "arguments": "" },
-                    }]
-                }));
-                out.push(json!({
-                    "tool_calls": [{
-                        "index": idx,
-                        "function": { "arguments": arguments.to_string() },
-                    }]
-                }));
+                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                    body: String::new(),
+                    streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
+                    index: None,
+                });
+                let idx = abrir(&name, tool_call_index, &mut chamada, out);
+                // Só o que ainda não saiu. Repetir o que o cliente já
+                // acumulou duplicaria os argumentos dele.
+                if let Some(delta) = chamada.streamer.finish_complete(&chamada.body, &arguments) {
+                    fragmento(idx, delta, out);
+                }
             }
             ScanEvent::ToolCallClose(Err(raw)) => {
+                let chamada = em_curso.take();
+                // Uma chamada que já começou a sair não pode virar texto: o
+                // cliente já tem um `tool_calls[i]` aberto com nome, e não há
+                // como desenviar. Ela fica como está - argumentos que não
+                // parseiam, que é o caso "JSON inválido" que os provedores
+                // documentam e mandam devolver ao modelo.
+                if chamada.is_some_and(|c| c.streamer.emitted_len() > 0) {
+                    continue;
+                }
                 apply_scan_events_openai(
                     vec![ScanEvent::Text(raw)],
                     tool_call_index,
                     saw_tool_call,
+                    em_curso,
                     out,
                 );
             }
-            // A chamada cortada pelo teto sai na mesma forma de duas partes -
-            // abertura com o nome, depois os argumentos -, só que os
-            // argumentos são a string JSON inacabada. `saw_tool_call` **não**
-            // é marcado: o turno terminou no teto, e o quadro final diz
-            // `length`.
+            // A chamada cortada pelo teto sai na mesma forma, e os argumentos
+            // acabam na string JSON inacabada da Fase 1 - o que já tinha sido
+            // transmitido conta, então só o que falta sai aqui.
+            // `saw_tool_call` **não** é marcado: o turno terminou no teto, e o
+            // quadro final diz `length`.
             ScanEvent::ToolCallTruncated(partial) => {
-                let idx = *tool_call_index;
-                *tool_call_index += 1;
-                let id = format!("call_{}", uuid::Uuid::new_v4().simple());
-                out.push(json!({
-                    "tool_calls": [{
-                        "index": idx, "id": id, "type": "function",
-                        "function": { "name": partial.name, "arguments": "" },
-                    }]
-                }));
-                out.push(json!({
-                    "tool_calls": [{
-                        "index": idx,
-                        "function": { "arguments": partial.arguments },
-                    }]
-                }));
+                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                    body: String::new(),
+                    streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
+                    index: None,
+                });
+                let idx = abrir(&partial.name, tool_call_index, &mut chamada, out);
+                if let Some(delta) = chamada.streamer.finish_truncated(&partial.arguments) {
+                    fragmento(idx, delta, out);
+                }
             }
         }
     }
@@ -1032,6 +1111,8 @@ fn sse_stream(
         /// `true` quando o teto do cliente caiu dentro de uma chamada de
         /// ferramenta. Vai para o `x_pom` do quadro final.
         truncated_tool_call: bool,
+        /// A chamada cujos argumentos estão sendo transmitidos agora.
+        em_curso: Option<ChamadaEmCurso>,
     }
 
     let state = S {
@@ -1048,6 +1129,7 @@ fn sse_stream(
         tool_call_index: 0,
         saw_tool_call: false,
         truncated_tool_call: false,
+        em_curso: None,
     };
 
     futures::stream::unfold(state, |mut s| async move {
@@ -1098,6 +1180,7 @@ fn sse_stream(
                                     events,
                                     &mut s.tool_call_index,
                                     &mut s.saw_tool_call,
+                                    &mut s.em_curso,
                                     &mut deltas,
                                 );
                                 for delta in deltas {
@@ -1130,6 +1213,7 @@ fn sse_stream(
                                 finish_events,
                                 &mut s.tool_call_index,
                                 &mut s.saw_tool_call,
+                                &mut s.em_curso,
                                 &mut deltas,
                             );
                             for delta in deltas {
@@ -1831,6 +1915,7 @@ mod tests {
     fn changing_the_tool_list_breaks_the_cache_key_on_purpose() {
         let messages = vec![msg("user", "oi")];
         let ferramenta = ToolDef {
+            eager_input_streaming: None,
             name: "buscar".into(),
             description: None,
             input_schema: json!({"type": "object"}),
@@ -1912,6 +1997,7 @@ mod tests {
         req.tools
             .iter()
             .map(|t| ToolDef {
+                eager_input_streaming: None,
                 name: t.function.name.clone(),
                 description: t.function.description.clone(),
                 input_schema: t.function.parameters.clone(),
@@ -2124,6 +2210,7 @@ mod tests {
             vec![ScanEvent::Text("hi".into())],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert_eq!(out, vec![json!({ "content": "hi" })]);
@@ -2142,6 +2229,7 @@ mod tests {
             )))],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert!(saw_tool_call);
@@ -2169,6 +2257,7 @@ mod tests {
             ],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert_eq!(out[0]["tool_calls"][0]["index"], 0);
@@ -2187,6 +2276,7 @@ mod tests {
             ))],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert!(!saw_tool_call);
@@ -2207,12 +2297,14 @@ mod tests {
             scanner.feed("<tool_call><function=write><parameter=content>\n<html>"),
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         apply_scan_events_openai(
             scanner.finish(),
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
 
@@ -2235,6 +2327,7 @@ mod tests {
                 scanner.feed(chunk),
                 &mut tool_call_index,
                 &mut saw_tool_call,
+                &mut None,
                 &mut out,
             );
         }
@@ -2242,6 +2335,7 @@ mod tests {
             scanner.finish(),
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
 

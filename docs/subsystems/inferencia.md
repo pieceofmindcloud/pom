@@ -1105,9 +1105,13 @@ Anthropic, que é tipado como objeto, leva o mesmo conteúdo já recuperado.
 | corte antes de o nome fechar | só o texto anterior à abertura; um nome pela metade não é ferramenta |
 | nenhuma chamada aberta | texto truncado, `length`/`max_tokens`, nada mais muda |
 
-Marcação crua nunca é resposta: o scanner segura o corpo da chamada até a tag
-fechar - `ToolCallOpen` e `ToolCallChunk` não viram delta nenhum -, então em
-streaming não há nada vazado para desenviar. `x_pom` conta a verdade:
+Marcação crua nunca é resposta: o scanner segura o corpo da chamada até saber
+o que ele é, então nada de dentro da tag vaza como prosa. Em streaming os
+argumentos saem em fragmentos conforme o modelo gera (ver
+`api-http.md`, "Streaming incremental dos argumentos"), e o que já saiu conta:
+o fechamento por corte emite **só o que falta**, de modo que um fragmento
+parcial normal e um truncamento terminal nunca se confundem. `x_pom` conta a
+verdade:
 `truncated_tool_call` diz se o corte caiu dentro de uma chamada, e `partial` é
 `true` sempre que isso aconteceu ou houve perda de transporte.
 

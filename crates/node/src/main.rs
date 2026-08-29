@@ -1052,7 +1052,6 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     let config = Arc::new(RwLock::new(Config {
         role: Role::Principal,
         tls_required: false,
-        tool_call_grace_tokens: crate::config::DEFAULT_TOOL_CALL_GRACE_TOKENS,
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,

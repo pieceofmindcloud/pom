@@ -30,15 +30,26 @@
 //!
 //! ## As duas fronteiras
 //!
-//! O laço de continuação resolveu o corte na fronteira da **perna**. A de
-//! fora - o teto absoluto - repetia o mesmo defeito: o orçamento acabava com
-//! um `<tool_call>` aberto e a chamada voltava degradada em texto solto, sem
-//! `tool_calls` (medido aqui: 335 caracteres de markup cru no `content`, com
-//! `x_pom.partial: false` mentindo). Agora o teto é conferido em **ponto
-//! seguro**: com uma chamada aberta o laço segue, gastando no máximo
-//! `tool_call_grace_tokens`, e só encerra fora dela. Se nem a folga fechar a
-//! chamada, o gateway recua até antes da abertura - nunca entrega o fragmento.
-//! Os três casos estão cobertos abaixo, nos dois modos.
+//! O laço de continuação resolveu o corte na fronteira da **perna**: ela é
+//! invisível, e costurar pernas para honrar o pedido do cliente é o certo. A
+//! de fora - o teto que o cliente pediu - é outra coisa: ela é **imposta e
+//! inviolável**, e atingi-la é parada terminal. Nada a ultrapassa, nem uma
+//! chamada de ferramenta aberta no token do corte.
+//!
+//! O que sobrava a resolver era a **forma** da resposta quando o corte cai
+//! dentro de uma chamada. Duas respostas erradas já foram medidas aqui: a
+//! marcação crua vazada como texto (335 caracteres de `<tool_call>…` no
+//! `content`, com `x_pom.partial: false` mentindo) e o descarte silencioso do
+//! fragmento. A certa é a dos dois provedores, verificada na documentação viva
+//! em 2026-08-29: a chamada volta **estruturada e incompleta**, ao lado do
+//! motivo de parada terminal - `finish_reason: "length"` na OpenAI,
+//! `stop_reason: "max_tokens"` com o último bloco `tool_use` na Anthropic. O
+//! cliente lê o motivo e repete o pedido com um teto maior; nenhum dos dois
+//! continua, transborda ou descarta.
+//!
+//! No lugar do transbordo os dois oferecem o **orçamento de tarefa**
+//! (`output_config.task_budget`), que avisa o modelo em vez de esticar o teto.
+//! Ele é advisory e está coberto aqui também.
 //!
 //! **Limite declarado:** o motor é falso. Ele lê um roteiro de pedaços de texto
 //! em vez de decodificar, então o que a bancada prova é o contrato entre
@@ -116,6 +127,10 @@ struct Hop {
     /// Quantos pedaços já saíram. Compartilhado entre prefill (o primeiro
     /// token) e step (o resto), como no motor de verdade.
     emitted: Arc<AtomicUsize>,
+    /// O prompt que a cabeça recebeu no quadro de prefill. É por aqui que a
+    /// bancada confere que o marcador do orçamento de tarefa chegou mesmo à
+    /// geração, e não só ao adaptador.
+    prompt_visto: Arc<std::sync::Mutex<String>>,
 }
 
 impl Hop {
@@ -224,6 +239,11 @@ async fn bubble(
 
 async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let inc = read(&body);
+    if hop.is_head {
+        if let Some(prompt) = inc.meta["prompt"].as_str() {
+            *hop.prompt_visto.lock().unwrap() = prompt.to_string();
+        }
+    }
     let chunk_index = inc.meta["chunk_index"].as_u64().unwrap_or(0) as u32;
     let chunk_size = inc.meta["chunk_size"].as_u64().unwrap_or(512) as u32;
     let is_final_chunk = inc.meta["is_final_chunk"].as_bool().unwrap_or(false);
@@ -331,21 +351,28 @@ const CHAVE: &str = "chave";
 
 struct No {
     base: String,
+    /// O prompt que a cabeça recebeu - ver `Hop::prompt_visto`.
+    prompt_visto: Arc<std::sync::Mutex<String>>,
     /// Vivo enquanto o teste roda; largar isto derruba o nó.
     _servidor: tokio::task::JoinHandle<()>,
+}
+
+impl No {
+    fn prompt_da_geracao(&self) -> String {
+        self.prompt_visto.lock().unwrap().clone()
+    }
 }
 
 /// Sobe dois hops falsos e um nó de verdade servindo `/v1` por HTTP.
 ///
 /// `deployment_max_new_tokens` é o teto de **uma** geração de backend - o
 /// número do captain, que a tarefa proíbe levantar. `absolute_ceiling` é o
-/// `max_output_tokens` do `pom.json`, o freio da requisição inteira.
-/// `tool_call_grace` é a folga que só uma chamada de ferramenta aberta gasta.
+/// `max_output_tokens` do `pom.json`: a capacidade que o nó declara, anunciada
+/// em `/v1/models` e recusada quando o pedido a excede.
 async fn no(
     script: Vec<String>,
     deployment_max_new_tokens: u32,
     absolute_ceiling: u32,
-    tool_call_grace: u32,
 ) -> No {
     static LOG: std::sync::Once = std::sync::Once::new();
     LOG.call_once(|| {
@@ -360,6 +387,7 @@ async fn no(
 
     let script = Arc::new(script);
     let emitted = Arc::new(AtomicUsize::new(0));
+    let prompt_visto = Arc::new(std::sync::Mutex::new(String::new()));
     let mut urls = Vec::new();
     for i in 0..2 {
         urls.push(
@@ -367,6 +395,7 @@ async fn no(
                 is_head: i == 0,
                 script: script.clone(),
                 emitted: emitted.clone(),
+                prompt_visto: prompt_visto.clone(),
             })
             .await,
         );
@@ -400,13 +429,13 @@ async fn no(
     {
         let mut auth = state.auth.write().await;
         auth.max_output_tokens = absolute_ceiling;
-        auth.tool_call_grace_tokens = tool_call_grace;
     }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = Router::new()
         .merge(crate::openai::routes())
+        .merge(crate::messages::routes())
         .with_state(state);
     let servidor = tokio::spawn(async move {
         let _ = axum::serve(listener, app).tcp_nodelay(true).await;
@@ -414,6 +443,7 @@ async fn no(
 
     No {
         base: format!("http://{addr}"),
+        prompt_visto,
         _servidor: servidor,
     }
 }
@@ -445,6 +475,21 @@ fn pedido(max_tokens: u32, stream: bool, com_ferramenta: bool) -> Value {
 async fn post_json(no: &No, body: Value) -> Value {
     reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
+        .bearer_auth(CHAVE)
+        .json(&body)
+        .send()
+        .await
+        .expect("resposta HTTP")
+        .json()
+        .await
+        .expect("corpo JSON")
+}
+
+/// `/v1/messages`, para o que só o adaptador Anthropic diz: o `stop_reason`,
+/// os blocos `tool_use` e o `output_config`.
+async fn post_messages(no: &No, body: Value) -> Value {
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", no.base))
         .bearer_auth(CHAVE)
         .json(&body)
         .send()
@@ -547,7 +592,7 @@ async fn post_sse(no: &No, body: Value) -> Fluxo {
 async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
     let script = plain_script();
     let esperado: String = script.concat();
-    let no = no(script.clone(), 8, 8_192, 0).await;
+    let no = no(script.clone(), 8, 8_192).await;
 
     let corpo = post_json(&no, pedido(100, false, false)).await;
     let escolha = &corpo["choices"][0];
@@ -576,7 +621,7 @@ async fn a_request_above_the_deployment_ceiling_comes_back_whole() {
 async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
     let script = plain_script();
     let esperado: String = script.concat();
-    let no = no(script.clone(), 8, 8_192, 0).await;
+    let no = no(script.clone(), 8, 8_192).await;
 
     let fluxo = post_sse(&no, pedido(100, true, false)).await;
 
@@ -599,7 +644,7 @@ async fn the_stream_is_one_continuous_flow_with_a_single_final_chunk() {
 #[tokio::test]
 async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
     let script = tool_call_script();
-    let no = no(script, 8, 8_192, 0).await;
+    let no = no(script, 8, 8_192).await;
 
     let corpo = post_json(&no, pedido(100, false, true)).await;
     let escolha = &corpo["choices"][0];
@@ -631,7 +676,7 @@ async fn a_tool_call_that_crosses_the_ceiling_arrives_complete_and_parseable() {
 #[tokio::test]
 async fn the_streamed_tool_call_carries_complete_arguments() {
     let script = tool_call_script();
-    let no = no(script, 8, 8_192, 0).await;
+    let no = no(script, 8, 8_192).await;
 
     let fluxo = post_sse(&no, pedido(100, true, true)).await;
     assert_eq!(fluxo.finish_reasons(), vec!["tool_calls".to_string()]);
@@ -655,14 +700,14 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
     assert!(!fluxo.texto().contains("<tool_call>"), "{}", fluxo.texto());
 }
 
-/// O freio obrigatório: sem ele um modelo em laço ocupa o nó para sempre. O
-/// teto absoluto é o único que produz `length`, e ele é do `pom.json`, não da
-/// implantação.
+/// O freio contra o modelo em laço: o teto que o cliente pediu é o único que
+/// produz `length`, e a implantação (8) não encerra nada - ela só divide a
+/// resposta em pernas invisíveis, cinco delas aqui.
 #[tokio::test]
-async fn the_absolute_ceiling_stops_a_runaway_model_and_is_the_only_length() {
-    let no = no(runaway_script(), 8, 37, 0).await;
+async fn the_client_ceiling_stops_a_runaway_model_and_is_the_only_length() {
+    let no = no(runaway_script(), 8, 37).await;
 
-    let corpo = post_json(&no, pedido(100_000, false, false)).await;
+    let corpo = post_json(&no, pedido(37, false, false)).await;
     let escolha = &corpo["choices"][0];
     assert_eq!(escolha["finish_reason"], "length");
     assert_eq!(corpo["usage"]["completion_tokens"], 37);
@@ -673,22 +718,24 @@ async fn the_absolute_ceiling_stops_a_runaway_model_and_is_the_only_length() {
     assert_eq!(corpo["x_pom"]["continuation_legs"], 5);
 }
 
-/// O mesmo estouro em streaming: um `length` só, no fim, e um `[DONE]` só.
+/// O mesmo estouro em streaming: um `length` só, no fim, e um `[DONE]` só. A
+/// costura das cinco pernas segue invisível.
 #[tokio::test]
-async fn the_absolute_ceiling_ends_the_stream_exactly_once() {
-    let no = no(runaway_script(), 8, 37, 0).await;
+async fn the_client_ceiling_ends_the_stream_exactly_once() {
+    let no = no(runaway_script(), 8, 37).await;
 
-    let fluxo = post_sse(&no, pedido(100_000, true, false)).await;
+    let fluxo = post_sse(&no, pedido(37, true, false)).await;
     assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
     assert_eq!(fluxo.done_sentinels, 1);
     assert_eq!(fluxo.texto().matches("e ").count(), 37);
+    assert_eq!(fluxo.ultimo_com_x_pom()["x_pom"]["continuation_legs"], 5);
 }
 
 /// Quando o pedido cabe numa perna nada muda: uma perna, sem costura, e o
 /// `length` continua sendo dito na hora certa.
 #[tokio::test]
 async fn a_request_that_fits_one_leg_is_untouched() {
-    let no = no(runaway_script(), 8, 8_192, 0).await;
+    let no = no(runaway_script(), 8, 8_192).await;
 
     let corpo = post_json(&no, pedido(5, false, false)).await;
     assert_eq!(corpo["choices"][0]["finish_reason"], "length");
@@ -701,7 +748,7 @@ async fn a_request_that_fits_one_leg_is_untouched() {
 /// da implantação faria o cliente pedir menos do que este nó entrega.
 #[tokio::test]
 async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
-    let no = no(runaway_script(), 8, 4_096, 0).await;
+    let no = no(runaway_script(), 8, 4_096).await;
 
     let corpo: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
@@ -717,9 +764,9 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
     assert_eq!(modelo["top_provider"]["max_completion_tokens"], 4_096);
 }
 
-// ── O teto ABSOLUTO caindo dentro da chamada ─────────────────────────────────
+// ── O teto do CLIENTE caindo dentro da chamada ───────────────────────────────
 
-/// Teto absoluto escolhido para cair **dentro** da chamada de ferramenta.
+/// Teto escolhido para cair **dentro** da chamada de ferramenta.
 ///
 /// `tool_call_script()` tem 50 pedaços: índice 0 é prosa, 1 abre
 /// `<tool_call>`, 7..=46 são as 40 linhas do `content`, 49 fecha
@@ -729,15 +776,9 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
 /// achar que o ponto caiu em outro lugar por acidente.
 const TETO_DENTRO_DA_CHAMADA: u32 = 20;
 
-/// Folga suficiente para os 30 pedaços que faltavam fecharem a chamada.
-const FOLGA_QUE_FECHA: u32 = 64;
-
-/// Folga curta demais: acaba com a chamada ainda aberta e força o recuo.
-const FOLGA_QUE_NAO_FECHA: u32 = 5;
-
 /// Prova aritmética do ponto de corte, independente dos testes de HTTP: com
 /// `TETO_DENTRO_DA_CHAMADA` tokens gerados, a saída bruta abriu a chamada e
-/// não a fechou - e as duas folgas acima caem dos dois lados do fechamento.
+/// não a fechou.
 #[test]
 fn corte_cai_dentro_da_chamada() {
     let script = tool_call_script();
@@ -757,56 +798,90 @@ fn corte_cai_dentro_da_chamada() {
     );
     // E cai no miolo do `content`, não numa fronteira de tag.
     assert!(cortado.ends_with("linha_12 = 12 * 2\n"), "{cortado:?}");
+}
 
-    // A folga longa alcança o fechamento; a curta, não. É isso que separa o
-    // caso da entrega completa do caso do recuo.
-    let com_folga = (TETO_DENTRO_DA_CHAMADA + FOLGA_QUE_FECHA) as usize;
-    assert!(com_folga >= script.len(), "a folga longa tem que alcançar");
-    let sem_folga = (TETO_DENTRO_DA_CHAMADA + FOLGA_QUE_NAO_FECHA) as usize;
-    assert!(sem_folga < script.len(), "a folga curta não pode alcançar");
-    assert!(
-        !script[..sem_folga].concat().contains("</tool_call>"),
-        "a folga curta tem que acabar com a chamada ainda aberta"
+/// **O teto do cliente é inviolável, inclusive com uma chamada aberta.**
+///
+/// Era aqui que a folga (`tool_call_grace_tokens`, removida) deixava a geração
+/// ultrapassar o que o cliente pediu. Nenhum dos dois provedores faz isso:
+/// `max_tokens` é teto por resposta imposto, atingi-lo é parada terminal, e a
+/// saída trunca no meio. O que eles oferecem no lugar do transbordo é o
+/// orçamento de tarefa, coberto mais abaixo.
+#[tokio::test]
+async fn the_client_ceiling_is_never_exceeded_even_with_an_open_tool_call() {
+    let no = no(tool_call_script(), 8, 8_192).await;
+
+    let corpo = post_json(&no, pedido(TETO_DENTRO_DA_CHAMADA, false, true)).await;
+
+    assert_eq!(
+        corpo["usage"]["completion_tokens"], TETO_DENTRO_DA_CHAMADA,
+        "a geração passou do teto que o cliente pediu"
+    );
+    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
+}
+
+/// O mesmo em streaming, e com a garantia que só o streaming dá: nem um token
+/// a mais atravessou o fluxo.
+#[tokio::test]
+async fn the_streamed_client_ceiling_is_never_exceeded_with_an_open_tool_call() {
+    let no = no(tool_call_script(), 8, 8_192).await;
+
+    let fluxo = post_sse(&no, pedido(TETO_DENTRO_DA_CHAMADA, true, true)).await;
+
+    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(fluxo.done_sentinels, 1);
+    assert_eq!(
+        fluxo.ultimo_com_x_pom()["x_pom"]["tokens_generated"],
+        TETO_DENTRO_DA_CHAMADA
     );
 }
 
-/// **Caso 1 - a chamada fecha dentro da folga.**
+/// **A forma da resposta quando o corte cai dentro da chamada** (OpenAI).
 ///
-/// O teto absoluto deixou de cortar no meio de uma chamada: ele é conferido em
-/// ponto seguro, fora dela. Com a chamada aberta o laço segue, gastando no
-/// máximo a folga, e entrega a chamada **completa e executável**. A resposta é
-/// marcada `partial` porque o orçamento pedido foi mesmo ultrapassado - mas
-/// ultrapassar por 30 tokens e entregar uma ferramenta utilizável é o que o
-/// cliente precisa; cortar no meio não servia para nada.
+/// Apurado na documentação viva em 2026-08-29: a chamada parcial volta
+/// **estruturada**, com `function.arguments` sendo a string JSON inacabada, ao
+/// lado de `finish_reason: "length"`. `arguments` é documentado como string
+/// que "nem sempre é JSON válido", e o cliente é obrigado a validar antes de
+/// executar - é isso que impede um harness de escrever meio arquivo.
+///
+/// As duas respostas erradas que já foram medidas aqui estão asseridas contra:
+/// marcação crua vazada como texto, e o descarte silencioso do fragmento.
 #[tokio::test]
-async fn a_tool_call_that_overruns_the_absolute_ceiling_closes_inside_the_grace() {
-    let script = tool_call_script();
-    let total = script.len() as u32;
-    let no = no(script, 8, TETO_DENTRO_DA_CHAMADA, FOLGA_QUE_FECHA).await;
+async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
+    let no = no(tool_call_script(), 8, 8_192).await;
 
-    let corpo = post_json(&no, pedido(100, false, true)).await;
+    let corpo = post_json(&no, pedido(TETO_DENTRO_DA_CHAMADA, false, true)).await;
     let escolha = &corpo["choices"][0];
 
-    // O turno terminou na chamada, não no teto.
-    assert_eq!(escolha["finish_reason"], "tool_calls");
+    // Parada terminal, com o motivo correspondente.
+    assert_eq!(escolha["finish_reason"], "length");
+
+    // A chamada NÃO foi descartada: ela volta estruturada.
     let chamadas = escolha["message"]["tool_calls"]
         .as_array()
-        .expect("a resposta traz tool_calls");
+        .expect("a chamada cortada volta estruturada, não descartada");
     assert_eq!(chamadas.len(), 1);
     assert_eq!(chamadas[0]["function"]["name"], "write_file");
+
+    // E os argumentos são a string JSON inacabada - de propósito: um cliente
+    // que ignore o `length` e tente parsear falha, em vez de executar meia
+    // chamada com o `content` pela metade.
     let bruto = chamadas[0]["function"]["arguments"]
         .as_str()
-        .expect("arguments é string JSON");
-    let argumentos: Value = serde_json::from_str(bruto).expect("arguments é JSON válido");
-    assert_eq!(argumentos["path"], "/tmp/calc.py");
-    assert!(argumentos["content"]
-        .as_str()
-        .expect("content")
-        .trim_end()
-        .ends_with("linha_39 = 39 * 2"));
+        .expect("arguments é string");
+    assert!(
+        serde_json::from_str::<Value>(bruto).is_err(),
+        "argumentos de uma chamada cortada não podem parsear: {bruto:?}"
+    );
+    assert!(bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#), "{bruto:?}");
+    // O último parâmetro entra com a aspa de abertura e **sem** a de
+    // fechamento, e nada do que o modelo escreveu é aparado: a quebra de linha
+    // final é conteúdo, não sobra.
+    assert!(bruto.ends_with(r"linha_12 = 12 * 2\n"), "{bruto:?}");
 
-    // Nada de marcação crua no conteúdo.
+    // E nada de marcação crua no conteúdo - o defeito original.
     let conteudo = escolha["message"]["content"].as_str().unwrap_or("");
+    assert_eq!(conteudo, "Vou escrever o arquivo.\n");
     assert!(
         !conteudo.contains("<tool_call>")
             && !conteudo.contains("<function=")
@@ -814,51 +889,46 @@ async fn a_tool_call_that_overruns_the_absolute_ceiling_closes_inside_the_grace(
         "{conteudo:?}"
     );
 
-    // O `x_pom` conta a verdade: passou do teto, e quanto da folga gastou.
-    assert_eq!(corpo["usage"]["completion_tokens"], total);
+    // `x_pom` honesto: o corte caiu dentro da chamada, e a resposta é parcial.
+    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
     assert_eq!(corpo["x_pom"]["partial"], true);
+    assert_eq!(corpo["x_pom"]["finish_reason"], "length");
     assert_eq!(
-        corpo["x_pom"]["tool_call_grace_tokens"],
-        total - TETO_DENTRO_DA_CHAMADA
-    );
-    assert_eq!(corpo["x_pom"]["discarded_tool_call"], false);
-    assert_eq!(
-        corpo["x_pom"]["output_limits"]["tool_call_grace_max_tokens"],
-        FOLGA_QUE_FECHA
-    );
-    assert_eq!(
-        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
+        corpo["x_pom"]["output_limits"]["effective_max_tokens"],
         TETO_DENTRO_DA_CHAMADA
     );
 }
 
-/// Caso 1 em streaming, com a garantia que só o streaming pode dar: um
-/// `[DONE]` só e um `finish_reason` só. O recuo e a folga acontecem antes de
-/// qualquer coisa ser transmitida, porque o scanner segura o corpo da chamada
-/// até a tag fechar - `ToolCallChunk` não vira delta nenhum.
+/// A mesma forma em streaming: os dois deltas de sempre - abertura com o nome,
+/// depois os argumentos -, só que os argumentos são a string inacabada. Nada
+/// de dentro da tag vazou como `content` antes disso, porque o scanner segura
+/// o corpo até a tag fechar.
 #[tokio::test]
-async fn the_streamed_tool_call_closes_inside_the_grace() {
-    let script = tool_call_script();
-    let total = script.len() as u32;
-    let no = no(script, 8, TETO_DENTRO_DA_CHAMADA, FOLGA_QUE_FECHA).await;
+async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete() {
+    let no = no(tool_call_script(), 8, 8_192).await;
 
-    let fluxo = post_sse(&no, pedido(100, true, true)).await;
+    let fluxo = post_sse(&no, pedido(TETO_DENTRO_DA_CHAMADA, true, true)).await;
 
-    assert_eq!(fluxo.finish_reasons(), vec!["tool_calls".to_string()]);
+    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
     assert_eq!(fluxo.done_sentinels, 1);
 
     let deltas = fluxo.tool_call_deltas();
     assert_eq!(deltas.len(), 2, "abertura e argumentos");
+    assert_eq!(
+        deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
+        "write_file"
+    );
     let bruto = deltas[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
         .as_str()
-        .expect("arguments é string JSON");
-    let argumentos: Value = serde_json::from_str(bruto).expect("arguments é JSON válido");
-    assert!(argumentos["content"]
-        .as_str()
-        .expect("content")
-        .contains("linha_39 = 39 * 2"));
+        .expect("arguments é string");
+    assert!(
+        serde_json::from_str::<Value>(bruto).is_err(),
+        "argumentos de uma chamada cortada não podem parsear: {bruto:?}"
+    );
+    assert!(bruto.ends_with(r"linha_12 = 12 * 2\n"), "{bruto:?}");
 
     let texto = fluxo.texto();
+    assert_eq!(texto, "Vou escrever o arquivo.\n");
     assert!(
         !texto.contains("<tool_call>")
             && !texto.contains("<function=")
@@ -867,122 +937,278 @@ async fn the_streamed_tool_call_closes_inside_the_grace() {
     );
 
     let x_pom = &fluxo.ultimo_com_x_pom()["x_pom"];
+    assert_eq!(x_pom["truncated_tool_call"], true);
     assert_eq!(x_pom["partial"], true);
-    assert_eq!(x_pom["discarded_tool_call"], false);
-    assert_eq!(
-        x_pom["tool_call_grace_tokens"],
-        total - TETO_DENTRO_DA_CHAMADA
-    );
 }
 
-/// **Caso 2 - a folga também acaba e a chamada continua aberta.**
-///
-/// Rede de segurança: um modelo que abre `<tool_call>` e nunca fecha não pode
-/// ocupar o nó, então o corte acontece. Mas o cliente **não** recebe o
-/// fragmento: o gateway recua até antes da abertura, que é o único ponto que
-/// ele conhece com certeza. Entregar `<tool_call><function=…>` cru como
-/// resposta do assistente - o defeito medido no cluster, 4366 caracteres de
-/// texto solto - é o que este recuo existe para impedir. `length` é honesto:
-/// o que acabou foi o orçamento.
+/// A mesma forma no vocabulário da Anthropic: o **último bloco** é um
+/// `tool_use` com o `input` incompleto, e o `stop_reason` é `max_tokens`. É
+/// exatamente o par que a documentação manda o cliente conferir para saber que
+/// precisa repetir o pedido com um teto maior.
 #[tokio::test]
-async fn a_tool_call_that_outlives_the_grace_is_discarded_not_degraded_into_text() {
-    let no = no(
-        tool_call_script(),
-        8,
-        TETO_DENTRO_DA_CHAMADA,
-        FOLGA_QUE_NAO_FECHA,
+async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block() {
+    let no = no(tool_call_script(), 8, 8_192).await;
+
+    let corpo = post_messages(
+        &no,
+        json!({
+            "model": "lab",
+            "max_tokens": TETO_DENTRO_DA_CHAMADA,
+            "messages": [{"role": "user", "content": "escreva o arquivo"}],
+            "tools": [{
+                "name": "write_file",
+                "description": "Escreve um arquivo",
+                "input_schema": {"type": "object", "properties": {}},
+            }],
+        }),
     )
     .await;
 
-    let corpo = post_json(&no, pedido(100, false, true)).await;
-    let escolha = &corpo["choices"][0];
-
-    assert_eq!(escolha["finish_reason"], "length");
-    assert!(
-        escolha["message"]["tool_calls"].is_null(),
-        "uma chamada que nunca fechou não pode virar tool_calls: {}",
-        escolha["message"]["tool_calls"]
-    );
-
-    // O conteúdo entregue termina ANTES da abertura da tag.
-    let conteudo = escolha["message"]["content"].as_str().unwrap_or("");
-    assert_eq!(conteudo, "Vou escrever o arquivo.\n");
-
-    // A folga foi gasta inteira e o descarte é inspecionável.
+    assert_eq!(corpo["stop_reason"], "max_tokens");
+    let blocos = corpo["content"].as_array().expect("content é lista");
+    let ultimo = blocos.last().expect("pelo menos um bloco");
     assert_eq!(
-        corpo["usage"]["completion_tokens"],
-        TETO_DENTRO_DA_CHAMADA + FOLGA_QUE_NAO_FECHA
+        ultimo["type"], "tool_use",
+        "o último bloco tem de ser a chamada cortada: {blocos:?}"
     );
-    assert_eq!(
-        corpo["x_pom"]["tool_call_grace_tokens"],
-        FOLGA_QUE_NAO_FECHA
-    );
-    assert_eq!(corpo["x_pom"]["discarded_tool_call"], true);
+    assert_eq!(ultimo["name"], "write_file");
+    // `input` é objeto por contrato, com o que deu para recuperar.
+    assert_eq!(ultimo["input"]["path"], "/tmp/calc.py");
+    assert!(ultimo["input"]["content"]
+        .as_str()
+        .expect("content parcial")
+        .ends_with("linha_12 = 12 * 2\n"));
+
+    // E nada de marcação crua nos blocos de texto.
+    let texto: String = blocos
+        .iter()
+        .filter_map(|b| b["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(!texto.contains("<tool_call>") && !texto.contains("<function="), "{texto:?}");
+
+    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
     assert_eq!(corpo["x_pom"]["partial"], true);
 }
 
-/// Caso 2 em streaming. O recuo só é possível porque nada de dentro da tag foi
-/// transmitido: `apply_scan_events_openai` engole `ToolCallOpen` e
-/// `ToolCallChunk`, e o corpo fica no scanner até a tag fechar. Se algum dia
-/// isso mudar, este teste é quem avisa - não dá para desenviar um delta.
+// ── Capacidade declarada do nó ───────────────────────────────────────────────
+
+/// **Pedir mais do que o nó declara é recusado, não atendido com menos.**
+///
+/// `max_output_tokens` deixou de cortar em silêncio: ele é a capacidade que
+/// `/v1/models` anuncia como `max_completion_tokens`, e um pedido acima dela é
+/// erro de validação - o que os provedores fazem quando se pede mais do que o
+/// modelo suporta. Atender calado com menos era a mentira que este erro
+/// substitui.
 #[tokio::test]
-async fn the_streamed_tool_call_that_outlives_the_grace_is_discarded() {
-    let no = no(
-        tool_call_script(),
-        8,
-        TETO_DENTRO_DA_CHAMADA,
-        FOLGA_QUE_NAO_FECHA,
+async fn a_request_above_the_declared_capacity_is_refused_not_quietly_shrunk() {
+    let no = no(runaway_script(), 8, 37).await;
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", no.base))
+        .bearer_auth(CHAVE)
+        .json(&pedido(100_000, false, false))
+        .send()
+        .await
+        .expect("resposta HTTP");
+
+    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    let mensagem = corpo["error"]["message"].as_str().expect("mensagem");
+    assert!(mensagem.contains("100000") && mensagem.contains("37"), "{mensagem}");
+    assert!(mensagem.contains("max_completion_tokens"), "{mensagem}");
+    // E nada foi gerado: a recusa acontece antes da geração.
+    assert!(corpo.get("choices").is_none(), "{corpo}");
+}
+
+/// A recusa vale igual no streaming, e antes de o SSE abrir: um stream que já
+/// começou não tem como recusar.
+#[tokio::test]
+async fn a_streaming_request_above_the_declared_capacity_is_refused_before_the_sse() {
+    let no = no(runaway_script(), 8, 37).await;
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", no.base))
+        .bearer_auth(CHAVE)
+        .json(&pedido(100_000, true, false))
+        .send()
+        .await
+        .expect("resposta HTTP");
+
+    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    let corpo = resposta.text().await.expect("corpo");
+    assert!(!corpo.contains("data:"), "o SSE chegou a abrir: {corpo}");
+}
+
+/// E o adaptador Anthropic recusa igual, no vocabulário dele.
+#[tokio::test]
+async fn the_anthropic_adapter_refuses_a_request_above_the_declared_capacity() {
+    let no = no(runaway_script(), 8, 37).await;
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/messages", no.base))
+        .bearer_auth(CHAVE)
+        .json(&json!({
+            "model": "lab",
+            "max_tokens": 100_000,
+            "messages": [{"role": "user", "content": "oi"}],
+        }))
+        .send()
+        .await
+        .expect("resposta HTTP");
+
+    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    assert_eq!(corpo["error"]["type"], "invalid_request_error");
+}
+
+/// O outro lado da mesma regra: pedir **exatamente** o que o nó declara é
+/// atendido, e o teto do cliente é o que encerra.
+#[tokio::test]
+async fn a_request_at_the_declared_capacity_is_served_in_full() {
+    let no = no(runaway_script(), 8, 37).await;
+
+    let corpo = post_json(&no, pedido(37, false, false)).await;
+    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
+    assert_eq!(corpo["usage"]["completion_tokens"], 37);
+    assert_eq!(corpo["x_pom"]["output_limits"]["absolute_max_tokens"], 37);
+    assert_eq!(corpo["x_pom"]["partial"], false);
+}
+
+// ── Orçamento de tarefa ──────────────────────────────────────────────────────
+
+/// **O marcador chega à geração.**
+///
+/// `output_config.task_budget` é o mecanismo que os provedores oferecem no
+/// lugar do transbordo: o servidor injeta um marcador de contagem regressiva
+/// que o modelo enxerga, para ele se organizar e terminar de forma graciosa
+/// dentro do limite. Este teste confere o caminho inteiro - o marcador sai do
+/// adaptador, atravessa o gateway e chega ao quadro de prefill que a cabeça
+/// recebe, que é onde o modelo de verdade o leria.
+#[tokio::test]
+async fn a_task_budget_puts_a_countdown_marker_into_the_generation() {
+    let no = no(plain_script(), 8, 8_192).await;
+
+    let corpo = post_messages(
+        &no,
+        json!({
+            "model": "lab",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "escreva o arquivo"}],
+            "output_config": {"task_budget": {"type": "tokens", "total": 64_000}},
+        }),
     )
     .await;
 
-    let fluxo = post_sse(&no, pedido(100, true, true)).await;
+    let prompt = no.prompt_da_geracao();
+    assert!(prompt.contains("<task_budget>"), "{prompt:?}");
+    assert!(prompt.contains("remaining_tokens: 64000"), "{prompt:?}");
+    assert!(prompt.contains("total_tokens: 64000"), "{prompt:?}");
 
-    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
-    assert!(
-        fluxo.tool_call_deltas().is_empty(),
-        "uma chamada que nunca fechou não pode virar delta de tool_calls"
-    );
-    assert_eq!(fluxo.texto(), "Vou escrever o arquivo.\n");
-
-    let x_pom = &fluxo.ultimo_com_x_pom()["x_pom"];
-    assert_eq!(x_pom["discarded_tool_call"], true);
-    assert_eq!(x_pom["partial"], true);
-    assert_eq!(x_pom["tool_call_grace_tokens"], FOLGA_QUE_NAO_FECHA);
-}
-
-/// **Caso 3 - modelo em laço, sem chamada nenhuma.**
-///
-/// A folga é do fechamento de uma chamada, não um aumento do teto. Sem
-/// `<tool_call>` na saída ela nunca é tocada, mesmo generosa: o teto absoluto
-/// continua sendo o único freio, no token exato de sempre.
-#[tokio::test]
-async fn a_generous_grace_is_never_spent_by_a_runaway_model_with_no_tool_call() {
-    let no = no(runaway_script(), 8, 37, 4_096).await;
-
-    let corpo = post_json(&no, pedido(100_000, false, false)).await;
-    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
-    assert_eq!(corpo["usage"]["completion_tokens"], 37);
-    assert_eq!(corpo["x_pom"]["tool_call_grace_tokens"], 0);
-    assert_eq!(corpo["x_pom"]["discarded_tool_call"], false);
-    assert_eq!(corpo["x_pom"]["partial"], false);
+    // Advisory: não corta nada. Quem corta é `max_tokens`, e o roteiro acabou
+    // antes dele.
+    assert_eq!(corpo["stop_reason"], "end_turn");
+    assert_eq!(corpo["x_pom"]["task_budget"]["total"], 64_000);
     assert_eq!(
-        corpo["x_pom"]["output_limits"]["tool_call_grace_max_tokens"],
-        4_096
+        corpo["x_pom"]["task_budget"]["remaining_at_turn_start"],
+        64_000
+    );
+    assert_eq!(
+        corpo["x_pom"]["task_budget_spent_this_turn"],
+        plain_script().len() as u64
     );
 }
 
-/// O mesmo em streaming: um `length` só, um `[DONE]` só, folga intocada.
+/// `remaining` é o resto vindo de uma requisição anterior: é ele que o
+/// marcador anuncia, não o `total`. É como o cliente costura o laço agêntico
+/// deste lado, já que o nó não guarda estado entre requisições.
 #[tokio::test]
-async fn a_generous_grace_does_not_extend_the_stream_of_a_runaway_model() {
-    let no = no(runaway_script(), 8, 37, 4_096).await;
+async fn a_carried_over_remaining_is_what_the_marker_announces() {
+    let no = no(plain_script(), 8, 8_192).await;
 
-    let fluxo = post_sse(&no, pedido(100_000, true, false)).await;
-    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
-    assert_eq!(fluxo.done_sentinels, 1);
-    assert_eq!(fluxo.texto().matches("e ").count(), 37);
-    assert_eq!(
-        fluxo.ultimo_com_x_pom()["x_pom"]["tool_call_grace_tokens"],
-        0
-    );
+    post_messages(
+        &no,
+        json!({
+            "model": "lab",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "continue"}],
+            "output_config": {
+                "task_budget": {"type": "tokens", "total": 128_000, "remaining": 42_000},
+            },
+        }),
+    )
+    .await;
+
+    let prompt = no.prompt_da_geracao();
+    assert!(prompt.contains("remaining_tokens: 42000"), "{prompt:?}");
+    assert!(prompt.contains("total_tokens: 128000"), "{prompt:?}");
+}
+
+/// **Ausente, nada muda.** O marcador não aparece no prompt, e o `x_pom` não
+/// inventa orçamento nenhum.
+#[tokio::test]
+async fn without_a_task_budget_the_generation_is_untouched() {
+    let no = no(plain_script(), 8, 8_192).await;
+
+    let corpo = post_messages(
+        &no,
+        json!({
+            "model": "lab",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "escreva o arquivo"}],
+        }),
+    )
+    .await;
+
+    let prompt = no.prompt_da_geracao();
+    assert!(!prompt.contains("task_budget"), "{prompt:?}");
+    assert_eq!(prompt, "User: escreva o arquivo");
+    assert!(corpo["x_pom"]["task_budget"].is_null(), "{}", corpo["x_pom"]);
+}
+
+/// O mínimo é o dos provedores: abaixo dele a API responde 400, porque um
+/// orçamento pequeno demais para a tarefa faz o modelo recusar ou parar cedo.
+#[tokio::test]
+async fn a_task_budget_below_the_minimum_is_refused() {
+    let no = no(plain_script(), 8, 8_192).await;
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/messages", no.base))
+        .bearer_auth(CHAVE)
+        .json(&json!({
+            "model": "lab",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "oi"}],
+            "output_config": {"task_budget": {"type": "tokens", "total": 1_000}},
+        }))
+        .send()
+        .await
+        .expect("resposta HTTP");
+
+    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    let mensagem = corpo["error"]["message"].as_str().expect("mensagem");
+    assert!(mensagem.contains("20000"), "{mensagem}");
+}
+
+/// O orçamento de tarefa **nunca corta**: quem corta é `max_tokens`. Um
+/// orçamento generoso não estende o teto nem por um token - se estendesse,
+/// teríamos reinventado a folga que esta tarefa removeu.
+#[tokio::test]
+async fn a_generous_task_budget_never_lifts_the_client_ceiling() {
+    let no = no(runaway_script(), 8, 8_192).await;
+
+    let corpo = post_messages(
+        &no,
+        json!({
+            "model": "lab",
+            "max_tokens": 30,
+            "messages": [{"role": "user", "content": "oi"}],
+            "output_config": {"task_budget": {"type": "tokens", "total": 1_000_000}},
+        }),
+    )
+    .await;
+
+    assert_eq!(corpo["stop_reason"], "max_tokens");
+    assert_eq!(corpo["usage"]["output_tokens"], 30);
 }

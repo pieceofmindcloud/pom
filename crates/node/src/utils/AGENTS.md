@@ -48,18 +48,14 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   lista **vazia** = não procure em lugar nenhum; `shard_dir` em branco cai para
   `<project_root>/models`. `shard_max_gb` limita somente a pasta de fatias e
   assume 100 GB quando falta em um `pom.json` antigo.
-- `max_output_tokens` (`DEFAULT_MAX_OUTPUT_TOKENS = 8192`) - teto **absoluto**
-  de tokens de saída de uma requisição, somando todas as pernas do laço de
-  continuação do gateway. Não é o `max_new_tokens` da implantação, que limita
-  só uma geração de backend; é o freio que impede um modelo em laço de ocupar o
-  nó depois que a perna deixou de encerrar a resposta. Ver
+- `max_output_tokens` (`DEFAULT_MAX_OUTPUT_TOKENS = 8192`) - **capacidade de
+  saída** do nó: quantos tokens uma requisição pode pedir, somando todas as
+  pernas do laço de continuação do gateway. Não é o `max_new_tokens` da
+  implantação, que limita só uma geração de backend; é o freio que impede um
+  modelo em laço de ocupar o nó depois que a perna deixou de encerrar a
+  resposta. É **declarado**, não corte silencioso: `/v1/models` o anuncia como
+  `max_completion_tokens` e um pedido acima dele é HTTP 400. Ver
   `docs/subsystems/inferencia.md`, seção 9.1.
-- `tool_call_grace_tokens` (`DEFAULT_TOOL_CALL_GRACE_TOKENS = 2048`) - folga
-  gasta **só** para fechar uma chamada de ferramenta que já estava aberta
-  quando `max_output_tokens` se esgotou. Não é aumento de teto: sem
-  `<tool_call>` na saída ela nunca é tocada. Zero desliga a folga, e aí o teto
-  volta a poder cortar dentro de uma chamada - o gateway recua até antes da
-  abertura em vez de entregar markup cru. Mesma seção 9.1.
 - `cache_type_k`/`cache_type_v` - tipo numérico do cache K/V para todos os
   contextos llama.cpp desta instalação. O padrão é `f16`; os valores aceitos
   são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e

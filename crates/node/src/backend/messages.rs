@@ -205,6 +205,113 @@ pub struct MessagesRequest {
     pub tools: Vec<ToolDef>,
     #[serde(default)]
     pub stop_sequences: Vec<String>,
+    /// `output_config`, de onde sai o orçamento de tarefa. Ver [`OutputConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
+}
+
+/// O `output_config` da Anthropic, do qual este nó lê só o `task_budget`.
+/// Campos que ele não implementa (`effort`, `format`) são aceitos e ignorados
+/// em vez de derrubarem a requisição - recusar um campo que o cliente manda
+/// para outro modelo não protege ninguém.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OutputConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_budget: Option<TaskBudget>,
+}
+
+/// Orçamento de tarefa: o mecanismo que os provedores oferecem **no lugar** do
+/// transbordo do teto.
+///
+/// Ele não corta nada. Quem corta é `max_tokens`, que é teto imposto e
+/// inviolável. O orçamento é **advisory**: o servidor injeta na geração um
+/// marcador de contagem regressiva que o modelo enxerga, para ele se organizar
+/// e terminar de forma graciosa dentro do limite em vez de ser cortado.
+///
+/// A forma é a da Anthropic, verificada na documentação viva em 2026-08-29
+/// (`platform.claude.com/docs/en/build-with-claude/task-budgets`):
+/// `{"type": "tokens", "total": N, "remaining": M?}`, mínimo de 20.000 no
+/// `total`, `remaining` opcional e igual a `total` quando ausente. Lá ele é
+/// beta, atrás do header `task-budgets-2026-03-13`. Ver
+/// `docs/subsystems/api-http.md`.
+///
+/// **Limite deste nó, declarado:** lá o marcador atravessa o laço agêntico
+/// inteiro e atualiza sozinho a cada turno; aqui ele é injetado uma vez por
+/// requisição, no prompt renderizado, com o `remaining` que a requisição
+/// trouxe. O nó não guarda estado entre requisições, então quem costura o laço
+/// é o cliente - exatamente o caso que a Anthropic documenta para compactação,
+/// em que o `remaining` é passado adiante a cada pedido. `x_pom.task_budget`
+/// devolve o que o turno gastou para o cliente decrementar.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TaskBudget {
+    /// Sempre `"tokens"`. É o discriminador da união, e só esta variante
+    /// existe hoje.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub total: u32,
+    /// O resto do orçamento vindo de uma requisição anterior. Ausente vale
+    /// `total`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<u32>,
+}
+
+/// Mínimo aceito no `total`, espelhando o dos provedores.
+///
+/// Lá ele é por modelo e vale 20.000 em todo modelo que hoje suporta a
+/// funcionalidade; abaixo disso a API responde 400. Um orçamento pequeno
+/// demais para a tarefa faz o modelo recusar ou parar cedo, então recusar o
+/// pedido é melhor do que aceitar um número que só atrapalha.
+pub const TASK_BUDGET_MIN_TOTAL: u32 = 20_000;
+
+impl TaskBudget {
+    /// Quanto o marcador anuncia nesta requisição.
+    pub fn remaining_now(&self) -> u32 {
+        self.remaining.unwrap_or(self.total).min(self.total)
+    }
+
+    fn validation_error(&self) -> Option<String> {
+        if self.kind != "tokens" {
+            return Some(format!(
+                "output_config.task_budget.type precisa ser \"tokens\", não \"{}\"",
+                self.kind
+            ));
+        }
+        if self.total < TASK_BUDGET_MIN_TOTAL {
+            return Some(format!(
+                "output_config.task_budget.total ({}) é menor que o mínimo de {TASK_BUDGET_MIN_TOTAL} tokens",
+                self.total
+            ));
+        }
+        if self.remaining.is_some_and(|r| r > self.total) {
+            return Some(format!(
+                "output_config.task_budget.remaining ({}) não pode ser maior que total ({})",
+                self.remaining.unwrap_or_default(),
+                self.total
+            ));
+        }
+        None
+    }
+}
+
+/// O marcador de contagem regressiva que o modelo enxerga.
+///
+/// **Este texto é aproximação nossa, não o marcador do provedor.** A
+/// documentação (`platform.claude.com/docs/en/build-with-claude/task-budgets`,
+/// lida em 2026-08-29) diz que o marcador é injetado server-side e que "a
+/// contagem regressiva é visível apenas para o modelo" - o texto literal não é
+/// publicado em lugar nenhum, então não há o que espelhar byte a byte. O que é
+/// espelhado é o contrato, esse sim documentado: o modelo vê quanto resta e usa
+/// isso para se organizar, e o marcador nunca corta nada.
+///
+/// **Não verificado:** se um modelo local reage a ele. A bancada prova que o
+/// marcador chega à geração; se o modelo servido sabe usá-lo é medição em
+/// cluster, não coisa que esta função possa afirmar.
+pub fn task_budget_marker(budget: &TaskBudget) -> String {
+    format!(
+        "<task_budget>\nremaining_tokens: {}\ntotal_tokens: {}\n</task_budget>",
+        budget.remaining_now(),
+        budget.total
+    )
 }
 
 fn default_max_tokens() -> u32 {
@@ -268,10 +375,29 @@ pub fn conversation_cache_key(
     key
 }
 
+/// O prompt renderizado, sem orçamento de tarefa. Ver
+/// [`render_prompt_with_budget`] - a chave do cache de prefixo usa esta forma,
+/// porque o marcador muda a cada turno e não é conversa.
 pub fn render_prompt(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
     tools: &[ToolDef],
+) -> String {
+    render_prompt_with_budget(system, messages, tools, None)
+}
+
+/// [`render_prompt`] com o marcador de contagem regressiva do orçamento de
+/// tarefa, quando a requisição trouxe um.
+///
+/// O marcador entra **depois** dos turnos, o mais perto possível do ponto em
+/// que o modelo começa a escrever: é o último contexto que ele lê, e é onde a
+/// contagem regressiva pesa mais. Ele é injetado server-side e nunca aparece
+/// na resposta - só o modelo o vê, como nos provedores.
+pub fn render_prompt_with_budget(
+    system: Option<&SystemPrompt>,
+    messages: &[AnthropicMessage],
+    tools: &[ToolDef],
+    task_budget: Option<&TaskBudget>,
 ) -> String {
     let non_empty: Vec<&AnthropicMessage> = messages
         .iter()
@@ -308,6 +434,10 @@ pub fn render_prompt(
         })
         .collect();
     out.push_str(&turns.join("\n\n"));
+    if let Some(budget) = task_budget {
+        out.push_str("\n\n");
+        out.push_str(&task_budget_marker(budget));
+    }
     out
 }
 
@@ -329,6 +459,19 @@ fn content_blocks(parts: &[OutputPart]) -> (Vec<serde_json::Value>, bool) {
                     "id": format!("toolu_{}", uuid::Uuid::new_v4().simple()),
                     "name": name,
                     "input": arguments,
+                }));
+            }
+            // A chamada que o teto cortou volta como último bloco `tool_use`,
+            // com o `input` incompleto - é isso que a Anthropic devolve, e é
+            // como o cliente detecta o corte (último bloco `tool_use` com
+            // `stop_reason: "max_tokens"`). `saw_tool_call` fica falso: o
+            // turno terminou no teto, não na chamada.
+            OutputPart::ToolCallTruncated(partial) => {
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": format!("toolu_{}", uuid::Uuid::new_v4().simple()),
+                    "name": partial.name,
+                    "input": partial.recovered,
                 }));
             }
         }
@@ -359,7 +502,19 @@ async fn messages(
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
         _ => state.active_model().await,
     };
-    let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+    let task_budget = req
+        .output_config
+        .as_ref()
+        .and_then(|cfg| cfg.task_budget.as_ref());
+    if let Some(error) = task_budget.and_then(TaskBudget::validation_error) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request_error", error);
+    }
+    let prompt = render_prompt_with_budget(
+        req.system.as_ref(),
+        &req.messages,
+        &req.tools,
+        task_budget,
+    );
     // Ver `conversation_cache_key`: a chave do cache vem das mensagens.
     let cache_key = conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
     let requested_max_tokens = req.requested_max_tokens();
@@ -369,6 +524,12 @@ async fn messages(
         .request_output_limit(requested_max_tokens, &prompt)
         .await;
     log_output_limit("/v1/messages", output_limit);
+    // Capacidade declarada: pedir mais do que o nó anuncia é erro de
+    // validação, nunca uma resposta calada e menor. Ver
+    // `OutputTokenLimit::exceeds_declared_capacity`.
+    if let Some(error) = output_limit.exceeds_declared_capacity() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request_error", error);
+    }
     if let Some(error) = output_limit.rejection_reason() {
         return error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -377,6 +538,15 @@ async fn messages(
         );
     }
     let budget = output_limit.budget();
+    // O que o cliente precisa para decrementar o `remaining` do próximo
+    // pedido. Fica só no `x_pom`: a Anthropic não devolve orçamento restante
+    // em `usage`, e copiar o schema dela inclui o que ela **não** manda.
+    let task_budget_report = task_budget.map(|b| {
+        json!({
+            "total": b.total,
+            "remaining_at_turn_start": b.remaining_now(),
+        })
+    });
 
     info!(
         "🤖 /v1/messages model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -388,35 +558,24 @@ async fn messages(
 
     let id = format!("msg_{}", uuid::Uuid::new_v4().simple());
 
+    let params = RespostaParams {
+        state,
+        caller: auth.into_caller(),
+        model,
+        prompt,
+        budget,
+        id,
+        input_tokens,
+        stops,
+        cache_key: Some(cache_key),
+        request_details,
+        output_limit,
+        task_budget_report,
+    };
     if req.stream {
-        stream_response(
-            state,
-            auth.into_caller(),
-            model,
-            prompt,
-            budget,
-            id,
-            input_tokens,
-            stops,
-            Some(cache_key),
-            request_details.clone(),
-            output_limit,
-        )
+        stream_response(params)
     } else {
-        blocking_response(
-            state,
-            auth.into_caller(),
-            model,
-            prompt,
-            budget,
-            id,
-            input_tokens,
-            stops,
-            Some(cache_key),
-            request_details,
-            output_limit,
-        )
-        .await
+        blocking_response(params).await
     }
 }
 
@@ -432,20 +591,11 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
 /// `max_tokens` aqui é o **total** da requisição, não o teto de uma perna do
 /// laço de continuação: perna esgotada é meio de resposta, não fim de turno.
 /// Mesmo raciocínio de `openai::finish_reason`, no vocabulário da Anthropic:
-/// a folga só é gasta com uma chamada aberta, então passar do teto com a
-/// chamada fechada quer dizer que o turno terminou na chamada; recuo por folga
-/// esgotada é `max_tokens`, porque o que acabou foi o orçamento.
-fn stop_reason(
-    summary: &GenSummary,
-    max_tokens: u32,
-    saw_tool_call: bool,
-    discarded_tool_call: bool,
-) -> &'static str {
-    if discarded_tool_call {
-        "max_tokens"
-    } else if saw_tool_call && summary.tokens_generated > max_tokens {
-        "tool_use"
-    } else if summary.tokens_generated >= max_tokens {
+/// atingir o teto é parada terminal e vem primeiro, mesmo com um `tool_use` na
+/// saída - a chamada que o teto pegou aberta está incompleta, e é `max_tokens`
+/// que diz ao cliente para repetir o pedido com um teto maior.
+fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
+    if summary.tokens_generated >= max_tokens {
         "max_tokens"
     } else if saw_tool_call {
         "tool_use"
@@ -456,7 +606,11 @@ fn stop_reason(
     }
 }
 
-async fn blocking_response(
+/// Tudo que as duas formas de resposta - bloqueante e SSE - precisam saber.
+///
+/// As duas recebem exatamente a mesma coisa, então a lista viaja junta em vez
+/// de ser digitada duas vezes e crescer de um lado só.
+struct RespostaParams {
     state: GatewayState,
     caller: crate::reqlog::Caller,
     model: String,
@@ -468,7 +622,26 @@ async fn blocking_response(
     cache_key: Option<String>,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
-) -> Response {
+    /// `x_pom.task_budget`: o orçamento de tarefa que a requisição trouxe,
+    /// para o cliente decrementar no próximo pedido. `None` quando ausente.
+    task_budget_report: Option<serde_json::Value>,
+}
+
+async fn blocking_response(params: RespostaParams) -> Response {
+    let RespostaParams {
+        state,
+        caller,
+        model,
+        prompt,
+        budget,
+        id,
+        input_tokens,
+        stops,
+        cache_key,
+        request_details,
+        output_limit,
+        task_budget_report,
+    } = params;
     match crate::gateway::generate_blocking_with_stops(
         "/v1/messages",
         caller,
@@ -486,16 +659,17 @@ async fn blocking_response(
     .await
     {
         Ok((text, summary)) => {
-            // Mesmo recuo do adaptador OpenAI: teto esgotado com uma chamada
-            // aberta descarta o fragmento em vez de degradá-lo em texto cru.
+            // Mesma regra do adaptador OpenAI: teto esgotado com uma chamada
+            // aberta devolve a chamada estruturada e incompleta, nunca
+            // marcação crua e nunca o descarte.
             let truncated = summary.finish_reason.as_deref() == Some("length");
-            let (parts, discarded_tool_call) = if truncated {
+            let (parts, truncated_tool_call) = if truncated {
                 parse_output_truncated(&text)
             } else {
                 (parse_output(&text), false)
             };
             let (content, saw_tool_call) = content_blocks(&parts);
-            let reason = stop_reason(&summary, budget.total, saw_tool_call, discarded_tool_call);
+            let reason = stop_reason(&summary, budget.total, saw_tool_call);
             (
                 cors_headers(),
                 Json(json!({
@@ -526,11 +700,9 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "timings": summary.timings,
-                        // Folga gasta e descarte deliberado também são
-                        // resposta parcial - ver `openai::blocking_response`.
-                        "partial": summary.partial
-                            || discarded_tool_call
-                            || summary.tokens_generated > budget.total,
+                        // Uma chamada cortada ao meio também é resposta
+                        // parcial - ver `openai::blocking_response`.
+                        "partial": summary.partial || truncated_tool_call,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
@@ -538,10 +710,13 @@ async fn blocking_response(
                         // Quantas gerações de backend a resposta costurou.
                         // `1` é uma só - ver `GenSummary::legs`.
                         "continuation_legs": summary.legs,
-                        "discarded_tool_call": discarded_tool_call,
-                        "tool_call_grace_tokens": summary
-                            .tokens_generated
-                            .saturating_sub(budget.total),
+                        "truncated_tool_call": truncated_tool_call,
+                        // Presente só quando a requisição trouxe orçamento de
+                        // tarefa. Ver `TaskBudget`.
+                        "task_budget": task_budget_report,
+                        // O que este turno gastou do orçamento, para o cliente
+                        // decrementar o `remaining` do próximo pedido.
+                        "task_budget_spent_this_turn": summary.tokens_generated,
                     },
                 })),
             )
@@ -551,19 +726,21 @@ async fn blocking_response(
     }
 }
 
-fn stream_response(
-    state: GatewayState,
-    caller: crate::reqlog::Caller,
-    model: String,
-    prompt: String,
-    budget: crate::gateway::OutputBudget,
-    id: String,
-    input_tokens: u32,
-    stops: Vec<String>,
-    cache_key: Option<String>,
-    request_details: serde_json::Value,
-    output_limit: OutputTokenLimit,
-) -> Response {
+fn stream_response(params: RespostaParams) -> Response {
+    let RespostaParams {
+        state,
+        caller,
+        model,
+        prompt,
+        budget,
+        id,
+        input_tokens,
+        stops,
+        cache_key,
+        request_details,
+        output_limit,
+        task_budget_report,
+    } = params;
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
         "/v1/messages",
@@ -581,7 +758,15 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, model, budget.total, input_tokens, output_limit);
+    let stream = sse_stream(
+        rx,
+        id,
+        model,
+        budget.total,
+        input_tokens,
+        output_limit,
+        task_budget_report,
+    );
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -679,6 +864,46 @@ fn apply_scan_events(
                     out,
                 );
             }
+            // A chamada cortada pelo teto: mesma sequência de blocos, com o
+            // `partial_json` inacabado - que é literalmente o que a Anthropic
+            // transmite enquanto o `input` está sendo escrito. `saw_tool_call`
+            // fica falso: o `message_delta` tem de dizer `max_tokens`.
+            ScanEvent::ToolCallTruncated(partial) => {
+                if let Some(idx) = text_open.take() {
+                    out.push((
+                        "content_block_stop",
+                        json!({ "type": "content_block_stop", "index": idx }),
+                    ));
+                }
+                let idx = *next_index;
+                *next_index += 1;
+                let id = format!("toolu_{}", uuid::Uuid::new_v4().simple());
+                out.push((
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": {
+                            "type": "tool_use", "id": id, "name": partial.name, "input": {},
+                        },
+                    }),
+                ));
+                out.push((
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": partial.arguments,
+                        },
+                    }),
+                ));
+                out.push((
+                    "content_block_stop",
+                    json!({ "type": "content_block_stop", "index": idx }),
+                ));
+            }
         }
     }
 }
@@ -697,6 +922,7 @@ fn sse_stream(
     max_tokens: u32,
     input_tokens: u32,
     output_limit: OutputTokenLimit,
+    task_budget_report: Option<serde_json::Value>,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     enum Phase {
         Opening,
@@ -720,6 +946,8 @@ fn sse_stream(
         text_open: Option<u32>,
         next_index: u32,
         saw_tool_call: bool,
+        /// Ver `blocking_response`.
+        task_budget_report: Option<serde_json::Value>,
     }
 
     fn ev(name: &'static str, data: serde_json::Value) -> Event {
@@ -739,6 +967,7 @@ fn sse_stream(
         text_open: None,
         next_index: 0,
         saw_tool_call: false,
+        task_budget_report,
     };
 
     futures::stream::unfold(state, |mut s| async move {
@@ -797,7 +1026,7 @@ fn sse_stream(
                     }
                     Some(GenEvent::Done(summary)) => {
                         let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
-                        let (finish_events, discarded_tool_call) =
+                        let (finish_events, truncated_tool_call) =
                             if summary.finish_reason.as_deref() == Some("length") {
                                 scanner.finish_truncated()
                             } else {
@@ -820,12 +1049,7 @@ fn sse_stream(
                                 json!({ "type": "content_block_stop", "index": idx }),
                             ));
                         }
-                        let reason = stop_reason(
-                            &summary,
-                            s.max_tokens,
-                            s.saw_tool_call,
-                            discarded_tool_call,
-                        );
+                        let reason = stop_reason(&summary, s.max_tokens, s.saw_tool_call);
                         s.queue.push_back(ev(
                             "message_delta",
                             json!({
@@ -838,10 +1062,10 @@ fn sse_stream(
                                 "x_pom": {
                                     "output_limits": s.output_limit,
                                     "continuation_legs": summary.legs,
-                                    "discarded_tool_call": discarded_tool_call,
-                                    "tool_call_grace_tokens": summary
-                                        .tokens_generated
-                                        .saturating_sub(s.output_limit.effective),
+                                    "truncated_tool_call": truncated_tool_call,
+                                    "task_budget": s.task_budget_report,
+                                    "task_budget_spent_this_turn":
+                                        summary.tokens_generated,
                                 },
                             }),
                         ));
@@ -1089,20 +1313,16 @@ mod tests {
             trace: None,
         };
         // Complete tool call within the budget remains tool_use.
-        assert_eq!(stop_reason(&summary(5), 100, true, false), "tool_use");
-        // Exhausting the budget wins over a parsed call in both blocking and
-        // streaming responses.
-        assert_eq!(stop_reason(&summary(100), 100, true, false), "max_tokens");
+        assert_eq!(stop_reason(&summary(5), 100, true), "tool_use");
+        // Atingir o teto é parada terminal e vence uma chamada na saída: a
+        // chamada que o teto pegou aberta está incompleta.
+        assert_eq!(stop_reason(&summary(100), 100, true), "max_tokens");
         // Plain text cut by the budget reports max_tokens.
-        assert_eq!(stop_reason(&summary(100), 100, false, false), "max_tokens");
+        assert_eq!(stop_reason(&summary(100), 100, false), "max_tokens");
         // Plain text ending before the budget uses the normal stop sequence.
         let mut stopped = summary(5);
         stopped.finish_reason = Some("stop".into());
-        assert_eq!(stop_reason(&stopped, 100, false, false), "stop_sequence");
-        // Ver `openai::finish_reason_reflects_the_limit_and_tool_calls`: os
-        // dois adaptadores decidem igual, em vocabulários diferentes.
-        assert_eq!(stop_reason(&summary(110), 100, true, false), "tool_use");
-        assert_eq!(stop_reason(&summary(150), 100, false, true), "max_tokens");
+        assert_eq!(stop_reason(&stopped, 100, false), "stop_sequence");
     }
 
     // ── content_blocks ───────────────────────────────────────────────────────

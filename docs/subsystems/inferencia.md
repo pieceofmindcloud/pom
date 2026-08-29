@@ -1055,38 +1055,61 @@ chamada de ferramenta acontece sobre a saída **completa** nos dois - o
 `TagScanner` só é fechado (`finish()`) no fim de verdade -, porque um pedaço
 intermediário é tag inacabada por construção.
 
-**O teto absoluto é obrigatório.** Sem ele um modelo em laço ocuparia o nó
-indefinidamente, já que a perna deixou de encerrar a resposta.
+**O teto pedido pelo cliente é imposto e inviolável.** Nada o ultrapassa, por
+motivo nenhum, nem uma chamada de ferramenta aberta no token do corte.
+Atingi-lo é **parada terminal**, com o motivo de parada correspondente. É a
+regra dos dois provedores, verificada na documentação viva em 2026-08-29:
+`max_tokens` é "um teto por resposta imposto, do qual o modelo não tem
+conhecimento", e ao ser atingido a saída "trunca no meio e exige nova
+tentativa". Não existe continuação, folga ou transbordo em nenhuma das duas
+APIs.
+
+Houve aqui uma folga (`tool_call_grace_tokens`, padrão 2048) que deixava a
+geração passar do teto para fechar uma chamada aberta. Ela foi **removida**: o
+que os provedores oferecem no lugar do transbordo é o [orçamento de
+tarefa](api-http.md#orçamento-de-tarefa), que avisa o modelo em vez de esticar
+o teto.
+
+**A capacidade do nó é declarada, não um corte silencioso.**
 `max_output_tokens` no `pom.json` (padrão `DEFAULT_MAX_OUTPUT_TOKENS = 8192`) é
-esse freio, e é ele que aparece como `absolute_max_tokens` no
-`x_pom.output_limits`. Zero ali é recusa nomeada, não corte.
+o freio contra o modelo em laço, aparece como `absolute_max_tokens` no
+`x_pom.output_limits` e é anunciado em `/v1/models` como
+`max_completion_tokens`. Um pedido **acima** dele é recusado com erro de
+validação (400), como os provedores fazem quando se pede mais do que o modelo
+suporta - nunca atendido calado com menos. Zero ali é recusa nomeada.
 
-**O teto absoluto não corta dentro de uma chamada de ferramenta.** Fechada a
-fronteira da perna, o mesmo defeito reaparecia na de fora: o orçamento total
-acabava com um `<tool_call>` aberto e o fragmento voltava degradado em texto
-solto, sem `tool_calls`. O teto passou a ser conferido em **ponto seguro**.
-`gateway::ToolCallGate` acompanha a saída com o mesmo `TagScanner` dos
-adaptadores - então gateway e adaptador nunca discordam sobre onde uma chamada
-começa - e enquanto ela está aberta o teto não encerra nada: o laço segue,
-gastando no máximo `tool_call_grace_tokens` do `pom.json` (padrão
-`DEFAULT_TOOL_CALL_GRACE_TOKENS = 2048`).
+O contexto que sobrou continua apertando o teto **sem** recusar, e isso é
+deliberado: ele sai de uma estimativa de tokens do prompt (`estimate_tokens`),
+e recusar por estimativa rejeitaria pedido válido. `x_pom.output_limits` conta
+a verdade, que é o canal certo para um número aproximado.
 
-São três desfechos, e a bancada cobre os três nos dois modos:
+**O corte dentro de uma chamada devolve a chamada estruturada e incompleta.**
+Esta é a forma dos dois provedores, apurada na documentação viva em 2026-08-29.
+A Anthropic devolve o último bloco como `tool_use` com o `input` incompleto e
+`stop_reason: "max_tokens"`, e manda o cliente conferir exatamente esse par
+para repetir o pedido com um `max_tokens` maior. A OpenAI devolve
+`tool_calls[].function.arguments` - documentado como string que "nem sempre é
+JSON válido", a validar antes de executar - junto de `finish_reason: "length"`.
+Nenhum dos dois descarta a chamada, e nenhum dos dois a degrada em texto.
+
+`TagScanner::finish_truncated` recupera o que dá: o nome da ferramenta e os
+parâmetros que já saíram, incluindo o que estava sendo escrito no momento do
+corte. Os argumentos saem numa string JSON **inacabada**, cortada onde o modelo
+foi cortado - ela não parseia de propósito, e é isso que faz um cliente que
+ignore o motivo de parada falhar em vez de executar meia chamada. O `input` da
+Anthropic, que é tipado como objeto, leva o mesmo conteúdo já recuperado.
 
 | situação | o cliente recebe |
 |---|---|
-| chamada fecha dentro da folga | a chamada **completa**, `finish_reason: "tool_calls"`, `x_pom.partial: true` |
-| folga esgota com a chamada aberta | conteúdo até **antes** da abertura, `finish_reason: "length"`, `x_pom.discarded_tool_call: true` |
-| nenhuma chamada aberta | inalterado: o teto corta no token exato, folga intocada |
+| corte dentro da chamada, nome já emitido | a chamada **estruturada e incompleta**, `length`/`max_tokens`, `x_pom.truncated_tool_call: true` |
+| corte antes de o nome fechar | só o texto anterior à abertura; um nome pela metade não é ferramenta |
+| nenhuma chamada aberta | texto truncado, `length`/`max_tokens`, nada mais muda |
 
-A folga **não** é aumento de teto: ela só é gasta com uma chamada aberta, e
-nunca ultrapassa o contexto que sobrou. O recuo do segundo caso
-(`TagScanner::finish_truncated`) só é possível porque o scanner segura o corpo
-da chamada até a tag fechar - `ToolCallOpen` e `ToolCallChunk` não viram delta
-nenhum -, então em streaming não há nada para desenviar. `x_pom` conta a
-verdade: `tool_call_grace_tokens` diz quanto da folga foi gasto,
-`discarded_tool_call` diz se houve descarte, e `partial` é `true` sempre que o
-orçamento pedido foi ultrapassado ou conteúdo foi descartado.
+Marcação crua nunca é resposta: o scanner segura o corpo da chamada até a tag
+fechar - `ToolCallOpen` e `ToolCallChunk` não viram delta nenhum -, então em
+streaming não há nada vazado para desenviar. `x_pom` conta a verdade:
+`truncated_tool_call` diz se o corte caiu dentro de uma chamada, e `partial` é
+`true` sempre que isso aconteceu ou houve perda de transporte.
 
 **Por que não há reprefill.** O laço não reabre geração: ele continua a que já
 está aberta. A alternativa - encerrar a perna, reabrir com o texto gerado como

@@ -204,6 +204,43 @@ pub(crate) enum ScanEvent {
     /// plain text — malformed model output must degrade gracefully, never
     /// crash or vanish.
     ToolCallClose(Result<(String, serde_json::Value), String>),
+    /// A chamada que o teto de saída cortou ao meio. Não é escolha do modelo:
+    /// o orçamento do cliente acabou com a tag ainda aberta. Ver
+    /// [`TagScanner::finish_truncated`] e [`PartialCall`].
+    ToolCallTruncated(PartialCall),
+}
+
+/// Uma chamada de ferramenta interrompida pelo teto de saída, na forma em que
+/// os dois provedores a devolvem.
+///
+/// OpenAI e Anthropic **não descartam** a chamada cortada e **não** a degradam
+/// em texto: ela volta estruturada, com os argumentos incompletos, ao lado do
+/// motivo de parada terminal (`finish_reason: "length"` /
+/// `stop_reason: "max_tokens"`). A orientação dos dois é a mesma - o cliente
+/// confere o motivo de parada e repete o pedido com um teto maior, sem
+/// executar nada.
+///
+/// Apurado na documentação viva em 2026-08-29:
+/// - `platform.claude.com/docs/en/build-with-claude/handling-stop-reasons` -
+///   com `stop_reason: "max_tokens"`, o cliente confere se o **último bloco**
+///   é um `tool_use` incompleto e repete com `max_tokens` maior.
+/// - `developers.openai.com/api/reference/…/chat` - `function.arguments` é
+///   documentado como string que nem sempre é JSON válido, a validar antes de
+///   executar.
+///
+/// Ver `docs/subsystems/inferencia.md` (9.1).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PartialCall {
+    pub(crate) name: String,
+    /// Os argumentos como a OpenAI os entrega: uma string JSON **inacabada**,
+    /// cortada onde o modelo foi cortado. É de propósito que ela não parseia -
+    /// é o que faz um cliente que ignore o motivo de parada falhar em vez de
+    /// executar meia chamada.
+    pub(crate) arguments: String,
+    /// O objeto com o que deu para recuperar, para o `input` do bloco
+    /// `tool_use` da Anthropic, que é tipado como objeto. Vazio quando o corte
+    /// caiu antes do primeiro parâmetro fechar.
+    pub(crate) recovered: serde_json::Value,
 }
 
 enum ScanState {
@@ -229,15 +266,6 @@ impl TagScanner {
             pending: String::new(),
             state: ScanState::Outside,
         }
-    }
-
-    /// `true` enquanto uma chamada de ferramenta está aberta e não fechou.
-    ///
-    /// É o que deixa o teto de saída ser conferido em **ponto seguro**: o
-    /// gateway não encerra a resposta aqui dentro, porque encerrar aqui é o
-    /// que produzia uma chamada pela metade.
-    pub(crate) fn inside_call(&self) -> bool {
-        matches!(self.state, ScanState::Inside(_, _))
     }
 
     pub(crate) fn feed(&mut self, chunk: &str) -> Vec<ScanEvent> {
@@ -342,27 +370,189 @@ impl TagScanner {
     }
 
     /// Como [`TagScanner::finish`], mas para o fim imposto de fora: o teto de
-    /// saída se esgotou no meio da geração.
+    /// saída pedido pelo cliente se esgotou no meio da geração.
     ///
-    /// Com uma chamada **aberta e não fechada**, o fragmento é descartado: o
-    /// scanner recua até antes da abertura, que é o único ponto que ele conhece
-    /// com certeza. Degradar o fragmento em texto entregaria ao cliente
-    /// `<tool_call><function=…>` cru como se fosse a resposta do assistente -
-    /// e o cliente não teria como distinguir isso de prosa. Prever se a chamada
-    /// caberia no orçamento é impossível; saber onde ela começou, não.
+    /// Com uma chamada **aberta e não fechada**, ela sai estruturada e
+    /// incompleta - [`ScanEvent::ToolCallTruncated`] - que é o que OpenAI e
+    /// Anthropic fazem. Nem degradar em texto (marcação crua entregue como
+    /// prosa, o defeito original) nem descartar: o cliente precisa ver que
+    /// **aquela** chamada não coube, para repetir o pedido com um teto maior.
+    /// Ver [`PartialCall`].
     ///
-    /// Nada é descartado calado: o `bool` de retorno é `true` quando houve
-    /// descarte, e é o que faz `x_pom.partial` dizer a verdade.
+    /// Cortada cedo demais para ter nome, não há chamada nenhuma a nomear e
+    /// nada sai: um nome que o modelo não terminou de escrever não é
+    /// ferramenta, é palpite.
+    ///
+    /// O `bool` de retorno é `true` sempre que o corte caiu dentro de uma
+    /// chamada, com nome ou sem, e é o que faz `x_pom` dizer a verdade.
     ///
     /// Fora de uma chamada nada muda - texto truncado continua sendo texto, e
     /// um prefixo pendente de tag (`<tool_c`) nunca chegou a abrir chamada
     /// nenhuma.
     pub(crate) fn finish_truncated(self) -> (Vec<ScanEvent>, bool) {
         match self.state {
-            ScanState::Inside(_, _) => (Vec::new(), true),
+            ScanState::Inside(raw, kind) => {
+                let body = format!("{raw}{}", self.pending);
+                match parse_partial_call_body(&body, kind) {
+                    Some(partial) => (vec![ScanEvent::ToolCallTruncated(partial)], true),
+                    None => (Vec::new(), true),
+                }
+            }
             _ => (self.finish(), false),
         }
     }
+}
+
+/// O que dá para recuperar do corpo de uma chamada que o teto cortou.
+///
+/// Espelha [`parse_call_body`], mas tolerando o fim ausente: o `</function>`
+/// que nunca veio, o `</parameter>` que ficou aberto, o JSON sem a chave de
+/// fechamento. `None` quando nem o nome da ferramenta chegou a sair inteiro.
+fn parse_partial_call_body(raw: &str, kind: CallKind) -> Option<PartialCall> {
+    match kind {
+        // `<function>NAME` sem fechamento: `NAME` pode estar pela metade, e
+        // um nome pela metade não identifica ferramenta nenhuma.
+        CallKind::BareFunction => None,
+        CallKind::Wrapped => {
+            let trimmed = raw.trim_start();
+            if trimmed.starts_with("<function=") {
+                parse_partial_function_call_xml(trimmed)
+            } else {
+                parse_partial_function_call_json(trimmed)
+            }
+        }
+    }
+}
+
+/// Serializa os pares recuperados na forma exata em que a OpenAI entrega uma
+/// chamada cortada: um objeto JSON **sem fechar**, interrompido onde o modelo
+/// foi interrompido. `partial` é o par cujo valor ainda estava sendo escrito -
+/// ele entra sem a aspa de fechamento.
+fn unterminated_arguments(
+    complete: &[(String, serde_json::Value)],
+    partial: Option<(&str, &str)>,
+) -> String {
+    let mut out = String::from("{");
+    for (i, (name, value)) in complete.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&serde_json::Value::String(name.clone()).to_string());
+        out.push(':');
+        out.push_str(&value.to_string());
+    }
+    if let Some((name, value)) = partial {
+        if !complete.is_empty() {
+            out.push(',');
+        }
+        out.push_str(&serde_json::Value::String(name.to_string()).to_string());
+        out.push(':');
+        // A aspa de abertura entra, a de fechamento não: o valor não acabou.
+        let escaped = serde_json::Value::String(value.to_string()).to_string();
+        out.push_str(&escaped[..escaped.len() - 1]);
+    }
+    out
+}
+
+/// `<function=NAME>` com zero ou mais `<parameter=P>v</parameter>` completos e,
+/// possivelmente, um último parâmetro aberto que o corte pegou no meio.
+fn parse_partial_function_call_xml(raw: &str) -> Option<PartialCall> {
+    let rest = raw.strip_prefix("<function=")?;
+    // Sem o `>` o próprio nome está pela metade.
+    let (name, mut cursor) = rest.split_once('>')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut complete: Vec<(String, serde_json::Value)> = Vec::new();
+    let mut partial: Option<(String, String)> = None;
+    loop {
+        let trimmed = cursor.trim_start();
+        let Some(after_open) = trimmed.strip_prefix("<parameter=") else {
+            break;
+        };
+        let Some((pname, after_name)) = after_open.split_once('>') else {
+            // `<parameter=pa` - nem o nome do parâmetro fechou.
+            break;
+        };
+        let pname = pname.trim().to_string();
+        match after_name.find("</parameter>") {
+            Some(close) => {
+                let value_raw = after_name[..close].trim();
+                complete.push((pname, decode_parameter_value(value_raw)));
+                cursor = &after_name[close + "</parameter>".len()..];
+            }
+            None => {
+                partial = Some((pname, after_name.trim_start().to_string()));
+                break;
+            }
+        }
+    }
+
+    let mut recovered = serde_json::Map::new();
+    for (pname, value) in &complete {
+        recovered.insert(pname.clone(), value.clone());
+    }
+    if let Some((pname, value)) = &partial {
+        recovered.insert(pname.clone(), serde_json::Value::String(value.clone()));
+    }
+
+    Some(PartialCall {
+        name: name.to_string(),
+        arguments: unterminated_arguments(
+            &complete,
+            partial.as_ref().map(|(p, v)| (p.as_str(), v.as_str())),
+        ),
+        recovered: serde_json::Value::Object(recovered),
+    })
+}
+
+/// A forma Hermes (`{"name":…,"arguments":{…`) cortada. O nome só serve se a
+/// string dele fechou; o resto do corpo já é, ele próprio, JSON inacabado - e
+/// é entregue como está, que é exatamente o que a OpenAI devolve.
+fn parse_partial_function_call_json(raw: &str) -> Option<PartialCall> {
+    let name = complete_json_string_field(raw, "name")?;
+    let arguments = match raw.find("\"arguments\"") {
+        Some(at) => {
+            let after = &raw[at + "\"arguments\"".len()..];
+            let after = after.trim_start();
+            let after = after.strip_prefix(':').unwrap_or(after);
+            after.trim_start().to_string()
+        }
+        None => String::from("{"),
+    };
+    // Um corpo que por acaso parseia inteiro ainda é chamada cortada: a tag de
+    // fechamento não veio, então mais argumentos podiam estar a caminho.
+    let recovered = serde_json::from_str::<serde_json::Value>(&arguments)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    Some(PartialCall {
+        name,
+        arguments,
+        recovered,
+    })
+}
+
+/// O valor de uma chave de string JSON, **só** quando a string fechou. Um
+/// nome cortado ao meio não identifica ferramenta nenhuma, então `None`.
+fn complete_json_string_field(raw: &str, field: &str) -> Option<String> {
+    let key = format!("\"{field}\"");
+    let at = raw.find(&key)?;
+    let after = raw[at + key.len()..].trim_start();
+    let after = after.strip_prefix(':')?.trim_start();
+    let after = after.strip_prefix('"')?;
+    let mut value = String::new();
+    let mut chars = after.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(value).filter(|v| !v.is_empty()),
+            '\\' => value.push(chars.next()?),
+            _ => value.push(c),
+        }
+    }
+    None
 }
 
 /// Longest suffix of `s` that is also a strict prefix of `tag` — how much of
@@ -452,6 +642,14 @@ fn parse_bare_function_call(raw: &str) -> Option<(String, serde_json::Value)> {
 /// internal ones, since the template explicitly allows multi-line values.
 /// `None` on any structural mismatch — missing `>`, unclosed `</function>`
 /// or `</parameter>` — so the caller can fall back to literal text.
+/// O valor de um `<parameter=…>`: JSON quando o texto é JSON, string crua
+/// quando não é. O parser completo e o parcial dividem esta função para nunca
+/// discordarem sobre o tipo de um mesmo valor.
+fn decode_parameter_value(value_raw: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(value_raw)
+        .unwrap_or_else(|_| serde_json::Value::String(value_raw.to_string()))
+}
+
 fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
     let raw = raw.trim();
     let rest = raw.strip_prefix("<function=")?;
@@ -474,9 +672,7 @@ fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
         let pname = pname.trim();
         let close_idx = after_name.find("</parameter>")?;
         let value_raw = after_name[..close_idx].trim();
-        let value = serde_json::from_str::<serde_json::Value>(value_raw)
-            .unwrap_or_else(|_| serde_json::Value::String(value_raw.to_string()));
-        args.insert(pname.to_string(), value);
+        args.insert(pname.to_string(), decode_parameter_value(value_raw));
         cursor = &after_name[close_idx + "</parameter>".len()..];
     }
     Some((name.to_string(), serde_json::Value::Object(args)))
@@ -491,6 +687,9 @@ pub(crate) enum OutputPart {
         name: String,
         arguments: serde_json::Value,
     },
+    /// A chamada que o teto do cliente cortou ao meio, estruturada e
+    /// incompleta - ver [`PartialCall`].
+    ToolCallTruncated(PartialCall),
 }
 
 fn events_to_parts(events: Vec<ScanEvent>) -> Vec<OutputPart> {
@@ -504,6 +703,9 @@ fn events_to_parts(events: Vec<ScanEvent>) -> Vec<OutputPart> {
                 parts.push(OutputPart::ToolCall { name, arguments })
             }
             ScanEvent::ToolCallClose(Err(raw)) => parts.push(OutputPart::Text(raw)),
+            ScanEvent::ToolCallTruncated(partial) => {
+                parts.push(OutputPart::ToolCallTruncated(partial))
+            }
         }
     }
     parts
@@ -535,9 +737,9 @@ pub(crate) fn parse_output(text: &str) -> Vec<OutputPart> {
 }
 
 /// [`parse_output`] para uma saída cortada pelo teto de tokens, e não pelo
-/// modelo: uma chamada aberta e não fechada é descartada em vez de degradar em
-/// texto. O `bool` diz se houve descarte - ver
-/// [`TagScanner::finish_truncated`].
+/// modelo: uma chamada aberta e não fechada volta **estruturada e incompleta**
+/// em vez de degradar em texto. O `bool` diz se o corte caiu dentro de uma
+/// chamada - ver [`TagScanner::finish_truncated`].
 pub(crate) fn parse_output_truncated(text: &str) -> (Vec<OutputPart>, bool) {
     let mut scanner = TagScanner::new();
     let mut events = scanner.feed(text);
@@ -825,6 +1027,131 @@ mod tests {
     fn parse_output_falls_back_to_text_when_name_is_missing() {
         let raw = r#"<tool_call>{"arguments":{}}</tool_call>"#;
         assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    // ── o corte do teto dentro de uma chamada ───────────────────────────────
+
+    /// A forma que os dois provedores devolvem: chamada estruturada, nome
+    /// recuperado, argumentos numa string JSON **inacabada**. Ela não parseia
+    /// de propósito - é o que faz um cliente que ignore o motivo de parada
+    /// falhar em vez de executar meia chamada.
+    #[test]
+    fn a_call_cut_mid_parameter_keeps_the_name_and_the_unterminated_arguments() {
+        let raw = "<tool_call>\n<function=Write>\n<parameter=path>\n/tmp/a.py\n</parameter>\n\
+                   <parameter=content>\nlinha 1\nlinha 2";
+        let (parts, cut_inside) = parse_output_truncated(raw);
+        assert!(cut_inside);
+        let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
+            panic!("esperava chamada cortada, veio {parts:?}");
+        };
+        assert_eq!(partial.name, "Write");
+        assert_eq!(
+            partial.arguments,
+            r#"{"path":"/tmp/a.py","content":"linha 1\nlinha 2"#
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&partial.arguments).is_err(),
+            "argumentos de chamada cortada não podem parsear"
+        );
+        // E o objeto recuperado, para o `input` da Anthropic, é JSON válido
+        // com o que deu para recuperar.
+        assert_eq!(partial.recovered["path"], "/tmp/a.py");
+        assert_eq!(partial.recovered["content"], "linha 1\nlinha 2");
+    }
+
+    /// Corte exatamente na fronteira de um `</parameter>`: não há parâmetro
+    /// pela metade, mas a chamada continua incompleta - a chave do objeto
+    /// nunca fecha, porque mais parâmetros podiam estar a caminho.
+    #[test]
+    fn a_call_cut_between_parameters_still_returns_unterminated_arguments() {
+        let raw = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n";
+        let (parts, cut_inside) = parse_output_truncated(raw);
+        assert!(cut_inside);
+        let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
+            panic!("esperava chamada cortada, veio {parts:?}");
+        };
+        assert_eq!(partial.arguments, r#"{"command":"ls""#);
+        assert_eq!(partial.recovered["command"], "ls");
+    }
+
+    /// Corte antes do primeiro parâmetro: o nome já saiu, os argumentos não.
+    #[test]
+    fn a_call_cut_before_any_parameter_keeps_the_name_and_an_empty_object() {
+        let raw = "<tool_call>\n<function=Bash>\n";
+        let (parts, _) = parse_output_truncated(raw);
+        let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
+            panic!("esperava chamada cortada, veio {parts:?}");
+        };
+        assert_eq!(partial.name, "Bash");
+        assert_eq!(partial.arguments, "{");
+        assert_eq!(partial.recovered, json!({}));
+    }
+
+    /// Cortada cedo demais para ter nome: nada sai. Um nome que o modelo não
+    /// terminou de escrever não é ferramenta, é palpite - e degradá-lo em
+    /// texto entregaria marcação crua como se fosse prosa.
+    #[test]
+    fn a_call_cut_before_the_name_closed_yields_nothing_executable() {
+        for raw in [
+            "<tool_call>\n<function=Wri",
+            "<tool_call>\n",
+            "<function>rea",
+        ] {
+            let (parts, cut_inside) = parse_output_truncated(raw);
+            assert!(cut_inside, "{raw:?} abriu chamada");
+            assert!(parts.is_empty(), "{raw:?} produziu {parts:?}");
+        }
+    }
+
+    /// O texto antes da abertura é resposta do modelo e sobrevive ao corte.
+    #[test]
+    fn text_before_a_cut_call_survives_and_never_carries_raw_markup() {
+        let raw = "Vou escrever.\n<tool_call>\n<function=Write>\n<parameter=p>\nx";
+        let (parts, _) = parse_output_truncated(raw);
+        assert_eq!(parts[0], OutputPart::Text("Vou escrever.\n".into()));
+        assert!(matches!(parts[1], OutputPart::ToolCallTruncated(_)));
+        for part in &parts {
+            if let OutputPart::Text(t) = part {
+                assert!(!t.contains("<tool_call>") && !t.contains("<function="), "{t:?}");
+            }
+        }
+    }
+
+    /// A forma Hermes cortada: o nome sai se a string dele fechou, e o corpo
+    /// dos argumentos já é, ele próprio, JSON inacabado.
+    #[test]
+    fn a_cut_hermes_style_call_keeps_the_name_and_the_raw_partial_json() {
+        let raw = r#"<tool_call>{"name":"Bash","arguments":{"command":"ls -"#;
+        let (parts, _) = parse_output_truncated(raw);
+        let OutputPart::ToolCallTruncated(partial) = &parts[0] else {
+            panic!("esperava chamada cortada, veio {parts:?}");
+        };
+        assert_eq!(partial.name, "Bash");
+        assert_eq!(partial.arguments, r#"{"command":"ls -"#);
+        assert_eq!(partial.recovered, json!({}));
+    }
+
+    /// Fora de uma chamada nada muda: texto cortado continua texto, e um
+    /// prefixo de tag pendente nunca chegou a abrir chamada nenhuma.
+    #[test]
+    fn truncation_outside_a_call_behaves_exactly_like_a_normal_finish() {
+        for raw in ["prosa cortada ao meio", "prosa <tool_c"] {
+            let (parts, cut_inside) = parse_output_truncated(raw);
+            assert!(!cut_inside, "{raw:?}");
+            assert_eq!(parts, parse_output(raw), "{raw:?}");
+        }
+    }
+
+    /// A chamada que **fechou** antes do corte não é chamada cortada: o corte
+    /// caiu depois dela, em texto.
+    #[test]
+    fn a_call_that_closed_before_the_cut_is_a_complete_call() {
+        let raw = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n\
+                   </function>\n</tool_call>depois";
+        let (parts, cut_inside) = parse_output_truncated(raw);
+        assert!(!cut_inside);
+        assert!(matches!(&parts[0], OutputPart::ToolCall { name, .. } if name == "Bash"));
+        assert_eq!(parts[1], OutputPart::Text("depois".into()));
     }
 
     #[test]

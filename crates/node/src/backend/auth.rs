@@ -240,7 +240,6 @@ mod tests {
             node_name: None,
             huggingface_token: None,
             max_output_tokens: crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
-            tool_call_grace_tokens: crate::config::DEFAULT_TOOL_CALL_GRACE_TOKENS,
         };
 
         assert!(is_valid_inference_token(&cfg, "cluster-secret"));
@@ -279,7 +278,6 @@ mod tests {
             node_name: None,
             huggingface_token: None,
             max_output_tokens: crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
-            tool_call_grace_tokens: crate::config::DEFAULT_TOOL_CALL_GRACE_TOKENS,
         };
 
         assert_eq!(inference_token(&cfg).as_deref(), Some("cluster-secret"));

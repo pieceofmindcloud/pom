@@ -165,13 +165,19 @@ quebra o produto inteiro.
   Ele nunca foi teto do backend - o `infer_server` não o conhece. É o teto de
   uma **perna** do laço de continuação do gateway, que atravessa a perna na
   mesma sessão de KV e no mesmo SSE, sem reprefill e sem o cliente ver nada.
-  Quem limita a requisição é `max_output_tokens` do `pom.json`, e só ele produz
+  Quem limita a requisição é o `max_tokens` do cliente, e só ele produz
   `finish_reason: "length"`. Vazar o `length` de uma perna fazia o harness largar
-  a chamada de ferramenta pela metade. E o total **nunca corta dentro de uma
-  chamada de ferramenta**: com a tag aberta o laço segue até fechá-la, gastando
-  no máximo `tool_call_grace_tokens`; se nem a folga fechar, o gateway recua
-  até antes da abertura - markup cru no `content` nunca é resposta.
-  → `inferencia.md` (9.1)
+  a chamada de ferramenta pela metade. → `inferencia.md` (9.1)
+- **O teto pedido pelo cliente é imposto e inviolável, e atingi-lo é parada
+  terminal.** Nada o ultrapassa, nem uma chamada de ferramenta aberta no token
+  do corte - é o que OpenAI e Anthropic fazem, e o que existe no lugar do
+  transbordo é o **orçamento de tarefa** (`output_config.task_budget`), que
+  avisa o modelo em vez de esticar o teto. Corte dentro de uma chamada devolve
+  a chamada **estruturada e incompleta**, como os dois provedores: markup cru
+  no `content` nunca é resposta, e descartar também não.
+  `max_output_tokens` do `pom.json` é **capacidade declarada** - anunciada em
+  `/v1/models` e recusada com 400 quando o pedido a excede, nunca atendida
+  calada com menos. → `inferencia.md` (9.1), `api-http.md`
 - **A geração nunca acontece na sequência de KV do prompt.** Cada sessão de um
   peer tem duas sequências: o prefill escreve na do prompt, a geração numa cópia
   dela, e o fim do turno apaga a cópia inteira. Só remoção **total** de

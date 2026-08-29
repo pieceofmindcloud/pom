@@ -179,28 +179,22 @@ pub struct Config {
     /// devolve pela API: a interface recebe apenas estado e máscara.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
-    /// Teto absoluto de tokens de saída por requisição, somando todas as
-    /// pernas do laço de continuação do gateway.
+    /// Capacidade de saída do nó: quantos tokens uma requisição pode pedir,
+    /// somando todas as pernas do laço de continuação do gateway.
     ///
     /// O `max_new_tokens` da implantação continua limitando **uma** geração de
-    /// backend; este número limita a **requisição inteira**, que o gateway
+    /// backend; este número é o teto da **requisição inteira**, que o gateway
     /// costura de várias pernas na mesma conexão (ver
     /// `gateway::output_token_limit`). Sem ele um modelo que entra em laço
     /// ocuparia o nó indefinidamente: é o único freio que sobra depois que a
     /// perna deixou de encerrar a resposta.
+    ///
+    /// Ele é **capacidade declarada**, não corte silencioso: `/v1/models` o
+    /// anuncia como `max_completion_tokens` e um pedido acima dele é recusado
+    /// com erro de validação, como fazem OpenAI e Anthropic. Ver
+    /// `gateway::OutputTokenLimit::exceeds_declared_capacity`.
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: u32,
-    /// Folga de tokens concedida **apenas** para fechar uma chamada de
-    /// ferramenta que já começou quando `max_output_tokens` se esgotou.
-    ///
-    /// O teto absoluto deixou de cortar no meio de um `<tool_call>`: ele é
-    /// conferido em ponto seguro, fora de uma chamada aberta. Enquanto a
-    /// chamada estiver aberta o laço segue, e esta folga é o que impede que
-    /// "seguir até fechar" vire "seguir para sempre" - um modelo que abre a
-    /// tag e nunca a fecha solta o nó quando a folga acaba, e aí o gateway
-    /// recua até antes da abertura em vez de entregar marcação crua.
-    #[serde(default = "default_tool_call_grace_tokens")]
-    pub tool_call_grace_tokens: u32,
 }
 
 impl fmt::Debug for Config {
@@ -261,19 +255,6 @@ pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
 
 fn default_max_output_tokens() -> u32 {
     DEFAULT_MAX_OUTPUT_TOKENS
-}
-
-/// Folga padrão para fechar uma chamada de ferramenta já aberta.
-///
-/// Conservadora de propósito: um quarto do teto padrão é espaço de sobra para
-/// fechar as tags de uma chamada que só não coube por pouco, e curto o
-/// bastante para um modelo que abriu `<tool_call>` e entrou em laço soltar o
-/// nó logo. Zero desliga a folga: o teto volta a poder cortar dentro de uma
-/// chamada, e o gateway recua na hora.
-pub const DEFAULT_TOOL_CALL_GRACE_TOKENS: u32 = 2_048;
-
-fn default_tool_call_grace_tokens() -> u32 {
-    DEFAULT_TOOL_CALL_GRACE_TOKENS
 }
 
 /// Put a peer address the operator typed into the form the resolver accepts.
@@ -566,7 +547,6 @@ mod tests {
             node_name: None,
             huggingface_token: None,
             max_output_tokens: default_max_output_tokens(),
-            tool_call_grace_tokens: default_tool_call_grace_tokens(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -597,7 +577,6 @@ mod tests {
             node_name: None,
             huggingface_token: None,
             max_output_tokens: default_max_output_tokens(),
-            tool_call_grace_tokens: default_tool_call_grace_tokens(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -696,7 +675,6 @@ mod tests {
             node_name: None,
             huggingface_token: Some("hf_super_secret".into()),
             max_output_tokens: default_max_output_tokens(),
-            tool_call_grace_tokens: default_tool_call_grace_tokens(),
         };
 
         std::fs::write(&path, b"old config").unwrap();
@@ -792,7 +770,6 @@ mod tests {
             node_name: None,
             huggingface_token: None,
             max_output_tokens: default_max_output_tokens(),
-            tool_call_grace_tokens: default_tool_call_grace_tokens(),
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

@@ -99,9 +99,11 @@ ele é o teto de uma **perna** do laço de continuação, que o gateway atravess
 sem fechar o SSE (ver `inferencia.md`, seção 9.1). Se o total for reduzido, o
 gateway registra a redução e a devolve em `x_pom.output_limits`
 (`requested_max_tokens`, `effective_max_tokens`, `deployment_max_tokens`,
-`context_available_tokens`, `absolute_max_tokens`, `leg_max_tokens`,
-`tool_call_grace_max_tokens`); se o
-contexto não deixar nenhum token, responde HTTP 413 antes de abrir o SSE.
+`context_available_tokens`, `absolute_max_tokens`, `leg_max_tokens`); se o
+contexto não deixar nenhum token, responde HTTP 413 antes de abrir o SSE. Um
+pedido **acima** do `max_output_tokens` é recusado com HTTP 400 - ele é a
+capacidade que `/v1/models` anuncia como `max_completion_tokens`, e atender
+calado com menos é o que esse erro substitui.
 `x_pom.continuation_legs` diz quantas pernas a resposta costurou - `1` é uma
 geração só. Assim, uma saída que esgota o orçamento **total** recebe
 `finish_reason: "length"`, inclusive se contiver uma chamada de ferramenta já
@@ -109,19 +111,20 @@ reconhecida, e a auditoria registra esse término como `incomplete` (`partial`
 fica reservado para falha de transporte com texto salvo). Uma perna esgotada
 nunca produz `length`: o cliente não tem como distinguir a costura, e era
 justamente esse `length` intermediário que fazia um harness largar a chamada de
-ferramenta pela metade. O total, por sua vez, nunca corta **dentro** de uma
-chamada de ferramenta: enquanto ela está aberta o gateway continua o laço,
-gastando no máximo `tool_call_grace_tokens`, e `x_pom.tool_call_grace_tokens`
-diz quanto disso foi usado. Chamada que fecha na folga é `tool_calls`; folga
-esgotada sem fechar é `length` com `x_pom.discarded_tool_call: true` e o
-conteúdo cortado antes da abertura da tag. Nos dois casos `x_pom.partial` é
-`true`, porque o orçamento pedido foi ultrapassado. O scanner compartilhado
+ferramenta pela metade. O total, por sua vez, é **inviolável**: nada o
+ultrapassa, nem uma chamada de ferramenta aberta no token do corte. Quando o
+corte cai dentro de uma chamada, ela volta **estruturada e incompleta** -
+`tool_calls[].function.arguments` com a string JSON inacabada na OpenAI, um
+bloco `tool_use` final com o `input` incompleto na Anthropic -, e
+`x_pom.truncated_tool_call` é `true`, junto de `x_pom.partial`. É a forma dos
+dois provedores: o cliente lê o motivo de parada terminal e repete o pedido com
+um teto maior, sem executar nada. O scanner compartilhado
 reconhece os marcadores declarados em
 `CALL_FORMATS`, preserva texto anterior à chamada, transforma todas as chamadas
 completas em `tool_calls` e, no SSE, em deltas indexados. Um marcador incompleto
 que o **modelo** deixou pela metade volta como conteúdo literal para não
-desaparecer; um que o **teto** cortou é descartado, e é essa a diferença entre
-`TagScanner::finish` e `finish_truncated`. Todas as
+desaparecer; um que o **teto** cortou volta estruturado, e é essa a diferença
+entre `TagScanner::finish` e `finish_truncated`. Todas as
 respostas válidas levam a extensão `x_pom` (fora do schema) com a prova de
 execução distribuída e o
 objeto próprio `timings`; o campo OpenAI `stop`
@@ -153,6 +156,59 @@ efetivo e o de uma perna; `x_pom.continuation_legs`, quantas pernas foram
 costuradas; `x_pom.timings` usa a mesma convenção do OpenAI; uma saída cortada
 pelo orçamento **total** usa `stop_reason: "max_tokens"`, e uma perna esgotada
 nunca.
+
+#### Orçamento de tarefa
+
+`output_config.task_budget` é o mecanismo que os provedores oferecem **no lugar
+do transbordo** do teto: em vez de deixar a geração passar de `max_tokens`, ele
+informa o modelo do orçamento para que ele se organize e termine de forma
+graciosa dentro do limite. A forma é a da Anthropic, verificada na documentação
+viva em 2026-08-29 (`platform.claude.com/docs/en/build-with-claude/task-budgets`):
+
+```json
+{
+  "output_config": {
+    "task_budget": {"type": "tokens", "total": 64000, "remaining": 42000}
+  }
+}
+```
+
+- `type` é sempre `"tokens"`; qualquer outro valor é HTTP 400.
+- `total` é o orçamento do laço agêntico inteiro. O mínimo é
+  `TASK_BUDGET_MIN_TOTAL = 20000`, o mesmo dos provedores, e abaixo dele a
+  resposta é HTTP 400 - orçamento pequeno demais para a tarefa faz o modelo
+  recusar ou parar cedo.
+- `remaining` é opcional e vale `total` quando ausente: é o resto vindo de uma
+  requisição anterior.
+- Campos de `output_config` que este nó não implementa (`effort`, `format`) são
+  aceitos e ignorados; recusar um campo que o cliente manda para outro modelo
+  não protege ninguém.
+
+Ele é **advisory e nunca corta**. Quem corta é `max_tokens`, que é teto imposto
+e inviolável - um `total` de um milhão não estende o teto por um token, e a
+bancada afirma isso. O servidor injeta na geração um marcador de contagem
+regressiva que só o modelo enxerga (`messages::task_budget_marker`), no fim do
+prompt renderizado, logo antes de o modelo começar a escrever. O marcador nunca
+aparece na resposta.
+
+**A forma do marcador é deste nó.** A Anthropic documenta que injeta um
+marcador server-side e que ele é visível só para o modelo; o texto literal não
+é publicado, então não há o que espelhar. O que é espelhado é o contrato.
+
+**Limite declarado.** Lá o marcador atravessa o laço agêntico inteiro e
+atualiza sozinho a cada turno, contando o que o modelo vê (pensamento, chamadas
+de ferramenta, resultados, saída) e não o histórico reenviado. Aqui ele é
+injetado **uma vez por requisição**, com o `remaining` que a requisição trouxe:
+o nó não guarda estado entre requisições, então quem costura o laço é o cliente
+- exatamente o caso que a Anthropic documenta para compactação, em que o
+`remaining` é passado adiante a cada pedido. `x_pom.task_budget` devolve
+`{total, remaining_at_turn_start}` e `x_pom.task_budget_spent_this_turn` diz o
+que o turno gastou, para o cliente decrementar. Nada disso entra em `usage`: a
+Anthropic não devolve orçamento restante ali, e copiar o schema dela inclui o
+que ela **não** manda.
+
+**Não verificado:** se um modelo local reage ao marcador. A bancada prova que
+ele chega à geração; se o modelo servido sabe usá-lo é medição em cluster.
 
 ### `/admin/*`
 

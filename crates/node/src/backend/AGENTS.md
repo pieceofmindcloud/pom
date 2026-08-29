@@ -118,16 +118,20 @@ behind an auth extractor.
   redução é registrada e devolvida em `x_pom.output_limits`
   (`requested`/`effective`/`deployment`/`context_available`/`absolute`/`leg`),
   e `x_pom.continuation_legs` diz quantas pernas a resposta costurou.
-  Streaming e blocking usam a mesma ordem de finish-reason, então orçamento
-  **total** esgotado é `length` mesmo com chamada de ferramenta lida; perna
-  esgotada nunca é. A exceção é a folga: passar do total só acontece com uma
-  chamada aberta, então uma chamada que fecha **dentro** da folga é
-  `tool_calls`, e folga esgotada sem fechar é `length` com
-  `x_pom.discarded_tool_call: true`. A linha de auditoria desse resultado é `incomplete`,
+  Streaming e blocking usam a mesma ordem de finish-reason, e ela não tem
+  exceção: orçamento **total** esgotado é `length`/`max_tokens` mesmo com
+  chamada de ferramenta lida, porque atingir o teto é parada terminal; perna
+  esgotada nunca é. Quando o corte cai **dentro** de uma chamada, ela volta
+  estruturada e incompleta (`x_pom.truncated_tool_call: true`), que é o que os
+  dois provedores devolvem - nunca markup cru, nunca descarte. A linha de
+  auditoria desse resultado é `incomplete`,
   enquanto falha de transporte continua `partial`. `/v1/models` expõe
   `context_length` e o `top_provider.max_completion_tokens`
   compatível com OpenRouter, que é o teto da **requisição**
-  (`min(n_ctx, max_output_tokens)`), não o de uma perna.
+  (`min(n_ctx, max_output_tokens)`), não o de uma perna - e é a capacidade que
+  um pedido maior faz o nó recusar com HTTP 400, em vez de atender com menos.
+  `messages.rs` aceita `output_config.task_budget` (advisory, nunca corta) e
+  injeta o marcador de contagem regressiva no prompt; ver `api-http.md`.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
   and finish-reason rules, with `x_pom.output_limits` and
   `x_pom.continuation_legs` on blocking responses and the final streaming
@@ -244,13 +248,13 @@ behind an auth extractor.
   orçamento total antes do EOS em cada ramo de decodificação;
   `audit_status_for_summary` registra `length` como `incomplete`, e reserva
   `partial` para falha de transporte com texto salvo.
-  **O total é conferido em ponto seguro.** `ToolCallGate` acompanha a saída com
-  o mesmo `TagScanner` dos adaptadores e, enquanto uma chamada de ferramenta
-  está aberta, o teto vale `total + grace` (`tool_call_grace_tokens` do
-  `pom.json`, padrão 2048) em vez de `total`: o laço segue até a chamada
-  fechar. Só a folga esgotada corta lá dentro, e aí o adaptador recua até antes
-  da abertura (`TagScanner::finish_truncated`) em vez de entregar markup cru -
-  possível porque o scanner segura o corpo da chamada até a tag fechar. Ver
+  **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
+  aberta no token do corte - houve aqui uma folga que ultrapassava
+  (`tool_call_grace_tokens`), e ela foi removida porque nenhum dos dois
+  provedores transborda. Quando o corte cai dentro de uma chamada, o adaptador
+  a devolve estruturada e incompleta (`TagScanner::finish_truncated`), com os
+  argumentos numa string JSON inacabada - possível porque o scanner segura o
+  corpo da chamada até a tag fechar, então nada vazou. Ver
   `docs/subsystems/inferencia.md` (9.1) e a bancada `continuation_lab.rs`.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective

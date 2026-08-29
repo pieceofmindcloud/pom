@@ -547,12 +547,15 @@ async fn messages(
         render_prompt_with_budget(req.system.as_ref(), &req.messages, &req.tools, task_budget);
     // A chave acompanha o valor do marcador: orçamento diferente não pode
     // reutilizar KV produzido para outro prompt.
-    let cache_key = conversation_cache_key_with_budget(
-        req.system.as_ref(),
-        &req.messages,
-        &req.tools,
-        task_budget,
-    );
+    let cache_key = match task_budget {
+        Some(task_budget) => conversation_cache_key_with_budget(
+            req.system.as_ref(),
+            &req.messages,
+            &req.tools,
+            Some(task_budget),
+        ),
+        None => conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools),
+    };
     let requested_max_tokens = req.requested_max_tokens();
     let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);

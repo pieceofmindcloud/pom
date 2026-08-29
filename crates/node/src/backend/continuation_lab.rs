@@ -427,6 +427,23 @@ async fn no_with_context(
     absolute_ceiling: u32,
     n_ctx: u32,
 ) -> No {
+    no_with_peer_capacities(
+        script,
+        deployment_max_new_tokens,
+        absolute_ceiling,
+        n_ctx,
+        Vec::new(),
+    )
+    .await
+}
+
+async fn no_with_peer_capacities(
+    script: Vec<String>,
+    deployment_max_new_tokens: u32,
+    absolute_ceiling: u32,
+    n_ctx: u32,
+    capacities: Vec<crate::network::RuntimeCapacity>,
+) -> No {
     static LOG: std::sync::Once = std::sync::Once::new();
     LOG.call_once(|| {
         let _ = tracing_subscriber::fmt()
@@ -474,6 +491,13 @@ async fn no_with_context(
             p.end_layer = i as u32;
             p.total_layers = 2;
             p.inference_frame_capabilities = caps.clone();
+            p.runtime_capacity = Some(capacities.get(i).copied().unwrap_or(
+                crate::network::RuntimeCapacity {
+                    n_ctx,
+                    max_new_tokens: deployment_max_new_tokens,
+                    max_output_tokens: absolute_ceiling,
+                },
+            ));
             p
         })
         .collect();
@@ -879,6 +903,61 @@ async fn a_large_html_tool_call_fits_a_declared_50000_token_capacity() {
         .contains("data-line=\"846\""));
 }
 
+/// O cenário do captain com a capacidade que o deployment pretende publicar:
+/// 32000 tokens de uma requisição em contexto efetivo de 100000. O HTML não
+/// pode sumir apenas porque atravessou várias pernas de 1024 tokens.
+#[tokio::test]
+async fn a_large_html_tool_call_at_32000_and_context_100k_is_complete() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 32_000, 100_000).await;
+
+    let corpo = post_json(&no, pedido(32_000, false, true)).await;
+    let escolha = &corpo["choices"][0];
+    assert_eq!(escolha["finish_reason"], "tool_calls");
+    assert!(
+        corpo["usage"]["completion_tokens"]
+            .as_u64()
+            .expect("completion_tokens")
+            < 32_000
+    );
+    assert_eq!(
+        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
+        32_000
+    );
+    assert_eq!(corpo["x_pom"]["partial"], false);
+
+    let bruto = escolha["message"]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments é string JSON");
+    let argumentos: Value = serde_json::from_str(bruto).expect("chamada completa é JSON");
+    assert!(argumentos["content"]
+        .as_str()
+        .expect("content")
+        .contains("data-line=\"846\""));
+}
+
+/// E o mesmo limite é verificável no caminho incremental que o Pi consome:
+/// concatenar os fragmentos de argumentos ainda produz a chamada inteira.
+#[tokio::test]
+async fn a_large_html_tool_call_at_32000_streams_complete_arguments() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 32_000, 100_000).await;
+
+    let fluxo = post_sse(&no, pedido(32_000, true, true)).await;
+
+    assert_eq!(fluxo.finish_reasons(), vec!["tool_calls".to_string()]);
+    assert_eq!(fluxo.done_sentinels, 1);
+    let argumentos: String = fluxo
+        .fragmentos_de_argumento()
+        .iter()
+        .map(|(_, fragment)| fragment.as_str())
+        .collect();
+    let argumentos: Value = serde_json::from_str(&argumentos).expect("arguments é JSON");
+    assert!(argumentos["content"]
+        .as_str()
+        .expect("content")
+        .contains("data-line=\"846\""));
+    assert_eq!(fluxo.ultimo_com_x_pom()["x_pom"]["partial"], false);
+}
+
 /// A mesma reprodução em 8192 tokens não pode ser "resolvida" com folga:
 /// o cliente recebe exatamente o teto, a chamada volta estruturada e os
 /// argumentos ficam deliberadamente incompletos para não serem executados.
@@ -904,6 +983,81 @@ async fn a_large_openai_tool_call_at_8192_is_structured_and_terminal() {
         .expect("arguments é string JSON");
     assert!(!argumentos.contains("<tool_call>"), "marcação crua vazou");
     assert!(serde_json::from_str::<Value>(argumentos).is_err());
+}
+
+#[tokio::test]
+async fn a_large_openai_tool_call_at_5000_is_structured_and_terminal_non_streaming() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+
+    let corpo = post_json(&no, pedido(5_000, false, true)).await;
+    let escolha = &corpo["choices"][0];
+    assert_eq!(escolha["finish_reason"], "length");
+    assert_eq!(corpo["usage"]["completion_tokens"], 5_000);
+    assert_eq!(corpo["x_pom"]["partial"], true);
+    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
+    assert!(!corpo["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("<tool_call>"));
+
+    let argumentos = escolha["message"]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments é string JSON");
+    assert!(serde_json::from_str::<Value>(argumentos).is_err());
+    assert!(!argumentos.contains("data-line=\"846\""));
+}
+
+/// A reprodução em streaming do write grande do Pi: quando o teto terminal
+/// corta o parâmetro HTML, o cliente ainda recebe um `tool_calls` estruturado
+/// e pode guardar o prefixo recuperável para uma nova tentativa. O fluxo não
+/// pode fechar sem argumentos nem despejar `<tool_call>` em `content`.
+#[tokio::test]
+async fn a_large_openai_tool_call_cut_in_stream_is_recoverable() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+
+    let fluxo = post_sse(&no, pedido(8_192, true, true)).await;
+
+    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(fluxo.done_sentinels, 1);
+    assert!(!fluxo.texto().contains("<tool_call>"), "{}", fluxo.texto());
+
+    let deltas = fluxo.tool_call_deltas();
+    assert!(!deltas.is_empty(), "o corte perdeu a chamada estruturada");
+    assert_eq!(
+        deltas[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
+        "write_file"
+    );
+    let arguments: String = fluxo
+        .fragmentos_de_argumento()
+        .iter()
+        .map(|(_, fragment)| fragment.as_str())
+        .collect();
+    assert!(arguments.starts_with(r#"{"path":"/tmp/index.html","content":"#));
+    assert!(serde_json::from_str::<Value>(&arguments).is_err());
+    assert!(!arguments.contains("data-line=\"846\""));
+
+    let x_pom = &fluxo.ultimo_com_x_pom()["x_pom"];
+    assert_eq!(x_pom["truncated_tool_call"], true);
+    assert_eq!(x_pom["partial"], true);
+}
+
+/// O mesmo caminho com o limite local de 5000 tokens reproduz o corte visto
+/// pelo Pi: não existe uma continuação escondida depois do evento terminal.
+#[tokio::test]
+async fn a_large_openai_tool_call_at_5000_has_one_recoverable_terminal_cut() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+
+    let fluxo = post_sse(&no, pedido(5_000, true, true)).await;
+
+    assert_eq!(fluxo.finish_reasons(), vec!["length".to_string()]);
+    assert_eq!(fluxo.done_sentinels, 1);
+    assert!(!fluxo.texto().contains("<tool_call>"));
+    assert!(!fluxo.fragmentos_de_argumento().is_empty());
+    assert!(!fluxo
+        .fragmentos_de_argumento()
+        .iter()
+        .any(|(_, fragment)| fragment.contains("data-line=\"846\"")));
+    assert_eq!(fluxo.ultimo_com_x_pom()["x_pom"]["partial"], true);
 }
 
 /// O adaptador Anthropic expõe a mesma chamada grande como bloco `tool_use`:
@@ -1145,6 +1299,150 @@ async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
     assert_eq!(modelo["max_tokens"], 50_000);
     assert_eq!(modelo["context_length"], 100_000);
     assert_eq!(modelo["top_provider"]["max_completion_tokens"], 50_000);
+}
+
+/// A capacidade da implantação é a capacidade do pipeline inteiro: um peer
+/// que ainda anuncia 8192 não pode ser escondido por outro que já reiniciou
+/// com 32000. A lista e a validação da requisição têm de usar o menor valor
+/// entre todos os peers vivos da implantação.
+#[tokio::test]
+async fn deployment_capacity_is_aggregated_across_all_live_peers() {
+    let no = no_with_peer_capacities(
+        plain_script(),
+        32_000,
+        32_000,
+        100_000,
+        vec![
+            crate::network::RuntimeCapacity {
+                n_ctx: 100_000,
+                max_new_tokens: 32_000,
+                max_output_tokens: 32_000,
+            },
+            crate::network::RuntimeCapacity {
+                n_ctx: 8_192,
+                max_new_tokens: 8_192,
+                max_output_tokens: 8_192,
+            },
+        ],
+    )
+    .await;
+
+    let models: Value = reqwest::Client::new()
+        .get(format!("{}/v1/models", no.base))
+        .bearer_auth(CHAVE)
+        .send()
+        .await
+        .expect("resposta HTTP")
+        .json()
+        .await
+        .expect("corpo JSON");
+    assert_eq!(models["data"][0]["context_length"], 8_192);
+    assert_eq!(
+        models["data"][0]["top_provider"]["max_completion_tokens"],
+        8_192
+    );
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", no.base))
+        .bearer_auth(CHAVE)
+        .json(&pedido(32_000, false, false))
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    assert!(corpo["error"]["message"]
+        .as_str()
+        .expect("mensagem")
+        .contains("8192"));
+}
+
+/// Depois que todos os peers reiniciam com a nova configuração, o gateway
+/// deixa de anunciar a capacidade antiga e aceita 32000 sem confundi-la com
+/// o teto por perna.
+#[tokio::test]
+async fn deployment_capacity_updates_only_after_all_peers_report_ready() {
+    let no = no_with_peer_capacities(
+        plain_script(),
+        32_000,
+        32_000,
+        100_000,
+        vec![
+            crate::network::RuntimeCapacity {
+                n_ctx: 100_000,
+                max_new_tokens: 32_000,
+                max_output_tokens: 32_000,
+            },
+            crate::network::RuntimeCapacity {
+                n_ctx: 100_000,
+                max_new_tokens: 32_000,
+                max_output_tokens: 32_000,
+            },
+        ],
+    )
+    .await;
+
+    let models: Value = reqwest::Client::new()
+        .get(format!("{}/v1/models", no.base))
+        .header("x-api-key", API_CHAVE)
+        .send()
+        .await
+        .expect("resposta HTTP")
+        .json()
+        .await
+        .expect("corpo JSON");
+    assert_eq!(models["data"][0]["context_length"], 100_000);
+    assert_eq!(
+        models["data"][0]["top_provider"]["max_completion_tokens"],
+        32_000
+    );
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", no.base))
+        .header("x-api-key", API_CHAVE)
+        .json(&pedido(32_000, false, false))
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
+}
+
+/// Reproduz exatamente o diagnóstico do captain: elevar `max_new_tokens` da
+/// implantação para 32000 não altera o `max_output_tokens` declarado como
+/// 8192 no nó. O primeiro é uma perna; o segundo é a capacidade publicada e
+/// imposta à requisição.
+#[tokio::test]
+async fn a_32000_deployment_leg_does_not_hide_an_8192_node_capacity() {
+    let no = no_with_context(plain_script(), 32_000, 8_192, 100_000).await;
+
+    let models: Value = reqwest::Client::new()
+        .get(format!("{}/v1/models", no.base))
+        .bearer_auth(CHAVE)
+        .send()
+        .await
+        .expect("resposta HTTP")
+        .json()
+        .await
+        .expect("corpo JSON");
+    assert_eq!(models["data"][0]["context_length"], 100_000);
+    assert_eq!(
+        models["data"][0]["top_provider"]["max_completion_tokens"],
+        8_192
+    );
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", no.base))
+        .bearer_auth(CHAVE)
+        .json(&pedido(32_000, false, false))
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    assert!(corpo["error"]["message"]
+        .as_str()
+        .expect("mensagem")
+        .contains("8192"));
 }
 
 /// OpenCode envia o nome novo do limite e pode acrescentar campos opcionais

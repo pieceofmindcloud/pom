@@ -373,22 +373,6 @@ struct ModelProviderLimits {
     max_completion_tokens: Option<u32>,
 }
 
-/// O que um cliente pode pedir, anunciado em `/v1/models`.
-///
-/// `max_completion_tokens` é o teto da **requisição**, não o de uma geração de
-/// backend: o `max_new_tokens` da implantação virou o teto de uma perna do laço
-/// de continuação e já não limita a resposta. Anunciá-lo aqui faria o cliente
-/// pedir menos do que este nó entrega.
-async fn model_limits(state: &GatewayState) -> (Option<u32>, Option<u32>) {
-    let ceiling = state.absolute_output_ceiling().await;
-    state
-        .runtime
-        .config()
-        .await
-        .map(|cfg| (Some(cfg.n_ctx), Some(cfg.n_ctx.min(ceiling))))
-        .unwrap_or((None, None))
-}
-
 fn model_object(
     id: String,
     created: i64,
@@ -421,16 +405,33 @@ fn model_object(
 /// `<modelo>@<deploy_id>`. É o que dá ao cliente como escolher **qual**
 /// implantação atende quando o mesmo modelo está no ar mais de uma vez; o nome
 /// pelado continua valendo e vai para a que quem monta o pipeline escolher.
-pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
-    let peers = state.all_peers().await;
-    let mut ids: Vec<String> = peers
+fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
+    let alive_models: std::collections::BTreeSet<String> = peers
         .iter()
-        .filter(|p| !p.model.is_empty())
+        .filter(|p| p.is_alive() && !p.model.is_empty())
         .map(|p| p.model.clone())
         .collect();
-    for p in &peers {
-        if !p.model.is_empty() && !p.deploy_id.is_empty() {
-            ids.push(format!("{}@{}", p.model, p.deploy_id));
+    let mut ids: Vec<String> = alive_models
+        .into_iter()
+        .filter(|model| {
+            peers
+                .iter()
+                .filter(|p| p.is_alive() && p.model == *model)
+                .all(|p| p.runtime_capacity.is_some())
+        })
+        .collect();
+    let deployments: std::collections::BTreeSet<(String, String)> = peers
+        .iter()
+        .filter(|p| p.is_alive() && !p.model.is_empty() && !p.deploy_id.is_empty())
+        .map(|p| (p.model.clone(), p.deploy_id.clone()))
+        .collect();
+    for (model, deploy_id) in deployments {
+        let ready = peers
+            .iter()
+            .filter(|p| p.is_alive() && p.model == model && p.deploy_id == deploy_id)
+            .all(|p| p.runtime_capacity.is_some());
+        if ready {
+            ids.push(format!("{model}@{deploy_id}"));
         }
     }
     ids.sort();
@@ -438,14 +439,26 @@ pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
     ids
 }
 
+pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
+    let peers = state.all_peers().await;
+    model_ids_from_peers(&peers)
+}
+
 async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> impl IntoResponse {
     let created = chrono::Utc::now().timestamp();
-    let (context_length, max_completion_tokens) = model_limits(&state).await;
-    let data: Vec<ModelObject> = model_ids(&state)
-        .await
-        .into_iter()
-        .map(|id| model_object(id, created, context_length, max_completion_tokens))
-        .collect();
+    let peers = state.all_peers().await;
+    let mut data = Vec::new();
+    for id in model_ids_from_peers(&peers) {
+        let (context_length, max_completion_tokens) = state
+            .advertised_output_limits_from_peers(&peers, Some(&id))
+            .await;
+        data.push(model_object(
+            id,
+            created,
+            context_length,
+            max_completion_tokens,
+        ));
+    }
 
     let first_id = data.first().map(|model| model.id.clone());
     let last_id = data.last().map(|model| model.id.clone());
@@ -466,8 +479,11 @@ async fn get_model(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if model_ids(&state).await.contains(&id) {
-        let (context_length, max_completion_tokens) = model_limits(&state).await;
+    let peers = state.all_peers().await;
+    if model_ids_from_peers(&peers).contains(&id) {
+        let (context_length, max_completion_tokens) = state
+            .advertised_output_limits_from_peers(&peers, Some(&id))
+            .await;
         (
             cors_headers(),
             Json(model_object(
@@ -520,7 +536,7 @@ async fn chat_completions(
     let caller = auth.into_caller();
 
     let output_limit = state
-        .request_output_limit(requested_max_tokens, &prompt)
+        .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
         .await;
     log_output_limit("/v1/chat/completions", output_limit);
     // Capacidade declarada: pedir mais do que o nó anuncia é erro de
@@ -539,6 +555,11 @@ async fn chat_completions(
         return error_response(StatusCode::BAD_REQUEST, error);
     }
     if let Some(error) = output_limit.rejection_reason() {
+        let status = if output_limit.capacity_pending() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::PAYLOAD_TOO_LARGE
+        };
         crate::gateway::record_rejected(
             &state,
             "/v1/chat/completions",
@@ -548,7 +569,7 @@ async fn chat_completions(
             request_details,
             error.clone(),
         );
-        return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
+        return error_response(status, error);
     }
     let budget = output_limit.budget();
 
@@ -614,14 +635,19 @@ async fn completions(
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let prompt_tokens = approx_tokens(&req.prompt);
     let output_limit = state
-        .request_output_limit(requested_max_tokens, &req.prompt)
+        .request_output_limit_for_model(Some(&model), requested_max_tokens, &req.prompt)
         .await;
     log_output_limit("/v1/completions", output_limit);
     if let Some(error) = output_limit.exceeds_declared_capacity() {
         return error_response(StatusCode::BAD_REQUEST, error);
     }
     if let Some(error) = output_limit.rejection_reason() {
-        return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
+        let status = if output_limit.capacity_pending() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::PAYLOAD_TOO_LARGE
+        };
+        return error_response(status, error);
     }
     let budget = output_limit.budget();
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
@@ -1413,6 +1439,20 @@ mod tests {
         assert!(model_ids(&state).await.is_empty());
     }
 
+    /// Um anúncio que perdeu a capacidade efetiva representa um peer em
+    /// restart, não uma implantação pronta. Ele não pode manter o modelo no
+    /// catálogo autodetectado enquanto a camada antiga ainda estiver viva na
+    /// tabela de gossip.
+    #[tokio::test]
+    async fn model_discovery_ignores_a_peer_during_runtime_restart() {
+        let mut peer = crate::gateway::testkit::peer("n1", "n1", 8080);
+        peer.model = "stale-after-restart".into();
+        peer.runtime_capacity = None;
+        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
+
+        assert!(model_ids(&state).await.is_empty());
+    }
+
     /// Pedir uma implantação que ninguém anuncia **não** pode cair calado na
     /// ativa: quem escreveu o sufixo pediu aquela configuração, e responder
     /// com outra é pior que falhar.
@@ -2125,7 +2165,8 @@ mod tests {
         state.runtime.seed_config_for_test(cfg).await;
         state.auth.write().await.max_output_tokens = 32_768;
 
-        let (context_length, max_completion_tokens) = model_limits(&state).await;
+        let (context_length, max_completion_tokens) =
+            state.advertised_output_limits(Some("ornith")).await;
         let value = serde_json::to_value(model_object(
             "ornith".into(),
             0,
@@ -2146,7 +2187,9 @@ mod tests {
         cfg.n_ctx = 100_000;
         state.runtime.seed_config_for_test(cfg).await;
         state.auth.write().await.max_output_tokens = 50_000;
-        let (context_length, max_completion_tokens) = model_limits(&state).await;
+        let (context_length, max_completion_tokens) = state
+            .advertised_output_limits(Some("Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"))
+            .await;
 
         let value = serde_json::to_value(model_object(
             "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf".into(),

@@ -862,6 +862,12 @@ mod tests {
     }
 
     #[test]
+    fn health_reports_the_context_window_per_session() {
+        assert_eq!(context_per_session(400_000, 4), 100_000);
+        assert_eq!(context_per_session(100_000, 0), 100_000);
+    }
+
+    #[test]
     fn resposta_de_item_unico_preserva_identidade_do_batch() {
         let request = json!({
             "item_id": "request-item",
@@ -2905,6 +2911,10 @@ fn err500(msg: impl std::fmt::Display) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()).into_response()
 }
 
+fn context_per_session(n_ctx_total: u32, max_sessions: u32) -> u32 {
+    n_ctx_total / max_sessions.max(1)
+}
+
 // ── /health ───────────────────────────────────────────────────────────────────
 
 async fn handle_health(State(app): State<InferenceAppState>) -> Response {
@@ -2930,6 +2940,8 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     if scheduler.config.enabled {
         caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
+    let n_ctx_total = s.engine.n_ctx();
+    let n_ctx_per_session = context_per_session(n_ctx_total, s.max_sessions);
     Json(json!({
         "status": "ok",
         "model_loaded": true,
@@ -2958,10 +2970,11 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         // **não** governa remoção parcial de KV. O reuso de prefixo deste
         // projeto não depende de nenhum dos dois - ver `Session`.
         "kv_can_shift": s.engine.kv_can_shift(),
-        "n_ctx_total": s.engine.n_ctx(),
-        // Cache unificado: a janela por sessão é o contexto inteiro. Ver
-        // `llm::kv_seq_budget`.
-        "n_ctx_per_session": s.engine.n_ctx(),
+        "n_ctx_total": n_ctx_total,
+        // O engine reserva a janela pública para cada sessão. Se o fit reduzir
+        // o total, a capacidade por sessão é a divisão efetiva, não o total
+        // bruto que o llama.cpp devolve.
+        "n_ctx_per_session": n_ctx_per_session,
         "offload_kqv": s.engine.offload_kqv(),
         "cache_type_k": s.engine.cache_type_k().as_str(),
         "cache_type_v": s.engine.cache_type_v().as_str(),

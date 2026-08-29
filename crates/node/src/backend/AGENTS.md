@@ -140,6 +140,10 @@ behind an auth extractor.
   interruptor. A concatenação dos fragmentos é sempre a string que o caminho
   não-streaming produziria, e o prefixo transmitido só cresce - não existe
   desenviar um fragmento SSE.
+  A capacidade publicada em `/v1/models` e usada por
+  `request_output_limit_for_model` é a menor `RuntimeCapacity` entre todos os
+  peers vivos do modelo/implantação. O runtime só anuncia esse valor depois do
+  `/health` efetivo; apply, erro e unload retiram a capacidade durante restart.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
   and finish-reason rules, with `x_pom.output_limits` and
   `x_pom.continuation_legs` on blocking responses and the final streaming

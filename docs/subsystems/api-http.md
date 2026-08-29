@@ -69,7 +69,9 @@ haver chave.
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
-  `pipeline_peers` (com `inference_port`), `default_model`.
+  `pipeline_peers` (com `inference_port`), `default_model` e
+  `runtime_capacity` (`n_ctx`, `max_new_tokens`, `max_output_tokens`) quando
+  o runtime local já respondeu `model_loaded`.
 - **`POST /handshake`** - corpo `{ node_id, pubkey, connection_key }`; 403
   `invalid_key`, `identity_mismatch` (o `node_id` não é o `SHA256` da `pubkey`,
   ou a chave é malformada) ou `blocked`; 200 com `approved` + `peer_id`.
@@ -149,12 +151,18 @@ campos compatíveis com os dois clientes: `type: "model"`, `created_at`,
 `context_length` e `top_provider.max_completion_tokens` para OpenAI. O campo
 `created_at` usa o epoch RFC 3339 quando a data de release local é desconhecida.
 
-Os limites vêm do `NodeConfig` em execução e do `pom.json`: `context_length` e
-`max_input_tokens` são `n_ctx`, enquanto `max_tokens` e
+Os limites vêm do runtime efetivo e do `pom.json`: `context_length` e
+`max_input_tokens` são o menor `n_ctx` entre todos os peers vivos que servem o
+modelo/implantação, enquanto `max_tokens` e
 `top_provider.max_completion_tokens` são `min(n_ctx, max_output_tokens)`, a
 capacidade da **requisição**, não o teto de uma perna. Anunciar o
 `max_new_tokens` da implantação aqui faria o cliente pedir menos do que o nó
-entrega. Quando não há runtime carregado, os limites aparecem como `null`.
+entrega. O mesmo mínimo de peers é usado pela validação de cada requisição.
+Um peer só entra nessa capacidade depois de seu `/health` confirmar o modelo
+carregado; durante restart, o anúncio anterior é retirado.
+Se ainda houver um peer vivo sem essa confirmação, o modelo não entra no
+catálogo e uma requisição explícita fica HTTP 503 até todos os peers provarem
+o runtime, em vez de cair na capacidade local e esconder um estágio antigo.
 
 ### Anthropic (`/v1/messages`)
 

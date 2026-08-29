@@ -177,7 +177,9 @@ quebra o produto inteiro.
   no `content` nunca é resposta, e descartar também não.
   `max_output_tokens` do `pom.json` é **capacidade declarada** - anunciada em
   `/v1/models` e recusada com 400 quando o pedido a excede, nunca atendida
-  calada com menos. Em streaming os argumentos de uma chamada saem em
+  calada com menos. A capacidade efetiva publicada e validada é a menor entre
+  os peers vivos da implantação, depois que cada `/health` confirma o runtime.
+  Em streaming os argumentos de uma chamada saem em
   **fragmentos** conforme o modelo gera, e a concatenação deles é sempre a
   string que o caminho não-streaming produziria.
   → `inferencia.md` (9.1), `api-http.md`

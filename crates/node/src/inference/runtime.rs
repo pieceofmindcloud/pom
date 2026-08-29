@@ -32,6 +32,28 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
         .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions excede o limite numérico"))
 }
 
+/// Converte a prova de prontidão do servidor numa capacidade publicável.
+/// `n_ctx_per_session` é a janela que o llama.cpp conseguiu reservar de fato;
+/// `max_new_tokens` continua sendo apenas o tamanho de uma perna; e o teto
+/// absoluto vem da configuração do gateway. Nenhum desses números é derivado
+/// silenciosamente de outro.
+fn runtime_capacity_from_health(
+    body: &serde_json::Value,
+    config: &NodeConfig,
+    max_output_tokens: u32,
+) -> crate::network::RuntimeCapacity {
+    let n_ctx = body
+        .get("n_ctx_per_session")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(config.n_ctx);
+    crate::network::RuntimeCapacity {
+        n_ctx,
+        max_new_tokens: config.max_new_tokens,
+        max_output_tokens,
+    }
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /// What this node is currently serving. Serialisable so the UI can round-trip it.
@@ -662,6 +684,7 @@ impl NodeRuntime {
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
         self.net.set_batching_ready(false);
+        self.net.set_runtime_generation(generation);
 
         // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
         // nó de voltar servindo no próximo arranque e desfazer essa decisão.
@@ -735,6 +758,9 @@ impl NodeRuntime {
         *self.assignment.write().await = Some(assignment.clone());
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
+        // A configuração nova só vira capacidade efetiva depois que o
+        // `/health` do processo novo responder `model_loaded`.
+        self.net.set_runtime_generation(generation);
 
         // Let peers know immediately instead of waiting for the next gossip tick.
         if let Err(e) = self.net.announce(Some(&assignment)).await {
@@ -886,6 +912,7 @@ impl NodeRuntime {
         );
         *self.status.write().await = RuntimeStatus::new(ServerState::Thermal, reason);
         self.net.set_batching_ready(false);
+        self.net.set_runtime_generation(generation);
         if let Err(error) = crate::lastslice::save(cfg, crate::lastslice::SliceState::Serving) {
             warn!("não deu para preservar a fatia para recuperação térmica: {error}");
         }
@@ -910,6 +937,7 @@ impl NodeRuntime {
                 policy.resume_limit_c()
             ),
         );
+        self.net.set_runtime_generation(*self.generation.borrow());
         let _ = self.net.announce(None).await;
     }
 
@@ -941,6 +969,7 @@ impl NodeRuntime {
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
         let batching_ready = self.net.batching_ready_handle();
+        let capacity_net = self.net.clone();
         let auth = self.auth.clone();
         let model_cache = self.model_cache.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
@@ -1028,12 +1057,15 @@ impl NodeRuntime {
                         append_log(port, "encerrado graciosamente");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        capacity_net.set_runtime_capacity_for_generation(generation, None);
                         return;
                     }
                     Err(e) => {
                         warn!("servidor de inferência encerrou com erro: {e}");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        capacity_net.set_runtime_capacity_for_generation(generation, None);
+                        let _ = capacity_net.announce(None).await;
                         append_log(port, &format!("encerrou com erro: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
@@ -1072,6 +1104,7 @@ impl NodeRuntime {
         };
         let assignment = self.assignment.clone();
         let net = self.net.clone();
+        let auth = self.auth.clone();
         let gen_rx = self.generation.subscribe();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -1105,6 +1138,15 @@ impl NodeRuntime {
                 {
                     continue;
                 }
+
+                let max_output_tokens = match &auth {
+                    Some(auth) => auth.read().await.max_output_tokens,
+                    None => crate::config::DEFAULT_MAX_OUTPUT_TOKENS,
+                };
+                net.set_runtime_capacity_for_generation(
+                    generation,
+                    Some(runtime_capacity_from_health(&body, &cfg, max_output_tokens)),
+                );
 
                 let reported = body
                     .get("original_block_count")
@@ -1491,6 +1533,7 @@ mod tests {
 
         let mut p = crate::webui::RuntimeParams::default();
         p.n_ctx = 65536;
+        p.max_new_tokens = 32000;
         p.n_gpu_layers = 7;
         p.temperature = 1.25;
         p.max_sessions = 4;
@@ -1499,6 +1542,7 @@ mod tests {
 
         // O que tinha que mudar, mudou.
         assert_eq!(depois.n_ctx, 65536);
+        assert_eq!(depois.max_new_tokens, 32000);
         assert_eq!(depois.n_gpu_layers, 7);
         assert_eq!(depois.temperature, 1.25);
         assert_eq!(depois.max_sessions, 4);
@@ -1518,6 +1562,26 @@ mod tests {
         assert_eq!(depois.no_embeddings, antes.no_embeddings);
         assert_eq!(depois.cache_type_k, antes.cache_type_k);
         assert_eq!(depois.cache_type_v, antes.cache_type_v);
+    }
+
+    #[test]
+    fn health_capacity_uses_effective_context_and_keeps_limits_separate() {
+        let mut config = cfg();
+        config.n_ctx = 8_192;
+        config.max_new_tokens = 32_000;
+
+        let capacity = runtime_capacity_from_health(
+            &serde_json::json!({
+                "model_loaded": true,
+                "n_ctx_per_session": 100_000,
+            }),
+            &config,
+            32_000,
+        );
+
+        assert_eq!(capacity.n_ctx, 100_000);
+        assert_eq!(capacity.max_new_tokens, 32_000);
+        assert_eq!(capacity.max_output_tokens, 32_000);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::auth::AuthState;
 use crate::model::LayerAssignment;
-use crate::network::{Network, PeerInfo};
+use crate::network::{Network, PeerInfo, RuntimeCapacity};
 use crate::ollama::OllamaClient;
 use crate::pipeline::{plan_pipeline_with_rtt, LoadTracker, PipelinePlan};
 use crate::runtime::NodeRuntime;
@@ -324,7 +324,10 @@ impl GatewayState {
                 crate::pkarr_node::detect_local_ip(),
             );
             peers.push(PeerInfo {
-                deploy_id: String::new(),
+                deploy_id: local
+                    .as_ref()
+                    .map(|assignment| assignment.deploy_id.clone())
+                    .unwrap_or_default(),
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
@@ -382,9 +385,49 @@ impl GatewayState {
                 api_keys_active: 0,
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
                 tp: self.network.tp_identity(),
+                runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
             });
         }
         peers
+    }
+
+    /// Capacidade deste processo. Depois que o `/health` local confirma o
+    /// motor, usa o valor efetivo que o llama.cpp reportou; antes disso cai no
+    /// alvo configurado para manter os testes e a validação local honestos.
+    async fn local_runtime_capacity(&self) -> Option<RuntimeCapacity> {
+        if let Some(capacity) = self.network.runtime_capacity() {
+            return Some(capacity);
+        }
+        let runtime = self.runtime.config().await?;
+        Some(RuntimeCapacity {
+            n_ctx: runtime.n_ctx,
+            max_new_tokens: runtime.max_new_tokens,
+            max_output_tokens: self.auth.read().await.max_output_tokens,
+        })
+    }
+
+    /// Menor capacidade entre os peers vivos que podem atender o seletor.
+    ///
+    /// A geração atravessa todos os estágios do pipeline, então anunciar o
+    /// maior peer seria uma mentira quando outro ainda está em 8192. Um peer
+    /// sem anúncio de capacidade é um nó antigo ou ainda inicializando; nesse
+    /// caso a configuração local continua sendo o fallback conservador só
+    /// quando não há peer correspondente. Se há peer vivo sem anúncio, a
+    /// requisição fica pendente: aceitar com a capacidade local poderia
+    /// esconder um estágio antigo no pipeline.
+    async fn runtime_capacity_for_model(
+        &self,
+        model: Option<&str>,
+    ) -> (Option<RuntimeCapacity>, bool) {
+        let Some(model) = model else {
+            return (self.local_runtime_capacity().await, false);
+        };
+        let peers = self.all_peers().await;
+        let (capacity, pending) = runtime_capacity_from_peers(&peers, model);
+        if capacity.is_some() || pending {
+            return (capacity, pending);
+        }
+        (self.local_runtime_capacity().await, false)
     }
 }
 
@@ -398,6 +441,39 @@ fn self_dial_host(advertised: Option<String>, local_ip: Option<String>) -> Strin
     advertised
         .or(local_ip)
         .unwrap_or_else(|| "127.0.0.1".into())
+}
+
+/// Reduz uma fotografia de peers para a capacidade do modelo selecionado.
+/// Manter essa função sobre um slice permite que `/v1/models` use exatamente
+/// o mesmo snapshot para descobrir IDs e publicar seus limites.
+fn runtime_capacity_from_peers(peers: &[PeerInfo], model: &str) -> (Option<RuntimeCapacity>, bool) {
+    let (label, deploy_id) = crate::deployment::split_selector(model);
+    let matching: Vec<&PeerInfo> = peers
+        .iter()
+        .filter(|peer| {
+            peer.is_alive()
+                && peer.model == label
+                && deploy_id.is_none_or(|id| peer.deploy_id == id)
+        })
+        .collect();
+    let capacities: Vec<RuntimeCapacity> = matching
+        .iter()
+        .filter_map(|peer| peer.runtime_capacity)
+        .collect();
+    if matching.is_empty() {
+        return (None, false);
+    }
+    if capacities.len() != matching.len() {
+        return (None, true);
+    }
+    (
+        capacities.into_iter().reduce(|a, b| RuntimeCapacity {
+            n_ctx: a.n_ctx.min(b.n_ctx),
+            max_new_tokens: a.max_new_tokens.min(b.max_new_tokens),
+            max_output_tokens: a.max_output_tokens.min(b.max_output_tokens),
+        }),
+        false,
+    )
 }
 
 /// Prompt tokens a peer running `cfg` can accept.
@@ -525,6 +601,11 @@ pub struct OutputTokenLimit {
     /// Tokens que cabem numa perna: `min(deployment, effective)`.
     #[serde(rename = "leg_max_tokens")]
     pub leg: u32,
+    /// Um modelo com peer vivo sem capacidade confirmada não pode usar o
+    /// fallback local com segurança. O campo é interno porque a requisição é
+    /// recusada antes de qualquer resposta `x_pom` ser gerada.
+    #[serde(skip)]
+    capacity_pending: bool,
 }
 
 impl OutputTokenLimit {
@@ -544,6 +625,10 @@ impl OutputTokenLimit {
     /// que vai precisar: o modelo pode parar antes.
     pub fn continuation_possible(self) -> bool {
         self.leg < self.effective
+    }
+
+    pub fn capacity_pending(self) -> bool {
+        self.capacity_pending
     }
 
     /// A capacidade declarada do nó foi excedida.
@@ -566,7 +651,12 @@ impl OutputTokenLimit {
     }
 
     pub fn rejection_reason(self) -> Option<String> {
-        if self.effective > 0 && self.leg > 0 {
+        if self.capacity_pending {
+            return Some(
+                "a capacidade efetiva do modelo ainda não foi confirmada por todos os peers vivos"
+                    .into(),
+            );
+        } else if self.effective > 0 && self.leg > 0 {
             return None;
         }
 
@@ -618,6 +708,7 @@ pub fn output_token_limit(
         context_available,
         absolute,
         leg,
+        capacity_pending: false,
     }
 }
 
@@ -625,14 +716,81 @@ impl GatewayState {
     /// Resolve an adapter request against the live deployment configuration
     /// and the operator's absolute output ceiling.
     pub async fn request_output_limit(&self, requested: u32, prompt: &str) -> OutputTokenLimit {
+        self.request_output_limit_for_model(None, requested, prompt)
+            .await
+    }
+
+    /// Resolve the request against the capacity of every live peer serving the
+    /// selected model. The deployment leg remains separate from the absolute
+    /// request ceiling.
+    pub async fn request_output_limit_for_model(
+        &self,
+        model: Option<&str>,
+        requested: u32,
+        prompt: &str,
+    ) -> OutputTokenLimit {
         let runtime = self.runtime.config().await;
+        let (capacity, capacity_pending) = self.runtime_capacity_for_model(model).await;
+        if capacity_pending {
+            return OutputTokenLimit {
+                requested: requested.max(1),
+                effective: 0,
+                deployment: None,
+                context_available: None,
+                absolute: 0,
+                leg: 0,
+                capacity_pending: true,
+            };
+        }
         output_token_limit(
             requested,
-            runtime.as_ref().map(|cfg| cfg.max_new_tokens),
-            runtime.as_ref().map(|cfg| cfg.n_ctx),
+            capacity
+                .map(|current| current.max_new_tokens)
+                .or_else(|| runtime.as_ref().map(|cfg| cfg.max_new_tokens)),
+            capacity
+                .map(|current| current.n_ctx)
+                .or_else(|| runtime.as_ref().map(|cfg| cfg.n_ctx)),
             estimate_tokens(prompt),
-            self.absolute_output_ceiling().await,
+            capacity
+                .map(|current| current.max_output_tokens)
+                .unwrap_or(self.absolute_output_ceiling().await),
         )
+    }
+
+    /// Metadados publicados por `/v1/models`, derivados da mesma capacidade
+    /// que a validação de uma requisição usa.
+    pub async fn advertised_output_limits(
+        &self,
+        model: Option<&str>,
+    ) -> (Option<u32>, Option<u32>) {
+        let peers = self.all_peers().await;
+        self.advertised_output_limits_from_peers(&peers, model)
+            .await
+    }
+
+    /// Variante que recebe a mesma fotografia usada para descobrir o
+    /// catálogo. Assim um peer não pode desaparecer ou entrar em restart entre
+    /// a decisão do ID e a publicação de `max_completion_tokens`.
+    pub async fn advertised_output_limits_from_peers(
+        &self,
+        peers: &[PeerInfo],
+        model: Option<&str>,
+    ) -> (Option<u32>, Option<u32>) {
+        let runtime = self.runtime.config().await;
+        let (capacity, capacity_pending) = match model {
+            Some(model) => runtime_capacity_from_peers(peers, model),
+            None => (self.local_runtime_capacity().await, false),
+        };
+        if capacity_pending {
+            return (None, None);
+        }
+        let context = capacity
+            .map(|current| current.n_ctx)
+            .or_else(|| runtime.as_ref().map(|cfg| cfg.n_ctx));
+        let absolute = capacity
+            .map(|current| current.max_output_tokens)
+            .unwrap_or(self.absolute_output_ceiling().await);
+        (context, context.map(|length| length.min(absolute)))
     }
 
     /// `max_output_tokens` do `pom.json`. Zero na config nunca vira zero aqui
@@ -643,6 +801,13 @@ impl GatewayState {
 }
 
 pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
+    if limit.capacity_pending() {
+        info!(
+            route,
+            "capacidade efetiva aguardando confirmação de todos os peers vivos"
+        );
+        return;
+    }
     if limit.was_clamped() {
         info!(
             route,
@@ -759,6 +924,9 @@ pub struct HealthResponse {
     pub peer_count: usize,
     pub pipeline_peers: usize,
     pub default_model: String,
+    /// Só fica presente quando o `/health` do servidor de inferência local
+    /// confirmou o runtime desta geração.
+    pub runtime_capacity: Option<RuntimeCapacity>,
 }
 
 // ── Streaming generation ─────────────────────────────────────────────────────
@@ -2608,6 +2776,7 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
         peer_count,
         pipeline_peers,
         default_model: state.active_model().await,
+        runtime_capacity: state.network.runtime_capacity(),
     })
 }
 
@@ -3029,10 +3198,7 @@ mod budget_tests {
     fn a_deployment_that_cannot_generate_is_still_a_refusal_not_a_silent_cut() {
         let limit = output_token_limit(4_000, Some(0), Some(100_000), 10, 8_192);
         assert_eq!(limit.leg, 0);
-        assert!(limit
-            .rejection_reason()
-            .unwrap()
-            .contains("max_new_tokens"));
+        assert!(limit.rejection_reason().unwrap().contains("max_new_tokens"));
     }
 
     #[test]
@@ -3045,21 +3211,51 @@ mod budget_tests {
             .contains("max_output_tokens"));
     }
 
+    #[test]
+    fn an_unconfirmed_peer_capacity_is_not_replaced_by_local_fallback() {
+        let limit = OutputTokenLimit {
+            requested: 32_000,
+            effective: 0,
+            deployment: None,
+            context_available: None,
+            absolute: 0,
+            leg: 0,
+            capacity_pending: true,
+        };
+        assert!(limit.capacity_pending());
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("todos os peers vivos"));
+    }
+
+    #[tokio::test]
+    async fn a_live_peer_without_capacity_blocks_model_specific_requests() {
+        let mut peer = crate::gateway::testkit::peer("n1", "n1", 8080);
+        peer.model = "qwen".into();
+        peer.runtime_capacity = None;
+        let state = crate::gateway::testkit::state_with("self", vec![peer]).await;
+
+        let limit = state
+            .request_output_limit_for_model(Some("qwen"), 32_000, "oi")
+            .await;
+
+        assert!(limit.capacity_pending());
+        assert_eq!(limit.effective, 0);
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("confirmada por todos"));
+    }
+
     /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não
     /// divide o total, e a perna nunca pode ser zero (divisão por zero no
     /// `note_leg_boundary`).
     #[test]
     fn the_budget_normalizes_to_usable_numbers() {
         assert_eq!(
-            OutputBudget {
-                total: 0,
-                leg: 0
-            }
-            .normalized(),
-            OutputBudget {
-                total: 1,
-                leg: 1
-            }
+            OutputBudget { total: 0, leg: 0 }.normalized(),
+            OutputBudget { total: 1, leg: 1 }
         );
         assert_eq!(
             OutputBudget {
@@ -3067,17 +3263,11 @@ mod budget_tests {
                 leg: 1_000
             }
             .normalized(),
-            OutputBudget {
-                total: 10,
-                leg: 10
-            }
+            OutputBudget { total: 10, leg: 10 }
         );
         assert_eq!(
             OutputBudget::single(7).normalized(),
-            OutputBudget {
-                total: 7,
-                leg: 7
-            }
+            OutputBudget { total: 7, leg: 7 }
         );
     }
 
@@ -3086,10 +3276,7 @@ mod budget_tests {
     /// pernas a resposta usou, não quantas caberiam.
     #[test]
     fn legs_are_counted_as_the_loop_crosses_each_deployment_budget() {
-        let budget = OutputBudget {
-            total: 10,
-            leg: 4,
-        };
+        let budget = OutputBudget { total: 10, leg: 4 };
         let mut legs = 1;
         let mut observed = Vec::new();
         for tokens in 1..=10u32 {
@@ -3239,6 +3426,7 @@ mod peer_visibility_tests {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: None,
         }
     }
 
@@ -3281,6 +3469,28 @@ mod peer_visibility_tests {
 
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
+    }
+
+    #[tokio::test]
+    async fn local_peer_preserves_the_active_deployment_selector() {
+        let state = crate::gateway::testkit::state_with("self", vec![]).await;
+        *state.local_assignment.write().await = Some(LayerAssignment {
+            deploy_id: "deployment-42".into(),
+            model: "qwen".into(),
+            total_layers: 32,
+            start_layer: 0,
+            end_layer: 15,
+            layers_count: 16,
+            memory_used_mb: 0.0,
+            memory_allocated_mb: 0.0,
+        });
+
+        let peers = state.all_peers().await;
+        let local = peers
+            .iter()
+            .find(|peer| peer.node_id == "self")
+            .expect("o gateway sempre inclui o peer local");
+        assert_eq!(local.deploy_id, "deployment-42");
     }
 }
 
@@ -3325,6 +3535,11 @@ pub(crate) mod testkit {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: Some(RuntimeCapacity {
+                n_ctx: 8_192,
+                max_new_tokens: 256,
+                max_output_tokens: 8_192,
+            }),
         }
     }
 

@@ -560,7 +560,7 @@ async fn messages(
     let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);
     let output_limit = state
-        .request_output_limit(requested_max_tokens, &prompt)
+        .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
         .await;
     log_output_limit("/v1/messages", output_limit);
     // Capacidade declarada: pedir mais do que o nó anuncia é erro de
@@ -570,11 +570,12 @@ async fn messages(
         return error_response(StatusCode::BAD_REQUEST, "invalid_request_error", error);
     }
     if let Some(error) = output_limit.rejection_reason() {
-        return error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "invalid_request_error",
-            error,
-        );
+        let status = if output_limit.capacity_pending() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::PAYLOAD_TOO_LARGE
+        };
+        return error_response(status, "invalid_request_error", error);
     }
     let budget = output_limit.budget();
     // O que o cliente precisa para decrementar o `remaining` do próximo

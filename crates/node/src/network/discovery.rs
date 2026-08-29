@@ -532,6 +532,7 @@ async fn handle_event(
                 disk_free_mb,
                 libp2p_peer_id,
                 tp,
+                runtime_capacity,
             }) = serde_json::from_slice(&message.data)
             {
                 let dial_for_tunnel = libp2p_peer_id
@@ -582,6 +583,7 @@ async fn handle_event(
                         api_keys_active: 0,
                         libp2p_peer_id: libp2p_peer_id.clone(),
                         tp,
+                        runtime_capacity,
                     })
                     .await;
 

@@ -1126,11 +1126,22 @@ prefixo e contar com o cache de prefixo - custaria reprefill do que já saiu, a
 cada perna, e ocuparia exatamente o mesmo KV no fim. Não há vantagem nenhuma em
 pagar por ela.
 
-**Limite conhecido.** `context_available` usa `cfg.n_ctx`, que é a capacidade
-total do contexto; com um pool (`max_sessions > 1`) cada contexto recebe
-`n_ctx / n`, então esse número é otimista. É imprecisão anterior a esta
-funcionalidade, e o `max_output_tokens` conservador é o que a mantém inofensiva
-na prática.
+**Capacidade de todos os peers.** Depois que o `/health` prova o carregamento,
+`runtime::spawn_health_watch` publica em `Announce.runtime_capacity` o
+`n_ctx` efetivo por sessão retornado pelo `/health` (o total do engine dividido
+por `max_sessions`), o `max_new_tokens` da perna e o
+`max_output_tokens` do `pom.json`. O gateway usa o menor valor entre todos os
+peers vivos do modelo/implantação tanto em `/v1/models` quanto na validação da
+requisição. Apply, erro, stop e unload térmico limpam o anúncio antes do
+restart, então uma capacidade antiga não fica no catálogo. Sem peer
+correspondente, a configuração local continua sendo fallback para rotas sem
+implantação; havendo peer vivo sem capacidade reportada, a requisição fica
+indisponível até todos confirmarem o runtime, sem esconder um estágio antigo.
+
+**Limite conhecido.** `context_available` ainda usa a janela por sessão; com
+um pool (`max_sessions > 1`) cada contexto recebe `n_ctx / n`, então esse
+número é otimista. É imprecisão anterior a esta funcionalidade, e o
+`max_output_tokens` conservador é o que a mantém inofensiva na prática.
 
 A bancada é `crates/node/src/backend/continuation_lab.rs`.
 

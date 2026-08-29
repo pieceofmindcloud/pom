@@ -352,6 +352,15 @@ struct ModelObject {
     object: &'static str,
     created: i64,
     owned_by: &'static str,
+    #[serde(rename = "type")]
+    model_type: &'static str,
+    /// Anthropic's model-list contract. A local deployment has no provider
+    /// release timestamp, so the documented epoch sentinel is used.
+    created_at: &'static str,
+    display_name: String,
+    capabilities: Option<serde_json::Value>,
+    max_input_tokens: Option<u32>,
+    max_tokens: Option<u32>,
     /// OpenRouter-compatible model capability metadata. `None` means this
     /// gateway has no loaded deployment from which to read the limit.
     context_length: Option<u32>,
@@ -387,10 +396,16 @@ fn model_object(
     max_completion_tokens: Option<u32>,
 ) -> ModelObject {
     ModelObject {
+        display_name: id.clone(),
         id,
         object: "model",
         created,
         owned_by: "pom",
+        model_type: "model",
+        created_at: "1970-01-01T00:00:00Z",
+        capabilities: None,
+        max_input_tokens: context_length,
+        max_tokens: max_completion_tokens,
         context_length,
         top_provider: ModelProviderLimits {
             context_length,
@@ -418,10 +433,6 @@ pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
             ids.push(format!("{}@{}", p.model, p.deploy_id));
         }
     }
-    let active = state.active_model().await;
-    if !active.is_empty() {
-        ids.push(active);
-    }
     ids.sort();
     ids.dedup();
     ids
@@ -436,9 +447,17 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
         .map(|id| model_object(id, created, context_length, max_completion_tokens))
         .collect();
 
+    let first_id = data.first().map(|model| model.id.clone());
+    let last_id = data.last().map(|model| model.id.clone());
     (
         cors_headers(),
-        Json(json!({ "object": "list", "data": data })),
+        Json(json!({
+            "object": "list",
+            "data": data,
+            "first_id": first_id,
+            "has_more": false,
+            "last_id": last_id,
+        })),
     )
 }
 
@@ -1383,6 +1402,17 @@ mod tests {
         assert!(ids.contains(&"qwen3:8b@d-bbbbbbbb".to_string()), "{ids:?}");
     }
 
+    /// A CLI default is only a selector for the inference path. Depois de um
+    /// unload, ele não é um modelo publicado e não pode voltar ao catálogo
+    /// para enganar um cliente que autodetecta modelos.
+    #[tokio::test]
+    async fn model_discovery_ignores_an_unpublished_default_model() {
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.default_model = "stale-after-unload".into();
+
+        assert!(model_ids(&state).await.is_empty());
+    }
+
     /// Pedir uma implantação que ninguém anuncia **não** pode cair calado na
     /// ativa: quem escreveu o sufixo pediu aquela configuração, e responder
     /// com outra é pior que falhar.
@@ -2107,6 +2137,34 @@ mod tests {
         assert_eq!(value["context_length"], 100_000);
         assert_eq!(value["top_provider"]["context_length"], 100_000);
         assert_eq!(value["top_provider"]["max_completion_tokens"], 32_768);
+    }
+
+    #[tokio::test]
+    async fn model_metadata_matches_openai_and_anthropic_list_contracts() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let mut cfg = crate::gateway::testkit::spec_config();
+        cfg.n_ctx = 100_000;
+        state.runtime.seed_config_for_test(cfg).await;
+        state.auth.write().await.max_output_tokens = 50_000;
+        let (context_length, max_completion_tokens) = model_limits(&state).await;
+
+        let value = serde_json::to_value(model_object(
+            "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf".into(),
+            0,
+            context_length,
+            max_completion_tokens,
+        ))
+        .unwrap();
+
+        assert_eq!(value["object"], "model");
+        assert_eq!(value["type"], "model");
+        assert_eq!(value["display_name"], "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf");
+        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(value["max_input_tokens"], 100_000);
+        assert_eq!(value["max_tokens"], 50_000);
+        assert!(value["capabilities"].is_null());
+        assert_eq!(value["context_length"], 100_000);
+        assert_eq!(value["top_provider"]["max_completion_tokens"], 50_000);
     }
 
     #[test]

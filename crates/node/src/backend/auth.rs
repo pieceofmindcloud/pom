@@ -2,7 +2,7 @@ use crate::config::Config;
 use async_trait::async_trait;
 use axum::{
     extract::{FromRequestParts, State},
-    http::{request::Parts, StatusCode},
+    http::{request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
 };
 use serde_json::json;
@@ -64,6 +64,51 @@ pub enum AuthRejection {
     InvalidKey,
 }
 
+/// Normalize one Authorization value without logging or copying its secret.
+/// Non-Bearer values remain candidates for compatibility with the historical
+/// connection-key route, while Bearer matching is case-insensitive and trims
+/// surrounding whitespace as HTTP clients commonly do.
+fn authorization_token(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let mut words = value.splitn(2, |character: char| character.is_ascii_whitespace());
+    let scheme = words.next().unwrap_or_default();
+    if scheme.eq_ignore_ascii_case("bearer") {
+        let token = words.next().unwrap_or_default().trim();
+        (!token.is_empty()).then_some(token)
+    } else {
+        Some(value)
+    }
+}
+
+/// Return every credential supplied by the caller. Claude-compatible clients
+/// may send both `Authorization: Bearer ...` and `x-api-key: ...`; one bad
+/// header must not hide the other valid credential.
+fn credential_candidates(headers: &HeaderMap) -> Vec<&str> {
+    let mut candidates = Vec::with_capacity(2);
+    if let Some(candidate) = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(authorization_token)
+    {
+        candidates.push(candidate);
+    }
+    if let Some(candidate) = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
 impl IntoResponse for AuthRejection {
     fn into_response(self) -> axum::response::Response {
         let (status, msg) = match self {
@@ -95,7 +140,7 @@ where
             .and_then(|v| v.to_str().ok())
             .ok_or(AuthRejection::MissingHeader)?;
 
-        let token = header.strip_prefix("Bearer ").unwrap_or(header);
+        let token = authorization_token(header).ok_or(AuthRejection::MissingHeader)?;
 
         let cfg = config.read().await;
         if token == cfg.connection_key {
@@ -131,40 +176,40 @@ where
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
 
-        // `Authorization: Bearer <key>` (OpenAI/`ANTHROPIC_AUTH_TOKEN` style) or
-        // `x-api-key: <key>` (Anthropic Messages API style, what `ANTHROPIC_API_KEY`
-        // sends) — a client picks whichever env var it has, and both name the
-        // same credential, so either header is accepted.
-        let token = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(|h| h.strip_prefix("Bearer ").unwrap_or(h))
-            .or_else(|| parts.headers.get("x-api-key").and_then(|v| v.to_str().ok()))
-            .ok_or(AuthRejection::MissingHeader)?;
+        // `Authorization: Bearer <key>` (OpenAI/`ANTHROPIC_AUTH_TOKEN` style)
+        // or `x-api-key: <key>` (Anthropic Messages API style, what
+        // `ANTHROPIC_API_KEY` sends). Consider both independently because a
+        // client may send both headers and one can be stale or invalid.
+        let candidates = credential_candidates(&parts.headers);
+        if candidates.is_empty() {
+            return Err(AuthRejection::MissingHeader);
+        }
 
         let cfg = config.read().await;
-        // The connection key is this cluster's operator credential; it also
-        // opens the OpenAI/Anthropic routes, so the built-in test panel and
-        // any operator can call them without first minting an API key.
-        let is_operator = !cfg.connection_key.is_empty() && token == cfg.connection_key;
-        if is_operator {
-            return Ok(ApiKeyAuth(crate::reqlog::Caller::operator()));
+        for token in candidates {
+            // The connection key is this cluster's operator credential; it
+            // also opens the OpenAI/Anthropic routes, so the built-in test
+            // panel and any operator can call them without first minting an
+            // API key.
+            if !cfg.connection_key.is_empty() && token == cfg.connection_key {
+                return Ok(ApiKeyAuth(crate::reqlog::Caller::operator()));
+            }
+            if let Some(key) = cfg.api_keys.iter().find(|k| k.active && k.key == token) {
+                return Ok(ApiKeyAuth(crate::reqlog::Caller {
+                    key_id: api_key_identity(key),
+                    key_label: key.label.clone(),
+                    key_node_id: (!key.node_id.is_empty()).then(|| key.node_id.clone()),
+                }));
+            }
         }
-        match cfg.api_keys.iter().find(|k| k.active && k.key == token) {
-            Some(key) => Ok(ApiKeyAuth(crate::reqlog::Caller {
-                key_id: api_key_identity(key),
-                key_label: key.label.clone(),
-                key_node_id: (!key.node_id.is_empty()).then(|| key.node_id.clone()),
-            })),
-            None => Err(AuthRejection::InvalidKey),
-        }
+        Err(AuthRejection::InvalidKey)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::Request;
 
     #[test]
     fn test_auth_rejection_status() {
@@ -284,5 +329,41 @@ mod tests {
 
         cfg.connection_key.clear();
         assert_eq!(inference_token(&cfg).as_deref(), Some("sk-active"));
+    }
+
+    #[tokio::test]
+    async fn valid_secondary_header_preserves_api_key_caller_identity() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state
+            .auth
+            .write()
+            .await
+            .api_keys
+            .push(crate::config::ApiKey {
+                id: "claude-code-id".into(),
+                key: "api-secret".into(),
+                label: "claude-code".into(),
+                node_id: "eu".into(),
+                active: true,
+                created_at: String::new(),
+            });
+
+        let request = Request::builder()
+            .header("authorization", "Bearer invalid")
+            .header("x-api-key", "api-secret")
+            .body(())
+            .expect("requisição");
+        let (mut parts, _) = request.into_parts();
+        let auth =
+            <ApiKeyAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
+                &mut parts, &state,
+            )
+            .await
+            .expect("a credencial secundária válida deve autenticar");
+
+        let caller = auth.into_caller();
+        assert_eq!(caller.key_id, "claude-code-id");
+        assert_eq!(caller.key_label, "claude-code");
+        assert_eq!(caller.key_node_id.as_deref(), Some("eu"));
     }
 }

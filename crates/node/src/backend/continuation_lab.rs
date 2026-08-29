@@ -104,6 +104,33 @@ fn tool_call_script() -> Vec<String> {
     script
 }
 
+/// A forma reduzida da reprodução do captain: 847 linhas de HTML, quebradas
+/// em pedaços pequenos como um tokenizer real faria. O número de linhas é
+/// deliberado - a bancada precisa atravessar tanto 8192 quanto 50000 tokens
+/// sem confundir tamanho do arquivo com a capacidade declarada do nó.
+fn large_html_tool_script() -> Vec<String> {
+    let mut script = vec![
+        "<tool_call>\n".to_string(),
+        "<function=write_file>\n".to_string(),
+        "<parameter=path>\n".to_string(),
+        "/tmp/index.html\n".to_string(),
+        "</parameter>\n".to_string(),
+        "<parameter=content>\n".to_string(),
+    ];
+    let html: String = (0..847)
+        .map(|line| format!("<div data-line=\"{line}\">conteudo da linha {line}</div>\n"))
+        .collect();
+    script.extend(
+        html.as_bytes()
+            .chunks(5)
+            .map(|chunk| String::from_utf8(chunk.to_vec()).expect("HTML ASCII")),
+    );
+    script.push("</parameter>\n".to_string());
+    script.push("</function>\n".to_string());
+    script.push("</tool_call>".to_string());
+    script
+}
+
 /// Texto corrido, também mais longo que uma perna. O `TagScanner` não acha
 /// tag nenhuma aqui, então este roteiro mede o caminho de texto puro sem o
 /// caminho de ferramenta por perto.
@@ -131,6 +158,9 @@ struct Hop {
     /// bancada confere que o marcador do orçamento de tarefa chegou mesmo à
     /// geração, e não só ao adaptador.
     prompt_visto: Arc<std::sync::Mutex<String>>,
+    /// Reutilizado entre tokens para que a reprodução longa meça o gateway,
+    /// não a exaustão de sockets causada por criar um cliente por passo.
+    peer_http: Arc<crate::peer_client::PeerClients>,
 }
 
 impl Hop {
@@ -203,6 +233,7 @@ fn read(body: &Bytes) -> Incoming {
 /// Espelha `infer_server::relay_and_bubble`: o anel, que é o transporte que
 /// esta bancada exercita.
 async fn bubble(
+    http: &crate::peer_client::PeerClients,
     hops: &[crate::pipeline::PipelineStep],
     path: &str,
     mut base_meta: Value,
@@ -215,7 +246,7 @@ async fn bubble(
     base_meta["next_hops"] = json!(remaining);
 
     let sent = crate::relay::send_frame(
-        &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+        http,
         &next.node_id,
         &next.inference_url,
         path,
@@ -291,7 +322,15 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         "reuse_prefix": inc.meta["reuse_prefix"].clone(),
         "is_final_chunk": if hop.is_head { !more } else { is_final_chunk },
     });
-    match bubble(&inc.next_hops, "/v1/prefill", base, (&residual, shape)).await {
+    match bubble(
+        &hop.peer_http,
+        &inc.next_hops,
+        "/v1/prefill",
+        base,
+        (&residual, shape),
+    )
+    .await
+    {
         Ok(mut bubbled) => {
             crate::infer_server::overlay_head_authoritative_fields(&local, &mut bubbled);
             frame(&bubbled, None)
@@ -323,7 +362,15 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         };
     }
     let base = json!({"session_id": inc.meta["session_id"].clone()});
-    match bubble(&inc.next_hops, "/v1/step", base, (&residual, shape)).await {
+    match bubble(
+        &hop.peer_http,
+        &inc.next_hops,
+        "/v1/step",
+        base,
+        (&residual, shape),
+    )
+    .await
+    {
         Ok(bubbled) => frame(&bubbled, None),
         Err(resp) => resp,
     }
@@ -348,6 +395,7 @@ async fn spawn_hop(hop: Hop) -> String {
 // ── O nó, com as rotas `/v1` de verdade num socket ────────────────────────────
 
 const CHAVE: &str = "chave";
+const API_CHAVE: &str = "api-chave";
 
 struct No {
     base: String,
@@ -369,10 +417,15 @@ impl No {
 /// número do captain, que a tarefa proíbe levantar. `absolute_ceiling` é o
 /// `max_output_tokens` do `pom.json`: a capacidade que o nó declara, anunciada
 /// em `/v1/models` e recusada quando o pedido a excede.
-async fn no(
+async fn no(script: Vec<String>, deployment_max_new_tokens: u32, absolute_ceiling: u32) -> No {
+    no_with_context(script, deployment_max_new_tokens, absolute_ceiling, 8_192).await
+}
+
+async fn no_with_context(
     script: Vec<String>,
     deployment_max_new_tokens: u32,
     absolute_ceiling: u32,
+    n_ctx: u32,
 ) -> No {
     static LOG: std::sync::Once = std::sync::Once::new();
     LOG.call_once(|| {
@@ -388,6 +441,9 @@ async fn no(
     let script = Arc::new(script);
     let emitted = Arc::new(AtomicUsize::new(0));
     let prompt_visto = Arc::new(std::sync::Mutex::new(String::new()));
+    let peer_http = Arc::new(crate::peer_client::PeerClients::new(
+        std::time::Duration::from_secs(600),
+    ));
     let mut urls = Vec::new();
     for i in 0..2 {
         urls.push(
@@ -396,6 +452,7 @@ async fn no(
                 script: script.clone(),
                 emitted: emitted.clone(),
                 prompt_visto: prompt_visto.clone(),
+                peer_http: peer_http.clone(),
             })
             .await,
         );
@@ -425,10 +482,19 @@ async fn no(
     let mut config = testkit::spec_config();
     config.speculative_decoding_enabled = false;
     config.max_new_tokens = deployment_max_new_tokens;
+    config.n_ctx = n_ctx;
     state.runtime.seed_config_for_test(config).await;
     {
         let mut auth = state.auth.write().await;
         auth.max_output_tokens = absolute_ceiling;
+        auth.api_keys.push(crate::config::ApiKey {
+            id: "claude-code-contract".into(),
+            key: API_CHAVE.into(),
+            label: "claude-code".into(),
+            node_id: "eu".into(),
+            active: true,
+            created_at: String::new(),
+        });
     }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -786,6 +852,114 @@ async fn the_streamed_tool_call_carries_complete_arguments() {
     assert!(!fluxo.texto().contains("<tool_call>"), "{}", fluxo.texto());
 }
 
+/// A reprodução grande do caso do captain: com capacidade declarada de
+/// 50000, as 847 linhas cabem e a chamada chega completa mesmo atravessando
+/// várias pernas de 1024 tokens.
+#[tokio::test]
+async fn a_large_html_tool_call_fits_a_declared_50000_token_capacity() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+
+    let corpo = post_json(&no, pedido(50_000, false, true)).await;
+    let escolha = &corpo["choices"][0];
+    assert_eq!(escolha["finish_reason"], "tool_calls");
+    assert_eq!(
+        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
+        50_000
+    );
+    assert_eq!(corpo["x_pom"]["partial"], false);
+
+    let bruto = escolha["message"]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments é string JSON");
+    let argumentos: Value = serde_json::from_str(bruto).expect("chamada completa é JSON");
+    assert_eq!(argumentos["path"], "/tmp/index.html");
+    assert!(argumentos["content"]
+        .as_str()
+        .expect("content")
+        .contains("data-line=\"846\""));
+}
+
+/// A mesma reprodução em 8192 tokens não pode ser "resolvida" com folga:
+/// o cliente recebe exatamente o teto, a chamada volta estruturada e os
+/// argumentos ficam deliberadamente incompletos para não serem executados.
+#[tokio::test]
+async fn a_large_openai_tool_call_at_8192_is_structured_and_terminal() {
+    let no = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+
+    let corpo = post_json(&no, pedido(8_192, false, true)).await;
+    let escolha = &corpo["choices"][0];
+    assert_eq!(escolha["finish_reason"], "length");
+    assert_eq!(corpo["usage"]["completion_tokens"], 8_192);
+    assert_eq!(
+        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
+        50_000
+    );
+    assert_eq!(corpo["x_pom"]["partial"], true);
+    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
+
+    let chamada = &escolha["message"]["tool_calls"][0];
+    assert_eq!(chamada["function"]["name"], "write_file");
+    let argumentos = chamada["function"]["arguments"]
+        .as_str()
+        .expect("arguments é string JSON");
+    assert!(!argumentos.contains("<tool_call>"), "marcação crua vazou");
+    assert!(serde_json::from_str::<Value>(argumentos).is_err());
+}
+
+/// O adaptador Anthropic expõe a mesma chamada grande como bloco `tool_use`:
+/// completa quando cabe, e incompleta com `stop_reason: max_tokens` quando o
+/// teto de 8192 cai dentro do parâmetro.
+#[tokio::test]
+async fn a_large_anthropic_tool_call_respects_50000_and_8192_separately() {
+    let ferramenta = json!({
+        "name": "write_file",
+        "description": "Escreve um arquivo",
+        "input_schema": {"type": "object", "properties": {}},
+    });
+
+    let completo = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let corpo = post_messages(
+        &completo,
+        json!({
+            "model": "lab",
+            "max_tokens": 50_000,
+            "messages": [{"role": "user", "content": "escreva o arquivo"}],
+            "tools": [ferramenta.clone()],
+        }),
+    )
+    .await;
+    assert_eq!(corpo["stop_reason"], "tool_use");
+    assert_eq!(
+        corpo["x_pom"]["output_limits"]["absolute_max_tokens"],
+        50_000
+    );
+    assert!(corpo["content"][0]["input"]["content"]
+        .as_str()
+        .expect("content")
+        .contains("data-line=\"846\""));
+
+    let cortado = no_with_context(large_html_tool_script(), 1_024, 50_000, 65_536).await;
+    let corpo = post_messages(
+        &cortado,
+        json!({
+            "model": "lab",
+            "max_tokens": 8_192,
+            "messages": [{"role": "user", "content": "escreva o arquivo"}],
+            "tools": [ferramenta],
+        }),
+    )
+    .await;
+    assert_eq!(corpo["stop_reason"], "max_tokens");
+    assert_eq!(corpo["usage"]["output_tokens"], 8_192);
+    assert_eq!(corpo["x_pom"]["partial"], true);
+    assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
+    assert_eq!(corpo["content"][0]["type"], "tool_use");
+    let content = corpo["content"][0]["input"]["content"]
+        .as_str()
+        .expect("content");
+    assert!(!content.contains("data-line=\"846\""));
+}
+
 /// **O defeito do captain, virado do avesso.** Medido no ksia vivo: 2 pedaços,
 /// os dois aos 11,01 s - os 663 caracteres chegavam todos de uma vez, no fim,
 /// e o usuário encarava uma tela parada. Agora o primeiro fragmento chega
@@ -873,6 +1047,157 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
 
     let modelo = &corpo["data"][0];
     assert_eq!(modelo["top_provider"]["max_completion_tokens"], 4_096);
+}
+
+/// Anthropic SDKs can send both authentication headers. A bad Bearer header
+/// must not mask a valid `x-api-key`, and the same rule applies to both API
+/// surfaces. Two invalid credentials still remain a 403.
+#[tokio::test]
+async fn either_valid_auth_header_is_accepted_on_models_and_messages() {
+    let no = no(plain_script(), 8, 8_192).await;
+    let client = reqwest::Client::new();
+
+    let models = client
+        .get(format!("{}/v1/models", no.base))
+        .header("authorization", "Bearer invalid-bearer")
+        .header("x-api-key", API_CHAVE)
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(models.status(), reqwest::StatusCode::OK);
+
+    let messages = client
+        .post(format!("{}/v1/messages", no.base))
+        .header("authorization", "Bearer invalid-bearer")
+        .header("x-api-key", API_CHAVE)
+        .json(&json!({
+            "model": "lab",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "oi"}],
+        }))
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(messages.status(), reqwest::StatusCode::OK);
+
+    let both_invalid = client
+        .get(format!("{}/v1/models", no.base))
+        .header("authorization", "Bearer invalid-bearer")
+        .header("x-api-key", "invalid-api-key")
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(both_invalid.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let messages_invalid = client
+        .post(format!("{}/v1/messages", no.base))
+        .header("authorization", "Bearer invalid-bearer")
+        .header("x-api-key", "invalid-api-key")
+        .json(&json!({
+            "model": "lab",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "oi"}],
+        }))
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(messages_invalid.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let bearer = client
+        .get(format!("{}/v1/models", no.base))
+        .header("authorization", format!("Bearer {API_CHAVE}"))
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(bearer.status(), reqwest::StatusCode::OK);
+
+    let x_api_key = client
+        .get(format!("{}/v1/models", no.base))
+        .header("x-api-key", API_CHAVE)
+        .send()
+        .await
+        .expect("resposta HTTP");
+    assert_eq!(x_api_key.status(), reqwest::StatusCode::OK);
+}
+
+/// A lista precisa ser autodetectável por Claude Code e OpenCode ao mesmo
+/// tempo. Os campos Anthropic extras são ignorados pelos clientes OpenAI.
+#[tokio::test]
+async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
+    let no = no_with_context(runaway_script(), 8, 50_000, 100_000).await;
+
+    let corpo: Value = reqwest::Client::new()
+        .get(format!("{}/v1/models", no.base))
+        .header("x-api-key", API_CHAVE)
+        .send()
+        .await
+        .expect("resposta HTTP")
+        .json()
+        .await
+        .expect("corpo JSON");
+
+    assert_eq!(corpo["object"], "list");
+    assert_eq!(corpo["has_more"], false);
+    let modelo = &corpo["data"][0];
+    assert_eq!(modelo["id"], "lab");
+    assert_eq!(modelo["type"], "model");
+    assert_eq!(modelo["max_input_tokens"], 100_000);
+    assert_eq!(modelo["max_tokens"], 50_000);
+    assert_eq!(modelo["context_length"], 100_000);
+    assert_eq!(modelo["top_provider"]["max_completion_tokens"], 50_000);
+}
+
+/// OpenCode envia o nome novo do limite e pode acrescentar campos opcionais
+/// do protocolo OpenAI. O gateway deve honrar `max_completion_tokens` sem
+/// exigir que o cliente também mande o nome antigo.
+#[tokio::test]
+async fn openai_chat_completions_accepts_max_completion_tokens() {
+    let no = no(runaway_script(), 8, 8_192).await;
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", no.base))
+        .header("authorization", format!("Bearer {API_CHAVE}"))
+        .json(&json!({
+            "model": "lab",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "oi"}]}],
+            "max_completion_tokens": 5,
+            "stream": false,
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "response_format": {"type": "text"},
+        }))
+        .send()
+        .await
+        .expect("resposta HTTP");
+
+    assert_eq!(resposta.status(), reqwest::StatusCode::OK);
+    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    assert_eq!(corpo["choices"][0]["finish_reason"], "length");
+    assert_eq!(corpo["usage"]["completion_tokens"], 5);
+    assert_eq!(corpo["x_pom"]["partial"], false);
+}
+
+#[tokio::test]
+async fn max_completion_tokens_above_the_50k_capacity_is_rejected() {
+    let no = no_with_context(runaway_script(), 8, 50_000, 100_000).await;
+
+    let resposta = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", no.base))
+        .header("x-api-key", API_CHAVE)
+        .json(&json!({
+            "model": "lab",
+            "messages": [{"role": "user", "content": "oi"}],
+            "max_completion_tokens": 50_001,
+        }))
+        .send()
+        .await
+        .expect("resposta HTTP");
+
+    assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
+    let corpo: Value = resposta.json().await.expect("corpo JSON");
+    let mensagem = corpo["error"]["message"].as_str().expect("mensagem");
+    assert!(mensagem.contains("50001"), "{mensagem}");
+    assert!(mensagem.contains("50000"), "{mensagem}");
 }
 
 // ── O teto do CLIENTE caindo dentro da chamada ───────────────────────────────
@@ -984,7 +1309,10 @@ async fn a_tool_call_cut_by_the_ceiling_comes_back_structured_and_incomplete() {
         serde_json::from_str::<Value>(bruto).is_err(),
         "argumentos de uma chamada cortada não podem parsear: {bruto:?}"
     );
-    assert!(bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#), "{bruto:?}");
+    assert!(
+        bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
+        "{bruto:?}"
+    );
     // O último parâmetro entra com a aspa de abertura e **sem** a de
     // fechamento, e nada do que o modelo escreveu é aparado: a quebra de linha
     // final é conteúdo, não sobra.
@@ -1039,7 +1367,10 @@ async fn the_streamed_tool_call_cut_by_the_ceiling_is_structured_and_incomplete(
         serde_json::from_str::<Value>(&bruto).is_err(),
         "argumentos de uma chamada cortada não podem parsear: {bruto:?}"
     );
-    assert!(bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#), "{bruto:?}");
+    assert!(
+        bruto.starts_with(r#"{"path":"/tmp/calc.py","content":"#),
+        "{bruto:?}"
+    );
     assert!(bruto.ends_with(r"linha_12 = 12 * 2\n"), "{bruto:?}");
 
     let texto = fluxo.texto();
@@ -1100,7 +1431,10 @@ async fn the_anthropic_adapter_returns_the_cut_call_as_a_trailing_tool_use_block
         .filter_map(|b| b["text"].as_str())
         .collect::<Vec<_>>()
         .join("");
-    assert!(!texto.contains("<tool_call>") && !texto.contains("<function="), "{texto:?}");
+    assert!(
+        !texto.contains("<tool_call>") && !texto.contains("<function="),
+        "{texto:?}"
+    );
 
     assert_eq!(corpo["x_pom"]["truncated_tool_call"], true);
     assert_eq!(corpo["x_pom"]["partial"], true);
@@ -1130,7 +1464,10 @@ async fn a_request_above_the_declared_capacity_is_refused_not_quietly_shrunk() {
     assert_eq!(resposta.status(), reqwest::StatusCode::BAD_REQUEST);
     let corpo: Value = resposta.json().await.expect("corpo JSON");
     let mensagem = corpo["error"]["message"].as_str().expect("mensagem");
-    assert!(mensagem.contains("100000") && mensagem.contains("37"), "{mensagem}");
+    assert!(
+        mensagem.contains("100000") && mensagem.contains("37"),
+        "{mensagem}"
+    );
     assert!(mensagem.contains("max_completion_tokens"), "{mensagem}");
     // E nada foi gerado: a recusa acontece antes da geração.
     assert!(corpo.get("choices").is_none(), "{corpo}");
@@ -1278,7 +1615,11 @@ async fn without_a_task_budget_the_generation_is_untouched() {
     let prompt = no.prompt_da_geracao();
     assert!(!prompt.contains("task_budget"), "{prompt:?}");
     assert_eq!(prompt, "User: escreva o arquivo");
-    assert!(corpo["x_pom"]["task_budget"].is_null(), "{}", corpo["x_pom"]);
+    assert!(
+        corpo["x_pom"]["task_budget"].is_null(),
+        "{}",
+        corpo["x_pom"]
+    );
 }
 
 /// O mínimo é o dos provedores: abaixo dele a API responde 400, porque um

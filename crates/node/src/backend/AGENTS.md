@@ -18,9 +18,11 @@ behind an auth extractor.
 ## Files
 
 - `auth.rs` (132) - auth extractors. `ConnectionAuth` (connection-key bearer
-  only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, either
+  only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, from
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
-  `is_valid_inference_token` aplica a mesma regra na porta 8181: a
+  When both headers are present they are checked independently, so an invalid
+  one cannot hide a valid one; a valid API key still supplies its non-secret
+  `Caller`. `is_valid_inference_token` aplica a mesma regra na porta 8181: a
   `connection_key` compartilhada ou uma API key ativa.
 - `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
@@ -280,8 +282,10 @@ behind an auth extractor.
   como na semântica do provedor.
   `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
   pipeline did not reprocess, read from the trace - the executed number, not the
-  cache's choice; `approx_tokens` = chars/4; `model_ids` from peers + active
-  model; `resolve_model` maps unknown names to the active model;
+  cache's choice; `approx_tokens` = chars/4; `model_ids` comes only from live
+  peer announcements (never the stale CLI default); model objects include both
+  OpenAI and Anthropic discovery fields; `resolve_model` maps unknown names to
+  the active model;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+

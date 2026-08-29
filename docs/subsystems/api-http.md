@@ -84,6 +84,12 @@ haver chave.
 ### OpenAI (`/v1/*`)
 
 Camada de protocolo pura sobre `gateway::generate_stream_with_stops`.
+Todas as rotas `/v1` exigem uma credencial ativa: `Authorization: Bearer
+<chave>` ou `x-api-key: <chave>`. Os headers são candidatos independentes:
+quando os dois chegam, uma credencial válida autentica mesmo que a outra esteja
+inválida; dois inválidos continuam HTTP 403. A `connection_key` identifica o
+operador e uma API key ativa preserva seu `Caller` no log de auditoria.
+Esse mapeamento segue a [autenticação da API Claude](https://platform.claude.com/docs/en/manage-claude/authentication): `ANTHROPIC_API_KEY` usa `x-api-key` e um token Bearer usa `Authorization`.
 `render_prompt` achata a conversa em um único texto e **rotula todo turno,
 inclusive o primeiro** - é o que faz o prompt de um turno ser prefixo exato do
 prompt do seguinte, sem o que o cache de prefixo nunca acertaria na transição
@@ -133,15 +139,22 @@ ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é
 enviada ao cliente. CORS `*` para harnesses
 de navegador.
 
-`GET /v1/models` e `GET /v1/models/{id}` anunciam os limites da implantação
-carregada: `context_length` é `n_ctx` e `top_provider.max_completion_tokens`
-é o máximo efetivo sem prompt - `min(n_ctx, max_output_tokens)`, o teto da
-**requisição**, no formato convencional usado por gateways compatíveis.
-Anunciar o `max_new_tokens` da implantação aqui faria o cliente pedir menos do
-que o nó entrega. Esses campos vêm do
-`NodeConfig` em execução e do `pom.json`, e não de uma constante do adaptador. Quando não há
-configuração de runtime carregada, os limites aparecem como `null` porque o
-gateway não deve inventar capacidade.
+`GET /v1/models` e `GET /v1/models/{id}` anunciam somente modelos publicados
+por peers vivos, inclusive o modelo local quando há uma atribuição ativa. O
+`default_model` do CLI e o registro persistido de deployments não entram nessa
+autodetecção, então um unload não deixa um modelo fantasma no catálogo. A lista
+traz o envelope de paginação Anthropic (`first_id`, `last_id`, `has_more`) e
+campos compatíveis com os dois clientes: `type: "model"`, `created_at`,
+`display_name`, `capabilities`, `max_input_tokens`, `max_tokens`, além de
+`context_length` e `top_provider.max_completion_tokens` para OpenAI. O campo
+`created_at` usa o epoch RFC 3339 quando a data de release local é desconhecida.
+
+Os limites vêm do `NodeConfig` em execução e do `pom.json`: `context_length` e
+`max_input_tokens` são `n_ctx`, enquanto `max_tokens` e
+`top_provider.max_completion_tokens` são `min(n_ctx, max_output_tokens)`, a
+capacidade da **requisição**, não o teto de uma perna. Anunciar o
+`max_new_tokens` da implantação aqui faria o cliente pedir menos do que o nó
+entrega. Quando não há runtime carregado, os limites aparecem como `null`.
 
 ### Anthropic (`/v1/messages`)
 
@@ -156,6 +169,14 @@ efetivo e o de uma perna; `x_pom.continuation_legs`, quantas pernas foram
 costuradas; `x_pom.timings` usa a mesma convenção do OpenAI; uma saída cortada
 pelo orçamento **total** usa `stop_reason: "max_tokens"`, e uma perna esgotada
 nunca.
+
+Para Claude Code, `ANTHROPIC_BASE_URL` deve apontar para a origem do gateway,
+por exemplo `http://ksia:8080`; o SDK acrescenta `/v1/messages`. A variável
+`ANTHROPIC_API_KEY` é enviada como `x-api-key`; `ANTHROPIC_AUTH_TOKEN` é
+enviado como `Authorization: Bearer`. O valor precisa ser exatamente a
+`connection_key` ou uma API key ativa do `pom.json`, e nunca uma chave
+Anthropic externa. Se o cliente enviar os dois headers, o gateway considera os
+dois independentemente, sem registrar nenhum segredo.
 
 #### Streaming incremental dos argumentos
 
@@ -286,6 +307,13 @@ peers solicitados), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
+
+`GET /api/ui/deployments` deduplica as cópias persistidas por `deploy_id` e
+marca `serving` somente quando um peer vivo anuncia o deployment. O registro
+pode continuar visível com `serving: false` para diagnóstico e recuperação,
+mas não publica modelo para os clientes de inferência. `?local=true` responde
+somente o registro local e não faz fan-out; `/v1/models` usa a lista viva do
+gateway, não esse catálogo persistido.
 
 As rotas remotas `/api/ui/model-provider/search`, `/details`, `/storage` e
 `/downloads` expõem o catálogo e os jobs do `ModelProvider` sem repassar

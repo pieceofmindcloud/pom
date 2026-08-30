@@ -59,6 +59,18 @@ impl ModelSource {
     }
 }
 
+/// Filesystem identity of the metadata generation already applied to a model.
+///
+/// This is deliberately not serialized. It only coordinates the in-process
+/// catalog cache across inventory generations; the strong source hash belongs
+/// to transfer verification, never to the metadata path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MetadataIdentity {
+    pub(crate) path: String,
+    pub(crate) size: u64,
+    pub(crate) mtime: u64,
+}
+
 /// One GGUF file found on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredModel {
@@ -71,6 +83,25 @@ pub struct DiscoveredModel {
     /// Absolute path of the `.gguf` file.
     pub path: String,
     pub size_bytes: u64,
+    /// True when the source GGUF declares a tensor-split set with more than
+    /// one part. The catalog exposes only the first part as the selectable
+    /// model, because the set is one logical source.
+    #[serde(default)]
+    pub multipart: bool,
+    /// Physical parts that make up a multipart source, in split order.
+    #[serde(default)]
+    pub multipart_parts: Vec<MultipartPart>,
+    /// Concrete reason a declared multipart source cannot currently be used.
+    #[serde(default)]
+    pub multipart_error: Option<String>,
+    /// Erro terminal ao ler o cabeçalho deste arquivo nesta geração do
+    /// catálogo. Um modelo quebrado não impede os demais de aparecerem.
+    #[serde(default)]
+    pub metadata_error: Option<String>,
+    /// Identity of the file for which the metadata fields below were read.
+    /// Kept in memory so a refreshed inventory can reuse completed work.
+    #[serde(skip)]
+    pub(crate) metadata_identity: Option<MetadataIdentity>,
     pub architecture: Option<String>,
     /// True only when the GGUF header reports more than one expert.
     #[serde(default)]
@@ -106,6 +137,14 @@ pub struct DiscoveredModel {
     /// GGUF. Ausente quando a leitura não pôde ser confirmada.
     #[serde(default)]
     pub capabilities: Option<ModelCapabilityEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultipartPart {
+    pub index: u32,
+    pub path: String,
+    pub bytes: u64,
+    pub tensor_count: u64,
 }
 
 impl DiscoveredModel {
@@ -169,12 +208,12 @@ pub struct ScannedRoot {
 
 type HeaderKey = (String, u64, u64);
 
-fn header_cache() -> &'static Mutex<HashMap<HeaderKey, Option<GgufInfo>>> {
-    static CACHE: OnceLock<Mutex<HashMap<HeaderKey, Option<GgufInfo>>>> = OnceLock::new();
+fn header_cache() -> &'static Mutex<HashMap<HeaderKey, Result<GgufInfo, String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<HeaderKey, Result<GgufInfo, String>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn cached_info(path: &Path, size: u64, mtime: u64) -> Option<GgufInfo> {
+fn cached_info(path: &Path, size: u64, mtime: u64) -> Result<GgufInfo, String> {
     let key = (path.to_string_lossy().into_owned(), size, mtime);
     if let Some(hit) = header_cache()
         .lock()
@@ -183,7 +222,7 @@ fn cached_info(path: &Path, size: u64, mtime: u64) -> Option<GgufInfo> {
     {
         return hit;
     }
-    let info = gguf::read_info(path).ok();
+    let info = gguf::read_info(path).map_err(|error| format!("{error:#}"));
     if let Ok(mut c) = header_cache().lock() {
         c.insert(key, info.clone());
     }
@@ -510,6 +549,11 @@ fn describe(
         source_label: source.label(),
         path: path.to_string_lossy().into_owned(),
         size_bytes,
+        multipart: false,
+        multipart_parts: Vec::new(),
+        multipart_error: None,
+        metadata_error: None,
+        metadata_identity: None,
         architecture: None,
         is_moe: false,
         total_layers,
@@ -539,31 +583,73 @@ fn file_mtime_fingerprint(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+fn metadata_identity(path: &Path, meta: &std::fs::Metadata) -> MetadataIdentity {
+    MetadataIdentity {
+        path: path.to_string_lossy().into_owned(),
+        size: meta.len(),
+        mtime: file_mtime_fingerprint(meta),
+    }
+}
+
+pub(crate) fn current_metadata_identity(model: &DiscoveredModel) -> Option<MetadataIdentity> {
+    let path = Path::new(&model.path);
+    let meta = std::fs::metadata(path).ok()?;
+    Some(metadata_identity(path, &meta))
+}
+
+/// Whether a model's metadata still describes the bytes currently on disk.
+pub(crate) fn metadata_is_current(model: &DiscoveredModel) -> bool {
+    model
+        .metadata_identity
+        .as_ref()
+        .is_some_and(|expected| current_metadata_identity(model).as_ref() == Some(expected))
+}
+
 enum EnrichResult {
     /// The header and optional capability evidence were read successfully.
     Ready,
-    /// The file could not be read yet. Keep it visible and retry the phase.
-    Retry,
+    /// The file could not be read in this generation. Keep it visible with a
+    /// concrete error, and let a later invalidation create a new generation.
+    Failed,
     /// The fast scan found an item that is not a runnable model.
     Drop,
 }
 
 /// Read the header for one item after the fast inventory is already visible.
 fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
-    let path = Path::new(&model.path);
-    let Some(meta) = std::fs::metadata(path).ok() else {
-        return EnrichResult::Retry;
+    let path = PathBuf::from(&model.path);
+    let Some(meta) = std::fs::metadata(&path).ok() else {
+        model.metadata_identity = None;
+        model.metadata_error = Some(format!("arquivo não encontrado: {}", path.display()));
+        return EnrichResult::Failed;
     };
+    let identity = metadata_identity(&path, &meta);
+    if model
+        .metadata_identity
+        .as_ref()
+        .is_some_and(|previous| previous == &identity)
+    {
+        return EnrichResult::Ready;
+    }
+    model.metadata_identity = Some(identity);
     model.size_bytes = meta.len();
     if model.size_bytes < 1024 {
-        return EnrichResult::Drop;
+        model.metadata_error = Some(format!(
+            "arquivo GGUF pequeno demais: {} bytes",
+            model.size_bytes
+        ));
+        return EnrichResult::Failed;
     }
     let filename = path
         .file_name()
         .map(|name| name.to_string_lossy())
         .unwrap_or_default();
-    let Some(info) = cached_info(path, model.size_bytes, file_mtime_fingerprint(&meta)) else {
-        return EnrichResult::Retry;
+    let info = match cached_info(&path, model.size_bytes, file_mtime_fingerprint(&meta)) {
+        Ok(info) => info,
+        Err(error) => {
+            model.metadata_error = Some(format!("não foi possível ler o cabeçalho GGUF: {error}"));
+            return EnrichResult::Failed;
+        }
     };
     if info.architecture.as_deref() == Some("clip") || filename.starts_with("mmproj") {
         return EnrichResult::Drop;
@@ -571,13 +657,34 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
 
     model.architecture = info.architecture.clone();
     model.is_moe = info.is_moe();
+    if let Err(error) = fill_multipart_metadata(model, &path, &info) {
+        if info.split_count.unwrap_or(1) > 1 {
+            let split_count = info.split_count.unwrap_or_default();
+            model.multipart = true;
+            model.multipart_parts.clear();
+            model.multipart_error = Some(format!(
+                "GGUF multipart declara split.count={split_count}, mas o conjunto não pôde ser lido: {error}. Coloque todas as partes no mesmo diretório e selecione a primeira parte."
+            ));
+            // The first physical file is not the model size. Zero makes the UI
+            // refuse to present a false byte count until the set is complete.
+            model.size_bytes = 0;
+        } else {
+            model.metadata_error = Some(format!(
+                "não foi possível descrever a fonte GGUF: {error:#}"
+            ));
+            return EnrichResult::Failed;
+        }
+    } else {
+        model.multipart_error = None;
+    }
+    model.metadata_error = None;
     // The catalog's second phase must finish after one lightweight header and
     // tensor-name pass. Reading the whole tensor layout here made a slow volume hold
     // `metadata_complete` false for the entire catalog, even though the
     // selected shard ranges already came from their manifests. MTP evidence
     // uses only the lightweight tensor-name scan; the full layout pass remains
     // available through `gguf::read_capability_evidence` callers that need it.
-    let tensor_mtp = gguf::has_nextn_tensors(path).ok();
+    let tensor_mtp = gguf::has_nextn_tensors(&path).ok();
     model.capabilities = Some(ModelCapabilityEvidence {
         thinking: info.thinking_capability(),
         mtp: match (info.nextn_predict_layers, tensor_mtp) {
@@ -595,6 +702,30 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
         };
     }
     EnrichResult::Ready
+}
+
+fn fill_multipart_metadata(
+    model: &mut DiscoveredModel,
+    path: &Path,
+    info: &GgufInfo,
+) -> anyhow::Result<()> {
+    let metadata = crate::multipart::catalog_metadata(path, info)?;
+    model.multipart = metadata.multipart;
+    let source_bytes = metadata.source_bytes;
+    model.multipart_parts = metadata
+        .parts
+        .into_iter()
+        .map(|part| MultipartPart {
+            index: part.index,
+            path: part.path.to_string_lossy().into_owned(),
+            bytes: part.bytes,
+            tensor_count: part.tensor_count,
+        })
+        .collect();
+    if metadata.multipart {
+        model.size_bytes = source_bytes;
+    }
+    Ok(())
 }
 
 /// LM Studio stores models as `<publisher>/<repo>/<file>.gguf`; show that.
@@ -1134,20 +1265,18 @@ pub fn discover_fast(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
 /// it separate from `discover_fast` is what lets the HTTP catalog answer with
 /// names and paths while a slow volume is still being read.
 pub fn enrich(mut catalog: Catalog) -> Catalog {
-    let mut complete = true;
     catalog
         .models
-        .retain_mut(|model| match enrich_model(model) {
-            EnrichResult::Ready => true,
-            EnrichResult::Retry => {
-                complete = false;
-                true
-            }
-            EnrichResult::Drop => false,
-        });
+        .retain_mut(|model| !matches!(enrich_model(model), EnrichResult::Drop));
     catalog.shard_sets = build_shard_sets(&catalog.models);
-    catalog.metadata_complete = complete;
+    catalog.metadata_complete = true;
     catalog
+}
+
+/// Rebuild the derived slice grouping after metadata from one generation is
+/// copied into another.
+pub(crate) fn rebuild_shard_sets(catalog: &mut Catalog) {
+    catalog.shard_sets = build_shard_sets(&catalog.models);
 }
 
 /// Full discovery for non-UI callers that still need a complete answer before
@@ -1199,6 +1328,11 @@ mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
+            metadata_error: None,
+            metadata_identity: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -1231,6 +1365,11 @@ mod tests {
                 tp_rank: tensor_parallel.then_some(if id == "c" { 0 } else { 1 }),
                 tp_size: tensor_parallel.then_some(2),
                 capabilities: None,
+                multipart: false,
+                multipart_parts: Vec::new(),
+                multipart_error: None,
+                metadata_error: None,
+                metadata_identity: None,
             };
             if tensor_parallel {
                 model.name = format!("{id}-tp.gguf");
@@ -1353,6 +1492,11 @@ mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
+            metadata_error: None,
+            metadata_identity: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));
@@ -1388,7 +1532,7 @@ mod tests {
     }
 
     #[test]
-    fn enrichment_keeps_unreadable_model_pending() {
+    fn enrichment_marks_unreadable_model_terminal_without_blocking_catalog() {
         let root =
             std::env::temp_dir().join(format!("pom-cat-invalid-{}", uuid::Uuid::new_v4().simple()));
         let models = root.join("models");
@@ -1396,11 +1540,75 @@ mod tests {
         std::fs::create_dir_all(&models).unwrap();
         std::fs::create_dir_all(&shards).unwrap();
         std::fs::write(models.join("broken.gguf"), vec![0u8; 1024]).unwrap();
+        std::fs::write(
+            models.join("valid.gguf"),
+            crate::splitter::test_gguf_bytes(1),
+        )
+        .unwrap();
 
         let enriched = enrich(discover_fast(&[models], &shards));
-        assert!(!enriched.metadata_complete);
-        assert_eq!(enriched.models.len(), 1);
-        assert_eq!(enriched.models[0].architecture, None);
+        assert!(enriched.metadata_complete);
+        assert_eq!(enriched.models.len(), 2);
+        let broken = enriched
+            .models
+            .iter()
+            .find(|model| model.name == "broken.gguf")
+            .unwrap();
+        assert_eq!(broken.architecture, None);
+        assert!(broken.metadata_error.is_some());
+        let valid = enriched
+            .models
+            .iter()
+            .find(|model| model.name == "valid.gguf")
+            .unwrap();
+        assert_eq!(valid.architecture.as_deref(), Some("llama"));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn enrichment_does_not_require_validating_tensor_payload() {
+        let root =
+            std::env::temp_dir().join(format!("pom-cat-header-{}", uuid::Uuid::new_v4().simple()));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+
+        // `read_info` only needs the GGUF KV header. The tensor table below is
+        // intentionally unusable so the catalog test proves that enrichment
+        // does not open the full tensor source just to publish architecture.
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x4655_4747u32.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&string("general.architecture"));
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&string("llama"));
+        bytes.extend_from_slice(&string("blk.0.weight"));
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&4u64.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        bytes.resize(1024, 0);
+        let path = models.join("header-only.gguf");
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(1 << 30)
+            .unwrap();
+
+        let enriched = enrich(discover_fast(&[models], &shards));
+        assert!(enriched.metadata_complete);
+        assert_eq!(enriched.models[0].architecture.as_deref(), Some("llama"));
 
         std::fs::remove_dir_all(root).ok();
     }

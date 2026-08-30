@@ -11,6 +11,9 @@ mod auth;
 mod brand;
 #[path = "backend/capabilities.rs"]
 mod capabilities;
+#[cfg(test)]
+#[path = "backend/continuation_lab.rs"]
+mod continuation_lab;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "inference/collective.rs"]
@@ -65,6 +68,8 @@ mod model_provider_backend;
 pub(crate) mod moe;
 #[path = "inference/mtp.rs"]
 mod mtp;
+#[path = "models/multipart.rs"]
+pub(crate) mod multipart;
 #[path = "network/network.rs"]
 mod network;
 #[path = "models/ollama.rs"]
@@ -115,6 +120,8 @@ mod splitter;
 mod storage;
 #[path = "utils/sysmon.rs"]
 mod sysmon;
+#[path = "utils/thermal.rs"]
+mod thermal;
 #[path = "network/tls.rs"]
 pub mod tls;
 #[path = "network/tls_policy.rs"]
@@ -250,6 +257,11 @@ struct Args {
     /// Prompt tokens pushed through the pipeline per round trip.
     #[arg(long, default_value = "512")]
     prefill_chunk_tokens: u32,
+
+    /// Profundidade do pipeline de prefill: pedaços mantidos em voo pela cadeia
+    /// ao mesmo tempo. Efetivo entre 1 (sem sobreposição) e 8.
+    #[arg(long, default_value = "8")]
+    prefill_max_inflight_chunks: u32,
 
     /// Predição multi-token pelo bloco `nextn` do modelo (MTP), quando ele
     /// tiver um e este nó servir o modelo inteiro. Não é a "decodificação
@@ -728,6 +740,9 @@ async fn main() -> Result<()> {
         tls_server.clone(),
         Some(auth_config.clone()),
     );
+    node_runtime
+        .start_thermal_monitor(auth_config.clone())
+        .await;
 
     // `--model` na linha de comando é intenção explícita e vence qualquer
     // fatia anotada por um reinício anterior. Este caminho nunca consome o
@@ -756,6 +771,7 @@ async fn main() -> Result<()> {
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
             offload_kqv: !args.kv_cache_ram,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: config::KvCacheType::F16,
             cache_type_v: config::KvCacheType::F16,
             fit_memory: true,
@@ -763,10 +779,11 @@ async fn main() -> Result<()> {
             max_sessions: args.max_sessions,
             batching_enabled: true,
             max_queue_requests: 128,
-            batch_window_ms: 4,
+            batch_window_ms: 0,
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: args.prefill_chunk_tokens,
+            prefill_max_inflight_chunks: args.prefill_max_inflight_chunks,
             max_new_tokens: args.max_new_tokens,
             temperature: args.temperature,
             top_p: args.top_p,
@@ -813,6 +830,7 @@ async fn main() -> Result<()> {
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
+            audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
             gateway_port,
             auth: auth_config,
             transfers: Default::default(),
@@ -999,6 +1017,10 @@ fn runtime_mem_source(status: &runtime::RuntimeStatus) -> String {
         ServerState::Starting => format!("inference_server (subindo: {})", status.detail),
         ServerState::Failed => format!("❌ inference_server parado: {}", status.detail),
         ServerState::Disabled => format!("inference_server desligado: {}", status.detail),
+        ServerState::Thermal => format!(
+            "⚠️ inference_server suspenso por temperatura: {}",
+            status.detail
+        ),
     }
 }
 
@@ -1033,6 +1055,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,
+        thermal: Default::default(),
         cache_type_k: config::KvCacheType::F16,
         cache_type_v: config::KvCacheType::F16,
         connection_key: String::new(),
@@ -1382,6 +1405,7 @@ async fn start_gateway_only(
         tls_server.clone(),
         Some(auth_state.clone()),
     );
+    node_runtime.start_thermal_monitor(auth_state.clone()).await;
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
     // nova: o nó volta servindo o que servia. Só aqui, porque este é o
@@ -1425,6 +1449,7 @@ async fn start_gateway_only(
         prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
+        audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
         gateway_port,
         auth: auth_state,
         transfers: Default::default(),

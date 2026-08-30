@@ -10,14 +10,13 @@
 //! parameter, not an assumption**: changing what travels on the wire touches
 //! `encode`/`decode` here and nothing else in the pipeline.
 //!
-//! Two deliberate choices, both about bytes on the wire — which is what decides
+//! Two deliberate choices, both about bytes on the wire - which is what decides
 //! time-to-first-word once the cluster runs over the internet rather than a LAN:
 //!
 //! * the body is **binary**, where it used to be base64 (which inflated every
 //!   transfer by a third for nothing);
-//! * the tensor travels as **f16**, half the size of f32. The maths stays f32
-//!   on both ends; f16 is the precision the GPU computes in anyway, so this
-//!   costs no quality — unlike int8, which was considered and refused.
+//! * the tensor travels as **f16** by default, half the size of f32. The maths
+//!   stays f32 on both ends; f8 is also available as an explicit experiment.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -43,20 +42,30 @@ pub const MAX_BATCH_PAYLOAD_BYTES: usize = MAX_FRAME_PAYLOAD_BYTES
     .saturating_sub(MAX_BATCH_HEADER_BYTES)
     .saturating_sub(4);
 
+/// Shape carried by an inference tensor. The first axis is the token count;
+/// the remaining axes preserve the feature layout required by the receiving
+/// model. A normal residual is `[tokens, n_embd]`; a model with additional
+/// streams may carry `[tokens, n_embd, stream, ...]`.
+pub type TensorShape = Vec<usize>;
+
 /// Marker retained at call boundaries while all inference traffic uses the
-/// canonical batch frame. Compression negotiation is intentionally absent from
-/// the first public protocol.
+/// canonical batch frame. Its variant selects the tensor precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameEncoding {
-    F16,
-}
-
-/// Precision a tensor takes on the wire. Adding one means adding a branch in
-/// `encode`/`decode` and nothing more.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WireDtype {
     F32,
     F16,
+    F8,
+}
+
+/// Precision a tensor takes on the wire. Inference always receives f32 after
+/// decoding, regardless of the selected wire representation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireDtype {
+    F32,
+    #[default]
+    F16,
+    F8,
 }
 
 impl WireDtype {
@@ -64,6 +73,7 @@ impl WireDtype {
         match self {
             WireDtype::F32 => "f32",
             WireDtype::F16 => "f16",
+            WireDtype::F8 => "f8",
         }
     }
 
@@ -71,6 +81,7 @@ impl WireDtype {
         match s {
             "f32" => Ok(WireDtype::F32),
             "f16" => Ok(WireDtype::F16),
+            "f8" => Ok(WireDtype::F8),
             other => Err(anyhow!("dtype de fio desconhecido: {other}")),
         }
     }
@@ -79,6 +90,15 @@ impl WireDtype {
         match self {
             WireDtype::F32 => 4,
             WireDtype::F16 => 2,
+            WireDtype::F8 => 1,
+        }
+    }
+
+    pub fn frame_encoding(self) -> FrameEncoding {
+        match self {
+            WireDtype::F32 => FrameEncoding::F32,
+            WireDtype::F16 => FrameEncoding::F16,
+            WireDtype::F8 => FrameEncoding::F8,
         }
     }
 }
@@ -92,7 +112,7 @@ impl WireDtype {
 pub struct BatchItem {
     pub item_id: String,
     pub session_id: String,
-    pub shape: [usize; 2],
+    pub shape: TensorShape,
     pub dtype: String,
     pub offset: usize,
     pub len: usize,
@@ -120,7 +140,7 @@ pub struct BatchPayloadItem {
     pub item_id: String,
     pub session_id: String,
     pub meta: Value,
-    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub tensor: Option<(Vec<f32>, TensorShape)>,
     pub dtype: WireDtype,
 }
 
@@ -130,7 +150,7 @@ pub struct BatchPayloadItem {
 pub struct DecodedBatchItem {
     pub item_id: String,
     pub meta: Value,
-    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub tensor: Option<(Vec<f32>, TensorShape)>,
     pub dtype: WireDtype,
 }
 
@@ -290,14 +310,12 @@ pub fn encode_batch_item(batch: &BatchFrame, item: &BatchItem) -> Result<Vec<u8>
 /// requests therefore share exactly the same protocol and validation path.
 pub fn encode_batch_single(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<Vec<u8>> {
     let (shape, payload) = match tensor {
         Some((values, shape)) => {
-            let expected_values = shape[0]
-                .checked_mul(shape[1])
-                .ok_or_else(|| anyhow!("shape excede o limite"))?;
+            let expected_values = checked_tensor_values(&shape)?;
             if values.len() != expected_values {
                 return Err(anyhow!(
                     "tensor com {} valores não bate com shape {:?}",
@@ -305,16 +323,10 @@ pub fn encode_batch_single(
                     shape
                 ));
             }
-            let payload = match dtype {
-                WireDtype::F32 => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
-                WireDtype::F16 => values
-                    .iter()
-                    .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
-                    .collect(),
-            };
+            let payload = encode_values(values, &shape, dtype)?;
             (shape, payload)
         }
-        None => ([0, 0], Vec::new()),
+        None => (vec![0, 0], Vec::new()),
     };
     let item_id = meta
         .get("item_id")
@@ -350,7 +362,7 @@ pub fn encode_batch_single(
 
 /// Decode a one-item frame for call sites that need the convenient historical
 /// `(meta, tensor)` shape. Multi-item receivers use `decode_batch_items`.
-pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     let batch = decode_batch(buf)?;
     if batch.items.len() != 1 {
         return Err(anyhow!(
@@ -363,7 +375,7 @@ pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usiz
 
 /// Decode the canonical inference request. All inference traffic is a batch
 /// frame, including a request carrying only one item.
-pub fn decode_inference_request(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+pub fn decode_inference_request(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     decode_batch_single(buf)
 }
 
@@ -404,7 +416,7 @@ fn validate_batch(batch: &BatchFrame) -> Result<()> {
             return Err(anyhow!("item_id duplicado: {}", item.item_id));
         }
         let dtype = WireDtype::parse(&item.dtype)?;
-        let expected_len = checked_tensor_bytes(item.shape, dtype)?;
+        let expected_len = checked_tensor_bytes(&item.shape, dtype)?;
         if item.len != expected_len {
             return Err(anyhow!(
                 "item {} declara {} bytes, esperado {} para shape {:?} em {}",
@@ -435,15 +447,13 @@ fn validate_batch(batch: &BatchFrame) -> Result<()> {
 }
 
 fn encode_tensor_payload(
-    tensor: Option<&(Vec<f32>, [usize; 2])>,
+    tensor: Option<&(Vec<f32>, TensorShape)>,
     dtype: WireDtype,
-) -> Result<([usize; 2], Vec<u8>)> {
+) -> Result<(TensorShape, Vec<u8>)> {
     let Some((values, shape)) = tensor else {
-        return Ok(([0, 0], Vec::new()));
+        return Ok((vec![0, 0], Vec::new()));
     };
-    let expected_values = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected_values = checked_tensor_values(shape)?;
     if values.len() != expected_values {
         return Err(anyhow!(
             "tensor com {} valores não bate com shape {:?}",
@@ -451,21 +461,15 @@ fn encode_tensor_payload(
             shape
         ));
     }
-    let payload = match dtype {
-        WireDtype::F32 => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
-        WireDtype::F16 => values
-            .iter()
-            .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
-            .collect(),
-    };
-    checked_tensor_bytes(*shape, dtype)?;
-    Ok((*shape, payload))
+    let payload = encode_values(values, shape, dtype)?;
+    checked_tensor_bytes(shape, dtype)?;
+    Ok((shape.clone(), payload))
 }
 
 fn decode_batch_item(
     batch: &BatchFrame,
     item: &BatchItem,
-) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     let end = item
         .offset
         .checked_add(item.len)
@@ -475,7 +479,7 @@ fn decode_batch_item(
         return Err(anyhow!("meta do item batch não é um objeto JSON"));
     }
     meta["dtype"] = Value::from(item.dtype.clone());
-    meta["shape"] = Value::from(vec![item.shape[0], item.shape[1]]);
+    meta["shape"] = Value::from(item.shape.clone());
     meta["frame_version"] = Value::from(BATCH_FRAME_VERSION);
     meta["batch_id"] = Value::from(batch.batch_id.clone());
     meta["item_id"] = Value::from(item.item_id.clone());
@@ -486,7 +490,7 @@ fn decode_batch_item(
 /// internal paths that do not need to coalesce with another request.
 pub fn encode(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<Vec<u8>> {
     encode_batch_single(meta, tensor, dtype)
@@ -497,10 +501,15 @@ pub fn encode(
 /// through `frame/v1-batch`.
 pub fn encode_with_encoding(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
-    _encoding: FrameEncoding,
+    tensor: Option<(&[f32], TensorShape)>,
+    encoding: FrameEncoding,
 ) -> Result<Vec<u8>> {
-    encode_batch_single(meta, tensor, WireDtype::F16)
+    let dtype = match encoding {
+        FrameEncoding::F32 => WireDtype::F32,
+        FrameEncoding::F16 => WireDtype::F16,
+        FrameEncoding::F8 => WireDtype::F8,
+    };
+    encode_batch_single(meta, tensor, dtype)
 }
 
 fn frame_bytes(head: Vec<u8>, payload: Vec<u8>) -> Result<Vec<u8>> {
@@ -526,14 +535,14 @@ fn frame_bytes(head: Vec<u8>, payload: Vec<u8>) -> Result<Vec<u8>> {
 
 /// Inverse of [`encode`]. The tensor always comes back as f32 - reduced
 /// precision is a property of the wire, never of the maths.
-pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     decode_batch_single(buf)
 }
 
 fn decode_tensor_payload(
     meta: &Value,
     payload: &[u8],
-) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     if payload.is_empty() {
         return Ok((meta.clone(), None));
     }
@@ -544,16 +553,19 @@ fn decode_tensor_payload(
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|x| x.as_u64().map(|n| n as usize))
-                .collect()
+                .map(|x| {
+                    x.as_u64()
+                        .map(|n| n as usize)
+                        .ok_or_else(|| anyhow!("dimensão de shape não é um inteiro: {x}"))
+                })
+                .collect::<Result<Vec<_>>>()
         })
+        .transpose()?
         .unwrap_or_default();
-    if shape.len() != 2 {
+    if shape.len() < 2 {
         return Err(anyhow!("shape inválido: {:?}", shape));
     }
-    let expected = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected = checked_tensor_values(&shape)?;
     let expected_bytes = expected
         .checked_mul(dtype.bytes_per_value())
         .ok_or_else(|| anyhow!("shape excede o limite"))?;
@@ -580,6 +592,10 @@ fn decode_tensor_payload(
             .chunks_exact(2)
             .map(|c| f16_bits_to_f32(u16::from_le_bytes([c[0], c[1]])))
             .collect(),
+        WireDtype::F8 => payload
+            .iter()
+            .map(|byte| f8_bits_to_f32(*byte))
+            .collect::<Result<Vec<_>>>()?,
     };
     if values.len() != expected {
         return Err(anyhow!(
@@ -587,13 +603,22 @@ fn decode_tensor_payload(
             values.len()
         ));
     }
-    Ok((meta.clone(), Some((values, [shape[0], shape[1]]))))
+    Ok((meta.clone(), Some((values, shape))))
 }
 
-fn checked_tensor_bytes(shape: [usize; 2], dtype: WireDtype) -> Result<usize> {
-    let values = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+fn checked_tensor_values(shape: &[usize]) -> Result<usize> {
+    if shape.len() < 2 {
+        return Err(anyhow!("shape inválido: {:?}", shape));
+    }
+    shape.iter().try_fold(1usize, |values, &dimension| {
+        values
+            .checked_mul(dimension)
+            .ok_or_else(|| anyhow!("shape excede o limite"))
+    })
+}
+
+fn checked_tensor_bytes(shape: &[usize], dtype: WireDtype) -> Result<usize> {
+    let values = checked_tensor_values(shape)?;
     let bytes = values
         .checked_mul(dtype.bytes_per_value())
         .ok_or_else(|| anyhow!("shape excede o limite"))?;
@@ -609,13 +634,14 @@ fn checked_tensor_bytes(shape: [usize; 2], dtype: WireDtype) -> Result<usize> {
 /// Number of bytes an owned tensor occupies after wire conversion, without
 /// allocating the converted payload. The relay uses this to split a
 /// multi-item frame before encoding it.
-pub fn tensor_payload_len(tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype) -> Result<usize> {
+pub fn tensor_payload_len(
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+) -> Result<usize> {
     let Some((values, shape)) = tensor else {
         return Ok(0);
     };
-    let expected_values = shape[0]
-        .checked_mul(shape[1])
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected_values = checked_tensor_values(&shape)?;
     if values.len() != expected_values {
         return Err(anyhow!(
             "tensor com {} valores não bate com shape {:?}",
@@ -623,7 +649,31 @@ pub fn tensor_payload_len(tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype
             shape
         ));
     }
-    checked_tensor_bytes(shape, dtype)
+    checked_tensor_bytes(&shape, dtype)
+}
+
+fn encode_values(values: &[f32], shape: &[usize], dtype: WireDtype) -> Result<Vec<u8>> {
+    let expected_values = checked_tensor_values(shape)?;
+    if values.len() != expected_values {
+        return Err(anyhow!(
+            "tensor com {} valores não bate com shape {:?}",
+            values.len(),
+            shape
+        ));
+    }
+    let payload = match dtype {
+        WireDtype::F32 => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        WireDtype::F16 => values
+            .iter()
+            .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
+            .collect(),
+        WireDtype::F8 => values
+            .iter()
+            .map(|value| f32_to_f8_bits(*value))
+            .collect::<Result<Vec<_>>>()?,
+    };
+    checked_tensor_bytes(shape, dtype)?;
+    Ok(payload)
 }
 
 // ── f16 conversion ───────────────────────────────────────────────────────────
@@ -703,6 +753,70 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
     f32::from_bits(sign | exp32 | (mantissa << 13))
 }
 
+// ── f8 E4M3FN conversion ────────────────────────────────────────────────────
+// E4M3FN has no infinity encoding. Exponent 0xF and mantissa 0..6 are finite,
+// while 0xF/7 is reserved. Values outside the finite range are refused so a
+// selected lower precision never saturates an activation without an error.
+
+fn f32_to_f8_bits(value: f32) -> Result<u8> {
+    if !value.is_finite() {
+        return Err(anyhow!("valor não finito não é representável em f8"));
+    }
+    let sign = if value.is_sign_negative() { 0x80 } else { 0 };
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        return Ok(sign);
+    }
+    if magnitude > 448.0 {
+        return Err(anyhow!(
+            "valor {value} excede o alcance finito de f8 E4M3FN"
+        ));
+    }
+
+    const MIN_NORMAL: f32 = 0.015625;
+    const SUBNORMAL_STEP: f32 = 0.001953125;
+    if magnitude < MIN_NORMAL {
+        let mantissa = (magnitude / SUBNORMAL_STEP).round() as u8;
+        return Ok(if mantissa >= 8 {
+            sign | 0x08
+        } else {
+            sign | mantissa
+        });
+    }
+
+    let exponent = magnitude.log2().floor() as i32;
+    let base = 2.0_f32.powi(exponent);
+    let mut encoded_exponent = exponent + 7;
+    let mut mantissa = ((magnitude / base - 1.0) * 8.0).round() as i32;
+    if mantissa >= 8 {
+        encoded_exponent += 1;
+        mantissa = 0;
+    }
+    if encoded_exponent > 15 {
+        return Err(anyhow!(
+            "valor {value} excede o alcance finito de f8 E4M3FN"
+        ));
+    }
+    if encoded_exponent == 15 {
+        mantissa = mantissa.min(6);
+    }
+    Ok(sign | ((encoded_exponent as u8) << 3) | mantissa as u8)
+}
+
+fn f8_bits_to_f32(bits: u8) -> Result<f32> {
+    let sign = if bits & 0x80 != 0 { -1.0 } else { 1.0 };
+    let exponent = (bits >> 3) & 0x0f;
+    let mantissa = bits & 0x07;
+    let magnitude = match exponent {
+        0 => f32::from(mantissa) * 0.001953125,
+        1..=14 => (1.0 + f32::from(mantissa) / 8.0) * 2.0_f32.powi(i32::from(exponent) - 7),
+        15 if mantissa <= 6 => (1.0 + f32::from(mantissa) / 8.0) * 256.0,
+        15 => return Err(anyhow!("codificação reservada de f8 E4M3FN: {bits:#04x}")),
+        _ => unreachable!(),
+    };
+    Ok(sign * magnitude)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,7 +826,7 @@ mod tests {
         let values = vec![0.25_f32; 8];
         let single = encode_with_encoding(
             &serde_json::json!({"session_id": "single"}),
-            Some((&values, [1, 8])),
+            Some((&values, vec![1, 8])),
             FrameEncoding::F16,
         )
         .unwrap();
@@ -726,11 +840,11 @@ mod tests {
     fn a_tensor_survives_a_round_trip_in_f32() {
         let values = vec![0.0f32, 1.5, -2.25, 1e-8, 1e8];
         let meta = serde_json::json!({ "session_id": "abc" });
-        let framed = encode(&meta, Some((&values, [1, 5])), WireDtype::F32).unwrap();
+        let framed = encode(&meta, Some((&values, vec![1, 5])), WireDtype::F32).unwrap();
         let (back_meta, tensor) = decode(&framed).unwrap();
         assert_eq!(back_meta["session_id"], "abc");
         let (back, shape) = tensor.unwrap();
-        assert_eq!(shape, [1, 5]);
+        assert_eq!(shape, vec![1, 5]);
         assert_eq!(back, values);
     }
 
@@ -741,7 +855,7 @@ mod tests {
     fn f16_round_trip_stays_close_for_activation_sized_values() {
         let values: Vec<f32> = vec![0.0, 1.0, -1.0, 0.5, -0.125, 12.5, -37.75, 0.001];
         let meta = serde_json::json!({});
-        let framed = encode(&meta, Some((&values, [1, 8])), WireDtype::F16).unwrap();
+        let framed = encode(&meta, Some((&values, vec![1, 8])), WireDtype::F16).unwrap();
         let (_, tensor) = decode(&framed).unwrap();
         let (back, _) = tensor.unwrap();
         for (a, b) in values.iter().zip(back.iter()) {
@@ -754,10 +868,121 @@ mod tests {
     fn f16_halves_the_bytes_on_the_wire() {
         let values = vec![1.0f32; 1024];
         let meta = serde_json::json!({});
-        let as_f32 = encode(&meta, Some((&values, [1, 1024])), WireDtype::F32).unwrap();
-        let as_f16 = encode(&meta, Some((&values, [1, 1024])), WireDtype::F16).unwrap();
+        let as_f32 = encode(&meta, Some((&values, vec![1, 1024])), WireDtype::F32).unwrap();
+        let as_f16 = encode(&meta, Some((&values, vec![1, 1024])), WireDtype::F16).unwrap();
         // Headers differ by a couple of bytes; the payload is what matters.
         assert_eq!(as_f32.len() - as_f16.len(), 1024 * 2);
+    }
+
+    #[test]
+    fn f8_round_trip_stays_within_activation_tolerance() {
+        let values: Vec<f32> = vec![0.0, 1.0, -1.0, 0.5, -0.125, 12.5, -37.75, 0.001];
+        let framed = encode(
+            &serde_json::json!({}),
+            Some((&values, vec![1, 8])),
+            WireDtype::F8,
+        )
+        .unwrap();
+        let (meta, tensor) = decode(&framed).unwrap();
+        assert_eq!(meta["dtype"], "f8");
+        let (back, shape) = tensor.unwrap();
+        assert_eq!(shape, vec![1, 8]);
+        assert!(back.iter().all(|value| value.is_finite()));
+        for (original, decoded) in values.iter().zip(back.iter()) {
+            let tolerance = original.abs() * 0.2 + 0.002;
+            assert!(
+                (original - decoded).abs() <= tolerance,
+                "{original} virou {decoded}"
+            );
+        }
+    }
+
+    #[test]
+    fn f8_uses_one_byte_per_value() {
+        let values = vec![1.0_f32; 1024];
+        assert_eq!(
+            tensor_payload_len(Some((&values, vec![1, 1024])), WireDtype::F8).unwrap(),
+            1024
+        );
+        assert_eq!(
+            tensor_payload_len(Some((&values, vec![1, 1024])), WireDtype::F16).unwrap(),
+            1024 * 2
+        );
+    }
+
+    #[test]
+    fn extra_feature_axes_survive_a_round_trip() {
+        let values: Vec<f32> = (0..24).map(|value| value as f32).collect();
+        let shape = vec![2, 4, 3];
+        let framed = encode(
+            &serde_json::json!({}),
+            Some((&values, shape.clone())),
+            WireDtype::F16,
+        )
+        .unwrap();
+        let (_, tensor) = decode(&framed).unwrap();
+        let (decoded, decoded_shape) = tensor.unwrap();
+        assert_eq!(decoded_shape, shape);
+        assert_eq!(decoded.len(), values.len());
+        assert!(decoded
+            .iter()
+            .zip(values)
+            .all(|(actual, expected)| (actual - expected).abs() < 0.01));
+    }
+
+    #[test]
+    fn residual_payload_cost_is_measured_per_token_and_feature_width() {
+        let shape = vec![1, 4096, 4];
+        let values = vec![1.0_f32; shape.iter().product()];
+        assert_eq!(
+            tensor_payload_len(Some((&values, shape.clone())), WireDtype::F16).unwrap(),
+            4 * 4096 * 2
+        );
+        assert_eq!(
+            tensor_payload_len(Some((&values, shape.clone())), WireDtype::F32).unwrap(),
+            4 * 4096 * 4
+        );
+        assert_eq!(
+            tensor_payload_len(Some((&values, shape)), WireDtype::F8).unwrap(),
+            4 * 4096
+        );
+    }
+
+    #[test]
+    fn f8_rejects_non_finite_or_out_of_range_values() {
+        for value in [f32::NAN, f32::INFINITY, -f32::INFINITY, 449.0] {
+            let error = encode(
+                &serde_json::json!({}),
+                Some((&[value], vec![1, 1])),
+                WireDtype::F8,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("f8"), "erro inesperado: {error}");
+        }
+    }
+
+    #[test]
+    fn f8_decode_rejects_reserved_encoding() {
+        let frame = BatchFrame {
+            version: BATCH_FRAME_VERSION,
+            kind: "inference".into(),
+            batch_id: "batch".into(),
+            items: vec![BatchItem {
+                item_id: "item".into(),
+                session_id: "session".into(),
+                shape: vec![1, 1],
+                dtype: "f8".into(),
+                offset: 0,
+                len: 1,
+                meta: serde_json::json!({}),
+            }],
+            payload: vec![0x7f],
+        };
+        let error = decode(&encode_batch(&frame).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("f8"), "erro inesperado: {error}");
     }
 
     #[test]
@@ -780,7 +1005,7 @@ mod tests {
         let values = vec![1.0f32; 4];
         let mut framed = encode(
             &serde_json::json!({}),
-            Some((&values, [1, 4])),
+            Some((&values, vec![1, 4])),
             WireDtype::F16,
         )
         .unwrap();
@@ -797,7 +1022,7 @@ mod tests {
                 BatchItem {
                     item_id: "item-a".into(),
                     session_id: "session-a".into(),
-                    shape: [1, 2],
+                    shape: vec![1, 2],
                     dtype: "f16".into(),
                     offset: 0,
                     len: 4,
@@ -806,7 +1031,7 @@ mod tests {
                 BatchItem {
                     item_id: "item-b".into(),
                     session_id: "session-b".into(),
-                    shape: [1, 2],
+                    shape: vec![1, 2],
                     dtype: "f16".into(),
                     offset: 4,
                     len: 4,
@@ -845,12 +1070,13 @@ mod tests {
             "chunk_index": 2,
         });
         let values = vec![0.5_f32, -1.25];
-        let framed = encode_batch_single(&meta, Some((&values, [1, 2])), WireDtype::F16).unwrap();
+        let framed =
+            encode_batch_single(&meta, Some((&values, vec![1, 2])), WireDtype::F16).unwrap();
         let (decoded_meta, decoded_tensor) = decode_inference_request(&framed).unwrap();
         assert_eq!(decoded_meta["session_id"], "session-single");
         assert_eq!(decoded_meta["frame_version"], BATCH_FRAME_VERSION);
         let (decoded_values, shape) = decoded_tensor.unwrap();
-        assert_eq!(shape, [1, 2]);
+        assert_eq!(shape, vec![1, 2]);
         assert!((decoded_values[0] - values[0]).abs() < 0.001);
         assert!((decoded_values[1] - values[1]).abs() < 0.001);
     }
@@ -901,7 +1127,7 @@ mod tests {
     #[test]
     fn batch_frame_rejects_payload_larger_than_the_wire_limit() {
         let mut frame = sample_batch();
-        frame.items[0].shape = [1, MAX_FRAME_PAYLOAD_BYTES / 2 + 1];
+        frame.items[0].shape = vec![1, MAX_FRAME_PAYLOAD_BYTES / 2 + 1];
         frame.items[0].len = MAX_FRAME_PAYLOAD_BYTES + 2;
         frame.items[1].offset = frame.items[0].len;
         frame.items[1].len = 0;

@@ -7,7 +7,7 @@ import {
   Route as RouteIcon,
   Zap,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { LayerRibbon, PipelineRail } from "../components/PipelineRail";
 import { PeerDetailCard } from "../components/PeerDetailCard";
 import { UndeployPipeline } from "../components/UndeployPipeline";
@@ -17,7 +17,7 @@ import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../compone
 import { api } from "../lib/api";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
-import { useCluster, useInvalidate, useNode } from "../lib/queries";
+import { useCluster, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
 import type { DeployPlan, PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -146,6 +146,14 @@ export function Dashboard() {
     ? networkPeers(c)
     : { pipeline: [] as PeerView[], others: [] as PeerView[] };
   const group = c?.active_model ?? "";
+  const rttNodeIds = useMemo(() => {
+    if (!c) return [];
+    return Array.from(new Set(
+      [...c.routing_edges, ...c.candidate_edges]
+        .flatMap((edge) => [edge.from_node_id, edge.to_node_id]),
+    )).sort();
+  }, [c]);
+  const networkRtt = useNetworkRtt(rttNodeIds, c != null);
 
   useEffect(() => {
     if (!adding || !group) return;
@@ -214,7 +222,7 @@ export function Dashboard() {
     </div>
 
     {view === "minima" ? (
-      <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} /></div>
+      <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} /></div>
     ) : (
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (

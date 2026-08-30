@@ -145,6 +145,32 @@ só começa depois que o HTTP direto desiste - **75 s medidos no macOS**, porque
 para uso real na internet: autenticação/TLS no `/v1/infer` e no gateway, e uma
 decisão de produto sobre o prazo do HTTP direto.
 
+## Ajuste opcional de TCP entre peers
+
+Em nós Linux, o operador pode experimentar estes ajustes para transferências
+entre peers distantes:
+
+```bash
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+sudo sysctl -w net.ipv4.tcp_slow_start_after_idle=0
+```
+
+`tcp_slow_start_after_idle=0` evita que o kernel descarte a janela de
+transmissão depois de uma pausa, mesmo com a conexão aberta. Isso pode ajudar
+porque o prefill trafega em rajadas. É uma recomendação opcional de operação,
+nunca um requisito: os ajustes exigem privilégio de administrador e não são
+dependência do POM, que deve funcionar bem sem eles.
+
+A medição disponível até agora, de 1,3 para 4,1 MB/s em um arquivo de 214 KB,
+foi no sentido de download e não permite atribuir o ganho a um fator isolado.
+Não há número de desempenho prometido. A transferência de arquivos do próprio
+POM via libp2p chegou a cerca de 40 MB/s entre duas máquinas; portanto, 126 MB
+seriam cerca de 3 s se o caminho de inferência usasse esse mesmo transporte.
+Essa é uma condição, não uma medição do caminho de inferência: as estimativas
+anteriores de 20 a 90 s vieram de HTTP em objeto pequeno e não decidem a
+escolha. Compare execuções pelo `hidden_state_bytes_*` de cada travessia e pelo
+`hidden_state_dtype` efetivo na telemetria.
+
 ## Conectando um harness
 
 OpenCode (verificado): `opencode.json` com provider `@ai-sdk/openai-compatible`,

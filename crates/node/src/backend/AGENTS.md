@@ -9,7 +9,7 @@ or peer Ollama, a missing plan fails the request), the gateway state all
 handlers share, the two protocol adapters (OpenAI and
 Anthropic), the operator control plane (`/admin/*`, `/api/ui/*`, `/api/ui/deploy/*`,
 `/api/ui/undeploy`),
-slice transfer over HTTP `Range`, and the in-memory request log. No P2P, no
+slice transfer over HTTP `Range`, and the persistent request audit. No P2P, no
 inference, no model loading lives here - those are `network/`, `inference/`,
 `models/`. All state is `crate::gateway::GatewayState` (or `crate::auth::AuthState`
 where a handler only needs the config); handlers are axum functions, most
@@ -18,9 +18,11 @@ behind an auth extractor.
 ## Files
 
 - `auth.rs` (132) - auth extractors. `ConnectionAuth` (connection-key bearer
-  only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, either
+  only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, from
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
-  `is_valid_inference_token` aplica a mesma regra na porta 8181: a
+  When both headers are present they are checked independently, so an invalid
+  one cannot hide a valid one; a valid API key still supplies its non-secret
+  `Caller`. `is_valid_inference_token` aplica a mesma regra na porta 8181: a
   `connection_key` compartilhada ou uma API key ativa.
 - `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
@@ -46,7 +48,8 @@ behind an auth extractor.
   arquivos locais emprestam o nome a cada iteração.
 - `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths and slice retention. `slice/plan` and `slice` accept the
+  storage paths, thermal policy (`GET/POST /api/ui/thermal`) and slice retention.
+  `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
   `parts`. Jobs and the cluster view use conditional JSON responses:
@@ -57,7 +60,32 @@ behind an auth extractor.
   calculating budget-driven ranges, includes the configured context, sessions
   and K/V cache types in the byte arithmetic. The response exposes weight,
   KV and total bytes per shard; absent KV metadata is an explicit bad request.
+  `RuntimeParams.prefill_max_inflight_chunks` is persisted with the other
+  inference knobs and sets the prefill pipeline depth (1..8, default 8).
+  GGUF multipart sources are read through models::multipart::GgufSource:
+  slice plans and extraction use all tensor parts, and model identity hashes
+  the complete ordered set. An incomplete set is a concrete bad request, so
+  the UI cannot start a one-file slice by accident.
+  `POST /api/ui/slice/plan` and `/api/ui/slice` also accept one `range` with
+  explicit start/end layers. The handler validates architectural boundaries,
+  estimates the real output against the configured destination volume, and
+  appends the resulting part to the source-hash manifest. Existing ranges are
+  preserved and a matching file is reused only after SHA-256 verification.
+  The same preflight checks architecture-specific output contracts before a
+  plan or job is accepted. `deepseek4` requires its complete output head in a
+  final slice; non-final ranges repeat the real required head weights, and the
+  plan exposes their per-slice disk cost. If the source is missing any tensor
+  that must be copied, the refusal names it before writing any payload.
+  Slicing does not invoke automatic retention, so it cannot silently remove an
+  older range. Jobs report named phases, source bytes read, current file, rate,
+  ETA when measurable, terminal errors and partial outputs.
   (local or forwarded to a peer).
+- `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
+  caminho de apply/launch dos demais ajustes globais; `NodeInfo` e
+  `DeployPlan.capabilities.hidden_state_f8` expõem a capability de peer usada
+  para bloquear uma implantação f8 incompatível. O redeploy consulta
+  `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
+  evitando uma implantação parcialmente misturada.
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
@@ -84,15 +112,55 @@ behind an auth extractor.
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
-- `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path;
-  streaming chat requests that exceed the configured prompt budget are rejected with
-  HTTP 413 before the SSE response starts, so clients such as OpenCode do not
-  hang on an error event inside an otherwise successful stream.
-- `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
+- `openai.rs` - OpenAI-compatible `/v1/*` on top of the generation path;
+  `max_tokens` da requisição é `min(pedido, n_ctx restante)`, com
+  `DEFAULT_MAX_TOKENS=512` só como padrão de quem não pede. O
+  `max_new_tokens` da implantação **não** entra nessa conta: ele é o teto de
+  uma **perna** do laço de continuação (ver `gateway.rs` abaixo). A redução é
+  registrada e devolvida em `x_pom.output_limits`
+  (`requested`/`effective`/`deployment`/`context_available`/`leg`),
+  e `x_pom.continuation_legs` diz quantas pernas a resposta costurou.
+  Streaming e blocking usam a mesma ordem de finish-reason, e ela não tem
+  exceção: orçamento **total** esgotado é `length`/`max_tokens` mesmo com
+  chamada de ferramenta lida, porque atingir o teto é parada terminal; perna
+  esgotada nunca é. Quando o corte cai **dentro** de uma chamada, ela volta
+  estruturada e incompleta (`x_pom.truncated_tool_call: true`), que é o que os
+  dois provedores devolvem - nunca markup cru, nunca descarte. A linha de
+  auditoria desse resultado é `incomplete`,
+  enquanto falha de transporte continua `partial`. `/v1/models` expõe
+  `context_length` e o `top_provider.max_completion_tokens` compatível com
+  OpenRouter, que é a capacidade da **requisição** derivada do `n_ctx`, não o
+  tamanho de uma perna. O contexto disponível reduz o orçamento quando o
+  prompt já ocupa parte da janela.
+  `messages.rs` aceita `output_config.task_budget` (advisory, nunca corta) e
+  injeta o marcador de contagem regressiva no prompt; ver `api-http.md`.
+  **Os argumentos de uma chamada saem em fragmentos** (`CallArgsStreamer`),
+  conforme o modelo gera: `eager_input_streaming` por ferramenta no
+  `/v1/messages`, sempre no `/v1/chat/completions` porque a OpenAI não tem
+  interruptor. A concatenação dos fragmentos é sempre a string que o caminho
+  não-streaming produziria, e o prefixo transmitido só cresce - não existe
+  desenviar um fragmento SSE.
+  A capacidade publicada em `/v1/models` e usada por
+  `request_output_limit_for_model` é a menor `RuntimeCapacity` entre todos os
+  peers vivos do modelo/implantação. O runtime só anuncia esse valor depois do
+  `/health` efetivo; apply, erro e unload retiram a capacidade durante restart.
+- `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
+  and finish-reason rules, with `x_pom.output_limits` and
+  `x_pom.continuation_legs` on blocking responses and the final streaming
+  `message_delta`.
+- `continuation_lab.rs` (`#[cfg(test)]`) - bancada do laço de continuação: dois
+  hops falsos, as rotas `/v1` de verdade num socket TCP e `reqwest` do outro
+  lado, inclusive lendo o SSE byte a byte. Prova que a saída volta inteira, que
+  a costura não aparece como `finish_reason` intermediário nem como segundo
+  `[DONE]`, que a chamada de ferramenta chega com JSON completo, e que o teto
+  absoluto para um modelo em laço.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` (185) - operator control plane: nodes, block/unblock, keys.
-- `reqlog.rs` (205) - bounded in-memory request log (500 entries), `Caller`/`Entry`.
+- `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
+  writes on a dedicated bounded thread; `AuditDb` creates the schema and FTS5
+  prompt index, opens requests in `in_progress`, completes the same row, marks
+  stale rows as `incomplete`, and serves authenticated queries.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
@@ -128,6 +196,13 @@ behind an auth extractor.
   prefill and decode executors, so the tail can answer this node directly
   (log says `resposta=direta|anel|hub`: direta when `direct` is Some and the
   plan supports direct reply, anel for `relay/v1-chain`, hub as the fallback);
+  prefill in hub and direct paths runs as an ordered pipeline of configurable
+  depth (`prefill_max_inflight_chunks`, effective 1..8, default 8, also
+  `--prefill-max-inflight-chunks`), bounded also by a 512 MiB hidden-state byte
+  budget; a chunk that fails past chunk 0 is resumed from that chunk rather than
+  re-sending the whole prompt, while the ring stays serialized by its nested
+  response contract; the request trace reports pipeline depth, prefix reuse and
+  transport per traversal;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
   the tail drafts on its own reply (`next_draft`), the gateway stores it and
   injects it as `speculate.draft` on the next round, and the head only
@@ -140,13 +215,19 @@ behind an auth extractor.
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
-  /`Failed`; `generate_blocking_with_stops` collapses it. The terminal event
+  /`Failed`; `GenSummary` also carries `GenerationTimings` aggregated over the
+  full pipeline: TTFT, prompt-token prefill speed, output-token generation
+  speed from the first token, and end-to-end total. The historical
+  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
   the next turn the instant the stream closes and used to arrive in the middle
   of it; token events still go out live. A prefill that fails with the prefix
   enabled is retried once from scratch - reusing is an optimisation, never a
-  reason for the request to fail. When the stream receiver closes,
+  reason for the request to fail. A peer that reports an unknown session also
+  triggers that same single cold retry, even when the original request did not
+  use prefix reuse, because a later chunk cannot be reconstructed from hidden
+  state alone. When the stream receiver closes,
   `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
   next retry, hop or chunk; already accepted peer frames are cleaned up by the
   normal session release. `start_gateway` registers
@@ -161,20 +242,53 @@ behind an auth extractor.
   touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
   `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
   JSON body (used by the transfer, deploy and webui tests).
-- `gateway.rs` - `/api/generate` aceita `max_tokens` opcional (padrão 512),
-  valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
-  prefill no orçamento total, sem o overshoot histórico de 513 tokens;
-- `openai.rs` - `DEFAULT_MAX_TOKENS=512`, `HARD_MAX_TOKENS=4096`;
+- `gateway.rs` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
+  número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
+  de backend, escolha do operador, que a decisão do produto proíbe levantar.
+  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`. Esgotar a
+  perna não encerra a resposta -
+  `note_leg_boundary` conta a perna e o laço segue decodificando na **mesma**
+  sessão de KV, no mesmo fluxo SSE, sem reprefill e sem o cliente ver nada
+  (`GenSummary::legs` é o que torna a costura inspecionável). O
+  `max_new_tokens` nunca foi limite do backend - o `infer_server` não o conhece;
+  sempre foi um corte do gateway, e cortar aí calado era o defeito. Só `total`
+  produz `finish_reason: "length"`. `/api/generate` aceita `max_tokens`
+  opcional (padrão 512), exige valor maior que zero e conta o primeiro token do
+  prefill no orçamento, sem o overshoot
+  histórico de 513 tokens; a resposta separa TTFT, velocidade do prefill,
+  velocidade da geração e total em `timings`. `generation_finish_reason` testa o
+  orçamento total antes do EOS em cada ramo de decodificação;
+  `audit_status_for_summary` registra `length` como `incomplete`, e reserva
+  `partial` para falha de transporte com texto salvo.
+  **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
+  aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
+  ela foi removida porque nenhum dos dois
+  provedores transborda. Quando o corte cai dentro de uma chamada, o adaptador
+  a devolve estruturada e incompleta (`TagScanner::finish_truncated`), com os
+  argumentos numa string JSON inacabada - possível porque o scanner segura o
+  corpo da chamada até a tag fechar, então nada vazou. Ver
+  `docs/subsystems/inferencia.md` (9.1) e a bancada `continuation_lab.rs`.
+- `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
+  client omits its output budget; there is no backend hard cap. The effective
+  request budget is the minimum of the client request and the remaining `n_ctx`
+  after the prompt - the deployment's `max_new_tokens` bounds one leg of the
+  continuation loop, not the request;
   `render_prompt` flattens the conversation into one user message, labelling
   **every** turn including the first, so one turn's prompt is an exact prefix of
   the next one's - the property the prefix cache rests on; raw, unlabelled text
   is what `/v1/completions` and `/api/generate` are for.
   `conversation_cache_key` is what the prefix cache keys on (the message array,
-  not the rendered text) and travels as `GenerationInput::cache_key`.
+  not the rendered text) and travels as `GenerationInput::cache_key`; a versão
+  Anthropic, `conversation_cache_key_with_budget`, prefixa a identidade do
+  orçamento de tarefa para que uma entrada sem orçamento ou com marcador
+  diferente não seja reutilizada; o marcador final é injetado a cada pedido,
+  como na semântica do provedor.
   `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
   pipeline did not reprocess, read from the trace - the executed number, not the
-  cache's choice; `approx_tokens` = chars/4; `model_ids` from peers + active
-  model; `resolve_model` maps unknown names to the active model;
+  cache's choice; `approx_tokens` = chars/4; `model_ids` comes only from live
+  peer announcements (never the stale CLI default); model objects include both
+  OpenAI and Anthropic discovery fields; `resolve_model` maps unknown names to
+  the active model;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+
@@ -215,10 +329,17 @@ behind an auth extractor.
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,
   stale-while-revalidate). A primeira resposta do catálogo publica o inventário
   rápido de arquivos e `metadata_complete: false`; os cabeçalhos GGUF são lidos
-  em uma tarefa `spawn_blocking` e publicados somente se as pastas e o inventário
-  continuarem atuais. O enriquecimento registra início e conclusão; uma falha
-  mantém o item pendente e libera o estado para nova tentativa, sem publicar o
-  inventário parcial como completo. O survey de implantação só recusa uma
+  em uma tarefa `spawn_blocking` e publicados quando terminam, mesmo que o
+  refresh tenha trocado o `Arc` do inventário: a reconciliação usa caminho,
+  tamanho e mtime do arquivo. O cache instala um placeholder antes da primeira
+  varredura, ordena as raízes e mantém single-flight para scans e enriquecimentos;
+  F5 ou seleção repetida não empilha trabalho. Uma configuração nova fica em
+  fila para o scan atual terminar. O enriquecimento registra início e conclusão
+  (inclusive descarte), e uma falha terminal marca `metadata_error` no item e
+  não impede os demais, então a passagem termina com `metadata_complete: true`.
+  O resultado publicado é reutilizado nas requisições da interface; modelo cujo
+  caminho, tamanho e mtime não mudaram não é relido. Nova leitura só ocorre em
+  refresh por TTL ou invalidação. O survey de implantação só recusa uma
   seleção que ainda não tem suas faixas resolvidas; em TP ele verifica cada
   rank selecionado. Enriquecimento de outro modelo, peer silencioso ou campo
   ausente em peer antigo não bloqueia. `merge_parts`
@@ -396,26 +517,32 @@ behind an auth extractor.
 - `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
   optional), compares to `connection_key`; `ApiKeyAuth` accepts `authorization`
   or `x-api-key`, and the connection key counts as operator
-  (`Caller::operator()`). `inference_token` chooses the shared connection key,
+  (`Caller::operator()`). `api_key_identity` supplies the stable non-secret API
+  key id used by the audit trail. `inference_token` chooses the shared connection key,
   falling back to the first active API key for internal inference calls.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
-- `reqlog.rs` - `CAPACITY=500` in a `OnceLock<RwLock<VecDeque<Entry>>>`;
-  `Caller { token_label, token_hint, token_node_id }` (built by the auth
-  extractor, the only place that sees the credential); `Entry` carries
-  route/model/token/entry_node_id/hops/source/tokens/duration/status/error;
-  `record` drops the oldest; `list_requests` filters by node_id/token and
-  returns by-token/by-node tallies plus an error count.
+- `reqlog.rs` - `AuditLog::begin` records the exact prompt, request body,
+  resolved model, entry node, API-key identity and arrival time before
+  generation. `spawn_logged_generation_with_stops` later calls `complete` on
+  that id with result, telemetry, timings, token counts, hop chain and error.
+  The request body contains no headers or secrets. `list_requests` requires
+  `ConnectionAuth`, supports node, API-key identity, prompt FTS and time-range
+  filters, and returns newest first with incomplete/error tallies.
 - `tool_call.rs` - `render_tools_block` (empty when no tools),
   `render_tool_call` (`<tool_call><function=NAME><parameter=P>...</parameter>`,
   string args raw, others re-serialized). `TagScanner` incrementally splits a
   token stream into text / tool-call spans tolerating tags split across chunk
-  boundaries (`longest_prefix_overlap`); `CallKind::Wrapped` (the real
-  `<tool_call>` convention) vs `CallKind::BareFunction` (a tolerated
-  wrapper-less `<function>NAME</function>` fallback, name-only, whitespace
-  guard). `parse_call_body` accepts the nested `<function=...>` XML form or
-  the legacy Hermes JSON-object form; malformed spans degrade to literal text.
-  `parse_output` = scanner over the whole text -> `Vec<OutputPart>`
-  (`Text` | `ToolCall { name, arguments }`), adjacent text merged.
+  boundaries (`CALL_FORMATS` + `longest_prefix_overlap`); the registry is
+  extended only with markers verified in the active GGUF's
+  `tokenizer.chat_template`. `CallKind::Wrapped` (the real `<tool_call>`
+  convention) vs `CallKind::BareFunction` (a tolerated wrapper-less
+  `<function>NAME</function>` fallback, name-only, whitespace guard).
+  `parse_call_body` accepts the nested `<function=...>` XML form or the legacy
+  Hermes JSON-object form, including an extra JSON-encoded `arguments` string;
+  malformed spans and incomplete calls degrade to literal text. `parse_output`
+  is the scanner over the whole text -> `Vec<OutputPart>` (`Text` |
+  `ToolCall { name, arguments }`), with adjacent text merged. The same scanner
+  feeds the blocking OpenAI message and its streaming tool-call deltas.
 - `webapp.rs` - `API_PREFIXES = ["api/", "v1/", "admin/", "peers", "health",
   "generate"]`; `routes<S>()` serves `GET /` (index) and `GET /*path`. A miss
   under an API prefix is a JSON 404, a miss with a file extension is "asset

@@ -37,7 +37,9 @@ gated e a licença antes do download.
 
 ## subsystems/
 
-Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`
+Os guias permanentes do runtime ficam em `docs/subsystems/`. `fatiamento.md`
+documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas
+e o rebase de metadata de camadas para a numeração local. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `inferencia.md` e `web-ui.md` também
 documentam o RTT observado do Chat, o RTT direcional por aresta e a leitura
@@ -45,7 +47,9 @@ efetiva de colocação e configuração por peer. `implantacao.md` também docum
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa. `web-ui.md` descreve como essa validação aparece na tela Implantar e
-como o mapa apresenta hops e RTTs direcionais.
+como o mapa apresenta hops e RTTs direcionais. `inferencia.md` registra também
+as causas conhecidas de perda do estado de sessão e a tarefa de observabilidade
+recomendada para distingui-las em campo.
 
 ## superpowers/specs/
 
@@ -67,6 +71,15 @@ frame multi-item e sincronizacao de lotes no Tensor Parallelism).
 `2026-08-24-chat-telemetria-design.md` registra o inventário do fio e a decisão
 de manter os dados no `x_pom`, no `/health` e numa rota autenticada de RTT, sem
 mudar frame entre peers ou planner.
+`2026-08-26-auditoria-de-requisicoes-design.md` e o plano homônimo registram a
+auditoria persistente de prompts em SQLite, a identidade não secreta da chave,
+o FTS5 e o ciclo em duas etapas do registro.
+
+## Proteção térmica da implantação
+
+`superpowers/specs/2026-08-26-protecao-termica-gpu-design.md` registra a
+política de temperatura e a máquina de histerese; o plano de implementação
+correspondente está em `superpowers/plans/2026-08-26-protecao-termica-gpu.md`.
 
 ## superpowers/plans/
 

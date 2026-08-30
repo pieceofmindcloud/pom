@@ -29,6 +29,7 @@ pub(crate) struct DeploymentCapabilities {
     pub no_embeddings: Capability,
     pub speculative_decoding: Capability,
     pub mtp: Capability,
+    pub hidden_state_f8: Capability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -52,6 +52,7 @@ const params: RuntimeParams = {
   max_new_tokens: 512,
   max_sessions: 1,
   prefill_chunk_tokens: 512,
+  prefill_max_inflight_chunks: 2,
   temperature: 0.7,
   top_p: 0.95,
   top_k: 40,
@@ -150,6 +151,31 @@ describe("Deployments", () => {
     // E a forma de cada uma aparece, que é o que distingue as duas na prática.
     expect(screen.getByText("Fatias")).toBeTruthy();
     expect(screen.getByText("Modelo inteiro")).toBeTruthy();
+  });
+
+  it("organiza o histórico do mais recente para o mais antigo", async () => {
+    listDeployments.mockResolvedValue({
+      node_id: "no-a",
+      deployments: [
+        row("d-old", { serving: false, isDefault: false }),
+        {
+          ...row("d-new", { serving: true, isDefault: true }),
+          deployment: {
+            ...row("d-new", { serving: true, isDefault: true }).deployment,
+            created_at: "2026-08-29T12:00:00Z",
+          },
+        },
+      ],
+    });
+
+    mount();
+    const table = await screen.findByRole("table");
+    const cells = Array.from(table.querySelectorAll("tbody tr")).map((tr) => tr.cells[0]);
+
+    expect(cells.map((cell) => cell.textContent?.trim())).toEqual(["d-new", "d-old"]);
+    expect(table.querySelector("thead th")?.textContent).toBe("Id");
+    expect(cells[0].className).toContain("px-5");
+    expect(screen.getByText("Criada")).toBeTruthy();
   });
 
   it("reimplanta mandando o parâmetro mexido e preservando o resto", async () => {

@@ -6,9 +6,9 @@
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
+import { ChatError, ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
 import { LocaleProvider } from "../i18n/provider";
-import type { PhaseTrace, RequestTrace } from "../lib/chatStream";
+import type { GenerationTimings, PhaseTrace, RequestTrace } from "../lib/chatStream";
 
 function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
   return {
@@ -122,6 +122,27 @@ describe("ExecutionTelemetry", () => {
     const details = container.querySelector("details");
     expect(details).toBeTruthy();
     expect(details!.open).toBe(false);
+  });
+
+  it("shows request-level TTFT, prefill speed, generation speed and total time", () => {
+    const timings: GenerationTimings = {
+      ttft_ms: 2400,
+      prefill_ms: 2000,
+      prefill_tokens: 100,
+      prefill_tokens_per_sec: 50,
+      generation_ms: 7600,
+      generation_tokens: 20,
+      generation_tokens_per_sec: 20 / 7.6,
+      total_ms: 10000,
+      total_tokens_per_sec: 2,
+    };
+
+    mount(<ExecutionTelemetry trace={trace} timings={timings} />);
+
+    expect(screen.getByText("Primeiro token (TTFT)")).toBeTruthy();
+    expect(screen.getByText("50,0 tokens/s · 100 tokens do prompt")).toBeTruthy();
+    expect(screen.getByText("2,6 tokens/s · 20 tokens")).toBeTruthy();
+    expect(screen.getByText("10,0 s · 2,0 tokens/s")).toBeTruthy();
   });
 
   it("gives each hop one prefill row and one decode row", () => {
@@ -261,6 +282,21 @@ describe("ExecutionTelemetry", () => {
   });
 });
 
+describe("ChatError", () => {
+  afterEach(cleanup);
+
+  it("shows a streamed server message in a readable, copyable block", () => {
+    const message = "peer error: ".concat("x".repeat(180));
+    mount(<ChatError message={message} />);
+
+    expect(screen.getByText("Erro do servidor")).toBeTruthy();
+    const errorText = screen.getByText(message);
+    expect(errorText.className).toContain("whitespace-pre-wrap");
+    expect(errorText.className).toContain("select-text");
+    expect(screen.getByRole("button", { name: "Copiar erro" })).toBeTruthy();
+  });
+});
+
 /**
  * O canal de cada salto, e o que o número do handshake significa.
  *
@@ -293,6 +329,40 @@ function traceCom(prefill: Partial<PhaseTrace>): RequestTrace {
 describe("ExecutionTelemetry: o canal de cada salto", () => {
   afterEach(cleanup);
 
+  const summaryTrace: RequestTrace = {
+    ...traceCom({
+      calls: 5_001,
+      transport_summary: {
+        fallback_calls: 1,
+        transports: [
+          {
+            transport: "local",
+            calls: 5_001,
+            bytes_sent: 9_090_000,
+            bytes_received: 960_000,
+            rtt_min_ms: 10,
+            rtt_median_ms: 10,
+            rtt_p95_ms: 10,
+            rtt_max_ms: 50,
+            fallback_calls: 0,
+          },
+          {
+            transport: "https",
+            calls: 2,
+            bytes_sent: 200,
+            bytes_received: 400,
+            rtt_min_ms: 30,
+            rtt_median_ms: 40,
+            rtt_p95_ms: 40,
+            rtt_max_ms: 40,
+            fallback_calls: 1,
+          },
+        ],
+        transport_switches: [{ from: "local", to: "https", calls: 1 }],
+      },
+    }),
+  };
+
   it("diz que o salto foi cifrado e que o handshake é por conexão", () => {
     mount(<ExecutionTelemetry trace={traceCom({ calls: 1, tls_calls: 1, tls_handshake_ms: 4 })} />);
     expect(screen.getByText(/canal: TLS/)).toBeTruthy();
@@ -311,6 +381,14 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
     mount(<ExecutionTelemetry trace={traceCom({ calls: 4, tls_calls: 3, tls_handshake_ms: 6 })} />);
     expect(screen.getByText(/TLS em 3\/4 chamadas/)).toBeTruthy();
     expect(screen.getByText(/as demais foram em claro/)).toBeTruthy();
+  });
+
+  it("mostra a distribuição de transporte e a troca sem listar cada chamada", () => {
+    mount(<ExecutionTelemetry trace={summaryTrace} />);
+    expect(screen.getByText(/local: 5001 chamadas/)).toBeTruthy();
+    expect(screen.getByText(/RTT mínimo\/mediana\/p95\/máximo 10\/10\/10\/50 ms/)).toBeTruthy();
+    expect(screen.getByText(/fallback total 1/)).toBeTruthy();
+    expect(screen.getByText(/troca de transporte local -> https \(1\)/)).toBeTruthy();
   });
 });
 

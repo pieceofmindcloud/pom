@@ -18,6 +18,10 @@ crashes the next.
 
 Per-file list:
 
+- `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine
+  details. It keeps `null` as "temperature unknown" and maps normal, attention
+  and critical readings to the existing design-system tones.
+
 - `ui.tsx` — The design system in one file on purpose. `Panel`/`PanelHeader`/
   `PageHeader` (surfaces), `Button` (4 variants, sizes, loading spinner),
   `Input`/`Select`/`Field`, `Badge`/`Dot`/`Progress`/`Meter` (the shared `Tone`
@@ -25,6 +29,10 @@ Per-file list:
   `ErrorState` (renders `localizeServerText` on the error message),
   `Mono`/`ScrollX`/`Footnote`/`KeyValue`. Everything is token-based class names
   (e.g. `bg-iris`, `border-line`) with `clsx`, no runtime styling.
+- `AlertTooltip` (ui.tsx) - aviso compacto usado no inspetor: o ícone âmbar é
+  focável e acionável por foco ou clique, e o texto completo é renderizado em
+  portal fixo, com quebra explícita de palavras para mensagens longas e ids sem
+  espaços.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
@@ -45,8 +53,8 @@ Per-file list:
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and hover/focus flyout menus for
   sections with children. `SidebarBrand` is the header and, on desktop, the
-  lockup itself is the accessible expand/collapse button: click or touch toggles
-  it, while a deliberate mouse hover closes an open sidebar after a short delay.
+  lockup itself is the accessible expand/collapse button: only an explicit click
+  or touch toggles it.
   In the mobile drawer it remains a passive lockup. The menu below it keeps a
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
   a multi-machine cluster "which build is that?" is unanswerable without a
@@ -67,9 +75,9 @@ Per-file list:
   perfil passar a chegar do nó, este arquivo sai inteiro.
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
-  per job with state, progress and output paths only while at least one job is
-  running. Completed history stays available to the notification system, but
-  does not leave an empty activity card on the slicing screen.
+  per job with state, named phase, byte heartbeat, rate/ETA when available and
+  output paths. Completed and failed history remains on the slicing screen so
+  a failure cannot look like an eternal spinner; partial outputs are shown.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), o `ProfileSwitcher`, the bell (`Notifications`), and `NodeActions` — a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network
@@ -102,7 +110,7 @@ Per-file list:
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
 - `ModelNetworkCanvas.tsx` — The primary operational view: a pan/zoom SVG graph
-  of nodes (range cards with VRAM/RAM/load meters) and curved edges, driven by
+  of nodes (range cards with VRAM/RAM/load/temperature meters) and curved edges, driven by
   `graphFromCluster` (`../lib/networkGraph`). Edges have three states via
   `edgeStyle` (principal / paralela / inativa) from `cluster.routing_edges` and
   `cluster.candidate_edges` (replicas = ready alternate routes). Positions are
@@ -113,7 +121,11 @@ Per-file list:
   with `isControlTarget` (a click that lands on a `button`/`a`/`input`/etc is
   not a click on the card), and `detailNodeId` stores the `node_id`, not a peer
   copy, so the window shows fresh numbers when the cluster list refreshes
-  under it. Exports `edgeStyle` and `isControlTarget`.
+  under it. Exports `edgeStyle` and `isControlTarget`. The graph also renders
+  directional RTT badges using the same label component as the deploy map.
+- `RouteRttLabel.tsx` - selo visual de RTT direcional compartilhado pelo mapa
+  do Painel e pelo mapa de implantação. O texto e as classes são os mesmos nos
+  dois contextos, inclusive quando a medição ainda não existe (`RTT -`).
 - `PeerDetailCard.tsx` — The card of one machine, in the same drawing for every
   machine. It lives outside `Dashboard` because it shows in two places: the
   details tab stacks one card per machine (`networkPeers` splits the whole
@@ -131,6 +143,8 @@ Per-file list:
   render from here now. `PeerPlacement` (interno) é a única parte do card que
   faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do
   `usePeerRuntime` é o que impede um `/health` por card a cada ciclo do Painel.
+  A seção térmica mostra uma linha por GPU e declara temperatura desconhecida
+  quando o driver não fornece leitura.
 - `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
   camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),
   os totais de peso por lado, onde o cache KV ficou e a cabeça de saída.
@@ -275,10 +289,14 @@ Key logic carriers:
   representa uma implantação ainda não aplicada.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
-  mantém os ajustes por máquina fora do bloco global. `CapabilitySwitch` usa o
+  inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,
+  1..8) e mantém os ajustes por máquina fora do bloco global. `CapabilitySwitch` usa o
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
   indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.
+  O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8 somente
+  como escolha explícita; uma capability de peer comprovadamente incompatível
+  desabilita a opção e exibe a razão devolvida pelo servidor.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `ModelPlacement.placementOf` (ModelPlacement.tsx:39) — "gpu" / "cpu" /

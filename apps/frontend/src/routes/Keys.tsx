@@ -171,6 +171,7 @@ export function TokenKeys() {
                             {k.active ? t("keys.active") : t("keys.inactive")}
                           </Badge>
                           <Badge tone="neutral">{nameOf(k.node_id)}</Badge>
+                          <Mono className="text-faint">{k.id}</Mono>
                         </div>
                         <div className="flex shrink-0 items-center gap-3">
                           <span className="text-[0.72rem] text-faint">

@@ -1,6 +1,6 @@
 use crate::auth::AuthState;
 use crate::model::LayerAssignment;
-use crate::network::{Network, PeerInfo};
+use crate::network::{Network, PeerInfo, RuntimeCapacity};
 use crate::ollama::OllamaClient;
 use crate::pipeline::{plan_pipeline_with_rtt, LoadTracker, PipelinePlan};
 use crate::runtime::NodeRuntime;
@@ -22,7 +22,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Tokens `/api/generate` will produce before stopping on its own.
-const DEFAULT_MAX_TOKENS: u32 = 512;
+pub const DEFAULT_MAX_TOKENS: u32 = 512;
 /// A peer that cannot answer its inference health endpoint is not eligible for
 /// a new pipeline. UDP discovery is deliberately lightweight and may still
 /// hear an isolated or old node, so it is not sufficient proof of a usable hop.
@@ -121,6 +121,8 @@ pub struct GatewayState {
     pub peer_http: Arc<crate::peer_client::PeerClients>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
+    /// Durable audit trail for requests entering this gateway.
+    pub audit: Arc<crate::reqlog::AuditLog>,
     /// HTTP port this node serves the API and UI on.
     pub gateway_port: u16,
     /// Setup-level configuration (role, connection key, bootstrap nodes).
@@ -322,7 +324,10 @@ impl GatewayState {
                 crate::pkarr_node::detect_local_ip(),
             );
             peers.push(PeerInfo {
-                deploy_id: String::new(),
+                deploy_id: local
+                    .as_ref()
+                    .map(|assignment| assignment.deploy_id.clone())
+                    .unwrap_or_default(),
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
@@ -342,6 +347,7 @@ impl GatewayState {
                 inference_frame_capabilities: {
                     let mut caps = vec![
                         crate::pipeline::CAP_FRAME_BATCH.into(),
+                        crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
                         "relay/v1-chain".into(),
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),
@@ -379,9 +385,48 @@ impl GatewayState {
                 api_keys_active: 0,
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
                 tp: self.network.tp_identity(),
+                runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
             });
         }
         peers
+    }
+
+    /// Capacidade deste processo. Depois que o `/health` local confirma o
+    /// motor, usa o valor efetivo que o llama.cpp reportou; antes disso cai no
+    /// alvo configurado para manter os testes e a validação local honestos.
+    async fn local_runtime_capacity(&self) -> Option<RuntimeCapacity> {
+        if let Some(capacity) = self.network.runtime_capacity() {
+            return Some(capacity);
+        }
+        let runtime = self.runtime.config().await?;
+        Some(RuntimeCapacity {
+            n_ctx: runtime.n_ctx,
+            max_new_tokens: runtime.max_new_tokens,
+        })
+    }
+
+    /// Menor capacidade entre os peers vivos que podem atender o seletor.
+    ///
+    /// A geração atravessa todos os estágios do pipeline, então anunciar o
+    /// maior peer seria uma mentira quando outro ainda está em 8192. Um peer
+    /// sem anúncio de capacidade é um nó antigo ou ainda inicializando; nesse
+    /// caso a configuração local continua sendo o fallback conservador só
+    /// quando não há peer correspondente. Se há peer vivo sem anúncio, a
+    /// requisição fica pendente: aceitar com a capacidade local poderia
+    /// esconder um estágio antigo no pipeline.
+    async fn runtime_capacity_for_model(
+        &self,
+        model: Option<&str>,
+    ) -> (Option<RuntimeCapacity>, bool) {
+        let Some(model) = model else {
+            return (self.local_runtime_capacity().await, false);
+        };
+        let peers = self.all_peers().await;
+        let (capacity, pending) = runtime_capacity_from_peers(&peers, model);
+        if capacity.is_some() || pending {
+            return (capacity, pending);
+        }
+        (self.local_runtime_capacity().await, false)
     }
 }
 
@@ -395,6 +440,38 @@ fn self_dial_host(advertised: Option<String>, local_ip: Option<String>) -> Strin
     advertised
         .or(local_ip)
         .unwrap_or_else(|| "127.0.0.1".into())
+}
+
+/// Reduz uma fotografia de peers para a capacidade do modelo selecionado.
+/// Manter essa função sobre um slice permite que `/v1/models` use exatamente
+/// o mesmo snapshot para descobrir IDs e publicar seus limites.
+fn runtime_capacity_from_peers(peers: &[PeerInfo], model: &str) -> (Option<RuntimeCapacity>, bool) {
+    let (label, deploy_id) = crate::deployment::split_selector(model);
+    let matching: Vec<&PeerInfo> = peers
+        .iter()
+        .filter(|peer| {
+            peer.is_alive()
+                && peer.model == label
+                && deploy_id.is_none_or(|id| peer.deploy_id == id)
+        })
+        .collect();
+    let capacities: Vec<RuntimeCapacity> = matching
+        .iter()
+        .filter_map(|peer| peer.runtime_capacity)
+        .collect();
+    if matching.is_empty() {
+        return (None, false);
+    }
+    if capacities.len() != matching.len() {
+        return (None, true);
+    }
+    (
+        capacities.into_iter().reduce(|a, b| RuntimeCapacity {
+            n_ctx: a.n_ctx.min(b.n_ctx),
+            max_new_tokens: a.max_new_tokens.min(b.max_new_tokens),
+        }),
+        false,
+    )
 }
 
 /// Prompt tokens a peer running `cfg` can accept.
@@ -448,7 +525,7 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GenerateRequest {
     pub model: Option<String>,
     pub prompt: String,
@@ -460,27 +537,299 @@ pub struct GenerateRequest {
     pub stop: Option<StopInput>,
 }
 
-fn resolve_request_max_tokens(
-    requested: Option<u32>,
-    configured_limit: u32,
-) -> Result<u32, String> {
+/// Os dois orçamentos de uma geração, que nunca são o mesmo número.
+///
+/// `leg` é o que **uma** geração de backend pode produzir - o `max_new_tokens`
+/// da implantação, escolha do operador. `total` é o que a **requisição** pode
+/// produzir. Esgotar a perna não encerra a resposta: o laço de continuação
+/// abre a próxima e segue decodificando na mesma sessão e no mesmo fluxo SSE.
+/// Confundir os dois é o defeito que este orçamento existe para impedir - era
+/// exatamente ele que devolvia `finish_reason: "length"` ao cliente no meio de
+/// uma chamada de ferramenta.
+/// O `total` é **imposto e inviolável**: nada o ultrapassa, por motivo nenhum,
+/// nem uma chamada de ferramenta aberta no token do corte. É a regra dos dois
+/// provedores - `max_tokens` é teto por resposta, atingi-lo é parada terminal,
+/// e a saída trunca no meio. O que existe no lugar do transbordo é o orçamento
+/// de tarefa (`messages::TaskBudget`), que avisa o modelo em vez de esticar o
+/// teto. Ver `docs/subsystems/inferencia.md` (9.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputBudget {
+    /// Teto da requisição inteira, somando todas as pernas.
+    pub total: u32,
+    /// Teto de uma perna.
+    pub leg: u32,
+}
+
+impl OutputBudget {
+    /// Um orçamento sem continuação: uma perna que já é a requisição inteira.
+    /// É o que os testes e as bancadas usam quando o laço não é o assunto.
+    pub fn single(total: u32) -> Self {
+        Self { total, leg: total }
+    }
+
+    /// Números utilizáveis: nunca zero, e a perna nunca maior que o total.
+    fn normalized(self) -> Self {
+        let total = self.total.max(1);
+        Self {
+            total,
+            leg: self.leg.clamp(1, total),
+        }
+    }
+}
+
+/// The output budget visible to a protocol adapter after applying the selected
+/// deployment and the remaining context window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct OutputTokenLimit {
+    #[serde(rename = "requested_max_tokens")]
+    pub requested: u32,
+    /// O que a requisição inteira vai poder gerar. É o total do orçamento.
+    #[serde(rename = "effective_max_tokens")]
+    pub effective: u32,
+    /// `max_new_tokens` da implantação. **Não** limita mais a requisição, só
+    /// uma perna do laço de continuação.
+    #[serde(rename = "deployment_max_tokens")]
+    pub deployment: Option<u32>,
+    #[serde(rename = "context_available_tokens")]
+    pub context_available: Option<u32>,
+    /// Tokens que cabem numa perna: `min(deployment, effective)`.
+    #[serde(rename = "leg_max_tokens")]
+    pub leg: u32,
+    /// Um modelo com peer vivo sem capacidade confirmada não pode usar o
+    /// fallback local com segurança. O campo é interno porque a requisição é
+    /// recusada antes de qualquer resposta `x_pom` ser gerada.
+    #[serde(skip)]
+    capacity_pending: bool,
+}
+
+impl OutputTokenLimit {
+    pub fn was_clamped(self) -> bool {
+        self.effective < self.requested
+    }
+
+    /// Os dois números que a geração precisa, sem o adaptador ter de escolher.
+    pub fn budget(self) -> OutputBudget {
+        OutputBudget {
+            total: self.effective,
+            leg: self.leg,
+        }
+    }
+
+    /// Esta requisição pode precisar de mais de uma perna. Não é promessa de
+    /// que vai precisar: o modelo pode parar antes.
+    pub fn continuation_possible(self) -> bool {
+        self.leg < self.effective
+    }
+
+    pub fn capacity_pending(self) -> bool {
+        self.capacity_pending
+    }
+
+    pub fn rejection_reason(self) -> Option<String> {
+        if self.capacity_pending {
+            return Some(
+                "a capacidade efetiva do modelo ainda não foi confirmada por todos os peers vivos"
+                    .into(),
+            );
+        } else if self.effective > 0 && self.leg > 0 {
+            return None;
+        }
+
+        if self.context_available == Some(0) {
+            Some(
+                "o prompt ocupa todo o contexto disponível; não há espaço para tokens de saída"
+                    .into(),
+            )
+        } else if self.deployment == Some(0) {
+            Some("max_new_tokens da implantação precisa ser maior que zero".into())
+        } else {
+            Some("não há tokens de saída disponíveis para esta requisição".into())
+        }
+    }
+}
+
+/// Resolve one request's output budget.
+///
+/// Dois números saem daqui, e é de propósito. O **total** da requisição é
+/// `min(pedido, contexto que sobrou)`: o `max_new_tokens` da implantação
+/// **não** entra no total, porque ele nunca foi limite do backend -
+/// sempre foi um corte do gateway, e cortar aí calado é o defeito. O que ele
+/// vira é o teto de **uma perna**, que o laço de continuação atravessa quantas
+/// vezes o total permitir. Nenhum adaptador de protocolo duplica esta conta.
+pub fn output_token_limit(
+    requested: u32,
+    deployment: Option<u32>,
+    context_length: Option<u32>,
+    prompt_tokens: u32,
+) -> OutputTokenLimit {
+    let requested = requested.max(1);
+    let context_available = context_length.map(|context| context.saturating_sub(prompt_tokens));
+    let effective = [Some(requested), context_available]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(0);
+    // A perna nunca passa do total: pedir 10 com implantação de 1000 continua
+    // sendo uma perna de 10, e o laço nem abre.
+    let leg = deployment.unwrap_or(effective).min(effective);
+
+    OutputTokenLimit {
+        requested,
+        effective,
+        deployment,
+        context_available,
+        leg,
+        capacity_pending: false,
+    }
+}
+
+impl GatewayState {
+    /// Resolve an adapter request against the live deployment configuration
+    /// and the remaining context reported by the active runtime.
+    pub async fn request_output_limit(&self, requested: u32, prompt: &str) -> OutputTokenLimit {
+        self.request_output_limit_for_model(None, requested, prompt)
+            .await
+    }
+
+    /// Resolve the request against the capacity of every live peer serving the
+    /// selected model. The deployment leg remains separate from the request's
+    /// context-derived total.
+    pub async fn request_output_limit_for_model(
+        &self,
+        model: Option<&str>,
+        requested: u32,
+        prompt: &str,
+    ) -> OutputTokenLimit {
+        let runtime = self.runtime.config().await;
+        let (capacity, capacity_pending) = self.runtime_capacity_for_model(model).await;
+        if capacity_pending {
+            return OutputTokenLimit {
+                requested: requested.max(1),
+                effective: 0,
+                deployment: None,
+                context_available: None,
+                leg: 0,
+                capacity_pending: true,
+            };
+        }
+        output_token_limit(
+            requested,
+            capacity
+                .map(|current| current.max_new_tokens)
+                .or_else(|| runtime.as_ref().map(|cfg| cfg.max_new_tokens)),
+            capacity
+                .map(|current| current.n_ctx)
+                .or_else(|| runtime.as_ref().map(|cfg| cfg.n_ctx)),
+            estimate_tokens(prompt),
+        )
+    }
+
+    /// Metadados publicados por `/v1/models`, derivados da mesma capacidade
+    /// que a validação de uma requisição usa.
+    pub async fn advertised_output_limits(
+        &self,
+        model: Option<&str>,
+    ) -> (Option<u32>, Option<u32>) {
+        let peers = self.all_peers().await;
+        self.advertised_output_limits_from_peers(&peers, model)
+            .await
+    }
+
+    /// Variante que recebe a mesma fotografia usada para descobrir o
+    /// catálogo. Assim um peer não pode desaparecer ou entrar em restart entre
+    /// a decisão do ID e a publicação de `max_completion_tokens`.
+    pub async fn advertised_output_limits_from_peers(
+        &self,
+        peers: &[PeerInfo],
+        model: Option<&str>,
+    ) -> (Option<u32>, Option<u32>) {
+        let runtime = self.runtime.config().await;
+        let (capacity, capacity_pending) = match model {
+            Some(model) => runtime_capacity_from_peers(peers, model),
+            None => (self.local_runtime_capacity().await, false),
+        };
+        if capacity_pending {
+            return (None, None);
+        }
+        let context = capacity
+            .map(|current| current.n_ctx)
+            .or_else(|| runtime.as_ref().map(|cfg| cfg.n_ctx));
+        (context, context)
+    }
+}
+
+pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
+    if limit.capacity_pending() {
+        info!(
+            route,
+            "capacidade efetiva aguardando confirmação de todos os peers vivos"
+        );
+        return;
+    }
+    if limit.was_clamped() {
+        info!(
+            route,
+            requested_max_tokens = limit.requested,
+            effective_max_tokens = limit.effective,
+            context_available_tokens = ?limit.context_available,
+            "limite de saída reduzido pelo contexto"
+        );
+    }
+    if limit.continuation_possible() {
+        info!(
+            route,
+            effective_max_tokens = limit.effective,
+            leg_max_tokens = limit.leg,
+            deployment_max_tokens = ?limit.deployment,
+            "saída maior que uma geração da implantação: o laço de continuação \
+             costura as pernas no mesmo fluxo"
+        );
+    }
+}
+
+/// `/api/generate` valida apenas o orçamento pedido. A capacidade do runtime é
+/// resolvida depois, a partir do contexto efetivo e da implantação ativa.
+fn resolve_request_max_tokens(requested: Option<u32>) -> Result<u32, String> {
     let max_tokens = requested.unwrap_or(DEFAULT_MAX_TOKENS);
     if max_tokens == 0 {
         return Err("max_tokens deve ser maior que zero".to_string());
-    }
-    if configured_limit == 0 {
-        return Err("max_new_tokens configurado deve ser maior que zero".to_string());
-    }
-    if max_tokens > configured_limit {
-        return Err(format!(
-            "max_tokens solicitado ({max_tokens}) excede max_new_tokens configurado ({configured_limit})"
-        ));
     }
     Ok(max_tokens)
 }
 
 fn remaining_generation_steps(max_tokens: u32, tokens_generated: u32) -> u32 {
     max_tokens.saturating_sub(tokens_generated)
+}
+
+/// Decide whether a generation step has a terminal reason. The budget is
+/// checked first because the backend may report EOS on the same step that
+/// consumed the last permitted token; the public API must call that result
+/// `length`, not a normal stop.
+fn generation_finish_reason(
+    max_tokens: u32,
+    tokens_generated: u32,
+    model_done: bool,
+) -> Option<&'static str> {
+    if tokens_generated >= max_tokens {
+        Some("length")
+    } else if model_done {
+        Some("stop")
+    } else {
+        None
+    }
+}
+
+/// Audit has a distinct state for a response cut by its effective output
+/// budget. Transport failures remain `partial`, even when they happened to
+/// produce the same amount of text.
+fn audit_status_for_summary(summary: &GenSummary) -> &'static str {
+    if summary.finish_reason.as_deref() == Some("length") {
+        "incomplete"
+    } else if summary.partial {
+        "partial"
+    } else {
+        "ok"
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -491,6 +840,7 @@ pub struct GenerateResponse {
     pub tokens_generated: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
+    pub timings: Option<GenerationTimings>,
     pub stop_sequence: Option<String>,
     pub trace: Option<crate::prefill::RequestTrace>,
 }
@@ -519,6 +869,9 @@ pub struct HealthResponse {
     pub peer_count: usize,
     pub pipeline_peers: usize,
     pub default_model: String,
+    /// Só fica presente quando o `/health` do servidor de inferência local
+    /// confirmou o runtime desta geração.
+    pub runtime_capacity: Option<RuntimeCapacity>,
 }
 
 // ── Streaming generation ─────────────────────────────────────────────────────
@@ -542,7 +895,9 @@ pub(crate) struct GenerationInput {
     pub(crate) model: String,
     pub(crate) prompt: String,
     pub(crate) chat_template: bool,
-    pub(crate) max_tokens: u32,
+    /// Os dois tetos desta requisição: o da perna e o do total. Ver
+    /// [`OutputBudget`].
+    pub(crate) budget: OutputBudget,
     pub(crate) stops: Vec<String>,
     /// Como o cache de prefixo reconhece que esta requisição continua a
     /// anterior. `None` usa o próprio prompt.
@@ -554,6 +909,9 @@ pub(crate) struct GenerationInput {
     /// mensagens, que só cresce: imune a template, a rótulo e a bloco de
     /// ferramentas. Ver `crate::openai::conversation_cache_key`.
     pub(crate) cache_key: Option<String>,
+    /// The parsed HTTP request body, retained for audit without headers or
+    /// credentials.
+    pub(crate) request_details: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -563,20 +921,41 @@ pub struct GenSummary {
     pub tokens_generated: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
+    pub timings: GenerationTimings,
     /// True when a peer failed mid-generation but some text was salvaged.
     pub partial: bool,
     /// "stop" when a server-side stop sequence ended the generation.
     pub finish_reason: Option<String>,
     /// The exact stop sequence that was matched, when one ended the stream.
     pub stop_sequence: Option<String>,
+    /// Quantas pernas do laço de continuação a resposta costurou. `1` é uma
+    /// geração só - nenhuma costura. Maior que `1` quer dizer que a saída
+    /// passou do `max_new_tokens` da implantação sem que ele fosse alterado, e
+    /// é o que torna a costura inspecionável de fora.
+    pub legs: u32,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
+}
+
+/// Resumo de desempenho de uma requisição, agregado sobre o pipeline inteiro.
+/// Cada taxa usa seu próprio relógio e conjunto de tokens.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GenerationTimings {
+    pub ttft_ms: u64,
+    pub prefill_ms: u64,
+    pub prefill_tokens: u32,
+    pub prefill_tokens_per_sec: Option<f64>,
+    pub generation_ms: u64,
+    pub generation_tokens: u32,
+    pub generation_tokens_per_sec: Option<f64>,
+    pub total_ms: u64,
+    pub total_tokens_per_sec: f64,
 }
 
 /// OpenAI's `stop` accepts either one string or a list. Keeping this parser in
 /// the gateway lets all HTTP adapters share the same matcher and keeps the
 /// internal inference protocol unchanged.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StopInput {
     One(String),
@@ -723,53 +1102,142 @@ async fn flush_stop_matcher(tx: &mpsc::Sender<GenEvent>, matcher: &mut StopMatch
     tail.is_empty() || tx.send(GenEvent::Token(tail)).await.is_ok()
 }
 
+fn rate_if_measurable(tokens: u32, milliseconds: u64) -> Option<f64> {
+    (tokens > 0 && milliseconds > 0).then(|| tokens as f64 / (milliseconds as f64 / 1000.0))
+}
+
+/// Calcula taxas com relógios que não se misturam. `generation_ms` começa no
+/// primeiro token e, portanto, não varia com o tamanho do prompt.
+pub(crate) fn timing_metrics(
+    total_ms: u64,
+    ttft_ms: u64,
+    prefill_ms: u64,
+    prefill_tokens: u32,
+    generation_tokens: u32,
+) -> GenerationTimings {
+    let generation_ms = total_ms.saturating_sub(ttft_ms);
+    GenerationTimings {
+        ttft_ms,
+        prefill_ms,
+        prefill_tokens,
+        prefill_tokens_per_sec: rate_if_measurable(prefill_tokens, prefill_ms),
+        generation_ms,
+        generation_tokens,
+        generation_tokens_per_sec: rate_if_measurable(generation_tokens, generation_ms),
+        total_ms,
+        total_tokens_per_sec: rate(generation_tokens, total_ms as f64 / 1000.0),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn summary_for(
+    plan: &PipelinePlan,
+    request_started: Instant,
+    first_token_at: Instant,
+    tokens_generated: u32,
+    legs: u32,
+    mut trace: crate::prefill::RequestTrace,
+    partial: bool,
+    finish_reason: Option<String>,
+    stop_sequence: Option<String>,
+) -> GenSummary {
+    let total_ms = request_started.elapsed().as_millis() as u64;
+    let ttft_ms = first_token_at
+        .saturating_duration_since(request_started)
+        .as_millis() as u64;
+    trace.output_tokens = tokens_generated;
+    trace.complete = !partial;
+    let timings = timing_metrics(
+        total_ms,
+        ttft_ms,
+        trace.prefill_ms,
+        trace.input_tokens.saturating_sub(trace.cached_tokens),
+        tokens_generated,
+    );
+    GenSummary {
+        source: format!(
+            "pipeline:{}{}",
+            plan.hop_chain(),
+            if partial { " (partial)" } else { "" }
+        ),
+        tokens_generated,
+        tokens_per_sec: timings.total_tokens_per_sec,
+        duration_ms: timings.total_ms,
+        timings,
+        partial,
+        finish_reason,
+        stop_sequence,
+        legs,
+        trace: Some(trace),
+    }
+}
+
+/// Contabiliza um token confirmado contra o orçamento de perna.
+///
+/// A perna é o teto de **uma** geração de backend (`max_new_tokens` da
+/// implantação). Fechá-la não encerra a resposta: o laço de continuação abre a
+/// seguinte e segue decodificando na mesma sessão de KV e no mesmo fluxo SSE,
+/// então nada disso é observável do lado do cliente. Só o total encerra, e só
+/// ele vira `finish_reason: "length"`.
+fn note_leg_boundary(budget: OutputBudget, tokens_generated: u32, legs: &mut u32) {
+    if tokens_generated.is_multiple_of(budget.leg) && tokens_generated < budget.total {
+        *legs += 1;
+        info!(
+            legs = *legs,
+            tokens_generated,
+            leg_max_tokens = budget.leg,
+            total_max_tokens = budget.total,
+            "perna esgotada: continuando a mesma geração na perna seguinte"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn send_stopped_summary(
     tx: &mpsc::Sender<GenEvent>,
     plan: &PipelinePlan,
-    gen_start: Instant,
+    request_started: Instant,
+    first_token_at: Instant,
     tokens_generated: u32,
-    mut trace: crate::prefill::RequestTrace,
+    legs: u32,
+    trace: crate::prefill::RequestTrace,
     stop_sequence: String,
 ) {
-    let elapsed = gen_start.elapsed();
-    trace.output_tokens = tokens_generated;
-    trace.complete = true;
-    let _ = tx
-        .send(GenEvent::Done(GenSummary {
-            source: format!("pipeline:{}", plan.hop_chain()),
-            tokens_generated,
-            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-            duration_ms: elapsed.as_millis() as u64,
-            partial: false,
-            finish_reason: Some("stop".to_string()),
-            stop_sequence: Some(stop_sequence),
-            trace: Some(trace),
-        }))
-        .await;
+    let summary = summary_for(
+        plan,
+        request_started,
+        first_token_at,
+        tokens_generated,
+        legs,
+        trace,
+        false,
+        Some("stop".to_string()),
+        Some(stop_sequence),
+    );
+    let _ = tx.send(GenEvent::Done(summary)).await;
 }
 
 async fn send_length_summary(
     tx: &mpsc::Sender<GenEvent>,
     plan: &PipelinePlan,
-    gen_start: Instant,
+    request_started: Instant,
+    first_token_at: Instant,
     tokens_generated: u32,
-    mut trace: crate::prefill::RequestTrace,
+    legs: u32,
+    trace: crate::prefill::RequestTrace,
 ) {
-    let elapsed = gen_start.elapsed();
-    trace.output_tokens = tokens_generated;
-    trace.complete = true;
-    let _ = tx
-        .send(GenEvent::Done(GenSummary {
-            source: format!("pipeline:{}", plan.hop_chain()),
-            tokens_generated,
-            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-            duration_ms: elapsed.as_millis() as u64,
-            partial: false,
-            finish_reason: Some("length".to_string()),
-            stop_sequence: None,
-            trace: Some(trace),
-        }))
-        .await;
+    let summary = summary_for(
+        plan,
+        request_started,
+        first_token_at,
+        tokens_generated,
+        legs,
+        trace,
+        false,
+        Some("length".to_string()),
+        None,
+    );
+    let _ = tx.send(GenEvent::Done(summary)).await;
 }
 
 /// Run one generation, emitting each token as it is decoded.
@@ -796,15 +1264,18 @@ async fn generate_stream_inner(
     tx: mpsc::Sender<GenEvent>,
     cancellation: crate::prefill::Cancellation,
 ) {
+    let request_started = Instant::now();
     let GenerationInput {
         state,
         model,
         prompt,
         chat_template,
-        max_tokens,
+        budget,
         stops,
         cache_key,
+        request_details: _,
     } = input;
+    let budget = budget.normalized();
     if cancellation.is_cancelled() {
         return;
     }
@@ -921,11 +1392,12 @@ async fn generate_stream_inner(
     );
 
     info!(
-        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} resposta={}",
+        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",
         plan.steps.len(),
         plan.hop_chain(),
         &session_id[..8],
-        max_tokens,
+        budget.total,
+        budget.leg,
         if direct.is_some() && plan.supports_direct_reply() {
             "direta"
         } else if plan.supports_relay_chain() {
@@ -935,27 +1407,40 @@ async fn generate_stream_inner(
         },
     );
 
-    let gen_start = Instant::now();
     let mut tokens_generated: u32 = 0;
-    let max_tokens = max_tokens.max(1);
+    // Pernas costuradas até agora. Começa em 1: toda resposta tem uma.
+    let mut legs: u32 = 1;
     let mut retained_prefix_tokens: Option<u32> = None;
     // Quantos tokens do prompt a cabeça de fato não reprocessou. Não é a
     // escolha do cache, é o que o pipeline executou - ver
     // `PrefillOutcome::cached_tokens`. Sai no `GenSummary` e daí para
     // `usage.prompt_tokens_details.cached_tokens`.
-    let mut honored_cached_tokens: u32 = 0;
 
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
     // constants baked into the protocol.
-    let (chunk_tokens, dtype, lookup_enabled, lookup_k, speculative_m, mtp_enabled, mtp_k) = {
+    let (
+        chunk_tokens,
+        max_inflight_chunks,
+        dtype,
+        lookup_enabled,
+        lookup_k,
+        speculative_m,
+        mtp_enabled,
+        mtp_k,
+    ) = {
         let cfg = state.runtime.config().await;
         let n_batch = cfg.as_ref().map(|c| c.n_batch).unwrap_or(512);
         (
             cfg.as_ref()
                 .map(|c| c.prefill_chunk_tokens)
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
-            crate::wire::WireDtype::F16,
+            cfg.as_ref()
+                .map(|c| c.prefill_max_inflight_chunks as usize)
+                .unwrap_or(crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS),
+            cfg.as_ref()
+                .map(|c| c.hidden_state_dtype)
+                .unwrap_or_default(),
             cfg.as_ref().is_some_and(|c| c.speculative_decoding_enabled),
             speculative_k_of(cfg.as_ref().map(|c| c.speculative_k).unwrap_or(4), n_batch),
             cfg.as_ref()
@@ -1030,8 +1515,8 @@ async fn generate_stream_inner(
         // este gateway acha que ele guarda; nesse caso a primeira tentativa
         // morre com posições fora de ordem. A segunda vai fria, que é
         // exatamente o comportamento de antes desta funcionalidade existir.
-        let prefill_attempt = |reuse: bool| {
-            crate::prefill::run(
+        let prefill_attempt = |reuse: bool, resume: Option<crate::prefill::PrefillResumable>| {
+            crate::prefill::run_with_options(
                 &plan,
                 model,
                 &session_id,
@@ -1045,33 +1530,61 @@ async fn generate_stream_inner(
                 state.tunnel_tx.as_ref(),
                 &cancellation,
                 reuse,
+                max_inflight_chunks,
+                resume,
             )
         };
-        let mut prefill_result = prefill_attempt(reuse_prefix).await;
-        if reuse_prefix {
-            if let Err(e) = &prefill_result {
-                if crate::relay::is_frame_size_error(e) {
+        let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
+        let mut unknown_session_recovery_attempted = false;
+        if let Err(e) = &prefill_result {
+            let original_unknown_session = crate::relay::is_unknown_session_error(e);
+            if crate::relay::is_frame_size_error(e) {
+                warn!(
+                    "prefill falhou por limite de frame ({e}); \
+                     não é recuperável repetindo o mesmo chunk"
+                );
+            } else if !crate::prefill::is_cancelled(e) {
+                // 1ª recuperação: retomar do pedaço que falhou. Os peers refazem
+                // o próprio KV a partir daquela posição; nada do prompt já
+                // ingerido volta pela rede.
+                if let Some(rp) = crate::prefill::resume_point(e) {
                     warn!(
-                        "prefill com prefixo falhou por limite de frame ({e}); \
-                         não é recuperável repetindo o mesmo chunk"
+                        "prefill falhou no pedaço {} ({e}); retomando da posição {}",
+                        rp.from_chunk, rp.start_pos
                     );
-                } else if !crate::prefill::is_cancelled(e) {
-                    warn!("prefill com prefixo reaproveitado falhou ({e}); repetindo do zero");
-                    prefill_result = prefill_attempt(false).await;
+                    prefill_result = prefill_attempt(reuse_prefix, Some(rp)).await;
+                }
+                // 2ª recuperação: refazer o prefill inteiro a frio, uma vez -
+                // é o comportamento de antes destas funcionalidades. Cobre o
+                // motor recorrente que recusa recuar o KV e a sessão que o peer
+                // perdeu.
+                if let Err(e2) = &prefill_result {
+                    let unknown_session =
+                        original_unknown_session || crate::relay::is_unknown_session_error(e2);
+                    if reuse_prefix || unknown_session {
+                        unknown_session_recovery_attempted = unknown_session;
+                        warn!(
+                            "prefill falhou com estado de sessão incompatível ({e2}); \
+                             reconstruindo o prefill inteiro a frio uma vez"
+                        );
+                        prefill_result = prefill_attempt(false, None).await;
+                    }
                 }
             }
         }
         let first = match prefill_result {
-            Ok(o) => {
+            Ok(mut o) => {
+                if unknown_session_recovery_attempted {
+                    o.trace.prefix_reuse_status = Some("session-lost-cold".to_owned());
+                }
                 info!(
                     "📥 prompt de {} tokens em {} pedaço(s), {} do cache · {:.1}s até a primeira palavra",
                     o.prompt_tokens,
                     o.chunks,
                     o.cached_tokens,
-                    gen_start.elapsed().as_secs_f64(),
+                    request_started.elapsed().as_secs_f64(),
                 );
                 retained_prefix_tokens = Some(o.retained_tokens);
-                honored_cached_tokens = o.cached_tokens;
                 o
             }
             Err(e) if crate::prefill::is_cancelled(&e) => {
@@ -1079,16 +1592,25 @@ async fn generate_stream_inner(
                 return;
             }
             Err(e) => {
+                let message = if unknown_session_recovery_attempted
+                    || crate::relay::is_unknown_session_error(&e)
+                {
+                    "Prefill falhou: um peer perdeu o estado da sessão; o sistema tentou reconstruir o contexto, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                } else {
+                    format!("Prefill falhou: {e}")
+                };
                 let _ = tx
-                    .send(GenEvent::Failed(format!("Prefill falhou: {e}")))
+                    .send(GenEvent::Failed(message))
                     .await;
                 return;
             }
         };
 
+        let first_token_at = Instant::now();
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         tokens_generated += 1;
+        note_leg_boundary(budget, tokens_generated, &mut legs);
         match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
             StopSend::Disconnected => {
                 info!("cliente desconectou logo após o prompt");
@@ -1098,8 +1620,10 @@ async fn generate_stream_inner(
                 send_stopped_summary(
                     &tx,
                     &plan,
-                    gen_start,
+                    request_started,
+                    first_token_at,
                     tokens_generated,
+                    legs,
                     trace,
                     stop_sequence,
                 )
@@ -1108,33 +1632,41 @@ async fn generate_stream_inner(
             }
             StopSend::Continue => {}
         }
+        if generation_finish_reason(budget.total, tokens_generated, first.done)
+            == Some("length")
+        {
+            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                return;
+            }
+            send_length_summary(
+                &tx,
+                &plan,
+                request_started,
+                first_token_at,
+                tokens_generated,
+                legs,
+                trace,
+            )
+            .await;
+            return;
+        }
+
         if first.done {
             if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                 return;
             }
-            let elapsed = gen_start.elapsed();
-            trace.output_tokens = tokens_generated;
-            trace.complete = true;
-            let _ = tx
-                .send(GenEvent::Done(GenSummary {
-                    source: format!("pipeline:{}", plan.hop_chain()),
-                    tokens_generated,
-                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                    duration_ms: elapsed.as_millis() as u64,
-                    partial: false,
-                    finish_reason: None,
-                    stop_sequence: None,
-                    trace: Some(trace),
-                }))
-                .await;
-            return;
-        }
-
-        if remaining_generation_steps(max_tokens, tokens_generated) == 0 {
-            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                return;
-            }
-            send_length_summary(&tx, &plan, gen_start, tokens_generated, trace).await;
+            let summary = summary_for(
+                &plan,
+                request_started,
+                first_token_at,
+                tokens_generated,
+                legs,
+                trace,
+                false,
+                None,
+                None,
+            );
+            let _ = tx.send(GenEvent::Done(summary)).await;
             return;
         }
 
@@ -1157,7 +1689,7 @@ async fn generate_stream_inner(
             // recusa da cabeça é esperada) das seguintes (o rascunho foi
             // mandado — ignorado aí é motivo para parar).
             let mut stored_draft: Option<Vec<i32>> = None;
-            while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
+            while remaining_generation_steps(budget.total, tokens_generated) > 0 {
                 if cancellation.is_cancelled() {
                     return;
                 }
@@ -1223,24 +1755,20 @@ async fn generate_stream_inner(
                             "rodada de decodificação"
                         };
                         warn!("Erro na {rodada} (token {tokens_generated}): {e}");
-                        let elapsed = gen_start.elapsed();
                         if tokens_generated > 0 {
                             info!("devolvendo {tokens_generated} tokens parciais");
-                            let _ = tx
-                                .send(GenEvent::Done(GenSummary {
-                                    source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                                    tokens_generated,
-                                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                    duration_ms: elapsed.as_millis() as u64,
-                                    partial: true,
-                                    finish_reason: None,
-                                    stop_sequence: None,
-                                    trace: {
-                                        trace.output_tokens = tokens_generated;
-                                        Some(trace)
-                                    },
-                                }))
-                                .await;
+                            let summary = summary_for(
+                                &plan,
+                                request_started,
+                                first_token_at,
+                                tokens_generated,
+                                legs,
+                                trace,
+                                true,
+                                None,
+                                None,
+                            );
+                            let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(format!(
@@ -1286,13 +1814,15 @@ async fn generate_stream_inner(
                 // stream only what fits, and note it so `step.done` (which
                 // may refer to a position we never even looked at) isn't
                 // trusted past the cut.
-                let remaining = remaining_generation_steps(max_tokens, tokens_generated) as usize;
+                let remaining =
+                    remaining_generation_steps(budget.total, tokens_generated) as usize;
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
+                    note_leg_boundary(budget, tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
                             info!("cliente desconectou após {tokens_generated} tokens");
@@ -1302,8 +1832,10 @@ async fn generate_stream_inner(
                             send_stopped_summary(
                                 &tx,
                                 &plan,
-                                gen_start,
+                                request_started,
+                                first_token_at,
                                 tokens_generated,
+                                legs,
                                 trace,
                                 stop_sequence,
                             )
@@ -1314,15 +1846,26 @@ async fn generate_stream_inner(
                     }
                 }
 
-                let finished =
-                    (step.done && !truncated_by_budget) || tokens_generated >= max_tokens;
-                if finished {
+                let finish_reason = generation_finish_reason(
+                    budget.total,
+                    tokens_generated,
+                    step.done && !truncated_by_budget,
+                );
+                if finish_reason.is_some() {
                     if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                         return;
                     }
-                    let elapsed = gen_start.elapsed();
-                    trace.output_tokens = tokens_generated;
-                    trace.complete = true;
+                    let summary = summary_for(
+                        &plan,
+                        request_started,
+                        first_token_at,
+                        tokens_generated,
+                        legs,
+                        trace,
+                        false,
+                        (finish_reason == Some("length")).then(|| "length".to_string()),
+                        None,
+                    );
                     info!(
                         "✅ Pipeline completo ({}): {} tokens em {:.1}s ({:.1} tok/s)",
                         if especulando {
@@ -1331,21 +1874,10 @@ async fn generate_stream_inner(
                             "sem especulação"
                         },
                         tokens_generated,
-                        elapsed.as_secs_f64(),
-                        rate(tokens_generated, elapsed.as_secs_f64())
+                        summary.timings.total_ms as f64 / 1000.0,
+                        summary.timings.total_tokens_per_sec
                     );
-                    let _ = tx
-                        .send(GenEvent::Done(GenSummary {
-                            source: format!("pipeline:{}", plan.hop_chain()),
-                            tokens_generated,
-                            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                            duration_ms: elapsed.as_millis() as u64,
-                            partial: false,
-                            finish_reason: None,
-                            stop_sequence: None,
-                            trace: Some(trace),
-                        }))
-                        .await;
+                    let _ = tx.send(GenEvent::Done(summary)).await;
                     return;
                 }
 
@@ -1378,23 +1910,19 @@ async fn generate_stream_inner(
                              {tokens_generated} tokens: encerrando a geração \
                              em vez de arriscar cache contaminado"
                         );
-                        let elapsed = gen_start.elapsed();
                         if tokens_generated > 0 {
-                            let _ = tx
-                                .send(GenEvent::Done(GenSummary {
-                                    source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                                    tokens_generated,
-                                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                    duration_ms: elapsed.as_millis() as u64,
-                                    partial: true,
-                                    finish_reason: None,
-                                    stop_sequence: None,
-                                    trace: {
-                                        trace.output_tokens = tokens_generated;
-                                        Some(trace)
-                                    },
-                                }))
-                                .await;
+                            let summary = summary_for(
+                                &plan,
+                                request_started,
+                                first_token_at,
+                                tokens_generated,
+                                legs,
+                                trace,
+                                true,
+                                None,
+                                None,
+                            );
+                            let _ = tx.send(GenEvent::Done(summary)).await;
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(
@@ -1409,7 +1937,7 @@ async fn generate_stream_inner(
             return;
         }
 
-        while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
+        while remaining_generation_steps(budget.total, tokens_generated) > 0 {
             let res = crate::prefill::step(
                 &plan,
                 model,
@@ -1431,6 +1959,7 @@ async fn generate_stream_inner(
                     let (token_id, text) = &step.accepted[0];
                     next_token = *token_id;
                     tokens_generated += 1;
+                    note_leg_boundary(budget, tokens_generated, &mut legs);
                     match send_text_with_stop(&tx, &mut stop_matcher, text).await {
                         StopSend::Disconnected => {
                             // Client hung up; stop burning GPU time on a dead request.
@@ -1441,8 +1970,10 @@ async fn generate_stream_inner(
                             send_stopped_summary(
                                 &tx,
                                 &plan,
-                                gen_start,
+                                request_started,
+                                first_token_at,
                                 tokens_generated,
+                                legs,
                                 trace,
                                 stop_sequence,
                             )
@@ -1451,57 +1982,51 @@ async fn generate_stream_inner(
                         }
                         StopSend::Continue => {}
                     }
-                    let done = step.done;
+                    let finish_reason =
+                        generation_finish_reason(budget.total, tokens_generated, step.done);
 
-                    if done || remaining_generation_steps(max_tokens, tokens_generated) == 0 {
+                    if finish_reason.is_some() {
                         if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                             return;
                         }
-                        let elapsed = gen_start.elapsed();
-                        trace.output_tokens = tokens_generated;
-                        trace.complete = true;
+                        let summary = summary_for(
+                            &plan,
+                            request_started,
+                            first_token_at,
+                            tokens_generated,
+                            legs,
+                            trace,
+                            false,
+                            (finish_reason == Some("length")).then(|| "length".to_string()),
+                            None,
+                        );
                         info!(
                             "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
                             tokens_generated,
-                            elapsed.as_secs_f64(),
-                            rate(tokens_generated, elapsed.as_secs_f64())
+                            summary.timings.total_ms as f64 / 1000.0,
+                            summary.timings.total_tokens_per_sec
                         );
-                        let _ = tx
-                            .send(GenEvent::Done(GenSummary {
-                                source: format!("pipeline:{}", plan.hop_chain()),
-                                tokens_generated,
-                                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                duration_ms: elapsed.as_millis() as u64,
-                                partial: false,
-                                finish_reason: (!done).then(|| "length".to_string()),
-                                stop_sequence: None,
-                                trace: Some(trace),
-                            }))
-                            .await;
+                        let _ = tx.send(GenEvent::Done(summary)).await;
                         return;
                     }
                 }
                 Err(e) => {
                     warn!("Erro no passo {tokens_generated} do pipeline: {e}");
-                    let elapsed = gen_start.elapsed();
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
                         info!("devolvendo {tokens_generated} tokens parciais");
-                        let _ = tx
-                            .send(GenEvent::Done(GenSummary {
-                                source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                                tokens_generated,
-                                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                                duration_ms: elapsed.as_millis() as u64,
-                                partial: true,
-                                finish_reason: None,
-                                stop_sequence: None,
-                                trace: {
-                                    trace.output_tokens = tokens_generated;
-                                    Some(trace)
-                                },
-                            }))
-                            .await;
+                        let summary = summary_for(
+                            &plan,
+                            request_started,
+                            first_token_at,
+                            tokens_generated,
+                            legs,
+                            trace,
+                            true,
+                            None,
+                            None,
+                        );
+                        let _ = tx.send(GenEvent::Done(summary)).await;
                     } else {
                         let _ = tx
                             .send(GenEvent::Failed(format!(
@@ -1769,21 +2294,38 @@ pub fn spawn_logged_generation_with_stops(
     let entry_node_id = input.state.network.node_id.clone();
     let prompt_tokens = estimate_tokens(&input.prompt);
     let logged_model = input.model.clone();
+    let logged_prompt = input.prompt.clone();
+    let request_details = input.request_details.clone();
+    let audit = input.state.audit.clone();
+    let request_id = Uuid::new_v4().simple().to_string();
+    let received_at = chrono::Utc::now().to_rfc3339();
+    let started = Instant::now();
+    audit.begin(crate::reqlog::AuditRequest {
+        id: request_id.clone(),
+        received_at,
+        route: route.to_string(),
+        model: logged_model.clone(),
+        caller,
+        entry_node_id: entry_node_id.clone(),
+        prompt: logged_prompt,
+        request_details,
+    });
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
     tokio::spawn(generate_stream_with_stops(input, inner_tx));
 
     tokio::spawn(async move {
-        let started = Instant::now();
         let mut generated: u32 = 0;
+        let mut result = String::new();
         // `None` means the client hung up before the generation ended, which is
         // its own outcome and worth seeing in the log.
         let mut outcome: Option<Result<GenSummary, String>> = None;
 
         while let Some(event) = inner_rx.recv().await {
             let terminal = match &event {
-                GenEvent::Token(_) => {
+                GenEvent::Token(text) => {
                     generated += 1;
+                    result.push_str(text);
                     None
                 }
                 GenEvent::Done(summary) => Some(Ok(summary.clone())),
@@ -1798,6 +2340,21 @@ pub fn spawn_logged_generation_with_stops(
             }
         }
 
+        let telemetry = outcome.as_ref().and_then(|outcome| {
+            outcome
+                .as_ref()
+                .ok()
+                .and_then(|summary| summary.trace.clone())
+                .and_then(|trace| serde_json::to_value(trace).ok())
+        });
+        let timings = outcome
+            .as_ref()
+            .and_then(|outcome| outcome.as_ref().ok().map(|summary| summary.timings.clone()));
+        let prompt_tokens = outcome
+            .as_ref()
+            .and_then(|outcome| outcome.as_ref().ok())
+            .and_then(|summary| summary.trace.as_ref().map(|trace| trace.input_tokens))
+            .or(Some(prompt_tokens));
         let (source, hops, completion_tokens, duration_ms, status, error) = match outcome {
             Some(Ok(s)) => (
                 s.source.clone(),
@@ -1810,7 +2367,7 @@ pub fn spawn_logged_generation_with_stops(
                     .collect(),
                 Some(s.tokens_generated),
                 Some(s.duration_ms),
-                if s.partial { "partial" } else { "ok" },
+                audit_status_for_summary(&s),
                 None,
             ),
             Some(Err(e)) => (
@@ -1831,25 +2388,70 @@ pub fn spawn_logged_generation_with_stops(
             ),
         };
 
-        crate::reqlog::record(crate::reqlog::Entry {
-            id: Uuid::new_v4().simple().to_string(),
-            at: chrono::Utc::now().to_rfc3339(),
-            route: route.to_string(),
-            model: logged_model,
-            token_label: caller.token_label,
-            token_hint: caller.token_hint,
-            token_node_id: caller.token_node_id,
-            entry_node_id,
-            hops,
-            source,
-            prompt_tokens: Some(prompt_tokens),
-            completion_tokens,
-            duration_ms,
-            status,
-            error,
-        })
-        .await;
+        let audit_status = match status {
+            "ok" => crate::reqlog::AuditStatus::Ok,
+            "partial" => crate::reqlog::AuditStatus::Partial,
+            "error" => crate::reqlog::AuditStatus::Error,
+            "abandoned" => crate::reqlog::AuditStatus::Abandoned,
+            _ => crate::reqlog::AuditStatus::Incomplete,
+        };
+        audit.complete(
+            request_id,
+            crate::reqlog::AuditCompletion {
+                completed_at: chrono::Utc::now().to_rfc3339(),
+                result: (!result.is_empty()).then_some(result),
+                telemetry,
+                timings,
+                source,
+                hops,
+                prompt_tokens,
+                completion_tokens,
+                duration_ms,
+                status: audit_status,
+                error,
+            },
+        );
     });
+}
+
+/// Record a request that is rejected before the generation task can be
+/// started, such as a prompt that exceeds the configured context budget.
+pub(crate) fn record_rejected(
+    state: &GatewayState,
+    route: &'static str,
+    caller: crate::reqlog::Caller,
+    model: String,
+    prompt: String,
+    request_details: serde_json::Value,
+    error: String,
+) {
+    let id = Uuid::new_v4().simple().to_string();
+    state.audit.begin(crate::reqlog::AuditRequest {
+        id: id.clone(),
+        received_at: chrono::Utc::now().to_rfc3339(),
+        route: route.to_string(),
+        model,
+        caller,
+        entry_node_id: state.network.node_id.clone(),
+        prompt,
+        request_details,
+    });
+    state.audit.complete(
+        id,
+        crate::reqlog::AuditCompletion {
+            completed_at: chrono::Utc::now().to_rfc3339(),
+            result: None,
+            telemetry: None,
+            timings: None,
+            source: "none".into(),
+            hops: Vec::new(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: Some(0),
+            status: crate::reqlog::AuditStatus::Error,
+            error: Some(error),
+        },
+    );
 }
 
 /// Run a generation to completion and return the whole text.
@@ -1969,6 +2571,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     tokens_generated: 0,
                     tokens_per_sec: 0.0,
                     duration_ms: 0,
+                    timings: None,
                     stop_sequence: None,
                     trace: None,
                 }),
@@ -1976,20 +2579,26 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 .into_response();
         }
     };
+    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| serde_json::json!({}));
 
     let model = match req.model.as_deref() {
         Some(m) => m.to_string(),
         None => state.active_model().await,
     };
-    let configured_limit = state
-        .runtime
-        .config()
-        .await
-        .map(|cfg| cfg.max_new_tokens)
-        .unwrap_or(DEFAULT_MAX_TOKENS);
-    let max_tokens = match resolve_request_max_tokens(req.max_tokens, configured_limit) {
+    let requested_max_tokens = match resolve_request_max_tokens(req.max_tokens) {
         Ok(value) => value,
         Err(error) => {
+            let error_for_audit = error.clone();
+            let prompt_for_audit = req.prompt.clone();
+            record_rejected(
+                &state,
+                "/api/generate",
+                crate::reqlog::Caller::anonymous(),
+                model.clone(),
+                prompt_for_audit,
+                request_details.clone(),
+                error_for_audit,
+            );
             return (
                 StatusCode::BAD_REQUEST,
                 Json(GenerateResponse {
@@ -1998,6 +2607,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     tokens_generated: 0,
                     tokens_per_sec: 0.0,
                     duration_ms: 0,
+                    timings: None,
                     stop_sequence: None,
                     trace: None,
                 }),
@@ -2006,6 +2616,39 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         }
     };
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
+    let output_limit = state
+        .request_output_limit_for_model(Some(&model), requested_max_tokens, &req.prompt)
+        .await;
+    log_output_limit("/api/generate", output_limit);
+    if let Some(error) = output_limit.rejection_reason() {
+        record_rejected(
+            &state,
+            "/api/generate",
+            crate::reqlog::Caller::anonymous(),
+            model.clone(),
+            req.prompt.clone(),
+            request_details.clone(),
+            error.clone(),
+        );
+        return (
+            if output_limit.capacity_pending() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::PAYLOAD_TOO_LARGE
+            },
+            Json(GenerateResponse {
+                response: error,
+                source: "error".to_string(),
+                tokens_generated: 0,
+                tokens_per_sec: 0.0,
+                duration_ms: 0,
+                timings: None,
+                stop_sequence: None,
+                trace: None,
+            }),
+        )
+            .into_response();
+    }
 
     info!(
         "📨 /api/generate model={} prompt_len={}",
@@ -2023,8 +2666,9 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
             model,
             prompt: req.prompt,
             chat_template: true,
-            max_tokens,
+            budget: output_limit.budget(),
             stops,
+            request_details,
             // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
             // o próprio texto.
             cache_key: None,
@@ -2040,6 +2684,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: summary.tokens_generated,
                 tokens_per_sec: summary.tokens_per_sec,
                 duration_ms: summary.duration_ms,
+                timings: Some(summary.timings),
                 stop_sequence: summary.stop_sequence,
                 trace: summary.trace,
             }),
@@ -2055,6 +2700,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: 0,
                 tokens_per_sec: 0.0,
                 duration_ms: 0,
+                timings: None,
                 stop_sequence: None,
                 trace: None,
             }),
@@ -2098,6 +2744,7 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
         peer_count,
         pipeline_peers,
         default_model: state.active_model().await,
+        runtime_capacity: state.network.runtime_capacity(),
     })
 }
 
@@ -2173,29 +2820,25 @@ mod tests {
         assert_eq!(many.into_vec(), vec!["END", "DONE"]);
     }
 
+    /// O orçamento pedido pelo cliente é validado aqui; capacidade e contexto
+    /// efetivos são resolvidos a partir do runtime ativo.
     #[test]
-    fn api_generate_max_tokens_defaults_accepts_and_rejects_by_configured_limit() {
+    fn api_generate_max_tokens_defaults_accepts_and_rejects_zero_only() {
         let absent: GenerateRequest = serde_json::from_str(r#"{"prompt":"oi"}"#).unwrap();
         let requested: GenerateRequest =
             serde_json::from_str(r#"{"prompt":"oi","max_tokens":64}"#).unwrap();
         let excessive: GenerateRequest =
             serde_json::from_str(r#"{"prompt":"oi","max_tokens":513}"#).unwrap();
 
-        assert_eq!(resolve_request_max_tokens(absent.max_tokens, 512), Ok(512));
-        assert_eq!(
-            resolve_request_max_tokens(requested.max_tokens, 512),
-            Ok(64)
-        );
-        assert_eq!(
-            resolve_request_max_tokens(excessive.max_tokens, 512),
-            Err("max_tokens solicitado (513) excede max_new_tokens configurado (512)".into())
-        );
+        assert_eq!(resolve_request_max_tokens(absent.max_tokens), Ok(512));
+        assert_eq!(resolve_request_max_tokens(requested.max_tokens), Ok(64));
+        assert_eq!(resolve_request_max_tokens(excessive.max_tokens), Ok(513));
     }
 
     #[test]
     fn api_generate_max_tokens_rejects_zero_instead_of_silently_clamping() {
         assert_eq!(
-            resolve_request_max_tokens(Some(0), 512),
+            resolve_request_max_tokens(Some(0)),
             Err("max_tokens deve ser maior que zero".into())
         );
     }
@@ -2205,6 +2848,39 @@ mod tests {
         assert_eq!(remaining_generation_steps(64, 1), 63);
         assert_eq!(remaining_generation_steps(1, 1), 0);
         assert_eq!(remaining_generation_steps(64, 64), 0);
+    }
+
+    #[test]
+    fn generation_finish_reason_prioritizes_the_effective_limit() {
+        assert_eq!(generation_finish_reason(4000, 4000, true), Some("length"));
+        assert_eq!(generation_finish_reason(4000, 3640, true), Some("stop"));
+        assert_eq!(generation_finish_reason(4000, 3640, false), None);
+    }
+
+    #[test]
+    fn audit_status_distinguishes_length_from_transport_partial() {
+        let summary = |finish_reason: Option<&str>, partial: bool| GenSummary {
+            source: "pipeline:node-a".into(),
+            tokens_generated: 4000,
+            tokens_per_sec: 1.0,
+            duration_ms: 1,
+            timings: timing_metrics(1, 1, 1, 1, 4000),
+            partial,
+            finish_reason: finish_reason.map(str::to_owned),
+            stop_sequence: None,
+            legs: 1,
+            trace: None,
+        };
+
+        assert_eq!(
+            audit_status_for_summary(&summary(Some("length"), false)),
+            "incomplete"
+        );
+        assert_eq!(audit_status_for_summary(&summary(None, true)), "partial");
+        assert_eq!(
+            audit_status_for_summary(&summary(Some("stop"), false)),
+            "ok"
+        );
     }
 
     /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
@@ -2322,12 +2998,230 @@ mod tests {
         assert_eq!(rate(10, 0.0), 0.0);
         assert!((rate(10, 2.0) - 5.0).abs() < 1e-9);
     }
+
+    #[test]
+    fn timing_metrics_separates_normal_prefill_from_generation_and_total() {
+        let timings = timing_metrics(2_000, 1_200, 1_000, 500, 20);
+
+        assert_eq!(timings.ttft_ms, 1_200);
+        assert_eq!(timings.prefill_ms, 1_000);
+        assert_eq!(timings.prefill_tokens, 500);
+        assert_eq!(timings.generation_ms, 800);
+        assert_eq!(timings.generation_tokens, 20);
+        assert_eq!(timings.prefill_tokens_per_sec, Some(500.0));
+        assert_eq!(timings.generation_tokens_per_sec, Some(25.0));
+        assert_eq!(timings.total_ms, 2_000);
+        assert_eq!(timings.total_tokens_per_sec, 10.0);
+    }
+
+    #[test]
+    fn timing_metrics_does_not_divide_by_zero_after_full_prefix_reuse() {
+        let timings = timing_metrics(1_000, 400, 0, 0, 12);
+
+        assert_eq!(timings.prefill_tokens_per_sec, None);
+        assert_eq!(timings.generation_ms, 600);
+        assert_eq!(timings.generation_tokens_per_sec, Some(20.0));
+    }
+
+    #[test]
+    fn timing_metrics_uses_the_aggregate_prefill_for_multiple_chunks() {
+        let timings = timing_metrics(3_500, 2_000, 1_800, 900, 30);
+
+        assert_eq!(timings.prefill_tokens, 900);
+        assert_eq!(timings.prefill_ms, 1_800);
+        assert_eq!(timings.prefill_tokens_per_sec, Some(500.0));
+    }
+
+    #[test]
+    fn timing_metrics_keeps_a_single_output_token_unmeasurable_when_instant() {
+        let timings = timing_metrics(900, 900, 700, 100, 1);
+
+        assert_eq!(timings.generation_ms, 0);
+        assert_eq!(timings.generation_tokens_per_sec, None);
+    }
+
+    #[test]
+    fn generation_speed_does_not_change_with_prompt_size() {
+        let short_prompt = timing_metrics(1_000, 700, 650, 20, 14);
+        let long_prompt = timing_metrics(2_000, 1_700, 1_650, 2_000, 14);
+
+        assert_eq!(short_prompt.generation_ms, long_prompt.generation_ms);
+        assert_eq!(
+            short_prompt.generation_tokens_per_sec,
+            long_prompt.generation_tokens_per_sec
+        );
+        assert_ne!(short_prompt.prefill_tokens, long_prompt.prefill_tokens);
+    }
 }
 
 #[cfg(test)]
 mod budget_tests {
     use super::*;
     use crate::runtime::NodeConfig;
+
+    /// A reprodução do defeito, em forma de conta: a implantação **não** pode
+    /// mais decidir quanto a requisição inteira gera. Era exatamente isto que
+    /// devolvia 1000 tokens a quem pediu 4000, calado.
+    #[test]
+    fn the_deployment_ceiling_bounds_a_leg_and_no_longer_bounds_the_request() {
+        let limit = output_token_limit(4_000, Some(1_000), Some(200_000), 18);
+        assert_eq!(limit.requested, 4_000);
+        assert_eq!(limit.deployment, Some(1_000));
+        assert_eq!(limit.effective, 4_000, "o cliente recebe o que pediu");
+        assert_eq!(limit.leg, 1_000, "uma geração de backend continua em 1000");
+        assert!(!limit.was_clamped());
+        assert!(limit.continuation_possible());
+        assert_eq!(limit.effective.div_ceil(limit.leg), 4, "quatro pernas");
+    }
+
+    /// O contexto que sobrou continua apertando sem recusar - ele sai de uma
+    /// **estimativa** do prompt, e recusar por estimativa rejeitaria pedido
+    /// válido. O `x_pom` conta a verdade (`was_clamped`), que é o canal certo
+    /// para um número aproximado.
+    #[test]
+    fn the_remaining_context_still_clamps_because_it_is_an_estimate() {
+        let limit = output_token_limit(50_000, Some(32_768), Some(40_000), 39_000);
+        assert_eq!(limit.context_available, Some(1_000));
+        assert_eq!(limit.effective, 1_000);
+        assert_eq!(limit.leg, 1_000, "a perna nunca passa do total");
+        assert!(!limit.continuation_possible());
+        assert!(limit.was_clamped());
+    }
+
+    #[test]
+    fn requested_client_limit_is_effective_when_it_fits_under_every_ceiling() {
+        let limit = output_token_limit(4_000, Some(32_768), Some(100_000), 2_000);
+        assert_eq!(limit.requested, 4_000);
+        assert_eq!(limit.effective, 4_000);
+        assert_eq!(limit.leg, 4_000);
+        assert!(!limit.continuation_possible());
+        assert!(!limit.was_clamped());
+    }
+
+    #[test]
+    fn output_limit_preserves_the_requested_value_when_no_deployment_is_loaded() {
+        let limit = output_token_limit(8_192, None, None, 0);
+        assert_eq!(limit.effective, 8_192);
+        assert_eq!(limit.leg, 8_192);
+        assert!(!limit.was_clamped());
+    }
+
+    #[test]
+    fn output_limit_contract_has_no_removed_absolute_capacity_field() {
+        let limit = output_token_limit(32_000, Some(32_000), Some(100_000), 0);
+        let value = serde_json::to_value(limit).unwrap();
+        let fields = value.as_object().expect("limites de saída serializados");
+        let legacy_field = ["absolute", "max", "tokens"].join("_");
+
+        assert_eq!(fields.len(), 5);
+        assert!(!fields.contains_key(&legacy_field));
+    }
+
+    #[test]
+    fn output_limit_reports_no_capacity_when_the_prompt_fills_the_context() {
+        let limit = output_token_limit(32_768, Some(32_768), Some(10_000), 10_000);
+        assert_eq!(limit.effective, 0);
+        assert!(limit.was_clamped());
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("todo o contexto"));
+    }
+
+    #[test]
+    fn a_deployment_that_cannot_generate_is_still_a_refusal_not_a_silent_cut() {
+        let limit = output_token_limit(4_000, Some(0), Some(100_000), 10);
+        assert_eq!(limit.leg, 0);
+        assert!(limit.rejection_reason().unwrap().contains("max_new_tokens"));
+    }
+
+    #[test]
+    fn an_unconfirmed_peer_capacity_is_not_replaced_by_local_fallback() {
+        let limit = OutputTokenLimit {
+            requested: 32_000,
+            effective: 0,
+            deployment: None,
+            context_available: None,
+            leg: 0,
+            capacity_pending: true,
+        };
+        assert!(limit.capacity_pending());
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("todos os peers vivos"));
+    }
+
+    #[tokio::test]
+    async fn a_live_peer_without_capacity_blocks_model_specific_requests() {
+        let mut peer = crate::gateway::testkit::peer("n1", "n1", 8080);
+        peer.model = "qwen".into();
+        peer.runtime_capacity = None;
+        let state = crate::gateway::testkit::state_with("self", vec![peer]).await;
+
+        let limit = state
+            .request_output_limit_for_model(Some("qwen"), 32_000, "oi")
+            .await;
+
+        assert!(limit.capacity_pending());
+        assert_eq!(limit.effective, 0);
+        assert!(limit
+            .rejection_reason()
+            .unwrap()
+            .contains("confirmada por todos"));
+    }
+
+    /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não
+    /// divide o total, e a perna nunca pode ser zero (divisão por zero no
+    /// `note_leg_boundary`).
+    #[test]
+    fn the_budget_normalizes_to_usable_numbers() {
+        assert_eq!(
+            OutputBudget { total: 0, leg: 0 }.normalized(),
+            OutputBudget { total: 1, leg: 1 }
+        );
+        assert_eq!(
+            OutputBudget {
+                total: 10,
+                leg: 1_000
+            }
+            .normalized(),
+            OutputBudget { total: 10, leg: 10 }
+        );
+        assert_eq!(
+            OutputBudget::single(7).normalized(),
+            OutputBudget { total: 7, leg: 7 }
+        );
+    }
+
+    /// A contagem de pernas é o que torna a costura inspecionável. Ela avança
+    /// ao fechar a perna, e **não** avança na última - `legs` é quantas
+    /// pernas a resposta usou, não quantas caberiam.
+    #[test]
+    fn legs_are_counted_as_the_loop_crosses_each_deployment_budget() {
+        let budget = OutputBudget { total: 10, leg: 4 };
+        let mut legs = 1;
+        let mut observed = Vec::new();
+        for tokens in 1..=10u32 {
+            note_leg_boundary(budget, tokens, &mut legs);
+            observed.push(legs);
+        }
+        assert_eq!(observed, vec![1, 1, 1, 2, 2, 2, 2, 3, 3, 3]);
+        assert_eq!(legs, 3);
+    }
+
+    #[test]
+    fn a_generation_that_fits_one_leg_reports_a_single_leg() {
+        let budget = OutputBudget {
+            total: 100,
+            leg: 100,
+        };
+        let mut legs = 1;
+        for tokens in 1..=100u32 {
+            note_leg_boundary(budget, tokens, &mut legs);
+        }
+        assert_eq!(legs, 1, "acabar o total não abre perna nenhuma");
+    }
 
     fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
         NodeConfig {
@@ -2346,6 +3240,7 @@ mod budget_tests {
             n_gpu_layers: 99,
             n_ctx,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
@@ -2357,6 +3252,8 @@ mod budget_tests {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             max_new_tokens: max_new,
             temperature: 0.7,
             top_p: 0.9,
@@ -2452,6 +3349,7 @@ mod peer_visibility_tests {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: None,
         }
     }
 
@@ -2494,6 +3392,28 @@ mod peer_visibility_tests {
 
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
+    }
+
+    #[tokio::test]
+    async fn local_peer_preserves_the_active_deployment_selector() {
+        let state = crate::gateway::testkit::state_with("self", vec![]).await;
+        *state.local_assignment.write().await = Some(LayerAssignment {
+            deploy_id: "deployment-42".into(),
+            model: "qwen".into(),
+            total_layers: 32,
+            start_layer: 0,
+            end_layer: 15,
+            layers_count: 16,
+            memory_used_mb: 0.0,
+            memory_allocated_mb: 0.0,
+        });
+
+        let peers = state.all_peers().await;
+        let local = peers
+            .iter()
+            .find(|peer| peer.node_id == "self")
+            .expect("o gateway sempre inclui o peer local");
+        assert_eq!(local.deploy_id, "deployment-42");
     }
 }
 
@@ -2538,6 +3458,10 @@ pub(crate) mod testkit {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: Some(RuntimeCapacity {
+                n_ctx: 8_192,
+                max_new_tokens: 256,
+            }),
         }
     }
 
@@ -2578,9 +3502,11 @@ pub(crate) mod testkit {
                 std::time::Duration::from_secs(600),
             )),
             runtime: NodeRuntime::new(net, assignment),
+            audit: crate::reqlog::AuditLog::new(std::path::PathBuf::from(":memory:")),
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
                 gpus: None,
+                thermal: Default::default(),
                 cache_type_k: crate::config::KvCacheType::F16,
                 cache_type_v: crate::config::KvCacheType::F16,
                 role: Role::Node,
@@ -2629,6 +3555,7 @@ pub(crate) mod testkit {
             n_gpu_layers: 0,
             n_ctx: 8192,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
@@ -2640,6 +3567,8 @@ pub(crate) mod testkit {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             max_new_tokens: 256,
             temperature: 0.7,
             top_p: 0.9,

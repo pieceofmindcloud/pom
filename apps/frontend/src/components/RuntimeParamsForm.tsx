@@ -15,8 +15,8 @@
  */
 import { useState } from "react";
 import { Check } from "lucide-react";
-import { Field, Input } from "./ui";
-import type { DeploymentCapabilities, RuntimeCapability, RuntimeParams } from "../lib/types";
+import { AlertTooltip, Field, Input, Select } from "./ui";
+import type { DeploymentCapabilities, RuntimeCapability, RuntimeParams, WireDtype } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 type Knob = {
@@ -34,6 +34,7 @@ export const KNOBS: Knob[] = [
   { key: "max_new_tokens", min: 16 },
   { key: "max_sessions", min: 1, max: 16 },
   { key: "prefill_chunk_tokens", min: 32, step: 32 },
+  { key: "prefill_max_inflight_chunks", min: 1, max: 8 },
   { key: "temperature", min: 0, max: 2, step: 0.05 },
   { key: "top_p", min: 0, max: 1, step: 0.05 },
   { key: "top_k", min: 0 },
@@ -159,17 +160,29 @@ export function CapabilitySwitch({
     : topologyWarning
       ? "A topologia limita esta opção; o controle continua acionável."
       : "Capacidade limitada no runtime; o controle continua acionável.";
+  const alertMessage = capability
+    ? `${alertLead} Fonte: ${capability.source}. ${capability.reason}${warning ? ` ${warning}` : ""}`
+    : "";
   return (
     <div className="space-y-1.5">
-      <Switch
-        {...props}
-        disabled={props.disabled}
-        hint={props.hint}
-      />
       {(unknown || topologyWarning || warning) && capability && (
-        <p role="alert" className="rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-xs leading-relaxed text-amber">
-          {alertLead} Fonte: {capability.source}. {capability.reason}{warning ? ` ${warning}` : ""}
-        </p>
+        <div className="flex min-w-0 items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <Switch
+              {...props}
+              disabled={props.disabled}
+              hint={props.hint}
+            />
+          </div>
+          <AlertTooltip label={props.label} message={alertMessage} />
+        </div>
+      )}
+      {!unknown && !topologyWarning && !warning && (
+        <Switch
+          {...props}
+          disabled={props.disabled}
+          hint={props.hint}
+        />
       )}
     </div>
   );
@@ -195,6 +208,14 @@ export function RuntimeParamsForm({
 }) {
   const { t } = useI18n();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const hiddenStateCapability = capabilities?.hidden_state_f8;
+  const hiddenStateDtype = value.hidden_state_dtype ?? "f16";
+  const f8Unavailable = hiddenStateCapability
+    ? hiddenStateCapability.state !== "supported"
+    : false;
+  const hiddenStateHint = hiddenStateCapability && f8Unavailable
+    ? `${t("deploy.knob.hidden_state_dtypeHint")} ${hiddenStateCapability.reason}`
+    : t("deploy.knob.hidden_state_dtypeHint");
 
   function setKnob(key: keyof RuntimeParams, text: string) {
     setDrafts((d) => ({ ...d, [key]: text }));
@@ -233,6 +254,30 @@ export function RuntimeParamsForm({
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
         {KNOBS.map((k) => numeric(k, false))}
+      </div>
+
+      <div className="border-t border-line pt-4">
+        <Field
+          label={t("deploy.knob.hidden_state_dtype")}
+          hint={hiddenStateHint}
+        >
+          <Select
+            name="hidden_state_dtype"
+            disabled={disabled}
+            value={hiddenStateDtype}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                hidden_state_dtype: event.target.value as WireDtype,
+              })
+            }
+          >
+            <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
+            <option value="f8" disabled={f8Unavailable}>
+              {t("deploy.knob.hidden_state_dtypeF8")}
+            </option>
+          </Select>
+        </Field>
       </div>
 
       {/* `offload_kqv` não está aqui: ele é propriedade da memória de uma

@@ -25,6 +25,10 @@ x-node: &node
       # `scripts/build-docker.sh`, which exports the host's commit, or the
       # interface shows "desconhecido" for every container.
       POM_BUILD_COMMIT: ${POM_BUILD_COMMIT:-}
+      # Keys the Dockerfile's /build/target cache mount id. A bump of the
+      # vendored llama.cpp fork gets a clean native tree instead of a stale
+      # libllama.a. build-docker.sh exports it from the fork checkout.
+      LLAMA_CPP_COMMIT: ${LLAMA_CPP_COMMIT:-unknown}
   image: pom:latest
   network_mode: host
   restart: always

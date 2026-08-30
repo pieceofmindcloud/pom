@@ -1,5 +1,5 @@
 use super::cache::{CacheError, ExpertCache, ExpertKey};
-use super::format_q4_0::{parse_tensor_table, Q4LoadError, TensorSpec};
+use super::format_q4_0::{parse_tensor_table, read_scalar_vector, Q4LoadError, TensorSpec};
 use memmap2::Mmap;
 use std::fmt;
 use std::fs::File;
@@ -13,7 +13,30 @@ const Q4_K_BLOCK_BYTES: usize = 144;
 const Q5_K_BLOCK_BYTES: usize = 176;
 const Q6_K_BLOCK_BYTES: usize = 210;
 const Q8_K_BLOCK_BYTES: usize = 292;
-const PAYLOAD_HEADER_BYTES: usize = 8;
+const PAYLOAD_HEADER_BYTES: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct KQuantScales {
+    gate: f32,
+    up: f32,
+    down: f32,
+    gate_input: f32,
+    up_input: f32,
+    down_input: f32,
+}
+
+impl Default for KQuantScales {
+    fn default() -> Self {
+        Self {
+            gate: 1.0,
+            up: 1.0,
+            down: 1.0,
+            gate_input: 1.0,
+            up_input: 1.0,
+            down_input: 1.0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KQuantFormat {
@@ -167,6 +190,7 @@ pub struct KQuantExpert<'a> {
     intermediate: usize,
     gate_up: &'a [u8],
     down: &'a [u8],
+    scales: KQuantScales,
 }
 
 impl<'a> KQuantExpert<'a> {
@@ -196,7 +220,7 @@ impl<'a> KQuantExpert<'a> {
         let expected = Self::packed_bytes(format, hidden, intermediate)?;
         if payload.len() != expected {
             return Err(KQuantError::PayloadLength {
-                expected: format.block_bytes(),
+                expected,
                 actual: payload.len(),
             });
         }
@@ -217,6 +241,18 @@ impl<'a> KQuantExpert<'a> {
                 "tamanhos gate_up/down não correspondem à geometria",
             ));
         }
+        let mut scales = [0.0f32; 6];
+        for (index, scale) in scales.iter_mut().enumerate() {
+            let start = 8 + index * 4;
+            *scale = f32::from_le_bytes(
+                payload[start..start + 4]
+                    .try_into()
+                    .map_err(|_| KQuantError::Payload("escala ausente"))?,
+            );
+            if !scale.is_finite() {
+                return Err(KQuantError::Payload("escala não finita"));
+            }
+        }
         let gate_up_start = PAYLOAD_HEADER_BYTES;
         let down_start = gate_up_start + gate_up_len;
         if down_start + down_len != payload.len() {
@@ -228,6 +264,14 @@ impl<'a> KQuantExpert<'a> {
             intermediate,
             gate_up: &payload[gate_up_start..down_start],
             down: &payload[down_start..],
+            scales: KQuantScales {
+                gate: scales[0],
+                up: scales[1],
+                down: scales[2],
+                gate_input: scales[3],
+                up_input: scales[4],
+                down_input: scales[5],
+            },
         })
     }
 
@@ -245,29 +289,50 @@ impl<'a> KQuantExpert<'a> {
             self.hidden,
             hidden,
         )?;
-        let gated: Vec<f32> = gate_up[..self.intermediate]
+        let gate = gate_up[..self.intermediate]
             .iter()
-            .zip(&gate_up[self.intermediate..])
+            .map(|value| value * self.scales.gate * self.scales.gate_input)
+            .collect::<Vec<_>>();
+        let up = gate_up[self.intermediate..]
+            .iter()
+            .map(|value| value * self.scales.up * self.scales.up_input)
+            .collect::<Vec<_>>();
+        let gated: Vec<f32> = gate
+            .iter()
+            .zip(&up)
             .map(|(&gate, &up)| silu(gate) * up)
             .collect();
-        mat_vec(
+        let output = mat_vec(
             self.format,
             self.down,
             self.hidden,
             self.intermediate,
             &gated,
-        )
-        .map_err(Into::into)
+        )?;
+        Ok(output
+            .into_iter()
+            .map(|value| value * self.scales.down * self.scales.down_input)
+            .collect())
     }
 }
 
-fn pack_payload(gate_up: &[u8], down: &[u8]) -> Result<Vec<u8>, KQuantError> {
+fn pack_payload(gate_up: &[u8], down: &[u8], scales: KQuantScales) -> Result<Vec<u8>, KQuantError> {
     if gate_up.len() > u32::MAX as usize || down.len() > u32::MAX as usize {
         return Err(KQuantError::Payload("bank excede u32"));
     }
     let mut payload = Vec::with_capacity(PAYLOAD_HEADER_BYTES + gate_up.len() + down.len());
     payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
     payload.extend_from_slice(&(down.len() as u32).to_le_bytes());
+    for scale in [
+        scales.gate,
+        scales.up,
+        scales.down,
+        scales.gate_input,
+        scales.up_input,
+        scales.down_input,
+    ] {
+        payload.extend_from_slice(&scale.to_le_bytes());
+    }
     payload.extend_from_slice(gate_up);
     payload.extend_from_slice(down);
     Ok(payload)
@@ -288,6 +353,7 @@ pub struct KQuantSource {
     hidden: usize,
     intermediate: usize,
     format: KQuantFormat,
+    tensors: Vec<TensorSpec>,
     gate_up: GateUpTensors,
     down: Vec<TensorSpec>,
     router: Vec<TensorSpec>,
@@ -398,11 +464,6 @@ impl KQuantSource {
             ));
         }
         let gate_up = if !fused.is_empty() {
-            if !gate.is_empty() || !up.is_empty() {
-                return Err(Q4LoadError::InvalidTensor(
-                    "convenções fundida e separada de experts misturadas",
-                ));
-            }
             GateUpTensors::Fused(fused)
         } else if gate.is_empty() || up.is_empty() {
             return Err(Q4LoadError::MissingTensor(
@@ -418,6 +479,7 @@ impl KQuantSource {
             hidden,
             intermediate,
             format,
+            tensors,
             gate_up,
             down,
             router,
@@ -487,7 +549,7 @@ impl KQuantSource {
             )
             .ok_or(Q4LoadError::InvalidTensor("overflow em down K-quant"))?;
         let down_bytes = self.expert_slice(down, expert, down_per_expert)?;
-        let (gate_bytes, up_bytes) = match &self.gate_up {
+        let (gate_bytes, up_bytes, scales) = match &self.gate_up {
             GateUpTensors::Fused(tensors) => {
                 let tensor = self.tensor_for_layer(tensors, layer, "ffn_gate_up_exps.weight")?;
                 validate_tensor(
@@ -502,9 +564,42 @@ impl KQuantSource {
                         Q4LoadError::InvalidTensor("geometria da linha gate_up K-quant")
                     })?)
                     .ok_or(Q4LoadError::InvalidTensor("overflow em gate_up K-quant"))?;
+                let scales = KQuantScales {
+                    gate: self.sidecar_scale_with_fallback(
+                        tensor,
+                        "scale",
+                        expert,
+                        0,
+                        self.split_tensor(layer, "ffn_gate_exps.weight"),
+                    )?,
+                    up: self.sidecar_scale_with_fallback(
+                        tensor,
+                        "scale",
+                        expert,
+                        1,
+                        self.split_tensor(layer, "ffn_up_exps.weight"),
+                    )?,
+                    down: self.sidecar_scale(down, "scale", expert, 0)?,
+                    gate_input: self.sidecar_scale_with_fallback(
+                        tensor,
+                        "input_scale",
+                        expert,
+                        0,
+                        self.split_tensor(layer, "ffn_gate_exps.weight"),
+                    )?,
+                    up_input: self.sidecar_scale_with_fallback(
+                        tensor,
+                        "input_scale",
+                        expert,
+                        1,
+                        self.split_tensor(layer, "ffn_up_exps.weight"),
+                    )?,
+                    down_input: self.sidecar_scale(down, "input_scale", expert, 0)?,
+                };
                 (
                     self.expert_slice(tensor, expert, bytes)?.to_vec(),
                     Vec::new(),
+                    scales,
                 )
             }
             GateUpTensors::Split { gate, up } => {
@@ -530,16 +625,25 @@ impl KQuantSource {
                         Q4LoadError::InvalidTensor("geometria da linha gate K-quant")
                     })?)
                     .ok_or(Q4LoadError::InvalidTensor("overflow em gate/up K-quant"))?;
+                let scales = KQuantScales {
+                    gate: self.sidecar_scale(gate, "scale", expert, 0)?,
+                    up: self.sidecar_scale(up, "scale", expert, 0)?,
+                    down: self.sidecar_scale(down, "scale", expert, 0)?,
+                    gate_input: self.sidecar_scale(gate, "input_scale", expert, 0)?,
+                    up_input: self.sidecar_scale(up, "input_scale", expert, 0)?,
+                    down_input: self.sidecar_scale(down, "input_scale", expert, 0)?,
+                };
                 (
                     self.expert_slice(gate, expert, bytes)?.to_vec(),
                     self.expert_slice(up, expert, bytes)?.to_vec(),
+                    scales,
                 )
             }
         };
         let mut gate_up = Vec::with_capacity(gate_bytes.len() + up_bytes.len());
         gate_up.extend_from_slice(&gate_bytes);
         gate_up.extend_from_slice(&up_bytes);
-        pack_payload(&gate_up, down_bytes)
+        pack_payload(&gate_up, down_bytes, scales)
             .map_err(|_| Q4LoadError::InvalidTensor("payload K-quant"))
     }
 
@@ -647,6 +751,76 @@ impl KQuantSource {
             return Err(Q4LoadError::InvalidTensor("tensor excede o arquivo"));
         }
         Ok(&self.mmap[offset..end])
+    }
+
+    fn sidecar_scale(
+        &self,
+        tensor: &TensorSpec,
+        suffix: &str,
+        expert: u32,
+        component: usize,
+    ) -> Result<f32, Q4LoadError> {
+        Ok(self
+            .sidecar_scale_value(tensor, suffix, expert, component)?
+            .unwrap_or(1.0))
+    }
+
+    fn sidecar_scale_with_fallback(
+        &self,
+        tensor: &TensorSpec,
+        suffix: &str,
+        expert: u32,
+        component: usize,
+        fallback: Option<&TensorSpec>,
+    ) -> Result<f32, Q4LoadError> {
+        let value = self.sidecar_scale_value(tensor, suffix, expert, component)?;
+        let value = match value {
+            Some(value) => Some(value),
+            None => fallback
+                .map(|tensor| self.sidecar_scale_value(tensor, suffix, expert, 0))
+                .transpose()?
+                .flatten(),
+        };
+        Ok(value.unwrap_or(1.0))
+    }
+
+    fn sidecar_scale_value(
+        &self,
+        tensor: &TensorSpec,
+        suffix: &str,
+        expert: u32,
+        component: usize,
+    ) -> Result<Option<f32>, Q4LoadError> {
+        let stem = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
+        let name = format!("{stem}.{suffix}");
+        let Some(sidecar) = self.tensors.iter().find(|candidate| candidate.name == name) else {
+            return Ok(None);
+        };
+        let values = read_scalar_vector(&self.mmap, self.data_start, sidecar)?;
+        let experts = self.experts as usize;
+        let index = if values.len() == experts {
+            expert as usize
+        } else if values.len() == 2 * experts {
+            component
+                .checked_mul(experts)
+                .and_then(|offset| offset.checked_add(expert as usize))
+                .ok_or(Q4LoadError::InvalidTensor("índice da escala excede usize"))?
+        } else {
+            return Err(Q4LoadError::InvalidTensor(
+                "escala de expert tem geometria errada",
+            ));
+        };
+        values
+            .get(index)
+            .copied()
+            .map(Some)
+            .ok_or(Q4LoadError::InvalidTensor("escala de expert ausente"))
+    }
+
+    fn split_tensor(&self, layer: u32, suffix: &str) -> Option<&TensorSpec> {
+        self.tensors
+            .iter()
+            .find(|tensor| tensor.name == format!("blk.{layer}.{suffix}"))
     }
 }
 
@@ -1227,6 +1401,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn k_quant_aplica_scale_e_input_scale_no_payload() {
+        let format = KQuantFormat::Q4K;
+        let hidden = 256;
+        let intermediate = 256;
+        let gate_up = packed_rows(2 * intermediate, hidden, format);
+        let down = packed_rows(hidden, intermediate, format);
+        let scales = KQuantScales {
+            gate: 2.0,
+            up: 3.0,
+            down: 5.0,
+            gate_input: 7.0,
+            up_input: 11.0,
+            down_input: 13.0,
+        };
+        let payload = pack_payload(&gate_up, &down, scales).unwrap();
+        let expert = KQuantExpert::from_payload(format, hidden, intermediate, &payload).unwrap();
+        let input = vec![1.0; hidden];
+        let raw_gate_up = mat_vec(format, &gate_up, 2 * intermediate, hidden, &input).unwrap();
+        let expected_gate = raw_gate_up[..intermediate]
+            .iter()
+            .map(|value| value * scales.gate * scales.gate_input)
+            .collect::<Vec<_>>();
+        let expected_up = raw_gate_up[intermediate..]
+            .iter()
+            .map(|value| value * scales.up * scales.up_input)
+            .collect::<Vec<_>>();
+        let gated = expected_gate
+            .iter()
+            .zip(&expected_up)
+            .map(|(gate, up)| silu(*gate) * up)
+            .collect::<Vec<_>>();
+        let expected = mat_vec(format, &down, hidden, intermediate, &gated)
+            .unwrap()
+            .into_iter()
+            .map(|value| value * scales.down * scales.down_input)
+            .collect::<Vec<_>>();
+        assert_eq!(expert.run(&input).unwrap(), expected);
+    }
+
+    #[test]
     fn source_mmap_carrega_k_quants_por_expert() {
         for format in [
             KQuantFormat::Q2K,
@@ -1267,7 +1481,7 @@ pub(crate) mod tests {
                 "pom-ftk-k-source-split-{dtype}-{}.gguf",
                 std::process::id()
             ));
-            write_k_source_with_layout(&path, dtype, format, true);
+            write_k_source_with_layout(&path, dtype, format, GateUpLayout::Split, false);
             let source = KQuantSource::open_infer(&path, 2).unwrap();
             assert_eq!(source.format(), format);
             let payload = source.load_expert(0, 1).unwrap();
@@ -1278,15 +1492,76 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn source_mmap_prefere_fundido_quando_o_gguf_tem_as_duas_convencoes() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-ftk-k-source-mixed-{}.gguf",
+            std::process::id()
+        ));
+        write_k_source_with_layout(
+            &path,
+            KQuantFormat::Q4K.dtype(),
+            KQuantFormat::Q4K,
+            GateUpLayout::Both,
+            false,
+        );
+        let source = KQuantSource::open_infer(&path, 2).unwrap();
+        let payload = source.load_expert(0, 1).unwrap();
+        let expert = KQuantExpert::from_payload(KQuantFormat::Q4K, 256, 256, &payload).unwrap();
+        assert_eq!(expert.run(&[1.0; 256]).unwrap().len(), 256);
+        assert!(matches!(source.gate_up, GateUpTensors::Fused(_)));
+        drop(source);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn source_mmap_carrega_os_sidecars_do_expert_fundido() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-ftk-k-source-scales-{}.gguf",
+            std::process::id()
+        ));
+        write_k_source_with_layout(
+            &path,
+            KQuantFormat::Q4K.dtype(),
+            KQuantFormat::Q4K,
+            GateUpLayout::Fused,
+            true,
+        );
+        let source = KQuantSource::open_infer(&path, 2).unwrap();
+        let payload = source.load_expert(0, 1).unwrap();
+        let expert = KQuantExpert::from_payload(KQuantFormat::Q4K, 256, 256, &payload).unwrap();
+        assert_eq!(
+            expert.scales,
+            KQuantScales {
+                gate: 2.0,
+                up: 3.0,
+                down: 5.0,
+                gate_input: 7.0,
+                up_input: 11.0,
+                down_input: 13.0,
+            }
+        );
+        drop(source);
+        std::fs::remove_file(path).unwrap();
+    }
+
     pub(crate) fn write_k_source(path: &std::path::Path, dtype: u32, format: KQuantFormat) {
-        write_k_source_with_layout(path, dtype, format, false);
+        write_k_source_with_layout(path, dtype, format, GateUpLayout::Fused, false);
+    }
+
+    #[derive(Clone, Copy)]
+    enum GateUpLayout {
+        Fused,
+        Split,
+        Both,
     }
 
     fn write_k_source_with_layout(
         path: &std::path::Path,
         dtype: u32,
         format: KQuantFormat,
-        split_gate_up: bool,
+        layout: GateUpLayout,
+        with_sidecars: bool,
     ) {
         use std::fs::File;
         use std::io::Write;
@@ -1309,13 +1584,18 @@ pub(crate) mod tests {
         let mut file = Vec::new();
         file.extend_from_slice(&0x4655_4747u32.to_le_bytes());
         file.extend_from_slice(&2u32.to_le_bytes());
-        let tensor_count = if split_gate_up { 4u64 } else { 3u64 };
+        let base_tensor_count = match layout {
+            GateUpLayout::Fused => 3u64,
+            GateUpLayout::Split => 4u64,
+            GateUpLayout::Both => 5u64,
+        };
+        let tensor_count = base_tensor_count + u64::from(with_sidecars) * 4;
         file.extend_from_slice(&tensor_count.to_le_bytes());
         file.extend_from_slice(&1u64.to_le_bytes());
         gguf_string(&mut file, "general.alignment");
         file.extend_from_slice(&4u32.to_le_bytes());
         file.extend_from_slice(&32u32.to_le_bytes());
-        if split_gate_up {
+        if matches!(layout, GateUpLayout::Split | GateUpLayout::Both) {
             gguf_tensor(
                 &mut file,
                 "blk.0.ffn_gate_exps.weight",
@@ -1330,17 +1610,24 @@ pub(crate) mod tests {
                 gate.len() as u64,
                 dtype,
             );
-        } else {
+        }
+        if matches!(layout, GateUpLayout::Fused | GateUpLayout::Both) {
             gguf_tensor(
                 &mut file,
                 "blk.0.ffn_gate_up_exps.weight",
                 &[hidden as u64, (2 * intermediate) as u64, experts as u64],
-                0,
+                if matches!(layout, GateUpLayout::Both) {
+                    (gate.len() + up.len()) as u64
+                } else {
+                    0
+                },
                 dtype,
             );
         }
-        let gate_up_bytes = if split_gate_up {
+        let gate_up_bytes = if matches!(layout, GateUpLayout::Split) {
             gate.len() + up.len()
+        } else if matches!(layout, GateUpLayout::Both) {
+            gate.len() + up.len() + gate_up.len()
         } else {
             gate_up.len()
         };
@@ -1358,16 +1645,51 @@ pub(crate) mod tests {
             (gate_up_bytes + down.len()) as u64,
             0,
         );
+        let base_data_bytes = gate_up_bytes + down.len() + router.len();
+        if with_sidecars {
+            assert!(matches!(layout, GateUpLayout::Fused));
+            for (name, count, offset) in [
+                ("blk.0.ffn_gate_up_exps.scale", 4u64, base_data_bytes as u64),
+                (
+                    "blk.0.ffn_gate_up_exps.input_scale",
+                    4,
+                    (base_data_bytes + 16) as u64,
+                ),
+                (
+                    "blk.0.ffn_down_exps.scale",
+                    2,
+                    (base_data_bytes + 32) as u64,
+                ),
+                (
+                    "blk.0.ffn_down_exps.input_scale",
+                    2,
+                    (base_data_bytes + 40) as u64,
+                ),
+            ] {
+                gguf_tensor(&mut file, name, &[count], offset, 0);
+            }
+        }
         let data_start = (file.len() + 31) / 32 * 32;
         file.resize(data_start, 0);
-        if split_gate_up {
+        if matches!(layout, GateUpLayout::Split) {
             file.extend_from_slice(&gate);
             file.extend_from_slice(&up);
+        } else if matches!(layout, GateUpLayout::Fused) {
+            file.extend_from_slice(&gate_up);
         } else {
+            file.extend_from_slice(&gate);
+            file.extend_from_slice(&up);
             file.extend_from_slice(&gate_up);
         }
         file.extend_from_slice(&down);
         file.extend_from_slice(&router);
+        if with_sidecars {
+            for value in [
+                2.0f32, 2.0, 3.0, 3.0, 7.0, 7.0, 11.0, 11.0, 5.0, 5.0, 13.0, 13.0,
+            ] {
+                file.extend_from_slice(&value.to_le_bytes());
+            }
+        }
         File::create(path).unwrap().write_all(&file).unwrap();
     }
 

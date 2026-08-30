@@ -33,6 +33,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `CAP_FRAME_BATCH` - capability `inference/frame-v1-batch`; o relay só envia
   depois que o peer anuncia o servidor carregado. Não há rolling upgrade para
   formatos anteriores nesta primeira versão do produto.
+- `CAP_FRAME_DTYPE_F8` e `PipelinePlan::validate_wire_dtype` - capability
+  `inference/frame-v1-dtype-f8` e validação all-or-nothing da precisão f8 no
+  plano inteiro; uma ausência identificada bloqueia o deploy ou a requisição
+  com a razão do peer, sem deixar bytes serem interpretados como outro dtype.
 - `PipelinePlan::supports_relay_chain` / `supports_direct_reply` /
   `supports_speculation` - all-or-nothing: um passo sem a capability derruba a
   feature do plano inteiro (`CAP_RELAY_CHAIN`, `CAP_RELAY_DIRECT`,
@@ -58,6 +62,9 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `routing_request_from_peers` - traduz `PeerInfo` para o `RoutingRequest` do
   `routing-contract` (rota futura de planejador; produção ainda usa
   `plan_pipeline` até cobertura de equivalência).
+- `PeerInfo::runtime_capacity` não participa da escolha greedy de camadas: o
+  gateway agrega essa capacidade antes de validar a requisição, mantendo o
+  `max_new_tokens` por perna separado do orçamento total derivado do contexto.
 - `PipelinePlan::hop_chain` - "abc123→def456", a prova de execução distribuída
   que o gateway põe em `source`.
 

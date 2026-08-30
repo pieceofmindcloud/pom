@@ -36,6 +36,12 @@ O primeiro build deve ser usado como verificação do ambiente. Se o symlink
 existir mas `ggml` estiver ausente, o `build.rs` falhará antes de compilar o
 Rust; corrija o caminho do checkout e rode novamente.
 
+O `build.rs` força o reconfigure do CMake a cada execução. Isso é intencional:
+o fork coleta os arquivos de `src/models` com `file(GLOB ...)`, enquanto Docker
+e Cargo podem reutilizar o diretório `target/` e o `CMakeCache.txt`. Sem o
+reconfigure, um arquivo de modelo presente no checkout pode continuar fora de
+`libllama.a` e só aparecer como símbolo C++ indefinido no link final.
+
 É o que os três workflows de release fazem. No Windows é obrigatório clonar
 nesse caminho, e não na raiz: lá o checkout não cria symlink - materializa um
 arquivo de texto com o caminho dentro -, então repor a pasta na raiz não

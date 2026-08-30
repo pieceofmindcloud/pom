@@ -969,7 +969,7 @@ pub struct HeterogeneousMoeBlock {
     top_k: usize,
     cache: Arc<ExpertCache>,
     #[cfg(feature = "cuda")]
-    cuda: Option<super::cuda::HeterogeneousIqCudaExecutor>,
+    cuda: Option<super::cuda::HeterogeneousCudaExecutor>,
 }
 
 impl HeterogeneousMoeBlock {
@@ -1004,7 +1004,7 @@ impl HeterogeneousMoeBlock {
             layer,
             top_k,
             cache,
-            cuda: Some(super::cuda::HeterogeneousIqCudaExecutor::new_with_cache(
+            cuda: Some(super::cuda::HeterogeneousCudaExecutor::new_with_cache(
                 hidden,
                 intermediate,
                 device_cache,
@@ -1021,7 +1021,7 @@ impl HeterogeneousMoeBlock {
     pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
         self.cuda.as_ref().map_or_else(
             Default::default,
-            super::cuda::HeterogeneousIqCudaExecutor::diagnostics,
+            super::cuda::HeterogeneousCudaExecutor::diagnostics,
         )
     }
 
@@ -1029,7 +1029,7 @@ impl HeterogeneousMoeBlock {
     pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
         self.cuda.as_ref().map_or_else(
             Default::default,
-            super::cuda::HeterogeneousIqCudaExecutor::resident_cache_stats,
+            super::cuda::HeterogeneousCudaExecutor::resident_cache_stats,
         )
     }
 
@@ -1105,7 +1105,12 @@ impl HeterogeneousMoeBlock {
                 .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
             let mut descriptor = CudaHeterogeneousExpert::default();
             for payload in payloads {
-                let HeterogeneousTensorPayload { role, dtype, bytes } = payload;
+                let HeterogeneousTensorPayload {
+                    role,
+                    dtype,
+                    bytes,
+                    scales,
+                } = payload;
                 let key = ExpertKey::new(
                     &self.model,
                     self.layer,
@@ -1122,6 +1127,10 @@ impl HeterogeneousMoeBlock {
                     data: lease.handle() as *const u8,
                     bytes: bytes.len(),
                     dtype,
+                    scale: scales.primary,
+                    input_scale: scales.input_primary,
+                    secondary_scale: scales.secondary,
+                    secondary_input_scale: scales.input_secondary,
                 };
                 match role {
                     TensorRole::GateUp if descriptor.gate_up.data.is_null() => {
@@ -1144,6 +1153,7 @@ impl HeterogeneousMoeBlock {
         let output = cuda
             .run_route_batch_resident(
                 &descriptors,
+                experts,
                 token_ids,
                 weights,
                 token_offsets,

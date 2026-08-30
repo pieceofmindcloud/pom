@@ -16,7 +16,7 @@
 use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, ModelCache, SamplingConfig};
 use crate::pipeline::PipelineStep;
 use crate::runtime::NodeConfig;
-use crate::wire::{self, WireDtype};
+use crate::wire::{self, TensorShape, WireDtype};
 use anyhow::{bail, Result};
 use axum::{
     body::Bytes,
@@ -303,6 +303,8 @@ struct PrefillJob {
     /// A decisão da cabeça que os hops intermediários só repassam. Um hop que
     /// não tokeniza não pode substituir `true` por seu `PrefixDecision::default`.
     cached_tokens: u32,
+    /// Candidato de prefixo comum, inclusive quando a decisão foi fria.
+    prefix_match_tokens: u32,
     start_pos: Option<u32>,
     /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
     /// por quem tokenizou - ver `Session::stable_len`.
@@ -315,7 +317,7 @@ struct PrefillJob {
     wire_dtype: WireDtype,
     prompt: Option<String>,
     chat_template: Option<bool>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     chunk_tokens: Option<Vec<i32>>,
     queued_at: Instant,
 }
@@ -325,7 +327,7 @@ struct StepJob {
     is_last: bool,
     wire_dtype: WireDtype,
     token_id: Option<i32>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     /// Bloco local onde parar, quando o remetente pediu menos que a fatia
     /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
     capture_block: Option<u32>,
@@ -492,6 +494,133 @@ struct InferenceAppState {
     /// complete inbound batches so a second request cannot replace that id
     /// while the first batch is waiting for its workers.
     tp_batch_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Keeps direct prefill forwarding in chunk order while the next chunk is
+    /// already being computed by the preceding hop.
+    direct_forward_order: DirectForwardOrder,
+}
+
+#[derive(Clone, Default)]
+struct DirectForwardOrder {
+    sequences: Arc<Mutex<HashMap<String, Arc<DirectForwardSequence>>>>,
+}
+
+struct DirectForwardSequence {
+    next_chunk: Mutex<u32>,
+    failed: Mutex<Option<String>>,
+    notify: tokio::sync::Notify,
+}
+
+struct DirectForwardTurn {
+    owner: DirectForwardOrder,
+    key: String,
+    sequence: Arc<DirectForwardSequence>,
+    chunk_index: u32,
+}
+
+impl DirectForwardOrder {
+    fn ensure_sequence(&self, key: &str) -> Result<()> {
+        let mut sequences = self
+            .sequences
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ordem do repasse direto corrompida"))?;
+        sequences.entry(key.to_owned()).or_insert_with(|| {
+            Arc::new(DirectForwardSequence {
+                next_chunk: Mutex::new(0),
+                failed: Mutex::new(None),
+                notify: tokio::sync::Notify::new(),
+            })
+        });
+        Ok(())
+    }
+
+    async fn wait_turn(
+        &self,
+        key: impl Into<String>,
+        chunk_index: u32,
+    ) -> Result<DirectForwardTurn> {
+        let key = key.into();
+        let sequence = {
+            let mut sequences = self
+                .sequences
+                .lock()
+                .map_err(|_| anyhow::anyhow!("ordem do repasse direto corrompida"))?;
+            if let Some(sequence) = sequences.get(&key) {
+                sequence.clone()
+            } else if chunk_index == 0 {
+                let sequence = Arc::new(DirectForwardSequence {
+                    next_chunk: Mutex::new(0),
+                    failed: Mutex::new(None),
+                    notify: tokio::sync::Notify::new(),
+                });
+                sequences.insert(key.clone(), sequence.clone());
+                sequence
+            } else {
+                return Err(anyhow::anyhow!(
+                    "chunk direto {chunk_index} chegou sem o chunk predecessor"
+                ));
+            }
+        };
+
+        loop {
+            let notified = sequence.notify.notified();
+            if let Some(error) = sequence
+                .failed
+                .lock()
+                .map_err(|_| anyhow::anyhow!("estado de ordem do repasse corrompido"))?
+                .clone()
+            {
+                return Err(anyhow::anyhow!(error));
+            }
+            let next_chunk = *sequence
+                .next_chunk
+                .lock()
+                .map_err(|_| anyhow::anyhow!("estado de ordem do repasse corrompido"))?;
+            if next_chunk == chunk_index {
+                drop(notified);
+                return Ok(DirectForwardTurn {
+                    owner: self.clone(),
+                    key,
+                    sequence,
+                    chunk_index,
+                });
+            }
+            if chunk_index < next_chunk {
+                return Err(anyhow::anyhow!(
+                    "chunk direto {chunk_index} chegou depois de {next_chunk}"
+                ));
+            }
+            notified.await;
+        }
+    }
+}
+
+impl DirectForwardTurn {
+    fn finish(self, success: bool, terminal: bool) {
+        if success {
+            if let Ok(mut next_chunk) = self.sequence.next_chunk.lock() {
+                if *next_chunk == self.chunk_index {
+                    *next_chunk += 1;
+                }
+            }
+        } else if let Ok(mut failed) = self.sequence.failed.lock() {
+            *failed = Some(format!(
+                "repasse direto falhou no chunk {}",
+                self.chunk_index
+            ));
+        }
+        self.sequence.notify.notify_waiters();
+
+        if terminal || !success {
+            if let Ok(mut sequences) = self.owner.sequences.lock() {
+                if sequences
+                    .get(&self.key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &self.sequence))
+                {
+                    sequences.remove(&self.key);
+                }
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -660,6 +789,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.chunk_size,
                 job.reuse_prefix,
                 job.cached_tokens,
+                job.prefix_match_tokens,
                 job.start_pos,
                 job.stable_len,
                 job.is_last,
@@ -729,6 +859,12 @@ mod tests {
     async fn accept_frame(body: Bytes) -> StatusCode {
         assert_eq!(body.len(), 4 * 1024 * 1024);
         StatusCode::NO_CONTENT
+    }
+
+    #[test]
+    fn health_reports_the_context_window_per_session() {
+        assert_eq!(context_per_session(400_000, 4), 100_000);
+        assert_eq!(context_per_session(100_000, 0), 100_000);
     }
 
     #[test]
@@ -1025,6 +1161,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
@@ -1035,6 +1172,8 @@ mod tests {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             n_batch: 512,
             max_new_tokens: 256,
             temperature: 0.7,
@@ -1156,7 +1295,8 @@ mod relay_tests {
             &hops,
             "/v1/step",
             json!({"session_id": "sess-1"}),
-            (&residual, [1, 8]),
+            (&residual, vec![1, 8]),
+            WireDtype::F16,
             1,
             json!(7),
             json!({"decode_ms": 2}),
@@ -1201,7 +1341,8 @@ mod relay_tests {
             &hops,
             "/v1/step",
             json!({"session_id": "sess-1"}),
-            (&residual, [1, 8]),
+            (&residual, vec![1, 8]),
+            WireDtype::F16,
             1,
             json!(7),
             json!({}),
@@ -1336,6 +1477,9 @@ mod relay_tests {
 pub(crate) struct PrefixDecision {
     pub(crate) reused: bool,
     pub(crate) cached_tokens: u32,
+    /// Quantos tokens abriram o prefixo retido, mesmo quando a divergência
+    /// obrigou o prefill a recomeçar a frio.
+    pub(crate) matched_tokens: u32,
 }
 
 /// A regra do reuso, sem sessão nem motor por perto.
@@ -1358,14 +1502,17 @@ pub(crate) struct PrefixDecision {
 /// sobraria token para decodificar, e quando a sessão não tem prompt no KV.
 /// Recusar custa o reuso daquele turno e nunca a requisição.
 pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> PrefixDecision {
-    if retidos.len() as u32 != n_past {
-        return PrefixDecision::default();
-    }
     let comum = retidos
         .iter()
         .zip(novos)
         .take_while(|(old, new)| old == new)
         .count() as u32;
+    if retidos.len() as u32 != n_past {
+        return PrefixDecision {
+            matched_tokens: comum.min(n_past),
+            ..PrefixDecision::default()
+        };
+    }
     // O último token do novo prompt tem de ser decodificado: é dele que saem os
     // logits do primeiro token gerado.
     let cabe_decodificar = (n_past as usize) < novos.len();
@@ -1373,9 +1520,13 @@ pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> 
         PrefixDecision {
             reused: true,
             cached_tokens: n_past,
+            matched_tokens: n_past,
         }
     } else {
-        PrefixDecision::default()
+        PrefixDecision {
+            matched_tokens: comum.min(n_past),
+            ..PrefixDecision::default()
+        }
     }
 }
 
@@ -1509,6 +1660,7 @@ mod prefix_rule_tests {
         let d = plan_prefix_reuse(&[10, 11, 12, 13], 4, &[10, 11, 99, 13, 20]);
         assert!(!d.reused);
         assert_eq!(d.cached_tokens, 0);
+        assert_eq!(d.matched_tokens, 2);
     }
 
     /// Prompt idêntico ao retido: não sobraria token para decodificar, e recuar
@@ -1736,6 +1888,7 @@ fn apply_prefix_decision(
     prefix: PrefixDecision,
     requested_reuse: bool,
     requested_cached_tokens: u32,
+    requested_prefix_match_tokens: u32,
     owns_tokens: bool,
 ) {
     if chunk_index != 0 {
@@ -1744,6 +1897,7 @@ fn apply_prefix_decision(
     if owns_tokens {
         meta["reuse_prefix"] = json!(prefix.reused);
         meta["cached_tokens"] = json!(prefix.cached_tokens);
+        meta["prefix_match_tokens"] = json!(prefix.matched_tokens);
     } else {
         // Só a cabeça pode decidir se os tokens batem. Todos os hops
         // intermediários devem transportar a decisão autoritativa recebida;
@@ -1751,12 +1905,47 @@ fn apply_prefix_decision(
         // depois receber um hidden state com posição positiva.
         meta["reuse_prefix"] = json!(requested_reuse);
         meta["cached_tokens"] = json!(requested_cached_tokens);
+        meta["prefix_match_tokens"] = json!(requested_prefix_match_tokens);
     }
 }
 
 #[cfg(test)]
 mod prefix_decision_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn direct_forward_waits_for_the_previous_chunk() {
+        let order = DirectForwardOrder::default();
+        let first = order.wait_turn("prefill-1", 0).await.unwrap();
+        let waiter_order = order.clone();
+        let second = tokio::spawn(async move {
+            waiter_order.wait_turn("prefill-1", 1).await.map(|turn| {
+                turn.finish(true, true);
+                1
+            })
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        assert!(!second.is_finished());
+        first.finish(true, false);
+        assert_eq!(second.await.unwrap().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_forward_failure_reaches_the_next_chunk() {
+        let order = DirectForwardOrder::default();
+        let first = order.wait_turn("prefill-2", 0).await.unwrap();
+        let waiter_order = order.clone();
+        let second = tokio::spawn(async move { waiter_order.wait_turn("prefill-2", 1).await });
+
+        tokio::task::yield_now().await;
+        first.finish(false, false);
+        let error = match second.await.unwrap() {
+            Ok(_) => panic!("o chunk seguinte não pode ultrapassar uma falha"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("repasse direto falhou"));
+    }
 
     #[test]
     fn an_intermediate_hop_echoes_the_head_decision() {
@@ -1765,10 +1954,11 @@ mod prefix_decision_tests {
             "cached_tokens": 0,
         });
 
-        apply_prefix_decision(&mut meta, 0, PrefixDecision::default(), true, 42, false);
+        apply_prefix_decision(&mut meta, 0, PrefixDecision::default(), true, 42, 17, false);
 
         assert_eq!(meta["reuse_prefix"], true);
         assert_eq!(meta["cached_tokens"], 42);
+        assert_eq!(meta["prefix_match_tokens"], 17);
     }
 
     #[test]
@@ -1784,9 +1974,11 @@ mod prefix_decision_tests {
             PrefixDecision {
                 reused: false,
                 cached_tokens: 0,
+                matched_tokens: 0,
             },
             true,
             42,
+            0,
             true,
         );
 
@@ -2356,6 +2548,7 @@ pub async fn run(
         state,
         scheduler,
         tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
+        direct_forward_order: DirectForwardOrder::default(),
     };
     crate::relay::install_local_inference(generation, Arc::new(app_state.clone())).await;
 
@@ -2718,6 +2911,10 @@ fn err500(msg: impl std::fmt::Display) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()).into_response()
 }
 
+fn context_per_session(n_ctx_total: u32, max_sessions: u32) -> u32 {
+    n_ctx_total / max_sessions.max(1)
+}
+
 // ── /health ───────────────────────────────────────────────────────────────────
 
 async fn handle_health(State(app): State<InferenceAppState>) -> Response {
@@ -2731,6 +2928,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
         crate::pipeline::CAP_FRAME_BATCH,
+        crate::pipeline::CAP_FRAME_DTYPE_F8,
         "relay/v1-chain",
         "relay/v2-direct",
         "speculate/v1-lookup",
@@ -2742,6 +2940,8 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     if scheduler.config.enabled {
         caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
+    let n_ctx_total = s.engine.n_ctx();
+    let n_ctx_per_session = context_per_session(n_ctx_total, s.max_sessions);
     Json(json!({
         "status": "ok",
         "model_loaded": true,
@@ -2770,10 +2970,11 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         // **não** governa remoção parcial de KV. O reuso de prefixo deste
         // projeto não depende de nenhum dos dois - ver `Session`.
         "kv_can_shift": s.engine.kv_can_shift(),
-        "n_ctx_total": s.engine.n_ctx(),
-        // Cache unificado: a janela por sessão é o contexto inteiro. Ver
-        // `llm::kv_seq_budget`.
-        "n_ctx_per_session": s.engine.n_ctx(),
+        "n_ctx_total": n_ctx_total,
+        // O engine reserva a janela pública para cada sessão. Se o fit reduzir
+        // o total, a capacidade por sessão é a divisão efetiva, não o total
+        // bruto que o llama.cpp devolve.
+        "n_ctx_per_session": n_ctx_per_session,
         "offload_kqv": s.engine.offload_kqv(),
         "cache_type_k": s.engine.cache_type_k().as_str(),
         "cache_type_v": s.engine.cache_type_v().as_str(),
@@ -3231,6 +3432,13 @@ async fn handle_prefill(
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
+    let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
+        Some(value) => match WireDtype::parse(value) {
+            Ok(dtype) => dtype,
+            Err(error) => return err400(error),
+        },
+        None => return err400("quadro sem dtype de estado oculto"),
+    };
 
     let sid_key = meta
         .get("session_id")
@@ -3242,6 +3450,11 @@ async fn handle_prefill(
         .get("chunk_index")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+    let prefill_sequence_id = meta
+        .get("prefill_sequence_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let direct_forward_order = app.direct_forward_order.clone();
     let chunk_size = meta
         .get("chunk_size")
         .and_then(|v| v.as_u64())
@@ -3254,6 +3467,14 @@ async fn handle_prefill(
         .get("cached_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+    let prefix_match_tokens = meta
+        .get("prefix_match_tokens")
+        .or_else(|| {
+            meta.get("prompt_progress")
+                .and_then(|v| v.get("prefix_match_tokens"))
+        })
+        .and_then(|v| v.as_u64())
+        .unwrap_or(cached_tokens as u64) as u32;
     let stable_len = meta
         .get("stable_len")
         .and_then(|value| value.as_u64())
@@ -3283,7 +3504,6 @@ async fn handle_prefill(
         .get("is_final_chunk")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let wire_dtype = WireDtype::F16;
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
     let prompt = meta
         .get("prompt")
@@ -3307,6 +3527,15 @@ async fn handle_prefill(
             Some((values, shape))
         }
         None => None,
+    };
+    let inbound_hidden_state_bytes = match wire::tensor_payload_len(
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+        wire_dtype,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => return err400(error),
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
     // Neither of `prefill_blocking`'s non-final replies echoes `session_id`
@@ -3337,6 +3566,7 @@ async fn handle_prefill(
         chunk_size,
         reuse_prefix,
         cached_tokens,
+        prefix_match_tokens,
         start_pos,
         stable_len,
         is_last,
@@ -3401,12 +3631,24 @@ async fn handle_prefill(
     // **adiante**, e quem entrega copia — só a cabeça tokenizou o prompt, e sem
     // isso todo prompt de mais de um pedaço seria truncado no primeiro.
     if let Some(reply_to) = direct_reply_to(&meta) {
+        let outbound_hidden_state_bytes = match wire::tensor_payload_len(
+            local_tensor
+                .as_ref()
+                .map(|(values, shape)| (values.as_slice(), shape.clone())),
+            wire_dtype,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return err500(error),
+        };
         let hop_timings = crate::direct::accumulate(
             &meta,
-            crate::direct::hop_entry(
+            crate::direct::hop_entry_with_state(
                 &local_meta["processing_ms"],
                 &local_meta["node_timings"],
                 inbound_bytes,
+                inbound_hidden_state_bytes,
+                outbound_hidden_state_bytes,
+                wire_dtype,
             ),
         );
         let hops = next_hops.unwrap_or_default();
@@ -3442,6 +3684,9 @@ async fn handle_prefill(
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
+        if let Some(sequence_id) = &prefill_sequence_id {
+            forward["prefill_sequence_id"] = json!(sequence_id);
+        }
         for field in ["start_pos", "next_pos", "stable_len"] {
             if let Some(value) = local_meta.get(field) {
                 forward[field] = value.clone();
@@ -3451,24 +3696,47 @@ async fn handle_prefill(
         if let Some(tokens) = local_meta.get("tokens") {
             forward["tokens"] = tokens.clone();
         }
-        tokio::spawn(forward_direct(
+        if chunk_index == 0 {
+            if let Some(sequence_id) = &prefill_sequence_id {
+                if let Err(error) = direct_forward_order.ensure_sequence(sequence_id) {
+                    let failure = crate::relay::RelayFailure {
+                        failed_node_id: hops[0].node_id.clone(),
+                        kind: "protocol".into(),
+                        message: error.to_string(),
+                    };
+                    tokio::spawn(async move {
+                        crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+                    });
+                    return direct_ack();
+                }
+            }
+        }
+        tokio::spawn(forward_direct_ordered(
             hops,
             "/v1/prefill",
             forward,
             residual,
             shape,
+            wire_dtype,
             crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
             reply_to,
+            Some(direct_forward_order),
+            prefill_sequence_id,
+            Some(chunk_index),
         ));
-        return direct_ack();
+        let progress =
+            owns_tokens(&local_meta).then(|| prompt_progress_for_forward(&meta, &local_meta));
+        return direct_ack_with_progress(progress);
     }
 
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
     if !should_relay {
         return match wire::encode_batch_single(
             &local_meta,
-            local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
-            WireDtype::F16,
+            local_tensor
+                .as_ref()
+                .map(|(v, s)| (v.as_slice(), s.clone())),
+            wire_dtype,
         ) {
             Ok(bytes) => (
                 StatusCode::OK,
@@ -3510,10 +3778,14 @@ async fn handle_prefill(
                     relay_meta[field] = value.clone();
                 }
             }
+            if let Some(value) = local_meta.get("prefix_match_tokens") {
+                relay_meta["prefix_match_tokens"] = value.clone();
+            }
             preserve_batch_identity(&meta, &mut relay_meta);
             relay_meta
         },
         (&residual, shape),
+        wire_dtype,
         crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
         local_meta["processing_ms"].clone(),
         local_meta["node_timings"].clone(),
@@ -3526,7 +3798,7 @@ async fn handle_prefill(
 
     overlay_head_authoritative_fields(&local_meta, &mut bubbled);
 
-    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, wire_dtype) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -3596,6 +3868,7 @@ pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mu
             // sobre um prompt que ela nunca tokenizou.
             "reuse_prefix",
             "cached_tokens",
+            "prefix_match_tokens",
             "stable_len",
         ] {
             if let Some(value) = local_meta.get(field) {
@@ -3619,6 +3892,7 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
             // Ver `overlay_head_authoritative_fields`: só a cabeça sabe.
             "reuse_prefix": local_meta["reuse_prefix"].clone(),
             "cached_tokens": local_meta["cached_tokens"].clone(),
+            "prefix_match_tokens": local_meta["prefix_match_tokens"].clone(),
             "stable_len": local_meta["stable_len"].clone(),
         });
     }
@@ -3642,6 +3916,7 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
         "next_pos",
         "reuse_prefix",
         "cached_tokens",
+        "prefix_match_tokens",
         "stable_len",
     ] {
         if let Some(value) = progress.get(field) {
@@ -3672,6 +3947,7 @@ fn prefill_blocking(
     chunk_size: u32,
     reuse_prefix: bool,
     cached_tokens: u32,
+    prefix_match_tokens: u32,
     start_pos: Option<u32>,
     stable_len: Option<u32>,
     is_last: bool,
@@ -3679,7 +3955,7 @@ fn prefill_blocking(
     wire_dtype: WireDtype,
     prompt: Option<String>,
     chat_template: Option<bool>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
     // wire. Só tem sentido no branch de estado oculto (a cabeça tokeniza o
@@ -3826,6 +4102,7 @@ fn prefill_blocking(
         n_tokens = shape[0];
         engine_timing = s.engine.decode_hidden(
             &hidden,
+            &shape,
             n_tokens,
             n_past,
             seq_id,
@@ -3848,7 +4125,7 @@ fn prefill_blocking(
         && !s.engine.moe_hook_enabled()
     {
         let residual = s.engine.take_residual(n_tokens)?;
-        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        let _ = s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;
     }
     timings.merge_engine_moe(&engine_timing);
@@ -3903,6 +4180,7 @@ fn prefill_blocking(
                 prefix,
                 reuse_prefix,
                 cached_tokens,
+                prefix_match_tokens,
                 owns_prompt_tokens,
             );
             apply_stable_len(&mut partial, stable);
@@ -3981,6 +4259,7 @@ fn prefill_blocking(
             prefix,
             reuse_prefix,
             cached_tokens,
+            prefix_match_tokens,
             owns_prompt_tokens,
         );
         apply_stable_len(&mut reply, stable);
@@ -3994,11 +4273,11 @@ fn prefill_blocking(
     let residual_started = Instant::now();
     let mut residual = s.engine.take_residual(n_tokens)?;
     if !input_was_hidden {
-        residual = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        residual.values =
+            s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
     }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
-    let n_embd = s.engine.n_embd;
     let mut reply_meta = json!({
         "done": false,
         "more_chunks": more,
@@ -4020,6 +4299,7 @@ fn prefill_blocking(
         prefix,
         reuse_prefix,
         cached_tokens,
+        prefix_match_tokens,
         owns_prompt_tokens,
     );
     apply_stable_len(&mut reply_meta, stable);
@@ -4034,7 +4314,7 @@ fn prefill_blocking(
     let encode_started = Instant::now();
     let bytes = wire::encode(
         &reply_meta,
-        Some((&residual, [n_tokens, n_embd])),
+        Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;
@@ -4053,6 +4333,7 @@ struct PreparedPrefill {
     /// Decisão recebida da cabeça para ecoar quando este peer não tokeniza.
     requested_reuse: bool,
     requested_cached_tokens: u32,
+    requested_prefix_match_tokens: u32,
     /// A fronteira medida - ver `Session::stable_len`.
     stable_len: u32,
     is_last: bool,
@@ -4068,7 +4349,10 @@ struct PreparedPrefill {
 
 enum PreparedPrefillInput {
     Tokens(Vec<i32>),
-    Hidden(Vec<f32>),
+    Hidden {
+        values: Vec<f32>,
+        shape: TensorShape,
+    },
 }
 
 fn prefill_batch_blocking(
@@ -4098,6 +4382,7 @@ fn prefill_batch_blocking(
             chunk_size,
             reuse_prefix,
             cached_tokens,
+            prefix_match_tokens,
             start_pos,
             stable_len,
             is_last,
@@ -4172,28 +4457,24 @@ fn prefill_batch_blocking(
             let (seq_id, n_past, prompt_tokens, input, n_tokens) = {
                 let session = &s.sessions[&sid_key];
                 if let Some((hidden, shape)) = tensor {
-                    if shape[0] == 0 || shape[1] != s.engine.n_embd {
-                        bail!(
-                            "hidden state de {} tem shape {:?}, esperado [tokens, {}]",
-                            sid_key,
-                            shape,
-                            s.engine.n_embd
-                        );
-                    }
-                    let n_tokens = shape[0];
-                    if hidden.len() != n_tokens.saturating_mul(s.engine.n_embd) {
-                        bail!(
-                            "hidden state de {} tem {} floats, esperado {}",
-                            sid_key,
-                            hidden.len(),
-                            n_tokens.saturating_mul(s.engine.n_embd)
-                        );
-                    }
+                    let n_tokens = shape.first().copied().unwrap_or(0);
+                    crate::llm::validate_hidden_tensor(
+                        hidden.len(),
+                        &shape,
+                        n_tokens,
+                        s.engine.n_embd,
+                        s.engine.n_embd_inp,
+                        s.engine.n_embd_out,
+                        &format!("hidden state de {sid_key}"),
+                    )?;
                     (
                         session.seq_id(),
                         session.n_past,
                         Vec::new(),
-                        PreparedPrefillInput::Hidden(hidden),
+                        PreparedPrefillInput::Hidden {
+                            values: hidden,
+                            shape,
+                        },
                         n_tokens,
                     )
                 } else {
@@ -4233,6 +4514,7 @@ fn prefill_batch_blocking(
                 prefix,
                 requested_reuse: reuse_prefix,
                 requested_cached_tokens: cached_tokens,
+                requested_prefix_match_tokens: prefix_match_tokens,
                 stable_len: stable,
                 is_last,
                 is_final_chunk,
@@ -4287,15 +4569,15 @@ fn prefill_batch_blocking(
     let mut transform_error = None;
     let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
     for (_, item) in &mut prepared {
-        if let PreparedPrefillInput::Hidden(hidden) = &mut item.input {
+        if let PreparedPrefillInput::Hidden { values, .. } = &mut item.input {
             let mut transform_timings = NodeTimings::default();
             match s.apply_moe_hidden(
-                std::mem::take(hidden),
+                std::mem::take(values),
                 item.n_tokens,
                 capture_block,
                 &mut transform_timings,
             ) {
-                Ok(transformed) => *hidden = transformed,
+                Ok(transformed) => *values = transformed,
                 Err(error) => {
                     transform_error = Some(error);
                     break;
@@ -4328,13 +4610,13 @@ fn prefill_batch_blocking(
                     },
                     tokens: match &item.input {
                         PreparedPrefillInput::Tokens(tokens) => tokens.clone(),
-                        PreparedPrefillInput::Hidden(_) => Vec::new(),
+                        PreparedPrefillInput::Hidden { .. } => Vec::new(),
                     },
                 })
                 .collect();
             s.engine.decode_tokens_batch(&entries, need_residual)
         }
-        PreparedPrefillInput::Hidden(_) => {
+        PreparedPrefillInput::Hidden { .. } => {
             let entries: Vec<crate::llm::HiddenBatchEntry> = prepared
                 .iter()
                 .map(|(_, item)| crate::llm::HiddenBatchEntry {
@@ -4346,7 +4628,11 @@ fn prefill_batch_blocking(
                         want_logits: item.is_last,
                     },
                     hidden: match &item.input {
-                        PreparedPrefillInput::Hidden(hidden) => hidden.clone(),
+                        PreparedPrefillInput::Hidden { values, .. } => values.clone(),
+                        PreparedPrefillInput::Tokens(_) => Vec::new(),
+                    },
+                    shape: match &item.input {
+                        PreparedPrefillInput::Hidden { shape, .. } => shape.clone(),
                         PreparedPrefillInput::Tokens(_) => Vec::new(),
                     },
                 })
@@ -4415,6 +4701,7 @@ fn prefill_batch_blocking(
                         item.prefix,
                         item.requested_reuse,
                         item.requested_cached_tokens,
+                        item.requested_prefix_match_tokens,
                         item.owns_tokens,
                     );
                     apply_stable_len(&mut meta, item.stable_len);
@@ -4482,6 +4769,7 @@ fn prefill_batch_blocking(
                     item.prefix,
                     item.requested_reuse,
                     item.requested_cached_tokens,
+                    item.requested_prefix_match_tokens,
                     item.owns_tokens,
                 );
                 apply_stable_len(&mut meta, item.stable_len);
@@ -4492,8 +4780,9 @@ fn prefill_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let input_was_hidden = matches!(&item.input, PreparedPrefillInput::Hidden(_));
-            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let input_was_hidden = matches!(&item.input, PreparedPrefillInput::Hidden { .. });
+            let (mut residual, residual_shape) =
+                output.residual_for(&item.sid_key, s.engine.n_embd)?;
             if !input_was_hidden {
                 residual =
                     s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
@@ -4513,6 +4802,7 @@ fn prefill_batch_blocking(
                 item.prefix,
                 item.requested_reuse,
                 item.requested_cached_tokens,
+                item.requested_prefix_match_tokens,
                 item.owns_tokens,
             );
             apply_stable_len(&mut meta, item.stable_len);
@@ -4522,11 +4812,7 @@ fn prefill_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let started = Instant::now();
-            let bytes = wire::encode(
-                &meta,
-                Some((&residual, [item.n_tokens, s.engine.n_embd])),
-                item.wire_dtype,
-            )?;
+            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
             timings.encode_us = started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();
@@ -4602,24 +4888,20 @@ fn step_batch_blocking(
             let seq_id = session.seq_id();
             let n_past = session.n_past;
             let input = if let Some((hidden, shape)) = tensor {
-                if shape[0] == 0 || shape[1] != s.engine.n_embd {
-                    bail!(
-                        "hidden state de {} tem shape {:?}, esperado [tokens, {}]",
-                        sid_key,
-                        shape,
-                        s.engine.n_embd
-                    );
+                let n_tokens = shape.first().copied().unwrap_or(0);
+                crate::llm::validate_hidden_tensor(
+                    hidden.len(),
+                    &shape,
+                    n_tokens,
+                    s.engine.n_embd,
+                    s.engine.n_embd_inp,
+                    s.engine.n_embd_out,
+                    &format!("hidden state de {sid_key}"),
+                )?;
+                PreparedStepInput::Hidden {
+                    values: hidden,
+                    shape,
                 }
-                let n_tokens = shape[0];
-                if hidden.len() != n_tokens.saturating_mul(s.engine.n_embd) {
-                    bail!(
-                        "hidden state de {} tem {} floats, esperado {}",
-                        sid_key,
-                        hidden.len(),
-                        n_tokens.saturating_mul(s.engine.n_embd)
-                    );
-                }
-                PreparedStepInput::Hidden { hidden, n_tokens }
             } else {
                 let token =
                     token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
@@ -4632,7 +4914,7 @@ fn step_batch_blocking(
             };
             let n_tokens = match &input {
                 PreparedStepInput::Tokens { .. } => 1,
-                PreparedStepInput::Hidden { n_tokens, .. } => *n_tokens,
+                PreparedStepInput::Hidden { shape, .. } => shape[0],
             };
             Ok(PreparedStep {
                 sid_key,
@@ -4684,15 +4966,15 @@ fn step_batch_blocking(
     let mut transform_error = None;
     let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
     for (_, item) in &mut prepared {
-        if let PreparedStepInput::Hidden { hidden, n_tokens } = &mut item.input {
+        if let PreparedStepInput::Hidden { values, shape } = &mut item.input {
             let mut transform_timings = NodeTimings::default();
             match s.apply_moe_hidden(
-                std::mem::take(hidden),
-                *n_tokens,
+                std::mem::take(values),
+                shape[0],
                 capture_block,
                 &mut transform_timings,
             ) {
-                Ok(transformed) => *hidden = transformed,
+                Ok(transformed) => *values = transformed,
                 Err(error) => {
                     transform_error = Some(error);
                     break;
@@ -4743,7 +5025,11 @@ fn step_batch_blocking(
                         want_logits: item.is_last,
                     },
                     hidden: match &item.input {
-                        PreparedStepInput::Hidden { hidden, .. } => hidden.clone(),
+                        PreparedStepInput::Hidden { values, .. } => values.clone(),
+                        PreparedStepInput::Tokens { .. } => Vec::new(),
+                    },
+                    shape: match &item.input {
+                        PreparedStepInput::Hidden { shape, .. } => shape.clone(),
                         PreparedStepInput::Tokens { .. } => Vec::new(),
                     },
                 })
@@ -4843,7 +5129,8 @@ fn step_batch_blocking(
 
             let residual_started = Instant::now();
             let input_was_hidden = matches!(&item.input, PreparedStepInput::Hidden { .. });
-            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (mut residual, residual_shape) =
+                output.residual_for(&item.sid_key, s.engine.n_embd)?;
             if !input_was_hidden {
                 residual =
                     s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
@@ -4858,11 +5145,7 @@ fn step_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let encode_started = Instant::now();
-            let bytes = wire::encode(
-                &meta,
-                Some((&residual, [item.n_tokens, s.engine.n_embd])),
-                item.wire_dtype,
-            )?;
+            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
             timings.encode_us = encode_started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();
@@ -4884,8 +5167,13 @@ struct PreparedStep {
 }
 
 enum PreparedStepInput {
-    Tokens { token: i32 },
-    Hidden { hidden: Vec<f32>, n_tokens: usize },
+    Tokens {
+        token: i32,
+    },
+    Hidden {
+        values: Vec<f32>,
+        shape: TensorShape,
+    },
 }
 
 // ── /v1/step ─────────────────────────────────────────────────────────────────
@@ -4927,6 +5215,13 @@ async fn handle_step(
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
+    let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
+        Some(value) => match WireDtype::parse(value) {
+            Ok(dtype) => dtype,
+            Err(error) => return err400(error),
+        },
+        None => return err400("quadro sem dtype de estado oculto"),
+    };
 
     let sid_key = meta
         .get("session_id")
@@ -4949,7 +5244,6 @@ async fn handle_step(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         });
-    let wire_dtype = WireDtype::F16;
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
     let token_id = meta
         .get("token_id")
@@ -4983,6 +5277,15 @@ async fn handle_step(
             Some((values, shape))
         }
         None => None,
+    };
+    let inbound_hidden_state_bytes = match wire::tensor_payload_len(
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+        wire_dtype,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => return err400(error),
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
     // A sub-faixa só é válida se este peer consegue executá-la exatamente.
@@ -5064,12 +5367,24 @@ async fn handle_step(
     // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
     // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
     if let Some(reply_to) = direct_reply_to(&meta) {
+        let outbound_hidden_state_bytes = match wire::tensor_payload_len(
+            local_tensor
+                .as_ref()
+                .map(|(values, shape)| (values.as_slice(), shape.clone())),
+            wire_dtype,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return err500(error),
+        };
         let hop_timings = crate::direct::accumulate(
             &meta,
-            crate::direct::hop_entry(
+            crate::direct::hop_entry_with_state(
                 &local_meta["processing_ms"],
                 &local_meta["node_timings"],
                 inbound_bytes,
+                inbound_hidden_state_bytes,
+                outbound_hidden_state_bytes,
+                wire_dtype,
             ),
         );
         let hops = next_hops.unwrap_or_default();
@@ -5101,7 +5416,7 @@ async fn handle_step(
         let mut forward = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
         forward["hop_timings"] = json!(hop_timings);
         tokio::spawn(forward_direct(
-            hops, "/v1/step", forward, residual, shape,
+            hops, "/v1/step", forward, residual, shape, wire_dtype,
             1, // a decode step has never retried — see relay_and_bubble's doc comment
             reply_to,
         ));
@@ -5112,8 +5427,10 @@ async fn handle_step(
     if !should_relay {
         return match wire::encode_batch_single(
             &local_meta,
-            local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
-            WireDtype::F16,
+            local_tensor
+                .as_ref()
+                .map(|(v, s)| (v.as_slice(), s.clone())),
+            wire_dtype,
         ) {
             Ok(bytes) => (
                 StatusCode::OK,
@@ -5137,6 +5454,7 @@ async fn handle_step(
         "/v1/step",
         forward_meta,
         (&residual, shape),
+        wire_dtype,
         1, // a decode step has never retried — see relay_and_bubble's doc comment
         local_meta["processing_ms"].clone(),
         local_meta["node_timings"].clone(),
@@ -5146,7 +5464,7 @@ async fn handle_step(
         Ok(bubbled) => bubbled,
         Err(resp) => return resp,
     };
-    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, wire_dtype) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -5208,7 +5526,8 @@ async fn relay_and_bubble(
     hops: &[PipelineStep],
     path: &str,
     mut base_meta: Value,
-    tensor: (&[f32], [usize; 2]),
+    tensor: (&[f32], TensorShape),
+    dtype: WireDtype,
     attempts: u32,
     local_processing_ms: Value,
     local_node_timings: Value,
@@ -5229,8 +5548,8 @@ async fn relay_and_bubble(
         path,
         &base_meta,
         Some(tensor),
-        WireDtype::F16,
-        next.frame_encoding(),
+        dtype,
+        dtype.frame_encoding(),
         attempts,
         &next.node_id,
         |issue| last_issue_kind = Some(issue.kind),
@@ -5285,7 +5604,15 @@ pub(crate) fn direct_reply_to(meta: &Value) -> Option<Value> {
 /// aceite, e nada mais. A resposta de verdade não passa por aqui — ver
 /// [`crate::direct`].
 pub(crate) fn direct_ack() -> Response {
-    match wire::encode_batch_single(&json!({"accepted": true}), None, WireDtype::F16) {
+    direct_ack_with_progress(None)
+}
+
+pub(crate) fn direct_ack_with_progress(progress: Option<Value>) -> Response {
+    let mut meta = json!({"accepted": true});
+    if let Some(progress) = progress {
+        meta["prompt_progress"] = progress;
+    }
+    match wire::encode_batch_single(&meta, None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -5306,14 +5633,60 @@ pub(crate) fn direct_ack() -> Response {
 pub(crate) async fn forward_direct(
     hops: Vec<PipelineStep>,
     path: &'static str,
-    mut base_meta: Value,
+    base_meta: Value,
     residual: Vec<f32>,
-    shape: [usize; 2],
+    shape: TensorShape,
+    dtype: WireDtype,
     attempts: u32,
     reply_to: Value,
 ) {
+    forward_direct_ordered(
+        hops, path, base_meta, residual, shape, dtype, attempts, reply_to, None, None, None,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn forward_direct_ordered(
+    hops: Vec<PipelineStep>,
+    path: &'static str,
+    mut base_meta: Value,
+    residual: Vec<f32>,
+    shape: TensorShape,
+    dtype: WireDtype,
+    attempts: u32,
+    reply_to: Value,
+    order: Option<DirectForwardOrder>,
+    sequence_id: Option<String>,
+    chunk_index: Option<u32>,
+) {
     let next = hops[0].clone();
     let remaining = &hops[1..];
+    let terminal = base_meta
+        .get("is_final_chunk")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let turn = match (order, sequence_id, chunk_index) {
+        (Some(order), Some(sequence_id), Some(chunk_index)) => {
+            match order.wait_turn(sequence_id, chunk_index).await {
+                Ok(turn) => Some(turn),
+                Err(error) => {
+                    let failure = crate::relay::RelayFailure {
+                        failed_node_id: next.node_id.clone(),
+                        kind: "protocol".into(),
+                        message: error.to_string(),
+                    };
+                    crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+                    return;
+                }
+            }
+        }
+        _ => None,
+    };
+    let destination_hop = base_meta
+        .get("hop_timings")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     base_meta["is_last"] = json!(remaining.is_empty());
     base_meta["scale"] = json!(1.0);
     base_meta["next_hops"] = json!(remaining);
@@ -5329,26 +5702,39 @@ pub(crate) async fn forward_direct(
         path,
         &base_meta,
         Some((&residual, shape)),
-        WireDtype::F16,
-        next.frame_encoding(),
+        dtype,
+        dtype.frame_encoding(),
         attempts,
         &next.node_id,
         |issue| last_issue_kind = Some(issue.kind),
     )
     .await;
 
-    if let Err(e) = sent {
-        let failure =
-            crate::relay::extract_relay_failure(&e).unwrap_or_else(|| crate::relay::RelayFailure {
-                failed_node_id: next.node_id.clone(),
-                kind: issue_kind_label(last_issue_kind).to_string(),
-                message: e.to_string(),
+    match sent {
+        Ok(sent) => {
+            if let Some(turn) = turn {
+                turn.finish(true, terminal);
+            }
+            crate::direct::deliver_transport(http_client(), &reply_to, destination_hop, &sent)
+                .await;
+        }
+        Err(e) => {
+            if let Some(turn) = turn {
+                turn.finish(false, false);
+            }
+            let failure = crate::relay::extract_relay_failure(&e).unwrap_or_else(|| {
+                crate::relay::RelayFailure {
+                    failed_node_id: next.node_id.clone(),
+                    kind: issue_kind_label(last_issue_kind).to_string(),
+                    message: e.to_string(),
+                }
             });
-        warn!(
-            "repasse direto para {} falhou: {} — avisando o gateway",
-            failure.failed_node_id, failure.message
-        );
-        crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+            warn!(
+                "repasse direto para {} falhou: {} - avisando o gateway",
+                failure.failed_node_id, failure.message
+            );
+            crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+        }
     }
 }
 
@@ -5750,7 +6136,7 @@ fn step_blocking(
     is_last: bool,
     wire_dtype: WireDtype,
     token_id: Option<i32>,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
     // Present only for the head — everyone else either forwards
     // `incoming_draft` untouched (not the tail) or verifies against it (the
@@ -5839,6 +6225,7 @@ fn step_blocking(
         let logits_all = incoming_draft.is_some() || !is_last;
         engine_timing = s.engine.decode_hidden(
             &hidden,
+            &shape,
             n_tokens,
             n_past,
             seq_id,
@@ -5923,7 +6310,7 @@ fn step_blocking(
         && !s.engine.moe_hook_enabled()
     {
         let residual = s.engine.take_residual(n_tokens)?;
-        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        let _ = s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;
     }
     timings.merge_engine_moe(&engine_timing);
@@ -6171,7 +6558,8 @@ fn step_blocking(
     let residual_started = Instant::now();
     let mut residual = s.engine.take_residual(n_tokens)?;
     if !input_was_hidden {
-        residual = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        residual.values =
+            s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
     }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let mut reply_meta = json!({"done": false});
@@ -6194,7 +6582,7 @@ fn step_blocking(
     let encode_started = Instant::now();
     let bytes = wire::encode(
         &reply_meta,
-        Some((&residual, [n_tokens, s.engine.n_embd])),
+        Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;

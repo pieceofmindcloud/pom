@@ -69,7 +69,7 @@ describe("Sidebar", () => {
     );
   });
 
-  it("fecha pelo hover da logo somente depois de um pequeno atraso", () => {
+  it("não minimiza ao passar o mouse sobre a logo", () => {
     vi.useFakeTimers();
     render(
       <MemoryRouter
@@ -86,10 +86,8 @@ describe("Sidebar", () => {
     fireEvent.mouseEnter(logo);
 
     expect(screen.getByRole("button", { name: "Minimizar menu" })).toBeTruthy();
-    act(() => vi.advanceTimersByTime(219));
+    act(() => vi.advanceTimersByTime(500));
     expect(screen.getByRole("button", { name: "Minimizar menu" })).toBeTruthy();
-    act(() => vi.advanceTimersByTime(1));
-    expect(screen.getByRole("button", { name: "Expandir menu" })).toBeTruthy();
   });
 
   /**
@@ -133,8 +131,9 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Implantações" }));
     expect(screen.getByText("Implantar na rede")).toBeTruthy();
-    expect(screen.getByText("Implantações")).toBeTruthy();
+    expect(screen.getByText("Histórico")).toBeTruthy();
     expect(screen.getByText("Logs")).toBeTruthy();
   });
 });

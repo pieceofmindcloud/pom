@@ -16,6 +16,14 @@ fi
 export POM_BUILD_COMMIT="$commit"
 echo "build commit: $POM_BUILD_COMMIT"
 
+# Short commit of the vendored llama.cpp fork. The Dockerfile keys the
+# /build/target cache mount id to this so a fork bump gets a clean native
+# tree instead of relinking a stale libllama.a — see the Dockerfile comment
+# and docs/subsystems/build-execucao.md ("Docker").
+llama_commit=$(git -C llama.cpp rev-parse --short HEAD 2>/dev/null || echo unknown)
+export LLAMA_CPP_COMMIT="$llama_commit"
+echo "llama.cpp fork commit: $LLAMA_CPP_COMMIT"
+
 #pushd apps/frontend
 #npm run build
 #popd

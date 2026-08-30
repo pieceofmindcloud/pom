@@ -16,7 +16,14 @@ Two files carry all of it: a static message table and a small provider. Tests:
   and formatting functions. The slice screen has messages for pipeline and
   tensor-parallel modes, including grouped `1ofN` rank labels. Deploy metadata
   refusals are rendered from the backend's selection-specific `blocked` reason;
-  there is no second global catalog warning in this table.
+  there is no second global catalog warning in this table. Dashboard GPU
+  temperature badges and the Network thermal policy panel have keys in both
+  locale blocks. Deployment-wide hidden-state dtype controls and the Chat
+  telemetry label for bytes/dtype are also present in both locale blocks.
+  Slicing phase, byte-progress, disk-space, required intermediate-head cost and
+  single-range controls also have keys in both locale blocks.
+  The Deployments section has separate `nav.history` and `deployments.created`
+  labels in both locale blocks for the nested history menu and date column.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
@@ -24,6 +31,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
 - O grupo `huggingFace.*` cobre o campo de token da tela de Rede. O valor
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
   fonte efetiva.
+- O grupo `tokenLogs.*` cobre a auditoria de requisições: filtros por identidade
+  da API key, prompt e período, detalhes do registro, telemetria e estados
+  incompletos. Nenhuma mensagem dessa tela recebe o segredo da chave.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured
@@ -43,13 +53,26 @@ Two files carry all of it: a static message table and a small provider. Tests:
 
 The chat telemetry additions live in both locale blocks: execution RTT, the
 source-to-destination edge scope, machine capacity/configuration, effective
- placement, per-peer `POM_PROFILE_SYNC`, backend-reported execution engine,
- execution diagnosis, TP collective table, AI-analysis action and initial-model
- mark must remain available in
+placement, per-peer `POM_PROFILE_SYNC`, backend-reported execution engine,
+execution diagnosis, TP collective table, prefix reuse and transmitted-token
+counts, overlap status, per-traversal transport identity/bytes, AI-analysis
+action and initial-model mark must remain available in
 English and Brazilian Portuguese. Generic configuration state labels for
 fit-memory and KV offload are separate from the per-peer `POM_PROFILE_SYNC`
 state labels. The footnote explains the measurements but does not claim a fixed
 environment value.
+
+Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
+velocidade de pré-processamento do prompt, velocidade de geração da saída,
+tempo total, tokens/s e o rótulo explícito de taxa não mensurável usado para
+prefill de zero token ou resposta de um token.
+
+O Chat também traduz o rótulo de erro vindo dentro do stream, o controle para
+copiar a mensagem e o estado de cópia. O texto do servidor é preservado sem
+passar pelo fallback de idioma, para que o diagnóstico real não seja perdido.
+
+The slice locale group also covers multipart part lists, summed-size loading
+state and explicit incomplete-set errors in both languages.
 
 ### provider.tsx
 - `LocaleProvider({ children, initialLocale })` - initial state from `initialLocale` or from `localStorage` `codai.locale` + `navigator.languages`; writes `<html lang>` on change; persists the choice.

@@ -97,6 +97,23 @@ pub struct TpMember {
     pub supports_tunnel: bool,
 }
 
+/// Capacidade efetiva anunciada por um servidor de inferência pronto.
+///
+/// `max_new_tokens` é o tamanho de uma perna do backend. `n_ctx` é a janela
+/// efetiva que limita a soma de prompt e saída neste peer.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCapacity {
+    pub n_ctx: u32,
+    pub max_new_tokens: u32,
+}
+
+#[derive(Debug, Default)]
+struct RuntimeCapacityState {
+    generation: u64,
+    capacity: Option<RuntimeCapacity>,
+}
+
 /// Message types exchanged between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -163,6 +180,10 @@ pub enum P2PMessage {
         /// um grupo. Ausente = nó sem TP (o caso de hoje).
         #[serde(default)]
         tp: Option<TpIdentity>,
+        /// Capacidade presente somente depois de `/health` provar que o
+        /// modelo carregou. Ausente em anúncios antigos ou durante o boot.
+        #[serde(default)]
+        runtime_capacity: Option<RuntimeCapacity>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -236,6 +257,10 @@ pub struct PeerInfo {
     /// Ver `P2PMessage::Announce::tp`.
     #[serde(default)]
     pub tp: Option<TpIdentity>,
+    /// Capacidade do runtime depois que o servidor de inferência ficou pronto.
+    /// `None` não é zero: significa que a capacidade ainda não foi provada.
+    #[serde(default)]
+    pub runtime_capacity: Option<RuntimeCapacity>,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -526,6 +551,9 @@ pub struct Network {
     /// um grupo TP. Mutável como `advertise_addr`: o `apply` pode ligar o
     /// nó como primary/worker sem reiniciar o processo.
     tp: std::sync::RwLock<Option<TpIdentity>>,
+    /// Capacidade que o último `/health` local confirmou. Fit de memória pode
+    /// reduzir o contexto efetivo depois que o llama.cpp carrega o GGUF.
+    runtime_capacity: std::sync::RwLock<RuntimeCapacityState>,
     socket: Arc<UdpSocket>,
     /// Set while the operator has taken this node off the network.
     ///
@@ -781,6 +809,7 @@ impl Network {
             hostname: String::new(),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
+            runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
             socket: Arc::new(socket),
             detached: AtomicBool::new(false),
             routes: Arc::new(crate::route::RouteTable::new()),
@@ -1032,6 +1061,7 @@ impl Network {
             inference_frame_capabilities: {
                 let mut caps = vec![
                     crate::pipeline::CAP_FRAME_BATCH.into(),
+                    crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
                     "relay/v1-chain".into(),
                     "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),
@@ -1071,6 +1101,11 @@ impl Network {
             disk_free_mb: 0,
             libp2p_peer_id: self.libp2p_peer_id.clone(),
             tp: self.tp.read().expect("tp lock").clone(),
+            runtime_capacity: self
+                .runtime_capacity
+                .read()
+                .expect("runtime capacity lock")
+                .capacity,
         }
     }
 
@@ -1121,6 +1156,47 @@ impl Network {
 
     pub fn set_batching_ready(&self, ready: bool) {
         self.batching_ready.store(ready, Ordering::Relaxed);
+    }
+
+    /// Muda a geração dona da capacidade e a retira enquanto o novo runtime
+    /// ainda não respondeu ao `/health`. O lock cobre geração e capacidade
+    /// juntos, para um watcher antigo não ressuscitar um anúncio depois de um
+    /// `apply`.
+    pub fn set_runtime_generation(&self, generation: u64) {
+        if let Ok(mut state) = self.runtime_capacity.write() {
+            state.generation = generation;
+            state.capacity = None;
+        }
+    }
+
+    /// Atualiza a capacidade que será enviada no próximo anúncio. Reservado a
+    /// testes e a mudanças que já controlam a geração; o watcher de saúde usa
+    /// `set_runtime_capacity_for_generation` para não publicar valor antigo.
+    pub fn set_runtime_capacity(&self, capacity: Option<RuntimeCapacity>) {
+        if let Ok(mut state) = self.runtime_capacity.write() {
+            state.capacity = capacity;
+        }
+    }
+
+    /// Publica somente se este health watcher ainda pertence ao runtime atual.
+    pub fn set_runtime_capacity_for_generation(
+        &self,
+        generation: u64,
+        capacity: Option<RuntimeCapacity>,
+    ) {
+        if let Ok(mut state) = self.runtime_capacity.write() {
+            if state.generation == generation {
+                state.capacity = capacity;
+            }
+        }
+    }
+
+    /// Retorna a capacidade confirmada pelo `/health` local.
+    pub fn runtime_capacity(&self) -> Option<RuntimeCapacity> {
+        self.runtime_capacity
+            .read()
+            .ok()
+            .and_then(|state| state.capacity)
     }
 
     pub fn tls_enabled(&self) -> bool {
@@ -1468,6 +1544,7 @@ impl Network {
                 disk_free_mb,
                 libp2p_peer_id,
                 tp,
+                runtime_capacity,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -1509,6 +1586,7 @@ impl Network {
                     api_keys_active: 0,
                     libp2p_peer_id,
                     tp,
+                    runtime_capacity,
                 };
 
                 let is_new = {
@@ -1801,6 +1879,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn announce_carries_the_capacity_confirmed_by_inference_health() {
+        let net = Network::new(
+            "n".into(),
+            "p".into(),
+            0,
+            vec![],
+            None,
+            Some(8181),
+            Some(8080),
+        )
+        .await
+        .unwrap();
+        net.set_runtime_capacity(Some(RuntimeCapacity {
+            n_ctx: 100_000,
+            max_new_tokens: 32_000,
+        }));
+
+        let wire: serde_json::Value = serde_json::to_value(net.self_announce(None)).unwrap();
+        assert_eq!(
+            wire["runtime_capacity"],
+            serde_json::json!({"n_ctx": 100_000, "max_new_tokens": 32_000})
+        );
+    }
+
+    #[test]
+    fn removed_capacity_field_is_rejected_from_peer_wire_contract() {
+        let legacy_field = ["max", "output", "tokens"].join("_");
+        let mut value = serde_json::json!({"n_ctx": 100_000, "max_new_tokens": 32_000});
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert(legacy_field.clone(), serde_json::json!(8_192));
+
+        let result: Result<RuntimeCapacity, _> = serde_json::from_value(value);
+        let error = result.expect_err("campo removido não pode ser ignorado no wire");
+        assert!(error.to_string().contains(&legacy_field));
+    }
+
+    #[tokio::test]
+    async fn an_old_runtime_generation_cannot_restore_its_capacity() {
+        let net = Network::new(
+            "n".into(),
+            "p".into(),
+            0,
+            vec![],
+            None,
+            Some(8181),
+            Some(8080),
+        )
+        .await
+        .unwrap();
+        net.set_runtime_generation(2);
+
+        net.set_runtime_capacity_for_generation(
+            1,
+            Some(RuntimeCapacity {
+                n_ctx: 8_192,
+                max_new_tokens: 8_192,
+            }),
+        );
+        assert_eq!(net.runtime_capacity(), None);
+
+        net.set_runtime_capacity_for_generation(
+            2,
+            Some(RuntimeCapacity {
+                n_ctx: 100_000,
+                max_new_tokens: 32_000,
+            }),
+        );
+        net.set_runtime_capacity_for_generation(1, None);
+        assert_eq!(
+            net.runtime_capacity(),
+            Some(RuntimeCapacity {
+                n_ctx: 100_000,
+                max_new_tokens: 32_000,
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn an_ephemeral_p2p_socket_never_announces_port_zero() {
         let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
             .await
@@ -2050,6 +2208,7 @@ mod tests {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: None,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -2091,6 +2250,7 @@ mod tests {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: None,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -2139,6 +2299,7 @@ mod tests {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: None,
         }
     }
 
@@ -2394,6 +2555,7 @@ mod tests {
             api_keys_active: 0,
             libp2p_peer_id: None,
             tp: None,
+            runtime_capacity: None,
         }
     }
 

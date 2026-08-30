@@ -12,9 +12,13 @@
 //! `POST /v1/chat/completions` (with `stream: true` SSE), `POST /v1/completions`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent, GenerationInput, StopInput};
+use crate::gateway::{
+    log_output_limit, GatewayState, GenEvent, GenerationInput, OutputTokenLimit, StopInput,
+    DEFAULT_MAX_TOKENS,
+};
 use crate::tool_call::{
-    parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
+    parse_output, parse_output_truncated, render_tool_call, render_tools_block, OutputPart,
+    ScanEvent, TagScanner, ToolDef,
 };
 use axum::{
     extract::{Path, State},
@@ -30,12 +34,6 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tracing::info;
-
-/// Tokens generated when the client does not ask for a limit.
-const DEFAULT_MAX_TOKENS: u32 = 512;
-/// Ceiling regardless of what the client asks for, so one request cannot pin
-/// the cluster indefinitely.
-const HARD_MAX_TOKENS: u32 = 4096;
 
 pub fn routes() -> Router<GatewayState> {
     Router::new()
@@ -75,7 +73,7 @@ pub(crate) fn cors_headers() -> HeaderMap {
 
 /// `content` is a bare string in the classic API and an array of typed parts in
 /// the vision-era one. Harnesses send both, so accept both.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Content {
     Text(String),
@@ -84,7 +82,7 @@ pub enum Content {
     Null,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentPart {
     #[serde(default)]
     pub text: Option<String>,
@@ -104,7 +102,7 @@ impl Content {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     #[serde(default = "default_content")]
@@ -122,13 +120,13 @@ fn default_content() -> Content {
     Content::Null
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRef {
     #[serde(default)]
     pub function: Option<FunctionCallRef>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCallRef {
     pub name: String,
     /// OpenAI encodes this as a JSON **string**, not a nested object like
@@ -173,7 +171,7 @@ impl ChatMessage {
 
 // ── Requests ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
     #[serde(default)]
     pub model: Option<String>,
@@ -196,12 +194,12 @@ pub struct ChatRequest {
 /// with `crate::messages`) matches the latter, so this unwraps into it via
 /// `ChatToolDef::into_tool_def` rather than pretending the two wire shapes
 /// are the same.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatToolDef {
     function: ChatFunctionDef,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ChatFunctionDef {
     name: String,
     #[serde(default)]
@@ -216,11 +214,16 @@ impl ChatToolDef {
             name: self.function.name,
             description: self.function.description,
             input_schema: self.function.parameters,
+            // A OpenAI não tem interruptor para isto: ela **sempre** transmite
+            // os argumentos em fragmentos, conforme gera. Não há campo a
+            // espelhar, e inventar um seria estender o schema dela. Quem
+            // decide nesta rota é `EAGER_STREAMING_OPENAI`.
+            eager_input_streaming: None,
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CompletionRequest {
     #[serde(default)]
     pub model: Option<String>,
@@ -238,7 +241,7 @@ impl ChatRequest {
         self.max_tokens
             .or(self.max_completion_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS)
-            .clamp(1, HARD_MAX_TOKENS)
+            .max(1)
     }
 }
 
@@ -349,6 +352,50 @@ struct ModelObject {
     object: &'static str,
     created: i64,
     owned_by: &'static str,
+    #[serde(rename = "type")]
+    model_type: &'static str,
+    /// Anthropic's model-list contract. A local deployment has no provider
+    /// release timestamp, so the documented epoch sentinel is used.
+    created_at: &'static str,
+    display_name: String,
+    capabilities: Option<serde_json::Value>,
+    max_input_tokens: Option<u32>,
+    max_tokens: Option<u32>,
+    /// OpenRouter-compatible model capability metadata. `None` means this
+    /// gateway has no loaded deployment from which to read the limit.
+    context_length: Option<u32>,
+    top_provider: ModelProviderLimits,
+}
+
+#[derive(Debug, Serialize)]
+struct ModelProviderLimits {
+    context_length: Option<u32>,
+    max_completion_tokens: Option<u32>,
+}
+
+fn model_object(
+    id: String,
+    created: i64,
+    context_length: Option<u32>,
+    max_completion_tokens: Option<u32>,
+) -> ModelObject {
+    ModelObject {
+        display_name: id.clone(),
+        id,
+        object: "model",
+        created,
+        owned_by: "pom",
+        model_type: "model",
+        created_at: "1970-01-01T00:00:00Z",
+        capabilities: None,
+        max_input_tokens: context_length,
+        max_tokens: max_completion_tokens,
+        context_length,
+        top_provider: ModelProviderLimits {
+            context_length,
+            max_completion_tokens,
+        },
+    }
 }
 
 /// Models this cluster can actually serve: whatever labels the peers advertise.
@@ -358,43 +405,72 @@ struct ModelObject {
 /// `<modelo>@<deploy_id>`. É o que dá ao cliente como escolher **qual**
 /// implantação atende quando o mesmo modelo está no ar mais de uma vez; o nome
 /// pelado continua valendo e vai para a que quem monta o pipeline escolher.
-pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
-    let peers = state.all_peers().await;
-    let mut ids: Vec<String> = peers
+fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
+    let alive_models: std::collections::BTreeSet<String> = peers
         .iter()
-        .filter(|p| !p.model.is_empty())
+        .filter(|p| p.is_alive() && !p.model.is_empty())
         .map(|p| p.model.clone())
         .collect();
-    for p in &peers {
-        if !p.model.is_empty() && !p.deploy_id.is_empty() {
-            ids.push(format!("{}@{}", p.model, p.deploy_id));
+    let mut ids: Vec<String> = alive_models
+        .into_iter()
+        .filter(|model| {
+            peers
+                .iter()
+                .filter(|p| p.is_alive() && p.model == *model)
+                .all(|p| p.runtime_capacity.is_some())
+        })
+        .collect();
+    let deployments: std::collections::BTreeSet<(String, String)> = peers
+        .iter()
+        .filter(|p| p.is_alive() && !p.model.is_empty() && !p.deploy_id.is_empty())
+        .map(|p| (p.model.clone(), p.deploy_id.clone()))
+        .collect();
+    for (model, deploy_id) in deployments {
+        let ready = peers
+            .iter()
+            .filter(|p| p.is_alive() && p.model == model && p.deploy_id == deploy_id)
+            .all(|p| p.runtime_capacity.is_some());
+        if ready {
+            ids.push(format!("{model}@{deploy_id}"));
         }
-    }
-    let active = state.active_model().await;
-    if !active.is_empty() {
-        ids.push(active);
     }
     ids.sort();
     ids.dedup();
     ids
 }
 
+pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
+    let peers = state.all_peers().await;
+    model_ids_from_peers(&peers)
+}
+
 async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> impl IntoResponse {
     let created = chrono::Utc::now().timestamp();
-    let data: Vec<ModelObject> = model_ids(&state)
-        .await
-        .into_iter()
-        .map(|id| ModelObject {
+    let peers = state.all_peers().await;
+    let mut data = Vec::new();
+    for id in model_ids_from_peers(&peers) {
+        let (context_length, max_completion_tokens) = state
+            .advertised_output_limits_from_peers(&peers, Some(&id))
+            .await;
+        data.push(model_object(
             id,
-            object: "model",
             created,
-            owned_by: "pom",
-        })
-        .collect();
+            context_length,
+            max_completion_tokens,
+        ));
+    }
 
+    let first_id = data.first().map(|model| model.id.clone());
+    let last_id = data.last().map(|model| model.id.clone());
     (
         cors_headers(),
-        Json(json!({ "object": "list", "data": data })),
+        Json(json!({
+            "object": "list",
+            "data": data,
+            "first_id": first_id,
+            "has_more": false,
+            "last_id": last_id,
+        })),
     )
 }
 
@@ -403,15 +479,19 @@ async fn get_model(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if model_ids(&state).await.contains(&id) {
+    let peers = state.all_peers().await;
+    if model_ids_from_peers(&peers).contains(&id) {
+        let (context_length, max_completion_tokens) = state
+            .advertised_output_limits_from_peers(&peers, Some(&id))
+            .await;
         (
             cors_headers(),
-            Json(json!({
-                "id": id,
-                "object": "model",
-                "created": chrono::Utc::now().timestamp(),
-                "owned_by": "pom",
-            })),
+            Json(model_object(
+                id,
+                chrono::Utc::now().timestamp(),
+                context_length,
+                max_completion_tokens,
+            )),
         )
             .into_response()
     } else {
@@ -432,6 +512,7 @@ async fn chat_completions(
     if req.messages.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "'messages' não pode ser vazio");
     }
+    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
 
     let model = match req.model.clone() {
         // Harnesses often pin a model name that means nothing here; the cluster
@@ -440,7 +521,7 @@ async fn chat_completions(
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
         _ => state.active_model().await,
     };
-    let max_tokens = req.max_tokens();
+    let requested_max_tokens = req.max_tokens();
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let tools: Vec<ToolDef> = req
         .tools
@@ -452,12 +533,30 @@ async fn chat_completions(
     // ver `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
     let prompt_tokens = approx_tokens(&prompt);
+    let caller = auth.into_caller();
 
-    if let Some(cfg) = state.runtime.config().await {
-        if let Some(error) = crate::gateway::prompt_budget_error(&cfg, &prompt) {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
-        }
+    let output_limit = state
+        .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
+        .await;
+    log_output_limit("/v1/chat/completions", output_limit);
+    if let Some(error) = output_limit.rejection_reason() {
+        let status = if output_limit.capacity_pending() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::PAYLOAD_TOO_LARGE
+        };
+        crate::gateway::record_rejected(
+            &state,
+            "/v1/chat/completions",
+            caller,
+            model.clone(),
+            prompt,
+            request_details,
+            error.clone(),
+        );
+        return error_response(status, error);
     }
+    let budget = output_limit.budget();
 
     info!(
         "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -473,31 +572,35 @@ async fn chat_completions(
     if req.stream {
         stream_response(
             state,
-            auth.into_caller(),
+            caller.clone(),
             "/v1/chat/completions",
             model,
             prompt,
-            max_tokens,
+            budget,
             id,
             created,
             Mode::Chat,
             stops,
             Some(cache_key),
+            request_details.clone(),
+            output_limit,
         )
     } else {
         blocking_response(
             state,
-            auth.into_caller(),
+            caller,
             "/v1/chat/completions",
             model,
             prompt,
-            max_tokens,
+            budget,
             id,
             created,
             prompt_tokens,
             Mode::Chat,
             stops,
             Some(cache_key),
+            request_details,
+            output_limit,
         )
         .await
     }
@@ -512,12 +615,23 @@ async fn completions(
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
         _ => state.active_model().await,
     };
-    let max_tokens = req
-        .max_tokens
-        .unwrap_or(DEFAULT_MAX_TOKENS)
-        .clamp(1, HARD_MAX_TOKENS);
+    let requested_max_tokens = req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).max(1);
+    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let prompt_tokens = approx_tokens(&req.prompt);
+    let output_limit = state
+        .request_output_limit_for_model(Some(&model), requested_max_tokens, &req.prompt)
+        .await;
+    log_output_limit("/v1/completions", output_limit);
+    if let Some(error) = output_limit.rejection_reason() {
+        let status = if output_limit.capacity_pending() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::PAYLOAD_TOO_LARGE
+        };
+        return error_response(status, error);
+    }
+    let budget = output_limit.budget();
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
     let created = chrono::Utc::now().timestamp();
 
@@ -528,13 +642,15 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
-            max_tokens,
+            budget,
             id,
             created,
             Mode::Completion,
             stops,
             // Completion crua não tem conversa: o prefixo é o próprio texto.
             None,
+            request_details.clone(),
+            output_limit,
         )
     } else {
         blocking_response(
@@ -543,13 +659,15 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
-            max_tokens,
+            budget,
             id,
             created,
             prompt_tokens,
             Mode::Completion,
             stops,
             None,
+            request_details,
+            output_limit,
         )
         .await
     }
@@ -602,13 +720,15 @@ async fn blocking_response(
     route: &'static str,
     model: String,
     prompt: String,
-    max_tokens: u32,
+    budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
     prompt_tokens: u32,
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    request_details: serde_json::Value,
+    output_limit: OutputTokenLimit,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
         route,
@@ -618,19 +738,37 @@ async fn blocking_response(
             model: model.clone(),
             prompt,
             chat_template: mode.applies_chat_template(),
-            max_tokens,
+            budget,
             stops,
             cache_key,
+            request_details,
         },
     )
     .await
     {
         Ok((text, summary)) => {
-            let (message_or_text, saw_tool_call): (serde_json::Value, bool) = match mode {
-                Mode::Chat => chat_message_json(&parse_output(&text)),
-                Mode::Completion => (json!(text), false),
+            // Quem encerrou foi o teto, não o modelo. Uma chamada ainda aberta
+            // aqui foi cortada ao meio, e é assim que ela volta: estruturada e
+            // incompleta, com `finish_reason: "length"` - o que a OpenAI faz.
+            // Ver `TagScanner::finish_truncated`.
+            let truncated = summary.finish_reason.as_deref() == Some("length");
+            let (message_or_text, saw_tool_call, truncated_tool_call): (
+                serde_json::Value,
+                bool,
+                bool,
+            ) = match mode {
+                Mode::Chat => {
+                    let (parts, cut_inside_call) = if truncated {
+                        parse_output_truncated(&text)
+                    } else {
+                        (parse_output(&text), false)
+                    };
+                    let (message, saw) = chat_message_json(&parts);
+                    (message, saw, cut_inside_call)
+                }
+                Mode::Completion => (json!(text), false, false),
             };
-            let finish = finish_reason(&summary, max_tokens, saw_tool_call);
+            let finish = finish_reason(&summary, budget.total, saw_tool_call);
             let choice = match mode {
                 Mode::Chat => json!({
                     "index": 0,
@@ -673,10 +811,24 @@ async fn blocking_response(
                         "source": summary.source,
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
-                        "partial": summary.partial,
+                        "timings": summary.timings,
+                        // `partial` é `true` sempre que a resposta não é a
+                        // que o modelo teria dado: perda de transporte, ou o
+                        // teto cortando uma chamada de ferramenta ao meio.
+                        "partial": summary.partial || truncated_tool_call,
                         "finish_reason": summary.finish_reason,
                         "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
+                        "output_limits": output_limit,
+                        // `true` quando o teto do cliente caiu **dentro** de
+                        // uma chamada de ferramenta. A chamada volta
+                        // estruturada e incompleta, com `length`: o cliente
+                        // repete o pedido com um teto maior, não executa.
+                        "truncated_tool_call": truncated_tool_call,
+                        // Quantas gerações de backend esta resposta costurou.
+                        // `1` é uma só; maior que `1` diz que a saída passou do
+                        // `max_new_tokens` da implantação sem que ele mudasse.
+                        "continuation_legs": summary.legs,
                     },
                 })),
             )
@@ -686,17 +838,26 @@ async fn blocking_response(
     }
 }
 
+/// `max_tokens` aqui é o **total** da requisição, nunca o teto de uma perna do
+/// laço de continuação: uma perna esgotada não é `length`, é o meio da
+/// resposta. Vazar o `length` intermediário para o cliente era o defeito - o
+/// harness lê `max_tokens` como condição terminal e larga a chamada de
+/// ferramenta pela metade.
+///
+/// Atingir o total, esse sim, é **parada terminal**: `length` vem primeiro,
+/// mesmo com uma chamada de ferramenta na saída, porque a chamada que o teto
+/// pegou aberta está incompleta e não é fim de turno. É a regra da OpenAI, e
+/// é o que faz o cliente repetir o pedido com um teto maior em vez de executar
+/// meia chamada.
 fn finish_reason(
     summary: &crate::gateway::GenSummary,
     max_tokens: u32,
     saw_tool_call: bool,
 ) -> &'static str {
-    if saw_tool_call {
-        "tool_calls"
-    } else if summary.finish_reason.as_deref() == Some("stop") {
-        "stop"
-    } else if summary.tokens_generated >= max_tokens {
+    if summary.tokens_generated >= max_tokens {
         "length"
+    } else if saw_tool_call {
+        "tool_calls"
     } else {
         "stop"
     }
@@ -710,6 +871,8 @@ fn finish_reason(
 fn chat_message_json(parts: &[OutputPart]) -> (serde_json::Value, bool) {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    // Só chamadas **completas** contam: ver `OutputPart::ToolCallTruncated`.
+    let mut complete_calls = 0usize;
     for p in parts {
         match p {
             OutputPart::Text(s) => {
@@ -719,20 +882,32 @@ fn chat_message_json(parts: &[OutputPart]) -> (serde_json::Value, bool) {
                 text.push_str(s);
             }
             OutputPart::ToolCall { name, arguments } => {
+                complete_calls += 1;
                 tool_calls.push(json!({
                     "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
                     "type": "function",
                     "function": { "name": name, "arguments": arguments.to_string() },
                 }));
             }
+            // A chamada que o teto cortou entra na lista - é o que a OpenAI
+            // devolve -, mas **não** conta como chamada vista: o turno não
+            // terminou nela, terminou no teto, e o motivo de parada tem de
+            // dizer `length`.
+            OutputPart::ToolCallTruncated(partial) => {
+                tool_calls.push(json!({
+                    "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
+                    "type": "function",
+                    "function": { "name": partial.name, "arguments": partial.arguments },
+                }));
+            }
         }
     }
-    let saw_tool_call = !tool_calls.is_empty();
+    let saw_tool_call = complete_calls > 0;
     let mut message = json!({
         "role": "assistant",
         "content": if text.is_empty() { serde_json::Value::Null } else { json!(text) },
     });
-    if saw_tool_call {
+    if !tool_calls.is_empty() {
         message["tool_calls"] = json!(tool_calls);
     }
     (message, saw_tool_call)
@@ -745,12 +920,14 @@ fn stream_response(
     route: &'static str,
     model: String,
     prompt: String,
-    max_tokens: u32,
+    budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    request_details: serde_json::Value,
+    output_limit: OutputTokenLimit,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -761,14 +938,15 @@ fn stream_response(
             model: model.clone(),
             prompt,
             chat_template: mode.applies_chat_template(),
-            max_tokens,
+            budget,
             stops,
             cache_key,
+            request_details,
         },
         tx,
     );
 
-    let stream = sse_stream(rx, id, created, model, mode, max_tokens);
+    let stream = sse_stream(rx, id, created, model, mode, budget.total, output_limit);
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -776,52 +954,148 @@ fn stream_response(
         .into_response()
 }
 
+/// A OpenAI **sempre** transmite os argumentos em fragmentos, conforme gera -
+/// não existe interruptor para isso na API dela, e por isso não há campo a
+/// espelhar em `ChatToolDef`. Esta rota é ansiosa sempre.
+const EAGER_STREAMING_OPENAI: bool = true;
+
+/// O estado de uma chamada de ferramenta sendo transmitida.
+///
+/// Ela nasce em `ToolCallOpen`, cresce a cada `ToolCallChunk` e morre no
+/// fechamento. Enquanto o nome não sai, nada é transmitido: um índice de
+/// `tool_calls` aberto sem nome não serve para nada ao cliente.
+struct ChamadaEmCurso {
+    /// O corpo cru visto até agora - é dele que o transcodificador vive.
+    body: String,
+    streamer: crate::tool_call::CallArgsStreamer,
+    /// O índice já anunciado ao cliente, quando a abertura já saiu.
+    index: Option<u32>,
+}
+
 /// Turns scanner events into OpenAI streaming `delta` values. Unlike
 /// Anthropic's content blocks, OpenAI's delta model has no block-index
 /// concept for plain text at all — just one implicit content stream, plus a
 /// separately-indexed `tool_calls` array (`tool_call_index`, bumped once per
-/// completed call). Synchronous and free of any axum/SSE type so it's
-/// directly unit-testable.
+/// call). Synchronous and free of any axum/SSE type so it's directly
+/// unit-testable.
 ///
-/// Tool-call arguments are emitted as a single delta carrying the whole JSON
-/// blob, not truly incrementally — same reasoning as the Anthropic adapter:
-/// the tool's name is only known once the entire `<tool_call>` tag closes,
-/// so there is nothing to stream before that point.
+/// **Os argumentos saem em fragmentos, conforme o modelo os gera.** Era aqui
+/// que eles ficavam represados: o corpo da chamada era acumulado e só virava
+/// delta quando a tag fechava, o que no ksia deu 663 caracteres num pedaço só,
+/// aos 11,01 s. `CallArgsStreamer` transcodifica a marcação em JSON conforme
+/// ela chega, e a concatenação dos fragmentos é exatamente a string que o
+/// caminho não-streaming produziria.
 fn apply_scan_events_openai(
     events: Vec<ScanEvent>,
     tool_call_index: &mut u32,
     saw_tool_call: &mut bool,
+    em_curso: &mut Option<ChamadaEmCurso>,
     out: &mut Vec<serde_json::Value>,
 ) {
+    /// A abertura: índice, id e nome, com os argumentos ainda vazios. Sai uma
+    /// vez só por chamada, no primeiro fragmento que houver.
+    fn abrir(
+        nome: &str,
+        tool_call_index: &mut u32,
+        em_curso: &mut ChamadaEmCurso,
+        out: &mut Vec<serde_json::Value>,
+    ) -> u32 {
+        if let Some(idx) = em_curso.index {
+            return idx;
+        }
+        let idx = *tool_call_index;
+        *tool_call_index += 1;
+        em_curso.index = Some(idx);
+        out.push(json!({
+            "tool_calls": [{
+                "index": idx,
+                "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
+                "type": "function",
+                "function": { "name": nome, "arguments": "" },
+            }]
+        }));
+        idx
+    }
+
+    fn fragmento(idx: u32, texto: String, out: &mut Vec<serde_json::Value>) {
+        out.push(json!({
+            "tool_calls": [{
+                "index": idx,
+                "function": { "arguments": texto },
+            }]
+        }));
+    }
+
     for e in events {
         match e {
             ScanEvent::Text(s) if !s.is_empty() => out.push(json!({ "content": s })),
-            ScanEvent::Text(_) | ScanEvent::ToolCallOpen | ScanEvent::ToolCallChunk(_) => {}
+            ScanEvent::Text(_) => {}
+            ScanEvent::ToolCallOpen => {
+                *em_curso = Some(ChamadaEmCurso {
+                    body: String::new(),
+                    streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
+                    index: None,
+                });
+            }
+            ScanEvent::ToolCallChunk(fragment) => {
+                let Some(chamada) = em_curso.as_mut() else {
+                    continue;
+                };
+                chamada.body.push_str(&fragment);
+                let corpo = chamada.body.clone();
+                if let Some(delta) = chamada.streamer.advance(&corpo) {
+                    let nome = crate::tool_call::peek_call_name(&corpo).unwrap_or_default();
+                    let idx = abrir(&nome, tool_call_index, chamada, out);
+                    fragmento(idx, delta, out);
+                }
+            }
             ScanEvent::ToolCallClose(Ok((name, arguments))) => {
                 *saw_tool_call = true;
-                let idx = *tool_call_index;
-                *tool_call_index += 1;
-                let id = format!("call_{}", uuid::Uuid::new_v4().simple());
-                out.push(json!({
-                    "tool_calls": [{
-                        "index": idx, "id": id, "type": "function",
-                        "function": { "name": name, "arguments": "" },
-                    }]
-                }));
-                out.push(json!({
-                    "tool_calls": [{
-                        "index": idx,
-                        "function": { "arguments": arguments.to_string() },
-                    }]
-                }));
+                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                    body: String::new(),
+                    streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
+                    index: None,
+                });
+                let idx = abrir(&name, tool_call_index, &mut chamada, out);
+                // Só o que ainda não saiu. Repetir o que o cliente já
+                // acumulou duplicaria os argumentos dele.
+                if let Some(delta) = chamada.streamer.finish_complete(&chamada.body, &arguments) {
+                    fragmento(idx, delta, out);
+                }
             }
             ScanEvent::ToolCallClose(Err(raw)) => {
+                let chamada = em_curso.take();
+                // Uma chamada que já começou a sair não pode virar texto: o
+                // cliente já tem um `tool_calls[i]` aberto com nome, e não há
+                // como desenviar. Ela fica como está - argumentos que não
+                // parseiam, que é o caso "JSON inválido" que os provedores
+                // documentam e mandam devolver ao modelo.
+                if chamada.is_some_and(|c| c.streamer.emitted_len() > 0) {
+                    continue;
+                }
                 apply_scan_events_openai(
                     vec![ScanEvent::Text(raw)],
                     tool_call_index,
                     saw_tool_call,
+                    em_curso,
                     out,
                 );
+            }
+            // A chamada cortada pelo teto sai na mesma forma, e os argumentos
+            // acabam na string JSON inacabada da Fase 1 - o que já tinha sido
+            // transmitido conta, então só o que falta sai aqui.
+            // `saw_tool_call` **não** é marcado: o turno terminou no teto, e o
+            // quadro final diz `length`.
+            ScanEvent::ToolCallTruncated(partial) => {
+                let mut chamada = em_curso.take().unwrap_or_else(|| ChamadaEmCurso {
+                    body: String::new(),
+                    streamer: crate::tool_call::CallArgsStreamer::new(EAGER_STREAMING_OPENAI),
+                    index: None,
+                });
+                let idx = abrir(&partial.name, tool_call_index, &mut chamada, out);
+                if let Some(delta) = chamada.streamer.finish_truncated(&partial.arguments) {
+                    fragmento(idx, delta, out);
+                }
             }
         }
     }
@@ -840,6 +1114,7 @@ fn sse_stream(
     model: String,
     mode: Mode,
     max_tokens: u32,
+    output_limit: OutputTokenLimit,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     enum Phase {
         Opening,
@@ -855,10 +1130,16 @@ fn sse_stream(
         model: String,
         mode: Mode,
         max_tokens: u32,
+        output_limit: OutputTokenLimit,
         queue: VecDeque<Event>,
         scanner: TagScanner,
         tool_call_index: u32,
         saw_tool_call: bool,
+        /// `true` quando o teto do cliente caiu dentro de uma chamada de
+        /// ferramenta. Vai para o `x_pom` do quadro final.
+        truncated_tool_call: bool,
+        /// A chamada cujos argumentos estão sendo transmitidos agora.
+        em_curso: Option<ChamadaEmCurso>,
     }
 
     let state = S {
@@ -869,10 +1150,13 @@ fn sse_stream(
         model,
         mode,
         max_tokens,
+        output_limit,
         queue: VecDeque::new(),
         scanner: TagScanner::new(),
         tool_call_index: 0,
         saw_tool_call: false,
+        truncated_tool_call: false,
+        em_curso: None,
     };
 
     futures::stream::unfold(state, |mut s| async move {
@@ -894,6 +1178,7 @@ fn sse_stream(
                             json!({ "role": "assistant", "content": "" }),
                             None,
                             None,
+                            None,
                         );
                         s.queue.push_back(Event::default().data(chunk));
                     }
@@ -911,6 +1196,7 @@ fn sse_stream(
                                     json!(text),
                                     None,
                                     None,
+                                    None,
                                 );
                                 s.queue.push_back(Event::default().data(chunk));
                             }
@@ -921,11 +1207,12 @@ fn sse_stream(
                                     events,
                                     &mut s.tool_call_index,
                                     &mut s.saw_tool_call,
+                                    &mut s.em_curso,
                                     &mut deltas,
                                 );
                                 for delta in deltas {
                                     let chunk = chunk_json(
-                                        &s.id, s.created, &s.model, s.mode, delta, None, None,
+                                        &s.id, s.created, &s.model, s.mode, delta, None, None, None,
                                     );
                                     s.queue.push_back(Event::default().data(chunk));
                                 }
@@ -936,17 +1223,29 @@ fn sse_stream(
                     Some(GenEvent::Done(summary)) => {
                         if s.mode == Mode::Chat {
                             let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
-                            let finish_events = scanner.finish();
+                            // A chamada cortada só pode sair estruturada aqui
+                            // porque nada de dentro da tag foi transmitido:
+                            // `apply_scan_events_openai` engole `ToolCallOpen`
+                            // e `ToolCallChunk`, e o scanner segura o corpo até
+                            // a tag fechar. Nada a desenviar, nada vazado.
+                            let (finish_events, cut_inside_call) =
+                                if summary.finish_reason.as_deref() == Some("length") {
+                                    scanner.finish_truncated()
+                                } else {
+                                    (scanner.finish(), false)
+                                };
+                            s.truncated_tool_call = cut_inside_call;
                             let mut deltas = Vec::new();
                             apply_scan_events_openai(
                                 finish_events,
                                 &mut s.tool_call_index,
                                 &mut s.saw_tool_call,
+                                &mut s.em_curso,
                                 &mut deltas,
                             );
                             for delta in deltas {
                                 let chunk = chunk_json(
-                                    &s.id, s.created, &s.model, s.mode, delta, None, None,
+                                    &s.id, s.created, &s.model, s.mode, delta, None, None, None,
                                 );
                                 s.queue.push_back(Event::default().data(chunk));
                             }
@@ -956,7 +1255,7 @@ fn sse_stream(
                             Mode::Chat => json!({}),
                             Mode::Completion => json!(""),
                         };
-                        let chunk = chunk_json(
+                        let chunk = chunk_json_final(
                             &s.id,
                             s.created,
                             &s.model,
@@ -964,6 +1263,8 @@ fn sse_stream(
                             delta,
                             Some(reason),
                             Some(&summary),
+                            Some(&s.output_limit),
+                            s.truncated_tool_call,
                         );
                         s.queue.push_back(Event::default().data(chunk));
                         s.queue.push_back(Event::default().data("[DONE]"));
@@ -999,6 +1300,34 @@ fn chunk_json(
     delta: serde_json::Value,
     finish: Option<&str>,
     summary: Option<&crate::gateway::GenSummary>,
+    output_limit: Option<&OutputTokenLimit>,
+) -> String {
+    chunk_json_final(
+        id,
+        created,
+        model,
+        mode,
+        delta,
+        finish,
+        summary,
+        output_limit,
+        false,
+    )
+}
+
+/// [`chunk_json`] com o único dado que só o quadro final conhece: se o teto
+/// cortou uma chamada de ferramenta ao meio.
+#[allow(clippy::too_many_arguments)]
+fn chunk_json_final(
+    id: &str,
+    created: i64,
+    model: &str,
+    mode: Mode,
+    delta: serde_json::Value,
+    finish: Option<&str>,
+    summary: Option<&crate::gateway::GenSummary>,
+    output_limit: Option<&OutputTokenLimit>,
+    truncated_tool_call: bool,
 ) -> String {
     let choice = match mode {
         Mode::Chat => json!({ "index": 0, "delta": delta, "finish_reason": finish }),
@@ -1017,10 +1346,16 @@ fn chunk_json(
             "tokens_per_sec": summary.tokens_per_sec,
             "tokens_generated": summary.tokens_generated,
             "duration_ms": summary.duration_ms,
-            "partial": summary.partial,
+            "timings": summary.timings,
+            // Ver o mesmo campo no caminho não-streaming: uma chamada
+            // cortada ao meio também é resposta parcial.
+            "partial": summary.partial || truncated_tool_call,
             "finish_reason": summary.finish_reason,
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
+            "output_limits": output_limit,
+            "continuation_legs": summary.legs,
+            "truncated_tool_call": truncated_tool_call,
         });
     }
     payload.to_string()
@@ -1075,6 +1410,31 @@ mod tests {
         assert!(ids.contains(&"qwen3:8b@d-bbbbbbbb".to_string()), "{ids:?}");
     }
 
+    /// A CLI default is only a selector for the inference path. Depois de um
+    /// unload, ele não é um modelo publicado e não pode voltar ao catálogo
+    /// para enganar um cliente que autodetecta modelos.
+    #[tokio::test]
+    async fn model_discovery_ignores_an_unpublished_default_model() {
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.default_model = "stale-after-unload".into();
+
+        assert!(model_ids(&state).await.is_empty());
+    }
+
+    /// Um anúncio que perdeu a capacidade efetiva representa um peer em
+    /// restart, não uma implantação pronta. Ele não pode manter o modelo no
+    /// catálogo autodetectado enquanto a camada antiga ainda estiver viva na
+    /// tabela de gossip.
+    #[tokio::test]
+    async fn model_discovery_ignores_a_peer_during_runtime_restart() {
+        let mut peer = crate::gateway::testkit::peer("n1", "n1", 8080);
+        peer.model = "stale-after-restart".into();
+        peer.runtime_capacity = None;
+        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
+
+        assert!(model_ids(&state).await.is_empty());
+    }
+
     /// Pedir uma implantação que ninguém anuncia **não** pode cair calado na
     /// ativa: quem escreveu o sufixo pediu aquela configuração, e responder
     /// com outra é pior que falhar.
@@ -1105,7 +1465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_endpoint_delivers_the_template_mode_with_the_user_prompt() {
+    async fn chat_endpoint_structures_the_audited_tool_call_and_keeps_intro() {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1129,7 +1489,7 @@ mod tests {
                                 "done": true,
                                 "more_chunks": false,
                                 "token_id": 1,
-                                "text": "ok"
+                                "text": "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>"
                             });
                             let bytes = crate::wire::encode_batch_single(
                                 &response,
@@ -1174,21 +1534,59 @@ mod tests {
                 model: Some("lab".into()),
                 messages: vec![msg("user", "Oi, teste")],
                 stream: false,
-                max_tokens: Some(1),
+                max_tokens: Some(128),
                 max_completion_tokens: None,
-                tools: Vec::new(),
+                tools: vec![ChatToolDef {
+                    function: ChatFunctionDef {
+                        name: "skill".into(),
+                        description: Some("Load a skill".into()),
+                        parameters: json!({
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}}
+                        }),
+                    },
+                }],
                 stop: None,
             }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
 
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n"
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"][0]["type"],
+            "function"
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "skill"
+        );
+        assert_eq!(
+            body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            r#"{"name":"brainstorming"}"#
+        );
+        assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+
         let meta = seen
             .lock()
             .unwrap()
             .clone()
             .expect("the chat request reached the inference head");
-        assert_eq!(meta["prompt"], "User: Oi, teste");
+        assert!(meta["prompt"]
+            .as_str()
+            .unwrap()
+            .ends_with("User: Oi, teste"));
         assert_eq!(meta["chat_template"], true);
     }
 
@@ -1470,33 +1868,48 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn oversized_streaming_chat_is_rejected_before_sse_starts() {
+    async fn streaming_chat_status(prompt_repeats: usize, max_tokens: u32) -> StatusCode {
         let state = crate::gateway::testkit::state_with("eu", Vec::new()).await;
         state
             .runtime
             .seed_config_for_test(crate::gateway::testkit::spec_config())
             .await;
 
-        let response = chat_completions(
+        chat_completions(
             ApiKeyAuth(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
                 model: Some("lab".into()),
                 messages: vec![
-                    msg("system", &"agent instructions ".repeat(2_000)),
+                    msg("system", &"agent instructions ".repeat(prompt_repeats)),
                     msg("user", "hello"),
                 ],
                 stream: true,
-                max_tokens: Some(32_000),
+                max_tokens: Some(max_tokens),
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
             }),
         )
-        .await;
+        .await
+        .status()
+    }
 
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    /// A ausência de um teto absoluto artificial não transforma o pedido em
+    /// erro. O contexto efetivo é quem reduz o orçamento, se necessário.
+    #[tokio::test]
+    async fn a_request_above_the_old_absolute_default_is_not_rejected() {
+        assert_eq!(streaming_chat_status(1, 32_000).await, StatusCode::OK);
+    }
+
+    /// E a recusa por contexto cheio continua sendo 413, com o pedido dentro
+    /// da capacidade: são dois motivos diferentes, com códigos diferentes.
+    #[tokio::test]
+    async fn a_prompt_that_fills_the_context_is_still_rejected_before_sse_starts() {
+        assert_eq!(
+            streaming_chat_status(2_000, 4_000).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 
     #[test]
@@ -1549,6 +1962,7 @@ mod tests {
     fn changing_the_tool_list_breaks_the_cache_key_on_purpose() {
         let messages = vec![msg("user", "oi")];
         let ferramenta = ToolDef {
+            eager_input_streaming: None,
             name: "buscar".into(),
             description: None,
             input_schema: json!({"type": "object"}),
@@ -1630,6 +2044,7 @@ mod tests {
         req.tools
             .iter()
             .map(|t| ToolDef {
+                eager_input_streaming: None,
                 name: t.function.name.clone(),
                 description: t.function.description.clone(),
                 input_schema: t.function.parameters.clone(),
@@ -1697,7 +2112,7 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_is_clamped_and_defaulted() {
+    fn max_tokens_is_defaulted_without_an_artificial_upper_bound() {
         let mk = |json: &str| -> ChatRequest { serde_json::from_str(json).unwrap() };
         assert_eq!(mk(r#"{"messages":[]}"#).max_tokens(), DEFAULT_MAX_TOKENS);
         assert_eq!(mk(r#"{"messages":[],"max_tokens":10}"#).max_tokens(), 10);
@@ -1711,8 +2126,62 @@ mod tests {
         );
         assert_eq!(
             mk(r#"{"messages":[],"max_tokens":999999}"#).max_tokens(),
-            HARD_MAX_TOKENS
+            999999
         );
+    }
+
+    /// `context_length` e `max_completion_tokens` vêm do contexto efetivo da
+    /// implantação. Anunciar o `max_new_tokens` (aqui, 1000) faria um cliente
+    /// confundir o tamanho de uma perna com o orçamento total.
+    #[tokio::test]
+    async fn model_metadata_advertises_the_request_ceiling_not_the_leg() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let mut cfg = crate::gateway::testkit::spec_config();
+        cfg.n_ctx = 100_000;
+        cfg.max_new_tokens = 1_000;
+        state.runtime.seed_config_for_test(cfg).await;
+        let (context_length, max_completion_tokens) =
+            state.advertised_output_limits(Some("ornith")).await;
+        let value = serde_json::to_value(model_object(
+            "ornith".into(),
+            0,
+            context_length,
+            max_completion_tokens,
+        ))
+        .unwrap();
+
+        assert_eq!(value["context_length"], 100_000);
+        assert_eq!(value["top_provider"]["context_length"], 100_000);
+        assert_eq!(value["top_provider"]["max_completion_tokens"], 100_000);
+    }
+
+    #[tokio::test]
+    async fn model_metadata_matches_openai_and_anthropic_list_contracts() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let mut cfg = crate::gateway::testkit::spec_config();
+        cfg.n_ctx = 100_000;
+        state.runtime.seed_config_for_test(cfg).await;
+        let (context_length, max_completion_tokens) = state
+            .advertised_output_limits(Some("Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"))
+            .await;
+
+        let value = serde_json::to_value(model_object(
+            "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf".into(),
+            0,
+            context_length,
+            max_completion_tokens,
+        ))
+        .unwrap();
+
+        assert_eq!(value["object"], "model");
+        assert_eq!(value["type"], "model");
+        assert_eq!(value["display_name"], "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf");
+        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(value["max_input_tokens"], 100_000);
+        assert_eq!(value["max_tokens"], 100_000);
+        assert!(value["capabilities"].is_null());
+        assert_eq!(value["context_length"], 100_000);
+        assert_eq!(value["top_provider"]["max_completion_tokens"], 100_000);
     }
 
     #[test]
@@ -1722,14 +2191,26 @@ mod tests {
             tokens_generated: n,
             tokens_per_sec: 1.0,
             duration_ms: 10,
+            timings: crate::gateway::timing_metrics(10, 10, 10, 0, n),
             partial: false,
             finish_reason: None,
             stop_sequence: None,
+            legs: 1,
             trace: None,
         };
-        assert_eq!(finish_reason(&summary(5), 100, false), "stop");
-        assert_eq!(finish_reason(&summary(100), 100, false), "length");
-        assert_eq!(finish_reason(&summary(5), 100, true), "tool_calls");
+        // Complete tool call within the budget: the model ended its turn by
+        // asking for the tool, so the protocol must preserve tool_calls.
+        assert_eq!(finish_reason(&summary(3640), 4000, true), "tool_calls");
+        // Atingir o teto é parada terminal e vence uma chamada na saída: a
+        // chamada que o teto pegou aberta está incompleta, e é o `length` que
+        // faz o cliente repetir o pedido em vez de executá-la.
+        assert_eq!(finish_reason(&summary(4000), 4000, true), "length");
+        // Plain text cut by the budget is length as well.
+        assert_eq!(finish_reason(&summary(4000), 4000, false), "length");
+        // Plain text that stopped before the budget is a normal stop.
+        let mut stopped = summary(3640);
+        stopped.finish_reason = Some("stop".into());
+        assert_eq!(finish_reason(&stopped, 4000, false), "stop");
     }
 
     // ── chat_message_json ────────────────────────────────────────────────────
@@ -1764,6 +2245,25 @@ mod tests {
     }
 
     #[test]
+    fn audited_tool_call_becomes_structured_openai_message_without_losing_intro() {
+        let raw = "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>";
+        let (message, saw_tool_call) = chat_message_json(&parse_output(raw));
+
+        assert!(saw_tool_call);
+        assert_eq!(
+            message["content"],
+            "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n"
+        );
+        assert_eq!(message["tool_calls"].as_array().unwrap().len(), 1);
+        assert_eq!(message["tool_calls"][0]["type"], "function");
+        assert_eq!(message["tool_calls"][0]["function"]["name"], "skill");
+        assert_eq!(
+            message["tool_calls"][0]["function"]["arguments"],
+            r#"{"name":"brainstorming"}"#
+        );
+    }
+
+    #[test]
     fn chat_message_json_with_only_a_call_has_null_content() {
         let parts = vec![OutputPart::ToolCall {
             name: "Bash".into(),
@@ -1785,6 +2285,7 @@ mod tests {
             vec![ScanEvent::Text("hi".into())],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert_eq!(out, vec![json!({ "content": "hi" })]);
@@ -1803,6 +2304,7 @@ mod tests {
             )))],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert!(saw_tool_call);
@@ -1830,6 +2332,7 @@ mod tests {
             ],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert_eq!(out[0]["tool_calls"][0]["index"], 0);
@@ -1848,6 +2351,7 @@ mod tests {
             ))],
             &mut tool_call_index,
             &mut saw_tool_call,
+            &mut None,
             &mut out,
         );
         assert!(!saw_tool_call);
@@ -1858,15 +2362,92 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_tool_call_stays_text_and_does_not_mark_a_call_in_openai_stream() {
+        let mut scanner = TagScanner::new();
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+
+        apply_scan_events_openai(
+            scanner.feed("<tool_call><function=write><parameter=content>\n<html>"),
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut None,
+            &mut out,
+        );
+        apply_scan_events_openai(
+            scanner.finish(),
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut None,
+            &mut out,
+        );
+
+        assert!(!saw_tool_call);
+        assert_eq!(out.len(), 1);
+        assert!(out[0]["content"].as_str().unwrap().contains("<tool_call>"));
+    }
+
+    #[test]
+    fn audited_tool_call_stream_emits_intro_and_structured_deltas_after_split_tags() {
+        let raw = "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n<tool_call>\n<function=skill>\n<parameter=name>\nbrainstorming\n</parameter>\n</function>\n</tool_call>";
+        let mut scanner = TagScanner::new();
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+
+        for chunk in raw.as_bytes().chunks(7) {
+            let chunk = std::str::from_utf8(chunk).expect("fixture is UTF-8");
+            apply_scan_events_openai(
+                scanner.feed(chunk),
+                &mut tool_call_index,
+                &mut saw_tool_call,
+                &mut None,
+                &mut out,
+            );
+        }
+        apply_scan_events_openai(
+            scanner.finish(),
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut None,
+            &mut out,
+        );
+
+        assert!(saw_tool_call);
+        let content = out
+            .iter()
+            .filter_map(|delta| delta["content"].as_str())
+            .collect::<String>();
+        assert_eq!(
+            content,
+            "I'll build a complete Tetris game. Let me start by loading the brainstorming skill to understand your full requirements.\n\n"
+        );
+        let tool_deltas = out
+            .iter()
+            .filter(|delta| delta.get("tool_calls").is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_deltas.len(), 2);
+        assert_eq!(tool_deltas[0]["tool_calls"][0]["index"], 0);
+        assert_eq!(tool_deltas[0]["tool_calls"][0]["function"]["name"], "skill");
+        assert_eq!(
+            tool_deltas[1]["tool_calls"][0]["function"]["arguments"],
+            r#"{"name":"brainstorming"}"#
+        );
+    }
+
+    #[test]
     fn final_stream_chunk_carries_generation_summary() {
         let summary = crate::gateway::GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: 12,
             tokens_per_sec: 4.5,
             duration_ms: 2666,
+            timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
             partial: false,
             finish_reason: None,
             stop_sequence: None,
+            legs: 1,
             trace: Some(crate::prefill::RequestTrace::new(
                 "qwen35",
                 &[("no1", 0, 15)],
@@ -1880,11 +2461,14 @@ mod tests {
             json!({}),
             Some("stop"),
             Some(&summary),
+            None,
         ))
         .expect("JSON válido");
 
         assert_eq!(payload["x_pom"]["tokens_per_sec"], 4.5);
         assert_eq!(payload["x_pom"]["tokens_generated"], 12);
+        assert_eq!(payload["x_pom"]["timings"]["ttft_ms"], 900);
+        assert!(payload["x_pom"]["timings"]["generation_tokens_per_sec"].is_number());
         assert_eq!(payload["x_pom"]["trace"]["model"], "qwen35");
     }
 }

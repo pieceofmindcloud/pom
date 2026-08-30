@@ -79,6 +79,7 @@ import type {
   InferenceMode,
   RuntimeParams,
   TpLaunch,
+  WireDtype,
   WholeSliceSelection,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -91,6 +92,7 @@ type NumericRuntimeKey =
   | "max_new_tokens"
   | "max_sessions"
   | "prefill_chunk_tokens"
+  | "prefill_max_inflight_chunks"
   | "temperature"
   | "top_p"
   | "top_k"
@@ -103,6 +105,7 @@ const GLOBAL_NUMERIC_KNOBS: Array<{ key: NumericRuntimeKey; label: string; step?
   { key: "max_new_tokens", label: "Máx. tokens" },
   { key: "max_sessions", label: "Sessões" },
   { key: "prefill_chunk_tokens", label: "Chunk prefill" },
+  { key: "prefill_max_inflight_chunks", label: "Chunks em voo" },
   { key: "temperature", label: "Temperatura", step: "0.05" },
   { key: "top_p", label: "Top-p", step: "0.01" },
   { key: "top_k", label: "Top-k" },
@@ -765,6 +768,11 @@ export function DeployModel() {
   const isMoePlan = p?.is_moe === true;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
+  const hiddenStateCapability = p?.capabilities?.hidden_state_f8;
+  const hiddenStateDtype = eff.hidden_state_dtype ?? "f16";
+  const f8Unavailable = hiddenStateCapability
+    ? hiddenStateCapability.state !== "supported"
+    : false;
 
   /** Edit one knob. The draft keeps the field usable while it is half-typed. */
   function setKnob(key: keyof RuntimeParams, text: string) {
@@ -1295,16 +1303,8 @@ export function DeployModel() {
           </div>
 
           {inspectorOpen ? <>
-            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45 p-3">
-            <div className="mb-3 flex items-center justify-between gap-2 border-b border-line pb-2">
-              <div>
-                <p className="eyebrow">Inspetor</p>
-                <p className="mt-0.5 text-[0.7rem] text-fg">Propriedades</p>
-              </div>
-              <ServerCog className="h-3.5 w-3.5 text-faint" />
-            </div>
-
-            <div role="tablist" aria-label="Propriedades da implantação" className="mb-3 flex border-b border-line">
+            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45">
+            <div role="tablist" aria-label="Propriedades da implantação" className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur-sm">
               <button
                 type="button"
                 role="tab"
@@ -1336,6 +1336,24 @@ export function DeployModel() {
                     <Input name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
                   </label>
                 ))}
+                <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-1.5 text-[0.65rem]">
+                  <span className="truncate text-muted">{t("deploy.knob.hidden_state_dtype")}</span>
+                  <Select
+                    aria-label={t("deploy.knob.hidden_state_dtype")}
+                    name="hidden_state_dtype"
+                    value={hiddenStateDtype}
+                    onChange={(event) => setParams({ ...eff, hidden_state_dtype: event.target.value as WireDtype })}
+                    compact
+                  >
+                    <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
+                    <option value="f8" disabled={f8Unavailable}>{t("deploy.knob.hidden_state_dtypeF8")}</option>
+                  </Select>
+                </label>
+                {hiddenStateCapability && f8Unavailable && (
+                  <p role="alert" className="text-[0.6rem] leading-relaxed text-amber">
+                    {t("deploy.knob.hidden_state_dtypeUnavailable")}{hiddenStateCapability.reason}
+                  </p>
+                )}
                 <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
                 <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
                 <CapabilitySwitch capability={p?.capabilities?.no_embeddings} alwaysVisible checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />

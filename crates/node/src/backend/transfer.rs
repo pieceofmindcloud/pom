@@ -520,6 +520,11 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
     // Também no caminho da concessão: é por ali que sai um arquivo de fora de
     // `models/`, e era a única porta sem checagem de tipo.
     ensure_gguf(&path)?;
+    if let Ok(Some(count)) = crate::multipart::declared_split_count(&path) {
+        return Err(format!(
+            "este arquivo pertence a um GGUF multipart com {count} partes; transfira o conjunto completo ou fatie-o pelo POM antes de distribuir"
+        ));
+    }
     Ok(path)
 }
 
@@ -1616,6 +1621,18 @@ async fn send_to_peer(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
+
+    if let Ok(Some(count)) = crate::multipart::declared_split_count(&path) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "o arquivo escolhido pertence a um GGUF multipart com {count} partes; mantenha o conjunto junto ou fatie-o pelo POM antes de transferir"
+                )
+            })),
+        )
+            .into_response();
+    }
 
     let size = match tokio::fs::metadata(&path).await {
         Ok(m) => m.len(),

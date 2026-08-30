@@ -81,6 +81,9 @@ impl KvCacheType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
+    /// Stable public identity used by the audit trail. Never a credential.
+    #[serde(default)]
+    pub id: String,
     pub key: String,
     pub label: String,
     pub node_id: String,
@@ -90,6 +93,7 @@ pub struct ApiKey {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub role: Role,
     #[serde(default)]
@@ -159,6 +163,9 @@ pub struct Config {
     /// entende, que numeram as placas em espaços separados.
     #[serde(default)]
     pub gpus: Option<Vec<u32>>,
+    /// Política local de proteção térmica da GPU.
+    #[serde(default)]
+    pub thermal: crate::thermal::ThermalPolicy,
     /// Tipo numérico do cache K usado por todos os contextos desta instalação.
     #[serde(default)]
     pub cache_type_k: KvCacheType,
@@ -199,6 +206,7 @@ impl fmt::Debug for Config {
             .field("shard_dir", &self.shard_dir)
             .field("shard_max_gb", &self.shard_max_gb)
             .field("gpus", &self.gpus)
+            .field("thermal", &self.thermal)
             .field("cache_type_k", &self.cache_type_k)
             .field("cache_type_v", &self.cache_type_v)
             .field("node_name", &self.node_name)
@@ -492,6 +500,7 @@ mod tests {
     fn test_roundtrip_principal_config() {
         let cfg = Config {
             gpus: None,
+            thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             role: Role::Principal,
@@ -516,10 +525,36 @@ mod tests {
         assert_eq!(parsed.connection_key, "test-key");
     }
 
+    /// Configurações legadas não podem reintroduzir uma capacidade absoluta
+    /// silenciosamente.
+    #[test]
+    fn removed_output_capacity_field_is_rejected_explicitly() {
+        let legacy_field = ["max", "output", "tokens"].join("_");
+        let mut value = serde_json::json!({"role": "principal", "connection_key": "k"});
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert(legacy_field.clone(), serde_json::json!(32000));
+        let result: Result<Config, _> = serde_json::from_value(value);
+        let error = result.expect_err("campo removido não pode ser aceito silenciosamente");
+        assert!(error.to_string().contains(&legacy_field));
+    }
+
+    #[test]
+    fn reference_config_has_no_absolute_output_capacity_field() {
+        let cfg: Config = serde_json::from_str(include_str!("../../pom.json")).unwrap();
+        let value = serde_json::to_value(cfg).unwrap();
+        assert!(!value
+            .as_object()
+            .unwrap()
+            .contains_key(&["max", "output", "tokens"].join("_")));
+    }
+
     #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
             gpus: None,
+            thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             role: Role::Node,
@@ -555,6 +590,22 @@ mod tests {
         assert_eq!(cfg.model_dir_paths(), crate::catalog::default_model_dirs());
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
         assert_eq!(cfg.shard_max_gb(), 100.0);
+        assert_eq!(cfg.thermal, crate::thermal::ThermalPolicy::default());
+    }
+
+    #[test]
+    fn thermal_policy_is_configurable_and_survives_roundtrip() {
+        let mut cfg: Config = serde_json::from_str(r#"{"role":"node"}"#).unwrap();
+        cfg.thermal = crate::thermal::ThermalPolicy {
+            limit_c: 82.0,
+            hysteresis_c: 7.0,
+            cooldown_secs: 45,
+        };
+        let value = serde_json::to_value(&cfg).unwrap();
+        let parsed: Config = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.thermal.limit_c, 82.0);
+        assert_eq!(parsed.thermal.hysteresis_c, 7.0);
+        assert_eq!(parsed.thermal.cooldown_secs, 45);
     }
 
     #[test]
@@ -613,6 +664,7 @@ mod tests {
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
             gpus: None,
+            thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             node_name: None,
@@ -676,6 +728,7 @@ mod tests {
     fn test_active_api_key() {
         let cfg = Config {
             gpus: None,
+            thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             role: Role::Principal,
@@ -688,6 +741,7 @@ mod tests {
             advertise_addr: None,
             api_keys: vec![
                 ApiKey {
+                    id: "old-id".into(),
                     key: "sk-old".into(),
                     label: "old".into(),
                     node_id: "n1".into(),
@@ -695,6 +749,7 @@ mod tests {
                     created_at: "2026-01-01T00:00:00Z".into(),
                 },
                 ApiKey {
+                    id: "active-id".into(),
                     key: "sk-active".into(),
                     label: "active".into(),
                     node_id: "n1".into(),

@@ -138,7 +138,18 @@ async fn list_api_keys(
     State(config): State<AuthState>,
 ) -> impl IntoResponse {
     let cfg = config.read().await;
-    Json(cfg.api_keys.clone())
+    let keys = cfg
+        .api_keys
+        .iter()
+        .cloned()
+        .map(|mut key| {
+            if key.id.is_empty() {
+                key.id = crate::auth::api_key_identity(&key);
+            }
+            key
+        })
+        .collect::<Vec<_>>();
+    Json(keys)
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +176,7 @@ async fn generate_api_key(
     let mut cfg = config.write().await;
     let raw = format!("sk-{}", Uuid::new_v4());
     let key = ApiKey {
+        id: Uuid::new_v4().simple().to_string(),
         key: raw,
         label: req.label.unwrap_or_else(|| "default".into()),
         node_id: req.node_id.unwrap_or_default(),

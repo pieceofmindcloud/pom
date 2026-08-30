@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, Moon, Sun } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
 import { brand } from "../lib/brand";
@@ -13,9 +13,8 @@ import { useTheme } from "../lib/theme";
 
 /**
  * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
- * logo vira o controle acessível: clique alterna o estado e o hover de mouse
- * recolhe a barra após um pequeno atraso. No drawer mobile ela permanece uma
- * marca passiva, pois o Topbar controla a abertura por fora.
+ * logo vira o controle acessível e o clique alterna o estado. No drawer mobile
+ * ela permanece uma marca passiva, pois o Topbar controla a abertura por fora.
  */
 function SidebarBrand({
   collapsed,
@@ -25,28 +24,6 @@ function SidebarBrand({
   onToggle?: () => void;
 }) {
   const { t } = useI18n();
-  const closeTimer = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-    };
-  }, []);
-
-  function cancelHoverClose() {
-    if (closeTimer.current === null) return;
-    window.clearTimeout(closeTimer.current);
-    closeTimer.current = null;
-  }
-
-  function scheduleHoverClose(pointerType?: string) {
-    if (!onToggle || collapsed || (pointerType && pointerType !== "mouse")) return;
-    cancelHoverClose();
-    closeTimer.current = window.setTimeout(() => {
-      closeTimer.current = null;
-      onToggle();
-    }, 220);
-  }
 
   return (
     <div
@@ -59,14 +36,7 @@ function SidebarBrand({
         <button
           type="button"
           aria-expanded={!collapsed}
-          onClick={() => {
-            cancelHoverClose();
-            onToggle();
-          }}
-          onPointerEnter={(event) => scheduleHoverClose(event.pointerType)}
-          onPointerLeave={cancelHoverClose}
-          onMouseEnter={() => scheduleHoverClose("mouse")}
-          onMouseLeave={cancelHoverClose}
+          onClick={onToggle}
           aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
           title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
           className={clsx(

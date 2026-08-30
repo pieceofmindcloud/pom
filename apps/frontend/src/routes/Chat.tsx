@@ -11,7 +11,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
   Boxes,
+  Check,
   ChevronDown,
+  Copy,
   MessagesSquare,
   Pencil,
   Plus,
@@ -25,7 +27,13 @@ import { Markdown } from "../components/Markdown";
 import { Badge, Button, Empty } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
-import { consumeChatDelta, emptyChatStream, finishChatStream } from "../lib/chatStream";
+import {
+  consumeChatDelta,
+  consumeChatError,
+  emptyChatStream,
+  finishChatStream,
+  streamErrorMessage,
+} from "../lib/chatStream";
 import {
   analyzeTelemetry,
   buildTelemetryAnalysisPrompt,
@@ -43,9 +51,9 @@ import {
   type ChatMessage,
   type ChatSession,
 } from "../lib/chatStore";
-import { bytes, since } from "../lib/format";
+import { bytes, ms, num, since } from "../lib/format";
 import { isPhasedHop } from "../lib/chatStream";
-import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
+import type { GenerationTimings, LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useCluster,
@@ -53,10 +61,10 @@ import {
   usePeerRuntimes,
   useServableModels,
 } from "../lib/queries";
+import { useStableRecord } from "../lib/stableRecord";
 import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
-import { localizeServerText } from "../i18n/locales";
 import type { ChatTelemetryNetwork, ClusterView, ExecutionEngine, PeerRuntime } from "../lib/types";
 
 /**
@@ -88,6 +96,29 @@ function EventMark({ message }: { message: ChatMessage }) {
 function ModelIntroMark({ model }: { model: string }) {
   const { t } = useI18n();
   return <EventMark message={{ id: "model-at-start", role: "event", content: t("chat.modelAtStart", { model }), at: "" }} />;
+}
+
+function metricRate(
+  value: number | null | undefined,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  return value == null ? t("chat.rateUnavailable") : `${num(value, 1)} ${t("chat.tokensPerSecondUnit")}`;
+}
+
+function TimingSummary({ timings }: { timings: GenerationTimings }) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-2 grid max-w-[38rem] grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[0.68rem]">
+      <span className="text-faint">{t("chat.generationSpeed")}</span>
+      <span className="font-mono text-muted">{metricRate(timings.generation_tokens_per_sec, t)} · {timings.generation_tokens} {t("chat.tokensUnit")}</span>
+      <span className="text-faint">{t("chat.prefillSpeed")}</span>
+      <span className="font-mono text-muted">{metricRate(timings.prefill_tokens_per_sec, t)} · {timings.prefill_tokens} {t("chat.promptTokensUnit")}</span>
+      <span className="text-faint">{t("chat.ttft")}</span>
+      <span className="font-mono text-muted">{ms(timings.ttft_ms)}</span>
+      <span className="text-faint">{t("chat.totalTime")}</span>
+      <span className="font-mono text-muted">{ms(timings.total_ms)} · {num(timings.total_tokens_per_sec, 1)} {t("chat.tokensPerSecondUnit")}</span>
+    </div>
+  );
 }
 
 export interface ExecutionTelemetryEnvironment {
@@ -285,6 +316,48 @@ function ExecutionEnvironment({
   );
 }
 
+export function ChatError({ message }: { message: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // The message remains selectable when the browser denies clipboard access.
+    }
+  };
+
+  return (
+    <div
+      role="alert"
+      className="mt-2 min-w-0 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
+          <p className="text-[0.82rem] font-medium text-fg">{t("chat.serverError")}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void copy()}
+          aria-label={t("chat.copyError")}
+          className="flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-[0.7rem] text-muted transition-colors hover:text-fg"
+        >
+          {copied ? <Check className="h-3 w-3 text-aqua" /> : <Copy className="h-3 w-3" />}
+          {copied ? t("chat.errorCopied") : t("chat.copyError")}
+        </button>
+      </div>
+      <p className="break-path mt-2 max-h-72 overflow-auto whitespace-pre-wrap select-text rounded-md border border-rose/20 bg-ink/40 px-2.5 py-2 text-[0.82rem] leading-relaxed text-muted">
+        {message}
+      </p>
+    </div>
+  );
+}
+
 function Bubble({
   message,
   streaming,
@@ -298,7 +371,7 @@ function Bubble({
   analysisDisabled?: boolean;
   telemetryEnvironment?: ExecutionTelemetryEnvironment;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
   return (
@@ -324,25 +397,23 @@ function Bubble({
           )}
           {message.content && <Markdown>{message.content}</Markdown>}
           {message.error && (
-            <div className="mt-2 flex items-start gap-2.5 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5">
-              <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
-              <p className="break-path text-[0.82rem] leading-relaxed text-muted">
-                {localizeServerText(locale, message.error)}
-              </p>
-            </div>
+            <ChatError message={message.error} />
           )}
           {message.source && (
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
           )}
-          {message.tokensPerSecond != null && (
+          {message.timings ? (
+            <TimingSummary timings={message.timings} />
+          ) : message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
-              <span>{message.tokensPerSecond.toFixed(1)} {t("chat.speedUnit")}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${t("chat.timeUnit")}`}</span>
+              <span>{t("chat.legacyTotalSpeed", { value: num(message.tokensPerSecond, 1) })}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${ms(message.durationMs)}`}</span>
             </div>
           )}
           {message.trace && (
             <div className="mt-2">
               <ExecutionTelemetry
                 trace={message.trace}
+                timings={message.timings}
                 source={message.source}
                 environment={telemetryEnvironment}
                 onAnalyze={onAnalyze}
@@ -363,12 +434,14 @@ function Bubble({
  */
 export function ExecutionTelemetry({
   trace,
+  timings,
   source,
   environment,
   onAnalyze,
   analyzeDisabled = false,
 }: {
   trace: RequestTrace;
+  timings?: GenerationTimings;
   source?: string;
   environment?: ExecutionTelemetryEnvironment;
   onAnalyze?: (trace: RequestTrace) => void;
@@ -388,7 +461,10 @@ export function ExecutionTelemetry({
 
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
     <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}{trace.prefix_match_tokens != null ? <span>{t("chat.telemetry.prefixCandidate", { count: trace.prefix_match_tokens })}</span> : null}{trace.prompt_tokens_transmitted != null ? <span>{t("chat.telemetry.tokensTransmitted", { count: trace.prompt_tokens_transmitted })}</span> : null}{trace.prefix_reuse_status ? <span>{t("chat.telemetry.prefixStatus", { status: trace.prefix_reuse_status })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    {timings && <TimingSummary timings={timings} />}
+    {trace.prefill_overlap_enabled && <p className="mt-1 font-mono text-[0.68rem] text-faint">{t("chat.telemetry.overlap", { chunks: trace.prefill_overlapped_chunks ?? 0, depth: trace.prefill_pipeline_depth_max ?? 1, limit: trace.prefill_max_inflight_chunks ?? 8 })}</p>}
+    {trace.transport_trace_complete === false && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
@@ -513,6 +589,35 @@ function tlsLine(
   return t("chat.telemetry.tlsOn", { handshake: phase.tls_handshake_ms });
 }
 
+function transportLine(
+  t: ReturnType<typeof useI18n>["t"],
+  phase: PhaseTrace,
+) {
+  const summary = phase.transport_summary;
+  if (!summary || summary.transports.length === 0) return t("chat.telemetry.transportMissing");
+  const transports = summary.transports.map((entry) => t("chat.telemetry.transportSummary", {
+    transport: entry.transport,
+    calls: entry.calls,
+    sent: bytes(entry.bytes_sent),
+    received: bytes(entry.bytes_received),
+    min: entry.rtt_min_ms,
+    median: entry.rtt_median_ms,
+    p95: entry.rtt_p95_ms,
+    max: entry.rtt_max_ms,
+    fallback: entry.fallback_calls,
+  }));
+  const switches = summary.transport_switches.map((switchEntry) => t("chat.telemetry.transportSwitch", {
+    from: switchEntry.from,
+    to: switchEntry.to,
+    calls: switchEntry.calls,
+  }));
+  return [
+    t("chat.telemetry.transportFallbackTotal", { calls: summary.fallback_calls }),
+    ...transports,
+    ...switches,
+  ].join(" · ");
+}
+
 function PhaseRow({
   hop,
   label,
@@ -533,6 +638,8 @@ function PhaseRow({
     phase.node_sampling_ms + phase.node_encode_ms;
   const unattributed = Math.max(0, phase.processing_ms - named);
   const idle = phase.calls === 0;
+  const hiddenStateSent = phase.hidden_state_bytes_sent ?? 0;
+  const hiddenStateReceived = phase.hidden_state_bytes_received ?? 0;
 
   return <>
     <tr className={clsx("border-t border-line/40", first && "border-t-line/70", idle && "text-faint")}>
@@ -547,7 +654,18 @@ function PhaseRow({
       <td className="py-1 pr-3 text-right">{phase.node_residual_ms} ms</td>
       <td className="py-1 pr-3 text-right">{phase.node_sampling_ms} ms</td>
       <td className="py-1 pr-3 text-right">{phase.network_ms} ms</td>
-      <td className="py-1 text-right">{bytes(phase.bytes_sent + phase.bytes_received)}</td>
+      <td className="py-1 text-right">
+        {bytes(phase.bytes_sent + phase.bytes_received)}
+        {phase.hidden_state_dtype && (
+          <span className="block text-[0.6rem] text-aqua">
+            {t("chat.telemetry.hiddenState", {
+              sent: bytes(hiddenStateSent),
+              received: bytes(hiddenStateReceived),
+              dtype: phase.hidden_state_dtype,
+            })}
+          </span>
+        )}
+      </td>
     </tr>
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={9}>
@@ -555,7 +673,11 @@ function PhaseRow({
         <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
         <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>
+        {phase.hidden_state_dtype && (
+          <span className="block">{t("chat.telemetry.hiddenState", { sent: bytes(hiddenStateSent), received: bytes(hiddenStateReceived), dtype: phase.hidden_state_dtype })}</span>
+        )}
         <span className="block">{tlsLine(t, phase)}</span>
+        <span className="block break-words">{transportLine(t, phase)}</span>
       </td>
     </tr>
   </>;
@@ -822,21 +944,33 @@ export function Chat() {
   );
   const telemetryNetwork = useChatTelemetryNetwork(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
   const runtimeQueries = usePeerRuntimes(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
-  const runtimeByNode = useMemo(
-    () => Object.fromEntries(telemetryNodeIds.map((nodeId, index) => [nodeId, runtimeQueries[index]?.data])) as Record<string, PeerRuntime | undefined>,
-    [runtimeQueries, telemetryNodeIds],
+  const runtimeByNode = useStableRecord(
+    Object.fromEntries(
+      telemetryNodeIds.map((nodeId, index) => [nodeId, runtimeQueries[index]?.data]),
+    ) as Record<string, PeerRuntime | undefined>,
   );
-  const telemetryEnvironment: ExecutionTelemetryEnvironment | undefined = telemetryCapture
-    ? {
-        snapshotCaptured: true,
-        cluster: telemetryCapture.cluster,
-        network: telemetryNetwork.data,
-        networkLoading: telemetryNetwork.isLoading,
-        networkError: telemetryNetwork.isError,
-        runtimes: runtimeByNode,
-        runtimesLoading: runtimeQueries.some((query) => query.isLoading),
-      }
-    : undefined;
+  const runtimesLoading = runtimeQueries.some((query) => query.isLoading);
+  const telemetryEnvironment = useMemo<ExecutionTelemetryEnvironment | undefined>(
+    () => telemetryCapture
+      ? {
+          snapshotCaptured: true,
+          cluster: telemetryCapture.cluster,
+          network: telemetryNetwork.data,
+          networkLoading: telemetryNetwork.isLoading,
+          networkError: telemetryNetwork.isError,
+          runtimes: runtimeByNode,
+          runtimesLoading,
+        }
+      : undefined,
+    [
+      telemetryCapture,
+      telemetryNetwork.data,
+      telemetryNetwork.isLoading,
+      telemetryNetwork.isError,
+      runtimeByNode,
+      runtimesLoading,
+    ],
+  );
 
   useEffect(() => {
     if (!telemetryCapture || !telemetryEnvironment) return;
@@ -945,6 +1079,12 @@ export function Chat() {
         if (data === "[DONE]") break;
         try {
           const chunk = JSON.parse(data);
+          const streamError = streamErrorMessage(chunk);
+          if (streamError) {
+            streamed = consumeChatError(streamed, streamError);
+            patchReply({ error: streamed.error });
+            continue;
+          }
           const delta = chunk?.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta) {
             streamed = consumeChatDelta(streamed, delta);
@@ -959,6 +1099,7 @@ export function Chat() {
               tokensPerSecond: streamed.tokensPerSecond,
               tokensGenerated: streamed.tokensGenerated,
               durationMs: streamed.durationMs,
+              timings: streamed.timings,
               trace: streamed.trace,
               source: typeof metrics.source === "string" ? metrics.source : undefined,
             });
@@ -972,7 +1113,7 @@ export function Chat() {
       if (streamed.trace) {
         setTelemetryCapture({ messageId: reply.id, trace: streamed.trace, cluster: cluster.data ?? null });
       }
-      if (!streamed.content && !streamed.reasoning) {
+      if (!streamed.content && !streamed.reasoning && !streamed.error) {
         patchReply({
           error:
             t("chat.emptyResponse"),

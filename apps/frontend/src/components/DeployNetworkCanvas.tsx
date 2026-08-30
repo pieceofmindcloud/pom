@@ -17,6 +17,7 @@ import {
 } from "../lib/networkLayout";
 import type { DeployMachine, DeployPlan, DeploySelection } from "../lib/types";
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
+import { RouteRttLabel } from "./RouteRttLabel";
 import { Badge, Button, Dot, Progress } from "./ui";
 
 type DeployNetworkCanvasProps = {
@@ -415,7 +416,7 @@ export function DeployNetworkCanvas({
             const from = positionOf(route.from_node_id, fromIndex);
             const to = positionOf(route.to_node_id, toIndex);
             const geometry = routeGeometry(from, to);
-            return <span key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} className="absolute z-10 -translate-x-1/2 rounded-md border border-aqua/25 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-aqua" style={{ left: geometry.labelX, top: geometry.labelY }}>{route.rtt_ms == null ? "RTT -" : `RTT ${route.rtt_ms.toFixed(1)} ms`}</span>;
+            return <RouteRttLabel key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} rttMs={route.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
           })}
           {machines.map((machine, index) => (
             <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />

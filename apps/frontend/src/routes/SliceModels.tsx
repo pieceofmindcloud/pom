@@ -30,7 +30,14 @@ import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
 import { useInvalidate, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import { isWholeModel, type SizePlan, type SliceMode, type SlicePlan, type TpSlicePlan } from "../lib/types";
+import {
+  isWholeModel,
+  type SizePlan,
+  type SliceLayerOptions,
+  type SliceMode,
+  type SlicePlan,
+  type TpSlicePlan,
+} from "../lib/types";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
 import { SlicingJobsPanel } from "../components/SlicingJobsPanel";
@@ -83,6 +90,10 @@ export function SliceModels() {
   const [mode, setMode] = useState<SliceMode>("pipeline");
   const [tpSize, setTpSize] = useState("2");
   const [slices, setSlices] = useState<SliceInput[]>([row("4"), row()]);
+  const [singleRange, setSingleRange] = useState(false);
+  const [layerOptions, setLayerOptions] = useState<SliceLayerOptions | null>(null);
+  const [rangeStart, setRangeStart] = useState(0);
+  const [rangeEnd, setRangeEnd] = useState(0);
   const [plan, setPlan] = useState<SlicePlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [planning, setPlanning] = useState(false);
@@ -94,8 +105,51 @@ export function SliceModels() {
   }, [models, path]);
 
   const model = models.find((m) => m.path === path);
+  const metadataComplete = catalog.data?.metadata_complete ?? true;
   const tensorMode = mode === "tensor_parallel";
   const tpSizeNumber = Math.max(2, Math.min(64, Number.parseInt(tpSize, 10) || 2));
+
+  useEffect(() => {
+    if (!singleRange || !path || tensorMode) return;
+    let alive = true;
+    void api
+      .post<SliceLayerOptions>("/api/ui/model-layer-options", { path })
+      .then((options) => {
+        if (!alive) return;
+        setLayerOptions(options);
+        setRangeStart(options.valid_starts?.[0] ?? 0);
+        setRangeEnd(options.total_layers - 1);
+      })
+      .catch(() => {
+        if (alive) setLayerOptions(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [path, singleRange, tensorMode]);
+
+  const validStarts = layerOptions?.valid_starts ?? [];
+  const validEndLayers = useMemo(() => {
+    const total = layerOptions?.total_layers ?? plan?.total_layers ?? 0;
+    if (!total) return [];
+    const nextBoundary = validStarts.find((start) => start > rangeStart);
+    const firstRunEnd = nextBoundary == null ? total - 1 : nextBoundary - 1;
+    const ends = Array.from(
+      { length: Math.max(0, firstRunEnd - rangeStart + 1) },
+      (_, index) => rangeStart + index,
+    );
+    for (const start of validStarts) {
+      if (start > rangeStart && start < total) ends.push(start - 1);
+    }
+    ends.push(total - 1);
+    return [...new Set(ends)].sort((a, b) => a - b);
+  }, [layerOptions, plan, rangeStart, validStarts]);
+
+  useEffect(() => {
+    if (validEndLayers.length > 0 && !validEndLayers.includes(rangeEnd)) {
+      setRangeEnd(validEndLayers[validEndLayers.length - 1]);
+    }
+  }, [rangeEnd, validEndLayers]);
 
   const slicePayload = useMemo(
     () =>
@@ -111,9 +165,21 @@ export function SliceModels() {
   // per file, so typing a size stays cheap.
   useEffect(() => {
     if (!path) return;
+    if (!metadataComplete) {
+      setPlan(null);
+      setPlanError(null);
+      return;
+    }
+    if (model?.multipart_error) {
+      setPlan(null);
+      setPlanError(model.multipart_error);
+      return;
+    }
     const body = tensorMode
       ? { model_path: path, mode, tp_size: tpSizeNumber }
-      : { model_path: path, mode, slices: slicePayload };
+      : singleRange
+        ? { model_path: path, mode, range: { start_layer: rangeStart, end_layer: rangeEnd } }
+        : { model_path: path, mode, slices: slicePayload };
     const timer = window.setTimeout(async () => {
       setPlanning(true);
       try {
@@ -127,7 +193,18 @@ export function SliceModels() {
       }
     }, 260);
     return () => window.clearTimeout(timer);
-  }, [mode, path, slicePayload, tensorMode, tpSizeNumber]);
+  }, [
+    metadataComplete,
+    mode,
+    model?.multipart_error,
+    path,
+    rangeEnd,
+    rangeStart,
+    slicePayload,
+    singleRange,
+    tensorMode,
+    tpSizeNumber,
+  ]);
 
   async function fillEqual(parts: number) {
     if (!path) return;
@@ -154,7 +231,7 @@ export function SliceModels() {
   }
 
   async function start() {
-    if (!path || !plan || plan.blocked) return;
+    if (!path || !plan || plan.blocked || model?.multipart_error) return;
     setStarting(true);
     try {
       const body = tensorMode
@@ -164,12 +241,19 @@ export function SliceModels() {
             mode,
             tp_size: tpSizeNumber,
           }
-        : {
-            model_path: path,
-            name: model?.name,
-            mode,
-            slices: slicePayload,
-          };
+        : singleRange
+          ? {
+              model_path: path,
+              name: model?.name,
+              mode,
+              range: { start_layer: rangeStart, end_layer: rangeEnd },
+            }
+          : {
+              model_path: path,
+              name: model?.name,
+              mode,
+              slices: slicePayload,
+            };
       const { job_id } = await api.post<{ job_id: string }>("/api/ui/slice", body);
       if (!job_id) throw new Error(t("slice.noJob"));
       toast.success(
@@ -227,7 +311,13 @@ export function SliceModels() {
                   <dl className="grid grid-cols-2 gap-3 text-[0.82rem]">
                     <div>
                       <dt className="eyebrow">{t("slice.size")}</dt>
-                      <dd className="font-mono text-fg">{bytes(model.size_bytes)}</dd>
+                      <dd className="font-mono text-fg">
+                        {!metadataComplete
+                          ? t("slice.sizePending")
+                          : model.multipart_error
+                            ? t("slice.multipartSizeUnavailable")
+                            : bytes(model.size_bytes)}
+                      </dd>
                     </div>
                     <div>
                       <dt className="eyebrow">{t("slice.layers")}</dt>
@@ -236,6 +326,38 @@ export function SliceModels() {
                       </dd>
                     </div>
                   </dl>
+                )}
+                {model?.multipart && (
+                  <div className="space-y-3 rounded-xl border border-amber/30 bg-amber/5 px-3.5 py-3">
+                    <div className="flex items-center gap-2">
+                      <Badge tone="amber">{t("slice.multipartBadge")}</Badge>
+                      <span className="text-[0.75rem] text-muted">
+                        {t("slice.multipartParts", {
+                          count: model.multipart_parts?.length ?? 0,
+                        })}
+                      </span>
+                    </div>
+                    <p className="text-[0.75rem] leading-relaxed text-muted">
+                      {t("slice.multipartNeedsSlicing")}
+                    </p>
+                    {model.multipart_parts && model.multipart_parts.length > 0 && (
+                      <ul className="space-y-1.5 border-t border-amber/20 pt-2 text-[0.7rem] text-faint">
+                        {model.multipart_parts.map((part) => (
+                          <li key={part.index} className="flex justify-between gap-3">
+                            <span className="min-w-0 truncate">
+                              {part.index + 1}. {part.path}
+                            </span>
+                            <span className="shrink-0 font-mono">{bytes(part.bytes)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {model.multipart_error && (
+                      <p className="border-t border-amber/20 pt-2 text-[0.75rem] leading-relaxed text-rose">
+                        {model.multipart_error}
+                      </p>
+                    )}
+                  </div>
                 )}
                 <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-raised/60 px-3.5 py-3 transition-colors hover:border-iris/50">
                   <input
@@ -255,6 +377,60 @@ export function SliceModels() {
                     </span>
                   </span>
                 </label>
+                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-raised/60 px-3.5 py-3 transition-colors hover:border-iris/50">
+                  <input
+                    type="checkbox"
+                    checked={singleRange}
+                    onChange={(e) => setSingleRange(e.target.checked)}
+                    disabled={tensorMode}
+                    className="mt-0.5 h-4 w-4 accent-iris"
+                    aria-label={t("slice.singleRange")}
+                  />
+                  <span className="min-w-0">
+                    <span className="text-[0.82rem] font-medium text-fg">
+                      {t("slice.singleRange")}
+                    </span>
+                    <span className="mt-1 block text-[0.75rem] leading-relaxed text-muted">
+                      {t("slice.singleRangeHint")}
+                    </span>
+                  </span>
+                </label>
+                {singleRange && !tensorMode && (
+                  <div className="grid grid-cols-2 gap-3 rounded-xl border border-iris/20 bg-iris/5 px-3.5 py-3">
+                    <Field label={t("slice.rangeStart")}>
+                      <Select
+                        value={String(rangeStart)}
+                        disabled={validStarts.length === 0}
+                        aria-label={t("slice.rangeStart")}
+                        onChange={(e) => {
+                          setRangeStart(Number(e.target.value));
+                          setRangeEnd(0);
+                        }}
+                      >
+                        {validStarts.map((start) => (
+                          <option key={start} value={start}>L{start}</option>
+                        ))}
+                      </Select>
+                    </Field>
+                    <Field label={t("slice.rangeEnd")}>
+                      <Select
+                        value={String(rangeEnd)}
+                        disabled={validEndLayers.length === 0}
+                        aria-label={t("slice.rangeEnd")}
+                        onChange={(e) => setRangeEnd(Number(e.target.value))}
+                      >
+                        {validEndLayers.map((end) => (
+                          <option key={end} value={end}>L{end}</option>
+                        ))}
+                      </Select>
+                    </Field>
+                    {layerOptions && (
+                      <p className="col-span-2 text-[0.7rem] leading-relaxed text-faint">
+                        {layerOptions.rule}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </Panel>
 
@@ -262,7 +438,7 @@ export function SliceModels() {
               <PanelHeader
                 title={tensorMode ? t("slice.tpParts") : t("slice.shards")}
                 subtitle={tensorMode ? t("slice.tpPartsDetail") : t("slice.shardsDetail")}
-                actions={!tensorMode ? (
+                actions={!tensorMode && !singleRange ? (
                   <Select
                     className="w-[8.5rem]"
                     value=""
@@ -298,6 +474,10 @@ export function SliceModels() {
                     {t("slice.tpAllLayers")}
                   </p>
                 </div>
+              ) : singleRange ? (
+                <p className="px-5 py-4 text-[0.75rem] leading-relaxed text-muted">
+                  {t("slice.singleRangeActive")}
+                </p>
               ) : (
                 <div className="space-y-2 px-5 py-4">
                 <AnimatePresence initial={false}>
@@ -469,6 +649,46 @@ export function SliceModels() {
                   </Badge>
                   {planning && <span className="text-xs text-faint">{t("slice.recalculating")}</span>}
                 </div>
+
+                {plan.mode !== "tensor_parallel" && plan.required_head_bytes != null && (
+                  <div className="mx-5 mb-3 rounded-xl border border-iris/20 bg-iris/5 px-3.5 py-3">
+                    <p className="text-[0.75rem] leading-relaxed text-muted">
+                      {t("slice.requiredHead", { size: bytes(plan.required_head_bytes) })}
+                    </p>
+                  </div>
+                )}
+
+                {plan.space_status && (
+                  <div
+                    role={plan.space_status === "insufficient" ? "alert" : "status"}
+                    className={`mx-5 mb-3 rounded-xl border px-3.5 py-3 ${
+                      plan.space_status === "insufficient"
+                        ? "border-rose/30 bg-rose/5"
+                        : plan.space_status === "tight"
+                          ? "border-amber/30 bg-amber/5"
+                          : "border-line bg-raised/50"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[0.78rem] font-medium text-fg">
+                        {t("slice.spaceTitle")}
+                      </span>
+                      <Badge tone={plan.space_status === "insufficient" ? "rose" : plan.space_status === "tight" ? "amber" : "aqua"}>
+                        {t(`slice.space.${plan.space_status}`)}
+                      </Badge>
+                    </div>
+                    <p className="break-path mt-1 text-[0.75rem] leading-relaxed text-muted">
+                      {plan.destination_path}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[0.7rem] text-faint">
+                      <span>{t("slice.spaceAvailable", { value: bytes(plan.destination_free_bytes) })}</span>
+                      <span>{t("slice.spaceRequired", { value: bytes(plan.model_bytes) })}</span>
+                      {plan.space_margin_bytes != null && (
+                        <span>{t("slice.spaceMargin", { value: bytes(Math.max(0, plan.space_margin_bytes)) })}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {plan.warnings.length > 0 && (
                   <ul className="space-y-2 border-t border-line px-5 py-3">

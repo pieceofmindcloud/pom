@@ -28,6 +28,12 @@ export interface GpuStat {
   temperature_c: number | null;
 }
 
+export interface ThermalPolicy {
+  limit_c: number;
+  hysteresis_c: number;
+  cooldown_secs: number;
+}
+
 export interface GpuProcess {
   pid: number;
   name: string;
@@ -66,7 +72,7 @@ export interface SystemLoad {
  * was assignable every screen compared against a value the node never sends.
  * A machine serving layers looked idle on every panel.
  */
-export type ServerState = "disabled" | "starting" | "ready" | "failed";
+export type ServerState = "disabled" | "starting" | "ready" | "failed" | "thermal";
 
 /** Motor que o backend afirma ter executado, sem inferência da interface. */
 export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
@@ -108,6 +114,8 @@ export interface NodeConfig {
   n_batch: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
+  /** Maximum number of prefills overlapping per request. */
+  prefill_max_inflight_chunks: number;
   max_new_tokens: number;
   temperature: number;
   top_p: number;
@@ -155,6 +163,7 @@ export interface NodeInfo {
   tls_required: boolean;
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
+  thermal: ThermalPolicy;
 }
 
 export interface PeerView {
@@ -303,6 +312,13 @@ export interface ClusterView {
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
 
+export interface MultipartPart {
+  index: number;
+  path: string;
+  bytes: number;
+  tensor_count: number;
+}
+
 export interface DiscoveredModel {
   id: string;
   name: string;
@@ -310,6 +326,12 @@ export interface DiscoveredModel {
   source_label: string;
   path: string;
   size_bytes: number;
+  /** O GGUF declara split.count > 1 e este item representa o conjunto. */
+  multipart?: boolean;
+  /** Partes físicas do conjunto, na ordem split.no. */
+  multipart_parts?: MultipartPart[];
+  /** Motivo concreto que impede ler um conjunto multipart incompleto. */
+  multipart_error?: string | null;
   architecture: string | null;
   /** True only when the GGUF metadata reports more than one expert. */
   is_moe?: boolean;
@@ -469,6 +491,11 @@ export interface Job {
   step: string;
   message: string;
   progress: number | null;
+  /** Bytes observed in the current phase, such as hashing the source. */
+  bytes_processed?: number | null;
+  /** Reused by slicing phase telemetry and remote download telemetry. */
+  current_file?: string | null;
+  phase_started_at?: string;
   outputs: string[];
   started_at: string;
   finished_at: string | null;
@@ -674,6 +701,8 @@ export interface AdminNode {
 }
 
 export interface ApiKey {
+  /** Stable identity used by audit queries, never a secret. */
+  id: string;
   key: string;
   label: string;
   node_id: string;
@@ -681,28 +710,61 @@ export interface ApiKey {
   created_at: string;
 }
 
+/** Request-level performance, aggregated over the whole inference pipeline. */
+export interface GenerationTimings {
+  ttft_ms: number;
+  prefill_ms: number;
+  prefill_tokens: number;
+  prefill_tokens_per_sec: number | null;
+  generation_ms: number;
+  generation_tokens: number;
+  generation_tokens_per_sec: number | null;
+  total_ms: number;
+  total_tokens_per_sec: number;
+}
+
 /** One inference request, as the node recorded it. `src/reqlog.rs`. */
 export interface RequestLogEntry {
   id: string;
-  at: string;
+  received_at: string;
+  completed_at: string | null;
   route: string;
   model: string;
-  /** Label of the API token that paid for it, or "chave de conexão". */
-  token_label: string;
-  /** Last 6 characters of the token, all that is ever shown. */
-  token_hint: string;
-  /** Node the token is assigned to, when it is assigned to one. */
-  token_node_id: string | null;
+  /** Stable API-key identity. The secret is never part of this contract. */
+  api_key_id: string;
+  /** Label of the API key, or "chave de conexão". */
+  api_key_label: string;
+  /** Node the API key is assigned to, when it is assigned to one. */
+  api_key_node_id: string | null;
   /** Node that received the request. */
   entry_node_id: string;
+  /** Exact prompt sent to the inference pipeline. */
+  prompt: string;
+  /** Parsed request body, excluding headers and credentials. */
+  request_details: Record<string, unknown>;
+  /** Result text, when any was produced. */
+  result: string | null;
+  /** Per-request telemetry, or null before the generation completes. */
+  telemetry: Record<string, unknown> | null;
   /** Ordered node ids the generation actually went through. */
   hops: string[];
   source: string;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   duration_ms: number | null;
-  status: "ok" | "error" | string;
+  timings?: GenerationTimings | null;
+  status: "in_progress" | "ok" | "partial" | "error" | "abandoned" | "incomplete" | string;
   error: string | null;
+}
+
+export interface RequestLogResponse {
+  entries: RequestLogEntry[];
+  total: number;
+  errors: number;
+  incomplete: number;
+  by_token: Record<string, number>;
+  by_node: Record<string, number>;
+  storage: "sqlite" | string;
 }
 
 /** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */
@@ -719,6 +781,15 @@ export interface SizedRange {
   empty: boolean;
 }
 
+/** Cortes de camada aceitos pelo GGUF para uma fatia independente. */
+export interface SliceLayerOptions {
+  total_layers: number;
+  valid_starts: number[];
+  cuts: LayerCut[];
+  granularity: number | null;
+  rule: string;
+}
+
 /** `src/plan.rs` — `SizePlan`, what `POST /api/ui/slice/plan` answers. */
 export interface SizePlan {
   mode?: "pipeline";
@@ -726,6 +797,8 @@ export interface SizePlan {
   model_bytes: number;
   /** Source GGUF size before embeddings and slice metadata are duplicated. */
   source_model_bytes?: number;
+  /** Real required head payload repeated by each non-final slice. */
+  required_head_bytes?: number;
   ranges: SizedRange[];
   covered_layers: number;
   complete: boolean;
@@ -733,6 +806,10 @@ export interface SizePlan {
   missing_bytes: number;
   blocked: boolean;
   warnings: string[];
+  destination_path?: string;
+  destination_free_bytes?: number | null;
+  space_margin_bytes?: number | null;
+  space_status?: "ok" | "tight" | "insufficient" | "unknown";
 }
 
 /** Um rank de um plano de fatiamento tensorial. */
@@ -752,6 +829,10 @@ export interface TpSlicePlan {
   complete: boolean;
   blocked: boolean;
   warnings: string[];
+  destination_path?: string;
+  destination_free_bytes?: number | null;
+  space_margin_bytes?: number | null;
+  space_status?: "ok" | "tight" | "insufficient" | "unknown";
 }
 
 export type SliceMode = "pipeline" | "tensor_parallel";
@@ -931,10 +1012,15 @@ export interface DeployLoadDistribution {
  * decides the prompt chunks the gateway sends. Sampling only runs on the last
  * peer.
  * `n_gpu_layers` is the default a peer takes when it has no override of its own.
+ * `max_new_tokens` is the backend leg size only. The total output capacity is
+ * derived from the live runtime context and is read from `/v1/models`; there
+ * is no absolute output-capacity knob in this deployment shape.
  */
 export interface RuntimeParams {
   /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
   inference_mode: InferenceMode;
+  /** Formato negociado para o estado oculto entre peers; ausente em config antiga = f16. */
+  hidden_state_dtype?: WireDtype;
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
@@ -943,6 +1029,8 @@ export interface RuntimeParams {
   max_new_tokens: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
+  /** Maximum number of prefill chunks allowed in flight. */
+  prefill_max_inflight_chunks: number;
   temperature: number;
   top_p: number;
   top_k: number;
@@ -968,6 +1056,9 @@ export interface RuntimeParams {
   mtp_min_probability: number;
 }
 
+/** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
+export type WireDtype = "f16" | "f8";
+
 export type CapabilityState = "supported" | "unsupported" | "unknown";
 
 export interface RuntimeCapability {
@@ -984,6 +1075,8 @@ export interface DeploymentCapabilities {
   no_embeddings: RuntimeCapability;
   speculative_decoding: RuntimeCapability;
   mtp: RuntimeCapability;
+  /** Capacidade de todos os peers selecionados de receber estado oculto f8. */
+  hidden_state_f8?: RuntimeCapability;
 }
 
 export type InferenceMode = "auto" | "dense" | "moe";

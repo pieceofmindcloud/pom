@@ -6,12 +6,15 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 
 ## Arquivos
 
-- `config.rs` - o `Config` persistido em `pom.json` e a resolução do
-  project root / diretório da UI.
+- `config.rs` - o `Config` persistido em `pom.json`, incluindo identidades
+  opacas das API keys, e a resolução do project root / diretório da UI. O
+  `audit.sqlite3` do gateway usa o mesmo `project_root`.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque.
 - `sysmon.rs` - amostragem de RAM/VRAM/disco por plataforma, com cache.
+- `thermal.rs` - política de temperatura, histerese e cooldown como máquina de
+  estados pura, sem dependência de fornecedor ou hardware.
 
 ## Funções-chave
 
@@ -45,6 +48,12 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   lista **vazia** = não procure em lugar nenhum; `shard_dir` em branco cai para
   `<project_root>/models`. `shard_max_gb` limita somente a pasta de fatias e
   assume 100 GB quando falta em um `pom.json` antigo.
+- A configuração não possui teto absoluto de saída. A capacidade efetiva é
+  observada no runtime depois do carregamento do modelo e chega ao gateway por
+  `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite
+  de geração definido no deploy é `max_new_tokens`, que limita uma perna.
+  Consulte `docs/subsystems/implantacao.md`, seção 1.3, e
+  `docs/subsystems/inferencia.md`, seção 9.1.
 - `cache_type_k`/`cache_type_v` - tipo numérico do cache K/V para todos os
   contextos llama.cpp desta instalação. O padrão é `f16`; os valores aceitos
   são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e
@@ -85,7 +94,15 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `deploy::free_memory_mb` lê o de **outras** máquinas para decidir se a fatia
   cabe.
 - `sample_disk` - `df -m` no project root (não no cwd); Windows
-  `GetDiskFreeSpaceExW`. É o que a tela usa para saber se outra fatia cabe.
+  `GetDiskFreeSpaceExW`. `sample_disk_at` recebe o destino configurado e mede
+  o volume que contém esse caminho, inclusive quando a pasta ainda não existe.
+  A tela usa essa variante para conferir se a saída de uma fatia cabe no disco
+  real apontado pelo operador.
+
+`sysmon.rs` também publica `GpuStat.temperature_c`: NVIDIA vem da mesma linha
+`nvidia-smi` que enumera VRAM e utilização, Radeon vem de `amdgpu`/hwmon, e
+GPU unificada fica explicitamente sem leitura. `None` significa temperatura
+desconhecida e nunca é convertido em alarme pela proteção térmica.
 
 ## Ligações
 

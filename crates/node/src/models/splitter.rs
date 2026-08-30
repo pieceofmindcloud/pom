@@ -3,7 +3,10 @@
 //! Reads the source model with mmap (never loads weights into RAM), selects
 //! tensors for the assigned layer range, remaps `blk.(start+i).*` names to
 //! `blk.i.*`, injects a fake identity `output_norm.weight` on non-last slices,
-//! updates KV metadata, and streams the slice to disk.
+//! updates KV metadata, and streams the slice to disk. Architecture-specific
+//! output contracts are checked before the destination is created: required
+//! head tensors are copied from the source into every slice that needs them,
+//! including non-final slices.
 //!
 //! Progress is reported via `on_progress(0.0..=100.0)` as bytes are written.
 
@@ -144,6 +147,7 @@ struct TensorRecord {
     name: String,
     dims: Vec<u64>,
     dtype: u32,
+    part_index: usize,
     src_offset: u64,
     byte_size: u64, // from offset-delta; 0 for fake tensors
 }
@@ -242,14 +246,40 @@ fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
 
 fn source_scalar_u32(mm: &[u8], entry: &KvSource) -> Option<u32> {
     match entry.vtype {
+        T_U8 => mm.get(entry.value_start).copied().map(u32::from),
+        T_I8 => mm
+            .get(entry.value_start)
+            .copied()
+            .map(|value| i8::from_le_bytes([value]))
+            .and_then(|value| u32::try_from(value).ok()),
+        T_U16 => mm
+            .get(entry.value_start..entry.value_start + 2)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u16::from_le_bytes)
+            .map(u32::from),
+        T_I16 => mm
+            .get(entry.value_start..entry.value_start + 2)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(i16::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
         T_U32 => mm
             .get(entry.value_start..entry.value_start + 4)
             .and_then(|bytes| bytes.try_into().ok())
             .map(u32::from_le_bytes),
+        T_I32 => mm
+            .get(entry.value_start..entry.value_start + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(i32::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
         T_U64 => mm
             .get(entry.value_start..entry.value_start + 8)
             .and_then(|bytes| bytes.try_into().ok())
             .map(u64::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
+        T_I64 => mm
+            .get(entry.value_start..entry.value_start + 8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(i64::from_le_bytes)
             .and_then(|value| u32::try_from(value).ok()),
         _ => None,
     }
@@ -310,6 +340,46 @@ fn encode_array_slice(mm: &[u8], entry: &KvSource, start: u32, count: u32) -> Re
     Ok(encoded)
 }
 
+fn layer_slice_bounds(
+    array_count: u64,
+    original_block_count: u32,
+    start_layer: u32,
+    layer_count: u32,
+) -> Result<(usize, usize)> {
+    let end_layer = start_layer
+        .checked_add(layer_count)
+        .ok_or_else(|| anyhow::anyhow!("overflow no intervalo de camadas"))?;
+    if start_layer >= original_block_count || end_layer > original_block_count {
+        bail!(
+            "intervalo de camadas {}..{} fora da contagem original {}",
+            start_layer,
+            end_layer.saturating_sub(1),
+            original_block_count
+        );
+    }
+    if array_count < original_block_count as u64 {
+        bail!(
+            "array por camada tem comprimento {array_count}; esperado pelo menos {original_block_count}"
+        );
+    }
+    Ok((start_layer as usize, end_layer as usize))
+}
+
+fn slice_layer_values<T: Clone>(
+    values: &[T],
+    original_block_count: u32,
+    start_layer: u32,
+    layer_count: u32,
+) -> Result<Vec<T>> {
+    let (start, end) = layer_slice_bounds(
+        values.len() as u64,
+        original_block_count,
+        start_layer,
+        layer_count,
+    )?;
+    Ok(values[start..end].to_vec())
+}
+
 fn is_global_array(key: &str, arch: &str) -> bool {
     !key.starts_with(&format!("{arch}.")) || key.contains(".rope.")
 }
@@ -339,7 +409,7 @@ fn tensor_header_size(name: &str, dims: &[u64]) -> usize {
     + 8 // offset(u64)
 }
 
-fn want_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
+fn want_tensor(name: &str, architecture: &str, start: u32, end: u32, is_last: bool) -> bool {
     if let Some(rest) = name.strip_prefix("blk.") {
         let idx: u32 = rest
             .split('.')
@@ -350,10 +420,20 @@ fn want_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
     }
     match name {
         "token_embd.weight" => true,
-        "output_norm.weight" | "output_norm.bias" | "output.weight" => is_last,
+        _ if crate::gguf::is_required_non_final_tensor(architecture, name) => true,
+        _ if crate::gguf::is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
         _ => false,
     }
+}
+
+/// GGUF tensor-table order is not a storage-order contract. Keep payload page
+/// faults monotonic within each multipart source, which matters when mmap is
+/// larger than RAM and the kernel has to evict old pages.
+fn source_read_order(tensors: &[TensorRecord]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..tensors.len()).collect();
+    order.sort_unstable_by_key(|&index| (tensors[index].part_index, tensors[index].src_offset));
+    order
 }
 
 fn remap_name(name: &str, start: u32) -> String {
@@ -412,6 +492,32 @@ fn identity_bytes(hidden_dim: u32, dtype: u32) -> (u32, Vec<u8>) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Validate the source tensors for one prospective slice without writing it.
+///
+/// This is used before reusing a path from an older manifest, so an existing
+/// invalid slice cannot bypass the current architecture contract.
+pub fn validate_slice_source(
+    src: &Path,
+    start_layer: u32,
+    end_layer: u32,
+    is_last: bool,
+) -> Result<()> {
+    let architecture = crate::gguf::read_info(src)?
+        .architecture
+        .unwrap_or_else(|| "llama".to_string());
+    let source = crate::multipart::GgufSource::open(src)?;
+    let tensor_names: HashSet<&str> = source
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect();
+    crate::gguf::validate_slice_tensors(&architecture, &tensor_names, is_last)?;
+    if start_layer > end_layer {
+        bail!("intervalo de camadas inválido L{start_layer}-{end_layer}");
+    }
+    Ok(())
+}
+
 /// Slice a GGUF model file.
 ///
 /// Produces a valid standalone GGUF at `dst` covering layers
@@ -436,10 +542,12 @@ pub fn split(
         src.display()
     );
 
-    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
-    let src_mm =
-        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
-    let mm: &[u8] = &src_mm;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
 
     let mut r = R { data: mm, pos: 0 };
 
@@ -506,21 +614,44 @@ pub fn split(
         .find(|entry| entry.key.ends_with(".block_count"))
         .and_then(|entry| source_scalar_u32(mm, entry));
 
+    let tensor_names: HashSet<&str> = source
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect();
+    crate::gguf::validate_slice_tensors(&arch, &tensor_names, is_last)?;
+
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
     let mut block_count_updated = false;
     let pom_prefix = format!("{}.", crate::brand::slug());
     for entry in &entries {
         let key = &entry.key;
-        if *key == crate::brand::gguf_key("original_block_count") || key.starts_with(&pom_prefix) {
+        if key.starts_with("split.")
+            || *key == crate::brand::gguf_key("original_block_count")
+            || key.starts_with(&pom_prefix)
+        {
             continue;
         }
-        if key.ends_with(".nextn_predict_layers") {
-            kv_out.push(if is_last {
-                KvOut::Raw(entry.start, entry.end)
-            } else {
-                KvOut::Encoded(encode_kv_u32(key, 0))
-            });
-            continue;
+        match crate::gguf::layer_count_semantics(key) {
+            Some(crate::gguf::LayerCountSemantics::FromStart) => {
+                let original = source_scalar_u32(mm, entry).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "metadata '{key}' conta camadas desde o início, mas não é um inteiro escalar não negativo que caiba em u32"
+                    )
+                })?;
+                let local = original.saturating_sub(start_layer).min(n_split);
+                kv_out.push(KvOut::Encoded(encode_kv_u32(key, local)));
+                continue;
+            }
+            Some(crate::gguf::LayerCountSemantics::FromEnd) => {
+                kv_out.push(if is_last {
+                    KvOut::Raw(entry.start, entry.end)
+                } else {
+                    KvOut::Encoded(encode_kv_u32(key, 0))
+                });
+                continue;
+            }
+            None => {}
         }
         if key.ends_with(".block_count") {
             kv_out.push(KvOut::Encoded(encode_kv_u32(key, n_split)));
@@ -532,25 +663,37 @@ pub fn split(
             continue;
         }
         if let Some(array) = entry.array {
-            let original = original_block_count.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
-                    key,
-                    array.count
-                )
-            })?;
-            if array.count == original as u64 {
-                let sliced = encode_array_slice(mm, entry, start_layer, n_split)?;
-                kv_out.push(KvOut::Encoded(sliced));
-                continue;
-            }
-            if array.count != 1 && !is_global_array(key, &arch) {
-                bail!(
-                    "array metadata '{}' tem comprimento {}; esperado 1 ou {} (contagem original de blocos)",
-                    key,
-                    array.count,
-                    original
-                );
+            // Only architecture-namespaced arrays are candidates for per-layer
+            // slicing. Global arrays such as tokenizer.ggml.tokens must remain
+            // byte-for-byte intact, even when their length exceeds block_count.
+            if !is_global_array(key, &arch) {
+                let original = original_block_count.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
+                        key,
+                        array.count
+                    )
+                })?;
+                if array.count >= original as u64 {
+                    let (slice_start, slice_end) =
+                        layer_slice_bounds(array.count, original, start_layer, n_split)?;
+                    let sliced = encode_array_slice(
+                        mm,
+                        entry,
+                        slice_start as u32,
+                        (slice_end - slice_start) as u32,
+                    )?;
+                    kv_out.push(KvOut::Encoded(sliced));
+                    continue;
+                }
+                if array.count != 1 {
+                    bail!(
+                        "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
+                        key,
+                        array.count,
+                        original
+                    );
+                }
             }
         }
         kv_out.push(KvOut::Raw(entry.start, entry.end));
@@ -579,47 +722,18 @@ pub fn split(
 
     // ── Parse tensor table ────────────────────────────────────────────────────
 
-    let mut all_tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()? as usize;
-        if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        let src_offset = r.u64()?;
-        all_tensors.push(TensorRecord {
-            name,
-            dims,
-            dtype,
-            src_offset,
-            byte_size: 0,
-        });
-    }
-
-    // The data section starts on an ALIGN boundary after the header
-    let src_data_start = align_up(r.pos as u64) as usize;
-
-    // Compute actual tensor sizes from offset deltas — more reliable than the
-    // type table, handles unknown quants and weight-tied (shared-offset) tensors.
-    {
-        let total_data = (mm.len() - src_data_start) as u64;
-        let mut unique: Vec<u64> = all_tensors.iter().map(|t| t.src_offset).collect();
-        unique.sort_unstable();
-        unique.dedup();
-        let size_map: HashMap<u64, u64> = unique
-            .iter()
-            .enumerate()
-            .map(|(i, &off)| {
-                let next = unique.get(i + 1).copied().unwrap_or(total_data);
-                (off, next - off)
-            })
-            .collect();
-        for t in &mut all_tensors {
-            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
-        }
-    }
+    let all_tensors: Vec<TensorRecord> = source
+        .tensors()
+        .iter()
+        .map(|tensor| TensorRecord {
+            name: tensor.name.clone(),
+            dims: tensor.dims.clone(),
+            dtype: tensor.dtype,
+            part_index: tensor.part_index,
+            src_offset: tensor.offset,
+            byte_size: tensor.byte_size,
+        })
+        .collect();
 
     // A hybrid model's recurrent layers, keyed by their *absolute* index in
     // the source file (see `ssm_conv1d_layer_index`). Empty for every plain
@@ -640,9 +754,10 @@ pub fn split(
 
     // ── Select tensors ────────────────────────────────────────────────────────
 
-    let selected: Vec<&TensorRecord> = all_tensors
-        .iter()
-        .filter(|t| want_tensor(&t.name, start_layer, end_layer, is_last))
+    let selected: Vec<&TensorRecord> = source_read_order(&all_tensors)
+        .into_iter()
+        .map(|index| &all_tensors[index])
+        .filter(|t| want_tensor(&t.name, &arch, start_layer, end_layer, is_last))
         .collect();
 
     if selected.is_empty() {
@@ -666,6 +781,7 @@ pub fn split(
                 name: t.name.clone(),
                 dims: t.dims.clone(),
                 dtype: t.dtype,
+                part_index: t.part_index,
                 src_offset: t.src_offset,
                 byte_size: t.byte_size,
             })
@@ -776,8 +892,17 @@ pub fn split(
                 }
             }
             TensorOut::Real(rec) => {
-                let start = src_data_start + rec.src_offset as usize;
-                let tensor_bytes = &mm[start..start + size as usize];
+                let part = source.parts().get(rec.part_index).ok_or_else(|| {
+                    anyhow::anyhow!("parte {} ausente para '{}'", rec.part_index, rec.name)
+                })?;
+                let start = part
+                    .data_start()
+                    .checked_add(rec.src_offset as usize)
+                    .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+                let tensor_bytes = part
+                    .map()
+                    .get(start..start + size as usize)
+                    .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", rec.name))?;
                 let mut pos = 0usize;
                 while pos < tensor_bytes.len() {
                     let n = CHUNK.min(tensor_bytes.len() - pos);
@@ -902,10 +1027,12 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         bail!("tp_size precisa ser >= 2");
     }
 
-    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
-    let src_mm =
-        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
-    let mm: &[u8] = &src_mm;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
@@ -946,43 +1073,18 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         }
     }
 
-    let mut tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()? as usize;
-        if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        let src_offset = r.u64()?;
-        tensors.push(TensorRecord {
-            name,
-            dims,
-            dtype,
-            src_offset,
-            byte_size: 0,
-        });
-    }
-
-    let src_data_start = align_up(r.pos as u64) as usize;
-    {
-        let total_data = (mm.len() - src_data_start) as u64;
-        let mut unique: Vec<u64> = tensors.iter().map(|t| t.src_offset).collect();
-        unique.sort_unstable();
-        unique.dedup();
-        let size_map: HashMap<u64, u64> = unique
-            .iter()
-            .enumerate()
-            .map(|(i, &off)| {
-                let next = unique.get(i + 1).copied().unwrap_or(total_data);
-                (off, next - off)
-            })
-            .collect();
-        for t in &mut tensors {
-            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
-        }
-    }
+    let tensors: Vec<TensorRecord> = source
+        .tensors()
+        .iter()
+        .map(|tensor| TensorRecord {
+            name: tensor.name.clone(),
+            dims: tensor.dims.clone(),
+            dtype: tensor.dtype,
+            part_index: tensor.part_index,
+            src_offset: tensor.offset,
+            byte_size: tensor.byte_size,
+        })
+        .collect();
 
     // Weight-tied output (output.weight compartilha offset com token_embd)
     // quebraria o shard: um fica inteiro e o outro partido. Recusa.
@@ -1044,6 +1146,42 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
     Ok(())
 }
 
+/// Estimates the combined disk footprint of every TP rank without writing it.
+///
+/// The payload follows the same role classification as the writer: shared
+/// tensors are replicated and column/row tensors are divided. The first GGUF
+/// data offset is used as a per-rank header budget, with one extra MiB for the
+/// TP metadata added by the writer. It is intentionally conservative because
+/// this value guards disk space before a long operation starts.
+pub fn estimate_tensor_parallel_output_bytes(src: &Path, tp_size: u32) -> Result<u64> {
+    validate_tensor_parallel(src, tp_size)?;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let header_budget = source
+        .parts()
+        .first()
+        .map(|part| part.data_start() as u64)
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .saturating_add(1 << 20);
+    let payload_per_rank = source.tensors().iter().try_fold(0u64, |sum, tensor| {
+        let bytes = match tp_role(&tensor.name) {
+            TpRole::Shared => tensor.byte_size,
+            TpRole::Column | TpRole::Row => tensor.byte_size / u64::from(tp_size),
+            TpRole::Unsupported => {
+                return Err(anyhow::anyhow!(
+                    "tensor '{}' não é shardável no caminho C (v1)",
+                    tensor.name
+                ));
+            }
+        };
+        sum.checked_add(align_up(bytes))
+            .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+    })?;
+    payload_per_rank
+        .checked_add(header_budget)
+        .and_then(|per_rank| per_rank.checked_mul(u64::from(tp_size)))
+        .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+}
+
 /// Shard de um modelo GGUF por tensor parallelism.
 ///
 /// Produz em `dst` um GGUF estruturalmente válido com os tensores do rank
@@ -1073,10 +1211,12 @@ pub fn shard_tensor_parallel(
     // como rede de segurança do layout.
     validate_tensor_parallel(src, tp_size)?;
 
-    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
-    let src_mm =
-        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
-    let mm: &[u8] = &src_mm;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
@@ -1140,7 +1280,7 @@ pub fn shard_tensor_parallel(
             continue;
         }
         r.skip_value(vtype)?;
-        if !key.starts_with(&pom_prefix) {
+        if !key.starts_with(&pom_prefix) && !key.starts_with("split.") {
             kv_out.push(KvOut::Raw(kv_start, r.pos));
         }
     }
@@ -1167,43 +1307,22 @@ pub fn shard_tensor_parallel(
     )));
 
     // Tensor table
-    let mut all_tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()? as usize;
-        if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        let src_offset = r.u64()?;
-        all_tensors.push(TensorRecord {
-            name,
-            dims,
-            dtype,
-            src_offset,
-            byte_size: 0,
-        });
-    }
-
-    let src_data_start = align_up(r.pos as u64) as usize;
-    {
-        let total_data = (mm.len() - src_data_start) as u64;
-        let mut unique: Vec<u64> = all_tensors.iter().map(|t| t.src_offset).collect();
-        unique.sort_unstable();
-        unique.dedup();
-        let size_map: HashMap<u64, u64> = unique
-            .iter()
-            .enumerate()
-            .map(|(i, &off)| {
-                let next = unique.get(i + 1).copied().unwrap_or(total_data);
-                (off, next - off)
-            })
-            .collect();
-        for t in &mut all_tensors {
-            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
-        }
-    }
+    let all_tensors: Vec<TensorRecord> = source
+        .tensors()
+        .iter()
+        .map(|tensor| TensorRecord {
+            name: tensor.name.clone(),
+            dims: tensor.dims.clone(),
+            dtype: tensor.dtype,
+            part_index: tensor.part_index,
+            src_offset: tensor.offset,
+            byte_size: tensor.byte_size,
+        })
+        .collect();
+    let ordered_tensors = source_read_order(&all_tensors)
+        .into_iter()
+        .map(|index| &all_tensors[index])
+        .collect::<Vec<_>>();
 
     // Weight-tied output (output.weight compartilha offset com token_embd)
     // quebraria o shard: um fica inteiro e o outro partido. Recusa.
@@ -1220,7 +1339,8 @@ pub fn shard_tensor_parallel(
     // Segmento de bytes a copiar do fonte para o destino.
     #[derive(Debug, Clone, Copy)]
     struct Seg {
-        src: usize, // absoluto no mmap
+        part_index: usize,
+        src: usize, // offset relativo à seção de dados da parte
         len: usize,
     }
     #[derive(Debug)]
@@ -1232,7 +1352,7 @@ pub fn shard_tensor_parallel(
     }
 
     let mut out_tensors: Vec<OutT> = Vec::with_capacity(n_tensors);
-    for t in &all_tensors {
+    for t in ordered_tensors {
         if t.byte_size == 0 {
             bail!(
                 "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
@@ -1241,7 +1361,6 @@ pub fn shard_tensor_parallel(
             );
         }
         let role = tp_role(&t.name);
-        let full_abs = src_data_start + t.src_offset as usize;
         match role {
             TpRole::Unsupported => {
                 bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
@@ -1251,7 +1370,8 @@ pub fn shard_tensor_parallel(
                 dims: t.dims.clone(),
                 dtype: t.dtype,
                 segs: vec![Seg {
-                    src: full_abs,
+                    part_index: t.part_index,
+                    src: t.src_offset as usize,
                     len: t.byte_size as usize,
                 }],
             }),
@@ -1275,7 +1395,8 @@ pub fn shard_tensor_parallel(
                         dims[1] = new_ne1;
                         let start = tp_rank as u64 * new_ne1 * row_stride;
                         vec![Seg {
-                            src: full_abs + start as usize,
+                            part_index: t.part_index,
+                            src: t.src_offset as usize + start as usize,
                             len: (new_ne1 * row_stride) as usize,
                         }]
                     }
@@ -1292,7 +1413,8 @@ pub fn shard_tensor_parallel(
                         let rank_off = tp_rank as u64 * chunk;
                         (0..ne1)
                             .map(|j| Seg {
-                                src: full_abs + (j * row_stride + rank_off) as usize,
+                                part_index: t.part_index,
+                                src: t.src_offset as usize + (j * row_stride + rank_off) as usize,
                                 len: chunk as usize,
                             })
                             .collect()
@@ -1373,7 +1495,17 @@ pub fn shard_tensor_parallel(
     for t in &out_tensors {
         let size = t.segs.iter().map(|s| s.len as u64).sum::<u64>();
         for seg in &t.segs {
-            let bytes = &mm[seg.src..seg.src + seg.len];
+            let part = source.parts().get(seg.part_index).ok_or_else(|| {
+                anyhow::anyhow!("parte {} ausente ao escrever '{}'", seg.part_index, t.name)
+            })?;
+            let start = part
+                .data_start()
+                .checked_add(seg.src)
+                .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+            let bytes = part
+                .map()
+                .get(start..start + seg.len)
+                .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", t.name))?;
             let mut pos = 0usize;
             while pos < bytes.len() {
                 let n = CHUNK.min(bytes.len() - pos);
@@ -1487,6 +1619,7 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
             name,
             dims,
             dtype,
+            part_index: 0,
             src_offset,
             byte_size: 0,
         });
@@ -1570,6 +1703,12 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         }
     }
 
+    let tensor_names: HashSet<&str> = parsed
+        .iter()
+        .flat_map(|part| part.tensors.iter().map(|tensor| tensor.name.as_str()))
+        .collect();
+    crate::gguf::validate_slice_tensors(&arch, &tensor_names, true)?;
+
     let start_first = parts[0].start_layer;
     let end_last = parts[parts.len() - 1].end_layer;
     let total = end_last - start_first + 1;
@@ -1620,14 +1759,12 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         let is_last = pi == parts.len() - 1;
         for t in &p.tensors {
             let is_blk = t.name.starts_with("blk.");
-            let is_output = matches!(
-                t.name.as_str(),
-                "output_norm.weight" | "output_norm.bias" | "output.weight"
-            );
-            // Blocks come from every slice; the head tensors (token embeddings,
-            // position embeddings, rope) only from the first; the head outputs
-            // only from the last — the middle slices carry a fake `output_norm`
-            // that would shadow the real one.
+            let is_output = crate::gguf::is_output_tensor(&arch, &t.name);
+            // Blocks come from every slice; the shared inputs only from the
+            // first; the final output head only from the last. Intermediate
+            // slices may carry real required head tensors for their loader,
+            // but their copy must not shadow the final head. They also carry a
+            // fake `output_norm` that would shadow the real one.
             let keep = is_blk || (is_output && is_last) || (pi == 0 && !is_output);
             if !keep {
                 continue;
@@ -1858,12 +1995,15 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("llama.feed_forward_length", 4),
         u32_array_kv(
             "llama.attention.head_count_kv_by_layer",
-            &(0..n_blocks).collect::<Vec<_>>(),
+            &(0..n_blocks)
+                .chain(n_blocks..n_blocks + 3)
+                .collect::<Vec<_>>(),
         ),
         bool_array_kv(
             "llama.attention.sliding_window_pattern",
             &(0..n_blocks)
                 .map(|layer| layer % 2 == 0)
+                .chain([true, false, true])
                 .collect::<Vec<_>>(),
         ),
         u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
@@ -2134,6 +2274,38 @@ fn qwen35_hybrid_test_gguf_bytes(n_blocks: u32, full_attn_interval: u32) -> Vec<
 mod tests {
     use super::*;
 
+    #[test]
+    fn payload_reads_are_ordered_by_source_part_and_offset() {
+        let tensors = vec![
+            TensorRecord {
+                name: "late".into(),
+                dims: vec![1],
+                dtype: 0,
+                part_index: 1,
+                src_offset: 8,
+                byte_size: 1,
+            },
+            TensorRecord {
+                name: "early".into(),
+                dims: vec![1],
+                dtype: 0,
+                part_index: 0,
+                src_offset: 32,
+                byte_size: 1,
+            },
+            TensorRecord {
+                name: "middle".into(),
+                dims: vec![1],
+                dtype: 0,
+                part_index: 0,
+                src_offset: 4,
+                byte_size: 1,
+            },
+        ];
+
+        assert_eq!(source_read_order(&tensors), vec![2, 1, 0]);
+    }
+
     fn kv_u32(mm: &[u8], want: &str) -> Option<u32> {
         let mut r = R { data: mm, pos: 0 };
         let magic = r.u32().ok()?;
@@ -2208,6 +2380,75 @@ mod tests {
         None
     }
 
+    fn kv_raw(mm: &[u8], want: &str) -> Option<Vec<u8>> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let start = r.pos;
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            r.skip_value(vtype).ok()?;
+            if key == want {
+                return Some(mm[start..r.pos].to_vec());
+            }
+        }
+        None
+    }
+
+    fn with_global_string_array(base: &[u8], count: usize) -> (Vec<u8>, Vec<u8>) {
+        let mut r = R { data: base, pos: 0 };
+        assert_eq!(r.u32().unwrap(), GGUF_MAGIC);
+        r.u32().unwrap();
+        r.u64().unwrap();
+        let n_kv = r.u64().unwrap();
+        for _ in 0..n_kv {
+            r.string().unwrap();
+            let vtype = r.u32().unwrap();
+            r.skip_value(vtype).unwrap();
+        }
+        let kv_end = r.pos;
+        let n_tensors = u64::from_le_bytes(base[8..16].try_into().unwrap());
+        for _ in 0..n_tensors {
+            r.string().unwrap();
+            let dimensions = r.u32().unwrap();
+            for _ in 0..dimensions {
+                r.u64().unwrap();
+            }
+            r.u32().unwrap();
+            r.u64().unwrap();
+        }
+        let data_start = align_up(r.pos as u64) as usize;
+
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let mut array = string("tokenizer.ggml.tokens");
+        array.extend_from_slice(&T_ARR.to_le_bytes());
+        array.extend_from_slice(&T_STR.to_le_bytes());
+        array.extend_from_slice(&(count as u64).to_le_bytes());
+        for index in 0..count {
+            array.extend_from_slice(&string(&format!("token-{index}")));
+        }
+
+        let mut out = base[..24].to_vec();
+        out[16..24].copy_from_slice(&(n_kv + 1).to_le_bytes());
+        out.extend_from_slice(&base[24..kv_end]);
+        out.extend_from_slice(&array);
+        out.extend_from_slice(&base[kv_end..data_start]);
+        while out.len() % ALIGN != 0 {
+            out.push(0);
+        }
+        out.extend_from_slice(&base[data_start..]);
+        (out, array)
+    }
+
     fn unknown_layer_array_gguf() -> Vec<u8> {
         let string = |value: &str| {
             let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
@@ -2259,6 +2500,128 @@ mod tests {
             ..p.data_start + t.src_offset as usize + t.byte_size as usize]
     }
 
+    fn deepseek4_test_gguf_bytes(n_blocks: u32, with_output_head: bool) -> Vec<u8> {
+        let n = 4u64;
+        let f32v = |values: &[f32]| -> Vec<u8> {
+            values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect()
+        };
+        let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = vec![(
+            "token_embd.weight".into(),
+            vec![n, n],
+            T_F32,
+            f32v(&[0.5; 16]),
+        )];
+        for layer in 0..n_blocks {
+            tensors.push((
+                format!("blk.{layer}.attn_q.weight"),
+                vec![n, n],
+                T_F32,
+                f32v(&[layer as f32; 16]),
+            ));
+        }
+        tensors.push(("output_norm.weight".into(), vec![n], T_F32, f32v(&[2.0; 4])));
+        if with_output_head {
+            tensors.extend([
+                ("output.weight".into(), vec![n, n], T_F32, f32v(&[3.0; 16])),
+                (
+                    "output_hc_fn.weight".into(),
+                    vec![8, 2],
+                    T_F32,
+                    f32v(&[4.0; 16]),
+                ),
+                (
+                    "output_hc_base.weight".into(),
+                    vec![2],
+                    T_F32,
+                    f32v(&[5.0; 2]),
+                ),
+                (
+                    "output_hc_scale.weight".into(),
+                    vec![1],
+                    T_F32,
+                    f32v(&[6.0; 1]),
+                ),
+            ]);
+        }
+
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let string_kv = |key: &str, value: &str| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_STR.to_le_bytes());
+            bytes.extend_from_slice(&string(value));
+            bytes
+        };
+        let u32_kv = |key: &str, value: u32| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_U32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        let kv = vec![
+            string_kv("general.architecture", "deepseek4"),
+            u32_kv("deepseek4.embedding_length", n as u32),
+            u32_kv("deepseek4.block_count", n_blocks),
+            u32_kv("deepseek4.vocab_size", n as u32),
+            u32_kv("deepseek4.dsv4_hc_mult", 2),
+            u32_kv("deepseek4.hash_layer_count", 3),
+            u32_kv("deepseek4.leading_dense_block_count", 3),
+            u32_kv("deepseek4.n_deepstack_layers", 3),
+            u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
+        ];
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+        for entry in &kv {
+            bytes.extend_from_slice(entry);
+        }
+
+        let mut offset = 0u64;
+        let offsets: Vec<u64> = tensors
+            .iter()
+            .map(|(_, _, _, data)| {
+                let current = offset;
+                offset = align_up(offset + data.len() as u64);
+                current
+            })
+            .collect();
+        for ((name, dims, dtype, _), offset) in tensors.iter().zip(offsets) {
+            bytes.extend_from_slice(&string(name));
+            bytes.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+            for dim in dims {
+                bytes.extend_from_slice(&dim.to_le_bytes());
+            }
+            bytes.extend_from_slice(&dtype.to_le_bytes());
+            bytes.extend_from_slice(&offset.to_le_bytes());
+        }
+        bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        for (_, _, _, data) in tensors {
+            bytes.extend_from_slice(&data);
+            bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        }
+        bytes
+    }
+
+    #[test]
+    fn per_layer_array_slice_uses_absolute_layer_indices() {
+        let values = vec![0u32, 0, 4, 128, 4, 128, 4, 128, 4, 0, 0];
+
+        assert_eq!(
+            slice_layer_values(&values, 8, 2, 4).unwrap(),
+            vec![4, 128, 4, 128]
+        );
+        assert_eq!(slice_layer_values(&values, 8, 7, 1).unwrap(), vec![128]);
+    }
+
     #[test]
     fn per_layer_arrays_are_sliced_without_naming_specific_keys() {
         let dir = std::env::temp_dir().join(format!("pom-array-slice-{}", std::process::id()));
@@ -2277,6 +2640,25 @@ mod tests {
             kv_bool_array(&bytes, "llama.attention.sliding_window_pattern"),
             Some(vec![false, true])
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn global_string_array_is_copied_without_layer_slicing() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-global-string-array-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("slice.gguf");
+        let (bytes, expected) = with_global_string_array(&test_gguf_bytes(1), 248_320);
+        std::fs::write(&whole, bytes).unwrap();
+
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        split(&whole, &out, 0, 0, true, true, |_| {}).unwrap();
+        let output = std::fs::read(&out).unwrap();
+
+        assert_eq!(layout.slice_bytes(0, 0, true), output.len() as u64);
+        assert_eq!(kv_raw(&output, "tokenizer.ggml.tokens"), Some(expected));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2550,6 +2932,208 @@ mod tests {
             None,
             "modelo sem ssm_conv1d não deve ganhar essa chave"
         );
+    }
+
+    #[test]
+    fn deepseek4_non_final_slice_carries_the_required_output_head() {
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-mid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("mid.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(4, true)).unwrap();
+
+        let source_bytes = std::fs::read(&whole).unwrap();
+        let source = parse_merged_src(&source_bytes).unwrap();
+        split(&whole, &output, 0, 1, true, false, |_| {}).unwrap();
+
+        let output_bytes = std::fs::read(&output).unwrap();
+        let parsed = parse_merged_src(&output_bytes).unwrap();
+        let names: HashSet<&str> = parsed
+            .tensors
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect();
+        for required in crate::gguf::required_output_tensors("deepseek4") {
+            assert!(names.contains(required), "faltou {required}: {names:?}");
+        }
+        for copied in [
+            "token_embd.weight",
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert_eq!(
+                tensor_data(&source_bytes, &source, copied),
+                tensor_data(&output_bytes, &parsed, copied),
+                "a fatia intermediária deve copiar os bytes reais de {copied}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_final_slice_carries_the_complete_output_head() {
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-final-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("final.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, true)).unwrap();
+
+        split(&whole, &output, 0, 1, true, true, |_| {}).unwrap();
+        let parsed = parse_merged_src(&std::fs::read(&output).unwrap()).unwrap();
+        let names: HashSet<&str> = parsed
+            .tensors
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect();
+        for required in [
+            "output_norm.weight",
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert!(names.contains(required), "faltou {required}: {names:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn layer_counts_from_model_start_are_rebased_for_offset_slices() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-layer-counts-offset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let prefix = dir.join("prefix.gguf");
+        let output = dir.join("tail.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(4, true)).unwrap();
+
+        split(&whole, &prefix, 0, 1, true, false, |_| {}).unwrap();
+        let prefix_bytes = std::fs::read(&prefix).unwrap();
+        for key in [
+            "deepseek4.hash_layer_count",
+            "deepseek4.leading_dense_block_count",
+            "deepseek4.n_deepstack_layers",
+        ] {
+            assert_eq!(
+                kv_u32(&prefix_bytes, key),
+                Some(2),
+                "a contagem desde o início deve ser limitada ao tamanho da fatia: {key}"
+            );
+        }
+
+        split(&whole, &output, 2, 3, false, true, |_| {}).unwrap();
+        let bytes = std::fs::read(&output).unwrap();
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        assert_eq!(
+            layout.slice_bytes(2, 3, true),
+            std::fs::metadata(&output).unwrap().len(),
+            "a estimativa precisa acompanhar a reserialização da metadata rebased"
+        );
+        for key in [
+            "deepseek4.hash_layer_count",
+            "deepseek4.leading_dense_block_count",
+            "deepseek4.n_deepstack_layers",
+        ] {
+            assert_eq!(
+                kv_u32(&bytes, key),
+                Some(1),
+                "a contagem relativa ao início precisa ser local para a fatia: {key}"
+            );
+        }
+
+        let tail = dir.join("empty-start-count.gguf");
+        split(&whole, &tail, 3, 3, false, true, |_| {}).unwrap();
+        let tail_bytes = std::fs::read(&tail).unwrap();
+        assert_eq!(kv_u32(&tail_bytes, "deepseek4.hash_layer_count"), Some(0));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_layout_prices_the_required_head_in_intermediate_ranges() {
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let mid = dir.join("mid.gguf");
+        let output = dir.join("final.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, true)).unwrap();
+
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        layout.validate_slice_ranges(&[(0, 0)]).unwrap();
+        split(&whole, &mid, 0, 0, true, false, |_| {}).unwrap();
+        assert_eq!(
+            layout.slice_bytes(0, 0, false),
+            std::fs::metadata(&mid).unwrap().len()
+        );
+        split(&whole, &output, 0, 1, true, true, |_| {}).unwrap();
+        assert_eq!(
+            layout.slice_bytes(0, 1, true),
+            std::fs::metadata(&output).unwrap().len()
+        );
+        assert!(layout.required_head_bytes() > 0);
+        let plan = crate::plan::plan_by_size(
+            &layout,
+            &[
+                crate::plan::SizedSlice {
+                    target_mb: Some(0.0),
+                },
+                crate::plan::SizedSlice { target_mb: None },
+            ],
+        )
+        .unwrap();
+        assert_eq!(plan.required_head_bytes, Some(layout.required_head_bytes()));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_non_final_slice_reports_missing_output_head_tensors() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-deepseek4-mid-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("mid.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, false)).unwrap();
+
+        let error = split(&whole, &output, 0, 0, true, false, |_| {}).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("deepseek4"), "{message}");
+        for required in [
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert!(message.contains(required), "faltou {required}: {message}");
+        }
+        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deepseek4_final_slice_reports_all_missing_output_tensors() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-deepseek4-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("deepseek4.gguf");
+        let output = dir.join("final.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(2, false)).unwrap();
+
+        let error = split(&whole, &output, 0, 1, true, true, |_| {}).unwrap_err();
+
+        let message = error.to_string();
+        for required in [
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ] {
+            assert!(message.contains(required), "faltou {required}: {message}");
+        }
+        assert!(!output.exists(), "uma recusa de preflight não cria a saída");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// `merge` reconstrói o array híbrido para a numeração 0-based do arquivo
@@ -2849,6 +3433,40 @@ mod tests {
         params.n_gpu_layers = 0;
         let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
         assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
+        unsafe { llama_cpp_sys_2::llama_model_free(model) };
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requer o GGUF real DeepSeek4 e vários GB livres em disco/RAM"]
+    fn real_deepseek4_intermediate_slice_copies_heads_and_loads() {
+        let source = std::env::var_os("POM_REAL_DEEPSEEK4_GGUF")
+            .expect("POM_REAL_DEEPSEEK4_GGUF deve apontar para o GGUF real");
+        let source = Path::new(&source);
+        let dir = std::env::temp_dir().join(format!("pom-deepseek4-slice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("deepseek4-15-28.gguf");
+
+        let layout = crate::gguf::read_layout(source).unwrap();
+        assert!(
+            layout.layer_count() > 28,
+            "o GGUF real precisa da camada 28"
+        );
+        assert!(
+            layout.required_head_bytes() > 0,
+            "a cabeça DeepSeek4 deve estar na fonte"
+        );
+        split(source, &out, 15, 28, false, false, |_| {}).unwrap();
+
+        unsafe { llama_cpp_sys_2::llama_backend_init() };
+        let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
+        let mut params = unsafe { llama_cpp_sys_2::llama_model_default_params() };
+        params.n_gpu_layers = 0;
+        let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        assert!(
+            !model.is_null(),
+            "uma fatia intermediária DeepSeek4 deveria carregar"
+        );
         unsafe { llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -295,6 +295,49 @@ CPUReference, depois da prova diferencial dos três dtypes na GPU real. A
 prova física desse GGUF ainda não foi executada neste worktree, portanto a
 telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
+Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute
+o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. Cada entrada do callback ganha
+duas linhas adjacentes, `callback_entry_default` no target padrão e
+`callback_entry` no target `moe.route_diagnostic`, como primeira ação, antes
+das validações. A dupla testa o sink e um eventual filtro por target no mesmo
+ponto do callback. Ambas registram os ponteiros e contagens crus; cada retorno
+`false` ganha ainda uma linha
+`callback_exit` com o motivo do caminho que abortou, inclusive argumentos
+nulos, geometria, normalização, metadata e forward. A primeira chamada de cada
+requisição e qualquer rota não finita ganham a amostra detalhada, sem depender
+do índice da camada. Ela registra valores crus de token 0, slot e deslocamento
+na ordem token-major, ponteiros e bytes das regiões lidas, quantidade de
+elementos declarada pelo
+llama.cpp versus esperada pelo POM, dtypes da metadata de gate/up/down e os
+dtypes assumidos nos argumentos do callback. Depois da normalização, registra
+novamente a amostra e as contagens de NaN. A variável é opt-in, fica desligada
+por padrão e não altera a execução. Na carga do primeiro `LoadedModel` do
+processo, uma linha adicional no target padrão registra uma vez o valor bruto
+da variável e o booleano efetivo do gate. Assim o log do próximo deploy mostra
+se o `OnceLock` reconheceu o ambiente, antes da primeira rota.
+
+O teste ignorado
+`llm::moe_route_tests::callback_global_emite_diagnostico_em_thread_externa_e_registra_gate`
+instala o dispatcher global com `.init` equivalente, cria uma thread
+`std::thread` fora do runtime Tokio e exige no mesmo sink a configuração, o
+`callback_entry_default`, o `callback_entry` com target MoE e o `callback_exit`.
+Ele passou localmente com `RUST_LOG=info`; isso prova o transporte no processo de
+teste, mas não substitui a confirmação no binário implantado.
+
+O callback do `llama.cpp` recebe a rota na ordem token-major que resulta do
+`ggml_get_rows` com dimensões `[1, experts_usados, tokens]`: slot é o índice
+mais rápido dentro de cada token. A normalização Rust valida e preserva essa
+ordem, sem transposição. O teste unitário
+`llm::moe_route_tests::rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major`
+fixa o contrato contra a sequência física produzida pelo builder C++.
+
+As mensagens `resolve_fused_ops: ... enabled` não provam que uma operação
+fundida foi usada: a sonda também imprime `enabled` quando não encontra nenhum
+nó daquele tipo. No `qwen35moe.cpp`, o FFN MoE continua passando pelo builder
+genérico e o expert compartilhado passa separadamente por `build_ffn`; a
+presença real de HC fundido precisa ser demonstrada pelos nós da reserva ou
+pelos logs da entrada do callback.
+
 ### Fase 5.1: ponte CUDA por dtype
 
 Esta foi a fase formal da ponte por dtype. O executor CUDA cobre NVFP4 (40),
@@ -993,11 +1036,42 @@ grafo nativo, inclusive para modelos densos. Arquitetura, geometria, ativação
 ou dtype que o executor não consiga atender devem produzir recusa nominal no
 limite de decode, nunca executar o bloco nativo como fallback silencioso.
 
-O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los:
-se já são contíguos, o caminho não copia; se top-k ou gather produziu uma view
-não contígua, o grafo cria uma cópia `ggml_cont` inevitável antes do reshape.
-`llama.cpp/tests/test-moe-route-layout.cpp` cobre as duas disposições sem
-assumir arquitetura ou dtype.
+O inventário segue a mesma prioridade do llama.cpp quando um GGUF traz
+`ffn_gate_up_exps.weight` fundido junto com `ffn_gate_exps.weight` e
+`ffn_up_exps.weight`: o tensor fundido é a representação ativa e os split
+duplicados são ignorados. Isso evita transformar cópias do mesmo expert em
+papéis concorrentes no descriptor. Nos caminhos K e heterogêneo, cada tensor
+ativo também procura os sidecars canônicos removendo `.weight` do nome base e
+anexando `.scale` ou `.input_scale`. Os valores por expert são validados como
+escalares finitos, carregados no payload/descriptor e aplicados nos produtos
+gate, up e down. O tensor compartilhado `ffn_*_shexp` continua fora desse
+inventário.
+
+Os testes `expert_shared_nao_entra_no_inventario_de_rota` e
+`inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` confirmam que somente
+os quatro tensores `*_exps.weight` são classificados como rota: `*_shexp` e
+`.scale`/`.input_scale` ficam fora. O teste
+`sidecars_fundidos_usam_componente_e_fallback_separado_corretos` confirma a
+associação do componente 0/1 nos sidecars do tensor fundido e o fallback para
+os sidecars de gate/up separados. As hipóteses de expert compartilhado contado
+e sidecar associado ao componente errado não explicam, portanto, o NaN
+observado no Ornith.
+
+O descriptor CUDA heterogêneo é uma estrutura C compatível com `#[repr(C)]`:
+`data` fica no offset 0, `bytes` no 8, `dtype` no 16, `scale` no 20,
+`input_scale` no 24, `secondary_scale` no 28 e `secondary_input_scale` no 32;
+o tamanho final é 40 bytes. Asserções de offset e tamanho existem no Rust e no
+`cuda_kernels.cu`. Essa parte não é coberta pela compilação local no macOS:
+qualquer mudança no kernel precisa de build com `nvcc` na ksia.
+
+O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los.
+Como esses buffers cruzam do backend que calcula top-k/gather para o custom op
+CPU, o stride aparentemente contíguo não prova que a alocação do produtor já
+foi materializada para a cópia do scheduler. O grafo cria sempre um produtor
+`ggml_cont` antes do reshape, inclusive para o primeiro token e slot. Isso
+fecha a leitura de memória não inicializada que aparecia como `NaN` em
+`ffn_moe_weights`; `llama.cpp/tests/test-moe-route-layout.cpp` cobre as vistas
+contígua e estriada.
 
 #### Prova numérica antes de desempenho
 
@@ -1069,12 +1143,52 @@ cargo test -p node nvfp4_matches_llama_cpp_from_first_layer_and_stage -- --ignor
 `POM_MOE_NUMERIC_ACTIVATION` é dado do GGUF, não uma seleção por arquitetura no
 executor. A captura de rota não é usada como oráculo: o teste primeiro usa o
 mesmo hidden, expert e pesos de um caso isolado; a prova E2E posterior reutiliza
-o hidden real de cada camada. O `ggml_cont` da correção de layout só é chamado
-quando `ggml_is_contiguous` é falso. Como o defeito original era exatamente um
-reshape de view não contígua, aquela requisição necessariamente pagou uma cópia
-de grafo para a rota afetada; o caso contíguo não paga cópia. O custo por
-camada/token ainda precisa ser medido separadamente, pois a telemetria atual
-não conta bytes ou tempo dessa cópia.
+o hidden real de cada camada. O `ggml_cont` da correção de layout é
+deliberadamente chamado mesmo quando `ggml_is_contiguous` retorna verdadeiro:
+somente a execução do produtor prova que a área está pronta para a cópia entre
+backends. O custo por camada/token ainda precisa ser medido separadamente, pois
+a telemetria atual não conta bytes ou tempo dessa cópia.
+
+Para provar a regressão completa antes de reimplantar, execute isoladamente o
+teste ignorado abaixo com um GGUF `qwen35moe` e CUDA real:
+
+```bash
+POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf \
+POM_MOE_NUMERIC_GPU_LAYERS=99 \
+cargo test -p node --features cuda --bin pom \
+  inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer \
+  -- --ignored --nocapture
+```
+
+Ele captura a saída da camada 1 para quatro tokens no caminho nativo e no
+callback externo, exige `moe_forward_us > 0` e somente executores `cuda`, e
+falha se qualquer residual não for finito. A medição publicada
+`MOE_NUMERIC_PROOF` deve mostrar `max_abs` e `max_relative`; cada elemento deve
+satisfazer `abs <= 5e-2 + 2e-2 * max(abs(native), 1)`. Essa combinação prova
+que a rota foi materializada e lida sem NaN, que o callback realmente usou
+CUDA e que o resultado externo acompanha o bloco nativo. O comando exige a
+feature CUDA e não deve ser substituído por `cargo test` sem `--ignored`.
+
+Para a prova do Ornith-1.5-35B-Q4_K_M, usar o GGUF completo real, não uma
+fatia, no valor de `POM_MOE_NUMERIC_MODEL`. O caminho exato não está neste
+worktree e não foi consultado na ksia nesta etapa, então permanece um
+placeholder explícito:
+
+```bash
+POM_MOE_NUMERIC_MODEL=/caminho/absoluto/Ornith-1.5-35B-Q4_K_M.gguf \
+POM_MOE_NUMERIC_GPU_LAYERS=99 \
+CUDAARCHS=120 \
+CUDACXX=/usr/local/cuda-12/bin/nvcc \
+CCACHE=ccache \
+RUSTC_WRAPPER=ccache \
+CARGO_TARGET_DIR=/data/ftk-cuda-target \
+cargo test -p node --features cuda --bin pom \
+  inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer \
+  -- --ignored --nocapture
+```
+
+Essa prova não foi executada: aguarda autorização explícita para gastar
+CPU/GPU na ksia.
 
 Pronto quando a telemetria de uma requisição MoE mostrar o callback executado,
 `executed_engine=MoE`, sem divergência, e a medição isolada comparar prefill e
@@ -1250,6 +1364,27 @@ quando o contrato exigir CUDA. Nunca se interpreta um payload não coberto como
 outro formato. Nesta entrega a ponte é declarada para Q4_K, Q6_K, IQ3_S, IQ2_S
 e IQ4_XS somente depois das respectivas provas; os demais IQ continuam
 protegidos pela recusa nominal.
+
+Quando uma rota heterogênea combina somente esses cinco dtypes, a decisão CUDA é
+feita por tensor, e não pela igualdade de um `KQuantFormat` global. Assim, uma
+combinação Q4_K/Q6_K como a do Ornith pode usar o mesmo executor heterogêneo,
+com `k_dot` escolhendo o decoder já validado de cada tensor. Um dtype fora desse
+conjunto mantém todos os experts da camada no llama.cpp; o diagnóstico lista
+somente os dtypes que bloquearam a ponte. A comparação diferencial específica
+da rota mista está no teste
+`executor_cuda_k_quants_heterogeneos_preserva_gate_up_down_do_decoder_cpu`, com
+tolerância absoluta de `1e-4` e relatório também da diferença relativa; ela deve
+ser executada com CUDA real antes de declarar a combinação provada.
+
+O callback comum do llama.cpp entrega `selected_experts` e `weights` na ordem
+token-major produzida por `ggml_get_rows` para `[1, experts_usados, tokens]`,
+enquanto o runtime Rust também agrupa lotes como `[token, expert_slot]`. A
+fronteira em `llm.rs` valida e preserva essa ordem, sem transposição adicional,
+antes de chamar o runtime. A validação de finitude permanece antes do upload e
+identifica `ffn_moe_weights`, arquitetura, camada, token, slot e expert no erro.
+Isso é importante para `qwen35moe`, que usa o mesmo `build_moe_ffn` genérico
+para experts roteados e mantém o expert compartilhado em outro caminho; não há
+um contrato de rota alternativo por arquitetura.
 
 Critério de pronto por bloco: build `--features vulkan,cuda` verde no ramo de
 checagem; teste diferencial executado para cada dtype; GGUF real correspondente
@@ -1770,6 +1905,13 @@ por tensor até que suas escalas sejam incluídas no inventário heterogêneo. Q
 I8, I16, I32, I64 e F64 continuam sem decoder. Qualquer dtype não coberto
 produz o nome do tensor, o ID e o nome GGML, sem interpretar os bytes por outro
 formato.
+
+Na ponte CUDA, o subconjunto heterogêneo validado é Q4_K (12), Q6_K (14),
+IQ3_S (21), IQ2_S (22) e IQ4_XS (23). Os kernels recebem um descriptor por
+expert e papel, validam o tamanho da matriz segundo o dtype e despacham para o
+decoder K ou IQ existente. Isso preserva o caminho IQ anterior e permite que
+gate, up e down usem dtypes diferentes; a ausência de uma ponte em qualquer
+tensor mantém a camada nativa e informa o dtype bloqueador.
 
 O teste ignorado
 `qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` exige

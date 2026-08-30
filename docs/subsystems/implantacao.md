@@ -36,6 +36,38 @@ Fatiar. O modo de modelo inteiro é a exceção controlada: quando o operador pe
 um prefixo para outro peer, o backend consulta as fronteiras reais do GGUF e
 materializa as faixas no peer que possui o arquivo.
 
+## 1.3 Capacidade de saída derivada do runtime
+
+O campo `max_new_tokens` dentro de `params` é o tamanho de uma perna do
+backend. Não existe um segundo teto absoluto no `pom.json`: o orçamento total
+da requisição vem de `max_tokens` do cliente e do espaço restante da janela
+`n_ctx` do runtime ativo. O gateway costura as pernas invisivelmente até o
+cliente parar, atingir seu orçamento ou o contexto não comportar mais saída.
+
+Passo operacional exato antes de testar uma implantação longa:
+
+1. Na tela de implantação, defina `n_ctx` e `max_new_tokens` em `params` para
+   os valores que o captain escolheu, por exemplo `n_ctx: 100000` e
+   `max_new_tokens: 32000`.
+2. Aplique a implantação e aguarde o `/health` de **cada peer** confirmar
+   `model_loaded` e `runtime_capacity`. Um peer que ainda está reiniciando não
+   entra na capacidade publicada.
+3. Consulte `/v1/models` autenticado e confirme
+   `context_length: 100000` e
+   `top_provider.max_completion_tokens: 100000` quando esse for o contexto
+   efetivo. Exemplo sem expor a chave:
+
+   ```bash
+   curl -fsS -H "x-api-key: ${POM_API_KEY}" \
+     http://ksia:8080/v1/models | jq '.data[] | {id, context_length, max_completion_tokens: .top_provider.max_completion_tokens}'
+   ```
+
+O gateway anuncia o menor `n_ctx` confirmado entre todos os peers vivos do
+modelo e mantém `max_new_tokens` apenas como tamanho de perna. O limite local
+do cliente, como `maxTokens: 5000` no Pi, continua independente dessa
+capacidade. Um `pom.json` legado que contenha o campo removido é recusado na
+leitura, em vez de ser aceito com um valor padrão escondido.
+
 Três regras saem da arquitetura, não do gosto:
 
 - **Ordem do pipeline = ordem das camadas.** Quem fica com a camada 0 recebe o
@@ -52,6 +84,22 @@ Três regras saem da arquitetura, não do gosto:
   diferentes sobre a mesma camada tornariam a resposta ambígua; cópias exatas
   são ignoradas na cobertura lógica e ficam disponíveis para o roteador. Uma
   atribuição válida precisa cobrir cada camada exigida exatamente uma vez.
+
+## 1.4 Proteção térmica da implantação
+
+Cada nó grava `thermal` no `pom.json`, com `limit_c` padrão de 85 °C,
+`hysteresis_c` de 8 °C e `cooldown_secs` de 30 segundos. O monitor usa a mesma
+lista `SystemLoad.gpus` que a tela exibe. Uma leitura conhecida acima do limite
+descarrega o modelo, remove o anúncio das camadas e publica o estado
+`thermal`; a configuração da implantação fica preservada para a retomada.
+
+A retomada só acontece quando todas as GPUs têm leitura conhecida no máximo em
+`limit_c - hysteresis_c` (77 °C no padrão) e permanecem nessa condição durante
+o cooldown. Leitura ausente, falha do driver ou GPU sem sensor não dispara
+desimplantação e também não prova que é seguro religar.
+`POST /api/ui/stop-inference` limpa a recuperação pendente, para que uma
+desimplantação manual não seja anulada pelo monitor. Cada transição registra
+temperatura observada, limites e tempo no log do servidor.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
@@ -105,6 +153,17 @@ com `sha256` antes de iniciar `transfer/pull`. Se uma faixa já existir no
 destino, ela permanece na lista de camadas disponíveis e não há slider para
 ela. Falha ou ausência de leitura do GGUF é uma recusa nominal, com o motivo
 visível no inspetor.
+
+O preflight também confere o contrato de saída que o loader exige. Para a
+arquitetura `deepseek4`, `llama.cpp` exige `token_embd.weight`,
+`output_norm.weight`, `output.weight`, `output_hc_fn.weight`,
+`output_hc_base.weight` e `output_hc_scale.weight` em uma instância carregável;
+como ele não conhece `pom.start_layer` nem `pom.end_layer`, a origem copia os
+pesos reais da cabeça para cada faixa não final antes de iniciar a implantação.
+O preflight recusa somente quando a origem não permite essa cópia, listando o
+tensor ausente ou a causa concreta. Contagens de camadas que o loader compara
+com o índice local também são rebaseadas para a faixa; `nextn_predict_layers`,
+que conta a partir do fim, fica zerada fora da faixa final.
 
 ## 1.2 Tensor parallel: grupo de ranks
 
@@ -221,8 +280,14 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   viaja por máquina. O cache KV é dimensionado pela janela de contexto, e uma
   caixa com 16 GB de VRAM e uma sem GPU no mesmo pipeline não podem estar as duas
   certas sobre onde ele cabe. Tudo o mais (`RuntimeParams`) é do pipeline inteiro
-  - contexto, batch e pedaço decidem o orçamento de prompt que o gateway cobra, e
-  a amostragem só roda no último peer.
+  - contexto, batch, pedaço e precisão do estado oculto decidem o orçamento de
+  prompt que o gateway cobra, e a amostragem só roda no último peer. A precisão
+  é `f16` por padrão e pode ser escolhida como `f8` para medição.
+- **Capacidade de precisão**: `f8` só pode ser implantado quando todos os peers
+  selecionados anunciam `inference/frame-v1-dtype-f8` em
+  `inference_frame_capabilities`. O planner bloqueia o deploy com a razão do
+  peer incompatível; a validação no caminho de inferência mantém a mesma
+  proteção contra configurações divergentes depois do deploy.
 - **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
   padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
   antes da carga usando a capacidade total `n_ctx * max_sessions`, e pode

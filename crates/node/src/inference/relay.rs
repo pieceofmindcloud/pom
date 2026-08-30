@@ -9,7 +9,7 @@
 //! encode/decode path instead of drifting apart.
 
 use crate::infer_tunnel::{TunnelOutbound, TunnelOutboundSender, TunnelRequest};
-use crate::wire::{self, FrameEncoding, WireDtype};
+use crate::wire::{self, FrameEncoding, TensorShape, WireDtype};
 use anyhow::{anyhow, Result};
 use axum::body::Bytes;
 use libp2p::PeerId;
@@ -69,15 +69,55 @@ pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
 /// call site's own comment for which applies.
 pub const CHUNK_ATTEMPTS: u32 = 3;
 
+/// Transporte que realmente carregou um frame de inferência.
+///
+/// `tls` continua separado porque o túnel libp2p é cifrado por Noise, mas não
+/// é TLS. O nome do transporte é a evidência necessária para comparar o
+/// caminho de inferência com o caminho HTTP de arquivos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InferenceTransport {
+    Local,
+    Libp2pTunnel,
+    Https,
+    Unknown,
+}
+
+impl InferenceTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Libp2pTunnel => "libp2p-tunnel",
+            Self::Https => "https",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "local" => Self::Local,
+            "libp2p-tunnel" => Self::Libp2pTunnel,
+            "https" => Self::Https,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// One hop's response, plus the client-observable timing a caller needs to
 /// build its own bookkeeping from (a `RequestTrace` hop entry in
 /// `prefill.rs`, or a `hop_timings` array entry in `infer_server.rs`).
 pub struct SentFrame {
     pub meta: Value,
-    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub tensor: Option<(Vec<f32>, TensorShape)>,
     pub round_trip_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// Tensor bytes sent on this crossing, excluding the frame header.
+    pub hidden_state_bytes_sent: u64,
+    /// Tensor bytes returned by this crossing, excluding the frame header.
+    pub hidden_state_bytes_received: u64,
+    /// Wire precision selected for this crossing.
+    pub hidden_state_dtype: WireDtype,
     pub client_encode_ms: u64,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
@@ -95,6 +135,11 @@ pub struct SentFrame {
     /// de medição: é custo de estabelecimento de conexão, não custo por token,
     /// e a tela precisa dizer isso - ver `Chat.tsx`.
     pub tls_handshake_ms: u64,
+    /// Transporte escolhido para esta travessia, sem agregar os hops
+    /// seguintes.
+    pub transport: InferenceTransport,
+    /// True quando HTTPS foi usado depois de uma falha de transporte no túnel.
+    pub transport_fallback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -114,7 +159,7 @@ struct BatchCall {
     local: Option<LocalInference>,
     path: String,
     meta: Value,
-    tensor: Option<(Vec<f32>, [usize; 2])>,
+    tensor: Option<(Vec<f32>, TensorShape)>,
     dtype: WireDtype,
     attempts: u32,
     peer_label: String,
@@ -124,12 +169,11 @@ struct BatchCall {
 
 /// Coalesces independent requests that are about to cross the same pipeline
 /// edge. The queue is process-local on purpose: each peer owns its own
-/// transport and its own llama context. A short window is enough to combine
-/// requests arriving in the same scheduler tick without making one request
-/// wait behind an unrelated generation.
+/// transport and its own llama context. The flush is scheduled immediately,
+/// so calls already concurrent in this executor turn can still share a frame
+/// without imposing a fixed delay on a lone request.
 pub struct BatchCoordinator {
     pending: Mutex<HashMap<BatchKey, Vec<BatchCall>>>,
-    window: Duration,
 }
 
 impl BatchCoordinator {
@@ -138,7 +182,6 @@ impl BatchCoordinator {
         INSTANCE.get_or_init(|| {
             Arc::new(Self {
                 pending: Mutex::new(HashMap::new()),
-                window: Duration::from_millis(4),
             })
         })
     }
@@ -182,7 +225,7 @@ impl BatchCoordinator {
         local: Option<LocalInference>,
         path: &str,
         meta: &Value,
-        tensor: Option<(&[f32], [usize; 2])>,
+        tensor: Option<(&[f32], TensorShape)>,
         dtype: WireDtype,
         attempts: u32,
         peer_label: &str,
@@ -224,7 +267,6 @@ impl BatchCoordinator {
         if should_flush {
             let coordinator = self.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(coordinator.window).await;
                 coordinator.flush(key).await;
             });
         }
@@ -249,7 +291,7 @@ impl BatchCoordinator {
                 wire::tensor_payload_len(
                     call.tensor
                         .as_ref()
-                        .map(|(values, shape)| (values.as_slice(), *shape)),
+                        .map(|(values, shape)| (values.as_slice(), shape.clone())),
                     call.dtype,
                 )
                 .unwrap_or(wire::MAX_BATCH_PAYLOAD_BYTES.saturating_add(1))
@@ -317,6 +359,20 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
             let item = by_id
                 .remove(&call.item_id)
                 .ok_or_else(|| anyhow!("resposta batch não contém o item {}", call.item_id))?;
+            let hidden_state_bytes_sent = hidden_state_bytes(
+                call.tensor
+                    .as_ref()
+                    .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                call.dtype,
+            )?;
+            let hidden_state_bytes_received = received_hidden_state_bytes(
+                &item.meta,
+                item.tensor
+                    .as_ref()
+                    .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                call.dtype,
+                &call.peer_label,
+            )?;
             let tls_handshake_ms = item
                 .meta
                 .get("tls_handshake_ms")
@@ -328,12 +384,17 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
                 round_trip_ms: response.round_trip_ms,
                 bytes_sent: response.bytes_sent / calls.len() as u64,
                 bytes_received: response.body.len() as u64 / calls.len() as u64,
+                hidden_state_bytes_sent,
+                hidden_state_bytes_received,
+                hidden_state_dtype: call.dtype,
                 client_encode_ms: response.client_encode_ms,
                 response_headers_ms: response.response_headers_ms,
                 response_body_ms: response.response_body_ms,
                 client_decode_ms: response.client_decode_ms,
                 tls: response.tls,
                 tls_handshake_ms,
+                transport: response.transport,
+                transport_fallback: response.transport_fallback,
             });
         }
         Ok::<_, anyhow::Error>(output)
@@ -367,12 +428,17 @@ impl SentFrame {
             "processing_ms": self.meta.get("processing_ms").cloned().unwrap_or(json!(0)),
             "bytes_sent": self.bytes_sent,
             "bytes_received": self.bytes_received,
+            "hidden_state_bytes_sent": self.hidden_state_bytes_sent,
+            "hidden_state_bytes_received": self.hidden_state_bytes_received,
+            "hidden_state_dtype": self.hidden_state_dtype.as_str(),
             "client_encode_ms": self.client_encode_ms,
             "response_headers_ms": self.response_headers_ms,
             "response_body_ms": self.response_body_ms,
             "client_decode_ms": self.client_decode_ms,
             "tls": self.tls,
             "tls_handshake_ms": self.tls_handshake_ms,
+            "transport": self.transport.as_str(),
+            "transport_fallback": self.transport_fallback,
             "node_timings": self.meta.get("node_timings").cloned().unwrap_or(json!({})),
         })
     }
@@ -465,12 +531,21 @@ pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
         || text.contains("corpo do frame excede limite")
 }
 
+/// Identifica a recusa que o gateway consegue reparar reconstruindo o prefill
+/// desde o prompt completo. A mensagem pode vir diretamente de `HttpRefusal`
+/// ou dentro de um `RelayFailure` serializado pelo anel/resposta direta, mas
+/// `anyhow::Error::to_string` preserva o texto nos dois casos.
+pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("sessão") && text.contains("desconhecida")
+}
+
 /// The request payload does not reveal the size of a hidden-state response
 /// produced by a head hop. Coalescing such calls could create a response batch
 /// larger than the wire limit even when every request was tiny. Ring frames
 /// already carry their downstream route and return metadata, so they remain
 /// safe to coalesce; hub frames without a tensor are sent one at a time.
-fn can_coalesce_frame(path: &str, meta: &Value, tensor: Option<(&[f32], [usize; 2])>) -> bool {
+fn can_coalesce_frame(path: &str, meta: &Value, tensor: Option<(&[f32], TensorShape)>) -> bool {
     let hidden_response = tensor.is_none()
         && matches!(path, "/v1/prefill" | "/v1/step")
         && meta.get("is_last").and_then(Value::as_bool) == Some(false)
@@ -523,34 +598,58 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 /// idempotency protection against being redecoded).
 fn encode_frame_body(
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
-    encoding: FrameEncoding,
+    _encoding: FrameEncoding,
     use_batch_frame: bool,
 ) -> Result<Vec<u8>> {
     if use_batch_frame {
         wire::encode_batch_single(meta, tensor, dtype)
     } else {
-        match (tensor, dtype) {
-            (Some(tensor), WireDtype::F16) => {
-                wire::encode_with_encoding(meta, Some(tensor), encoding)
-            }
-            (tensor, dtype) => wire::encode(meta, tensor, dtype),
-        }
+        wire::encode(meta, tensor, dtype)
     }
+}
+
+fn hidden_state_bytes(tensor: Option<(&[f32], TensorShape)>, dtype: WireDtype) -> Result<u64> {
+    Ok(wire::tensor_payload_len(tensor, dtype)? as u64)
+}
+
+fn received_hidden_state_bytes(
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+    expected_dtype: WireDtype,
+    peer_label: &str,
+) -> Result<u64> {
+    let Some(tensor) = tensor else {
+        return Ok(0);
+    };
+    let actual_dtype = WireDtype::parse(
+        meta.get("dtype")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("{peer_label}: resposta com estado oculto sem dtype"))?,
+    )?;
+    if actual_dtype != expected_dtype {
+        return Err(anyhow!(
+            "{peer_label}: resposta de estado oculto usa {}, mas o formato negociado é {}",
+            actual_dtype.as_str(),
+            expected_dtype.as_str()
+        ));
+    }
+    hidden_state_bytes(Some(tensor), actual_dtype)
 }
 
 async fn send_frame_in_process(
     local: LocalInference,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     use_batch_frame: bool,
     peer_label: &str,
 ) -> Result<SentFrame> {
     debug!(peer = peer_label, path, "inferência em processo");
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
@@ -568,6 +667,14 @@ async fn send_frame_in_process(
     }
     let client_decode_started = Instant::now();
     let (meta, tensor) = wire::decode(&bytes)?;
+    let hidden_state_bytes_received = received_hidden_state_bytes(
+        &meta,
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+        dtype,
+        peer_label,
+    )?;
     let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
     let tls_handshake_ms = meta
         .get("tls_handshake_ms")
@@ -579,12 +686,17 @@ async fn send_frame_in_process(
         round_trip_ms: started.elapsed().as_millis() as u64,
         bytes_sent,
         bytes_received: bytes.len() as u64,
+        hidden_state_bytes_sent,
+        hidden_state_bytes_received,
+        hidden_state_dtype: dtype,
         client_encode_ms,
         response_headers_ms: 0,
         response_body_ms: 0,
         client_decode_ms,
         tls: false,
         tls_handshake_ms,
+        transport: InferenceTransport::Local,
+        transport_fallback: false,
     })
 }
 
@@ -596,7 +708,7 @@ pub async fn send_frame(
     base_url: &str,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     attempts: u32,
@@ -605,7 +717,7 @@ pub async fn send_frame(
 ) -> Result<SentFrame> {
     send_frame_with_protocol(
         clients, peer_id, base_url, path, meta, tensor, dtype, encoding, false, attempts,
-        peer_label, on_issue,
+        peer_label, false, on_issue,
     )
     .await
 }
@@ -617,18 +729,20 @@ async fn send_frame_with_protocol(
     base_url: &str,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     use_batch_frame: bool,
     attempts: u32,
     peer_label: &str,
+    transport_fallback: bool,
     mut on_issue: impl FnMut(SendIssue),
 ) -> Result<SentFrame> {
     // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
     // certificado esperado deste destino, e o pinning é o que distingue o peer
     // de quem se põe no meio dele.
     let http = &clients.for_peer(peer_id)?;
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
@@ -668,6 +782,14 @@ async fn send_frame_with_protocol(
                     }
                 };
                 let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+                let hidden_state_bytes_received = received_hidden_state_bytes(
+                    &meta,
+                    tensor
+                        .as_ref()
+                        .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                    dtype,
+                    peer_label,
+                )?;
                 // O handshake é medido no servidor e volta no meta da resposta:
                 // é lá que o tempo é exato, porque é lá que o `accept` acontece.
                 let tls_handshake_ms = meta
@@ -682,10 +804,15 @@ async fn send_frame_with_protocol(
                     round_trip_ms: started.elapsed().as_millis() as u64,
                     bytes_sent: body.len() as u64,
                     bytes_received: bytes.len() as u64,
+                    hidden_state_bytes_sent,
+                    hidden_state_bytes_received,
+                    hidden_state_dtype: dtype,
                     client_encode_ms,
                     response_headers_ms,
                     response_body_ms,
                     client_decode_ms,
+                    transport: InferenceTransport::Https,
+                    transport_fallback,
                 });
             }
             Ok(r) => {
@@ -737,6 +864,8 @@ struct BatchTransportResponse {
     response_body_ms: u64,
     client_decode_ms: u64,
     tls: bool,
+    transport: InferenceTransport,
+    transport_fallback: bool,
 }
 
 /// Send one already encoded batch. The batch coordinator uses this function
@@ -776,6 +905,8 @@ async fn send_batch_body(
             response_body_ms: 0,
             client_decode_ms: 0,
             tls: false,
+            transport: InferenceTransport::Local,
+            transport_fallback: false,
         });
     }
 
@@ -789,6 +920,7 @@ async fn send_batch_body(
         tunnel.is_some(),
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
+    let mut transport_fallback = false;
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
         match send_batch_via_tunnel(
@@ -805,6 +937,7 @@ async fn send_batch_body(
             Ok(response) => return Ok(response),
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
+                transport_fallback = true;
                 warn!("{peer_label}: libp2p batch falhou ({error}), tentando HTTPS direto")
             }
         }
@@ -845,6 +978,8 @@ async fn send_batch_body(
                     response_body_ms,
                     client_decode_ms,
                     tls: url.starts_with("https://"),
+                    transport: InferenceTransport::Https,
+                    transport_fallback,
                 });
             }
             Ok(response) => {
@@ -921,6 +1056,8 @@ async fn send_batch_via_tunnel(
         response_body_ms: 0,
         client_decode_ms: 0,
         tls: false,
+        transport: InferenceTransport::Libp2pTunnel,
+        transport_fallback: false,
     })
 }
 
@@ -1127,7 +1264,7 @@ pub async fn send_frame_or_tunnel(
     tunnel: Option<&TunnelOutboundSender>,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     attempts: u32,
@@ -1144,7 +1281,7 @@ pub async fn send_frame_or_tunnel(
     } else {
         None
     };
-    let can_batch = can_coalesce_frame(path, meta, tensor)
+    let can_batch = can_coalesce_frame(path, meta, tensor.clone())
         && step.supports(crate::pipeline::CAP_FRAME_BATCH)
         && !meta.get("reply_to").is_some_and(|value| !value.is_null())
         && meta.get("speculate").is_none()
@@ -1185,7 +1322,7 @@ pub async fn send_frame_or_tunnel(
             local,
             path,
             meta,
-            tensor,
+            tensor.clone(),
             dtype,
             encoding,
             step.supports(crate::pipeline::CAP_FRAME_BATCH),
@@ -1206,6 +1343,7 @@ pub async fn send_frame_or_tunnel(
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
+    let mut transport_fallback = false;
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
@@ -1215,7 +1353,7 @@ pub async fn send_frame_or_tunnel(
             &step.libp2p_addr_candidates,
             path,
             meta,
-            tensor,
+            tensor.clone(),
             dtype,
             encoding,
             use_batch_frame,
@@ -1226,7 +1364,10 @@ pub async fn send_frame_or_tunnel(
         {
             Ok(sent) => return Ok(sent),
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(error) => warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto"),
+            Err(error) => {
+                transport_fallback = true;
+                warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto")
+            }
         }
     }
 
@@ -1242,6 +1383,7 @@ pub async fn send_frame_or_tunnel(
         use_batch_frame,
         attempts,
         peer_label,
+        transport_fallback,
         on_issue,
     )
     .await
@@ -1306,7 +1448,7 @@ pub async fn send_frame_via_tunnel(
     peer_id: PeerId,
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     encoding: FrameEncoding,
     peer_label: &str,
@@ -1333,23 +1475,19 @@ async fn send_frame_via_tunnel_with_auth(
     addr_candidates: &[String],
     path: &str,
     meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
+    tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
-    encoding: FrameEncoding,
+    _encoding: FrameEncoding,
     use_batch_frame: bool,
     peer_label: &str,
     auth_token: Option<String>,
 ) -> Result<SentFrame> {
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let body = if use_batch_frame {
         wire::encode_batch_single(meta, tensor, dtype)?
     } else {
-        match (tensor, dtype) {
-            (Some(tensor), WireDtype::F16) => {
-                wire::encode_with_encoding(meta, Some(tensor), encoding)?
-            }
-            (tensor, dtype) => wire::encode(meta, tensor, dtype)?,
-        }
+        wire::encode(meta, tensor, dtype)?
     };
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
 
@@ -1391,6 +1529,14 @@ async fn send_frame_via_tunnel_with_auth(
     let response_body_ms = 0;
     let client_decode_started = Instant::now();
     let (meta, tensor) = wire::decode(&response.body)?;
+    let hidden_state_bytes_received = received_hidden_state_bytes(
+        &meta,
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+        dtype,
+        peer_label,
+    )?;
     let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
 
     Ok(SentFrame {
@@ -1404,10 +1550,15 @@ async fn send_frame_via_tunnel_with_auth(
         round_trip_ms,
         bytes_sent: body.len() as u64,
         bytes_received: response.body.len() as u64,
+        hidden_state_bytes_sent,
+        hidden_state_bytes_received,
+        hidden_state_dtype: dtype,
         client_encode_ms,
         response_headers_ms: round_trip_ms,
         response_body_ms,
         client_decode_ms,
+        transport: InferenceTransport::Libp2pTunnel,
+        transport_fallback: false,
     })
 }
 
@@ -1452,6 +1603,40 @@ mod tests {
         });
 
         assert!(is_frame_size_error(&error));
+    }
+
+    #[test]
+    fn a_response_with_another_hidden_state_dtype_is_refused() {
+        let values = vec![1.0_f32; 2];
+        let error = received_hidden_state_bytes(
+            &json!({"dtype": "f16"}),
+            Some((&values, vec![1, 2])),
+            WireDtype::F8,
+            "old-peer",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("old-peer"), "erro inesperado: {error}");
+        assert!(error.contains("f16"), "erro inesperado: {error}");
+        assert!(error.contains("f8"), "erro inesperado: {error}");
+    }
+
+    #[test]
+    fn unknown_session_refusal_is_classified() {
+        let unknown = anyhow::Error::new(HttpRefusal {
+            status: 400,
+            body: "sessão 's' desconhecida - envie reset=true antes".into(),
+            peer_label: "peer-x".into(),
+        });
+        let other = anyhow::Error::new(HttpRefusal {
+            status: 400,
+            body: "chunk fora de ordem".into(),
+            peer_label: "peer-x".into(),
+        });
+
+        assert!(is_unknown_session_error(&unknown));
+        assert!(!is_unknown_session_error(&other));
     }
 
     #[tokio::test]
@@ -1594,12 +1779,21 @@ mod tests {
             round_trip_ms: 12,
             bytes_sent: 100,
             bytes_received: 200,
+            hidden_state_bytes_sent: 0,
+            hidden_state_bytes_received: 0,
+            hidden_state_dtype: WireDtype::F16,
             client_encode_ms: 1,
             response_headers_ms: 5,
             response_body_ms: 3,
             client_decode_ms: 1,
             tls,
             tls_handshake_ms: handshake,
+            transport: if tls {
+                InferenceTransport::Https
+            } else {
+                InferenceTransport::Unknown
+            },
+            transport_fallback: false,
         }
     }
 
@@ -1626,6 +1820,22 @@ mod tests {
         let e = frame(false, 0).as_hop_timing_entry();
         assert_eq!(e["tls"], false);
         assert_eq!(e["tls_handshake_ms"], 0);
+    }
+
+    #[test]
+    fn hop_timing_expone_transporte_e_medidas_da_travessia() {
+        let e = SentFrame {
+            transport: InferenceTransport::Https,
+            transport_fallback: true,
+            ..frame(false, 0)
+        }
+        .as_hop_timing_entry();
+
+        assert_eq!(e["transport"], "https");
+        assert_eq!(e["transport_fallback"], true);
+        assert_eq!(e["round_trip_ms"], 12);
+        assert_eq!(e["bytes_sent"], 100);
+        assert_eq!(e["bytes_received"], 200);
     }
     use tokio::sync::mpsc;
 
@@ -2112,7 +2322,7 @@ mod tests {
             None,
             "/v1/step",
             &json!({"session_id": "session-v3"}),
-            Some((&[0.25_f32, -0.5], [1, 2])),
+            Some((&[0.25_f32, -0.5], vec![1, 2])),
             WireDtype::F16,
             FrameEncoding::F16,
             1,

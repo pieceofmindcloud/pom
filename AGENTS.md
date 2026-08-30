@@ -76,6 +76,29 @@ RUST_LOG=debug ./target/release/pom ...
 cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 ```
 
+## Preparo do build
+
+O build depende do fork do `llama.cpp` em `/llama.cpp`, ignorado pelo Git
+(ver `.gitignore`), alcançado por `vendor/llama-cpp-sys-2/llama.cpp`.
+Antes de compilar, confira e atualize o checkout na branch
+`pom-tensor-parallel`, pois o lado Rust acompanha a API desse fork:
+
+```bash
+git -C /llama.cpp remote -v
+git -C /llama.cpp switch pom-tensor-parallel
+git -C /llama.cpp pull --ff-only origin pom-tensor-parallel
+git -C /llama.cpp log -1 --oneline
+```
+
+Se faltarem `llama_moe_ffn_descriptor`, `llama_set_moe_ffn_callback` ou campos
+`moe_external_executor*` em `llama_model_params`, o checkout do fork está
+desatualizado - não é defeito preexistente do projeto. Em uma cópia nova, se o
+symlink estiver ausente, recrie-o com:
+
+```bash
+ln -s ../../llama.cpp vendor/llama-cpp-sys-2/llama.cpp
+```
+
 **Compilar com `--features cuda` sem `CUDAARCHS` é quase sempre desperdício**:
 o llama.cpp gera cada objeto CUDA para dez arquiteturas de GPU. Meça o custo e
 a arquitetura de cada máquina em `docs/subsystems/build-execucao.md`
@@ -138,6 +161,28 @@ quebra o produto inteiro.
   O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
   uma obrigação de suportar um protocolo legado; mudanças futuras devem
   evoluir esse contrato de forma explícita. → `inferencia.md`
+- **O `max_new_tokens` da implantação limita uma geração, não a requisição.**
+  Ele nunca foi teto do backend - o `infer_server` não o conhece. É o teto de
+  uma **perna** do laço de continuação do gateway, que atravessa a perna na
+  mesma sessão de KV e no mesmo SSE, sem reprefill e sem o cliente ver nada.
+  Quem limita a requisição é o `max_tokens` do cliente, e só ele produz
+  `finish_reason: "length"`. Vazar o `length` de uma perna fazia o harness largar
+  a chamada de ferramenta pela metade. → `inferencia.md` (9.1)
+- **O teto pedido pelo cliente é imposto e inviolável, e atingi-lo é parada
+  terminal.** Nada o ultrapassa, nem uma chamada de ferramenta aberta no token
+  do corte - é o que OpenAI e Anthropic fazem, e o que existe no lugar do
+  transbordo é o **orçamento de tarefa** (`output_config.task_budget`), que
+  avisa o modelo em vez de esticar o teto. Corte dentro de uma chamada devolve
+  a chamada **estruturada e incompleta**, como os dois provedores: markup cru
+  no `content` nunca é resposta, e descartar também não.
+  A capacidade de saída vem do `n_ctx` efetivo anunciado em `/health` e
+  agregado entre os peers vivos da implantação. Ela é publicada em
+  `/v1/models`; `max_new_tokens` continua sendo somente o tamanho de uma perna
+  do laço, e `max_tokens` continua sendo o orçamento pedido pelo cliente.
+  Em streaming os argumentos de uma chamada saem em
+  **fragmentos** conforme o modelo gera, e a concatenação deles é sempre a
+  string que o caminho não-streaming produziria.
+  → `inferencia.md` (9.1), `api-http.md`
 - **A geração nunca acontece na sequência de KV do prompt.** Cada sessão de um
   peer tem duas sequências: o prefill escreve na do prompt, a geração numa cópia
   dela, e o fim do turno apaga a cópia inteira. Só remoção **total** de

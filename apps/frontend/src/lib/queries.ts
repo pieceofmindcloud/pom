@@ -33,7 +33,7 @@ import type {
   PathsResponse,
   PeerCatalog,
   PeerRuntime,
-  RequestLogEntry,
+  RequestLogResponse,
   TransferJob,
   TransferOffer,
 } from "./types";
@@ -69,6 +69,7 @@ export const keys = {
   requests: ["requests"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
+  networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
   remoteModels: (query: string, ggufOnly: boolean, page: number) =>
@@ -186,6 +187,19 @@ export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, exe
     enabled: enabled && nodeIds.length > 1,
     retry: false,
     staleTime: Infinity,
+  });
+}
+
+/** RTT direcional da topologia atual, para o mapa do Painel. */
+export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
+  return useQuery({
+    queryKey: keys.networkRtt(nodeIds),
+    queryFn: () =>
+      api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", { node_ids: nodeIds }),
+    enabled: enabled && nodeIds.length > 1,
+    retry: false,
+    refetchInterval: 15000,
+    staleTime: 10000,
   });
 }
 
@@ -316,19 +330,42 @@ export function useApiKeys() {
   });
 }
 
-export function useRequestLog(params: { node_id?: string; token?: string } = {}) {
+export function useRequestLog(
+  params: {
+    node_id?: string;
+    api_key?: string;
+    prompt?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+) {
   const search = new URLSearchParams();
   if (params.node_id) search.set("node_id", params.node_id);
-  if (params.token) search.set("token", params.token);
+  if (params.api_key) search.set("api_key", params.api_key);
+  if (params.prompt) search.set("prompt", params.prompt);
+  if (params.from) search.set("from", params.from);
+  if (params.to) search.set("to", params.to);
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  if (params.offset !== undefined) search.set("offset", String(params.offset));
   const qs = search.toString();
   return useQuery({
     queryKey: [...keys.requests, qs],
     queryFn: () =>
       optional(
-        api.get<{ entries: RequestLogEntry[]; total: number }>(
+        api.get<RequestLogResponse>(
           `/api/ui/requests${qs ? `?${qs}` : ""}`,
         ),
-        { entries: [], total: 0 },
+        {
+          entries: [],
+          total: 0,
+          errors: 0,
+          incomplete: 0,
+          by_token: {},
+          by_node: {},
+          storage: "unavailable",
+        },
       ),
     refetchInterval: 3000,
   });

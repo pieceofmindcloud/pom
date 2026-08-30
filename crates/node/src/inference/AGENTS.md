@@ -10,6 +10,11 @@ direto em pernas de rede (`direct_lab.rs`), a bancada da especulação
 rede (`wire.rs`) e a
 supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
 anotação da fatia servida (estado Pending/Serving em `models/lastslice.rs`).
+O runtime consulta a política de `utils/thermal.rs` a cada 5 segundos, pausa
+o modelo acima do limite com estado `thermal`, preserva a configuração para
+retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
+abaixo do limite de religar durante o cooldown. `stop` limpa essa recuperação
+para respeitar uma desimplantação manual.
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
@@ -66,24 +71,40 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
+  A captura identifica o eixo de tokens pela quantidade conhecida de tokens do
+  microlote físico e pela forma do tensor. `n_embd_inp` valida a forma 2D ou
+  com eixos extras singleton; quando há um eixo extra não singleton,
+  `n_embd_out` valida a largura física expandida reportada pelo llama.cpp. Essas
+  larguras não participam da identificação do eixo: todos os eixos anteriores
+  ao eixo de tokens são features e são preservados na ordem física, publicando
+  o shape canônico `[tokens, features...]`. Eixos posteriores maiores que 1
+  são recusados e eixos posteriores singleton são ignorados. Se mais de um
+  eixo ainda for candidato, o menor eixo que fecha os strides contíguos é
+  escolhido deterministicamente. A acumulação continua anexando microlotes na
+  ordem produzida com `kv_unified=true`. Shape ou stride que não fecha essa
+  geometria é recusado com diagnóstico explícito. `decode_hidden` e
+  `decode_hidden_batch` usam a largura validada para dimensionar o batch Rust.
   `decode_tokens_batch` e `decode_hidden_batch`
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.
 - `scheduler.rs` - limites de admissão, janela de microbatch e seleção FIFO
-  round robin. Cada processo cria sua própria fila; réplicas da mesma faixa não
+  round robin. A janela tem default de 0 ms para não atrasar uma chamada
+  isolada, mas continua configurável para workloads que priorizam coalescer
+  chegadas. Cada processo cria sua própria fila; réplicas da mesma faixa não
   compartilham scheduler, KV ou capacidade de fila.
 - `mtp.rs` (445) - predição multi-token (MTP): contexto de rascunho
   `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
   `observe`/`accept`/`draft` portado de `common_speculative_impl_draft_mtp` do
-  llama.cpp.
+  llama.cpp. O buffer `h` acompanha `n_embd_out`, porque o contexto MTP expõe a
+  largura física de saída quando a arquitetura tem eixos de fluxo.
 - `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
   `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do
   `llama-cpp-sys-2` (o `wrapper.h` dele só inclui `llama.h`). Compilada pelo
   `crates/node/build.rs`.
-- `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
-  `step_speculative`, as duas formas de resposta da especulação, traço de fases
-  por requisição. `Cancellation` cancela a operação do gateway quando o
+- `prefill.rs` - `run_with_options` (hub) / `run_ring` (anel) / `run_direct`
+  (direto), `step_speculative`, as duas formas de resposta da especulação, traço
+  de fases por requisição. `Cancellation` cancela a operação do gateway quando o
   consumidor desaparece, antes do próximo chunk ou hop e também durante a
   espera HTTP; um frame já aceito pelo peer não recebe um novo header de fio.
   O prefill de continuação carrega `reuse_prefix` no primeiro chunk e
@@ -99,11 +120,28 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   absolutos, inclusive no primeiro chunk de um modelo inteiro.
   `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
   não foram reprocessados; `retained_tokens` devolve a fronteira estável que
-  ficou na `prompt_seq` e que o gateway confirma no rewind.
+  ficou na `prompt_seq` e que o gateway confirma no rewind. Hub e resposta
+  direta rodam o prefill como um pipeline em ordem: uma bomba da cabeça
+  despacha os pedaços em série e uma bomba de downstream (`FuturesOrdered`)
+  os leva pelos hops restantes, até `W` em voo. `PrefillOverlapWindow` limita
+  por contagem (`prefill_max_inflight_chunks`, efetivo 1..8, padrão 8) e por
+  bytes de estado oculto em RAM no gateway (`INFLIGHT_BYTE_BUDGET`, 512 MiB);
+  o permit de cada limite viaja com o pedaço. A janela cancela as futures em
+  voo no erro ou no cancelamento e preserva a ordem do resultado. Um pedaço
+  `k>0` que falha depois de a cadeia aceitar os anteriores anexa um
+  `PrefillResumable` ao erro, e o gateway retoma do pedaço `k` em vez de
+  reenviar o prompt (sessão perdida vai para o retry frio). O modo anel
+  continua serializado pelo contrato aninhado e ignora a janela. A telemetria
+  também registra `prefix_match_tokens`, `prefix_reuse_status`,
+  `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
+  travessia.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
-  mensagens (`openai::conversation_cache_key`), não do prompt renderizado.
+  mensagens (`openai::conversation_cache_key`), não do prompt renderizado; no
+  caminho Anthropic, `conversation_cache_key_with_budget` também inclui a
+  identidade de `task_budget` para impedir que o KV de outro marcador seja
+  reutilizado.
 - `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
   **escolha**. A referência acompanha lookup, insert, busy, release e eviction;
   o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a
@@ -122,6 +160,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   as funções de produção nos pontos de decisão
   (`plan_prefix_reuse`, `reuse_prefix_for_forward`,
   `overlay_head_authoritative_fields`, `prompt_progress_for_forward`).
+  Também simula um hop que perde a sessão no meio do prefill: o gateway repete
+  o prefill completo a frio uma única vez, para reconstruir o KV desde o prompt,
+  e a bateria verifica que uma segunda perda termina com erro limitado e útil.
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
@@ -140,9 +181,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
   feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
   Q6_K (14) e IQ3_S (21), IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa
-  descritores por papel e dtype para esses três IQ, sem converter a combinação
-  para um dtype global. A ponte escalar reutiliza o payload de
-  `format_plain.rs` e valida o cabeçalho antes do kernel.
+  descritores por papel e dtype para Q4_K/Q6_K e esses três IQ, sem converter a
+  combinação para um dtype global. O hook comum recebe a rota do llama.cpp já
+  em ordem token-major, a ordem física produzida por `ggml_get_rows`; `llm.rs`
+  valida e preserva essa ordem antes do runtime. A ponte escalar reutiliza o
+  payload de `format_plain.rs` e valida o cabeçalho antes do kernel.
   K-quants e IQ-quants validam a convenção GGUF
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
   antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML
@@ -152,6 +195,48 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
   uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  Quando `ffn_gate_up_exps.weight` e os tensores split coexistem, o inventário
+  segue a prioridade do llama.cpp e usa somente o fundido, sem contar os
+  duplicados como uma segunda rota. Os loaders K e heterogêneo resolvem os
+  sidecars canônicos `.scale` e `.input_scale` por expert, carregam os valores
+  no payload/descriptor e aplicam as escalas nos estágios gate, up e down.
+  O helper `llama_moe_reshape_route_2d` do fork materializa sempre a rota com
+  `ggml_cont` antes do reshape: `ggml_is_contiguous` sozinho não prova que a
+  área do produtor já está pronta para a cópia entre backends. Isso protege o
+  primeiro token/slot contra leitura não inicializada. `qwen35moe` mantém
+  `ffn_*_shexp` fora do inventário: o callback recebe apenas `ffn_*_exps`, e o
+  expert compartilhado continua no `build_ffn` nativo.
+  Na carga do primeiro `LoadedModel` do processo, o servidor registra uma vez,
+  no target padrão, o valor bruto de `POM_MOE_ROUTE_DIAGNOSTICS` e o booleano
+  efetivo do gate, antes de qualquer callback MoE. O teste ignorado
+  `callback_global_emite_diagnostico_em_thread_externa_e_registra_gate` instala
+  o mesmo dispatcher global, cria uma thread fora do Tokio e exige as linhas
+  default e `moe.route_diagnostic` no mesmo sink.
+  Os testes `expert_shared_nao_entra_no_inventario_de_rota` e
+  `inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` verificam que somente
+  os quatro nomes exps terminados em `.weight` entram na classificação, sem
+  contar `shexp` nem sidecars. O teste
+  `sidecars_fundidos_usam_componente_e_fallback_separado_corretos` verifica os
+  nomes canônicos e a associação componente 0/1 do fundido, além do fallback
+  para gate/up separados. Essas provas não encontraram a origem do NaN do
+  Ornith.
+  A prova diferencial CUDA do Ornith ainda depende de um GGUF completo fora do
+  worktree. O comando preparado, sem execução local ou remota nesta etapa, é:
+  `POM_MOE_NUMERIC_MODEL=/caminho/absoluto/Ornith-1.5-35B-Q4_K_M.gguf`
+  `POM_MOE_NUMERIC_GPU_LAYERS=99 CUDAARCHS=120`
+  `CUDACXX=/usr/local/cuda-12/bin/nvcc CCACHE=ccache RUSTC_WRAPPER=ccache`
+  `CARGO_TARGET_DIR=/data/ftk-cuda-target cargo test -p node --features cuda --bin pom`
+  `inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer`
+  `-- --ignored --nocapture`. O caminho do GGUF é um placeholder explícito,
+  porque o arquivo real não está neste worktree e a ksia não foi consultada.
+  A prova E2E isolada é:
+  `POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf POM_MOE_NUMERIC_GPU_LAYERS=99`
+  `cargo test -p node --features cuda --bin pom`
+  `inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer`
+  `-- --ignored --nocapture`. Ela compara quatro tokens na camada 1 entre o
+  bloco nativo e o callback externo, exige executor `cuda`, ausência de NaN e
+  `abs <= 5e-2 + 2e-2 * max(abs(native), 1)` por elemento; `MOE_NUMERIC_PROOF`
+  publica `max_abs` e `max_relative`.
   `bandwidth.rs` transforma medições concorrentes CPU/transferência em uma
   fração determinística dos misses; `coexecution.rs` divide por expert,
   executa as duas lanes em paralelo e soma saídas com largura validada.
@@ -167,7 +252,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Antes da carga, `MoeRuntime::external_executor_plan` publica ownership por
   camada: somente camadas com ponte device têm seus experts omitidos do
   llama.cpp; dtypes sem cache device e combinações heterogêneas fora do
-  conjunto IQ priorizado ficam nativas e registram o motivo na telemetria. O
+  conjunto Q4_K/Q6_K/IQ3_S/IQ2_S/IQ4_XS ficam nativas e registram o dtype que
+  barrou na telemetria. O
   fork mantém a lista como metadata
   copiada no modelo e o grafo escolhe external/native pela camada, nunca por
   uma flag global que possa deixar experts sem executor.
@@ -177,6 +263,28 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   host, preparação do lote e cópia dos resultados para vetores Rust. O perfil é opt-in por
   `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
   política do cache.
+  Para investigar a origem de uma rota inválida, `POM_MOE_ROUTE_DIAGNOSTICS=1`
+  habilita duas linhas adjacentes, `callback_entry_default` no target padrão e
+  `callback_entry` no target `moe.route_diagnostic`, como primeira ação do
+  callback, antes de qualquer validação e sem filtro de camada. A dupla existe
+  para provar no mesmo ponto se o evento chega ao sink e se um filtro por target
+  o remove. Ambas registram os ponteiros e contagens crus recebidos. Todo
+  retorno `false` também emite
+  `callback_exit` com o motivo estável do caminho que abortou, inclusive
+  argumentos nulos, geometria, normalização, metadata e forward. A primeira
+  chamada de cada requisição recebe a amostra detalhada;
+  qualquer chamada com rota não finita também recebe essa amostra, mesmo que
+  outra já tenha sido registrada. O log registra os valores crus de token 0 e
+  seus deslocamentos na ordem token-major produzida por `ggml_get_rows`,
+  contagens declaradas pelo llama.cpp e esperadas pelo POM, endereços e bytes
+  lidos, dtypes da metadata de cada tensor e os dtypes assumidos pelos
+  argumentos do callback. Também registra a
+  mesma amostra depois da normalização Rust. Sem a variável, o instrumento fica
+  desligado e não altera o caminho de execução. A normalização valida e
+  preserva essa ordem; não deve transpor a rota novamente. O teste ignorado
+  `llm::moe_route_tests::callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink`
+  executa o callback real com o mesmo `EnvFilter` do processo e deve ser rodado
+  com `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
   acumulação inteira por subbloco NVFP4 e decodificação direta dos superblocos
   Q4_K/Q6_K com SiLU no caminho K. O
@@ -191,6 +299,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   também publica `runtime_forward_ms`, `host_batch_prepare_ms`,
   `host_result_copy_ms` e `host_aggregation_ms` para fechar a conta do forward
   MoE sem somar relógios sobrepostos.
+  Alterações em `cuda_kernels.cu` só são validadas com compilação CUDA na
+  máquina que tem `nvcc`; compilar o crate Rust no macOS não compila esse
+  arquivo. O descriptor `CudaHeterogeneousTensor` mantém offsets ABI
+  explícitos para `data`, `bytes`, `dtype`, `scale`, `input_scale`,
+  `secondary_scale` e `secondary_input_scale`, além de asserções de offset e
+  tamanho nas duas pontas.
   A descompactação NVFP4 e K-quant ainda ocorre no kernel a cada uso, mas os bytes quantizados
   do expert ficam residentes no device entre usos quando a ponte CUDA e o
   orçamento medido permitem. O cache frio de RAM e o cache quente de device têm
@@ -245,9 +359,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   seleciona o runtime próprio por dtype. `ExecutionEngine` é a fonte única do
   rótulo que sai na telemetria; ausente em peer antigo vira desconhecido na
   interface.
-- `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
-  próximo hop, envia um frame único e distribui respostas por `item_id`;
-  `bubble_hop_timings` mantém a telemetria por salto.
+- `relay.rs` - `BatchCoordinator` agenda o flush imediatamente e ainda agrupa
+  chamadas concorrentes para o mesmo próximo hop no mesmo ciclo do executor;
+  envia um frame único e distribui respostas por `item_id`. Não há mais um
+  timer fixo no relay; `bubble_hop_timings` mantém a telemetria por salto.
 - `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
   cache globais do `pom.json` e guarda o
   `deployment_name` operacional separado de `model_label`, sobe e
@@ -259,12 +374,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   veio do deploy; `infer_server::run` a entrega ao seletor antes de carregar o
   modelo. O campo escolhido ainda não substitui a observação: a telemetria
   continua sendo a fonte de verdade sobre o motor executado e deixa divergência
-  visível.
+  visível. Depois de `/health` responder `model_loaded`,
+  `spawn_health_watch` também publica no `Network` o `RuntimeCapacity` efetivo
+  (`n_ctx`, `max_new_tokens`); apply, erro, stop e unload térmico removem esse
+  valor até o próximo runtime pronto.
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
   como botão. O fixture não anuncia batching, pois o endpoint falso atende
-  frames unitários.
+  frames unitários. Os cenários também conferem que a resposta real do gateway
+  traz `GenerationTimings` agregados, inclusive no limite de um token.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
   lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o
@@ -353,6 +472,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   texto sem sentido (18/08).
 - `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
+  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN na borda,
+  sempre devolvendo f32 ao motor; `prefill.rs`/`relay.rs` propagam o dtype
+  escolhido e registram bytes enviados, recebidos e formato efetivo por hop.
 
 ## Funções-chave
 
@@ -386,26 +508,36 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `pipeline.rs` preserva os node IDs das réplicas escolhidas durante a sessão.
 - `spawn_scheduler`/`run_scheduler` - worker único por contexto llama.cpp,
   com backpressure antes de alocar sessão e resposta `429 Retry-After` quando
-  a fila atingiu o limite. O `/health` expõe os limites e os últimos contadores
-  de lote.
+  a fila atingiu o limite. Com `batch_window_ms=0`, o primeiro item segue ao
+  worker sem espera temporizada; um valor positivo mantém a janela de coleta.
+  O `/health` expõe os limites e os últimos contadores de lote.
 - bloco de resposta direta (nos dois handlers, quando `direct_reply_to(&meta)`
   existe) - acumula `hop_timings` na ida (`direct::accumulate` +
   `direct::hop_entry`); cauda (`next_hops` vazio): spawna `direct::deliver_result`
-  ao `reply_to` e devolve `direct_ack()`; meio: spawna `forward_direct` para o
-  próximo hop; meio sem residual local: `deliver_failure` com "hop intermediário
-  não produziu estado oculto".
+  ao `reply_to` e devolve `direct_ack()`; a cabeça inclui a progressão de
+  prefill em `prompt_progress` no ACK, para o gateway despachar o próximo
+  chunk com `next_pos` absoluto durante a sobreposição; meio: spawna
+  `forward_direct` para o próximo hop; meio sem residual local:
+  `deliver_failure` com "hop intermediário não produziu estado oculto".
 - `forward_direct` - repasse assíncrono em task própria (quem chamou já foi
   aceito e não espera mais nada); repassa `reply_to` intacto; remonta `scale=1.0`,
   `is_last` e `next_hops` remanescente. Falhou o repasse, entrega
   `direct::deliver_failure` nomeando o nó que realmente morreu.
-- `direct_ack` - `{"accepted": true}` wire-codificado; é tudo que volta pelo
-  caminho de quem chamou.
+- `direct_ack`/`direct_ack_with_progress` - ACK wire-codificado com
+  `{"accepted": true}`; no prefill, a cabeça anexa `prompt_progress` com
+  `more_chunks`/`start_pos`/`next_pos` autoritativos. O gateway lê esse campo
+  aninhado antes de lançar o próximo chunk; não deriva posição pela ordem de
+  chegada.
 - `direct_reply_to` - o campo `reply_to` do meta; ausente no hub e no anel, é
   só ele que liga o caminho novo.
 - `prompt_progress_for_forward`/`apply_prompt_progress` - a contraparte direta
   de `overlay_head_authoritative_fields` (agora `pub(crate)`): sem volta, a
   cabeça manda `more_chunks`/`n_prompt_tokens` **adiante** e quem entrega copia
   para o resultado - senão todo prompt de mais de um pedaço trunca no primeiro.
+- `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso` -
+  cenário ponta a ponta com dois chunks, ACK de progresso aninhado e cabeça
+  remota; os hops falsos recusam continuação sem posição e conferem os valores
+  absolutos tanto numa sessão fria quanto com prefixo reaproveitado.
 - branch de relay (`should_relay`) - no anel, quando `next_hops` não é vazio e
   há hidden state local, reencaminha para a cauda em vez de devolver ao
   chamador; patcha `processing_ms`/`node_timings` próprios antes de codificar a
@@ -418,6 +550,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   KV não confirmado da especulação; sessão desconhecida é no-op (não erro);
   o gateway fan-out para todos os hops.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
+  reinício do processo também remove o estado em memória. Se um desses eventos
+  ocorrer no meio de um prefill, o peer devolve sessão desconhecida e o gateway
+  recomeça o prefill completo uma vez, nunca apenas o chunk que perdeu o KV;
   `INFERENCE_FRAME_BODY_LIMIT=64 MiB` corta frame impossível no body.
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
@@ -470,16 +605,26 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   libera a string (`llama_rs_string_free`, nunca `free` nem
   `CString::from_raw`).
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
-  `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
-  Mutex global e disputava com decodes paralelos). `accumulate_capture` junta um
-  disparo por **microlote**: o llama.cpp parte o lote em pedaços de `n_ubatch` e
-  chama a captura uma vez por pedaço, então substituir em vez de acumular
-  guardava só o último - com `fit_memory=true` (padrão, `n_ubatch` limitado a
-  128), um chunk de 512 tokens perdia 3/4 e o peer seguinte recusava com "got
-  655360 floats, expected 2621440". Todo caminho de decode chama
-  `reset_capture_slot` antes, senão a sobra de uma requisição entraria
-  concatenada na próxima. A ordem depende do `split_simple` - ver Defeitos
-  anotados.
+  `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data`; o
+  DeepSeek4 chama a mesma fronteira de `l_last-<N>`, e o callback aceita os dois
+  nomes. A cabeça que vem depois pode executar, mas não altera o residual já
+  copiado. Quando `llama_model_n_embd_out` diverge de `llama_model_n_embd`,
+  `cparams.embeddings` fica desligado para impedir que a cópia genérica do
+  llama.cpp peça mais bytes que o tensor real; o callback continua sendo a
+  saída usada pelo POM. O eixo de tokens é localizado pela contagem conhecida
+  do microlote atual e pela forma física, nunca pelo produto até
+  `n_embd_inp`; assim, eixos de fluxo ou outras features anteriores são
+  preservados. Depois do eixo, dimensões maiores que 1 são recusadas e
+  dimensões 1 são ignoradas; em caso ambíguo, o menor eixo fisicamente contíguo
+  vence de forma determinística. `accumulate_capture` junta um disparo por
+  **microlote**: o llama.cpp parte o lote em pedaços de `n_ubatch` e chama a
+  captura uma vez por pedaço, então substituir em vez de acumular guardava só o
+  último - com `fit_memory=true` (padrão, `n_ubatch` limitado a 128), um chunk de
+  512 tokens perdia 3/4 e o peer seguinte recusava com "got 655360 floats,
+  expected 2621440". Todo caminho de decode chama `reset_capture_slot` antes,
+  senão a sobra de uma requisição entraria concatenada na próxima. A ordem
+  depende do `split_simple` - ver Defeitos anotados, e `kv_unified=true` mantém
+  essa ordem para o transporte do residual.
 - `profile_backend_sync_enabled` - perfil do backend síncrono, `POM_PROFILE_SYNC`
   (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
   `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os
@@ -495,21 +640,25 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   da sessão. Mistura de token e hidden state fica em lanes distintas.
 
 `prefill.rs`:
-- `run`/`step` - dispatch em três níveis: `run_direct`/`step_direct` quando
-  `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
-  `supports_relay_chain()`, senão hub.
-- `run_direct` - mesmo loop chunk a chunk do ring, mas cada chunk é despachado
-  **uma vez** para a cabeça com `reply_to`; a cauda entrega o resultado direto
-  ao gateway (`await_result` no ticket). `is_last` é sempre `false` na cabeça
+- `run_with_options`/`step` - dispatch em três níveis: `run_direct`/`step_direct`
+  quando `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
+  `supports_relay_chain()`, senão o pipeline hub. `run_with_options` recebe
+  `max_inflight_chunks` e um `resume: Option<PrefillResumable>` (retomada).
+- hub e `run_direct` - pipeline em ordem, não par travado: `head_pump`
+  (despacho serial à cabeça, lê `next_pos` do ACK) e um `drain` com
+  `FuturesOrdered` que leva cada estado oculto pelos hops restantes, até `W`
+  em voo. `run_direct` despacha cada chunk **uma vez** para a cabeça com
+  `reply_to`; a cauda entrega o resultado direto ao gateway
+  (`await_result_with_ack` no ticket). `is_last` é sempre `false` na cabeça
   (o modo direto exige >= 2 hops).
 - `step_direct` - o gêmeo de decode: uma chamada de saída (para a cabeça), uma
   espera no ticket. É a diferença entre `2N` travessias (anel) e `N+1` (direto),
   e é por isso que o custo por token deixa de depender de onde mora a camada 0.
 - `direct_failure` - resultado que chega com `error` no lugar do token nomeia o
   hop que morreu e marca **esse** (não a cabeça) com `routes.mark_failure`.
-- `record_direct_hops` + `direct::credit_transport` - telemetria da ida dobrada
-  no `RequestTrace`; o transporte não atribuído vai para a entrada da cabeça
-  (ver o doc de `direct::hop_entry`).
+- `record_direct_hops` - dobra no `RequestTrace` o `hop_timings` e as evidências
+  por travessia recebidas no modo direto; não inventa atribuição para o primeiro
+  hop quando a medição não existe.
 - `step_speculative` - **NÃO** estendida ao desvio direto: continua no anel/hub
   (não recebe o parâmetro `direct`).
 - `speculative_step_from_meta` - interpreta a resposta da cauda, e aqui está o
@@ -539,11 +688,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   conserva a ida e volta observada de cada chamada para a soma do RTT da execução,
   enquanto `node_lock_wait_ms` separa "nó lento" de "nó ocupado". Os campos
   derivados de `NodeTimings` preservam frações de milissegundo. Isso é telemetria
-  do gateway/SSE e não muda o frame entre peers.
+  do gateway/SSE e não muda o frame entre peers. Cada `PhaseTrace` agrega as
+  travessias em `transport_summary`, por transporte, com chamadas, bytes, RTT
+  mínimo/mediana/p95/máximo, fallback por destino e trocas de transporte. As
+  amostras internas de RTT e decode têm teto fixo; `transport_trace_complete`
+  denuncia recibos ausentes.
 
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
-  `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`.
+  `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
+  também identifica `transport` (`local`, `libp2p-tunnel` ou `https`) e se o
+  HTTPS foi fallback depois de falha do túnel.
 - O transporte normal tenta o túnel libp2p/Noise antes do cliente HTTP pinado;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de
   topologia. O `round_trip_ms` de `SentFrame` inclui processamento remoto e
@@ -588,15 +743,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   terceira via.
 - `deliver_failure` - entrega um `RelayFailure` no lugar do resultado para o
   gateway nomear o nó morto em vez de esperar o prazo inteiro.
-- `hop_entry`/`accumulate` - cada hop descreve a si mesmo na ida: `bytes_sent`
-  é o quadro que entrou, `round_trip_ms` = `processing_ms` porque a perna de
-  rede não é observável por ninguém no modo direto; a lista viaja cabeça→cauda
-  e a cauda a entrega junto do resultado.
-- `credit_transport` - fecha a telemetria com o que só o gateway sabe: o
-  transporte não atribuído (total menos a soma dos `processing_ms` declarados)
-  vai para o `round_trip_ms` da **cabeça**, e os `bytes_received` do resultado
-  para a cauda. O número somado continua certo; dividido por hop, ele não
-  existe.
+- `hop_entry`/`accumulate` - cada hop descreve a si mesmo na ida: a lista viaja
+  cabeça→cauda e a cauda a entrega junto do resultado.
+- `record_transport`/`deliver_transport` - o chamador entrega uma evidência
+  separada por travessia, com transporte, RTT e bytes. O inbox aguarda essas
+  evidências por uma janela curta depois do resultado e marca a trace como
+  incompleta quando alguma não chega.
 
 `direct_lab.rs`:
 - A "lei": **o custo por token não depende de onde está a cabeça da pipeline.**
@@ -781,7 +933,7 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 ## Defeitos anotados
 
-Nenhum no momento.
+Nenhum defeito ativo nesta fronteira.
 
 O que estava anotado aqui - "a captura do residual assume a ordem do
 `split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o

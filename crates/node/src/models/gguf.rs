@@ -8,9 +8,9 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" little-endian
@@ -86,6 +86,14 @@ pub struct GgufInfo {
     /// sem carimbo é um shard de regra desconhecida, e regra desconhecida se
     /// regenera. Ver `splitter::TP_SHARD_FORMAT`.
     pub tp_stamp: Option<TpStamp>,
+    /// Contagem de tensores declarada no cabeçalho. O catálogo usa isto para
+    /// descrever uma parte sem abrir a fonte completa.
+    pub(crate) tensor_count: u64,
+    /// Campos `split.*` do cabeçalho, quando presentes. Eles são suficientes
+    /// para identificar a coleção multipart sem ler a tabela de tensores.
+    pub(crate) split_count: Option<u64>,
+    pub(crate) split_no: Option<u64>,
+    pub(crate) split_tensors_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +265,14 @@ struct LayoutKv {
     array: Option<ArrayShape>,
 }
 
+/// How llama.cpp interprets a metadata count when it chooses tensors or
+/// graph branches by the local zero-based layer index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerCountSemantics {
+    FromStart,
+    FromEnd,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ArrayShape {
     element_type: u32,
@@ -275,6 +291,18 @@ impl<R: Read + Seek> Reader<R> {
         Ok(self.inner.stream_position()?)
     }
 
+    fn u8(&mut self) -> Result<u8> {
+        let mut b = [0u8; 1];
+        self.inner.read_exact(&mut b)?;
+        Ok(b[0])
+    }
+
+    fn u16(&mut self) -> Result<u16> {
+        let mut b = [0u8; 2];
+        self.inner.read_exact(&mut b)?;
+        Ok(u16::from_le_bytes(b))
+    }
+
     fn u32(&mut self) -> Result<u32> {
         let mut b = [0u8; 4];
         self.inner.read_exact(&mut b)?;
@@ -285,6 +313,30 @@ impl<R: Read + Seek> Reader<R> {
         let mut b = [0u8; 8];
         self.inner.read_exact(&mut b)?;
         Ok(u64::from_le_bytes(b))
+    }
+
+    fn i8(&mut self) -> Result<i8> {
+        let mut b = [0u8; 1];
+        self.inner.read_exact(&mut b)?;
+        Ok(i8::from_le_bytes(b))
+    }
+
+    fn i16(&mut self) -> Result<i16> {
+        let mut b = [0u8; 2];
+        self.inner.read_exact(&mut b)?;
+        Ok(i16::from_le_bytes(b))
+    }
+
+    fn i32(&mut self) -> Result<i32> {
+        let mut b = [0u8; 4];
+        self.inner.read_exact(&mut b)?;
+        Ok(i32::from_le_bytes(b))
+    }
+
+    fn i64(&mut self) -> Result<i64> {
+        let mut b = [0u8; 8];
+        self.inner.read_exact(&mut b)?;
+        Ok(i64::from_le_bytes(b))
     }
 
     fn string(&mut self) -> Result<String> {
@@ -341,27 +393,33 @@ impl<R: Read + Seek> Reader<R> {
         Ok(self.position()? - start)
     }
 
-    /// Read a scalar as u32 when it is an integer type; otherwise skip it.
-    fn value_as_u32(&mut self, vtype: u32) -> Result<Option<u32>> {
+    fn value_as_u64(&mut self, vtype: u32) -> Result<Option<u64>> {
         let v = match vtype {
-            T_UINT8 | T_INT8 => {
-                let mut b = [0u8; 1];
-                self.inner.read_exact(&mut b)?;
-                Some(b[0] as u32)
-            }
-            T_UINT16 | T_INT16 => {
-                let mut b = [0u8; 2];
-                self.inner.read_exact(&mut b)?;
-                Some(u16::from_le_bytes(b) as u32)
-            }
-            T_UINT32 | T_INT32 => Some(self.u32()?),
-            T_UINT64 | T_INT64 => Some(self.u64()? as u32),
+            T_UINT8 => Some(self.u8()? as u64),
+            T_UINT16 => Some(self.u16()? as u64),
+            T_UINT32 => Some(self.u32()? as u64),
+            T_UINT64 => Some(self.u64()?),
+            T_INT8 => Some(nonnegative_integer(i128::from(self.i8()?))?),
+            T_INT16 => Some(nonnegative_integer(i128::from(self.i16()?))?),
+            T_INT32 => Some(nonnegative_integer(i128::from(self.i32()?))?),
+            T_INT64 => Some(nonnegative_integer(i128::from(self.i64()?))?),
             _ => {
                 self.skip_value(vtype)?;
                 None
             }
         };
         Ok(v)
+    }
+
+    /// Read a scalar as u32 when it is a nonnegative integer; otherwise skip
+    /// it. GGUF producers use signed integer types for some numeric metadata.
+    fn value_as_u32(&mut self, vtype: u32) -> Result<Option<u32>> {
+        self.value_as_u64(vtype)?
+            .map(|value| {
+                u32::try_from(value)
+                    .map_err(|_| anyhow::anyhow!("inteiro GGUF grande demais para u32: {value}"))
+            })
+            .transpose()
     }
 
     fn values_as_u32(&mut self, vtype: u32) -> Result<Option<Vec<u32>>> {
@@ -411,6 +469,10 @@ impl<R: Read + Seek> Reader<R> {
     }
 }
 
+fn nonnegative_integer(value: i128) -> Result<u64> {
+    u64::try_from(value).map_err(|_| anyhow::anyhow!("inteiro GGUF não pode ser negativo: {value}"))
+}
+
 /// Parse the KV header of a GGUF file.
 ///
 /// Cheap: reads a few hundred KB at most, never the tensor data.
@@ -425,7 +487,7 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
         bail!("not a GGUF file (magic {magic:#x})");
     }
     let _version = r.u32()?;
-    let _n_tensors = r.u64()?;
+    let n_tensors = r.u64()?;
     let n_kv = r.u64()?;
     if n_kv > 100_000 {
         bail!("implausible GGUF kv count {n_kv}");
@@ -464,6 +526,11 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k == crate::brand::gguf_key("tp_format") => tp_format = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("tp_size") => tp_size = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("tp_rank") => tp_rank = r.value_as_u32(vtype)?,
+            "split.count" => info.split_count = r.value_as_u32(vtype)?.map(u64::from),
+            "split.no" => info.split_no = r.value_as_u32(vtype)?.map(u64::from),
+            "split.tensors.count" => {
+                info.split_tensors_count = r.value_as_u32(vtype)?.map(u64::from)
+            }
             k if k == crate::brand::gguf_key("start_layer") => {
                 start_layer = r.value_as_u32(vtype)?
             }
@@ -507,6 +574,8 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             rank: rk,
         });
     }
+
+    info.tensor_count = n_tensors;
 
     Ok(info)
 }
@@ -627,7 +696,8 @@ pub struct GgufLayout {
     pub layer_bytes: Vec<u64>,
     /// `token_embd.weight` — every slice carries it (see `split_model.py`).
     pub embedding_bytes: u64,
-    /// `output.weight` + `output_norm.weight` — only the last slice carries them.
+    /// Tensors de saída, incluindo cabeças específicas da arquitetura; só a
+    /// fatia final carrega esse grupo.
     pub head_bytes: u64,
     /// Tensors belonging to none of the above.
     pub other_bytes: u64,
@@ -777,6 +847,127 @@ impl GgufLayout {
             .unwrap_or(0);
         layers + self.embedding_bytes + if is_last { self.head_bytes } else { 0 }
     }
+
+    /// Bytes of real architecture-required head tensors repeated in each
+    /// non-final slice. The synthetic identity norm is intentionally excluded:
+    /// this reports the extra source payload an operator must keep on disk.
+    pub fn required_head_bytes(&self) -> u64 {
+        self.serialized
+            .as_ref()
+            .map(|serialized| {
+                serialized
+                    .tensors
+                    .iter()
+                    .filter(|tensor| {
+                        is_required_non_final_tensor(&serialized.architecture, &tensor.name)
+                    })
+                    .map(|tensor| align_up_layout(tensor.bytes))
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Valida a cabeça arquitetural antes de oferecer ou escrever faixas. O
+    /// layout já contém a tensor table completa, então a checagem é barata e
+    /// não toca nos payloads dos tensores.
+    pub fn validate_slice_ranges(&self, ranges: &[(u32, u32)]) -> Result<()> {
+        let Some(serialized) = &self.serialized else {
+            return Ok(());
+        };
+        let tensor_names: HashSet<&str> = serialized
+            .tensors
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect();
+        let total_layers = self.layer_count();
+        for &(start, end) in ranges {
+            if start > end || end >= total_layers {
+                bail!("intervalo de camadas inválido L{start}-{end}");
+            }
+            let is_last = end.checked_add(1) == Some(total_layers);
+            validate_slice_tensors(&serialized.architecture, &tensor_names, is_last)?;
+        }
+        Ok(())
+    }
+}
+
+/// Tensores que o llama.cpp cria fora de `blk.N.*` para esta arquitetura.
+///
+/// Os nomes vêm de `models/deepseek4.cpp`, onde todos são criados com flags
+/// obrigatórias. Em particular, os tensores HC são uma transformação
+/// arquitetural antes de `output_norm`, não uma projeção de saída opcional.
+pub(crate) fn required_output_tensors(architecture: &str) -> &'static [&'static str] {
+    match architecture {
+        "deepseek4" => &[
+            "token_embd.weight",
+            "output_norm.weight",
+            "output.weight",
+            "output_hc_fn.weight",
+            "output_hc_base.weight",
+            "output_hc_scale.weight",
+        ],
+        _ => &[],
+    }
+}
+
+pub(crate) fn is_output_tensor(architecture: &str, name: &str) -> bool {
+    matches!(
+        name,
+        "output_norm.weight" | "output_norm.bias" | "output.weight"
+    ) || required_output_tensors(architecture)
+        .iter()
+        .any(|required| *required == name && *required != "token_embd.weight")
+}
+
+/// Real required tensors copied into every non-final slice. `token_embd` is
+/// selected by the common embedding rule, while `output_norm` keeps the
+/// established synthetic identity used by trunk slices.
+pub(crate) fn is_required_non_final_tensor(architecture: &str, name: &str) -> bool {
+    name != "token_embd.weight"
+        && name != "output_norm.weight"
+        && required_output_tensors(architecture)
+            .iter()
+            .any(|required| *required == name)
+}
+
+/// Verifica o contrato exato do loader para uma fatia candidata.
+pub(crate) fn validate_slice_tensors(
+    architecture: &str,
+    tensor_names: &HashSet<&str>,
+    is_last: bool,
+) -> Result<()> {
+    let required = required_output_tensors(architecture);
+    if required.is_empty() {
+        return Ok(());
+    }
+
+    if !is_last {
+        let missing: Vec<&str> = required
+            .iter()
+            .copied()
+            .filter(|name| *name != "output_norm.weight" && !tensor_names.contains(name))
+            .collect();
+        if !missing.is_empty() {
+            bail!(
+                "fatiamento da arquitetura '{architecture}' recusado para faixa não final: não foi possível copiar da origem os tensores obrigatórios {}",
+                missing.join(", ")
+            );
+        }
+        return Ok(());
+    }
+
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|name| !tensor_names.contains(name))
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "fatiamento da arquitetura '{architecture}' recusado: a fatia final exige os tensores não-bloco {}, mas a origem não os contém",
+            missing.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn gcd_u32(mut left: u32, mut right: u32) -> u32 {
@@ -815,13 +1006,20 @@ fn layout_block_index(name: &str) -> Option<u32> {
     rest[..dot].parse().ok()
 }
 
-fn layout_wants_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
+fn layout_wants_tensor(
+    name: &str,
+    architecture: &str,
+    start: u32,
+    end: u32,
+    is_last: bool,
+) -> bool {
     if let Some(index) = layout_block_index(name) {
         return (start..=end).contains(&index);
     }
     match name {
         "token_embd.weight" => true,
-        "output_norm.weight" | "output_norm.bias" | "output.weight" => is_last,
+        _ if is_required_non_final_tensor(architecture, name) => true,
+        _ if is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
         _ => false,
     }
@@ -852,7 +1050,18 @@ impl SerializedLayout {
                 had_recurrent_key = true;
                 continue;
             }
-            if entry.key.ends_with(".nextn_predict_layers") && !is_last {
+            if matches!(
+                layer_count_semantics(&entry.key),
+                Some(LayerCountSemantics::FromStart)
+            ) {
+                bytes += Self::encoded_u32_size(&entry.key);
+                continue;
+            }
+            if matches!(
+                layer_count_semantics(&entry.key),
+                Some(LayerCountSemantics::FromEnd)
+            ) && !is_last
+            {
                 bytes += Self::encoded_u32_size(&entry.key);
                 continue;
             }
@@ -861,7 +1070,7 @@ impl SerializedLayout {
                 continue;
             }
             if let Some(array) = entry.array {
-                if array.count == self.original_block_count as u64 {
+                if array.count >= self.original_block_count as u64 {
                     if let Some(element_size) = scalar_size(array.element_type) {
                         bytes += 8
                             + entry.key.len() as u64
@@ -903,7 +1112,7 @@ impl SerializedLayout {
         let mut has_output_norm = false;
 
         for tensor in &self.tensors {
-            if !layout_wants_tensor(&tensor.name, start, end, is_last) {
+            if !layout_wants_tensor(&tensor.name, &self.architecture, start, end, is_last) {
                 continue;
             }
             headers +=
@@ -930,10 +1139,15 @@ impl SerializedLayout {
 ///
 /// Reads the header only — the tensor *data* is never touched.
 pub fn read_layout(path: &Path) -> Result<GgufLayout> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let source_file_bytes = file.metadata()?.len();
+    let source = crate::multipart::GgufSource::open(path)?;
+    let source_file_bytes = source.source_bytes();
+    let first_map = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
     let mut r = Reader {
-        inner: BufReader::with_capacity(1 << 16, file),
+        inner: Cursor::new(first_map),
     };
 
     let magic = r.u32()?;
@@ -969,8 +1183,6 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
                     architecture = value;
                 }
             }
-            T_UINT32 => scalar_u32 = Some(r.u32()?),
-            T_UINT64 => scalar_u32 = Some(r.u64()? as u32),
             T_ARRAY => {
                 let element_type = r.u32()?;
                 let count = r.u64()?;
@@ -980,7 +1192,16 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
                     count,
                 });
             }
-            _ => r.skip_value(vtype)?,
+            _ => scalar_u32 = r.value_as_u32(vtype)?,
+        }
+        if matches!(
+            layer_count_semantics(&key),
+            Some(LayerCountSemantics::FromStart)
+        ) && scalar_u32.is_none()
+        {
+            bail!(
+                "metadata '{key}' conta camadas desde o início, mas não é um inteiro escalar não negativo que caiba em u32"
+            );
         }
         if is_nextn_predict_layers_key(&key) {
             layout.nextn_predict_layers = scalar_u32.unwrap_or(0);
@@ -998,50 +1219,24 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         });
     }
 
-    let mut tensors = Vec::with_capacity(n_tensors);
-
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()?;
-        if n_dims > 8 {
-            bail!("implausible tensor rank {n_dims} for {name}");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        if ggml_type_info(dtype).is_none() {
-            bail!(
-                "dtype GGML {dtype} desconhecido no tensor '{name}'; estimativa de tamanho recusada"
-            );
-        }
-        let src_offset = r.u64()?;
-        tensors.push((name, dims, dtype, src_offset));
-    }
-
-    let data_start = align_up_layout(r.position()?);
-    if data_start > source_file_bytes {
-        bail!("GGUF truncado antes da seção de dados");
-    }
-    let total_data = source_file_bytes - data_start;
-    let mut unique_offsets: Vec<u64> = tensors.iter().map(|t| t.3).collect();
-    unique_offsets.sort_unstable();
-    unique_offsets.dedup();
-    let size_map: HashMap<u64, u64> = unique_offsets
+    let layout_tensors: Vec<LayoutTensor> = source
+        .tensors()
         .iter()
-        .enumerate()
-        .map(|(index, &offset)| {
-            let next = unique_offsets.get(index + 1).copied().unwrap_or(total_data);
-            (offset, next.saturating_sub(offset))
+        .map(|tensor| {
+            if ggml_type_info(tensor.dtype).is_none() {
+                return Err(anyhow::anyhow!(
+                    "dtype GGML {} desconhecido no tensor '{}'; estimativa de tamanho recusada",
+                    tensor.dtype,
+                    tensor.name
+                ));
+            }
+            Ok(LayoutTensor {
+                name: tensor.name.clone(),
+                dims: tensor.dims.clone(),
+                bytes: tensor.byte_size,
+            })
         })
-        .collect();
-
-    let layout_tensors: Vec<LayoutTensor> = tensors
-        .into_iter()
-        .map(|(name, dims, _dtype, offset)| LayoutTensor {
-            name,
-            dims,
-            bytes: size_map.get(&offset).copied().unwrap_or(0),
-        })
-        .collect();
+        .collect::<Result<_>>()?;
 
     let mut layers: HashMap<u32, u64> = HashMap::new();
     let mut kinds: HashMap<u32, Vec<String>> = HashMap::new();
@@ -1061,7 +1256,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
             max_layer = max_layer.max(n as i64);
         } else if tensor.name == "token_embd.weight" {
             layout.embedding_bytes += bytes;
-        } else if tensor.name == "output.weight" || tensor.name == "output_norm.weight" {
+        } else if is_output_tensor(&architecture, &tensor.name) {
             layout.head_bytes += bytes;
         } else {
             layout.other_bytes += bytes;
@@ -1096,15 +1291,15 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         if !entry.key.starts_with(&arch_prefix) || entry.key.contains(".rope.") {
             continue;
         }
-        if array.count != 1 && array.count != original_block_count as u64 {
+        if array.count != 1 && array.count < original_block_count as u64 {
             bail!(
-                "array metadata '{}' tem comprimento {}; esperado 1 ou {} (contagem original de blocos)",
+                "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
                 entry.key,
                 array.count,
                 original_block_count
             );
         }
-        if array.count == original_block_count as u64 && scalar_size(array.element_type).is_none() {
+        if array.count >= original_block_count as u64 && scalar_size(array.element_type).is_none() {
             bail!(
                 "array metadata '{}' tem elementos aninhados e não pode ser fatiado por camada",
                 entry.key
@@ -1140,7 +1335,30 @@ pub fn read_capability_evidence(path: &Path) -> Result<ModelCapabilityEvidence> 
 }
 
 fn is_nextn_predict_layers_key(key: &str) -> bool {
-    key == "nextn_predict_layers" || key.ends_with(".nextn_predict_layers")
+    matches!(
+        layer_count_semantics(key),
+        Some(LayerCountSemantics::FromEnd)
+    )
+}
+
+pub(crate) fn layer_count_semantics(key: &str) -> Option<LayerCountSemantics> {
+    if is_metadata_key(key, "nextn_predict_layers") {
+        Some(LayerCountSemantics::FromEnd)
+    } else if is_metadata_key(key, "leading_dense_block_count")
+        || is_metadata_key(key, "hash_layer_count")
+        || is_metadata_key(key, "n_deepstack_layers")
+    {
+        Some(LayerCountSemantics::FromStart)
+    } else {
+        None
+    }
+}
+
+fn is_metadata_key(key: &str, suffix: &str) -> bool {
+    key == suffix
+        || key
+            .strip_suffix(suffix)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 /// `blk.17.attn_q.weight` → `Some(17)`.
@@ -1263,7 +1481,42 @@ mod tests {
             }
             b.extend_from_slice(v);
         }
+        b.resize((b.len() + 31) & !31, 0);
         b
+    }
+
+    #[test]
+    fn accepts_nonnegative_signed_integer_metadata() {
+        let nonce = uuid::Uuid::new_v4().simple();
+        let path = std::env::temp_dir().join(format!("pom-signed-gguf-{nonce}.gguf"));
+        let bytes = header_only_gguf(&[
+            ("split.tensors.count", T_INT32, 0i32.to_le_bytes().to_vec()),
+            ("llama.block_count", T_INT32, 32i32.to_le_bytes().to_vec()),
+        ]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let info = read_info(&path).unwrap();
+
+        assert_eq!(info.split_tensors_count, Some(0));
+        assert_eq!(info.block_count, Some(32));
+        let layout = read_layout(&path).unwrap();
+        assert_eq!(layout.serialized.as_ref().unwrap().original_block_count, 32);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_negative_signed_integer_metadata() {
+        let nonce = uuid::Uuid::new_v4().simple();
+        let path = std::env::temp_dir().join(format!("pom-negative-gguf-{nonce}.gguf"));
+        let bytes = header_only_gguf(&[(
+            "split.tensors.count",
+            T_INT32,
+            (-1i32).to_le_bytes().to_vec(),
+        )]);
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(read_info(&path).is_err());
+        let _ = std::fs::remove_file(path);
     }
 
     fn gguf_with_tensors(kvs: &[(&str, u32, Vec<u8>)], names: &[&str]) -> Vec<u8> {
@@ -1471,6 +1724,39 @@ mod tests {
         let layout = read_layout(&q).unwrap();
         assert_eq!(layout.nextn_predict_layers, 0);
         let _ = std::fs::remove_file(&q);
+    }
+
+    #[test]
+    fn classifies_layer_count_origins_by_metadata_suffix() {
+        for key in [
+            "alpha.leading_dense_block_count",
+            "beta.hash_layer_count",
+            "gamma.n_deepstack_layers",
+        ] {
+            assert_eq!(
+                layer_count_semantics(key),
+                Some(LayerCountSemantics::FromStart),
+                "a contagem usada com índice local deve ser rebased: {key}"
+            );
+        }
+        assert_eq!(
+            layer_count_semantics("delta.nextn_predict_layers"),
+            Some(LayerCountSemantics::FromEnd)
+        );
+        assert_eq!(layer_count_semantics("epsilon.block_count"), None);
+    }
+
+    #[test]
+    fn rejects_non_scalar_from_start_layer_count_metadata() {
+        let nonce = uuid::Uuid::new_v4().simple();
+        let path = std::env::temp_dir().join(format!("pom-layer-count-{nonce}.gguf"));
+        let bytes = header_only_gguf(&[("deepseek4.hash_layer_count", T_STRING, b"3".to_vec())]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = read_layout(&path).unwrap_err().to_string();
+        assert!(error.contains("deepseek4.hash_layer_count"), "{error}");
+        assert!(error.contains("inteiro escalar"), "{error}");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

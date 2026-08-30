@@ -274,7 +274,22 @@ pub(crate) struct CudaHeterogeneousTensor {
     pub data: *const u8,
     pub bytes: usize,
     pub dtype: u32,
+    pub scale: f32,
+    pub input_scale: f32,
+    pub secondary_scale: f32,
+    pub secondary_input_scale: f32,
 }
+
+const _: () = {
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, data) == 0);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, bytes) == 8);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, dtype) == 16);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, scale) == 20);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, input_scale) == 24);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_scale) == 28);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_input_scale) == 32);
+    assert!(std::mem::size_of::<CudaHeterogeneousTensor>() == 40);
+};
 
 impl Default for CudaHeterogeneousTensor {
     fn default() -> Self {
@@ -282,6 +297,10 @@ impl Default for CudaHeterogeneousTensor {
             data: std::ptr::null(),
             bytes: 0,
             dtype: 0,
+            scale: 1.0,
+            input_scale: 1.0,
+            secondary_scale: 1.0,
+            secondary_input_scale: 1.0,
         }
     }
 }
@@ -843,11 +862,11 @@ impl IqQuantCudaExecutor {
     }
 }
 
-/// Executor CUDA para uma rota cujos tensores podem usar IQ3_S, IQ2_S ou
-/// IQ4_XS independentemente por papel. Os descritores carregam ponteiro,
-/// tamanho e dtype de cada tensor; o cache residente mantém os bytes no
-/// device entre tokens.
-pub struct HeterogeneousIqCudaExecutor {
+/// Executor CUDA para uma rota cujos tensores podem usar Q4_K, Q6_K, IQ3_S,
+/// IQ2_S ou IQ4_XS independentemente por papel. Os descritores carregam
+/// ponteiro, tamanho e dtype de cada tensor; o cache residente mantém os bytes
+/// no device entre tokens.
+pub struct HeterogeneousCudaExecutor {
     hidden: usize,
     intermediate: usize,
     profile: bool,
@@ -855,7 +874,7 @@ pub struct HeterogeneousIqCudaExecutor {
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
-impl HeterogeneousIqCudaExecutor {
+impl HeterogeneousCudaExecutor {
     pub fn new_with_cache(
         hidden: usize,
         intermediate: usize,
@@ -895,6 +914,7 @@ impl HeterogeneousIqCudaExecutor {
     pub fn run_route_batch_resident(
         &self,
         experts: &[CudaHeterogeneousExpert],
+        expert_ids: &[u32],
         token_ids: &[u32],
         weights: &[f32],
         token_offsets: &[usize],
@@ -903,6 +923,7 @@ impl HeterogeneousIqCudaExecutor {
         activation: i32,
     ) -> Result<Vec<f32>, CudaMoeError> {
         if experts.is_empty()
+            || experts.len() != expert_ids.len()
             || experts.len() != token_ids.len()
             || experts.len() != weights.len()
             || tokens == 0
@@ -927,10 +948,17 @@ impl HeterogeneousIqCudaExecutor {
                 actual: hidden.len(),
             });
         }
-        if weights.iter().any(|weight| !weight.is_finite()) {
-            return Err(CudaMoeError::Payload(
-                "batch CUDA heterogêneo tem peso de rota não finito".into(),
-            ));
+        if let Some((route, weight)) = weights
+            .iter()
+            .enumerate()
+            .find(|(_, weight)| !weight.is_finite())
+        {
+            return Err(CudaMoeError::Payload(format!(
+                "tensor ffn_moe_weights tem valor não finito na rota {route}, token {}, expert {} ({})",
+                token_ids[route],
+                expert_ids[route],
+                if weight.is_nan() { "NaN" } else { "infinito" }
+            )));
         }
 
         for (index, expert) in experts.iter().enumerate() {
@@ -975,7 +1003,7 @@ impl HeterogeneousIqCudaExecutor {
         };
         let cuda_started = Instant::now();
         let status = unsafe {
-            pom_moe_heterogeneous_iq_forward_route_batch_resident(
+            pom_moe_heterogeneous_quant_forward_route_batch_resident(
                 experts.as_ptr(),
                 experts.len(),
                 token_ids.as_ptr(),
@@ -1026,7 +1054,18 @@ fn validate_heterogeneous_tensor(
     columns: usize,
     label: &str,
 ) -> Result<(), CudaMoeError> {
+    if !tensor.scale.is_finite()
+        || !tensor.input_scale.is_finite()
+        || !tensor.secondary_scale.is_finite()
+        || !tensor.secondary_input_scale.is_finite()
+    {
+        return Err(CudaMoeError::Payload(format!(
+            "{label} contém escala não finita"
+        )));
+    }
     let row_bytes = match tensor.dtype {
+        12 => 144,
+        14 => 210,
         21 => 110,
         22 => 82,
         23 => 136,
@@ -1441,7 +1480,7 @@ unsafe extern "C" {
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
-    fn pom_moe_heterogeneous_iq_forward_route_batch_resident(
+    fn pom_moe_heterogeneous_quant_forward_route_batch_resident(
         experts: *const CudaHeterogeneousExpert,
         expert_count: usize,
         token_ids: *const u32,
@@ -1484,8 +1523,12 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
-    use super::super::format_iq_quants::{dequantize_row, row_bytes, IqQuantExpert, IqQuantFormat};
-    use super::super::format_k_quants::{KQuantExpert, KQuantFormat};
+    use super::super::format_iq_quants::{
+        dequantize_row as dequantize_iq_row, row_bytes, IqQuantExpert, IqQuantFormat,
+    };
+    use super::super::format_k_quants::{
+        dequantize_row as dequantize_k_row, KQuantExpert, KQuantFormat,
+    };
     use super::super::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
     use super::super::format_plain::{PlainExpert, PlainFormat};
     use super::super::format_q4_0::parse_tensor_table;
@@ -1545,9 +1588,12 @@ mod tests {
         };
         let gate_up = matrix(2 * intermediate, hidden);
         let down = matrix(hidden, intermediate);
-        let mut payload = Vec::with_capacity(8 + gate_up.len() + down.len());
+        let mut payload = Vec::with_capacity(32 + gate_up.len() + down.len());
         payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
         payload.extend_from_slice(&(down.len() as u32).to_le_bytes());
+        for _ in 0..6 {
+            payload.extend_from_slice(&1.0f32.to_le_bytes());
+        }
         payload.extend_from_slice(&gate_up);
         payload.extend_from_slice(&down);
         payload
@@ -1666,7 +1712,27 @@ mod tests {
         let row_size = row_bytes(format, columns).unwrap();
         (0..rows)
             .map(|row| {
-                dequantize_row(format, &matrix[row * row_size..(row + 1) * row_size])
+                dequantize_iq_row(format, &matrix[row * row_size..(row + 1) * row_size])
+                    .unwrap()
+                    .iter()
+                    .zip(input)
+                    .map(|(weight, value)| weight * value)
+                    .sum()
+            })
+            .collect()
+    }
+
+    fn k_mat_vec(
+        format: KQuantFormat,
+        matrix: &[u8],
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+    ) -> Vec<f32> {
+        let row_size = super::super::format_k_quants::row_bytes(format, columns).unwrap();
+        (0..rows)
+            .map(|row| {
+                dequantize_k_row(format, &matrix[row * row_size..(row + 1) * row_size])
                     .unwrap()
                     .iter()
                     .zip(input)
@@ -1751,6 +1817,115 @@ mod tests {
                 assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
             }
         }
+    }
+
+    #[test]
+    fn executor_cuda_k_quants_heterogeneos_preserva_gate_up_down_do_decoder_cpu() {
+        let hidden = 256;
+        let intermediate = 256;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 - 127.0) * 0.0078125)
+            .collect::<Vec<_>>();
+        let gate_payload = k_payload(KQuantFormat::Q4K, hidden, intermediate);
+        let up_payload = k_payload(KQuantFormat::Q6K, hidden, intermediate);
+        let down_payload = k_payload(KQuantFormat::Q4K, hidden, intermediate);
+        let split = |payload: &[u8]| {
+            let gate_up_len = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
+            let down_start = 8 + gate_up_len;
+            (
+                &payload[8..8 + gate_up_len / 2],
+                &payload[8 + gate_up_len / 2..down_start],
+                &payload[down_start..],
+            )
+        };
+        let (gate, _, _) = split(&gate_payload);
+        let (_, up, _) = split(&up_payload);
+        let (_, _, down) = split(&down_payload);
+        let gate_values = k_mat_vec(
+            KQuantFormat::Q4K,
+            gate,
+            intermediate,
+            hidden,
+            &hidden_values,
+        );
+        let up_values = k_mat_vec(KQuantFormat::Q6K, up, intermediate, hidden, &hidden_values);
+        let activated = gate_values
+            .iter()
+            .zip(up_values)
+            .map(|(gate, up)| gate / (1.0 + (-gate).exp()) * up)
+            .collect::<Vec<_>>();
+        let expected = k_mat_vec(KQuantFormat::Q4K, down, hidden, intermediate, &activated);
+
+        let executor = HeterogeneousCudaExecutor::new_with_cache(
+            hidden,
+            intermediate,
+            measured_device_cache(1_000_000).unwrap(),
+        );
+        let gate_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new("cuda-heterogeneous-k-test", 0, 0, "gate-12"),
+                gate,
+            )
+            .unwrap();
+        let up_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new("cuda-heterogeneous-k-test", 0, 0, "up-14"),
+                up,
+            )
+            .unwrap();
+        let down_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new("cuda-heterogeneous-k-test", 0, 0, "down-12"),
+                down,
+            )
+            .unwrap();
+        let descriptor = CudaHeterogeneousExpert {
+            gate: CudaHeterogeneousTensor {
+                data: gate_lease.handle() as *const u8,
+                bytes: gate.len(),
+                dtype: 12,
+                ..CudaHeterogeneousTensor::default()
+            },
+            up: CudaHeterogeneousTensor {
+                data: up_lease.handle() as *const u8,
+                bytes: up.len(),
+                dtype: 14,
+                ..CudaHeterogeneousTensor::default()
+            },
+            down: CudaHeterogeneousTensor {
+                data: down_lease.handle() as *const u8,
+                bytes: down.len(),
+                dtype: 12,
+                ..CudaHeterogeneousTensor::default()
+            },
+            ..CudaHeterogeneousExpert::default()
+        };
+        let actual = executor
+            .run_route_batch_resident(
+                &[descriptor],
+                &[0],
+                &[0],
+                &[1.0],
+                &[0, 1],
+                &hidden_values,
+                1,
+                1,
+            )
+            .unwrap();
+        let (max_absolute, max_relative) = actual.iter().zip(&expected).fold(
+            (0.0f32, 0.0f32),
+            |(max_absolute, max_relative), (actual, expected)| {
+                let absolute = (actual - expected).abs();
+                let relative = absolute / expected.abs().max(f32::MIN_POSITIVE);
+                (max_absolute.max(absolute), max_relative.max(relative))
+            },
+        );
+        const tolerance: f32 = 1.0e-4;
+        eprintln!(
+            "CUDA K-quant heterogêneo: max_absolute={max_absolute:.6e}, max_relative={max_relative:.6e}, absolute_tolerance={tolerance:.1e}"
+        );
+        assert_eq!(actual.len(), expected.len());
+        assert!(max_absolute <= tolerance);
     }
 
     #[test]
@@ -2000,7 +2175,7 @@ mod tests {
             &activated,
         );
 
-        let executor = HeterogeneousIqCudaExecutor::new_with_cache(
+        let executor = HeterogeneousCudaExecutor::new_with_cache(
             hidden,
             intermediate,
             measured_device_cache(1_000_000).unwrap(),
@@ -2028,21 +2203,33 @@ mod tests {
                 data: gate_lease.handle() as *const u8,
                 bytes: gate.len(),
                 dtype: 21,
+                ..CudaHeterogeneousTensor::default()
             },
             up: CudaHeterogeneousTensor {
                 data: up_lease.handle() as *const u8,
                 bytes: up.len(),
                 dtype: 22,
+                ..CudaHeterogeneousTensor::default()
             },
             down: CudaHeterogeneousTensor {
                 data: down_lease.handle() as *const u8,
                 bytes: down.len(),
                 dtype: 23,
+                ..CudaHeterogeneousTensor::default()
             },
             ..CudaHeterogeneousExpert::default()
         };
         let actual = executor
-            .run_route_batch_resident(&[descriptor], &[0], &[1.0], &[0, 1], &hidden_values, 1, 1)
+            .run_route_batch_resident(
+                &[descriptor],
+                &[0],
+                &[0],
+                &[1.0],
+                &[0, 1],
+                &hidden_values,
+                1,
+                1,
+            )
             .unwrap();
         assert_eq!(actual.len(), expected.len());
         for (actual, expected) in actual.iter().zip(expected) {

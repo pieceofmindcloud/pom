@@ -18,12 +18,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, hidden-state bytes/dtype, bounded `transport_summary` and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; derives the observed execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
+- `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
+  the GPU badge; missing or non-finite readings stay explicitly unknown.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
@@ -39,6 +41,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
   RTT snapshot after a chat stream, and `usePeerRuntimes` reads `/health` for
   the peers in that trace without polling the whole cluster.
+  `useNetworkRtt` asks the same authenticated telemetry route for the current
+  deployment edges shown on the Dashboard and refreshes them every 15 s.
+- `stableRecord.ts` - preserves the identity of a shallow record while its
+  values remain unchanged. It prevents effects that capture `useQueries` data
+  from writing state on every render; the Chat regression test covers this
+  navigation freeze.
 - `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`): tipo, provider,
   `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
   desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia
@@ -68,8 +76,19 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `WholeLayerOptions` and `LayerCut` carry the GGUF-derived cut points used by
   the whole-model deploy slider; `WholeSliceSelection` identifies the source,
   destination and accepted prefix end sent back to the node.
+  `SliceLayerOptions` carries the starts and architectural options for the
+  single-range slicing controls, while `SizePlan` and `TpSlicePlan` carry the
+  destination disk-space estimate shown before writing.
   `tpPartsOf` normalizes a missing optional wire field to an empty list before
-  catalog consumers iterate it.
+  catalog consumers iterate it. DiscoveredModel.multipart_parts carries the
+  ordered physical files and multipart_error carries the concrete reason a
+  declared set cannot be sliced; the UI uses metadata_complete to avoid
+  displaying a first-part byte count while enrichment is pending.
+  `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8 choice;
+  `RuntimeParams.max_new_tokens` is only the size of one backend leg. The
+  total output capacity comes from live runtime context and `/v1/models`, not
+  from a second deployment field. `PhaseTrace` carries the effective dtype and
+  hidden-state bytes per hop.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -97,7 +116,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### types.ts
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
-- `ServerState` - `"disabled" | "starting" | "ready" | "failed"` only, no `| string` escape hatch; the doc comment records that the loose first version made every machine look idle.
+- `ServerState` - `"disabled" | "starting" | "ready" | "failed" | "thermal"`; the thermal state is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
   `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
@@ -136,8 +155,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to})` 3s, `useServableModels()` 30s.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to})` 3s, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
   is a question waiting on a human, not a progress bar. With the sender no
@@ -153,7 +172,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
-- `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records tokens/sec, duration and trace.
+- `streamErrorMessage(payload)` / `consumeChatError(previous, error)` - leem a mensagem real de um frame de erro compatível com OpenAI dentro do stream SSE e a mantêm junto do conteúdo já renderizado.
+- `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records the legacy total rate, separated TTFT/prefill/generation/total timings and trace.
 - `isPhasedHop(hop)` - discriminates `PhasedHopTrace` (split prefill/decode) from `LegacyHopTrace` so the telemetry table can render both shapes.
 - Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry
   contract from `inference/prefill.rs`/gateway. `PhaseTrace.selected_path` is
@@ -162,7 +182,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   mixed flags are evidence from the request, not a UI guess.
   `RequestTrace.cached_tokens` is optional on purpose: a node that does not
   report prefix reuse means "unknown", and the chat shows nothing rather than
-  claiming savings it cannot prove.
+  claiming savings it cannot prove. The trace also carries prefix candidate and
+  transmitted-token counts, reuse status, bounded prefill-overlap counters, and
+  per-transport traversal distributions with fallback and switch counts. The
+  transport contract is aggregate by default, never one serialized entry per
+  decode call.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.

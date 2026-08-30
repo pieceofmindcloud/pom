@@ -12,7 +12,7 @@ Per-file list:
 
 - `Chat.tsx` — The test chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage),
-  `../lib/chatStream` (SSE delta + metrics parsing), `../lib/chatScroll`
+  `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
   (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,
   `useServableModels`), `../components/Markdown`,
@@ -23,9 +23,16 @@ Per-file list:
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
   from the explicit per-peer health field; health shows the selected path,
   while the request trace shows the executed engine and mixed/mismatch flags.
-  Missing snapshots stay visible as missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  The runtime record keeps stable identity between unchanged polls so the
+  telemetry snapshot cannot trigger a render loop that freezes navigation.
+  Missing snapshots stay visible as missing data. Phase rows also render
+  hidden-state bytes sent/received and the effective f16/f8 dtype. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
-  resolution retain those ids.
+  resolution retain those ids. Um frame de erro compatível com OpenAI dentro
+  do stream fica junto de qualquer resposta parcial e mostra a mensagem exata
+  do servidor; o texto genérico de resposta vazia só é usado quando nenhum
+  erro foi enviado. Erros longos quebram linha, continuam selecionáveis e têm
+  um controle de cópia localizado.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG
@@ -84,7 +91,9 @@ Per-file list:
   "Adicionar nó" there is a `UndeployPipeline` button when a model is live -
   `undeployTargets` is the list the confirmation shows (peers on `group` with
   `total_layers > 0`, sorted by start layer); the node re-scans the cluster
-  before acting, so the list is just the preview.
+  before acting, so the list is just the preview. The flow canvas receives the
+  directional RTT measurements for its adjacent routing edges from
+  `useNetworkRtt`, with the same badge presentation used by deployment.
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
   Simple/Complete strategy, central peer map, compact property inspector and
@@ -134,13 +143,17 @@ Per-file list:
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
-  repetition, fit-memory, execution toggles and the installation-wide KV cache
+  repetition, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
   types. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
   then edit that probability before deploying. The machine section includes
   GPU/KV overrides, machine capacity and the available layer ranges that can
   be assigned to the selected peer. Choosing a range replaces that peer's
   active range; the same range on a second peer remains a replica. Coverage is
   a compact footer indicator. The inspector uses Global/Machine tab bars.
+  O inspetor começa diretamente pelas abas Globais e Máquina, sem o título
+  anterior e sem padding externo; alertas de capacidade aparecem como ícones
+  âmbar ao lado do controle e abrem a mensagem inteira por hover, foco ou
+  clique, inclusive quando a origem contém identificadores sem espaços.
   `fit_memory` is on by default for shards and whole-model deployment, and the
   screen disables it for tensor parallelism because llama.cpp cannot auto-fit
   `split-mode tensor`.
@@ -189,18 +202,20 @@ Per-file list:
   então continua ancorada na altura da tela durante rolagem e resize; ao fechar,
   o controle de reabertura permanece na coluna compacta existente.
 - `Deployments.tsx` - lista as implantações registradas no cluster via
-  `useDeployments`, diferencia "no ar" de "padrão" e permite reimplantar só
+  `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
+  criação mais recente e mostra a coluna "Criada". Permite reimplantar só
   parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.
 - `Keys.tsx` — Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses — `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   `ConnectionKeys`: the cluster operator key — `POST /admin/regenerate-key`.
-- `LogsByToken.tsx` — Request log tallies and table ("who asked, which machines
-  answered"), read from `GET /api/ui/requests` (`src/reqlog.rs`, in-memory,
-  lost on restart — the screen says so). Exports `HopChain`, reused by
-  `LogsLive`. Node-name map from `useCluster`.
-- `LogsLive.tsx` — Same `GET /api/ui/requests` source (polled at 3 s), rendered
-  newest-first with an animated highlight and a pause/resume that freezes a
-  snapshot. Reuses `HopChain` from `LogsByToken`.
+- `LogsByToken.tsx` - Audit inspector for the persistent request trail. It reads
+  `GET /api/ui/requests` with API-key identity, prompt FTS, node and time-range
+  filters, shows exact prompt/request body/result/telemetry in collapsible
+  details, and labels `in_progress` and `incomplete` separately from success.
+  Reuses `HopChain`, `statusLabel` and `statusTone` in `LogsLive`.
+- `LogsLive.tsx` - Same authenticated SQLite audit source (polled at 3 s),
+  rendered as an animated newest-first stream with pause/resume and a frozen
+  snapshot. It displays the non-secret API-key label and identity.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
@@ -209,7 +224,8 @@ Per-file list:
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
   Também monta o `HuggingFaceSettingsPanel`, que salva o token local sem
-  receber o segredo de volta.
+  receber o segredo de volta. O `ThermalPanel` grava a política local em
+  `POST /api/ui/thermal`, incluindo limite, margem de histerese e cooldown.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
@@ -231,15 +247,24 @@ Per-file list:
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
   `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
   the node_id prefix.
-- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing or
-  Tensor Parallelism. Pipeline builds a by-size plan (target GB per slice,
-  empty = "the rest"); TP chooses 2..64 ranks and previews one full layer
-  range per rank, labeled `1ofN`. Both modes use the debounced
+- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing, one
+  explicit layer range, or Tensor Parallelism. Pipeline builds a by-size plan
+  (target GB per slice, empty = "the rest"); a single range uses the GGUF
+  architectural starts and ends; TP chooses 2..64 ranks and previews one full
+  layer range per rank, labeled `1ofN`. The modes use the debounced
   `POST /api/ui/slice/plan` and start through `POST /api/ui/slice`; TP sends
-  `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices`.
-  `SlicingJobsPanel` is shown only while at least one slicing job is running.
+  `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices` or
+  `range`. `SlicingJobsPanel` keeps running, completed and failed jobs visible,
+  including named phase, bytes and partial output paths.
+  For architectures with a required non-final head, the plan includes
+  `required_head_bytes`, and the preview identifies the real payload repeated
+  in each intermediate slice. `asPlan` keeps this field optional for older
+  nodes and for tensor-parallel plans.
   `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
-  can be sliced.
+  can be sliced. Multipart models show the summed physical size, every
+  declared part and an explicit instruction to keep the set together before
+  POM slicing; incomplete sets surface the backend reason and leave the start
+  action disabled.
 - `Transfers.tsx` — Shows remote model downloads from `useModelDownloads` in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
@@ -273,9 +298,12 @@ Key logic carriers:
   closed-by-default telemetry table: per-hop prefill/decode phases, selected
   path versus backend-reported executed engine, mixed/mismatch evidence,
   gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
-  optional TP collective table and a pure diagnosis card. The AI action sends
+  optional TP collective table, aggregate transport identity/RTT distribution/
+  bytes with fallback and switch counts, prefix reuse counters, overlap counters and a pure diagnosis card. The request summary also shows TTFT, prompt-token prefill rate, output-token generation rate and end-to-end total, including an explicit unavailable state when a rate has no measurable interval. The AI action sends
   both tables as private request content, while the initial model is shown as
   a non-turn mark before chat messages.
+- `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
+  knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8).
 - `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
   merged steps expand back into per-slice rows and the planner answer is compared
   with the displayed rows after sorting by layer.

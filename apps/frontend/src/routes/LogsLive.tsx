@@ -1,14 +1,14 @@
 /**
  * Requests as they land.
  *
- * Same source as the tallies next door, read on a short interval and rendered
- * newest-first with the new lines animating in — the point of this screen is to
- * watch a harness hit the cluster and see which machines answered.
+ * Same source as the audit inspector, read on a short interval and rendered
+ * newest-first with the new lines animating in. It shows arrival and outcome
+ * without duplicating the long-form inspector.
  */
 import { AnimatePresence, motion } from "framer-motion";
 import { Activity, Pause, Play, Radio } from "lucide-react";
 import { useState } from "react";
-import { HopChain } from "./LogsByToken";
+import { HopChain, statusLabel, statusTone } from "./LogsByToken";
 import {
   Badge,
   Button,
@@ -26,6 +26,10 @@ import { clock, ms, num } from "../lib/format";
 import { useCluster, useRequestLog } from "../lib/queries";
 import type { RequestLogEntry } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+
+function rateText(value: number | null, unavailable: string, unit: string) {
+  return value == null ? unavailable : `${num(value, 1)} ${unit}`;
+}
 
 export function LogsLive() {
   const { t } = useI18n();
@@ -94,22 +98,22 @@ export function LogsLive() {
                     transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
                     className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-5 py-2.5"
                   >
-                    <Mono className="shrink-0 text-faint">{clock(e.at)}</Mono>
-                    <Badge
-                      tone={
-                        e.status === "ok" ? "aqua" : e.status === "partial" ? "amber" : "rose"
-                      }
-                      className="shrink-0"
-                    >
-                      {e.status}
+                    <Mono className="shrink-0 text-faint">{clock(e.received_at)}</Mono>
+                    <Badge tone={statusTone(e.status)} className="shrink-0">
+                      {statusLabel(e.status, t)}
                     </Badge>
-                    <span className="shrink-0 text-[0.8rem] text-fg">{e.token_label}</span>
+                    <span className="shrink-0 text-[0.8rem] text-fg">{e.api_key_label}</span>
                     <div className="min-w-[12rem] flex-1">
                       <HopChain entry={e} name={name} />
                     </div>
                     <Mono className="shrink-0 text-muted">
                       {num(e.completion_tokens ?? 0)} tok · {ms(e.duration_ms)}
                     </Mono>
+                    {e.timings && (
+                      <span className="w-full pl-0 font-mono text-[0.68rem] text-faint md:pl-[calc(12rem+1rem)]">
+                        {t("liveLogs.totalShort", { value: ms(e.timings.total_ms) })} · {t("liveLogs.ttftShort", { value: ms(e.timings.ttft_ms) })} · {t("liveLogs.prefillShort", { value: rateText(e.timings.prefill_tokens_per_sec, t("liveLogs.rateUnavailable"), t("liveLogs.tokensPerSecondUnit")) })} · {t("liveLogs.generationShort", { value: rateText(e.timings.generation_tokens_per_sec, t("liveLogs.rateUnavailable"), t("liveLogs.tokensPerSecondUnit")) })}
+                      </span>
+                    )}
                     {e.error && (
                       <p className="break-path w-full text-[0.75rem] text-rose">{e.error}</p>
                     )}

@@ -16,7 +16,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 - Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
-  `socket2`, `tower-http` (compression-full), `routing-contract` (path).
+  `socket2`, `tower-http` (compression-full), `rusqlite` bundled para a
+  auditoria persistente, `routing-contract` (path).
 - O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
   runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
@@ -61,6 +62,12 @@ como `primary` na config de inferência montada pela linha de comando),
 `--pkarr-peers`, `--public-addr`, `--relay-peers`, `--serve-relay`,
 `--no-default-relays`, `--no-discovery`.
 
+Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
+derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os
+peers vivos; `max_new_tokens` continua sendo apenas o tamanho de uma perna.
+Consulte `/v1/models` depois de todos os peers confirmarem o runtime. O passo
+operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
+
 **Fluxo (`main`):**
 1. `respawn::remember_argv` + tracing.
 2. Sem `pom.json` → `start_setup_mode`: só `/api/setup/key`, `/api/setup/save`
@@ -90,8 +97,11 @@ como `primary` na config de inferência montada pela linha de comando),
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
     `calculate_assignment` (gap-filling). `lastslice::take()` é consumido
     apenas no caminho sem `--model`; aqui ele só limpa o arquivo órfão.
-11. Com `--inference-port`: monta `runtime::NodeConfig` e `NodeRuntime::apply`
-    (sobe o servidor de inferência Rust **em-processo** e o supervisa).
+11. Antes de restaurar ou aplicar um modelo, inicia o monitor térmico do
+    `NodeRuntime`; com `--inference-port`, monta `runtime::NodeConfig` e chama
+    `NodeRuntime::apply` (sobe o servidor de inferência Rust **em-processo** e
+    o supervisa). Uma GPU acima do limite remove a atribuição e o estado
+    `thermal` aguarda o cooldown configurado.
 12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI).
 13. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
@@ -126,7 +136,8 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
 - `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`,
-  `generate_stream_with_stops`), `webapp.rs` (serve a UI do disco), `webui.rs`
+  `generate_stream_with_stops` e o resumo agregado de TTFT, prefill, geração e
+  total), `webapp.rs` (serve a UI do disco), `webui.rs`
   (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,
   `deploy.rs`, `transfer.rs` (fatias por HTTP Range), `devupdate.rs`
   (atualizar/reiniciar), `openai.rs` (rotas OpenAI-compatíveis), `messages.rs`,

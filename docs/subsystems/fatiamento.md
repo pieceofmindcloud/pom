@@ -48,7 +48,14 @@ cortadas antes disso precisam ser refatiadas.
 por trás: `local_catalog` usa `CATALOG_TTL = 20 s` com stale-while-revalidate, e
 `warm_catalog` roda no arranque para um volume lento não segurar a porta do
 gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
-0,18 s com o aquecimento).
+0,18 s com o aquecimento). A primeira fase enumera e faz `stat`; a segunda lê
+somente os cabeçalhos necessários. Um erro terminal fica em `metadata_error` no
+modelo, sem impedir os demais, e a passagem publica `metadata_complete: true`.
+O backend mantém uma única varredura e um único enriquecimento em voo, inclusive
+quando a tela é recarregada ou a seleção muda. Um refresh pode trocar o
+inventário, mas preserva metadata por identidade `path + size + mtime`; somente
+modelo novo ou arquivo alterado volta a ler o cabeçalho. Hash integral continua
+restrito à fronteira de fatiamento ou transferência.
 
 ## 2. Leitura do GGUF: cabeçalho e tensor table
 
@@ -59,11 +66,31 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
   (`attention.head_count_kv`, `key_length` e `value_length`). Cada item pode
   ser escalar ou array por camada. Quem decide se um arquivo é fatia é
   `catalog::InstalledModel::is_shard`; a cópia que existia em `GgufInfo` não
-  tinha chamador e saiu.
+  tinha chamador e saiu. O catálogo também lê os campos de multipart nesse
+  header, sem mapear nem validar o payload dos tensores.
+
+  Campos numéricos do cabeçalho são interpretados pelo valor inteiro não
+  negativo, não pela rigidez do tipo signed/unsigned. Isso inclui
+  `split.tensors.count`, que o `gguf-split` de referência grava como INT32,
+  enquanto `split.no` e `split.count` são UINT16. Valores signed negativos e
+  valores que excedem o destino são recusados; a regra vale para as demais
+  chaves numéricas e não é específica a um modelo.
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml
-  desconhecido sub-reporta em `other_bytes` em vez de inventar.
+  desconhecido recusa o layout em vez de inventar. Para multipart, a tabela
+  vem de `multipart::GgufSource` e inclui todos os tensores do conjunto. O
+  `head_bytes` inclui os tensores de saída específicos da arquitetura quando
+  conhecidos.
+- `validate_slice_ranges`/`validate_slice_tensors` - conferem o contrato que o
+  loader realmente aplica, pela arquitetura e pela tabela de tensores. Para
+  `deepseek4`, `deepseek4.cpp` exige `token_embd.weight`,
+  `output_norm.weight`, `output.weight`, `output_hc_fn.weight`,
+  `output_hc_base.weight` e `output_hc_scale.weight`; não há fallback para
+  `token_embd` nem flag de tensor opcional. A faixa não final copia da origem
+  os tensores reais que não são sintetizados, e é recusada antes de gerar o
+  arquivo se algum deles faltar. A final só é aceita quando os seis tensores
+  existem.
 - `arch_boundaries`/`snap_end_layer` - modelos híbridos (Mamba + Attention) não
   são pilha de blocos iguais; o corte só acontece em fronteira de tipo, senão o
   bloco renumera para o tipo errado (`missing tensor` ou resposta errada
@@ -71,7 +98,15 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 - `nextn_predict_layers` - MTP/Qwen3.5+: o bloco nextn vive só na última camada;
   fatia que não termina no fim do modelo precisa zerar o hiperparâmetro ou o
   llama.cpp aborta o load procurando `blk.<last>.nextn.*`.
-- `attention.recurrent_layers` - modelo híbrido attention/SSM (Qwen3-Next-style,
+- `LayerCountSemantics` - metadata que o llama.cpp compara com o índice local
+  do bloco é classificada pela semântica, não pelo nome de uma arquitetura.
+  Contagens desde o início (`leading_dense_block_count`, `hash_layer_count` e
+  `n_deepstack_layers`) são rebaseadas por `start_layer` e limitadas ao número
+  de blocos da fatia. A contagem desde o fim (`nextn_predict_layers`) é zerada
+  fora da faixa final e preservada nela. Uma contagem relativa ao início que
+  não seja um inteiro escalar não negativo que caiba em `u32` recusa o layout
+  com a chave e a causa, sem copiar um valor ambíguo.
+- `attention.recurrent_layers` - modelo híbrido attention/SSM,
   como o Qwen3.8-27B): na ausência de um array explícito com essa chave, o
   llama.cpp decide sozinho quais camadas são recorrentes (levam
   `ssm_conv1d.weight`) por uma fórmula sobre o índice **absoluto** da camada
@@ -83,13 +118,68 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
   `splitter::split`/`merge` corrigem isso escrevendo o array explícito, derivado
   da presença real do tensor no arquivo fonte (não da fórmula) - ver §4.
 - `slice_bytes(start, end, is_last)` - bytes de uma fatia: camadas + `token_embd`
-  (toda fatia) + output head (só a última). É o que o plano soma.
+  (toda fatia) + cabeças exigidas pela arquitetura. Para `deepseek4`,
+  `output.weight` e os três tensores `output_hc_*` reais também entram nas
+  faixas intermediárias; `output_norm.weight` continua sendo a identidade
+  sintética do tronco e a cabeça completa fica na faixa final. O método
+  `required_head_bytes` informa o payload real adicional repetido em cada faixa
+  intermediária. No DeepSeek-V4-Flash medido, esse adicional fica perto de
+  0,44 GB por faixa. É o que o plano soma e a interface mostra.
 - `ggml_type_info` + `ggml_type_table_matches_ggml` - a tabela de tipos é
   conferida contra a `GGML_TRUTH` no mesmo arquivo (teste de build quebra se
   divergirem; números escritos lendo o llama.cpp - `ggml.h` para os códigos,
   `ggml_type_size`/`ggml_blck_size` para os tamanhos -, nunca de memória).
   Errar um tamanho de tipo **não dá erro**: a fatia sai e só a resposta fica
   errada. Por isso um tipo desconhecido é recusa, não estimativa.
+
+## 2.1 GGUF multipart
+
+`multipart.rs` trata um GGUF simples como um conjunto de uma parte e um GGUF
+com `split.count > 1` como uma fonte lógica. O catálogo valida `split.no`,
+`split.count` e `split.tensors.count`, reconstrói os caminhos `N-of-M.gguf` e
+lê somente o cabeçalho e o tamanho de cada parte. O caminho completo de
+`GgufSource` é reservado para layout e fatiamento: nele os cabeçalhos e tabelas
+de tensores são mapeados com `mmap`. A tabela unificada guarda, para cada tensor,
+o índice da parte, o offset relativo à seção de dados e o tamanho calculado pela
+diferença entre offsets.
+
+Nenhum peso é remontado em arquivo temporário: o fatiador escolhe os tensores
+pela faixa e copia cada um diretamente do mmap da parte que o contém. A mesma
+fonte é consumida por `gguf::read_layout`, `splitter::validate_tensor_parallel`
+e `splitter::shard_tensor_parallel`. Um GGUF sem `split.*` continua no caminho
+de uma parte, com o mesmo comportamento.
+
+O catálogo enumera somente a primeira parte, mas depois da leitura do cabeçalho
+publica o tamanho físico somado e a lista ordenada de partes. Se uma parte
+estiver ausente ou os campos declarados não fecharem, o modelo fica visível com
+o motivo concreto, sem byte count falso e sem plano de fatiamento. O hash usado
+para identidade de um modelo fonte é o SHA-256 da sequência ordenada de partes.
+Esse hash é calculado somente na fronteira de fatiamento ou transferência, nunca
+na resposta inicial do catálogo.
+
+O diagnóstico de leitura separa duas causas que pareciam iguais na medição de
+campo. `GgufSource::open` mapeia todas as partes com `mmap` e não mantém um fd de
+GGUF aberto para copiar pesos. O hash percorre as partes em ordem física uma vez.
+Já o extrator recebia a tabela de tensores na ordem lógica do GGUF; essa ordem
+não promete offsets crescentes e podia provocar page faults regressivos quando a
+fonte mapeada era maior que a RAM. `splitter::source_read_order` agora ordena os
+acessos por `(part_index, src_offset)`. Isso derruba a hipótese de uma passagem
+inteira por fatia como explicação única: há uma passagem lógica de hash e uma
+passagem pelos tensores selecionados, além de globais legitimamente repetidos em
+cada saída. A escrita de todas as faixas numa única passagem continua uma
+otimização separada, ainda não implementada. A medição de campo dá a escala:
+três partes de aproximadamente 41,8, 39,5 e 48,1 GB somam cerca de 129,3 GB
+para uma fonte de 119,4 GiB; com 276 GiB lidos enquanto só a primeira parte foi
+escrita, a taxa observada equivale a cerca de 2,3 passagens efetivas por faixa.
+Uma implementação que percorra a fonte uma vez em offsets crescentes e grave
+as três saídas em paralelo tenderia a reduzir a leitura projetada de mais de
+800 GiB para perto dos 120 GiB da fonte. É uma estimativa de I/O, não uma
+promessa de tempo: ainda há o custo de gerar três cabeçalhos e gravar cerca de
+129,3 GB.
+Transferências continuam sendo operações de arquivos POM individuais. O
+endpoint de envio recusa uma fonte inteira que declara multipart, com a
+orientação de manter o conjunto completo ou gerar fatias POM; a transferência
+de um modelo inteiro multipart não foi generalizada nesta etapa.
 
 ## 3. Planejamento
 
@@ -129,6 +219,9 @@ alvo pedido, a faixa que saiu e o tamanho real.
   incluindo embeddings repetidos, tensores globais, cabeçalho, tabela de
   tensores, alinhamento e o norm sintético das fatias não finais.
   `source_model_bytes` conserva o tamanho do GGUF de origem para comparação.
+  `required_head_bytes`, quando presente, é o payload de pesos reais da cabeça
+  repetido por cada faixa não final. O total de cada faixa continua incluindo
+  também cabeçalho, tabela, alinhamento e os demais bytes de serialização.
   O custo recusa nominalmente qualquer dtype GGML desconhecido; nenhum tipo
   desconhecido entra como zero na prévia.
 
@@ -139,6 +232,17 @@ os ranks de uma vez e selar `tp_parts` no manifesto unificado. O rank guardado
 no manifesto é zero-based; a interface mostra a identificação operacional
 one-based `1ofN`, `2ofN` etc. O arquivo físico continua endereçado pelo hash do
 conteúdo, conforme a regra de armazenamento por hash.
+
+O endpoint de plano também aceita `range: { start_layer, end_layer }` para uma
+faixa avulsa. A tela oferece apenas inícios e fins derivados da arquitetura, e
+o backend repete a validação no momento do clique. A saída é uma parte
+independente, com a mesma reindexação de metadata por camada das demais fatias.
+`finalize_run` localiza o manifesto pelo hash da fonte e acrescenta a parte sem
+substituir as anteriores; uma faixa existente só é reaproveitada depois de
+conferir o SHA-256 do arquivo. O caminho de fatiamento não executa retenção
+automática que pudesse apagar uma faixa antiga em silêncio. Como a identidade da
+fonte ainda é calculada antes do corte, uma faixa menor reduz a escrita e o
+espaço final, mas não elimina a leitura completa do hash.
 
 ### O que a camada 0 significa
 
@@ -169,7 +273,8 @@ passe que grava os bytes (`pom::HashingWriter`), sem custar uma segunda leitura.
 No fim, `pom::finalize_run` guarda as partes em
 `<shard_dir>/<modelo>-<hash curto do original>/` e sela
 `<modelo>-<hash curto do original>.pom` lá. No único formato v1, `pom_id` é o
-sha256 completo do GGUF original, não o hash da lista de partes. Assim, fatiar
+sha256 completo da fonte lógica: em GGUF simples é o arquivo; em multipart é a
+sequência ordenada de partes, não um arquivo remontado. Assim, fatiar
 novamente o mesmo modelo não cria outra pasta nem outro manifesto: as partes
 novas são mescladas por `sha256`, inclusive quando cobrem faixas alternativas
 como `L0-7` e `L0-3`. O mesmo manifesto contém `parts` para pipeline e
@@ -178,29 +283,69 @@ como `L0-7` e `L0-3`. O mesmo manifesto contém `parts` para pipeline e
 O merge é protegido por lock por `pom_id` e grava o manifesto atomicamente.
 Não há compatibilidade com outro formato de manifesto.
 
+### Contrato de saída e reparo de fatias antigas
+
+O contrato de saída é uma propriedade da arquitetura, não do nome do modelo.
+`gemma3` e `gemma4`, por exemplo, marcam `output.weight` como opcional no
+llama.cpp e fazem fallback explícito para `token_embd.weight`; é por isso que a
+regra existente de cabeça funciona para elas. `deepseek4.cpp` cria todos os
+seis tensores listados acima com flags obrigatórias. `output_hc_fn.weight` não é
+uma cabeça de vocabulário substituível: transforma o estado HC antes da norma,
+enquanto `output.weight` projeta para o vocabulário.
+
+As fatias DeepSeek4 já geradas sem esses tensores não podem ser consertadas só
+com metadata. O loader não consulta `pom.*` para relaxar a exigência. Também
+não existe acréscimo barato ao fim do GGUF: os descritores dos novos tensores
+ficam antes do payload, e ampliar a tabela desloca os dados existentes. Um
+reparo teria de reescrever a fatia inteira e ainda obter os pesos reais da
+cabeça; fabricar uma identidade para `output.weight` não preservaria o modelo.
+O fatiador continua recusando cedo uma fonte que não tenha os pesos reais para
+a cópia exigida na faixa intermediária; quando eles existem, a nova fatia é
+gerada já com os descritores e payloads corretos. Ele não promete uma ferramenta
+de reparo que fabrique outro arquivo recusado pelo loader.
+
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):
 
-1. Abre o GGUF por mmap, valida mágica `GGUF` e versões 2/3.
-2. Lê a tensor table; o tamanho de cada tensor vem da **diferença entre offsets**
+1. Abre um GGUF simples ou todas as partes declaradas por `split.*` com
+   mmap, valida mágica `GGUF` e versões 2/3, sem remontar os pesos.
+2. Lê a tabela unificada; o tamanho de cada tensor vem da **diferença entre offsets**
    (mais confiável que a tabela de tipos: aguenta quant desconhecido e tensores
    weight-tied). Tensor de byte_size 0 é **recusa**, não estimativa - fatiar
    produziria um arquivo corrompido. Rank implausível também é recusa.
 3. Seleciona tensores da faixa (`want_tensor`), remapeia `blk.(start+i).*` ->
    `blk.i.*`.
-4. Fatia não-final injeta `output_norm.weight` identidade (o llama.cpp precisa
-   dele para ler a fatia); zera `nextn_predict_layers` fora da última; atualiza
-   `{arch}.block_count`.
+4. Valida o contrato de saída antes de criar o destino. Fatia não-final injeta
+   `output_norm.weight` identidade nas arquiteturas em que essa adaptação é
+   suficiente (o llama.cpp precisa dele para ler a fatia), copia os tensores
+   obrigatórios reais da origem e zera `nextn_predict_layers` fora da última;
+   também atualiza `{arch}.block_count`. Metadata classificada como contagem
+   desde o início é rebaseada por `start_layer` e limitada ao tamanho da faixa;
+   metadata desde o fim só é preservada na faixa final. Para `deepseek4`,
+   `output.weight` e `output_hc_*` são copiados para cada faixa intermediária,
+   nunca inventados.
+   A faixa final mantém a cabeça completa mais `token_embd.weight`.
 5. Modelo híbrido (qualquer tensor `blk.N.ssm_conv1d.weight` na tabela): grava
    `{arch}.attention.recurrent_layers` explícito, sizado e indexado para a
    fatia, a partir de quais camadas **absolutas** realmente têm o tensor -
    nunca reimplementando a fórmula do llama.cpp. Modelo comum não ganha a
    chave. `merge` faz o mesmo sobre a numeração 0-based do arquivo unido.
-6. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
+6. Primeiro se decide se o array é por camada: ele precisa estar sob o
+   namespace da arquitetura e não ser um array estrutural de rope. Só então um
+   array escalar cujo comprimento é pelo menos `block_count` é recortado pelos
+   índices absolutos da faixa e gravado com a contagem local. Comprimento 1
+   continua broadcast; comprimento menor que `block_count` é recusa nominal.
+   Arrays globais, como `tokenizer.ggml.tokens`, inclusive arrays de strings,
+   são copiados intactos antes da comparação de comprimento. A regra `>=`
+   permanece para vetores da arquitetura com cauda extra, como
+   `compress_ratios`; a seleção é por posição, sem repetir um passo periódico.
+7. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
-7. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),
-   chamando `on_progress(0..100)`; o progresso é do arquivo, não do trabalho
-   (100% de uma fatia é 1/N do serviço).
+8. Ordena os payloads por parte e offset físico, escreve com `ALIGN` de 32 bytes
+   e copia dados em blocos de `CHUNK` (8 MB), chamando `on_progress(0..100)`.
+   Esse progresso é do arquivo, não do trabalho (100% de uma fatia é 1/N do
+   serviço); o job da UI também expõe a fase de leitura/hash, bytes lidos,
+   arquivo atual, taxa e ETA quando há base para estimá-la.
 
 ### Reaproveitamento
 

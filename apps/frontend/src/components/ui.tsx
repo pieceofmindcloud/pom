@@ -8,6 +8,8 @@
 import clsx from "clsx";
 import { motion } from "framer-motion";
 import { AlertTriangle, Loader2 } from "lucide-react";
+import { createPortal } from "react-dom";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
@@ -223,6 +225,126 @@ const toneClass: Record<Tone, string> = {
   sky: "border-sky/35 bg-sky/12 text-sky",
   lime: "border-lime/35 bg-lime/12 text-lime",
 };
+
+type TooltipPosition = { top: number; left: number };
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+/**
+ * Avisos compactos que continuam sendo uma superfície de leitura completa.
+ * O balão é um portal fixo para não ser cortado pelo scroll vertical do
+ * inspetor, e a largura máxima mais `overflow-wrap:anywhere` segura ids sem
+ * espaços dentro da viewport.
+ */
+export function AlertTooltip({
+  label,
+  message,
+}: {
+  label: string;
+  message: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [position, setPosition] = useState<TooltipPosition>({ top: 8, left: 8 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const tooltipId = `alert-tooltip-${useId().replaceAll(":", "")}`;
+
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const tooltip = tooltipRef.current;
+    const width = tooltip?.offsetWidth || Math.min(320, window.innerWidth - 16);
+    const height = tooltip?.offsetHeight || 160;
+    const left = clamp(rect.right - width, 8, window.innerWidth - width - 8);
+    const below = rect.bottom + 8;
+    const preferredTop = below + height <= window.innerHeight - 8
+      ? below
+      : rect.top - height - 8;
+    const top = clamp(preferredTop, 8, window.innerHeight - height - 8);
+    setPosition({ top, left });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || tooltipRef.current?.contains(target)) return;
+      setPinned(false);
+      setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setPinned(false);
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+
+  const closeIfUnpinned = () => {
+    if (!pinned) setOpen(false);
+  };
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={`Ver aviso para ${label}`}
+        aria-expanded={open}
+        aria-controls={open ? tooltipId : undefined}
+        aria-describedby={open ? tooltipId : undefined}
+        title={`Aviso para ${label}`}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={closeIfUnpinned}
+        onFocus={() => setOpen(true)}
+        onBlur={closeIfUnpinned}
+        onClick={() => {
+          setPinned((current) => {
+            const next = !current;
+            setOpen(next);
+            return next;
+          });
+        }}
+        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-amber/35 bg-amber/10 text-amber transition-colors hover:bg-amber/20 focus-visible:ring-2 focus-visible:ring-amber/60"
+      >
+        <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5" />
+      </button>
+      {open && createPortal(
+        <div
+          ref={tooltipRef}
+          id={tooltipId}
+          role="tooltip"
+          className="fixed z-[80] max-h-[min(18rem,calc(100vh-1rem))] w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto break-words whitespace-normal rounded-lg border border-amber/40 bg-ink px-3 py-2.5 text-[0.68rem] leading-relaxed text-fg shadow-lift [overflow-wrap:anywhere]"
+          style={{ top: position.top, left: position.left }}
+        >
+          {message}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 export function Badge({
   tone = "neutral",

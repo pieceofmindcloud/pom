@@ -211,19 +211,21 @@ codificação em trânsito. Formato:
 [4 bytes big-endian: tamanho do header][JSON header][tensor cru]
 ```
 
-- `dtype`/`shape` vão no JSON; o corpo é **binário** f16 (nunca base64, nunca
-  f32 na rede). Precisão e codificação são parâmetro de `encode`/`decode`, não
-  suposição.
+- `dtype`/`shape` vão no JSON; o corpo é **binário** f16 por padrão ou f8
+  quando a implantação escolhe a alternativa (nunca base64). Precisão e
+  codificação são parâmetro de `encode`/`decode`, não suposição.
 - `frame_version=1` (`inference/frame-v1-batch`) é o primeiro e único contrato
   oficial. Um header JSON carrega `batch_id` e itens `{item_id, session_id,
   shape, dtype, offset, len, meta}`, seguido pelo payload concatenado. O
   decoder valida versão, dtype, tamanho derivado do shape, limites e
   sobreposição antes de expor qualquer tensor.
 - Uma requisição individual usa o mesmo frame por meio de
-  `encode_batch_single`. O relay mantém uma janela curta de 4 ms e agrupa
-  chamadas compatíveis para o mesmo próximo hop, modelo, implantação,
-  configuração, fase e rota. O peer receptor distribui os itens
-  concorrentemente para o scheduler local e devolve os resultados pelo
+  `encode_batch_single`. O relay agenda o flush imediatamente e agrupa, quando
+  possível, chamadas concorrentes para o mesmo próximo hop, modelo,
+  implantação, configuração, fase e rota no mesmo ciclo do executor. Assim
+  uma chamada isolada não espera um timer fixo, enquanto chamadas que já
+  chegaram juntas ainda compartilham o frame. O peer receptor distribui os
+  itens concorrentemente para o scheduler local e devolve os resultados pelo
   `item_id` original.
 - O produto ainda não foi lançado, portanto não há fallback, adapter ou
   código de compatibilidade para formatos v1/v2 anteriores.
@@ -234,8 +236,72 @@ codificação em trânsito. Formato:
   request. Uma recusa determinística de tamanho não repete o mesmo prefill a
   frio.
 - O decode sempre devolve o tensor como f32: precisão reduzida é propriedade do
-  fio, nunca da matemática (f16 é a precisão da GPU mesmo, então não custa
-  qualidade - diferente do int8, considerado e recusado).
+  fio, nunca da matemática. `f16` é o padrão preservado; `f8` usa FP8 E4M3FN,
+  um byte por valor, e é uma escolha explícita de `RuntimeParams` para medir o
+  trade-off. O conversor recusa NaN, infinito e valores fora do alcance finito
+  em vez de saturá-los silenciosamente. O f32 continua representável em
+  caminhos internos, mas não é uma opção de implantação.
+- `RuntimeParams.hidden_state_dtype` é global para a implantação e segue o
+  mesmo caminho persistido de contexto, batch, chunk prefill e cache KV. O
+  padrão é `f16`; `f8` só é enviado quando o operador o escolhe
+  explicitamente. Cada peer anuncia `inference/frame-v1-dtype-f8` em
+  `/api/ui/node`. O planejador bloqueia uma implantação f8 se qualquer peer
+  selecionado não anunciar a capability, e o servidor ainda recusa um frame
+  incompatível com uma mensagem explícita. Não há interpretação silenciosa.
+- O trace de cada hop registra `hidden_state_bytes_sent`,
+  `hidden_state_bytes_received` e `hidden_state_dtype`. A UI mostra esses
+  campos por travessia e o formato efetivo, inclusive quando uma configuração
+  pedida não pode ser usada. O número observado, e não uma estimativa de
+  transporte, é a medida para comparar f16 e f8.
+
+### Forma do residual e custo por token
+
+O residual capturado não é assumido como uma matriz de duas dimensões. A
+captura encontra, pela quantidade conhecida de tokens do microlote físico e
+pela forma do tensor, o eixo de tokens. `n_embd_inp` descreve a largura do
+hidden state de entrada e não é usado para localizar esse eixo: em arquiteturas
+com fluxos, as features anteriores podem fazer o produto ultrapassar essa
+largura. Todos os eixos anteriores ao eixo de tokens são preservados na ordem
+física. O wire normaliza isso para `[tokens, features...]`. Dimensões posteriores
+maiores que 1 são recusadas; dimensões posteriores iguais a 1 são ignoradas.
+Se mais de um eixo tiver a contagem de tokens, o menor eixo que também fecha os
+strides contíguos é escolhido de forma determinística. Geometria ou stride que
+não fecha essa regra é recusado com o shape no erro.
+
+Na recepção, a validação usa `n_embd_inp` para a forma 2D e para dimensões
+extras singleton. Quando há um eixo extra não singleton, a largura efetiva é
+`n_embd_out`, que o llama.cpp calcula a partir da arquitetura e que já
+representa a largura física produzida pelo callback. A contagem de fluxos da
+metadata descreve a geometria, mas não é multiplicada novamente pelo receptor.
+Assim, uma forma `[tokens, n_embd, fluxos...]` só passa quando o produto das
+features coincide com a largura expandida reportada; uma largura incompatível
+continua sendo recusada com a forma no erro. `decode_hidden` e
+`decode_hidden_batch` usam essa mesma largura validada para reservar o batch
+Rust, evitando aceitar uma forma que depois estoure a cópia para o buffer.
+
+Quando existe uma dimensão de fluxo extra, o residual precisa carregar cada
+fluxo. Não há uma fronteira genérica em que uma largura `n_embd` combinada seja
+matematicamente equivalente: os ops de pré-combinação e pós-combinação mantêm
+os fluxos, e o op de combinação só mistura fontes em destinos. A combinação
+observada depois das camadas é uma saída auxiliar, não a entrada equivalente
+para o próximo peer. Portanto, para essa arquitetura, o caminho correto é
+transportar todos os fluxos; o planner não comprime o tensor por heurística de
+nome de família.
+
+O custo abaixo é o payload do tensor, medido pelo mesmo cálculo de
+`tensor_payload_len`; não inclui o header JSON nem o transporte. Para `n_embd =
+4096` e quatro fluxos, o custo por token é:
+
+| Representação | Quatro fluxos | Uma largura combinada |
+|---|---:|---:|
+| f16 | 32.768 bytes | 8.192 bytes |
+| f32 | 65.536 bytes | 16.384 bytes |
+| f8 | 16.384 bytes | 4.096 bytes |
+
+A coluna de uma largura é apenas o limite teórico de uma compressão equivalente;
+ela não é usada quando a arquitetura não fornece essa fronteira. A ordem dos
+microlotes não muda com a dimensão extra: `CaptureSlot` acumula cada bloco na
+ordem entregue pelo `split_simple`, habilitado por `kv_unified=true`.
 
 Medido com `tcpdump` no peer 2 (requisição de 35 tokens de prompt + 34
 gerados): 565.336 bytes de estado oculto da cabeça para a cauda, 6.715 bytes de
@@ -243,7 +309,9 @@ tokens amostrados na volta. 565.336 / 69 tokens = **8.192 bytes por token por
 hop**, exatamente `hidden_dim 4096 × 2` (f16). O formato antigo (f32 em
 base64) custava 4096 × 4 × 4/3 = 21.846 bytes por token por hop - **62,5%
 menos bytes** na rede hoje. Um pedaço de prefill de 512 tokens é ~8 MiB f16 por
-hop por pedaço.
+hop por pedaço. Com f8, o payload do mesmo tensor cai para um byte por valor,
+mas a redução efetiva deve ser lida em `hidden_state_bytes_*`, por travessia,
+porque header, transporte e padrão de tráfego também entram na medição.
 
 ## 3. Prefill e step
 
@@ -283,6 +351,48 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   retry, hop ou chunk. Um frame que o peer já aceitou pode terminar, porque o
   contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
   libera as sessões dos peers alcançados.
+
+**Pipeline de prefill (H1).** Nos caminhos hub e resposta direta, quando há
+mais de um hop, o prefill roda como um pipeline em ordem, não como um par
+travado. Duas rotinas concorrentes na mesma task do gateway (`prefill.rs`,
+`run`/`run_direct`): a **bomba da cabeça** despacha os pedaços em série - cada
+um é uma perna de rede + o decode da cabeça - e a **bomba de downstream** leva
+cada estado oculto pelos hops restantes, mantendo até `W` pedaços em voo ao
+mesmo tempo e colhendo os resultados na ordem de envio (`FuturesOrdered`). É
+isso que mantém todos os enlaces e todas as GPUs ocupados em paralelo, em vez
+de um estágio só.
+
+`PrefillOverlapWindow` impõe dois limites: a **contagem** de pedaços em voo
+(`prefill_max_inflight_chunks` em `pom.json` ou `--prefill-max-inflight-chunks`,
+efetivo entre 1 e 8, padrão 8; 1 desliga a sobreposição) e um **orçamento de
+bytes** de estado oculto em RAM no gateway (`INFLIGHT_BYTE_BUDGET`, 512 MiB
+fixo, que só morde com `n_embd` grande ou janela alta). O permit de cada limite
+viaja com o pedaço e só é solto quando o downstream dele termina. Uma falha ou
+a desconexão do cliente cancela as futures em voo; no modo direto, uma
+sequência UUID e uma fila por peer (`DirectForwardSequence`) mantêm o repasse
+hop a hop em ordem. O ACK da cabeça carrega o `next_pos` absoluto dentro de
+`prompt_progress`, e é dali que a bomba da cabeça despacha o pedaço seguinte
+sem esperar o resultado do anterior. A posição nunca é inferida pela ordem de
+conclusão ou chegada.
+
+**Retomada.** Se um pedaço `k > 0` falha depois de a cadeia já ter aceitado os
+anteriores, o erro carrega um `PrefillResumable { from_chunk, start_pos, ... }`
+e o gateway repete o prefill **a partir de `k`** em vez de reenviar o prompt
+inteiro: cada peer refaz o próprio KV pela reentrada de pedaço que
+`prefill_blocking` já trata (`kv_remove` da cauda; motor recorrente que recusa
+cai no retry frio total, que continua sendo a segunda recuperação). Sessão
+perdida no peer não é retomável - vai direto para o retry frio.
+
+O modo anel permanece serializado pelo contrato de resposta aninhada, para não
+abrir uma segunda requisição na mesma sessão sem a confirmação da anterior; ele
+ignora a janela.
+
+H1 aproxima o prefill do regime limitado por transmissão: com `K` pedaços e o
+pipeline cheio, o tempo tende a `K · max(perna, cálculo)` mais o enchimento, em
+vez de `K · (pernas + cálculo)`. Ela **não reduz os bytes**: os 126 MB de um
+prompt de 30.000 tokens continuam atravessando cada fronteira. O trace publica
+`prefill_pipeline_depth_max`, `prefill_overlapped_chunks` e
+`prefill_max_inflight_chunks`.
 
 ### 3.1 Cache de prefixo entre turnos
 
@@ -338,15 +448,73 @@ por `chunk_index * chunk_size` = 0 apagava o KV reaproveitado uma linha depois
 de aproveitá-lo. Nos pedaços seguintes, campo ausente é erro e provoca o
 fallback frio, em vez de fabricar 512 para uma sessão que está em 42.
 
-Se ainda assim o prefill falhar com o prefixo ligado - um peer que despejou a
-sessão, reiniciou ou divergiu -, o gateway repete a rodada inteira do zero antes
-de devolver erro. Reusar é otimização, nunca motivo para a requisição falhar.
+O acerto parcial é observado, mas não aplicado como KV parcial. Se os primeiros
+tokens coincidem e a divergência exigiria encolher a sequência retida, a cabeça
+informa `prefix_match_tokens` e recomeça a sessão a frio; `cached_tokens` fica
+zero e `prompt_tokens_transmitted` volta a ser o prompt inteiro. Isso evita
+resposta errada em motores recorrentes ou híbridos que recusam remoção parcial.
+`prefix_reuse_status` distingue `full`, `partial-cold`, `full-cold`, `miss` e
+`cold`; quando uma perda de sessão exige a repetição fria, o gateway publica
+`session-lost-cold`.
+
+Se um peer perder a sessão durante o prefill - por coleta de ociosidade,
+reinício do processo ou remoção explícita -, ele devolve "sessão desconhecida".
+O gateway reconhece essa recusa e repete a rodada inteira do zero uma única vez,
+mesmo quando o pedido não usava prefixo: o estado anterior daquele peer não
+existe mais, então repetir apenas o chunk recusado poderia produzir uma resposta
+silenciosamente errada. O custo é refazer também os chunks já aceitos e o KV em
+todos os hops. Se a segunda rodada falhar, o erro final informa que o sistema
+tentou reconstruir o contexto e que o pedido não foi executado; ele não expõe ao
+cliente a instrução interna de enviar `reset=true`. Reusar é otimização, nunca
+motivo para a requisição falhar.
 
 O prompt que o cache reconhece vem do **array de mensagens**
 (`openai::conversation_cache_key`), não do texto renderizado, e `render_prompt`
 rotula todo turno inclusive o primeiro: as duas coisas juntas garantem que o
 prompt de um turno seja prefixo exato do prompt do seguinte. Texto cru sem
 rótulo continua disponível em `/v1/completions` e `POST /api/generate`.
+No caminho Anthropic, quando há `output_config.task_budget`,
+`conversation_cache_key_with_budget` também prefixa `type`, `total` e
+`remaining`; trocar qualquer valor invalida o KV porque troca o marcador que o
+modelo enxerga. Como o marcador é final e muda a cada requisição, ele não
+coincide entre turnos, conforme a semântica documentada do provedor.
+
+### Por que a sessão desaparece
+
+A investigação do caminho real não encontrou um único evento que possa ser
+atribuído retrospectivamente ao peer da ocorrência: o erro 400 não leva o
+motivo da remoção. O estado de uma sessão é um `HashMap` em memória dentro de
+`InferState`; não há persistência nem restauração depois de um reinício. As
+remoções possíveis hoje são:
+
+- reinício do processo, que recria `sessions` vazio;
+- coleta de ociosidade em `reap_idle`, depois de 900 segundos sem uso, chamada
+  quando `alloc_seq` precisa de um slot;
+- pressão de capacidade: `max_sessions` é 1 por padrão, e `alloc_seq` despeja
+  primeiro a sessão retida menos usada em `evict_retained`;
+- remoção ativa por `finish`, usada pelo `/v1/session/release`, pelo cleanup de
+  cancelamento/erro e pelo próprio despejo de capacidade.
+
+O limite de sessões não remove uma sessão ativa: o despejo seleciona apenas
+sessões retidas, e falta de slot sem vítima devolve `seq pool esgotado`, não
+`sessão desconhecida`. A coleta de ociosidade também não é um timer contínuo.
+Durante um prefill normal, cada chunk aceito atualiza `last_used`, e uma sessão
+em andamento ainda não está marcada como retida. Portanto, para o sintoma
+observado em um chunk posterior, a evidência do código aponta para reinício do
+processo ou remoção explícita/concurrente durante o prefill; TTL e capacidade
+explicam principalmente o cache de prefixo ficar apontando para uma sessão
+perdida entre turnos. O pedido novo funcionar logo depois no mesmo peer prova
+que ele voltou a atender, mas não distingue reinício de remoção.
+
+Conclusão: a perda da sessão é possível e, em parte, intencional no ciclo de
+vida atual, mas não há telemetria suficiente para dizer qual dos eventos ocorreu
+na máquina do relato. Recomenda-se uma tarefa separada para registrar o motivo
+de cada `finish`, `reap_idle` e `evict_retained`, correlacionar o início do
+processo com o `node_id` e alinhar a capacidade do `prefix_cache` do gateway
+com `max_sessions` dos peers. A recuperação automática continua sendo a
+resposta correta para a perda legítima; sem essa tarefa, ela permanece uma
+proteção contra divergência de estado, não uma prova de que a causa deixou de
+existir.
 
 EOS ou fim de turno apenas fecha o acumulador UTF-8 da resposta. O servidor
 mantém a sessão física até receber `/v1/session/rewind` ou `/v1/session/release`,
@@ -359,7 +527,9 @@ públicas não mudaram, mas a economia agora é **publicada**:
 `usage.prompt_tokens_details.cached_tokens` (OpenAI),
 `usage.cache_read_input_tokens` (Anthropic) e `x_pom.trace.cached_tokens`
 reportam tokens de prompt que o pipeline não reprocessou - medida do executado,
-não da escolha. `/health` publica `sessions_retained`,
+não da escolha. O trace também publica `prefix_match_tokens`,
+`prefix_reuse_status` e `prompt_tokens_transmitted`, para separar candidato
+comum de tokens realmente poupados. `/health` publica `sessions_retained`,
 `prefix_tokens_retained` e `kv_seq_max`.
 
 `prefix_cache_lab.rs` compara cada operação do cache em memória com uma
@@ -414,8 +584,20 @@ Cada processo de inferência possui um scheduler próprio para o contexto
 `llama.cpp`. Ele recebe os frames depois da autenticação e do decode do wire,
 aplica backpressure antes de criar uma sessão e responde `429` com
 `Retry-After: 1` quando `max_queue_requests` foi atingido. O padrão é fila 128,
-janela de coleta de 4 ms, `max_batch_sequences` limitado por `max_sessions` e
-`max_batch_tokens` limitado por `n_batch`.
+janela de coleta de 0 ms, `max_batch_sequences` limitado por `max_sessions` e
+`max_batch_tokens` limitado por `n_batch`. Uma janela positiva continua
+disponível na configuração para workloads que priorizam formar microbatches.
+
+Na telemetria de cada hop, `queue_ms` começa no `queued_at` marcado pelo
+handler imediatamente antes de `SchedulerHandle::submit_prefill` ou
+`submit_step`, e termina na entrada do worker, antes de adquirir o mutex do
+estado e do motor. O atraso fixo vinha do `tokio::time::sleep(cfg.batch_window)`
+em `run_scheduler` quando a fila ainda não estava cheia. `lock_wait_ms` começa
+depois e mede a espera pelo mutex separadamente, portanto não deve ser usado
+como explicação para uma fila uniforme entre GPUs diferentes. Com o default de
+0 ms não há espera temporizada; um valor positivo mantém exatamente a janela
+opt-in. O relay tinha ainda um `sleep` fixo de 4 ms fora dessa métrica, agora
+substituído por flush assíncrono imediato.
 
 Quando as entradas são compatíveis, o worker monta um único `llama_batch` com
 uma sequência física por sessão. Prefill e decode de tokens ficam em uma lane;
@@ -485,12 +667,31 @@ receptor mantém o comportamento de executar a fatia inteira.
 
 O handler confere a sub-faixa contra a faixa carregada antes de enfileirar o
 trabalho. Quando `exec_start` coincide com `start_layer`, `exec_end` menor que
-`end_layer` reposiciona a captura de residual para o bloco local correspondente
-e o callback do llama.cpp interrompe o grafo depois dele. Quando o pedido chega
-até `end_layer`, a captura normal da fatia inteira é usada. Uma sub-faixa
-invertida ou fora da fatia recebe HTTP 400; começar acima de `start_layer`
+`end_layer` reposiciona a captura de residual para o bloco local correspondente.
+O callback copia o residual antes das operações seguintes e deixa o grafo
+continuar; portanto uma cabeça obrigatória pode ser executada depois da captura
+sem alterar o estado oculto enviado ao próximo peer. No DeepSeek4, o grafo chama
+essa fronteira `l_last-N`; o alias `l_out-N` continua aceito pelo POM. Quando o
+pedido chega até `end_layer`, a captura normal da fatia inteira é usada. Uma
+sub-faixa invertida ou fora da fatia recebe HTTP 400; começar acima de `start_layer`
 também é recusado explicitamente, porque o motor atual sempre entra pelo
 primeiro bloco da fatia e não consegue pular a cabeça já carregada.
+
+Quando `llama_model_n_embd_out` é diferente de `llama_model_n_embd`, o contexto
+não liga `cparams.embeddings`. A extração genérica do llama.cpp calcula a leitura
+com a largura de saída da metadata, que pode ser maior que o tensor materializado
+no grafo e provocar um `GGML_ASSERT` de leitura fora dos limites. O callback de
+`l_out`/`l_last` continua sendo o único caminho de captura usado pelo POM.
+
+O caminho de entrada mantém a forma do residual até `llama_decode`: a recepção
+valida o shape, o relay preserva os eixos, e o `llama_batch` Rust é alocado com
+a largura efetiva. O fork publicado em `pom-tensor-parallel` também carrega
+essa largura explícita pelo allocator e pelo input do grafo. Para uma entrada
+expandida, o grafo normal usa a largura física reportada por `n_embd_out` e a
+reinterpreta diretamente como `[n_embd, fluxos, tokens]`, sem repetir a primeira
+faixa. Para a entrada canônica, o allocator e o grafo continuam usando
+`n_embd_inp`; uma largura que não seja canônica nem a expandida reportada é
+recusada com a geometria no erro.
 
 Por isso o planejador só escolhe uma faixa que começa exatamente na posição
 executada. Faixas sobrepostas no inventário podem formar entradas alternativas,
@@ -549,9 +750,12 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
   existe); falhou em todas, o gateway fecha no prazo - não há terceira via.
   `deliver_failure` entrega um `RelayFailure` no lugar do resultado, para o
   gateway nomear o nó que morreu em vez de esperar o prazo inteiro.
-- `forward_direct`: o repasse corre em task própria (quem chamou já foi aceito).
-  Falhou o repasse, o próprio hop denuncia direto ao gateway nomeando o nó que
-  realmente morreu.
+- `forward_direct`: o repasse corre em task própria (quem chamou já foi aceito),
+  mas a sequência de prefill espera o `chunk_index` predecessor antes de
+  transmitir. Assim, a computação do próximo pedaço pode acontecer em paralelo
+  sem permitir que um estado oculto posterior seja aplicado primeiro. Falhou o
+  repasse, o próprio hop denuncia direto ao gateway nomeando o nó que realmente
+  morreu.
 - Falha que chega com `error` no lugar do token (`direct_failure`) nomeia o hop
   morto e marca **esse** (não a cabeça) com `routes.mark_failure`.
 
@@ -560,15 +764,22 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
 `overlay_head_authoritative_fields`). Ela manda os dois **adiante**
 (`prompt_progress_for_forward`) e a cauda copia para o resultado
 (`apply_prompt_progress`). Errar isso trunca todo prompt de mais de um pedaço
-no primeiro, em silêncio.
+no primeiro, em silêncio. O ACK imediato da cabeça também carrega essa
+estrutura aninhada; `prefill::run_direct` a lê para enviar o chunk seguinte com
+`start_pos = next_pos`, inclusive quando há sobreposição e quando o primeiro
+chunk reaproveita um prefixo. `direct_lab.rs` recusa chunks posteriores sem
+`start_pos` e cobre as duas situações.
 
-**Telemetria** (`direct::hop_entry`/`accumulate`/`credit_transport`): cada hop
-descreve a si mesmo na ida (`bytes_sent` = quadro que entrou; `round_trip_ms` =
-`processing_ms`, porque a perna de rede não é observável por ninguém no modo
-direto). A lista viaja cabeça→cauda e a cauda a entrega junto do resultado. O
-transporte não atribuído (total menos a soma dos `processing_ms` declarados) vai
-para o `round_trip_ms` da **cabeça**, e os `bytes_received` do resultado para a
-cauda. O número somado continua certo; dividido por hop, ele não existe.
+**Telemetria** (`direct::hop_entry`/`accumulate`/`record_transport`): cada hop
+descreve a si mesmo na ida e o chamador envia uma evidência separada da
+travessia. `transport_traversals` contém uma entrada por chamada, em ordem,
+com `transport` (`local`, `libp2p-tunnel` ou `https`), `transport_fallback`,
+tempo e bytes enviados e recebidos. O trace copia cada entrada para o hop e
+fase correspondentes, sem lançar o residual no primeiro hop. Se uma evidência
+não chegar em até 2 segundos depois do resultado, o pedido segue com
+`transport_trace_complete=false` e a UI deixa a ausência visível. Um hop local
+na mesma máquina pode ter zero de rede corretamente; isso não é uma atribuição
+ao primeiro hop.
 
 ## 5. Decodificação especulativa
 
@@ -652,6 +863,11 @@ requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
 O bloco `nextn` recebe o estado oculto do tronco na posição `p` com o embedding
 do token de `p+1` e prevê o token de `p+2`. É a cabeça de rascunho que o LM
 Studio liga quando oferece "MTP".
+
+O buffer `h` do contexto MTP usa `n_embd_out`, a largura física reportada pelo
+llama.cpp. Em arquiteturas com eixos de fluxo, usar apenas `n_embd` perderia
+parte do estado antes de chamar `llama_decode`; em modelos sem expansão os dois
+valores são iguais.
 
 - **O motor embarcado já sabe executá-lo.** `llama-cpp-sys-2` 0.1.154 traz
   `LLAMA_CONTEXT_TYPE_MTP` e `llama_model_n_layer_nextn` nos bindings. As
@@ -766,7 +982,9 @@ inteiro.
   llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de
   verdade. Como os hops falsos implementam frames unitários, o fixture só
   anuncia capabilities compatíveis e não entra no `BatchCoordinator`; só o
-  llama.cpp faz isso, ver o doc do módulo para o que mudou em 2026-08-16.
+  llama.cpp faz isso, ver o doc do módulo para o que mudou em 2026-08-16. Ela
+  também confere o resumo agregado `GenerationTimings` no caminho de geração do
+  gateway, incluindo uma resposta de um token.
 
 ## 9. Limite de prompt
 
@@ -791,10 +1009,10 @@ resposta válida e mostravam apenas uma execução sem resposta. Requisições q
 cabem no orçamento mantêm o SSE e o caminho distribuído inalterados.
 
 O `POST /api/generate` aceita `max_tokens` opcional. Na ausência, usa 512;
-quando presente, exige valor maior que zero e no máximo o `max_new_tokens`
-configurado no nó, recusando 400 com os dois valores quando excede. O limite é
-o total de tokens de saída: o primeiro token devolvido pelo prefill já conta,
-portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de decode.
+quando presente, exige valor maior que zero. O limite efetivo é o menor entre o
+pedido e o espaço restante de `n_ctx` depois do prompt. O primeiro token devolvido pelo prefill já
+conta, portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de
+decode.
 
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes
@@ -809,10 +1027,138 @@ portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de decode.
   `--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 32512
   tokens; sem uma janela compatível o nó responde HTTP 413 antes do SSE.
 
+### 9.1 Os dois orçamentos de saída e o laço de continuação
+
+O `max_new_tokens` da implantação **nunca foi limite do backend**. O
+`infer_server` não o conhece: ele decodifica enquanto o gateway pedir `/v1/step`.
+Ele sempre foi um corte do gateway - e cortar ali, calado, era o defeito. Medido
+no cluster em 2026-08-27, `max_tokens: 4000` contra uma implantação de 1000
+devolvia 1000 tokens e `finish_reason: "length"`, sem erro nenhum; com uma
+ferramenta declarada, o corte caía **dentro** do `<tool_call>` e a resposta
+voltava sem `tool_calls`, com a chamada inacabada degradada em texto solto. Um
+harness que trate `max_tokens` como condição terminal - o opencode trata - larga
+o turno aí e o arquivo fica pela metade.
+
+Hoje são **dois números**, e nunca um só (`gateway::OutputBudget`):
+
+| | quem decide | o que limita |
+|---|---|---|
+| **perna** (`leg`) | `NodeConfig.max_new_tokens` da implantação | **uma** geração de backend |
+| **total** (`total`) | `min(pedido, n_ctx - prompt)` | a **requisição inteira** |
+
+Esgotar a perna não encerra a resposta. `gateway::note_leg_boundary` conta a
+perna e o laço segue decodificando na **mesma** sessão de KV, na mesma conexão,
+no mesmo fluxo SSE: nada é reprefilado, nada é reenviado, o cliente não tem como
+distinguir a costura. Só o **total** encerra, e só ele produz
+`finish_reason: "length"`. O `x_pom.continuation_legs` diz quantas pernas a
+resposta usou - `1` é uma geração só.
+
+Isso vale para `stream: true` e `stream: false` pelo mesmo caminho: o
+`stream: false` costura internamente e devolve uma resposta única. A análise da
+chamada de ferramenta acontece sobre a saída **completa** nos dois - o
+`TagScanner` só é fechado (`finish()`) no fim de verdade -, porque um pedaço
+intermediário é tag inacabada por construção.
+
+**O teto pedido pelo cliente é imposto e inviolável.** Nada o ultrapassa, por
+motivo nenhum, nem uma chamada de ferramenta aberta no token do corte.
+Atingi-lo é **parada terminal**, com o motivo de parada correspondente. É a
+regra dos dois provedores, verificada na documentação viva em 2026-08-29:
+`max_tokens` é "um teto por resposta imposto, do qual o modelo não tem
+conhecimento", e ao ser atingido a saída "trunca no meio e exige nova
+tentativa". Não existe continuação, folga ou transbordo em nenhuma das duas
+APIs.
+
+Houve aqui uma folga que deixava a geração passar do teto para fechar uma
+chamada aberta. Ela foi **removida**: o
+que os provedores oferecem no lugar do transbordo é o [orçamento de
+tarefa](api-http.md#orçamento-de-tarefa), que avisa o modelo em vez de esticar
+o teto.
+
+**A capacidade do nó é derivada do runtime, não é um corte silencioso.**
+O `n_ctx` efetivo confirmado pelo `/health` é anunciado em `/v1/models` como
+`context_length` e `max_completion_tokens`. O gateway usa o menor contexto
+confirmado entre os peers vivos do modelo e reduz o orçamento somente quando o
+prompt ocupa parte dessa janela. Não há uma capacidade absoluta adicional no
+arquivo de configuração.
+
+O contexto que sobrou continua apertando o teto **sem** recusar, e isso é
+deliberado: ele sai de uma estimativa de tokens do prompt (`estimate_tokens`),
+e recusar por estimativa rejeitaria pedido válido. `x_pom.output_limits` conta
+a verdade, que é o canal certo para um número aproximado.
+
+**O corte dentro de uma chamada devolve a chamada estruturada e incompleta.**
+Esta é a forma dos dois provedores, apurada na documentação viva em 2026-08-29.
+A Anthropic devolve o último bloco como `tool_use` com o `input` incompleto e
+`stop_reason: "max_tokens"`, e manda o cliente conferir exatamente esse par
+para repetir o pedido com um `max_tokens` maior. A OpenAI devolve
+`tool_calls[].function.arguments` - documentado como string que "nem sempre é
+JSON válido", a validar antes de executar - junto de `finish_reason: "length"`.
+Nenhum dos dois descarta a chamada, e nenhum dos dois a degrada em texto.
+
+`TagScanner::finish_truncated` recupera o que dá: o nome da ferramenta e os
+parâmetros que já saíram, incluindo o que estava sendo escrito no momento do
+corte. Os argumentos saem numa string JSON **inacabada**, cortada onde o modelo
+foi cortado - ela não parseia de propósito, e é isso que faz um cliente que
+ignore o motivo de parada falhar em vez de executar meia chamada. O `input` da
+Anthropic, que é tipado como objeto, leva o mesmo conteúdo já recuperado.
+
+| situação | o cliente recebe |
+|---|---|
+| corte dentro da chamada, nome já emitido | a chamada **estruturada e incompleta**, `length`/`max_tokens`, `x_pom.truncated_tool_call: true` |
+| corte antes de o nome fechar | só o texto anterior à abertura; um nome pela metade não é ferramenta |
+| nenhuma chamada aberta | texto truncado, `length`/`max_tokens`, nada mais muda |
+
+Marcação crua nunca é resposta: o scanner segura o corpo da chamada até saber
+o que ele é, então nada de dentro da tag vaza como prosa. Em streaming os
+argumentos saem em fragmentos conforme o modelo gera (ver
+`api-http.md`, "Streaming incremental dos argumentos"), e o que já saiu conta:
+o fechamento por corte emite **só o que falta**, de modo que um fragmento
+parcial normal e um truncamento terminal nunca se confundem. `x_pom` conta a
+verdade:
+`truncated_tool_call` diz se o corte caiu dentro de uma chamada, e `partial` é
+`true` sempre que isso aconteceu ou houve perda de transporte.
+
+**Por que não há reprefill.** O laço não reabre geração: ele continua a que já
+está aberta. A alternativa - encerrar a perna, reabrir com o texto gerado como
+prefixo e contar com o cache de prefixo - custaria reprefill do que já saiu, a
+cada perna, e ocuparia exatamente o mesmo KV no fim. Não há vantagem nenhuma em
+pagar por ela.
+
+**Capacidade de todos os peers.** Depois que o `/health` prova o carregamento,
+`runtime::spawn_health_watch` publica em `Announce.runtime_capacity` o
+`n_ctx` efetivo por sessão retornado pelo `/health` (o total do engine dividido
+por `max_sessions`), e o `max_new_tokens` da perna. O gateway usa o menor valor entre todos os
+peers vivos do modelo/implantação tanto em `/v1/models` quanto na validação da
+requisição. Apply, erro, stop e unload térmico limpam o anúncio antes do
+restart, então uma capacidade antiga não fica no catálogo. Sem peer
+correspondente, a configuração local continua sendo fallback para rotas sem
+implantação; havendo peer vivo sem capacidade reportada, a requisição fica
+indisponível até todos confirmarem o runtime, sem esconder um estágio antigo.
+
+**Limite conhecido.** `context_available` ainda usa a janela por sessão; com
+um pool (`max_sessions > 1`) cada contexto recebe `n_ctx / n`, então esse
+número é otimista. A capacidade publicada deve ser lida novamente depois de
+qualquer restart ou alteração da implantação.
+
+A bancada é `crates/node/src/backend/continuation_lab.rs`.
+
 ## 10. O canal de cada salto na telemetria
 
-`SentFrame` e `PhaseTrace` carregam dois campos sobre o transporte, e eles
-aparecem numa linha própria da tabela de telemetria do Chat.
+`SentFrame` e `PhaseTrace` carregam a identidade do transporte e a medição de
+cada travessia, e eles aparecem numa linha própria da tabela de telemetria do
+Chat.
+
+- **`transport_summary`** - resumo limitado das travessias deste hop, agrupado
+  por transporte (`local`, `libp2p-tunnel`, `https` ou `unknown`). Cada entrada
+  informa chamadas, bytes enviados e recebidos, RTT mínimo, mediana, p95 e
+  máximo, além de quantas chamadas chegaram por fallback naquele transporte.
+  O resumo também informa `fallback_calls` total e `transport_switches` agrupadas
+  por par origem/destino, para uma troca durante a execução não desaparecer no
+  agregado. O caminho direto recebe os recibos por mensagens autenticadas pelo
+  ticket e espera no máximo 2 segundos depois do resultado;
+  `transport_trace_complete=false` deixa a perda explícita. As amostras usadas
+  para quantis são limitadas internamente, portanto a resposta de produção não
+  cresce com o número de tokens.
 
 - **`tls` / `tls_calls`** - se o salto foi cifrado. Na `PhaseTrace` é uma
   **contagem**, não um booleano: uma fase soma várias chamadas, e se só parte
@@ -860,7 +1206,6 @@ aquele salto não deu.
   do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
   Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
   pom é expectativa, não fato.
-
 ## Nota de versão
 
 Documentado a partir dos fontes na branch `fm/pom-linha-2` (2026-08-15):

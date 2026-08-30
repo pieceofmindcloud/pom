@@ -102,6 +102,36 @@ describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
       expect(bar.getAttribute("aria-valuenow")).not.toBeNull();
     }
   });
+
+  it("declara explicitamente quando a temperatura não está disponível", () => {
+    mount(semGpu);
+    expect(screen.getByLabelText(/temperatura da gpu: temperatura desconhecida/i)).toBeTruthy();
+  });
+});
+
+describe("temperatura das GPUs", () => {
+  afterEach(cleanup);
+
+  it("mostra uma leitura e a faixa térmica para cada GPU", () => {
+    const peer = fakeSlicePeer("thermal", 0, 15, {
+      node: fakeNode({
+        node_id: "thermal",
+        short_id: "thermal",
+        hostname: "node-thermal",
+        system: fakeSystem({
+          gpu_kind: "nvidia",
+          gpus: [
+            { index: 0, name: "RTX A", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, temperature_c: 72 },
+            { index: 1, name: "RTX B", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, temperature_c: 90 },
+          ],
+        }),
+      }),
+    });
+    mount(peer);
+    expect(screen.getByText(/72,0 °C/)).toBeTruthy();
+    expect(screen.getByText(/90,0 °C/)).toBeTruthy();
+    expect(screen.getByText(/crítica/)).toBeTruthy();
+  });
 });
 
 describe("cardRange", () => {

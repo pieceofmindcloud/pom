@@ -28,6 +28,20 @@ partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
   (`npm run build` ou apontar `POM_UI_DIST`). `dist/` e `dist-release/`
   são artefatos locais ignorados pelo git.
 
+### Temperatura da GPU
+
+O Painel Fluxo mostra a maior leitura conhecida da máquina no card de cada
+faixa, enquanto Detalhes mostra uma linha por GPU. As faixas normal, atenção e
+crítica usam os tons existentes `aqua`, `amber` e `rose`; quando o driver não
+responde, o selo diz explicitamente "temperatura desconhecida". A API
+`GET /api/ui/node` leva a política térmica junto com a máquina, e
+`GET/POST /api/ui/thermal` lê ou grava seus três valores.
+
+O painel de proteção térmica fica em Configurações > Rede. O backend valida a
+política antes de persistir, e o runtime do próprio nó aplica a histerese e o
+cooldown. Quando o modelo é pausado por calor, o estado do servidor aparece
+como "aguardando resfriar", distinto de peer indisponível ou falha.
+
 ### Roteamento no axum (`webapp.rs`)
 
 O bundle é montado por último no roteador e o fallback é estreito de propósito:
@@ -79,7 +93,8 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
   reconfiguração de parâmetros e desimplantação por `deploy_id`)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
+- `/logs` -> LogsByToken, inspetor da auditoria SQLite; `/logs/ao-vivo` ->
+  LogsLive
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
@@ -119,6 +134,16 @@ rede" descrevem um trabalho que não é dele. O perfil é o que separa os dois.
 ausente é livre. Hoje `/implantar`, `/implantacoes` e `/logs` (com a filha
 `/logs/ao-vivo`) são só do administrador. A chave casa **segmento inteiro**, então
 `/logs` cobre `/logs/ao-vivo` sem repetir a filha e não cobre `/logs-antigos`.
+
+`LogsByToken` consulta `GET /api/ui/requests` com a chave de conexão do
+operador. A tela filtra por identidade não secreta da API key, texto do prompt,
+nó e período, lista primeiro as entradas mais recentes e abre cada linha para
+mostrar o prompt exato, detalhes da requisição, resultado, telemetria por hop,
+tempos agregados e erro.
+Prompts longos ficam em blocos monoespaçados com quebra e rolagem internas.
+`in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais
+distintos. A identidade exibida é o id e o rótulo configurados para a chave;
+nenhum segredo é pedido ao endpoint ou renderizado no navegador.
 
 **Uma tabela só, lida em dois lugares.** O `App.tsx` a consulta para barrar a rota
 (`Forbidden` no lugar da tela) e o `navForProfile` (`components/nav.ts`) para podar
@@ -304,7 +329,18 @@ guarda além das falas:
   primeira mensagem de sobrescrever o nome escolhido).
 
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
-entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
+entre pedaços; `finishChatStream` grava o resumo de TTFT, velocidade de
+pré-processamento do prompt, velocidade de geração da saída e total ponta a
+ponta, além do trace por hop. O Chat mostra essas quatro linhas no resumo da
+resposta e deixa explícito quando uma taxa não é mensurável, como no reuso total
+do prefixo ou numa resposta de um token.
+Se `/v1/chat/completions` enviar um frame SSE com o envelope de erro OpenAI,
+`streamErrorMessage` preserva a mensagem real mesmo quando já há texto na
+resposta; ela aparece em um bloco que quebra linhas, permite seleção e oferece
+um botão de cópia. A mensagem genérica de resposta vazia só aparece quando o
+stream termina sem tokens e sem erro.
+Cada fase também mostra os bytes de estado oculto enviados e recebidos na
+travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
 Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para
 os pares adjacentes do trace e `/api/ui/peer/:node_id/runtime` para cada máquina
 do trace. O painel mostra o RTT total observado das chamadas, o RTT de cada
@@ -415,14 +451,32 @@ impressão digital é só modelo + conjunto de faixas.
 ## Fatiar, implantar e transferir na tela
 
 - **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
-  "o resto") ou Tensor Parallelism. No modo TP, o operador escolhe 2..64 ranks
-  e a prévia mostra uma faixa completa por rank com a identificação `1of2`,
-  `2of2`, `1of4` etc. Cada alteração posta `POST /api/ui/slice/plan`
-  (debounce 260 ms); TP leva `mode: "tensor_parallel"` e `tp_size`, enquanto
-  pipeline leva `slices`. `POST /api/ui/slice` roda o job. O painel de atividade
-  só aparece enquanto existe um fatiamento em execução. A tela Fatias separa
+  "o resto"), uma faixa específica por início/fim de camada, ou Tensor
+  Parallelism. A faixa específica usa as opções arquiteturais do GGUF, envia
+  `range: { start_layer, end_layer }` e acrescenta a parte ao manifesto por
+  hash, sem substituir nem apagar fatias anteriores. No modo TP, o operador
+  escolhe 2..64 ranks e a prévia mostra uma faixa completa por rank com a
+  identificação `1of2`, `2of2`, `1of4` etc. Cada alteração posta
+  `POST /api/ui/slice/plan` (debounce 260 ms); TP leva `mode: "tensor_parallel"`
+  e `tp_size`, enquanto pipeline leva `slices` ou `range`. `POST /api/ui/slice`
+  roda o job. O painel de atividade fica visível também para jobs terminados e
+  mostra fase nomeada, bytes, taxa, ETA quando confiável, arquivo atual e
+  saídas parciais em caso de falha. A prévia confere o espaço livre no destino
+  real configurado, com número concreto e alerta antes de iniciar. A tela Fatias separa
   `parts` e `tp_parts`, agrupa TP por tamanho e ordena os ranks dentro de cada
-  grupo. A transferência considera ambas as listas.
+  grupo. A transferência considera ambas as listas. Quando o catálogo confirma
+  um GGUF multipart, esta tela mostra a soma real dos bytes, a etiqueta
+  MULTIPART e a lista de partes físicas. Enquanto o cabeçalho ainda está sendo
+  enriquecido, não mostra o tamanho da primeira parte. Se a fonte estiver
+  incompleta, o motivo vindo de `split.count`, `split.no` ou da parte
+  ausente aparece no painel e o botão de fatiar fica desabilitado; o operador
+  precisa colocar o conjunto completo junto e deixar o POM gerar as fatias.
+  A prévia e o início do job repetem o preflight do GGUF para a cabeça exigida
+  pelo loader. Em `deepseek4`, uma faixa intermediária copia os pesos reais da
+  cabeça que o loader exige, e a prévia mostra o payload adicional repetido em
+  cada uma; se a tabela de tensores não permitir a cópia, a recusa lista o
+  motivo concreto. A faixa final só é oferecida quando a tabela contém a
+  cabeça completa.
 - **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.
@@ -440,7 +494,8 @@ impressão digital é só modelo + conjunto de faixas.
   não inventa pontes pela ordem dos cards, o que preserva uma entrada rápida
   quando outra faixa carregada se sobrepõe. O Tensor usa o modelo inteiro em todos os
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
-  (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
+  (contexto, batch, amostragem, sessões e precisão do estado oculto) ficam
+  separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. Nas globais, a seção
   de execução separa a especulação por lookup do MTP; ao marcar MTP, a
@@ -477,8 +532,14 @@ impressão digital é só modelo + conjunto de faixas.
   e o progresso vem de `GET /api/ui/jobs`. O mapa usa os mesmos primitives do
   canvas do Painel: pontos no fundo, cards arrastáveis, zoom, Fit, Organizar e
   Redefinir, com posições persistidas por implantação. O inspetor tem 19rem,
-  pode ser recolhido pela borda esquerda, separa visualmente propriedades
-  globais e da máquina selecionada, e permite atribuir ao peer uma faixa que
+  pode ser recolhido pela borda esquerda, começa diretamente pelas abas
+  Globais e Máquina, sem título próprio e sem o padding externo `p-3`, e separa
+  visualmente propriedades globais e da máquina selecionada. Avisos de
+  capacidade ficam como ícones âmbar ao lado do controle: o texto completo,
+  incluindo fonte e motivo, abre por hover, foco ou clique em um portal fixo que
+  quebra palavras e identificadores sem espaços sem criar overflow horizontal.
+  O conjunto de alertas permanece distribuído junto dos respectivos controles,
+  em vez de formar uma fileira de cartões. O inspetor permite atribuir ao peer uma faixa que
   ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
   peers é uma rota paralela válida, não uma troca. Clicar de novo numa faixa já
   atribuída tira a seleção - o mesmo botão é o caminho de ida e de volta. A
@@ -507,8 +568,16 @@ impressão digital é só modelo + conjunto de faixas.
   modelo ainda em enriquecimento, peer silencioso ou peer antigo sem
   `metadata_complete` não bloqueia. Quando a própria seleção ainda não pode
   ser resolvida, o plano devolve um único `blocked` que nomeia a faixa ou o
-  modelo pendente. O enriquecimento registra início e conclusão e permite nova
-  tentativa após falha, sem transformar o inventário parcial em completo.
+  modelo pendente. O enriquecimento registra início e conclusão; um erro
+  terminal fica em `metadata_error` no modelo e não impede os demais, enquanto
+  `metadata_complete` vira `true` ao terminar a passagem. A resposta publicada
+  é reaproveitada pelas requisições. A primeira chamada instala um placeholder
+  e compartilha a única varredura em voo, por isso F5 e trocas repetidas na combo
+  não empilham scans ou enriquecimentos. Se o refresh trocar o inventário, o
+  backend reconcilia o resultado por `path + size + mtime` e preserva os modelos
+  já lidos; somente arquivo novo ou alterado volta ao cabeçalho. Nova tentativa
+  só ocorre em refresh por TTL ou invalidação, e descartes de tarefas ficam
+  registrados no log.
   **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as
   linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
   mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os

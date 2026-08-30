@@ -1,11 +1,13 @@
-import type { ExecutionEngine } from "./types";
+import type { ExecutionEngine, GenerationTimings, WireDtype } from "./types";
 
 export type { ExecutionEngine } from "./types";
+export type { GenerationTimings } from "./types";
 
 export interface StreamMetrics {
   tokens_per_sec?: number;
   tokens_generated?: number;
   duration_ms?: number;
+  timings?: GenerationTimings;
   trace?: RequestTrace;
 }
 
@@ -16,11 +18,46 @@ export interface RequestTrace {
    *  da sessão do turno anterior. Medida do executado, não da escolha do
    *  cache. Ausente em trace de nó antigo. */
   cached_tokens?: number;
+  /** Prefixo comum encontrado antes de decidir se o KV podia ser reaproveitado. */
+  prefix_match_tokens?: number;
+  /** Resultado executado do reuso: full, cold, miss ou perda de sessão. */
+  prefix_reuse_status?: string;
+  /** Tokens que cruzaram a fronteira de inferência nesta execução. */
+  prompt_tokens_transmitted?: number;
   output_tokens: number;
   prefill_ms: number;
   total_bytes_sent: number;
   total_bytes_received: number;
   hops: HopTrace[];
+  transport_trace_complete?: boolean;
+  prefill_overlap_enabled?: boolean;
+  prefill_max_inflight_chunks?: number;
+  prefill_overlapped_chunks?: number;
+  prefill_pipeline_depth_max?: number;
+}
+
+export interface TransportSummaryEntry {
+  transport: "local" | "libp2p-tunnel" | "https" | "unknown";
+  calls: number;
+  bytes_sent: number;
+  bytes_received: number;
+  rtt_min_ms: number;
+  rtt_median_ms: number;
+  rtt_p95_ms: number;
+  rtt_max_ms: number;
+  fallback_calls: number;
+}
+
+export interface TransportSwitch {
+  from: TransportSummaryEntry["transport"];
+  to: TransportSummaryEntry["transport"];
+  calls: number;
+}
+
+export interface TransportSummary {
+  transports: TransportSummaryEntry[];
+  fallback_calls: number;
+  transport_switches: TransportSwitch[];
 }
 
 export interface TpTelemetry {
@@ -67,6 +104,8 @@ export interface PhaseTrace {
    * ficam no pool. É custo de estabelecimento, não custo por token.
    */
   tls_handshake_ms: number;
+  /** Distribuição limitada das travessias observadas deste hop. */
+  transport_summary?: TransportSummary;
   node_frame_decode_ms: number;
   node_input_prepare_ms: number;
   node_queue_ms: number;
@@ -86,6 +125,11 @@ export interface PhaseTrace {
   node_top_p_ms: number;
   node_selection_ms: number;
   node_token_text_ms: number;
+  /** Estado oculto que cruzou este hop nesta fase, separado dos bytes de frame. */
+  hidden_state_bytes_sent?: number;
+  hidden_state_bytes_received?: number;
+  /** Formato efetivamente observado; ausente em traces anteriores à medição. */
+  hidden_state_dtype?: WireDtype;
   node_sampling_ms: number;
   node_encode_ms: number;
   node_p50_ms: number;
@@ -172,7 +216,9 @@ export interface ChatStreamState {
   tokensPerSecond?: number;
   tokensGenerated?: number;
   durationMs?: number;
+  timings?: GenerationTimings;
   trace?: RequestTrace;
+  error?: string;
 }
 
 const OPEN = "<think>";
@@ -220,12 +266,28 @@ export function consumeChatDelta(previous: ChatStreamState, delta: string): Chat
   return state;
 }
 
+/** Reads the message from an OpenAI-compatible error envelope sent in SSE. */
+export function streamErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === "string") return error.trim() ? error : undefined;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" && message.trim() ? message : undefined;
+}
+
+/** Stores a server error without discarding content already rendered. */
+export function consumeChatError(previous: ChatStreamState, error: string): ChatStreamState {
+  return error ? { ...previous, error } : previous;
+}
+
 /** Flushes an incomplete delimiter as literal text and records final metrics. */
 export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetrics): ChatStreamState {
   let state = append({ ...previous, pending: "" }, previous.pending);
   if (metrics?.tokens_per_sec != null) state = { ...state, tokensPerSecond: metrics.tokens_per_sec };
   if (metrics?.tokens_generated != null) state = { ...state, tokensGenerated: metrics.tokens_generated };
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
+  if (metrics?.timings) state = { ...state, timings: metrics.timings };
   if (metrics?.trace) state = { ...state, trace: metrics.trace };
   return state;
 }

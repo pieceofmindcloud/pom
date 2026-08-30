@@ -3,22 +3,28 @@ import { LayoutGrid, Minus, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
+import { GpuTemperature } from "./GpuTemperature";
 import { Button, Dot } from "./ui";
 import { graphFromCluster, type GraphRange } from "../lib/networkGraph";
 import { pipelinePeers } from "../lib/networkPeers";
 import { useI18n } from "../i18n/provider";
 import {
   autoLayout,
+  CARD_HEIGHT,
+  CARD_WIDTH,
   clearPositions,
   deploymentLayoutKey,
   fallbackPosition,
   readPositions,
+  routeGeometry,
   writePositions,
   type CanvasPosition,
 } from "../lib/networkLayout";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
+import { highestKnownTemperature } from "../lib/thermal";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
-import type { ClusterView, RoutingEdge } from "../lib/types";
+import type { ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
+import { RouteRttLabel } from "./RouteRttLabel";
 
 export type EdgeState = "principal" | "paralela" | "inativa";
 
@@ -34,11 +40,12 @@ export function edgeStyle(state: EdgeState) {
   return { className: "fill-none stroke-faint/70", strokeWidth: "2", strokeDasharray: "7 7", markerEnd: undefined };
 }
 
-const CARD_WIDTH = 264;
-const CARD_HEIGHT = 202;
-
 function keyFor(range: Pick<GraphRange, "node_id" | "model_id" | "start_layer" | "end_layer">) {
   return `${range.node_id}:${range.model_id}:${range.start_layer}:${range.end_layer}`;
+}
+
+function edgeKey(edge: Pick<RoutingEdge, "from_node_id" | "to_node_id" | "from_end_layer" | "to_start_layer">) {
+  return `${edge.from_node_id}:${edge.to_node_id}:${edge.from_end_layer}:${edge.to_start_layer}`;
 }
 
 function rangeForEdge(ranges: GraphRange[], edge: RoutingEdge, side: "from" | "to") {
@@ -112,6 +119,7 @@ export function isControlTarget(target: EventTarget | null): boolean {
 function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen: () => void }) {
   const system = range.node?.system;
   const gpu = system?.gpus[0];
+  const temperature = highestKnownTemperature(system?.gpus.map((g) => g.temperature_c) ?? []);
   const vramUsed = gpu?.vram_used_mb != null ? gpu.vram_used_mb / 1024 : null;
   const vramTotal = gpu?.vram_total_mb != null ? gpu.vram_total_mb / 1024 : null;
   const ramUsed = system ? system.ram.used_mb / 1024 : null;
@@ -148,12 +156,13 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
     <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
     {placement && <LayerPlacementMeter placement={placement} />}
     <Meter label="VRAM" used={vramUsed} total={vramTotal} unknown={!gpu || vramTotal == null} />
+    <GpuTemperature temperature={temperature} policy={range.node?.thermal} compact />
     <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
     <Meter label={t("canvas.load")} used={range.load} total={8} />
   </article>;
 }
 
-export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
+export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster: ClusterView; rttMeasurements?: ChatTelemetryRtt[] }) {
   const { t } = useI18n();
   const graph = useMemo(() => graphFromCluster(cluster), [cluster]);
   const [model, setModel] = useState<string | undefined>();
@@ -176,8 +185,12 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
   const layoutKey = useMemo(() => deploymentLayoutKey(selected ?? "", ranges.map((range) => ({ node_id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer, changed_at: range.node?.status.changed_at }))), [ranges, selected]);
   const selectedEdges = selected ? cluster.routing_edges.filter((edge) => edge.model_id === selected) : [];
   const candidates = selected ? cluster.candidate_edges.filter((edge) => edge.model_id === selected) : [];
-  const selectedEdgeIds = new Set(selectedEdges.map((edge) => `${edge.from_node_id}:${edge.to_node_id}:${edge.from_end_layer}:${edge.to_start_layer}`));
-  const candidateIds = new Set(candidates.map((edge) => `${edge.from_node_id}:${edge.to_node_id}:${edge.from_end_layer}:${edge.to_start_layer}`));
+  const selectedEdgeIds = new Set(selectedEdges.map(edgeKey));
+  const candidateIds = new Set(candidates.map(edgeKey));
+  const rttByPair = useMemo(
+    () => new Map(rttMeasurements.map((measurement) => [`${measurement.from_node_id}:${measurement.to_node_id}`, measurement.rtt_ms])),
+    [rttMeasurements],
+  );
   const edges = [...candidates, ...selectedEdges.filter((edge) => !candidates.some((candidate) => candidate.from_node_id === edge.from_node_id && candidate.to_node_id === edge.to_node_id && candidate.from_end_layer === edge.from_end_layer && candidate.to_start_layer === edge.to_start_layer))];
 
   useEffect(() => { setPositions(readPositions(layoutKey)); }, [layoutKey]);
@@ -268,16 +281,22 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
           if (!from || !to) return null;
           const fromIndex = ranges.indexOf(from); const toIndex = ranges.indexOf(to);
           const a = positionOf(from, fromIndex); const b = positionOf(to, toIndex);
-          const x1 = a.left + CARD_WIDTH; const y1 = a.top + CARD_HEIGHT / 2; const x2 = b.left; const y2 = b.top + CARD_HEIGHT / 2; const bend = Math.max(60, Math.abs(x2 - x1) * .42);
-          const id = `${edge.from_node_id}:${edge.to_node_id}:${edge.from_end_layer}:${edge.to_start_layer}`;
+          const geometry = routeGeometry(a, b);
+          const id = edgeKey(edge);
           // Uma aresta que está num `candidate_edges` é caminho pronto, não
           // tráfego hipotético: com réplicas, é por onde a rede serviria se a
           // principal saísse.
           const state: EdgeState = selectedEdgeIds.has(id) ? "principal" : candidateIds.has(id) ? "paralela" : "inativa";
           const style = edgeStyle(state);
-          return <path key={id} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
+          return <path key={id} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
         })}
       </svg>
+      {edges.map((edge, index) => {
+        const from = rangeForEdge(ranges, edge, "from"); const to = rangeForEdge(ranges, edge, "to");
+        if (!from || !to) return null;
+        const geometry = routeGeometry(positionOf(from, ranges.indexOf(from)), positionOf(to, ranges.indexOf(to)));
+        return <RouteRttLabel key={`rtt-${edgeKey(edge)}-${index}`} rttMs={rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`)} left={geometry.labelX} top={geometry.labelY} />;
+      })}
       {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={() => setDetailNodeId(range.node_id)} />)}
     </div>}
     {/* A mesma visão que a aba Detalhes mostra, no mesmo componente. */}

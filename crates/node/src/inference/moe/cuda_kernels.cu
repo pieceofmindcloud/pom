@@ -23,7 +23,8 @@ constexpr int kBlockElements = 64;
 constexpr int kSubblockElements = 16;
 constexpr int kBlockBytes = 36;
 constexpr int kPayloadHeaderBytes = 32;
-constexpr int kKQuantPayloadHeaderBytes = 8;
+constexpr int kKQuantPayloadHeaderBytes = 32;
+constexpr int kScalarPayloadHeaderBytes = 8;
 
 struct CudaMoeCallTiming {
     uint64_t expert_calls;
@@ -49,6 +50,10 @@ struct CudaHeterogeneousTensor {
     const uint8_t * data;
     std::size_t bytes;
     uint32_t dtype;
+    float scale;
+    float input_scale;
+    float secondary_scale;
+    float secondary_input_scale;
 };
 
 struct CudaHeterogeneousExpert {
@@ -57,6 +62,23 @@ struct CudaHeterogeneousExpert {
     CudaHeterogeneousTensor up;
     CudaHeterogeneousTensor down;
 };
+
+static_assert(offsetof(CudaHeterogeneousTensor, data) == 0,
+    "CudaHeterogeneousTensor.data ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, bytes) == 8,
+    "CudaHeterogeneousTensor.bytes ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, dtype) == 16,
+    "CudaHeterogeneousTensor.dtype ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, scale) == 20,
+    "CudaHeterogeneousTensor.scale ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, input_scale) == 24,
+    "CudaHeterogeneousTensor.input_scale ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, secondary_scale) == 28,
+    "CudaHeterogeneousTensor.secondary_scale ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, secondary_input_scale) == 32,
+    "CudaHeterogeneousTensor.secondary_input_scale ABI offset differs from Rust");
+static_assert(sizeof(CudaHeterogeneousTensor) == 40,
+    "CudaHeterogeneousTensor ABI must match its Rust descriptor");
 
 using Clock = std::chrono::steady_clock;
 
@@ -620,6 +642,20 @@ __device__ float iq_dot(
     return result;
 }
 
+__device__ float heterogeneous_quant_dot(
+    const CudaHeterogeneousTensor &tensor,
+    int row,
+    int columns,
+    const float *input,
+    float scale,
+    float input_scale
+) {
+    if (tensor.dtype == 12 || tensor.dtype == 14) {
+        return k_dot(tensor.dtype, tensor.data, row, columns, input) * scale * input_scale;
+    }
+    return iq_dot(tensor.dtype, tensor.data, row, columns, input) * scale * input_scale;
+}
+
 __global__ void kquant_gate_up_route_kernel(
     uint32_t dtype,
     const uint8_t * const *payloads,
@@ -644,7 +680,9 @@ __global__ void kquant_gate_up_route_kernel(
         (static_cast<uint32_t>(payload[3]) << 24);
     const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
     gate_up_values[pair * rows_per_pair + row] = k_dot(
-        dtype, payload + kKQuantPayloadHeaderBytes, row, hidden, input);
+        dtype, payload + kKQuantPayloadHeaderBytes, row, hidden, input) *
+        payload_scale(payload, row < intermediate ? 0 : 1) *
+        payload_scale(payload, row < intermediate ? 3 : 4);
     (void)gate_up_len;
 }
 
@@ -691,7 +729,8 @@ __global__ void kquant_down_route_kernel(
         payload + kKQuantPayloadHeaderBytes + gate_up_len,
         row,
         intermediate,
-        activated + pair * intermediate);
+        activated + pair * intermediate) * payload_scale(payload, 2) *
+        payload_scale(payload, 5);
 }
 
 __device__ __forceinline__ float plain_value(
@@ -754,7 +793,7 @@ __global__ void plain_gate_up_route_kernel(
         (static_cast<uint32_t>(payload[3]) << 24);
     const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
     gate_up_values[pair * rows_per_pair + row] = plain_dot(
-        dtype, payload + kKQuantPayloadHeaderBytes, row, hidden, input);
+        dtype, payload + kScalarPayloadHeaderBytes, row, hidden, input);
     (void)gate_up_len;
 }
 
@@ -780,7 +819,7 @@ __global__ void plain_down_route_kernel(
         (static_cast<uint32_t>(payload[3]) << 24);
     pair_output[pair * hidden + row] = plain_dot(
         dtype,
-        payload + kKQuantPayloadHeaderBytes + gate_up_len,
+        payload + kScalarPayloadHeaderBytes + gate_up_len,
         row,
         intermediate,
         activated + pair * intermediate);
@@ -810,7 +849,7 @@ __global__ void iquant_gate_up_route_kernel(
         (static_cast<uint32_t>(payload[3]) << 24);
     const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
     gate_up_values[pair * rows_per_pair + row] = iq_dot(
-        dtype, payload + kKQuantPayloadHeaderBytes, row, hidden, input);
+        dtype, payload + kScalarPayloadHeaderBytes, row, hidden, input);
     (void)gate_up_len;
 }
 
@@ -836,13 +875,13 @@ __global__ void iquant_down_route_kernel(
         (static_cast<uint32_t>(payload[3]) << 24);
     pair_output[pair * hidden + row] = iq_dot(
         dtype,
-        payload + kKQuantPayloadHeaderBytes + gate_up_len,
+        payload + kScalarPayloadHeaderBytes + gate_up_len,
         row,
         intermediate,
         activated + pair * intermediate);
 }
 
-__global__ void heterogeneous_iq_gate_up_route_kernel(
+__global__ void heterogeneous_quant_gate_up_route_kernel(
     const CudaHeterogeneousExpert * experts,
     const uint32_t * token_ids,
     int pair_count,
@@ -864,12 +903,19 @@ __global__ void heterogeneous_iq_gate_up_route_kernel(
     float gate;
     float up;
     if (expert.gate_up.data != nullptr) {
-        gate = iq_dot(expert.gate_up.dtype, expert.gate_up.data, component_row, hidden, input);
-        up = iq_dot(expert.gate_up.dtype, expert.gate_up.data,
-            intermediate + component_row, hidden, input);
+        gate = heterogeneous_quant_dot(
+            expert.gate_up, component_row, hidden, input,
+            expert.gate_up.scale, expert.gate_up.input_scale);
+        up = heterogeneous_quant_dot(expert.gate_up,
+            intermediate + component_row, hidden, input,
+            expert.gate_up.secondary_scale, expert.gate_up.secondary_input_scale);
     } else {
-        gate = iq_dot(expert.gate.dtype, expert.gate.data, component_row, hidden, input);
-        up = iq_dot(expert.up.dtype, expert.up.data, component_row, hidden, input);
+        gate = heterogeneous_quant_dot(
+            expert.gate, component_row, hidden, input,
+            expert.gate.scale, expert.gate.input_scale);
+        up = heterogeneous_quant_dot(
+            expert.up, component_row, hidden, input,
+            expert.up.scale, expert.up.input_scale);
     }
     gate_up_values[pair * rows_per_pair + row] = row < intermediate ? gate : up;
 }
@@ -901,7 +947,7 @@ __global__ void heterogeneous_activation_kernel(
         heterogeneous_activation(gate_up[row], activation) * gate_up[intermediate + row];
 }
 
-__global__ void heterogeneous_iq_down_route_kernel(
+__global__ void heterogeneous_quant_down_route_kernel(
     const CudaHeterogeneousExpert * experts,
     int pair_count,
     int hidden,
@@ -916,12 +962,9 @@ __global__ void heterogeneous_iq_down_route_kernel(
         return;
     }
     const CudaHeterogeneousExpert expert = experts[pair];
-    pair_output[pair * hidden + row] = iq_dot(
-        expert.down.dtype,
-        expert.down.data,
-        row,
-        intermediate,
-        activated + pair * intermediate);
+    pair_output[pair * hidden + row] = heterogeneous_quant_dot(
+        expert.down, row, intermediate, activated + pair * intermediate,
+        expert.down.scale, expert.down.input_scale);
 }
 
 int cuda_status(cudaError_t error) {
@@ -1905,7 +1948,7 @@ extern "C" int pom_moe_iquant_forward_route_batch_resident(
     return result;
 }
 
-extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
+extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     const CudaHeterogeneousExpert * experts,
     std::size_t expert_count,
     const uint32_t * token_ids,
@@ -1940,17 +1983,21 @@ extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
     }
 
     const auto valid_dtype = [](uint32_t dtype) {
-        return dtype == 21 || dtype == 22 || dtype == 23;
+        return dtype == 12 || dtype == 14 || dtype == 21 || dtype == 22 || dtype == 23;
     };
     const auto row_bytes = [&](uint32_t dtype, std::size_t columns) -> std::size_t {
-        const std::size_t block_bytes = dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
+        const std::size_t block_bytes = dtype == 12 ? 144 : dtype == 14 ? 210 :
+            dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
         return (columns / 256) * block_bytes;
     };
     const auto valid_tensor = [&](const CudaHeterogeneousTensor & tensor,
                                   std::size_t rows,
                                   std::size_t columns) {
         if (tensor.data == nullptr || !valid_dtype(tensor.dtype) ||
-            columns == 0 || columns % 256 != 0) {
+            columns == 0 || columns % 256 != 0 ||
+            !std::isfinite(tensor.scale) || !std::isfinite(tensor.input_scale) ||
+            !std::isfinite(tensor.secondary_scale) ||
+            !std::isfinite(tensor.secondary_input_scale)) {
             return false;
         }
         return tensor.bytes == rows * row_bytes(tensor.dtype, columns);
@@ -2062,7 +2109,7 @@ extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
             result = cuda_status(cudaEventRecord(start));
             if (result != 0) break;
         }
-        heterogeneous_iq_gate_up_route_kernel<<<
+        heterogeneous_quant_gate_up_route_kernel<<<
             (2 * intermediate_i * pair_count + block_size - 1) / block_size,
             block_size>>>(d_experts, d_token_ids, pair_count, intermediate_i,
                 hidden_i, d_hidden, d_gate_up);
@@ -2073,7 +2120,7 @@ extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
             block_size>>>(d_gate_up, pair_count, intermediate_i, activation, d_activated);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
-        heterogeneous_iq_down_route_kernel<<<
+        heterogeneous_quant_down_route_kernel<<<
             (hidden_i * pair_count + block_size - 1) / block_size,
             block_size>>>(d_experts, pair_count, hidden_i, intermediate_i,
                 d_activated, d_pair_output);

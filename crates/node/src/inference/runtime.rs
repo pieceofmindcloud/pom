@@ -7,12 +7,13 @@
 
 use crate::model::{LayerAssignment, ModelProfile};
 use crate::network::Network;
+use crate::thermal::{ThermalAction, ThermalMachine, ThermalPolicy};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 
@@ -29,6 +30,25 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
     n_ctx
         .checked_mul(max_sessions.max(1))
         .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions excede o limite numérico"))
+}
+
+/// Converte a prova de prontidão do servidor numa capacidade publicável.
+/// `n_ctx_per_session` é a janela que o llama.cpp conseguiu reservar de fato;
+/// `max_new_tokens` continua sendo apenas o tamanho de uma perna. A capacidade
+/// publicada é derivada somente desses valores efetivos do runtime.
+fn runtime_capacity_from_health(
+    body: &serde_json::Value,
+    config: &NodeConfig,
+) -> crate::network::RuntimeCapacity {
+    let n_ctx = body
+        .get("n_ctx_per_session")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(config.n_ctx);
+    crate::network::RuntimeCapacity {
+        n_ctx,
+        max_new_tokens: config.max_new_tokens,
+    }
 }
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -82,6 +102,9 @@ pub struct NodeConfig {
     /// host RAM capacity on large-context hardware.
     #[serde(default = "default_offload_kqv")]
     pub offload_kqv: bool,
+    /// Precision used for hidden state crossing between inference peers.
+    #[serde(default)]
+    pub hidden_state_dtype: crate::wire::WireDtype,
     /// Tipo numérico do cache K, definido pela instalação inteira.
     #[serde(default)]
     pub cache_type_k: crate::config::KvCacheType,
@@ -113,6 +136,12 @@ pub struct NodeConfig {
     /// Prompt tokens pushed through the pipeline per round trip.
     #[serde(default = "default_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
+    /// Profundidade do pipeline de prefill: pedaços mantidos em voo pela cadeia
+    /// ao mesmo tempo. O runtime limita o valor efetivo a oito e a um orçamento
+    /// de bytes de estado oculto; oito é o padrão, que enche o pipeline num
+    /// cluster de poucos hops. Um desliga a sobreposição.
+    #[serde(default = "default_prefill_max_inflight_chunks")]
+    pub prefill_max_inflight_chunks: u32,
     pub max_new_tokens: u32,
     pub temperature: f32,
     pub top_p: f32,
@@ -192,6 +221,7 @@ impl NodeConfig {
             n_gpu_layers: p.n_gpu_layers,
             n_ctx: p.n_ctx,
             offload_kqv: p.offload_kqv,
+            hidden_state_dtype: p.hidden_state_dtype,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: p.fit_memory && allow_fit_memory,
@@ -204,6 +234,7 @@ impl NodeConfig {
             max_batch_sequences: p.max_batch_sequences,
             max_batch_tokens: p.max_batch_tokens,
             prefill_chunk_tokens: p.prefill_chunk_tokens,
+            prefill_max_inflight_chunks: p.prefill_max_inflight_chunks,
             temperature: p.temperature,
             top_p: p.top_p,
             top_k: p.top_k,
@@ -264,7 +295,7 @@ fn default_max_queue_requests() -> u32 {
     128
 }
 fn default_batch_window_ms() -> u32 {
-    4
+    0
 }
 fn default_max_batch_sequences() -> u32 {
     u32::MAX
@@ -274,6 +305,9 @@ fn default_max_batch_tokens() -> u32 {
 }
 fn default_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
+}
+fn default_prefill_max_inflight_chunks() -> u32 {
+    crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32
 }
 fn default_offload_kqv() -> bool {
     true
@@ -441,6 +475,8 @@ pub enum ServerState {
     Ready,
     /// Crashed past the restart budget.
     Failed,
+    /// Model was unloaded because a GPU exceeded the thermal limit.
+    Thermal,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -502,6 +538,15 @@ pub struct NodeRuntime {
     /// Dono do último conjunto de pesos carregado. O servidor de cada geração
     /// conserva sua própria referência até drenar as requisições em voo.
     model_cache: Arc<crate::llm::ModelCache>,
+    /// Serializes apply, manual unload and thermal unload so an operator action
+    /// cannot race a temperature transition.
+    operation: Mutex<()>,
+    thermal: Arc<Mutex<ThermalRuntime>>,
+}
+
+struct ThermalRuntime {
+    blocked: bool,
+    recovery: Option<NodeConfig>,
 }
 
 impl NodeRuntime {
@@ -538,6 +583,11 @@ impl NodeRuntime {
             tls,
             auth,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
+            operation: Mutex::new(()),
+            thermal: Arc::new(Mutex::new(ThermalRuntime {
+                blocked: false,
+                recovery: None,
+            })),
         })
     }
 
@@ -569,10 +619,57 @@ impl NodeRuntime {
             .unwrap_or_else(|| fallback.to_string())
     }
 
+    /// Start the local thermal monitor before restoring or applying a model.
+    /// The initial sample closes the race where a hot GPU would otherwise load
+    /// a model before the first periodic tick notices it.
+    pub async fn start_thermal_monitor(self: &Arc<Self>, auth: crate::auth::AuthState) {
+        let policy = auth.read().await.thermal;
+        let mut machine = ThermalMachine::new(policy);
+        let initial = crate::sysmon::sample().await;
+        if let ThermalAction::Suspend { observed_c } = machine.observe(
+            &initial
+                .gpus
+                .iter()
+                .map(|gpu| gpu.temperature_c)
+                .collect::<Vec<_>>(),
+            std::time::Instant::now(),
+        ) {
+            warn!(
+                temperature_c = observed_c,
+                limit_c = policy.limit_c,
+                "GPU acima do limite antes do carregamento; novas implantações aguardam resfriamento"
+            );
+            self.thermal.lock().await.blocked = true;
+        }
+
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(5)).await;
+                let policy = auth.read().await.thermal;
+                machine.set_policy(policy);
+                let system = crate::sysmon::sample().await;
+                let readings: Vec<_> = system.gpus.iter().map(|gpu| gpu.temperature_c).collect();
+                match machine.observe(&readings, std::time::Instant::now()) {
+                    ThermalAction::None => {}
+                    ThermalAction::Suspend { observed_c } => {
+                        runtime.suspend_for_thermal(observed_c, policy).await;
+                    }
+                    ThermalAction::Resume { observed_c } => {
+                        if let Err(error) = runtime.resume_from_thermal(observed_c, policy).await {
+                            warn!("não deu para reimplantar após resfriamento: {error:#}");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     /// Stop the current inference server and announce to peers that this
     /// node no longer serves any layers. Called before a cluster reconfiguration
     /// so no peer sends inference requests to a stale endpoint.
     pub async fn stop(&self) {
+        let _operation = self.operation.lock().await;
         info!("parando servidor de inferencia neste no");
 
         let generation = *self.generation.borrow() + 1;
@@ -584,10 +681,13 @@ impl NodeRuntime {
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
         self.net.set_batching_ready(false);
+        self.net.set_runtime_generation(generation);
 
         // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
         // nó de voltar servindo no próximo arranque e desfazer essa decisão.
         crate::lastslice::clear();
+
+        self.thermal.lock().await.recovery = None;
 
         let _ = self.net.announce(None).await;
     }
@@ -595,13 +695,24 @@ impl NodeRuntime {
     /// Switch this node to a new configuration: stop the current inference
     /// server, re-announce the new layer range, start the new server.
     pub async fn apply(&self, cfg: NodeConfig) -> Result<()> {
-        let mut cfg = cfg;
+        let _operation = self.operation.lock().await;
+        self.apply_locked(cfg).await
+    }
+
+    async fn apply_locked(&self, mut cfg: NodeConfig) -> Result<()> {
         if let Some(auth) = &self.auth {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
             cfg.cache_type_v = installation.cache_type_v;
         }
         cfg.validate()?;
+
+        let blocked = self.thermal.lock().await.blocked;
+        if blocked {
+            self.queue_thermal_recovery(cfg).await;
+            return Ok(());
+        }
+        self.thermal.lock().await.recovery = None;
 
         let profile = ModelProfile::guess_from_name(&cfg.model_path);
         let assignment = cfg.to_assignment(&profile);
@@ -644,6 +755,9 @@ impl NodeRuntime {
         *self.assignment.write().await = Some(assignment.clone());
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
+        // A configuração nova só vira capacidade efetiva depois que o
+        // `/health` do processo novo responder `model_loaded`.
+        self.net.set_runtime_generation(generation);
 
         // Let peers know immediately instead of waiting for the next gossip tick.
         if let Err(e) = self.net.announce(Some(&assignment)).await {
@@ -668,6 +782,160 @@ impl NodeRuntime {
 
         self.spawn_supervisor(cfg, generation, reuse_weights);
         Ok(())
+    }
+
+    async fn queue_thermal_recovery(&self, cfg: NodeConfig) {
+        let policy = if let Some(auth) = &self.auth {
+            auth.read().await.thermal
+        } else {
+            ThermalPolicy::default()
+        };
+        let current = self.config.read().await.clone();
+        let port = current
+            .as_ref()
+            .map(|current| current.inference_port)
+            .unwrap_or(cfg.inference_port);
+        {
+            let mut thermal = self.thermal.lock().await;
+            thermal.recovery = Some(cfg.clone());
+        }
+        if current.is_some() {
+            self.clear_active_for_thermal(&cfg, None, policy).await;
+        } else {
+            self.set_thermal_status(&cfg, policy).await;
+        }
+        append_log(
+            port,
+            &format!(
+                "modelo aguardando resfriamento: limite {:.1} °C, retomada abaixo de {:.1} °C",
+                policy.limit_c,
+                policy.resume_limit_c()
+            ),
+        );
+    }
+
+    async fn suspend_for_thermal(&self, observed_c: f64, policy: ThermalPolicy) {
+        let _operation = self.operation.lock().await;
+        let current = self.config.read().await.clone();
+        self.thermal.lock().await.blocked = true;
+        let Some(current) = current else {
+            return;
+        };
+        {
+            let mut thermal = self.thermal.lock().await;
+            if thermal.recovery.is_none() {
+                thermal.recovery = Some(current.clone());
+            }
+        }
+        warn!(
+            temperature_c = observed_c,
+            limit_c = policy.limit_c,
+            resume_below_c = policy.resume_limit_c(),
+            cooldown_secs = policy.cooldown_secs,
+            "desimplantando modelo por temperatura da GPU"
+        );
+        append_log(
+            current.inference_port,
+            &format!(
+                "desimplantado por temperatura: {:.1} °C (limite {:.1} °C; retomada abaixo de {:.1} °C por {}s)",
+                observed_c,
+                policy.limit_c,
+                policy.resume_limit_c(),
+                policy.cooldown_secs
+            ),
+        );
+        self.clear_active_for_thermal(&current, Some(observed_c), policy)
+            .await;
+    }
+
+    async fn resume_from_thermal(&self, observed_c: f64, policy: ThermalPolicy) -> Result<()> {
+        let _operation = self.operation.lock().await;
+        let recovery = {
+            let mut thermal = self.thermal.lock().await;
+            thermal.blocked = false;
+            thermal.recovery.take()
+        };
+        let Some(cfg) = recovery else {
+            return Ok(());
+        };
+        info!(
+            temperature_c = observed_c,
+            limit_c = policy.limit_c,
+            resume_below_c = policy.resume_limit_c(),
+            cooldown_secs = policy.cooldown_secs,
+            "reimplantando modelo após resfriamento da GPU"
+        );
+        append_log(
+            cfg.inference_port,
+            &format!(
+                "reimplantando após resfriamento: {:.1} °C (limite {:.1} °C; retomada abaixo de {:.1} °C por {}s)",
+                observed_c,
+                policy.limit_c,
+                policy.resume_limit_c(),
+                policy.cooldown_secs
+            ),
+        );
+        self.apply_locked(cfg).await
+    }
+
+    async fn clear_active_for_thermal(
+        &self,
+        cfg: &NodeConfig,
+        observed_c: Option<f64>,
+        policy: ThermalPolicy,
+    ) {
+        let generation = *self.generation.borrow() + 1;
+        self.generation.send_replace(generation);
+        *self.config.write().await = None;
+        *self.assignment.write().await = None;
+        self.model_cache.clear();
+        let reason = observed_c.map_or_else(
+            || {
+                format!(
+                    "modelo aguardando resfriar abaixo de {:.1} °C por {}s (limite {:.1} °C)",
+                    policy.resume_limit_c(),
+                    policy.cooldown_secs,
+                    policy.limit_c
+                )
+            },
+            |temperature| {
+                format!(
+                    "modelo desimplantado por temperatura da GPU ({temperature:.1} °C; limite {:.1} °C); aguardando resfriar abaixo de {:.1} °C por {}s",
+                    policy.limit_c,
+                    policy.resume_limit_c(),
+                    policy.cooldown_secs
+                )
+            },
+        );
+        *self.status.write().await = RuntimeStatus::new(ServerState::Thermal, reason);
+        self.net.set_batching_ready(false);
+        self.net.set_runtime_generation(generation);
+        if let Err(error) = crate::lastslice::save(cfg, crate::lastslice::SliceState::Serving) {
+            warn!("não deu para preservar a fatia para recuperação térmica: {error}");
+        }
+        let _ = self.net.announce(None).await;
+    }
+
+    async fn set_thermal_status(&self, cfg: &NodeConfig, policy: ThermalPolicy) {
+        *self.status.write().await = RuntimeStatus::new(
+            ServerState::Thermal,
+            format!(
+                "modelo aguardando resfriar abaixo de {:.1} °C por {}s (limite {:.1} °C)",
+                policy.resume_limit_c(),
+                policy.cooldown_secs,
+                policy.limit_c
+            ),
+        );
+        append_log(
+            cfg.inference_port,
+            &format!(
+                "modelo aguardando resfriamento: limite {:.1} °C, retomada abaixo de {:.1} °C",
+                policy.limit_c,
+                policy.resume_limit_c()
+            ),
+        );
+        self.net.set_runtime_generation(*self.generation.borrow());
+        let _ = self.net.announce(None).await;
     }
 
     /// Registra que a fatia anotada não voltou porque nunca chegou a carregar.
@@ -698,6 +966,7 @@ impl NodeRuntime {
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
         let batching_ready = self.net.batching_ready_handle();
+        let capacity_net = self.net.clone();
         let auth = self.auth.clone();
         let model_cache = self.model_cache.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
@@ -764,7 +1033,7 @@ impl NodeRuntime {
                     }
                 }
 
-                match crate::infer_server::run(
+                let result = crate::infer_server::run(
                     cfg.clone(),
                     gen_rx.clone(),
                     generation,
@@ -775,19 +1044,25 @@ impl NodeRuntime {
                     model_cache.clone(),
                     reuse_weights,
                 )
-                .await
-                {
+                .await;
+                if *gen_rx.borrow() != generation {
+                    return;
+                }
+                match result {
                     Ok(()) => {
                         info!("servidor de inferência encerrado graciosamente");
                         append_log(port, "encerrado graciosamente");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        capacity_net.set_runtime_capacity_for_generation(generation, None);
                         return;
                     }
                     Err(e) => {
                         warn!("servidor de inferência encerrou com erro: {e}");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        capacity_net.set_runtime_capacity_for_generation(generation, None);
+                        let _ = capacity_net.announce(None).await;
                         append_log(port, &format!("encerrou com erro: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
@@ -849,6 +1124,9 @@ impl NodeRuntime {
                 let Ok(body) = resp.json::<serde_json::Value>().await else {
                     continue;
                 };
+                if *gen_rx.borrow() != generation {
+                    return;
+                }
                 if !body
                     .get("model_loaded")
                     .and_then(|v| v.as_bool())
@@ -856,6 +1134,11 @@ impl NodeRuntime {
                 {
                     continue;
                 }
+
+                net.set_runtime_capacity_for_generation(
+                    generation,
+                    Some(runtime_capacity_from_health(&body, &cfg)),
+                );
 
                 let reported = body
                     .get("original_block_count")
@@ -892,8 +1175,14 @@ impl NodeRuntime {
                     warn!("não deu para anotar a fatia servida: {e}");
                 }
 
+                if *gen_rx.borrow() != generation {
+                    return;
+                }
                 append_log(port, "modelo carregado (/health respondeu model_loaded)");
                 status.set_ready(reported, reported_gpu).await;
+                if *gen_rx.borrow() != generation {
+                    return;
+                }
                 let current_assignment = assignment.read().await.clone();
                 if let Err(e) = net.announce(current_assignment.as_ref()).await {
                     warn!("announce de capability batch após readiness falhou: {e}");
@@ -1235,7 +1524,8 @@ mod tests {
         antes.cache_type_v = crate::config::KvCacheType::Bf16;
 
         let mut p = crate::webui::RuntimeParams::default();
-        p.n_ctx = 65536;
+        p.n_ctx = 100_000;
+        p.max_new_tokens = 32000;
         p.n_gpu_layers = 7;
         p.temperature = 1.25;
         p.max_sessions = 4;
@@ -1243,7 +1533,8 @@ mod tests {
         let depois = antes.with_params(&p);
 
         // O que tinha que mudar, mudou.
-        assert_eq!(depois.n_ctx, 65536);
+        assert_eq!(depois.n_ctx, 100_000);
+        assert_eq!(depois.max_new_tokens, 32000);
         assert_eq!(depois.n_gpu_layers, 7);
         assert_eq!(depois.temperature, 1.25);
         assert_eq!(depois.max_sessions, 4);
@@ -1263,6 +1554,24 @@ mod tests {
         assert_eq!(depois.no_embeddings, antes.no_embeddings);
         assert_eq!(depois.cache_type_k, antes.cache_type_k);
         assert_eq!(depois.cache_type_v, antes.cache_type_v);
+    }
+
+    #[test]
+    fn health_capacity_uses_effective_context_and_keeps_limits_separate() {
+        let mut config = cfg();
+        config.n_ctx = 8_192;
+        config.max_new_tokens = 32_000;
+
+        let capacity = runtime_capacity_from_health(
+            &serde_json::json!({
+                "model_loaded": true,
+                "n_ctx_per_session": 100_000,
+            }),
+            &config,
+        );
+
+        assert_eq!(capacity.n_ctx, 100_000);
+        assert_eq!(capacity.max_new_tokens, 32_000);
     }
 
     #[test]
@@ -1323,6 +1632,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
@@ -1333,6 +1643,8 @@ mod tests {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             n_batch: 512,
             max_new_tokens: 256,
             temperature: 0.7,
@@ -1449,6 +1761,25 @@ mod tests {
             "e dizer por que ela não voltou, e diz: {}",
             s.detail
         );
+    }
+
+    #[tokio::test]
+    async fn parada_manual_cancela_a_retomada_termica_pendente() {
+        let net = Arc::new(
+            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+                .await
+                .expect("socket UDP em porta efêmera"),
+        );
+        let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
+        rt.thermal.lock().await.recovery = Some(cfg());
+
+        rt.stop().await;
+
+        assert!(
+            rt.thermal.lock().await.recovery.is_none(),
+            "desimplantação manual não pode ser anulada quando a temperatura cai"
+        );
+        assert_eq!(rt.status().await.state, ServerState::Disabled);
     }
 
     /// O callback de captura do residual custa ~8 ms por token (medido em

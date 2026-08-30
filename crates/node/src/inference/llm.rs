@@ -10,7 +10,21 @@
 //! enters the next block's attention) to its successor. `llama_get_embeddings_ith`
 //! returns the post-output_norm value instead, so we install a
 //! `ggml_backend_sched_eval_callback` that fires when the last block's output
-//! tensor (`l_out-<N>`) is computed and copies it before output_norm sees it.
+//! tensor (`l_out-<N>`, or an equivalent last-layer name used by the graph) is
+//! computed
+//! and copies it before the output head sees it. The graph keeps running after
+//! the copy, so a required output head may cost compute without changing the
+//! residual already exported to the next peer. If `n_embd_out` differs from
+//! `n_embd`, generic llama.cpp embedding extraction stays disabled: that path
+//! sizes its backend read from the metadata width, which may exceed the real
+//! output tensor. The callback remains the only embedding-like output used by
+//! the POM in that case.
+//!
+//! The callback identifies the token axis from the known token count of the
+//! current physical microbatch and the tensor shape. It never uses
+//! `n_embd_inp` to find that axis: dimensions before it are features and are
+//! preserved in their physical order. Trailing singleton dimensions are
+//! ignored, while trailing dimensions greater than one are rejected.
 //!
 //! The callback is an `extern "C"` fn with no closure environment, so the
 //! capture state travels in llama.cpp's own `cb_eval_user_data`: each context
@@ -20,12 +34,16 @@
 //! request would carry the other's residual - no error, just a wrong answer.
 
 use crate::config::KvCacheType;
+use crate::wire::TensorShape;
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
 use std::ops::Range;
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use std::time::Instant;
 use tracing::warn;
 
@@ -44,11 +62,96 @@ use llama_cpp_sys_2 as sys;
 struct CaptureSlot {
     want: Option<CString>,
     buf: Option<Vec<f32>>,
+    expected_tokens: usize,
+    max_microbatch_tokens: usize,
+    n_embd: usize,
     expected_floats: Option<usize>,
+    layout: Option<ResidualCaptureLayout>,
+    error: Option<String>,
     last_shape: Option<[i64; 4]>,
     last_strides: Option<[usize; 4]>,
     last_nbytes: Option<usize>,
     copy_us: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResidualCaptureLayout {
+    feature_shape: Vec<usize>,
+    token_axis: usize,
+}
+
+pub(crate) fn validate_hidden_tensor(
+    values_len: usize,
+    shape: &TensorShape,
+    n_tokens: usize,
+    n_embd: usize,
+    n_embd_inp: usize,
+    n_embd_out: usize,
+    item: &str,
+) -> Result<usize> {
+    if shape.len() < 2 {
+        bail!(
+            "{item}: hidden state shape {:?} não suportado, esperado [tokens, n_embd, ...]",
+            shape
+        );
+    }
+    if shape[0] != n_tokens {
+        bail!(
+            "{item}: hidden state declara {} tokens no shape {:?}, esperado {}",
+            shape[0],
+            shape,
+            n_tokens
+        );
+    }
+    if shape[1] != n_embd {
+        bail!(
+            "{item}: dimensão base {} no hidden state {:?} diverge de n_embd {}",
+            shape[1],
+            shape,
+            n_embd
+        );
+    }
+    let feature_width = shape[1..]
+        .iter()
+        .try_fold(1usize, |width, &dimension| width.checked_mul(dimension))
+        .ok_or_else(|| anyhow::anyhow!("{item}: largura do hidden state excede o limite"))?;
+    // A forma 2D continua usando a entrada base. Quando o emissor preserva
+    // eixos de fluxo, llama.cpp reporta em n_embd_out a largura física que
+    // aparece no residual. A contagem de fluxos da metadata é estrutural e
+    // não deve ser multiplicada aqui em paralelo com essa fonte autoritativa.
+    let has_non_singleton_extra_axis = shape[2..].iter().any(|&dimension| dimension > 1);
+    let expected_width = if !has_non_singleton_extra_axis {
+        n_embd_inp
+    } else {
+        n_embd_out
+    };
+    if feature_width != expected_width {
+        bail!(
+            "{item}: hidden state shape {:?} tem largura de entrada {}, esperado {} a partir da metadata",
+            shape,
+            feature_width,
+            expected_width
+        );
+    }
+    let expected_values = shape
+        .iter()
+        .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+        .ok_or_else(|| anyhow::anyhow!("{item}: tamanho do hidden state excede o limite"))?;
+    if values_len != expected_values {
+        bail!(
+            "{item}: hidden state tem {} floats, esperado {} para shape {:?}",
+            values_len,
+            expected_values,
+            shape
+        );
+    }
+    Ok(feature_width)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CapturedResidual {
+    pub(crate) values: Vec<f32>,
+    pub(crate) shape: TensorShape,
 }
 
 #[derive(Default)]
@@ -57,10 +160,92 @@ struct MoeCallbackTelemetry {
     executors: Vec<crate::moe::runtime::MoeExecutorKind>,
 }
 
+const MOE_ROUTE_DIAGNOSTICS_ENV: &str = "POM_MOE_ROUTE_DIAGNOSTICS";
+
+#[derive(Debug, PartialEq)]
+struct MoeRouteDiagnosticSample {
+    slot: usize,
+    source_offset_elements: usize,
+    expert: i32,
+    weight: f32,
+}
+
+#[derive(Debug, PartialEq)]
+struct MoeRouteDiagnostic {
+    llama_declared_route_elements: usize,
+    pom_expected_route_elements: usize,
+    selected_read_elements: usize,
+    weights_read_elements: usize,
+    raw_nan_count: usize,
+    raw_non_finite_count: usize,
+    token_zero_samples: Vec<MoeRouteDiagnosticSample>,
+}
+
+fn collect_moe_route_diagnostic(
+    selected_experts: &[i32],
+    weights: &[f32],
+    n_tokens: usize,
+    expert_count_used: usize,
+) -> MoeRouteDiagnostic {
+    let declared_route_elements = n_tokens
+        .checked_mul(expert_count_used)
+        .unwrap_or(usize::MAX);
+    let token_zero_samples = if n_tokens == 0 {
+        Vec::new()
+    } else {
+        (0..expert_count_used.min(4))
+            .filter_map(|slot| {
+                let source_offset_elements = slot;
+                Some(MoeRouteDiagnosticSample {
+                    slot,
+                    source_offset_elements,
+                    expert: *selected_experts.get(source_offset_elements)?,
+                    weight: *weights.get(source_offset_elements)?,
+                })
+            })
+            .collect()
+    };
+
+    MoeRouteDiagnostic {
+        llama_declared_route_elements: declared_route_elements,
+        pom_expected_route_elements: declared_route_elements,
+        selected_read_elements: selected_experts.len(),
+        weights_read_elements: weights.len(),
+        raw_nan_count: weights.iter().filter(|weight| weight.is_nan()).count(),
+        raw_non_finite_count: weights.iter().filter(|weight| !weight.is_finite()).count(),
+        token_zero_samples,
+    }
+}
+
+fn moe_route_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var(MOE_ROUTE_DIAGNOSTICS_ENV).ok().as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        )
+    })
+}
+
+fn log_moe_route_diagnostics_configuration() {
+    static LOGGED: OnceLock<()> = OnceLock::new();
+    if LOGGED.set(()).is_err() {
+        return;
+    }
+    let raw = std::env::var(MOE_ROUTE_DIAGNOSTICS_ENV).unwrap_or_else(|_| "<unset>".to_owned());
+    let enabled = moe_route_diagnostics_enabled();
+    warn!("POM_MOE_ROUTE_DIAGNOSTICS configuration raw={raw:?} enabled={enabled}");
+}
+
+fn route_diagnostic_should_emit(first_callback: bool, raw_non_finite: bool) -> bool {
+    first_callback || raw_non_finite
+}
+
 struct MoeCallbackState {
     runtime: Arc<crate::moe::runtime::MoeRuntime>,
     telemetry: Mutex<MoeCallbackTelemetry>,
     error: Mutex<Option<String>>,
+    route_diagnostic_emitted: AtomicBool,
 }
 
 impl MoeCallbackState {
@@ -73,6 +258,13 @@ impl MoeCallbackState {
             .telemetry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = MoeCallbackTelemetry::default();
+        self.route_diagnostic_emitted
+            .store(false, Ordering::Relaxed);
+    }
+
+    fn claim_route_diagnostic(&self) -> bool {
+        moe_route_diagnostics_enabled()
+            && !self.route_diagnostic_emitted.swap(true, Ordering::Relaxed)
     }
 
     fn fail(&self, message: String) {
@@ -103,6 +295,89 @@ impl MoeCallbackState {
     }
 }
 
+fn log_moe_callback_entry(
+    user_data: *mut c_void,
+    descriptor: *const sys::llama_moe_ffn_descriptor,
+    hidden: *const f32,
+    selected_experts: *const i32,
+    weights: *const f32,
+    n_tokens: usize,
+    hidden_width: usize,
+    output: *mut f32,
+) {
+    tracing::warn!(
+        "POM_MOE_ROUTE_DIAGNOSTICS callback_entry_default raw_args=1 descriptor_ptr={:p} user_data_ptr={:p} hidden_ptr={:p} selected_ptr={:p} weights_ptr={:p} output_ptr={:p} n_tokens={n_tokens} hidden_width={hidden_width}",
+        descriptor,
+        user_data,
+        hidden,
+        selected_experts,
+        weights,
+        output,
+    );
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS callback_entry raw_args=1 descriptor_ptr={:p} user_data_ptr={:p} hidden_ptr={:p} selected_ptr={:p} weights_ptr={:p} output_ptr={:p} n_tokens={n_tokens} hidden_width={hidden_width}",
+        descriptor,
+        user_data,
+        hidden,
+        selected_experts,
+        weights,
+        output,
+    );
+}
+
+#[derive(Debug, PartialEq)]
+struct MoeCallbackExitDiagnostic {
+    reason: &'static str,
+    raw_pointers: [usize; 6],
+    n_tokens: usize,
+    hidden_width: usize,
+}
+
+fn build_moe_callback_exit_diagnostic(
+    reason: &'static str,
+    user_data: *mut c_void,
+    descriptor: *const sys::llama_moe_ffn_descriptor,
+    hidden: *const f32,
+    selected_experts: *const i32,
+    weights: *const f32,
+    n_tokens: usize,
+    hidden_width: usize,
+    output: *mut f32,
+) -> MoeCallbackExitDiagnostic {
+    MoeCallbackExitDiagnostic {
+        reason,
+        raw_pointers: [
+            user_data as usize,
+            descriptor as usize,
+            hidden as usize,
+            selected_experts as usize,
+            weights as usize,
+            output as usize,
+        ],
+        n_tokens,
+        hidden_width,
+    }
+}
+
+fn log_moe_callback_exit(diagnostic: &MoeCallbackExitDiagnostic) {
+    let [user_data, descriptor, hidden, selected_experts, weights, output] =
+        diagnostic.raw_pointers;
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS callback_exit reason={} user_data_ptr=0x{user_data:x} descriptor_ptr=0x{descriptor:x} hidden_ptr=0x{hidden:x} selected_ptr=0x{selected_experts:x} weights_ptr=0x{weights:x} output_ptr=0x{output:x} n_tokens={} hidden_width={} null_args=user_data:{} descriptor:{} hidden:{} selected:{} weights:{} output:{}",
+        diagnostic.reason,
+        diagnostic.n_tokens,
+        diagnostic.hidden_width,
+        user_data == 0,
+        descriptor == 0,
+        hidden == 0,
+        selected_experts == 0,
+        weights == 0,
+        output == 0,
+    );
+}
+
 unsafe extern "C" fn moe_ffn_callback(
     user_data: *mut c_void,
     descriptor: *const sys::llama_moe_ffn_descriptor,
@@ -113,6 +388,40 @@ unsafe extern "C" fn moe_ffn_callback(
     hidden_width: usize,
     output: *mut f32,
 ) -> bool {
+    let diagnostics_enabled = moe_route_diagnostics_enabled();
+    if diagnostics_enabled {
+        log_moe_callback_entry(
+            user_data,
+            descriptor,
+            hidden,
+            selected_experts,
+            weights,
+            n_tokens,
+            hidden_width,
+            output,
+        );
+    }
+
+    macro_rules! diagnostic_return {
+        ($reason:literal) => {{
+            if diagnostics_enabled {
+                let diagnostic = build_moe_callback_exit_diagnostic(
+                    $reason,
+                    user_data,
+                    descriptor,
+                    hidden,
+                    selected_experts,
+                    weights,
+                    n_tokens,
+                    hidden_width,
+                    output,
+                );
+                log_moe_callback_exit(&diagnostic);
+            }
+            return false;
+        }};
+    }
+
     if user_data.is_null()
         || descriptor.is_null()
         || hidden.is_null()
@@ -120,7 +429,7 @@ unsafe extern "C" fn moe_ffn_callback(
         || weights.is_null()
         || output.is_null()
     {
-        return false;
+        diagnostic_return!("null_callback_argument");
     }
     let state = unsafe { &*(user_data as *const MoeCallbackState) };
     let descriptor = unsafe { &*descriptor };
@@ -128,21 +437,21 @@ unsafe extern "C" fn moe_ffn_callback(
         Ok(used) if used > 0 => used,
         _ => {
             state.fail("descriptor MoE sem quantidade válida de experts ativos".to_string());
-            return false;
+            diagnostic_return!("invalid_expert_count_used");
         }
     };
     let expected = match n_tokens.checked_mul(hidden_width) {
         Some(expected) => expected,
         None => {
             state.fail("overflow na geometria hidden do hook".to_string());
-            return false;
+            diagnostic_return!("hidden_geometry_overflow");
         }
     };
     let route_len = match n_tokens.checked_mul(used) {
         Some(length) => length,
         None => {
             state.fail("overflow na geometria da rota do hook".to_string());
-            return false;
+            diagnostic_return!("route_geometry_overflow");
         }
     };
     let hidden = unsafe { std::slice::from_raw_parts(hidden, expected) };
@@ -153,6 +462,41 @@ unsafe extern "C" fn moe_ffn_callback(
             .to_string_lossy()
             .into_owned()
     };
+    let raw_non_finite = weights.iter().any(|weight| !weight.is_finite());
+    let emit_route_diagnostic = state.claim_route_diagnostic()
+        || (diagnostics_enabled && route_diagnostic_should_emit(false, raw_non_finite));
+    if emit_route_diagnostic {
+        log_moe_route_input_diagnostic(
+            &architecture,
+            descriptor,
+            hidden,
+            selected_experts,
+            weights,
+            n_tokens,
+            hidden_width,
+            expected,
+            route_len,
+            used,
+            output,
+        );
+    }
+    let (selected_experts, weights) = match normalize_moe_route(
+        &architecture,
+        descriptor.layer,
+        selected_experts,
+        weights,
+        n_tokens,
+        used,
+    ) {
+        Ok(route) => route,
+        Err(error) => {
+            state.fail(error.to_string());
+            diagnostic_return!("route_normalization_failed");
+        }
+    };
+    if emit_route_diagnostic {
+        log_moe_route_post_diagnostic(descriptor.layer, &selected_experts, &weights, used);
+    }
     if descriptor.gate_up_bias.present != 0
         || descriptor.gate_bias.present != 0
         || descriptor.up_bias.present != 0
@@ -161,7 +505,7 @@ unsafe extern "C" fn moe_ffn_callback(
         state.fail(format!(
             "arquitetura {architecture} usa bias de experts não suportado pelo hook"
         ));
-        return false;
+        diagnostic_return!("unsupported_expert_bias");
     }
     if descriptor.down.present == 0
         || (descriptor.gate_up.present == 0
@@ -170,7 +514,7 @@ unsafe extern "C" fn moe_ffn_callback(
         state.fail(format!(
             "arquitetura {architecture} não forneceu metadata completa de gate/up/down"
         ));
-        return false;
+        diagnostic_return!("incomplete_expert_metadata");
     }
     let mut metadata_owned = Vec::new();
     for (role, tensor) in [
@@ -209,7 +553,7 @@ unsafe extern "C" fn moe_ffn_callback(
             Ok(name) => name,
             Err(error) => {
                 state.fail(format!("arquitetura {architecture}: {error}"));
-                return false;
+                diagnostic_return!("invalid_tensor_name");
             }
         };
         let dtype = match u32::try_from(tensor.dtype) {
@@ -219,7 +563,7 @@ unsafe extern "C" fn moe_ffn_callback(
                     "arquitetura {architecture}: tensor {name} tem dtype negativo {}",
                     tensor.dtype
                 ));
-                return false;
+                diagnostic_return!("negative_tensor_dtype");
             }
         };
         metadata_owned.push((role, name, dtype));
@@ -233,7 +577,7 @@ unsafe extern "C" fn moe_ffn_callback(
         .validate_callback_metadata(descriptor.layer as u32, &metadata)
     {
         state.fail(format!("arquitetura {architecture}: {error}"));
-        return false;
+        diagnostic_return!("callback_metadata_validation_failed");
     }
     let expert_count = match usize::try_from(descriptor.expert_count) {
         Ok(count) => count,
@@ -241,7 +585,7 @@ unsafe extern "C" fn moe_ffn_callback(
             state.fail(format!(
                 "arquitetura {architecture}: quantidade de experts excede usize"
             ));
-            return false;
+            diagnostic_return!("expert_count_overflow");
         }
     };
     let started = Instant::now();
@@ -250,8 +594,8 @@ unsafe extern "C" fn moe_ffn_callback(
         .forward_batch_with_route(crate::moe::runtime::MoeRouteBatch {
             layer: descriptor.layer as u32,
             hidden,
-            selected_experts,
-            weights,
+            selected_experts: &selected_experts,
+            weights: &weights,
             tokens: n_tokens,
             expert_count,
             expert_count_used: used,
@@ -265,11 +609,11 @@ unsafe extern "C" fn moe_ffn_callback(
                 "hook MoE devolveu {} floats, esperado {expected}",
                 values.len()
             ));
-            return false;
+            diagnostic_return!("forward_output_geometry_mismatch");
         }
         Err(error) => {
             state.fail(format!("arquitetura {architecture}: {error}"));
-            return false;
+            diagnostic_return!("forward_failed");
         }
     };
     unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), output, expected) };
@@ -285,6 +629,375 @@ unsafe extern "C" fn moe_ffn_callback(
         telemetry.executors.push(executor);
     }
     true
+}
+
+fn diagnostic_tensor_name(tensor: &sys::llama_moe_tensor_descriptor) -> String {
+    let end = tensor
+        .name
+        .iter()
+        .position(|&character| character == 0)
+        .unwrap_or(tensor.name.len());
+    let bytes = tensor.name[..end]
+        .iter()
+        .map(|&character| character as u8)
+        .collect::<Vec<_>>();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn log_moe_route_input_diagnostic(
+    architecture: &str,
+    descriptor: &sys::llama_moe_ffn_descriptor,
+    hidden: &[f32],
+    selected_experts: &[i32],
+    weights: &[f32],
+    n_tokens: usize,
+    hidden_width: usize,
+    hidden_elements: usize,
+    route_elements: usize,
+    expert_count_used: usize,
+    output: *mut f32,
+) {
+    let diagnostic =
+        collect_moe_route_diagnostic(selected_experts, weights, n_tokens, expert_count_used);
+    let selected_bytes = route_elements.saturating_mul(std::mem::size_of::<i32>());
+    let weights_bytes = route_elements.saturating_mul(std::mem::size_of::<f32>());
+    let hidden_bytes = hidden_elements.saturating_mul(std::mem::size_of::<f32>());
+    let output_bytes = hidden_bytes;
+
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS input architecture={architecture} layer={} token=0 selected_ptr={:p} selected_bytes={selected_bytes} weights_ptr={:p} weights_bytes={weights_bytes} hidden_ptr={:p} hidden_bytes={hidden_bytes} output_ptr={:p} output_bytes={output_bytes} hidden_width={hidden_width} n_tokens={n_tokens} llama_declared_expert_count={} llama_declared_expert_count_used={} llama_declared_route_elements={} pom_expected_route_elements={} selected_read_elements={} weights_read_elements={}",
+        descriptor.layer,
+        selected_experts.as_ptr(),
+        weights.as_ptr(),
+        hidden.as_ptr(),
+        output,
+        descriptor.expert_count,
+        descriptor.expert_count_used,
+        diagnostic.llama_declared_route_elements,
+        diagnostic.pom_expected_route_elements,
+        diagnostic.selected_read_elements,
+        diagnostic.weights_read_elements,
+    );
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS raw route_dtype_assumed=i32 selected_dtype_assumed=i32 weight_dtype_assumed=f32 hidden_dtype_assumed=f32 output_dtype_assumed=f32 raw_has_nan={} raw_nan_count={} raw_has_non_finite={} raw_non_finite_count={} raw_token_zero_slots={:?}",
+        diagnostic.raw_nan_count > 0,
+        diagnostic.raw_nan_count,
+        diagnostic.raw_non_finite_count > 0,
+        diagnostic.raw_non_finite_count,
+        diagnostic.token_zero_samples,
+    );
+
+    for (role, tensor) in [
+        ("gate_up", &descriptor.gate_up),
+        ("gate", &descriptor.gate),
+        ("up", &descriptor.up),
+        ("down", &descriptor.down),
+        ("gate_up_bias", &descriptor.gate_up_bias),
+        ("gate_bias", &descriptor.gate_bias),
+        ("up_bias", &descriptor.up_bias),
+        ("down_bias", &descriptor.down_bias),
+        ("gate_scale", &descriptor.gate_scale),
+        ("up_scale", &descriptor.up_scale),
+        ("down_scale", &descriptor.down_scale),
+    ] {
+        tracing::warn!(
+            target: "moe.route_diagnostic",
+            "POM_MOE_ROUTE_DIAGNOSTICS tensor role={role} present={} dtype={} n_dims={} ne={:?} name={}",
+            tensor.present,
+            tensor.dtype,
+            tensor.n_dims,
+            tensor.ne,
+            diagnostic_tensor_name(tensor),
+        );
+    }
+}
+
+fn log_moe_route_post_diagnostic(
+    layer: i32,
+    selected_experts: &[i32],
+    weights: &[f32],
+    expert_count_used: usize,
+) {
+    let post_nan_count = weights.iter().filter(|weight| weight.is_nan()).count();
+    let post_non_finite_count = weights.iter().filter(|weight| !weight.is_finite()).count();
+    let token_zero_weights = weights
+        .iter()
+        .take(expert_count_used.min(4))
+        .copied()
+        .collect::<Vec<_>>();
+
+    tracing::warn!(
+        target: "moe.route_diagnostic",
+        "POM_MOE_ROUTE_DIAGNOSTICS after_pom_route_normalization layer={layer} normalized_selected_ptr={:p} normalized_weights_ptr={:p} normalized_selected_elements={} normalized_weight_elements={} normalized_weight_dtype=f32 post_pom_has_nan={} post_pom_nan_count={} post_pom_has_non_finite={} post_pom_non_finite_count={} normalized_token_zero_experts={:?} normalized_token_zero_weights={:?}",
+        selected_experts.as_ptr(),
+        weights.as_ptr(),
+        selected_experts.len(),
+        weights.len(),
+        post_nan_count > 0,
+        post_nan_count,
+        post_non_finite_count > 0,
+        post_non_finite_count,
+        selected_experts.iter().take(expert_count_used.min(4)).copied().collect::<Vec<_>>(),
+        token_zero_weights,
+    );
+}
+
+fn normalize_moe_route(
+    architecture: &str,
+    layer: i32,
+    selected_experts: &[i32],
+    weights: &[f32],
+    n_tokens: usize,
+    expert_count_used: usize,
+) -> Result<(Vec<i32>, Vec<f32>)> {
+    let expected = n_tokens
+        .checked_mul(expert_count_used)
+        .ok_or_else(|| anyhow::anyhow!("overflow na rota MoE"))?;
+    if selected_experts.len() != expected || weights.len() != expected {
+        bail!(
+            "tensor(es) de rota MoE têm {} ids e {} pesos, esperado {expected}",
+            selected_experts.len(),
+            weights.len()
+        );
+    }
+
+    let mut selected = Vec::with_capacity(expected);
+    let mut normalized = Vec::with_capacity(expected);
+    for source in 0..expected {
+        let token = source / expert_count_used;
+        let slot = source % expert_count_used;
+        let expert = selected_experts[source];
+        if expert < 0 {
+            bail!(
+                "tensor ffn_moe_selected_experts da arquitetura {architecture}, camada {layer}, token {token}, slot {slot} tem expert negativo {expert}"
+            );
+        }
+        let weight = weights[source];
+        if !weight.is_finite() {
+            let kind = if weight.is_nan() { "NaN" } else { "infinito" };
+            bail!(
+                "tensor ffn_moe_weights da arquitetura {architecture}, camada {layer}, token {token}, slot {slot}, expert {expert} tem valor não finito ({kind})"
+            );
+        }
+        selected.push(expert);
+        normalized.push(weight);
+    }
+    Ok((selected, normalized))
+}
+
+#[cfg(test)]
+mod moe_route_tests {
+    use super::*;
+
+    #[test]
+    fn rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major() {
+        // `ggml_get_rows` writes the [1, used, tokens] result with slot as
+        // the fastest-changing dimension. After the C++ reshape to
+        // [used, tokens], the callback therefore receives
+        // [token0/slot0, token0/slot1, token1/slot0, ...].
+        let selected_experts = [10, 20, 11, 21, 12, 22];
+        let weights = [0.1, 0.4, 0.2, 0.5, 0.3, 0.6];
+
+        let (selected, normalized) =
+            normalize_moe_route("qwen35moe", 7, &selected_experts, &weights, 3, 2).unwrap();
+
+        assert_eq!(selected, selected_experts);
+        assert_eq!(normalized, weights);
+    }
+
+    #[test]
+    fn rota_nao_finita_identifica_tensor_token_slot_e_expert() {
+        let error = normalize_moe_route("qwen35moe", 4, &[13, 27], &[f32::INFINITY, 0.5], 1, 2)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("ffn_moe_weights"));
+        assert!(error.contains("camada 4"));
+        assert!(error.contains("token 0"));
+        assert!(error.contains("slot 0"));
+        assert!(error.contains("expert 13"));
+        assert!(error.contains("infinito"));
+    }
+
+    #[test]
+    fn diagnostico_da_rota_registra_entrada_bruta_e_layout_de_token_zero() {
+        let selected_experts = [10, 20, 11, 21, 12, 22];
+        let weights = [0.1, 0.4, 0.2, 0.5, 0.3, 0.6];
+
+        let diagnostic = collect_moe_route_diagnostic(&selected_experts, &weights, 3, 2);
+
+        assert_eq!(diagnostic.llama_declared_route_elements, 6);
+        assert_eq!(diagnostic.pom_expected_route_elements, 6);
+        assert_eq!(diagnostic.raw_nan_count, 0);
+        assert_eq!(diagnostic.raw_non_finite_count, 0);
+        assert_eq!(
+            diagnostic.token_zero_samples,
+            vec![
+                MoeRouteDiagnosticSample {
+                    slot: 0,
+                    source_offset_elements: 0,
+                    expert: 10,
+                    weight: 0.1,
+                },
+                MoeRouteDiagnosticSample {
+                    slot: 1,
+                    source_offset_elements: 1,
+                    expert: 20,
+                    weight: 0.4,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn diagnostico_captura_primeira_chamada_e_rota_nao_finita_em_qualquer_camada() {
+        assert!(route_diagnostic_should_emit(true, false));
+        assert!(route_diagnostic_should_emit(false, true));
+        assert!(!route_diagnostic_should_emit(false, false));
+    }
+
+    #[test]
+    fn diagnostico_de_saida_preserva_argumentos_crus_e_motivo_do_retorno() {
+        let diagnostic = build_moe_callback_exit_diagnostic(
+            "null_callback_argument",
+            0x11usize as *mut c_void,
+            0x22usize as *const sys::llama_moe_ffn_descriptor,
+            0x33usize as *const f32,
+            0x44usize as *const i32,
+            0x55usize as *const f32,
+            7,
+            4096,
+            0x66usize as *mut f32,
+        );
+
+        assert_eq!(diagnostic.reason, "null_callback_argument");
+        assert_eq!(
+            diagnostic.raw_pointers,
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+        );
+        assert_eq!(diagnostic.n_tokens, 7);
+        assert_eq!(diagnostic.hidden_width, 4096);
+    }
+
+    #[derive(Clone)]
+    struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("writer mutex poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogWriter {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    #[ignore = "prova do callback requer POM_MOE_ROUTE_DIAGNOSTICS=1"]
+    fn callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(SharedLogWriter(bytes.clone()))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let accepted = unsafe {
+                moe_ffn_callback(
+                    ptr::null_mut(),
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    1,
+                    4096,
+                    ptr::null_mut(),
+                )
+            };
+            assert!(!accepted);
+        });
+
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("callback_entry_default"), "{output}");
+        assert!(output.contains("callback_entry raw_args=1"), "{output}");
+        assert!(
+            output.contains("callback_exit reason=null_callback_argument"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    #[ignore = "prova do dispatcher global requer POM_MOE_ROUTE_DIAGNOSTICS=1"]
+    fn callback_global_emite_diagnostico_em_thread_externa_e_registra_gate() {
+        std::env::set_var(MOE_ROUTE_DIAGNOSTICS_ENV, "1");
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(SharedLogWriter(bytes.clone()))
+            .init();
+
+        log_moe_route_diagnostics_configuration();
+        log_moe_route_diagnostics_configuration();
+        let join = std::thread::spawn(|| unsafe {
+            moe_ffn_callback(
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                1,
+                4096,
+                ptr::null_mut(),
+            )
+        });
+        assert!(!join
+            .join()
+            .expect("thread do callback não pode entrar em pânico"));
+
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            output
+                .matches("POM_MOE_ROUTE_DIAGNOSTICS configuration")
+                .count(),
+            1,
+            "{output}"
+        );
+        assert!(
+            output.contains("POM_MOE_ROUTE_DIAGNOSTICS configuration"),
+            "{output}"
+        );
+        assert!(output.contains("enabled=true"), "{output}");
+        assert!(output.contains("callback_entry_default"), "{output}");
+        assert!(output.contains("callback_entry raw_args=1"), "{output}");
+        assert!(
+            output.contains("callback_exit reason=null_callback_argument"),
+            "{output}"
+        );
+    }
 }
 
 unsafe extern "C" fn capture_callback(
@@ -311,10 +1024,11 @@ unsafe extern "C" fn capture_callback(
     if name.is_null() {
         return true;
     }
-    let matches = slot
-        .want
-        .as_deref()
-        .is_some_and(|target| unsafe { CStr::from_ptr(name) } == target);
+    let matches = slot.want.as_deref().is_some_and(|target| {
+        unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .is_ok_and(|name| capture_target_matches(name, target))
+    });
 
     // The two phases mean different things, and the return value means something
     // different in each — see `ggml_backend_sched_compute_splits`:
@@ -356,10 +1070,28 @@ unsafe extern "C" fn capture_callback(
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     if floats.len() == n_floats {
-        accumulate_capture(&mut slot, floats);
+        if let Err(error) = record_capture(&mut slot, tensor_shape, tensor_strides, n_bytes, floats)
+        {
+            if slot.error.is_none() {
+                slot.error = Some(error.to_string());
+            }
+        }
     }
     slot.copy_us += copy_started.elapsed().as_micros() as u64;
     true
+}
+
+/// Some graph variants name the residual immediately before the output head
+/// `l_last-N`; older graphs and the POM capture API use `l_out-N` for the same
+/// boundary. The target remains `l_out-N` so existing callers keep working.
+fn capture_target_matches(name: &str, target: &CStr) -> bool {
+    let Ok(target) = target.to_str() else {
+        return false;
+    };
+    name == target
+        || target
+            .strip_prefix("l_out-")
+            .is_some_and(|layer| name == format!("l_last-{layer}"))
 }
 
 /// Junta o `l_out` de mais um microlote ao residual deste decode.
@@ -397,6 +1129,258 @@ fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
         Some(acumulado) => acumulado.extend_from_slice(&floats),
         None => slot.buf = Some(floats),
     }
+}
+
+fn residual_capture_layout(
+    tensor_shape: [i64; 4],
+    tensor_strides: [usize; 4],
+    n_tokens: usize,
+    n_embd: usize,
+) -> Result<ResidualCaptureLayout> {
+    if n_tokens == 0 {
+        bail!("residual capture: quantidade de tokens vazia");
+    }
+    let dims = tensor_shape
+        .into_iter()
+        .map(|dim| {
+            usize::try_from(dim)
+                .map_err(|_| anyhow::anyhow!("residual capture: dimensão negativa {dim}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if dims[0] != n_embd {
+        bail!(
+            "residual capture: dimensão 0 é {}, esperada n_embd {}",
+            dims[0],
+            n_embd
+        );
+    }
+
+    let mut saw_token_axis = false;
+    let mut saw_unsupported_trailing = false;
+    let mut saw_invalid_stride = false;
+    for token_axis in 1..dims.len() {
+        if dims[token_axis] != n_tokens {
+            continue;
+        }
+        saw_token_axis = true;
+        if dims[token_axis + 1..].iter().any(|&dim| dim > 1) {
+            saw_unsupported_trailing = true;
+            continue;
+        }
+        let feature_width = dims[..token_axis]
+            .iter()
+            .try_fold(1usize, |width, &dimension| width.checked_mul(dimension))
+            .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+        let expected_stride = feature_width
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| anyhow::anyhow!("residual capture: stride excede o limite"))?;
+        if tensor_strides[token_axis] != expected_stride {
+            saw_invalid_stride = true;
+            continue;
+        }
+        let mut stride = std::mem::size_of::<f32>();
+        let mut contiguous = true;
+        for axis in 0..=token_axis {
+            if tensor_strides[axis] != stride {
+                contiguous = false;
+                break;
+            }
+            stride = stride
+                .checked_mul(dims[axis])
+                .ok_or_else(|| anyhow::anyhow!("residual capture: stride excede o limite"))?;
+        }
+        if !contiguous {
+            saw_invalid_stride = true;
+            continue;
+        }
+        // The scan is intentionally from low to high axes. When more than one
+        // axis has the token count (most notably a one-token batch), the
+        // lowest axis that satisfies the physical layout wins. This is
+        // deterministic and avoids absorbing trailing singleton dimensions
+        // into the canonical shape.
+        return Ok(ResidualCaptureLayout {
+            feature_shape: dims[..token_axis].to_vec(),
+            token_axis,
+        });
+    }
+
+    if saw_unsupported_trailing {
+        bail!(
+            "residual capture: shape {:?} tem dimensões posteriores ao eixo de tokens não suportadas",
+            tensor_shape
+        );
+    }
+    if saw_token_axis && saw_invalid_stride {
+        bail!(
+            "residual capture: shape {:?} não é contígua no eixo de tokens {}",
+            tensor_shape,
+            n_tokens
+        );
+    }
+    bail!(
+        "residual capture: shape {:?} não expõe o número de tokens {}",
+        tensor_shape,
+        n_tokens
+    )
+}
+
+fn capture_microbatch_tokens(slot: &CaptureSlot) -> Result<usize> {
+    // `expected_tokens` is the batch count supplied by the decode caller. The
+    // callback sees only the tensor, so after the first capture the accumulated
+    // feature rows tell us how many tokens already arrived; the next physical
+    // microbatch is the remaining count capped by `n_ubatch`.
+    if slot.expected_tokens == 0 {
+        bail!("residual capture: quantidade esperada de tokens vazia");
+    }
+    if slot.max_microbatch_tokens == 0 {
+        bail!("residual capture: limite de microlote vazio");
+    }
+    let captured_tokens = match &slot.layout {
+        Some(layout) => {
+            let feature_values = layout
+                .feature_shape
+                .iter()
+                .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+                .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+            if feature_values == 0 {
+                bail!("residual capture: largura de features vazia");
+            }
+            let current = slot.buf.as_ref().map_or(0, Vec::len);
+            if current % feature_values != 0 {
+                bail!(
+                    "residual capture: buffer acumulado de {} floats não fecha a largura de features {}",
+                    current,
+                    feature_values
+                );
+            }
+            current / feature_values
+        }
+        None => 0,
+    };
+    let remaining = slot
+        .expected_tokens
+        .checked_sub(captured_tokens)
+        .ok_or_else(|| {
+            anyhow::anyhow!("residual capture: microlotes excederam o batch esperado")
+        })?;
+    Ok(remaining.min(slot.max_microbatch_tokens))
+}
+
+fn record_capture(
+    slot: &mut CaptureSlot,
+    tensor_shape: [i64; 4],
+    tensor_strides: [usize; 4],
+    n_bytes: usize,
+    floats: Vec<f32>,
+) -> Result<()> {
+    if let Some(expected) = slot.expected_floats {
+        let current = slot.buf.as_ref().map_or(0, Vec::len);
+        if current >= expected {
+            return Ok(());
+        }
+    }
+    let microbatch_tokens = capture_microbatch_tokens(slot)?;
+    let layout =
+        residual_capture_layout(tensor_shape, tensor_strides, microbatch_tokens, slot.n_embd)?;
+    let captured_bytes = floats
+        .len()
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| anyhow::anyhow!("residual capture: tamanho excede o limite"))?;
+    if captured_bytes != n_bytes {
+        bail!(
+            "residual capture: tensor shape {:?} declara {} bytes, mas a cópia tem {}",
+            tensor_shape,
+            n_bytes,
+            captured_bytes
+        );
+    }
+    if let Some(existing) = &slot.layout {
+        if existing != &layout {
+            bail!("residual capture: layout mudou entre microlotes ({existing:?} vs {layout:?})");
+        }
+    } else {
+        let feature_values = layout
+            .feature_shape
+            .iter()
+            .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+            .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+        let expected = slot
+            .expected_tokens
+            .checked_mul(feature_values)
+            .ok_or_else(|| anyhow::anyhow!("residual capture: tamanho esperado excede o limite"))?;
+        slot.expected_floats = Some(expected);
+        slot.layout = Some(layout);
+    }
+    let feature_shape = slot
+        .layout
+        .as_ref()
+        .map(|layout| layout.feature_shape.as_slice())
+        .ok_or_else(|| anyhow::anyhow!("residual capture: layout não definido"))?;
+    let feature_values = feature_shape
+        .iter()
+        .try_fold(1usize, |values, &dimension| values.checked_mul(dimension))
+        .ok_or_else(|| anyhow::anyhow!("residual capture: largura excede o limite"))?;
+    if feature_values == 0 {
+        bail!("residual capture: largura de features vazia");
+    }
+    let expected_microbatch = microbatch_tokens
+        .checked_mul(feature_values)
+        .ok_or_else(|| anyhow::anyhow!("residual capture: tamanho do microlote excede o limite"))?;
+    if floats.len() != expected_microbatch {
+        bail!(
+            "residual capture: microlote tem {} floats, esperado {} para {} tokens e features {:?}",
+            floats.len(),
+            expected_microbatch,
+            microbatch_tokens,
+            feature_shape
+        );
+    }
+    let expected = slot.expected_floats.unwrap_or(0);
+    let current = slot.buf.as_ref().map_or(0, Vec::len);
+    if current >= expected {
+        return Ok(());
+    }
+    let Some(end) = current.checked_add(floats.len()) else {
+        bail!("residual capture: tamanho do microlote excede o limite numérico");
+    };
+    if end > expected {
+        bail!(
+            "residual capture: microlote excede o batch esperado ({} + {} > {})",
+            current,
+            floats.len(),
+            expected
+        );
+    }
+    accumulate_capture(slot, floats);
+    Ok(())
+}
+
+fn take_captured_residual(slot: &mut CaptureSlot) -> Result<CapturedResidual> {
+    if let Some(error) = slot.error.take() {
+        bail!(error);
+    }
+    let expected = slot
+        .expected_floats
+        .ok_or_else(|| anyhow::anyhow!("residual capture did not observe a tensor"))?;
+    let values = slot
+        .buf
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("residual capture did not fire"))?;
+    if values.len() != expected {
+        bail!(
+            "residual capture: got {} floats, expected {}",
+            values.len(),
+            expected
+        );
+    }
+    let layout = slot
+        .layout
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("residual capture did not record a layout"))?;
+    let mut shape = Vec::with_capacity(layout.feature_shape.len() + 1);
+    shape.push(slot.expected_tokens);
+    shape.extend_from_slice(&layout.feature_shape);
+    Ok(CapturedResidual { values, shape })
 }
 
 // ── Ponte de diagnóstico ─────────────────────────────────────────────────────
@@ -544,9 +1528,8 @@ const CHAT_TEMPLATE_INITIAL_BUF: usize = 65536;
 ///   `n_seq_max`), porque estado de prompt e estado de geração são estados
 ///   diferentes - não há como um modelo Mamba/GDN reter o prompt sem guardar o
 ///   estado dele em separado;
-/// - o cache DSV4, que hoje ignora o pedido de unificação
-///   (`llama-kv-cache-dsv4.h`, `unified_raw = false`) e mantém um stream por
-///   sequência.
+/// - o cache de estados com múltiplos fluxos, que hoje ignora o pedido de
+///   unificação (`unified_raw = false`) e mantém um stream por sequência.
 ///
 /// Em ambos os casos o `fit_memory` (`llama_rs_fit_params`, que recebe estes
 /// mesmos `cparams`) dimensiona o contexto já contando as duas sequências, e
@@ -585,6 +1568,14 @@ fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
 
 fn load_mtp_weights(cfg: &EngineConfig) -> bool {
     cfg.mtp
+}
+
+/// O POM exporta o residual pelo callback, mas o llama.cpp também pode tentar
+/// copiar o resultado de embeddings. Essa cópia usa `n_embd_out` como se fosse
+/// a largura real do tensor; quando as duas larguras divergem, o pedido pode
+/// ultrapassar `ggml_nbytes(tensor)` antes de o callback ser consumido.
+fn generic_embeddings_compatible(need_embeddings: bool, n_embd: usize, n_embd_out: usize) -> bool {
+    need_embeddings && n_embd == n_embd_out
 }
 
 fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
@@ -722,6 +1713,8 @@ pub struct LlmEngine {
     loaded: Arc<LoadedModel>,
     ctx: *mut sys::llama_context,
     pub n_embd: usize,
+    pub n_embd_inp: usize,
+    pub n_embd_out: usize,
     pub n_vocab: usize,
     /// Whether the residual capture callback was successfully installed.
     capture_ok: bool,
@@ -896,6 +1889,7 @@ impl LlmEngine {
             runtime,
             telemetry: Mutex::new(MoeCallbackTelemetry::default()),
             error: Mutex::new(None),
+            route_diagnostic_emitted: AtomicBool::new(false),
         });
         unsafe {
             sys::llama_set_moe_ffn_callback(
@@ -964,6 +1958,7 @@ impl Drop for LlmEngine {
 impl LoadedModel {
     /// Lê os pesos do disco. Uma vez por arquivo, não por contexto.
     fn load(model_path: &str, plan: &FitPlan) -> Result<Arc<Self>> {
+        log_moe_route_diagnostics_configuration();
         // llama_backend_init is idempotent; call it on every load.
         unsafe { sys::llama_backend_init() };
 
@@ -1133,6 +2128,12 @@ impl LlmEngine {
     pub fn with_model(loaded: Arc<LoadedModel>, cfg: &EngineConfig) -> Result<Self> {
         let model = loaded.model;
         let n_embd = loaded.n_embd;
+        let n_embd_inp = usize::try_from(unsafe { sys::llama_model_n_embd_inp(model) })
+            .map_err(|_| anyhow::anyhow!("llama_model_n_embd_inp retornou valor inválido"))?;
+        if n_embd_inp == 0 {
+            bail!("llama_model_n_embd_inp retornou largura vazia");
+        }
+        let n_embd_out = unsafe { sys::llama_model_n_embd_out(model) } as usize;
         let n_vocab = loaded.n_vocab;
 
         // ── Context params ───────────────────────────────────────────────────
@@ -1144,7 +2145,7 @@ impl LlmEngine {
         cparams.kv_unified = true;
         cparams.offload_kqv = cfg.offload_kqv;
         apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
-        cparams.embeddings = cfg.need_embeddings;
+        cparams.embeddings = generic_embeddings_compatible(cfg.need_embeddings, n_embd, n_embd_out);
         cparams.n_rs_seq = cfg.rs_seq_window;
         if cfg.n_threads > 0 {
             cparams.n_threads = cfg.n_threads;
@@ -1155,7 +2156,12 @@ impl LlmEngine {
         let capture: Box<Mutex<CaptureSlot>> = Box::new(Mutex::new(CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 0,
+            max_microbatch_tokens: effective_n_ubatch(cfg) as usize,
+            n_embd,
             expected_floats: None,
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -1207,7 +2213,7 @@ impl LlmEngine {
         // O contexto de rascunho MTP vem depois do alvo de propósito: ele
         // precisa do `ctx` já criado para ligar a saída do estado oculto nele.
         let mtp = if cfg.mtp {
-            match crate::mtp::MtpDrafter::attach(model, ctx, cfg, n_embd, n_vocab) {
+            match crate::mtp::MtpDrafter::attach(model, ctx, cfg, n_embd_out, n_vocab) {
                 Ok(d) => {
                     if d.is_none() {
                         tracing::info!(
@@ -1232,6 +2238,8 @@ impl LlmEngine {
             loaded,
             ctx,
             n_embd,
+            n_embd_inp,
+            n_embd_out,
             n_vocab,
             capture_ok,
             capture,
@@ -1307,13 +2315,12 @@ impl LlmEngine {
         unsafe { sys::llama_model_n_layer(self.loaded.model) as u32 }
     }
 
-    /// Em qual bloco desta fatia a próxima decodificação deve parar.
+    /// Em qual bloco desta fatia a próxima decodificação deve ser capturada.
     ///
-    /// `None` volta ao normal: captura no último bloco, grafo inteiro. Com
-    /// `Some(k)` a captura passa a mirar `l_out-k`, e o retorno `false` do
-    /// callback na fase de compute **abandona o resto do grafo** - é isso que
-    /// faz a execução ser de fato parcial, e não o grafo inteiro com o
-    /// resultado de um bloco do meio.
+    /// `None` volta ao normal: captura no último bloco. Com `Some(k)` a captura
+    /// passa a mirar `l_out-k`. O callback copia o residual e deixa o restante
+    /// do grafo continuar; isso é necessário para que cabeças obrigatórias
+    /// possam ser executadas sem contaminar o residual exportado.
     ///
     /// Vale só para a próxima decodificação porque quem a chama já segura o
     /// mesmo lock que serializa as decodificações deste contexto.
@@ -1709,29 +2716,58 @@ impl LlmEngine {
         }
         let descriptors: Vec<BatchEntry> = entries.iter().map(|e| e.descriptor.clone()).collect();
         let layout = BatchLayout::new(&descriptors)?;
+        let mut feature_shape: Option<&[usize]> = None;
+        let mut input_width = None;
         for entry in entries {
-            let expected = entry.descriptor.tokens.saturating_mul(self.n_embd);
-            if entry.hidden.len() != expected {
-                bail!(
-                    "item {} tem hidden state com {} floats, esperado {}",
-                    entry.descriptor.item_id,
-                    entry.hidden.len(),
-                    expected
-                );
+            let entry_width = validate_hidden_tensor(
+                entry.hidden.len(),
+                &entry.shape,
+                entry.descriptor.tokens,
+                self.n_embd,
+                self.n_embd_inp,
+                self.n_embd_out,
+                &format!("item {}", entry.descriptor.item_id),
+            )?;
+            if let Some(expected_width) = input_width {
+                if expected_width != entry_width {
+                    bail!(
+                        "item {} tem largura {}, mas o batch usa {}",
+                        entry.descriptor.item_id,
+                        entry_width,
+                        expected_width
+                    );
+                }
+            } else {
+                input_width = Some(entry_width);
+            }
+            if let Some(expected_shape) = feature_shape {
+                if *expected_shape != entry.shape[1..] {
+                    bail!(
+                        "item {} tem layout {:?}, mas o batch usa {:?}",
+                        entry.descriptor.item_id,
+                        &entry.shape[1..],
+                        expected_shape
+                    );
+                }
+            } else {
+                feature_shape = Some(&entry.shape[1..]);
             }
         }
 
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
+        let input_width = input_width.expect("entries não vazio garante largura de entrada");
+        let input_width_i32 = i32::try_from(input_width)
+            .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
         let enqueue_started = Instant::now();
         self.reset_capture_slot(layout.total_tokens());
-        let mut batch = unsafe { sys::llama_batch_init(n, self.n_embd as i32, 1) };
+        let mut batch = unsafe { sys::llama_batch_init(n, input_width_i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut();
         let mut row = 0usize;
         unsafe {
             for entry in entries {
-                let start = row * self.n_embd;
+                let start = row * input_width;
                 let end = start + entry.hidden.len();
                 std::ptr::copy_nonoverlapping(
                     entry.hidden.as_ptr(),
@@ -1764,7 +2800,10 @@ impl LlmEngine {
     fn reset_capture_slot(&self, n_tokens: usize) {
         let mut capture = self.capture.lock().unwrap();
         capture.buf = None;
-        capture.expected_floats = n_tokens.checked_mul(self.n_embd);
+        capture.expected_tokens = n_tokens;
+        capture.expected_floats = None;
+        capture.layout = None;
+        capture.error = None;
         capture.last_shape = None;
         capture.last_strides = None;
         capture.last_nbytes = None;
@@ -1795,6 +2834,11 @@ impl LlmEngine {
         } else {
             None
         };
+        let residual_shape = residual
+            .as_ref()
+            .map(|captured| captured.shape.clone())
+            .unwrap_or_else(|| vec![0, self.n_embd]);
+        let residual = residual.map(|captured| captured.values);
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
@@ -1810,6 +2854,7 @@ impl LlmEngine {
             BatchDecodeOutput {
                 layout,
                 residual,
+                residual_shape,
                 n_embd: self.n_embd,
             },
             timings,
@@ -1949,6 +2994,7 @@ impl LlmEngine {
     pub fn decode_hidden(
         &mut self,
         hidden: &[f32],
+        shape: &TensorShape,
         n_tokens: usize,
         pos_offset: u32,
         seq_id: u32,
@@ -1961,16 +3007,20 @@ impl LlmEngine {
         // residual de outra requisição concatenado ao desta.
         self.reset_capture_slot(n_tokens);
         let enqueue_started = Instant::now();
-        if hidden.len() != n_tokens * self.n_embd {
-            bail!(
-                "hidden state length {} != n_tokens {} × n_embd {}",
-                hidden.len(),
-                n_tokens,
-                self.n_embd
-            );
-        }
-        let n = n_tokens as i32;
-        let mut batch = unsafe { sys::llama_batch_init(n, self.n_embd as i32, 1) };
+        let input_width = validate_hidden_tensor(
+            hidden.len(),
+            shape,
+            n_tokens,
+            self.n_embd,
+            self.n_embd_inp,
+            self.n_embd_out,
+            "hidden state",
+        )?;
+        let n = i32::try_from(n_tokens)
+            .map_err(|_| anyhow::anyhow!("hidden state excede o limite de tokens do llama.cpp"))?;
+        let input_width_i32 = i32::try_from(input_width)
+            .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
+        let mut batch = unsafe { sys::llama_batch_init(n, input_width_i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut(); // signals embedding mode
 
@@ -2057,26 +3107,22 @@ impl LlmEngine {
     /// Consume the residual captured during the last `decode_*` call.
     ///
     /// Must be called exactly once per decode when `need_embeddings` is true.
-    pub fn take_residual(&self, n_tokens: usize) -> Result<Vec<f32>> {
+    pub fn take_residual(&self, n_tokens: usize) -> Result<CapturedResidual> {
         if self.capture_ok {
             let mut capture = self.capture.lock().unwrap();
-            let shape = capture.last_shape;
-            let strides = capture.last_strides;
-            let nbytes = capture.last_nbytes;
-            let buf = capture.buf.take();
-            match buf {
-                Some(v) if v.len() == n_tokens * self.n_embd => Ok(v),
-                Some(v) => bail!(
-                    "residual capture: got {} floats, expected {} ({}×{}), tensor shape={shape:?} strides={strides:?} nbytes={nbytes:?}",
-                    v.len(),
-                    n_tokens * self.n_embd,
+            let captured = take_captured_residual(&mut capture)?;
+            if captured.shape.first().copied() != Some(n_tokens) {
+                bail!(
+                    "residual capture: captured {} tokens, expected {} (shape {:?}, last tensor shape {:?}, strides {:?}, nbytes {:?})",
+                    captured.shape.first().copied().unwrap_or(0),
                     n_tokens,
-                    self.n_embd
-                ),
-                None => bail!(
-                    "residual capture did not fire — refusing to fall back to the post-norm state"
-                ),
+                    captured.shape,
+                    capture.last_shape,
+                    capture.last_strides,
+                    capture.last_nbytes
+                );
             }
+            Ok(captured)
         } else {
             // Fallback: post-output_norm embeddings. Only correct when the
             // slice's output_norm is all-ones (shallow cuts are wrong with this).
@@ -2090,7 +3136,10 @@ impl LlmEngine {
                     out.extend_from_slice(std::slice::from_raw_parts(ptr, self.n_embd));
                 }
             }
-            Ok(out)
+            Ok(CapturedResidual {
+                values: out,
+                shape: vec![n_tokens, self.n_embd],
+            })
         }
     }
 
@@ -2285,6 +3334,7 @@ pub struct TokenBatchEntry {
 pub struct HiddenBatchEntry {
     pub descriptor: BatchEntry,
     pub hidden: Vec<f32>,
+    pub shape: TensorShape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2354,6 +3404,7 @@ impl BatchLayout {
 pub struct BatchDecodeOutput {
     pub layout: BatchLayout,
     residual: Option<Vec<f32>>,
+    residual_shape: TensorShape,
     n_embd: usize,
 }
 
@@ -2363,11 +3414,12 @@ impl BatchDecodeOutput {
         Self {
             layout,
             residual: Some(residual),
+            residual_shape: vec![0, n_embd],
             n_embd,
         }
     }
 
-    pub fn residual_for(&self, item_id: &str, n_embd: usize) -> Result<Vec<f32>> {
+    pub fn residual_for(&self, item_id: &str, n_embd: usize) -> Result<(Vec<f32>, TensorShape)> {
         let range = self
             .layout
             .range(item_id)
@@ -2383,20 +3435,30 @@ impl BatchDecodeOutput {
                 self.n_embd
             );
         }
+        let feature_width = self
+            .residual_shape
+            .get(1..)
+            .ok_or_else(|| anyhow::anyhow!("shape do residual ausente no resultado"))?
+            .iter()
+            .try_fold(1usize, |width, &dimension| width.checked_mul(dimension))
+            .ok_or_else(|| anyhow::anyhow!("largura de residual excede o limite numérico"))?;
         let start = range
             .rows
             .start
-            .checked_mul(n_embd)
+            .checked_mul(feature_width)
             .ok_or_else(|| anyhow::anyhow!("offset de residual excede o limite numérico"))?;
         let end = range
             .rows
             .end
-            .checked_mul(n_embd)
+            .checked_mul(feature_width)
             .ok_or_else(|| anyhow::anyhow!("fim de residual excede o limite numérico"))?;
-        residual
+        let values = residual
             .get(start..end)
-            .map(|values| values.to_vec())
-            .ok_or_else(|| anyhow::anyhow!("residual incompleto para item {item_id}"))
+            .ok_or_else(|| anyhow::anyhow!("residual incompleto para item {item_id}"))?
+            .to_vec();
+        let mut shape = self.residual_shape.clone();
+        shape[0] = range.rows.len();
+        Ok((values, shape))
     }
 }
 
@@ -2449,8 +3511,14 @@ mod batch_layout_tests {
         let layout = BatchLayout::new(&entries).unwrap();
         let output = BatchDecodeOutput::test(layout, vec![1.0, 2.0, 3.0], 1);
 
-        assert_eq!(output.residual_for("a", 1).unwrap(), vec![1.0, 2.0]);
-        assert_eq!(output.residual_for("b", 1).unwrap(), vec![3.0]);
+        assert_eq!(
+            output.residual_for("a", 1).unwrap(),
+            (vec![1.0, 2.0], vec![2, 1])
+        );
+        assert_eq!(
+            output.residual_for("b", 1).unwrap(),
+            (vec![3.0], vec![1, 1])
+        );
         assert!(output.residual_for("missing", 1).is_err());
     }
 }
@@ -2521,7 +3589,12 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 0,
+            max_microbatch_tokens: 0,
+            n_embd: 0,
             expected_floats: None,
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -2558,7 +3631,12 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 0,
+            max_microbatch_tokens: 0,
+            n_embd: 0,
             expected_floats: None,
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -2575,7 +3653,12 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_tokens: 1,
+            max_microbatch_tokens: 1,
+            n_embd: 4,
             expected_floats: Some(4),
+            layout: None,
+            error: None,
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
@@ -2586,6 +3669,211 @@ mod pool_tests {
         accumulate_capture(&mut slot, vec![5.0, 6.0, 7.0, 8.0]);
 
         assert_eq!(slot.buf.as_deref(), Some(&[1.0, 2.0, 3.0, 4.0][..]));
+    }
+
+    fn capture_slot_for_test(
+        expected_tokens: usize,
+        n_embd: usize,
+        max_microbatch_tokens: usize,
+    ) -> CaptureSlot {
+        CaptureSlot {
+            want: None,
+            buf: None,
+            expected_tokens,
+            max_microbatch_tokens,
+            n_embd,
+            expected_floats: None,
+            layout: None,
+            error: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
+            copy_us: 0,
+        }
+    }
+
+    #[test]
+    fn residual_capture_without_extra_dimension_keeps_the_current_wire_shape() {
+        let mut slot = capture_slot_for_test(2, 4, 4);
+        record_capture(
+            &mut slot,
+            [4, 2, 1, 1],
+            [4, 16, 32, 32],
+            2 * 4 * 4,
+            (0..8).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![2, 4]);
+        assert_eq!(
+            captured.values,
+            (0..8).map(|value| value as f32).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn residual_capture_accepts_the_classic_ggml_shape_with_trailing_singletons() {
+        let mut slot = capture_slot_for_test(3, 4096, 4096);
+        let values = (0..(3 * 4096))
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [4096, 3, 1, 1],
+            [4, 16_384, 49_152, 49_152],
+            values.len() * 4,
+            values.clone(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![3, 4096]);
+        assert_eq!(captured.values, values);
+    }
+
+    #[test]
+    fn residual_capture_accepts_a_model_without_hyperconnection_streams() {
+        let mut slot = capture_slot_for_test(4, 8, 8);
+        let values = (0..32).map(|value| value as f32).collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [8, 4, 1, 1],
+            [4, 32, 128, 128],
+            values.len() * 4,
+            values.clone(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![4, 8]);
+        assert_eq!(captured.values, values);
+    }
+
+    #[test]
+    fn residual_capture_preserves_extra_stream_dimensions() {
+        let mut slot = capture_slot_for_test(11, 4096, 4096);
+        let values = (0..(11 * 4096 * 4))
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [4096, 4, 11, 1],
+            [4, 16_384, 65_536, 720_896],
+            values.len() * 4,
+            values.clone(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![11, 4096, 4]);
+        assert_eq!(captured.values, values);
+    }
+
+    #[test]
+    fn residual_capture_accumulates_extra_dimensions_in_microbatch_order() {
+        let mut slot = capture_slot_for_test(5, 4, 2);
+        record_capture(
+            &mut slot,
+            [4, 2, 2, 1],
+            [4, 16, 32, 64],
+            2 * 8 * 4,
+            (0..16).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+        record_capture(
+            &mut slot,
+            [4, 2, 2, 1],
+            [4, 16, 32, 64],
+            2 * 8 * 4,
+            (16..32).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+        record_capture(
+            &mut slot,
+            [4, 2, 1, 1],
+            [4, 16, 32, 32],
+            8 * 4,
+            (32..40).map(|value| value as f32).collect(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![5, 4, 2]);
+        let expected = (0..40).map(|value| value as f32).collect::<Vec<_>>();
+        assert_eq!(captured.values, expected);
+    }
+
+    #[test]
+    fn residual_capture_names_unsupported_trailing_dimensions() {
+        let mut slot = capture_slot_for_test(2, 4, 8);
+        let error = record_capture(
+            &mut slot,
+            [4, 2, 2, 3],
+            [4, 16, 32, 64],
+            2 * 3 * 8 * 4,
+            vec![0.0; 2 * 3 * 8],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("dimensões posteriores"),
+            "erro inesperado: {error}"
+        );
+    }
+
+    #[test]
+    fn residual_capture_preserves_an_internal_singleton_before_tokens() {
+        let mut slot = capture_slot_for_test(2, 4, 4);
+        record_capture(
+            &mut slot,
+            [4, 1, 2, 1],
+            [4, 16, 16, 32],
+            2 * 4 * 4,
+            vec![0.0; 2 * 4],
+        )
+        .unwrap();
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![2, 4, 1]);
+        assert_eq!(captured.values, vec![0.0; 2 * 4]);
+    }
+
+    #[test]
+    fn residual_capture_does_not_use_n_embd_in_to_find_the_token_axis() {
+        // The surrounding model may have n_embd=4 and n_embd_inp=8. The
+        // residual is still identified from its physical shape and token
+        // count, not from that input-only metadata.
+        let mut slot = capture_slot_for_test(3, 4, 3);
+        let values = (0..12).map(|value| value as f32).collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [4, 3, 1, 1],
+            [4, 16, 48, 48],
+            values.len() * 4,
+            values.clone(),
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![3, 4]);
+        assert_eq!(captured.values, values);
+    }
+
+    #[test]
+    fn residual_capture_resolves_ambiguous_single_token_axis_deterministically() {
+        let mut slot = capture_slot_for_test(1, 4, 1);
+        record_capture(
+            &mut slot,
+            [4, 1, 1, 1],
+            [4, 16, 16, 16],
+            4 * 4,
+            vec![1.0, 2.0, 3.0, 4.0],
+        )
+        .unwrap();
+
+        let captured = take_captured_residual(&mut slot).unwrap();
+        assert_eq!(captured.shape, vec![1, 4]);
+        assert_eq!(captured.values, vec![1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
@@ -2930,6 +4218,122 @@ fn token_sequence_ends_with(tokens: &[i32], suffix: &[i32]) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn receptor_aceita_hidden_state_com_fluxos_expandidos() {
+        let shape = vec![11, 4096, 4];
+        let values_len = 11 * 4096 * 4;
+
+        validate_hidden_tensor(values_len, &shape, 11, 4096, 4096, 16_384, "hidden state")
+            .expect("a largura expandida do eixo de fluxos deve ser aceita");
+    }
+
+    #[test]
+    fn receptor_aceita_hidden_state_sem_fluxos() {
+        let shape = vec![3, 8];
+
+        validate_hidden_tensor(3 * 8, &shape, 3, 8, 8, 32, "hidden state")
+            .expect("o modelo sem fluxos deve manter a validação atual");
+    }
+
+    #[test]
+    fn receptor_mantem_singletons_de_um_modelo_sem_fluxos() {
+        let shape = vec![3, 8, 1];
+
+        validate_hidden_tensor(3 * 8, &shape, 3, 8, 8, 32, "hidden state")
+            .expect("dimensões singleton não devem virar um eixo de fluxo");
+    }
+
+    #[test]
+    fn receptor_recusa_largura_de_hidden_state_incompativel_nomeando_shape() {
+        let shape = vec![11, 4096, 3];
+
+        let error = validate_hidden_tensor(
+            11 * 4096 * 3,
+            &shape,
+            11,
+            4096,
+            4096,
+            16_384,
+            "hidden state",
+        )
+        .expect_err("uma largura de fluxo incompatível deve continuar recusada")
+        .to_string();
+
+        assert!(error.contains("[11, 4096, 3]"), "erro inesperado: {error}");
+        assert!(
+            error.contains("largura de entrada 12288"),
+            "erro inesperado: {error}"
+        );
+    }
+
+    #[test]
+    fn residual_do_emissor_via_wire_e_aceito_pelo_receptor() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            expected_tokens: 11,
+            max_microbatch_tokens: 11,
+            n_embd: 4096,
+            expected_floats: None,
+            layout: None,
+            error: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
+            copy_us: 0,
+        };
+        let values = (0..(11 * 4096 * 4))
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
+        record_capture(
+            &mut slot,
+            [4096, 4, 11, 1],
+            [4, 16_384, 65_536, 720_896],
+            values.len() * 4,
+            values,
+        )
+        .unwrap();
+        let emitted = take_captured_residual(&mut slot).unwrap();
+
+        let frame = crate::wire::encode(
+            &serde_json::json!({"session_id": "round-trip"}),
+            Some((&emitted.values, emitted.shape.clone())),
+            crate::wire::WireDtype::F32,
+        )
+        .unwrap();
+        let (_, received) = crate::wire::decode(&frame).unwrap();
+        let (received_values, received_shape) = received.unwrap();
+
+        let width = validate_hidden_tensor(
+            received_values.len(),
+            &received_shape,
+            11,
+            4096,
+            4096,
+            16_384,
+            "hidden state",
+        )
+        .expect("o receptor deve aceitar exatamente a forma emitida");
+        assert_eq!(received_shape, vec![11, 4096, 4]);
+        assert_eq!(width, 16_384);
+    }
+
+    #[test]
+    fn capture_target_accepts_an_alternate_last_layer_alias() {
+        let target = CString::new("l_out-19").unwrap();
+        assert!(capture_target_matches("l_out-19", &target));
+        assert!(capture_target_matches("l_last-19", &target));
+        assert!(!capture_target_matches("l_last-18", &target));
+        assert!(!capture_target_matches("output-19", &target));
+    }
+
+    #[test]
+    fn output_width_mismatch_disables_unsafe_generic_embedding_copy() {
+        assert!(!generic_embeddings_compatible(true, 4096, 16384));
+        assert!(generic_embeddings_compatible(true, 4096, 4096));
+        assert!(!generic_embeddings_compatible(false, 4096, 4096));
+    }
+
     const GEMMA4_TEMPLATE_FIXTURE: &str = r#"
         {{- bos_token -}}
         {%- if (enable_thinking is defined and enable_thinking) or messages[0]['role'] in ['system', 'developer'] -%}
@@ -3189,16 +4593,225 @@ mod tests {
             .map(|i| ((i % 97) as f32 - 48.0) / 48.0)
             .collect();
         engine
-            .decode_hidden(&hidden, n_tokens, 0, 0, true, None)
+            .decode_hidden(
+                &hidden,
+                &vec![n_tokens, engine.n_embd],
+                n_tokens,
+                0,
+                0,
+                true,
+                None,
+            )
             .expect("decode of an injected hidden state succeeds");
 
         let residual = engine
             .take_residual(n_tokens)
             .expect("the capture callback must fire on the hidden-state path too");
-        assert_eq!(residual.len(), n_tokens * engine.n_embd);
+        assert_eq!(residual.values.len(), n_tokens * engine.n_embd);
         assert!(
-            residual.iter().any(|v| *v != 0.0 && v.is_finite()),
+            residual.values.iter().any(|v| *v != 0.0 && v.is_finite()),
             "residual is all zeros or non-finite — the graph did not run"
+        );
+    }
+
+    /// Prova E2E do contrato que falhou em produção: o mesmo hidden e o mesmo
+    /// GGUF passam pelo bloco nativo e pelo callback externo CUDA, e a captura
+    /// é feita exatamente depois da camada 1. Além de comparar o residual,
+    /// exige que toda chamada observada tenha usado CUDA. Assim um callback que
+    /// leia a rota com passo errado ou uma área ainda não materializada falha
+    /// antes de poder parecer uma divergência de quantização.
+    ///
+    /// ```text
+    /// POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf \
+    /// POM_MOE_NUMERIC_GPU_LAYERS=99 \
+    /// cargo test -p node --features cuda --bin pom \
+    ///   inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requer GGUF qwen35moe e CUDA real"]
+    fn qwen35moe_external_route_matches_native_at_layer() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(cfg!(feature = "cuda"), "rode com --features cuda");
+
+        let path = std::env::var("POM_MOE_NUMERIC_MODEL")
+            .expect("POM_MOE_NUMERIC_MODEL deve apontar para um GGUF qwen35moe");
+        let info = crate::gguf::read_info(std::path::Path::new(&path))
+            .expect("o cabeçalho GGUF deve ser legível");
+        assert_eq!(
+            info.architecture.as_deref(),
+            Some("qwen35moe"),
+            "o teste é específico para a rota do qwen35moe"
+        );
+        assert_eq!(
+            crate::moe::format_q4_0::detect_expert_format(&path)
+                .expect("o formato dos experts deve ser detectável"),
+            crate::moe::format_q4_0::ExpertFormat::Heterogeneous,
+            "o Ornith deve passar pelo inventário heterogêneo Q4_K/Q6_K"
+        );
+        let expert_dtypes = crate::moe::format_q4_0::detect_expert_dtypes(&path)
+            .expect("os dtypes dos experts devem ser detectáveis");
+        assert!(
+            expert_dtypes.contains(&12) && expert_dtypes.contains(&14),
+            "a prova precisa incluir Q4_K e Q6_K: {expert_dtypes:?}"
+        );
+        let experts = info
+            .expert_count
+            .expect("qwen35moe deve declarar expert_count");
+        let top_k = info.expert_used_count.unwrap_or(1).max(1) as usize;
+        let layer = std::env::var("POM_MOE_NUMERIC_LAYER")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
+        let gpu_layers = std::env::var("POM_MOE_NUMERIC_GPU_LAYERS")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(99);
+        let plan = crate::moe::runtime::MoeRuntime::external_executor_plan(&path)
+            .expect("o planejamento de ownership MoE deve funcionar");
+        assert_eq!(
+            plan.layers.get(layer as usize).copied(),
+            Some(1),
+            "a camada {layer} não tem executor externo CUDA: {:?}",
+            plan.reason
+        );
+
+        let config = |external| EngineConfig {
+            n_ctx: 512,
+            offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
+            fit_memory: false,
+            n_batch: 4,
+            n_gpu_layers: gpu_layers,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: true,
+            mtp: false,
+            rs_seq_window: 0,
+            moe_external_executor: external,
+            moe_external_executor_layers: if external {
+                plan.layers.clone()
+            } else {
+                Vec::new()
+            },
+        };
+
+        let mut native =
+            LlmEngine::load_with_cache(&path, &config(false), &ModelCache::new(), false)
+                .expect("o modelo nativo deve carregar");
+        native
+            .set_capture_layer(Some(layer))
+            .expect("a camada de captura deve existir");
+        let n_tokens = 4;
+        let hidden: Vec<f32> = (0..n_tokens * native.n_embd)
+            .map(|index| ((index % 127) as f32 - 63.0) / 63.0)
+            .collect();
+        native
+            .decode_hidden(
+                &hidden,
+                &vec![n_tokens, native.n_embd],
+                n_tokens,
+                0,
+                0,
+                true,
+                None,
+            )
+            .expect("o caminho nativo deve decodificar");
+        let native_residual = native
+            .take_residual(n_tokens)
+            .expect("o residual nativo deve ser capturado");
+        drop(native);
+
+        let mut external =
+            LlmEngine::load_with_cache(&path, &config(true), &ModelCache::new(), false)
+                .expect("o modelo em modo metadata-only deve carregar");
+        external
+            .set_capture_layer(Some(layer))
+            .expect("a camada de captura deve existir");
+        let weights_bytes = std::fs::metadata(&path).expect("o GGUF deve existir").len();
+        let cuda_compute_bytes = external
+            .cuda_compute_bytes()
+            .expect("o contexto deve expor um compute buffer CUDA medido");
+        let runtime = std::sync::Arc::new(
+            crate::moe::runtime::MoeRuntime::open(
+                &path,
+                "qwen35moe-numeric-proof",
+                experts,
+                top_k,
+                weights_bytes,
+                Some(cuda_compute_bytes),
+            )
+            .expect("o runtime externo deve abrir os experts roteados"),
+        );
+        external
+            .set_moe_runtime(runtime)
+            .expect("o callback MoE deve instalar");
+        let timings = external
+            .decode_hidden(
+                &hidden,
+                &vec![n_tokens, external.n_embd],
+                n_tokens,
+                0,
+                0,
+                true,
+                None,
+            )
+            .expect("a rota externa deve decodificar sem NaN");
+        let external_residual = external
+            .take_residual(n_tokens)
+            .expect("o residual externo deve ser capturado");
+
+        assert!(timings.moe_forward_us > 0, "o callback MoE não foi medido");
+        assert!(
+            !timings.moe_executors.is_empty(),
+            "nenhum callback MoE foi observado"
+        );
+        assert!(
+            timings
+                .moe_executors
+                .iter()
+                .all(|executor| *executor == crate::moe::runtime::MoeExecutorKind::Cuda),
+            "o teste precisa provar execução CUDA: {:?}",
+            timings.moe_executors
+        );
+        assert!(
+            external_residual
+                .values
+                .iter()
+                .all(|value| value.is_finite()),
+            "o residual externo contém valor não finito"
+        );
+        assert_eq!(native_residual.values.len(), external_residual.values.len());
+
+        let mut max_abs = 0.0f32;
+        let mut max_relative = 0.0f32;
+        let mut max_index = 0usize;
+        for (index, (&expected, &actual)) in native_residual
+            .values
+            .iter()
+            .zip(&external_residual.values)
+            .enumerate()
+        {
+            assert!(
+                expected.is_finite(),
+                "residual nativo não finito no índice {index}"
+            );
+            let absolute = (actual - expected).abs();
+            let relative = absolute / expected.abs().max(1e-3);
+            if absolute > max_abs {
+                max_abs = absolute;
+                max_index = index;
+            }
+            max_relative = max_relative.max(relative);
+            assert!(
+                absolute <= 5e-2 + 2e-2 * expected.abs().max(1.0),
+                "divergência no residual índice {index}: nativo={expected:?}, externo={actual:?}, abs={absolute:?}, rel={relative:?}"
+            );
+        }
+        println!(
+            "MOE_NUMERIC_PROOF layer={layer} tokens={n_tokens} experts={experts} top_k={top_k} max_abs={max_abs:.6e} max_relative={max_relative:.6e} max_index={max_index} executors={:?}",
+            timings.moe_executors
         );
     }
 
@@ -3236,10 +4849,10 @@ mod tests {
         let residual = engine
             .take_residual(toks.len())
             .expect("the capture callback must have fired");
-        assert_eq!(residual.len(), toks.len() * engine.n_embd);
+        assert_eq!(residual.values.len(), toks.len() * engine.n_embd);
         // An abandoned graph leaves the buffer zeroed; a real residual does not.
         assert!(
-            residual.iter().any(|v| *v != 0.0 && v.is_finite()),
+            residual.values.iter().any(|v| *v != 0.0 && v.is_finite()),
             "residual is all zeros or non-finite — the graph did not run"
         );
     }

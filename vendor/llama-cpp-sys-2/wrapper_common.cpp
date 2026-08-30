@@ -398,11 +398,11 @@ extern "C" int llama_rs_moe_reference_expert(
             return 2;
         }
 
-        ggml_init_params init = {
-            .mem_size   = 64ull * 1024ull * 1024ull,
-            .mem_buffer = nullptr,
-            .no_alloc   = true,
-        };
+        // Keep this wrapper compatible with the C++17 mode used by cc-rs and CMake.
+        ggml_init_params init{};
+        init.mem_size = 64ull * 1024ull * 1024ull;
+        init.mem_buffer = nullptr;
+        init.no_alloc = true;
         ggml_context * ctx = ggml_init(init);
         if (!ctx) {
             return 3;

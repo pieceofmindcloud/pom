@@ -133,6 +133,15 @@ ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
 margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
 vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
+O fork local do llama.cpp captura esse livre antes de criar o contexto seco da
+sondagem. `no_alloc=true` e `LLAMA_LOAD_MODE_NONE` impedem os pesos, mas o
+estado recorrente ainda aloca buffers reais durante `llama_init_from_model`;
+medir o livre depois desse ponto descontava o estado e o somava de novo no
+breakdown projetado. O wrapper eleva temporariamente a verbosidade comum para
+`TRACE` durante o fit e restaura o limite anterior, deixando visíveis o
+snapshot, o breakdown e as decisões sem alterar o limite global do processo.
+`fit_plan` também registra o PID, a memória GPU do próprio processo quando
+`nvidia-smi` a fornece, o total, o livre e a margem por dispositivo.
 Para evitar que a reserva tardia de temporários CUDA derrube o processo quando a
 GPU já está quase cheia, `fit_memory=true` mantém `n_batch` como limite do
 chunk, mas usa `n_ubatch=min(n_batch, 128)` no contexto. O prompt continua

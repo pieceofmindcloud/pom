@@ -65,6 +65,16 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 | `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
 
+`llama_rs_fit_params` eleva temporariamente o limite de verbosidade do logger
+comum para `TRACE` e o restaura ao sair, porque `common_fit_params` registra a
+decisão nesses níveis e não é thread-safe. O `common/fit.cpp` do checkout local
+também captura `free` e `total` antes de criar o contexto seco: mesmo com
+`no_alloc=true`, o contexto aloca o estado recorrente, que já aparece no
+breakdown e não pode ser descontado do livre antes da projeção. Essa é uma
+divergência local do fork e precisa acompanhar a branch `pom-tensor-parallel`
+usada no build. A regressão da contabilidade sintética fica em
+`llama.cpp/tests/test-fit-memory.cpp` e no alvo CTest `test-fit-memory`.
+
 As duas devolvem JSON de `malloc` que **tem que** voltar por
 `llama_rs_string_free`; do lado Rust quem faz isso é `json_from_wrapper` em
 `crates/node/src/inference/llm.rs`, e é por isso que a liberação mora lá e não

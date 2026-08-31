@@ -87,6 +87,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   do Activity Monitor, e devolve wired para os buffers do Metal); Windows
   `GlobalMemoryStatusEx` declarado à mão para não arrastar `windows-sys`.
 - `read_gpu`/`nvidia_smi` - VRAM total/em uso e processos por placa NVIDIA;
+  `current_process_gpu_memory_mb` faz a sondagem síncrona do uso do PID atual
+  para correlacionar o processo com o snapshot do fit, e devolve `None` quando
+  o driver não informa a linha.
   Apple Silicon reporta `GpuKind::Unified` com a nota honesta (sem VRAM
   dedicada para medir) em vez de inventar número. Essa variante só é construída
   no macOS, e fora dele o `dead_code` acusava - daí o `cfg_attr(not(macos),

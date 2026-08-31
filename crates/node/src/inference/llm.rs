@@ -1559,6 +1559,13 @@ struct FitDeviceMemory {
     free_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FitMemorySnapshot {
+    total_bytes: usize,
+    free_bytes: usize,
+    margin_bytes: usize,
+}
+
 fn fit_memory_configured_margin_bytes(configured_margin_mb: u32) -> usize {
     usize::try_from(u64::from(configured_margin_mb) * 1024 * 1024)
         .unwrap_or(usize::MAX)
@@ -1595,6 +1602,24 @@ fn fit_memory_margins(
                 .get(index)
                 .map(|memory| fit_memory_margin_bytes(*memory, configured_margin_mb))
                 .unwrap_or(fallback)
+        })
+        .collect()
+}
+
+fn fit_memory_snapshots(memories: &[FitDeviceMemory], margins: &[usize]) -> Vec<FitMemorySnapshot> {
+    margins
+        .iter()
+        .enumerate()
+        .map(|(index, &margin_bytes)| {
+            let memory = memories.get(index).copied().unwrap_or(FitDeviceMemory {
+                total_bytes: 0,
+                free_bytes: 0,
+            });
+            FitMemorySnapshot {
+                total_bytes: memory.total_bytes,
+                free_bytes: memory.free_bytes,
+                margin_bytes,
+            }
         })
         .collect()
 }
@@ -1654,6 +1679,28 @@ mod fit_memory_margin_tests {
         );
 
         assert_eq!(margins, vec![256 * MIB, 64 * MIB, 0]);
+    }
+
+    #[test]
+    fn snapshot_do_fit_preserva_memoria_e_orcamento_por_dispositivo() {
+        let memories = vec![memory(16 * 1024, 15 * 1024), memory(24 * 1024, 20 * 1024)];
+        let margins = fit_memory_margins(&memories, memories.len(), 256);
+
+        assert_eq!(
+            fit_memory_snapshots(&memories, &margins),
+            vec![
+                FitMemorySnapshot {
+                    total_bytes: 16 * 1024 * MIB,
+                    free_bytes: 15 * 1024 * MIB,
+                    margin_bytes: 256 * MIB,
+                },
+                FitMemorySnapshot {
+                    total_bytes: 24 * 1024 * MIB,
+                    free_bytes: 20 * 1024 * MIB,
+                    margin_bytes: 256 * MIB,
+                },
+            ]
+        );
     }
 }
 
@@ -1738,18 +1785,39 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
         sys::llama_rs_get_device_memory(device_memories.as_mut_ptr(), device_memories.len())
     };
     device_memories.truncate(memory_count.min(n_devices));
-    let mut margins = fit_memory_margins(
-        &device_memories
-            .iter()
-            .map(|memory| FitDeviceMemory {
-                total_bytes: memory.total_bytes,
-                free_bytes: memory.free_bytes,
-            })
-            .collect::<Vec<_>>(),
-        n_devices,
-        cfg.fit_memory_margin_mb,
+    let fit_memories = device_memories
+        .iter()
+        .map(|memory| FitDeviceMemory {
+            total_bytes: memory.total_bytes,
+            free_bytes: memory.free_bytes,
+        })
+        .collect::<Vec<_>>();
+    let mut margins = fit_memory_margins(&fit_memories, n_devices, cfg.fit_memory_margin_mb);
+    if memory_count != n_devices {
+        warn!(
+            reported_devices = memory_count,
+            expected_devices = n_devices,
+            "llama.cpp fit recebeu um snapshot parcial de memória"
+        );
+    }
+    let snapshots = fit_memory_snapshots(&fit_memories, &margins);
+    let process_gpu_memory_mb = crate::sysmon::current_process_gpu_memory_mb();
+    tracing::info!(
+        process_id = std::process::id(),
+        process_gpu_memory_mb = process_gpu_memory_mb.unwrap_or(0.0),
+        process_gpu_memory_known = process_gpu_memory_mb.is_some(),
+        "llama.cpp fit memória do processo no ponto da sondagem"
     );
-
+    for (device, snapshot) in snapshots.iter().enumerate() {
+        tracing::info!(
+            device,
+            total_bytes = snapshot.total_bytes,
+            free_bytes = snapshot.free_bytes,
+            margin_bytes = snapshot.margin_bytes,
+            budget_bytes = snapshot.free_bytes.saturating_sub(snapshot.margin_bytes),
+            "llama.cpp fit memória e orçamento por dispositivo"
+        );
+    }
     let mut mparams = unsafe { sys::llama_model_default_params() };
     mparams.n_gpu_layers = -1;
     mparams.load_mtp = load_mtp_weights(cfg);

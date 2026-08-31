@@ -71,6 +71,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
+  `fit_plan` registra o snapshot de memória retornado pelo backend, a margem
+  efetiva, o orçamento por dispositivo e o uso de VRAM do próprio PID quando
+  `nvidia-smi` o fornece. O fit chama a ponte com trace temporariamente visível
+  para que o raciocínio do llama.cpp fique no log. O estado recorrente da
+  sondagem seca é contado no breakdown, mas o fork captura `free` antes de
+  criar esse contexto, pois os buffers recorrentes são reais mesmo com
+  `no_alloc=true`.
   A captura identifica o eixo de tokens pela quantidade conhecida de tokens do
   microlote físico e pela forma do tensor. `n_embd_inp` valida a forma 2D ou
   com eixos extras singleton; quando há um eixo extra não singleton,

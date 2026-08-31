@@ -307,6 +307,10 @@ vazio, e o build morre no `build.rs` do `llama-cpp-sys-2` com
 projeto. Por isso cada workflow tem um passo que clona o fork
 (`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, público) **por cima do
 symlink**, no caminho que o `build.rs` de fato lê (`<manifest_dir>/llama.cpp`).
+Essa branch também carrega a correção local do `common_fit_params`: a memória
+livre é capturada antes do contexto seco, pois os buffers de estado recorrente
+são reais mesmo com `no_alloc=true`. O projeto não versiona o conteúdo apontado
+pelo symlink, então atualizar o fork é parte da atualização da dependência.
 
 Clonar nesse caminho, e não na raiz, é o que faz o Windows funcionar: lá o
 checkout não cria symlink nenhum - materializa um arquivo de texto com o caminho

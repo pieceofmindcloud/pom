@@ -19,6 +19,7 @@
 #include "llama.cpp/ggml/include/ggml-backend.h"
 #include "llama.cpp/ggml/include/ggml-cpu.h"
 #include "llama.cpp/common/fit.h"
+#include "llama.cpp/common/log.h"
 #include "llama.cpp/common/json-schema-to-grammar.h"
 #include "llama.cpp/common/speculative.h"
 #include "llama.cpp/include/llama.h"
@@ -133,8 +134,25 @@ extern "C" llama_rs_status llama_rs_sampler_accept(struct llama_sampler * sample
     }
 }
 
+class common_log_trace_guard {
+public:
+    common_log_trace_guard()
+        : previous_(common_log_get_verbosity_thold()) {
+        common_log_set_verbosity_thold(LOG_LEVEL_TRACE);
+    }
+
+    ~common_log_trace_guard() {
+        common_log_set_verbosity_thold(previous_);
+    }
+
+private:
+    int previous_;
+};
+
 // Thin pass-through to llama.cpp's common_fit_params (a C++ symbol in libcommon).
 // Returns common_params_fit_status as an int: 0 = success, 1 = failure, 2 = error.
+// The fit decision is otherwise invisible at the default log threshold. Its
+// trace is enabled only for this non-thread-safe call and restored on return.
 extern "C" int llama_rs_fit_params(
     const char * path_model,
     struct llama_model_params * mparams,
@@ -144,6 +162,7 @@ extern "C" int llama_rs_fit_params(
     size_t * margins,
     uint32_t n_ctx_min,
     enum ggml_log_level log_level) {
+    common_log_trace_guard trace;
     return static_cast<int>(common_fit_params(
         path_model,
         mparams,

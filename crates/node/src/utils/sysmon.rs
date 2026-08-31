@@ -563,6 +563,45 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
     }
 }
 
+/// Lê a VRAM usada pelo processo atual, somando as linhas do próprio PID.
+///
+/// Isto é deliberadamente uma sondagem pontual e síncrona: o caminho só é
+/// usado durante o fit, onde precisamos correlacionar o valor do driver com o
+/// snapshot que o llama.cpp recebeu. Em máquinas sem NVIDIA, ou quando o
+/// `nvidia-smi` não está disponível, devolve `None`.
+pub fn current_process_gpu_memory_mb() -> Option<f64> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-compute-apps=pid,used_memory",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_current_process_gpu_memory_mb(
+        &String::from_utf8_lossy(&output.stdout),
+        std::process::id(),
+    )
+}
+
+fn parse_current_process_gpu_memory_mb(output: &str, pid: u32) -> Option<f64> {
+    let mut total_mb = 0.0;
+    let mut found = false;
+    for line in output.lines() {
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        if fields.len() < 2 || fields[0].parse::<u32>().ok() != Some(pid) {
+            continue;
+        }
+        let used_mb = fields[1].parse::<f64>().ok()?;
+        total_mb += used_mb;
+        found = true;
+    }
+    found.then_some(total_mb)
+}
+
 /// Query NVIDIA cards. Returns `None` when `nvidia-smi` is absent or fails,
 /// which is the normal case on the MacBook.
 async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
@@ -839,6 +878,14 @@ mod tests {
             .expect("printf should run");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"ok");
+    }
+
+    #[test]
+    fn current_process_gpu_memory_sums_only_the_requested_pid() {
+        let output = "100, 12\n42, 700\n42, 30\n";
+
+        assert_eq!(parse_current_process_gpu_memory_mb(output, 42), Some(730.0));
+        assert_eq!(parse_current_process_gpu_memory_mb(output, 101), None);
     }
 }
 

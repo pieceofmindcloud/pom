@@ -35,7 +35,7 @@ export function GpuTemperature({
     ? t("dashboard.temperatureUnknown")
     : `${num(temperature, 1)} °C`;
   const bandLabel = {
-    unknown: t("dashboard.temperatureUnknown"),
+    unknown: t("dashboard.temperatureSensorUnavailable"),
     normal: t("dashboard.temperatureNormal"),
     attention: t("dashboard.temperatureAttention"),
     critical: t("dashboard.temperatureCritical"),

@@ -36,8 +36,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
   is shared by the remote-model and transfers screens.
   `useCacheTypes` reads the installation-wide K/V cache representation from
-  `/api/ui/cache-types`; saving it is an authenticated mutation owned by the
-  deployment inspector, not a per-machine launch parameter.
+  `/api/ui/cache-types`; the deployment inspector applies combo changes through
+  the same endpoint, not as a per-machine launch parameter.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
   RTT snapshot after a chat stream, and `usePeerRuntimes` reads `/health` for
   the peers in that trace without polling the whole cluster.
@@ -73,9 +73,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
   the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
   `tp_size`, which the UI turns into one-based labels such as `1of4`.
-  `WholeLayerOptions` and `LayerCut` carry the GGUF-derived cut points used by
-  the whole-model deploy slider; `WholeSliceSelection` identifies the source,
-  destination and accepted prefix end sent back to the node.
+  O modo modelo inteiro não expõe cortes de GGUF no inspetor: o mapa escolhe
+  uma única máquina e o frontend não envia seleção de prefixo.
   `SliceLayerOptions` carries the starts and architectural options for the
   single-range slicing controls, while `SizePlan` and `TpSlicePlan` carry the
   destination disk-space estimate shown before writing.
@@ -216,6 +215,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### format.ts
 - `bytes/megabytes/pct/num/duration/ms/rate` - `Intl.NumberFormat` in the active locale; null/non-finite render as a placeholder dash.
 - `since(iso)` / `clock(iso)` - relative recency ("há 4 min" / "4 min ago") and clock time.
+- `deployModelDisplayName(name)` - removes only a final `.gguf` and a final
+  eight-character hexadecimal round hash from deployment labels; request
+  values and model identities remain unchanged.
 - `isServing(state)` / `serverStateLabel(state)` / `serverStateTone(state)` - the one place `ServerState` is compared/labeled, so screens never hand-roll the comparison.
 
 ### deleteModel.ts

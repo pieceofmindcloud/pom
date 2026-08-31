@@ -127,9 +127,10 @@ describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
     }
   });
 
-  it("declara explicitamente quando a temperatura não está disponível", () => {
+  it("omite a seção de temperatura quando a máquina não tem GPU", () => {
     mount(semGpu);
-    expect(screen.getByLabelText(/temperatura da gpu: temperatura desconhecida/i)).toBeTruthy();
+    expect(screen.queryByText(/temperatura da gpu/i)).toBeNull();
+    expect(screen.queryByLabelText(/temperatura da gpu/i)).toBeNull();
   });
 });
 
@@ -155,6 +156,24 @@ describe("temperatura das GPUs", () => {
     expect(screen.getByText(/72,0 °C/)).toBeTruthy();
     expect(screen.getByText(/90,0 °C/)).toBeTruthy();
     expect(screen.getByText(/crítica/)).toBeTruthy();
+  });
+
+  it("mantém o aviso quando uma GPU existe mas o sensor está indisponível", () => {
+    const peer = fakeSlicePeer("thermal-unknown", 0, 15, {
+      node: fakeNode({
+        node_id: "thermal-unknown",
+        short_id: "thermal-unknown",
+        hostname: "node-thermal-unknown",
+        system: fakeSystem({
+          gpu_kind: "nvidia",
+          gpus: [
+            { index: 0, name: "RTX A", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, temperature_c: null },
+          ],
+        }),
+      }),
+    });
+    mount(peer);
+    expect(screen.getByText("temperatura desconhecida · sensor indisponível")).toBeTruthy();
   });
 });
 

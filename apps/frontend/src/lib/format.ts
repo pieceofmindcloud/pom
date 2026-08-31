@@ -94,6 +94,13 @@ export function basename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/** Human-readable model label; the catalog identity stays unchanged. */
+export function deployModelDisplayName(name: string): string {
+  return name
+    .replace(/\.gguf$/i, "")
+    .replace(/-[0-9a-f]{8}$/i, "");
+}
+
 // ── Node state ───────────────────────────────────────────────────────────────
 
 /**

@@ -99,13 +99,14 @@ Per-file list:
   Simple/Complete strategy, central peer map, compact property inspector and
   draggable bottom peer strip. Three shapes, chosen by the
   mode bar at the top and carried to the node as `kind`: **a set of shards**
-  (below), **a whole model** (one model picker from `../lib/wholeModels`, one
-  machine picker, no coverage ribbon/"included"/merge - a pipeline of one has a
-  single answer), or **tensor parallel** (`tensor_parallel`): when the catalog
+  (below), **a whole model** (one model picker from `../lib/wholeModels`, with
+  the deployment map as its only machine choice and no coverage
+  ribbon/"included"/merge), or **tensor parallel** (`tensor_parallel`): when the catalog
   has `tp_parts`, the picker groups the round by TP width and the inspector
   shows one-based ranks such as `1of2` and `2of2`; otherwise it uses the
   whole-model runtime path. Canvas membership is canonical: rows plus preferred
-  peers, with every live peer added by the Complete strategy. Tensor selectors
+  peers, with every live peer added by the Complete strategy except in whole
+  mode, which remains limited to one machine. Tensor selectors
   reuse those map cards; pre-sliced TP accepts any mapped peer because the node
   can transfer the needed rank, while whole-model TP filters mapped cards to
   peers that hold the local GGUF. Eligible Tensor cards expose the accessible
@@ -118,14 +119,10 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
-  Quando a máquina selecionada não tem uma fatia, o inspetor de máquina expõe
-  um slider indexado pelos cortes que o backend leu do GGUF. O índice não é uma
-  camada cravada: em modelos densos os cortes podem ser camada a camada, e em
-  modelos híbridos saltam pelas fronteiras arquiteturais reais. A seleção envia
-  `whole_slice`; o backend materializa prefixo e restante na máquina que tem o
-  modelo inteiro e só então usa a transferência existente. Se o destino já tem
-  a faixa, a lista "Camadas disponíveis neste peer" continua sendo o controle e
-  o slider fica oculto; falha na leitura aparece no inspetor com o motivo.
+  Em modelo inteiro, o inspetor não repete os fatos do GGUF nem oferece um
+  seletor de máquina: o mapa é a única escolha. O mapa aceita uma máquina; ao
+  tentar adicionar outra ou trocar para esse modo com várias já presentes, a
+  tela avisa e preserva a seleção existente.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
   A lista de modelos pode aparecer antes do fim da leitura dos cabeçalhos GGUF.
@@ -144,7 +141,9 @@ Per-file list:
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
   repetition, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
-  types. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
+  types. The two K/V cache combos apply changes immediately through
+  `POST /api/ui/cache-types`; the save button, subtitle and `global` badge are
+  intentionally absent. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
   then edit that probability before deploying. The machine section includes
   GPU/KV overrides, machine capacity and the available layer ranges that can
   be assigned to the selected peer. Choosing a range replaces that peer's
@@ -171,7 +170,8 @@ Per-file list:
   the planner. The map is explanatory: capacity/load come from the live
   cluster and RTT comes from the directional survey in the plan;
   adding a peer without a range only adds its card and keeps existing positions;
-  in whole-model mode, adding a peer also appends an explicit full-model replica;
+  in whole-model mode, the map has one machine only and adding another peer is
+  refused with a warning;
   in pre-sliced tensor mode, adding a peer makes it eligible for a rank even
   without a local rank file, while whole-model tensor mode still requires the
   local GGUF; neither path adds an off-map peer implicitly;

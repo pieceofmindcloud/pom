@@ -16,10 +16,11 @@ Two files carry all of it: a static message table and a small provider. Tests:
   and formatting functions. The slice screen has messages for pipeline and
   tensor-parallel modes, including grouped `1ofN` rank labels. Deploy metadata
   refusals are rendered from the backend's selection-specific `blocked` reason;
-  there is no second global catalog warning in this table. Dashboard GPU
-  temperature badges and the Network thermal policy panel have keys in both
-  locale blocks. Deployment-wide hidden-state dtype controls and the Chat
-  telemetry label for bytes/dtype are also present in both locale blocks.
+  the whole-model single-machine warning and cache update failure are paired
+  in both locales. Dashboard GPU temperature badges distinguish an unavailable
+  sensor from a machine with no GPU, and the Network thermal policy panel has
+  keys in both locale blocks. Deployment-wide hidden-state dtype controls and
+  the Chat telemetry label for bytes/dtype are also present in both locale blocks.
   Slicing phase, byte-progress, disk-space, required intermediate-head cost and
   single-range controls also have keys in both locale blocks.
   Dashboard machine details also has paired labels for requested MTP status and

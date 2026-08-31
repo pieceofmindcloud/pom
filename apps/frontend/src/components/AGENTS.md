@@ -19,8 +19,9 @@ crashes the next.
 Per-file list:
 
 - `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine
-  details. It keeps `null` as "temperature unknown" and maps normal, attention
-  and critical readings to the existing design-system tones.
+  details. It keeps `null` as "temperature unknown" only when a GPU exists;
+  cards with no GPU omit the temperature section. Normal, attention, critical
+  and unavailable-sensor readings use the existing design-system tones.
 
 - `ui.tsx` — The design system in one file on purpose. `Panel`/`PanelHeader`/
   `PageHeader` (surfaces), `Button` (4 variants, sizes, loading spinner),
@@ -110,7 +111,7 @@ Per-file list:
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
 - `ModelNetworkCanvas.tsx` — The primary operational view: a pan/zoom SVG graph
-  of nodes (range cards with VRAM/RAM/load/temperature meters) and curved edges, driven by
+  of nodes (range cards with VRAM/RAM/load/temperature meters when a GPU exists) and curved edges, driven by
   `graphFromCluster` (`../lib/networkGraph`). Edges have three states via
   `edgeStyle` (principal / paralela / inativa) from `cluster.routing_edges` and
   `cluster.candidate_edges` (replicas = ready alternate routes). Positions are
@@ -275,8 +276,8 @@ Key logic carriers:
   e o devolve à faixa inferior. Se o backend não publicar uma aresta, o canvas
   deixa o RTT da aresta ausente em vez de copiar a medição do nó de destino; o
   card ainda pode mostrar o RTT local anunciado pela própria máquina. Réplicas exatas podem aparecer empilhadas na
-  mesma coluna. Em modelo inteiro, incluir um peer no mapa acrescenta a réplica
-  explícita da faixa completa; em Tensor, o mapa limita os ranks disponíveis.
+  mesma coluna. Em modelo inteiro, o mapa aceita uma única máquina e recusa uma
+  segunda com aviso; em Tensor, o mapa limita os ranks disponíveis.
   O `DeployModel` calcula `mapNodeIds` uma vez e passa essa mesma população
   para os cards e para os seletores primary/workers; TP pré-fatiado aceita
   worker mapeado sem o rank local, enquanto TP de modelo inteiro exige o GGUF

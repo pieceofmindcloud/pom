@@ -190,6 +190,7 @@ export function PeerDetailCard({
   const kind = machineKind(system);
   const cfg = n?.config;
   const serving = isServing(n?.status.state);
+  const hasGpu = (system?.gpus.length ?? 0) > 0;
   // Só as que reportam VRAM: memória unificada cai no ramo `unified` abaixo,
   // que mede outra coisa (wired), e uma barra sem valor viraria animação de
   // "carregando" para sempre.
@@ -253,7 +254,7 @@ export function PeerDetailCard({
       {peer.unreachable ? (
         <div className="space-y-3 px-5 py-5 text-sm text-muted">
           {t("dashboard.unreachable", { error: peer.unreachable })}
-          <GpuTemperature temperature={null} policy={n?.thermal} />
+          {hasGpu && <GpuTemperature temperature={null} policy={n?.thermal} />}
         </div>
       ) : (
         <>
@@ -322,23 +323,19 @@ export function PeerDetailCard({
             ) : (
               <Meter label={t("dashboard.noGpu")} value={0} tone="sky" detail="—" />
             )}
-            <div className="min-w-0 sm:col-span-2">
+            {hasGpu && <div className="min-w-0 sm:col-span-2">
               <div className="eyebrow mb-2">{t("dashboard.gpuTemperature")}</div>
-              {system && system.gpus.length > 0 ? (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {system.gpus.map((g) => (
-                    <GpuTemperature
-                      key={g.index}
-                      temperature={g.temperature_c}
-                      policy={n?.thermal}
-                      label={gpuLabel(g)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <GpuTemperature temperature={null} policy={n?.thermal} />
-              )}
-            </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {system?.gpus.map((g) => (
+                  <GpuTemperature
+                    key={g.index}
+                    temperature={g.temperature_c}
+                    policy={n?.thermal}
+                    label={gpuLabel(g)}
+                  />
+                ))}
+              </div>
+            </div>}
             <Meter
               label={t("dashboard.disk", { path: system?.disk.mount_point || "—" })}
               value={

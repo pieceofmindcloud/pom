@@ -32,8 +32,9 @@ partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
 
 O Painel Fluxo mostra a maior leitura conhecida da máquina no card de cada
 faixa, enquanto Detalhes mostra uma linha por GPU. As faixas normal, atenção e
-crítica usam os tons existentes `aqua`, `amber` e `rose`; quando o driver não
-responde, o selo diz explicitamente "temperatura desconhecida". A API
+crítica usam os tons existentes `aqua`, `amber` e `rose`; máquinas sem GPU
+omitem a seção de temperatura, enquanto uma GPU cujo sensor não responde mostra
+"temperatura desconhecida" e "sensor indisponível". A API
 `GET /api/ui/node` leva a política térmica junto com a máquina, e
 `GET/POST /api/ui/thermal` lê ou grava seus três valores.
 
@@ -486,8 +487,8 @@ impressão digital é só modelo + conjunto de faixas.
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.
   Todos os peers aparecem na faixa inferior e podem ser arrastados para o mapa;
   no tab Globais, o inspetor também permite escolher `cache_type_k` e
-  `cache_type_v` para a instalação; o botão salva em `POST /api/ui/cache-types`,
-  separado dos overrides por máquina e do payload de um deploy;
+  `cache_type_v` para a instalação; cada mudança dos combos é aplicada por
+  `POST /api/ui/cache-types`, sem botão de salvar, subtítulo ou badge `global`;
   o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
   carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
   exibe hops, capacidade e latência conhecida, além de rotas alternativas e
@@ -502,7 +503,9 @@ impressão digital é só modelo + conjunto de faixas.
   separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. Nas globais, a seção
-  de execução separa a especulação por lookup do MTP; ao marcar MTP, a
+  de fatos do modelo inteiro e seu seletor de máquina não são exibidos: a
+  máquina escolhida no mapa é a única que vale para a implantação. Nas globais,
+  a seção de execução separa a especulação por lookup do MTP; ao marcar MTP, a
   probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
   pelo operador e o valor alterado segue no deploy. A seção
   **Motor de inferência** aparece somente quando a metadata real do GGUF
@@ -553,15 +556,16 @@ impressão digital é só modelo + conjunto de faixas.
   implantação". Peers que já estão no mapa
   deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
   disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
-  atribuída. Em modelo inteiro, incluir um peer no mapa cria uma réplica explícita
-  da faixa completa; a mesma faixa em peers diferentes é aceita pelo planner e
-  pode ser escolhida pelo roteador por RTT/carga. No Tensor, somente peers que
-  estão no mapa entram como primary/worker, mesmo que outros tenham o modelo.
+  atribuída. Em modelo inteiro, o mapa aceita uma máquina. Tentar incluir uma
+  segunda ou trocar para esse modo enquanto há várias máquinas preserva o mapa
+  e mostra um aviso. No Tensor, somente peers que estão no mapa entram como
+  primary/worker, mesmo que outros tenham o modelo.
   GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; os
   RTTs vêm do survey direcional do planner e não são substituídos pela medição
   HTTP do gateway. Uma GPU ausente aparece como `sem GPU`, sem barra
-  indeterminada. Em Completa, todos os peers entram no canvas e na lista de candidatos. A
-  cobertura fica reduzida no rodapé junto da barra de peers.
+  indeterminada. Em Completa, todos os peers entram no canvas e na lista de
+  candidatos nos modos de fatias e Tensor; modelo inteiro mantém a restrição de
+  uma máquina. A cobertura fica reduzida no rodapé junto da barra de peers.
   A última implantação de cada modelo
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
   plano, podada contra o que ainda existe.

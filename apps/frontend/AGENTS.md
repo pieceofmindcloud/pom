@@ -53,7 +53,7 @@ Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`l
 - `/fatias` -> Shards; `/fatias/implantar` -> redirects to `/implantar` (kept for old links)
 - `/implantar` -> DeployModel (first-level entry for putting models in service,
   full-bleed Deploy Studio with central cluster map, property inspector and
-  draggable peer strip)
+  draggable peer strip; whole-model mode accepts exactly one map machine)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> LogsByToken, o inspetor autenticado da auditoria SQLite com
   filtros por identidade da API key, prompt e período; `/logs/ao-vivo` ->

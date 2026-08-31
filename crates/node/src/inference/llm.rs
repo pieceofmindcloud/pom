@@ -4254,6 +4254,11 @@ pub struct SamplingTimings {
 /// Temperature + top-k + top-p + repetition-penalty sampling.
 ///
 /// Returns the sampled token id. When `temperature <= 0` this is greedy argmax.
+static SAMPLER_RNG: Mutex<u64> = Mutex::new(0x853c49e6748fea9b);
+
+#[cfg(test)]
+static SAMPLER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 pub fn sample_token_profiled(
     logits: &[f32],
     recent: &[i32],
@@ -4264,7 +4269,12 @@ pub fn sample_token_profiled(
         return (0, timings);
     }
     let kept = sampling_candidates_profiled(logits, recent, cfg, &mut timings);
-
+    if cfg.temperature <= 0.0 {
+        let selection_started = Instant::now();
+        let token = kept[0].0 as i32;
+        timings.selection_us = selection_started.elapsed().as_micros() as u64;
+        return (token, timings);
+    }
     // ── Multinomial draw ─────────────────────────────────────────────────────
     //
     // The candidates are normalized and in ascending id order, so this is the
@@ -4272,8 +4282,7 @@ pub fn sample_token_profiled(
     let selection_started = Instant::now();
     let rng_val: f32 = {
         // A simple LCG, to avoid pulling in `rand`.
-        static RNG: Mutex<u64> = Mutex::new(0x853c49e6748fea9b);
-        let mut r = RNG.lock().unwrap();
+        let mut r = SAMPLER_RNG.lock().unwrap();
         *r = r
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
@@ -4725,6 +4734,7 @@ mod tests {
         /// field: no token outside the k highest logits may ever be drawn.
         #[test]
         fn top_k_confines_the_draw_to_the_k_highest_logits() {
+            let _sampling = SAMPLER_TEST_LOCK.lock().unwrap();
             // Indices 3 and 1 hold the two highest logits.
             let logits = [0.0, 5.0, 1.0, 9.0, 2.0, 0.5];
             let c = cfg(1.0, 2, 1.0);
@@ -4816,6 +4826,22 @@ mod tests {
             for temperature in [0.0, -1.0] {
                 assert_eq!(sample_token(&logits, &[], &cfg(temperature, 1, 0.01)), 1);
             }
+        }
+
+        #[test]
+        fn non_positive_temperature_does_not_advance_the_lcg() {
+            let _sampling = SAMPLER_TEST_LOCK.lock().unwrap();
+            const SEED: u64 = 0x853c49e6748fea9b;
+            let stochastic = cfg(1.0, 0, 1.0);
+            let deterministic = cfg(0.0, 0, 1.0);
+            let logits = [2.0, 0.0];
+
+            *SAMPLER_RNG.lock().unwrap() = SEED;
+            let expected = sample_token(&logits, &[], &stochastic);
+
+            *SAMPLER_RNG.lock().unwrap() = SEED;
+            assert_eq!(sample_token(&logits, &[], &deterministic), 0);
+            assert_eq!(sample_token(&logits, &[], &stochastic), expected);
         }
 
         #[test]

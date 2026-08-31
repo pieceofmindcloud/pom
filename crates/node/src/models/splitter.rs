@@ -365,6 +365,9 @@ fn layer_slice_bounds(
     Ok((start_layer as usize, end_layer as usize))
 }
 
+// Helper de teste que preserva a prova da seleção de valores por camada; o
+// caminho de produção usa `layer_slice_bounds` diretamente ao serializar.
+#[cfg(test)]
 fn slice_layer_values<T: Clone>(
     values: &[T],
     original_block_count: u32,

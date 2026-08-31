@@ -499,6 +499,9 @@ pub fn encode(
 /// The first public protocol has one tensor representation per item. Keep this
 /// small marker parameter at existing call boundaries while routing all bytes
 /// through `frame/v1-batch`.
+// Retido apenas pelo teste de equivalência entre o encoder de item único e o
+// frame de batch; o runtime usa `encode` com `WireDtype`.
+#[cfg(test)]
 pub fn encode_with_encoding(
     meta: &Value,
     tensor: Option<(&[f32], TensorShape)>,

@@ -278,10 +278,6 @@ impl DirectReply {
         })
     }
 
-    pub fn ticket(&self) -> Ticket {
-        self.inbox.register()
-    }
-
     pub fn ticket_for_hops(&self, expected_hops: usize) -> Ticket {
         self.inbox.register_with_expected_transport(expected_hops)
     }
@@ -416,22 +412,6 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
         debug!("resultado direto para ticket desconhecido (o gateway já desistiu)");
         (StatusCode::GONE, "ticket desconhecido").into_response()
     }
-}
-
-/// Espera o resultado direto, sem soltar o erro do ack nem o prazo.
-///
-/// Três coisas correm ao mesmo tempo e a primeira que chegar decide:
-///
-/// 1. **o resultado**, entregue pela cauda no inbox — o caso normal;
-/// 2. **o ack da cabeça**, que só interessa quando falha (aí não há cadeia
-///    nenhuma para esperar) ou quando vem com resposta completa dentro, que é
-///    um peer antigo borbulhando em vez de aceitar — nesse caso é a resposta;
-/// 3. **o prazo**, para o hop que morreu depois de aceitar.
-pub async fn await_result<F>(ack: F, ticket: &mut Ticket, head_label: &str) -> Result<Value>
-where
-    F: Future<Output = Result<crate::relay::SentFrame>>,
-{
-    await_result_with_ack(ack, ticket, head_label, |_| {}).await
 }
 
 /// Espera o resultado e executa uma ação síncrona quando o ack da cabeça
@@ -658,6 +638,9 @@ pub fn accumulate(inbound_meta: &Value, entry: Value) -> Vec<Value> {
 /// Substitui a estimativa de um hop pela medição da chamada que o originou.
 /// O índice é a posição do destino na cadeia, por isso nenhum tempo de uma
 /// travessia pode ser lançado no primeiro hop por conveniência.
+// Mantido para a prova unitária do mapeamento de índice; o caminho direto em
+// produção registra a medição no inbox com `record_transport`.
+#[cfg(test)]
 pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::relay::SentFrame) {
     let Some(hop) = hops.get_mut(destination) else {
         return;

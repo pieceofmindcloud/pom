@@ -1317,7 +1317,10 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     Ok(layout)
 }
 
-/// Read the model-level evidence used by the deployment planner.
+/// Lê a evidência completa usada pelas provas de capacidades do GGUF.
+// O catálogo faz a mesma leitura de forma leve durante o enriquecimento; este
+// helper fica compilado em testes para manter a prova estrutural reutilizável.
+#[cfg(test)]
 pub fn read_capability_evidence(path: &Path) -> Result<ModelCapabilityEvidence> {
     let info = read_info(path)?;
     let mtp = match (info.nextn_predict_layers, has_nextn_tensors(path)?) {

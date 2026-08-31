@@ -683,7 +683,8 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     // `metadata_complete` false for the entire catalog, even though the
     // selected shard ranges already came from their manifests. MTP evidence
     // uses only the lightweight tensor-name scan; the full layout pass remains
-    // available through `gguf::read_capability_evidence` callers that need it.
+    // The full layout helper is retained for structural tests; production
+    // catalog enrichment intentionally stays on this lightweight path.
     let tensor_mtp = gguf::has_nextn_tensors(&path).ok();
     model.capabilities = Some(ModelCapabilityEvidence {
         thinking: info.thinking_capability(),

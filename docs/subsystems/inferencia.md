@@ -816,7 +816,7 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
   confundido com o do quadro seguinte.
 - `DirectReply::new` devolve `None` quando o nó não conhece nenhum endereço de
   si mesmo - aí o anel assume em vez de despachar um quadro que nunca volta.
-- `await_result`: `select!` biased entre o resultado do inbox (caso normal), o
+- `await_result_with_ack`: `select!` biased entre o resultado do inbox (caso normal), o
   ack da cabeça (só interessa quando falha, ou quando um peer antigo borbulhou
   a resposta inteira - `token_id` presente vale como resultado), e o prazo
   `DIRECT_REPLY_DEADLINE = 600 s` (hop morreu depois de aceitar).

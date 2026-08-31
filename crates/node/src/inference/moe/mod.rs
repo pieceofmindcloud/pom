@@ -5,9 +5,11 @@
 //! CPU para o primeiro formato suportado.
 
 pub mod admission;
+#[cfg(any(feature = "cuda", test))]
 pub mod bandwidth;
 pub mod block;
 pub mod cache;
+#[cfg(any(feature = "cuda", test))]
 pub mod coexecution;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda;

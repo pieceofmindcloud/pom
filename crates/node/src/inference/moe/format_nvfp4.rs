@@ -22,7 +22,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "cuda")]
+use std::sync::Mutex;
 #[cfg(feature = "cuda")]
 use std::time::Instant;
 
@@ -61,6 +63,7 @@ impl std::error::Error for Nvfp4Error {}
 #[derive(Debug)]
 pub enum Nvfp4ExecuteError {
     Cache(CacheError),
+    #[cfg(feature = "cuda")]
     Coexecution(String),
     Format(Nvfp4Error),
     Source(Q4LoadError),
@@ -76,6 +79,7 @@ impl fmt::Display for Nvfp4ExecuteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cache(error) => error.fmt(formatter),
+            #[cfg(feature = "cuda")]
             Self::Coexecution(error) => write!(formatter, "co-execução NVFP4 falhou: {error}"),
             Self::Format(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
@@ -1032,9 +1036,11 @@ pub struct Nvfp4Executor {
     backend: Nvfp4Backend,
     #[cfg(feature = "cuda")]
     coexecution_profile: Option<BandwidthProfile>,
+    #[cfg(feature = "cuda")]
     host_diagnostics: Mutex<Nvfp4HostDiagnostics>,
 }
 
+#[cfg(feature = "cuda")]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Nvfp4HostDiagnostics {
     pub cache_lookup_ms: f64,
@@ -1077,6 +1083,7 @@ impl Nvfp4Executor {
             backend: Nvfp4Backend::Cpu,
             #[cfg(feature = "cuda")]
             coexecution_profile: None,
+            #[cfg(feature = "cuda")]
             host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
         })
     }
@@ -1114,6 +1121,7 @@ impl Nvfp4Executor {
             backend,
             #[cfg(feature = "cuda")]
             coexecution_profile: None,
+            #[cfg(feature = "cuda")]
             host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
         })
     }
@@ -1144,6 +1152,7 @@ impl Nvfp4Executor {
             intermediate,
             backend,
             coexecution_profile,
+            #[cfg(feature = "cuda")]
             host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
         })
     }

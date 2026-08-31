@@ -258,9 +258,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   bloco nativo e o callback externo, exige executor `cuda`, ausência de NaN e
   `abs <= 5e-2 + 2e-2 * max(abs(native), 1)` por elemento; `MOE_NUMERIC_PROOF`
   publica `max_abs` e `max_relative`.
-  `bandwidth.rs` transforma medições concorrentes CPU/transferência em uma
-  fração determinística dos misses; `coexecution.rs` divide por expert,
-  executa as duas lanes em paralelo e soma saídas com largura validada.
+  `bandwidth.rs` e `coexecution.rs` são compilados no caminho CUDA ou nos
+  testes; transformam medições concorrentes CPU/transferência em uma fração
+  determinística dos misses, dividem por expert, executam as duas lanes em
+  paralelo e somam saídas com largura validada.
   A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
   `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
   `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
@@ -765,7 +766,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   a autenticação é o próprio ticket (UUID v4 por quadro, só a própria cadeia
   conhece); resultado sem ticket vivo é `410 Gone`. A rota é registrada **sem**
   auth de chave por desenho: o hop que responde nunca teve a chave do operador.
-- `await_result` - `select!` biased entre três coisas: o resultado do inbox
+- `await_result_with_ack` - `select!` biased entre três coisas: o resultado do inbox
   (caso normal), o ack da cabeça (só interessa quando falha, ou quando um peer
   antigo borbulhou a resposta inteira - `token_id` presente vale como
   resultado), e o prazo `DIRECT_REPLY_DEADLINE=600 s` (hop morreu depois de
@@ -865,8 +866,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `encode_batch_single`/`decode_batch_single`. Não existe fallback para frames
   v1/v2 anteriores, pois o produto ainda não foi lançado.
 - `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
-  o fio oficial é sempre `inference/frame-v1-batch`. `WireDtype{F32, F16}`
-  continua com `as_str`/`parse`/`bytes_per_value`.
+  o fio oficial é sempre `inference/frame-v1-batch`. O helper
+  `encode_with_encoding` é exclusivo da prova de equivalência em testes;
+  `WireDtype{F32, F16}` continua com `as_str`/`parse`/`bytes_per_value`.
 - `MAX_FRAME_PAYLOAD_BYTES=64 MiB`; o relay separa lotes pelo orçamento de
   payload e não coalesce a cabeça quando a resposta pode carregar hidden state
   sem que o tamanho apareça no request.

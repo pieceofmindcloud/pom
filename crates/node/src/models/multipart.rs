@@ -276,6 +276,8 @@ fn tensor_sizes(header: &ParsedHeader, file_bytes: usize) -> Result<Vec<u64>> {
 
 #[derive(Debug)]
 pub struct GgufPart {
+    /// Mantido para que o `Debug` derivado identifique a parte nos diagnósticos.
+    #[allow(dead_code)]
     pub path: PathBuf,
     pub index: u32,
     pub bytes: u64,
@@ -307,6 +309,9 @@ pub struct GgufTensor {
 pub struct GgufSource {
     parts: Vec<GgufPart>,
     tensors: Vec<GgufTensor>,
+    /// API explícita para distinguir uma fonte lógica multipart sem inferir
+    /// isso pela quantidade de partes.
+    #[allow(dead_code)]
     multipart: bool,
 }
 
@@ -562,6 +567,8 @@ impl GgufSource {
         })
     }
 
+    /// Conveniência pública para callers que precisam da forma da fonte.
+    #[allow(dead_code)]
     pub fn is_multipart(&self) -> bool {
         self.multipart
     }
@@ -578,6 +585,8 @@ impl GgufSource {
         self.parts.iter().map(|part| part.bytes).sum()
     }
 
+    /// Conveniência pública para calcular o hash sem callback de progresso.
+    #[allow(dead_code)]
     pub fn hash_sha256(&self) -> String {
         let mut hasher = Sha256::new();
         for part in &self.parts {

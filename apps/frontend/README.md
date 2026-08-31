@@ -309,12 +309,12 @@ Viabilidade, e o que é recusa e o que é aviso:
 
 ### Ajustes avançados (execução)
 
-Os treze knobs de `RuntimeParams` (`src/webui.rs`) voltaram para a tela, com os
+Os quatorze knobs de `RuntimeParams` (`src/webui.rs`) voltaram para a tela, com os
 mesmos rótulos e padrões da interface antiga, e agora vão de verdade para o
 `launch` de cada fatia: contexto (`n_ctx`), lote (`n_batch`), máx. tokens novos,
 requisições simultâneas, tokens por pedaço, temperatura, `top_p`, `top_k`,
-penalidade de repetição e sua janela, desligar o bloco de raciocínio, e forçar
-sem embeddings.
+penalidade de repetição e sua janela, a reserva de segurança da VRAM do ajuste
+automático, desligar o bloco de raciocínio, e forçar sem embeddings.
 
 São **do cluster**, não de cada peer, porque o pipeline precisa que sejam: o
 contexto e o lote decidem o orçamento de prompt que o gateway cobra de toda

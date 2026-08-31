@@ -111,6 +111,7 @@ export interface NodeConfig {
   n_ctx: number;
   offload_kqv: boolean;
   fit_memory: boolean;
+  fit_memory_margin_mb: number;
   n_batch: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
@@ -1025,6 +1026,8 @@ export interface RuntimeParams {
   n_ctx: number;
   offload_kqv: boolean;
   fit_memory: boolean;
+  /** VRAM left free by llama.cpp's automatic layer fit, per device. */
+  fit_memory_margin_mb: number;
   n_batch: number;
   max_new_tokens: number;
   max_sessions: number;

@@ -1,5 +1,6 @@
 #include "wrapper_common.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -152,6 +153,83 @@ extern "C" int llama_rs_fit_params(
         margins,
         n_ctx_min,
         log_level));
+}
+
+extern "C" size_t llama_rs_get_device_memory(
+    struct llama_rs_device_memory * out,
+    size_t capacity) {
+    if (!out || capacity == 0) {
+        return 0;
+    }
+
+    // Keep this selection in lockstep with llama_prepare_model_devices for
+    // the default layer-split model params used by common_fit_params: RPC
+    // devices first, then discrete GPUs, then integrated GPUs only when there
+    // is no discrete GPU. The query is deliberately backend-native rather
+    // than an nvidia-smi side channel.
+    std::vector<ggml_backend_dev_t> rpc_servers;
+    std::vector<ggml_backend_dev_t> gpus;
+    std::vector<ggml_backend_dev_t> igpus;
+
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        switch (ggml_backend_dev_type(dev)) {
+            case GGML_BACKEND_DEVICE_TYPE_CPU:
+            case GGML_BACKEND_DEVICE_TYPE_ACCEL:
+                break;
+
+            case GGML_BACKEND_DEVICE_TYPE_GPU: {
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+                if (std::string(ggml_backend_reg_name(reg)) == "RPC") {
+                    rpc_servers.push_back(dev);
+                    break;
+                }
+
+                ggml_backend_dev_props props;
+                ggml_backend_dev_get_props(dev, &props);
+                const bool duplicate = std::any_of(
+                    gpus.begin(),
+                    gpus.end(),
+                    [&props](ggml_backend_dev_t existing) {
+                        ggml_backend_dev_props existing_props;
+                        ggml_backend_dev_get_props(existing, &existing_props);
+                        return props.device_id && existing_props.device_id
+                            && std::strcmp(props.device_id, existing_props.device_id) == 0;
+                    });
+                if (!duplicate) {
+                    gpus.push_back(dev);
+                }
+                break;
+            }
+
+            case GGML_BACKEND_DEVICE_TYPE_IGPU:
+                if (igpus.empty()
+                    || ggml_backend_dev_backend_reg(dev) == ggml_backend_dev_backend_reg(igpus.back())) {
+                    igpus.push_back(dev);
+                }
+                break;
+
+            case GGML_BACKEND_DEVICE_TYPE_META:
+                break;
+        }
+    }
+
+    std::vector<ggml_backend_dev_t> devices;
+    devices.reserve(rpc_servers.size() + gpus.size() + igpus.size());
+    devices.insert(devices.end(), rpc_servers.begin(), rpc_servers.end());
+    devices.insert(devices.end(), gpus.begin(), gpus.end());
+    if (gpus.empty()) {
+        devices.insert(devices.end(), igpus.begin(), igpus.end());
+    }
+
+    const size_t written = std::min(capacity, devices.size());
+    for (size_t i = 0; i < written; ++i) {
+        size_t free_bytes = 0;
+        size_t total_bytes = 0;
+        ggml_backend_dev_memory(devices[i], &free_bytes, &total_bytes);
+        out[i] = {free_bytes, total_bytes};
+    }
+    return written;
 }
 
 extern "C" void llama_rs_memory_breakdown_print(const struct llama_context * ctx) {

@@ -62,6 +62,9 @@ behind an auth extractor.
   KV and total bytes per shard; absent KV metadata is an explicit bad request.
   `RuntimeParams.prefill_max_inflight_chunks` is persisted with the other
   inference knobs and sets the prefill pipeline depth (1..8, default 8).
+  `RuntimeParams.fit_memory_margin_mb` is also persisted and controls the
+  per-device safety reserve used by llama.cpp's automatic layer fit (default
+  256 MiB).
   GGUF multipart sources are read through models::multipart::GgufSource:
   slice plans and extraction use all tensor parts, and model identity hashes
   the complete ordered set. An incomplete set is a concrete bad request, so

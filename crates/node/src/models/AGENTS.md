@@ -142,8 +142,10 @@ inteiros são somente leitura e nunca entram na retenção automática.
 as configurações do scheduler local (`batching_enabled`, limites da fila,
 janela e limites do microbatch) também sobrevivem a um reinício e voltam com a
 mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
-`cache_type_v`) também são serializados no estado efetivo, mas o `NodeRuntime`
-os repõe a partir do `pom.json` antes de carregar o modelo.
+`cache_type_v`) e a margem de segurança do fit também são serializados no
+estado efetivo. Os tipos do cache continuam sendo repostos a partir do
+`pom.json` pelo `NodeRuntime` antes de carregar o modelo; a margem vem dos
+parâmetros da implantação.
 
 O fatiador primeiro classifica arrays GGUF pelo namespace: somente arrays sob o
 namespace da arquitetura, exceto os arrays estruturais de rope, podem ser

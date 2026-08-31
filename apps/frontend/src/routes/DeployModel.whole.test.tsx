@@ -133,6 +133,7 @@ function wholePlan(target = "ksia"): DeployPlan {
       n_gpu_layers: 0,
       offload_kqv: true,
       fit_memory: true,
+      fit_memory_margin_mb: 256,
       speculative_decoding_enabled: false,
       speculative_k: 4,
       speculative_lookup_window: 3,

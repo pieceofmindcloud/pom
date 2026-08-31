@@ -31,6 +31,7 @@ export const KNOBS: Knob[] = [
   { key: "n_gpu_layers", min: 0 },
   { key: "n_ctx", min: 512, max: 250000, step: 512 },
   { key: "n_batch", min: 32, step: 32 },
+  { key: "fit_memory_margin_mb", min: 4, max: 16384, step: 16 },
   { key: "max_new_tokens", min: 16 },
   { key: "max_sessions", min: 1, max: 16 },
   { key: "prefill_chunk_tokens", min: 32, step: 32 },

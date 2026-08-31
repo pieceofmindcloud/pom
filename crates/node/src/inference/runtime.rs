@@ -53,6 +53,10 @@ fn runtime_capacity_from_health(
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
+/// Folga conservadora para a projeção de alocação CUDA: 256 MiB mantém o
+/// ganho de capacidade observado no modelo híbrido sem voltar a consumir 1 GiB.
+pub const DEFAULT_FIT_MEMORY_MARGIN_MB: u32 = 256;
+
 /// What this node is currently serving. Serialisable so the UI can round-trip it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeConfig {
@@ -114,6 +118,9 @@ pub struct NodeConfig {
     /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
+    /// Reserva de segurança que o `fit` deixa livre em cada dispositivo.
+    #[serde(default = "default_fit_memory_margin_mb")]
+    pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
     /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
@@ -225,6 +232,7 @@ impl NodeConfig {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: p.fit_memory && allow_fit_memory,
+            fit_memory_margin_mb: p.fit_memory_margin_mb,
             n_batch: p.n_batch,
             max_new_tokens: p.max_new_tokens,
             max_sessions: p.max_sessions,
@@ -316,6 +324,9 @@ fn default_offload_kqv() -> bool {
 fn default_fit_memory() -> bool {
     true
 }
+fn default_fit_memory_margin_mb() -> u32 {
+    DEFAULT_FIT_MEMORY_MARGIN_MB
+}
 fn default_speculative_k() -> u32 {
     4
 }
@@ -401,6 +412,7 @@ impl NodeConfig {
             && self.total_layers == other.total_layers
             && self.n_gpu_layers == other.n_gpu_layers
             && self.fit_memory == other.fit_memory
+            && (!self.fit_memory || self.fit_memory_margin_mb == other.fit_memory_margin_mb)
             && self.mtp_effective() == other.mtp_effective()
             && self.tp == other.tp
     }
@@ -1587,6 +1599,9 @@ mod tests {
 
         assert!(antes.weights_are_compatible(&depois));
 
+        depois.fit_memory_margin_mb += 1;
+        assert!(!antes.weights_are_compatible(&depois));
+
         depois.start_layer += 1;
         assert!(!antes.weights_are_compatible(&depois));
     }
@@ -1636,6 +1651,7 @@ mod tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
+            fit_memory_margin_mb: DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,
             batching_enabled: true,
             max_queue_requests: 128,

@@ -289,9 +289,13 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   peer incompatível; a validação no caminho de inferência mantém a mesma
   proteção contra configurações divergentes depois do deploy.
 - **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
-  padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
-  antes da carga usando a capacidade total `n_ctx * max_sessions`, e pode
-  reduzir as camadas GPU para evitar OOM. Um
+  padrão em `shards` e `whole`. O nó consulta a memória livre e total do
+  backend por dispositivo e usa `RuntimeParams.fit_memory_margin_mb` para
+  definir a reserva de segurança de cada um, padrão 256 MiB. O livre já vem
+  descontado dos processos existentes, então essa margem não é uma segunda
+  cobrança da ocupação. O `common_fit_params` do llama.cpp roda antes da carga
+  usando a capacidade total `n_ctx * max_sessions`, e pode reduzir as camadas
+  GPU para evitar OOM. Um
   `n_gpu_layers` diferente de `99` é explícito e desliga esse ajuste de camadas.
   Em `tensor_parallel`, o planner normaliza `fit_memory` para desligado porque
   o fit nativo não suporta `split-mode tensor`.

@@ -571,12 +571,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 
 `llm.rs`:
 - `LlmEngine::load_with_cache` - carga com `EngineConfig` (n_ctx total, n_batch,
-  n_gpu_layers, offload_kqv, fit_memory, max_sessions e
+  n_gpu_layers, offload_kqv, fit_memory, sua margem configurável por GPU,
+  max_sessions e
   `moe_external_executor`). O runtime transforma
   o contexto por sessão em `n_ctx * max_sessions` antes de criar o engine. Com
   `fit_memory=true` e o padrão de
   camadas GPU (`99`), chama a ponte `llama_rs_fit_params` do llama.cpp antes de
-  carregar os pesos. O plano preserva `tensor_split` e `tensor_buft_overrides`
+  carregar os pesos. Antes disso, consulta pela ponte o livre e o total dos
+  dispositivos do backend; o livre já exclui processos existentes e a margem
+  padrão de 256 MiB cobre apenas alocações tardias e uma ocupação que apareça
+  depois. O plano preserva `tensor_split` e `tensor_buft_overrides`
   quando há mais de uma GPU local. Se a criação do contexto falha com o KV na
   GPU, tenta novamente com `offload_kqv=false`, mantendo as mesmas camadas de
   peso na GPU e deixando o KV cache na RAM. `/health` mostra se o fit foi

@@ -48,6 +48,7 @@ const params: RuntimeParams = {
   n_ctx: 8192,
   offload_kqv: true,
   fit_memory: true,
+  fit_memory_margin_mb: 256,
   n_batch: 512,
   max_new_tokens: 512,
   max_sessions: 1,

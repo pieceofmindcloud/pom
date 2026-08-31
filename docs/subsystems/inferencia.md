@@ -123,6 +123,16 @@ memória disponível e preserva a capacidade total correspondente a
 escolha explícita e desliga o ajuste automático de camadas. O fit nativo não
 suporta tensor parallelism; o planner e o runtime normalizam essa opção para
 desligada no modo TP. O fallback do KV continua ativo depois do fit.
+`RuntimeParams.fit_memory_margin_mb` configura quanto o fit deixa livre em
+cada dispositivo, com padrão de 256 MiB. Antes de chamar o
+`common_fit_params`, a ponte consulta o total e o livre no backend na mesma
+ordem das GPUs usadas pelo fit; o livre de `cudaMemGetInfo` já exclui o que
+outros processos ocupam. Assim a margem não subtrai essa ocupação novamente:
+ela cobre a diferença entre a projeção e as alocações tardias, além de uma
+ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
+margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
+vira zero para não transformar toda tentativa de carga em uma meta impossível.
+O valor não é consultado quando `fit_memory=false`.
 Para evitar que a reserva tardia de temporários CUDA derrube o processo quando a
 GPU já está quase cheia, `fit_memory=true` mantém `n_batch` como limite do
 chunk, mas usa `n_ubatch=min(n_batch, 128)` no contexto. O prompt continua

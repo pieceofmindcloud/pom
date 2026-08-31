@@ -101,7 +101,9 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
     `NodeRuntime`; com `--inference-port`, monta `runtime::NodeConfig` e chama
     `NodeRuntime::apply` (sobe o servidor de inferência Rust **em-processo** e
     o supervisa). Uma GPU acima do limite remove a atribuição e o estado
-    `thermal` aguarda o cooldown configurado.
+    `thermal` aguarda o cooldown configurado. O `NodeConfig` carregado pela
+    implantação leva também a reserva configurável do ajuste automático de
+    memória; a consulta de VRAM e a aplicação ficam em `inference/llm.rs`.
 12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI).
 13. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do

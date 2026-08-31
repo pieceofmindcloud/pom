@@ -84,7 +84,7 @@ const environment: ExecutionTelemetryEnvironment = {
         node: {
           hostname: "gpu-a",
           system: { cpu_count: 12, ram: { total_mb: 32768, available_mb: 16384 }, gpus: [{ name: "RTX A6000" }] },
-          config: { n_gpu_layers: 12, n_ctx: 8192, n_batch: 512, fit_memory: true, offload_kqv: true, max_sessions: 2 },
+          config: { n_gpu_layers: 12, n_ctx: 8192, n_batch: 512, fit_memory: true, fit_memory_margin_mb: 256, offload_kqv: true, max_sessions: 2 },
         },
       },
       {
@@ -93,7 +93,7 @@ const environment: ExecutionTelemetryEnvironment = {
         node: {
           hostname: "cpu-b",
           system: { cpu_count: 8, ram: { total_mb: 16384, available_mb: 4096 }, gpus: [] },
-          config: { n_gpu_layers: 0, n_ctx: 4096, n_batch: 256, fit_memory: false, offload_kqv: false, max_sessions: 1 },
+          config: { n_gpu_layers: 0, n_ctx: 4096, n_batch: 256, fit_memory: false, fit_memory_margin_mb: 256, offload_kqv: false, max_sessions: 1 },
         },
       },
     ],

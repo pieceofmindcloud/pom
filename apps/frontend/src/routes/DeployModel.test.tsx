@@ -138,6 +138,7 @@ function planOutOfLayerOrder(): DeployPlan {
       n_gpu_layers: 0,
       offload_kqv: true,
       fit_memory: true,
+      fit_memory_margin_mb: 256,
     } as DeployPlan["params"],
     prompt_tokens: 3840,
     chunk_tokens: 512,

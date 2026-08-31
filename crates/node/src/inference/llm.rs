@@ -1426,6 +1426,10 @@ pub struct EngineConfig {
     pub cache_type_k: KvCacheType,
     pub cache_type_v: KvCacheType,
     pub fit_memory: bool,
+    /// VRAM que fica livre após a projeção do backend, por dispositivo.
+    /// Processos atuais já ficam fora do snapshot de memória livre do backend;
+    /// este campo é somente a reserva de segurança configurável.
+    pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
     pub n_gpu_layers: i32,
     pub n_threads: i32,
@@ -1541,13 +1545,117 @@ pub fn kv_seq_budget(max_sessions: u32) -> u32 {
 }
 
 const DEFAULT_GPU_LAYERS: i32 = 99;
-const FIT_MEMORY_MARGIN_BYTES: usize = 1024 * 1024 * 1024;
+const FIT_MEMORY_MIN_MARGIN_BYTES: usize = 4 * 1024 * 1024;
 const FIT_MIN_CONTEXT: u32 = 4096;
 /// The CUDA graph and kernel workspaces scale with the microbatch, while the
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
 const FIT_MAX_UBATCH: u32 = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FitDeviceMemory {
+    total_bytes: usize,
+    free_bytes: usize,
+}
+
+fn fit_memory_configured_margin_bytes(configured_margin_mb: u32) -> usize {
+    usize::try_from(u64::from(configured_margin_mb) * 1024 * 1024)
+        .unwrap_or(usize::MAX)
+        .max(FIT_MEMORY_MIN_MARGIN_BYTES)
+}
+
+/// Returns the amount that `common_fit_params` should leave unused on one
+/// device. The backend's `free_bytes` is already the memory available to POM:
+/// CUDA obtains it from `cudaMemGetInfo`, so allocations owned by other
+/// processes are already excluded. The margin therefore covers only allocator
+/// and late-workspace drift, plus a process that starts after this snapshot.
+///
+/// When the card has less free memory than the requested reserve, using the
+/// whole free amount would make every positive allocation fail the fit. A
+/// smaller reserve is still useful until the card cannot even provide the
+/// minimum safety gap; at that point zero is the only honest target.
+fn fit_memory_margin_bytes(memory: FitDeviceMemory, configured_margin_mb: u32) -> usize {
+    let free_bytes = memory.free_bytes.min(memory.total_bytes);
+    if free_bytes < FIT_MEMORY_MIN_MARGIN_BYTES {
+        return 0;
+    }
+    free_bytes.min(fit_memory_configured_margin_bytes(configured_margin_mb))
+}
+
+fn fit_memory_margins(
+    memories: &[FitDeviceMemory],
+    n_devices: usize,
+    configured_margin_mb: u32,
+) -> Vec<usize> {
+    let fallback = fit_memory_configured_margin_bytes(configured_margin_mb);
+    (0..n_devices)
+        .map(|index| {
+            memories
+                .get(index)
+                .map(|memory| fit_memory_margin_bytes(*memory, configured_margin_mb))
+                .unwrap_or(fallback)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod fit_memory_margin_tests {
+    use super::*;
+
+    const MIB: usize = 1024 * 1024;
+
+    fn memory(total_mib: usize, free_mib: usize) -> FitDeviceMemory {
+        FitDeviceMemory {
+            total_bytes: total_mib * MIB,
+            free_bytes: free_mib * MIB,
+        }
+    }
+
+    #[test]
+    fn sem_outros_processos_reserva_o_padrao_pequeno() {
+        assert_eq!(
+            fit_memory_margin_bytes(memory(16 * 1024, 16 * 1024), 256),
+            256 * MIB
+        );
+    }
+
+    #[test]
+    fn processos_existentes_nao_sao_descontados_duas_vezes() {
+        assert_eq!(
+            fit_memory_margin_bytes(memory(16 * 1024, 4 * 1024), 256),
+            256 * MIB
+        );
+    }
+
+    #[test]
+    fn memoria_livre_menor_que_o_pedido_reduz_a_reserva() {
+        assert_eq!(
+            fit_memory_margin_bytes(memory(16 * 1024, 64), 256),
+            64 * MIB
+        );
+    }
+
+    #[test]
+    fn memoria_insuficiente_ate_para_o_minimo_nao_faz_underflow() {
+        assert_eq!(fit_memory_margin_bytes(memory(16 * 1024, 2), 256), 0);
+    }
+
+    #[test]
+    fn margens_sao_calculadas_independentemente_para_cada_dispositivo() {
+        let margins = fit_memory_margins(
+            &[
+                memory(16 * 1024, 16 * 1024),
+                memory(24 * 1024, 64),
+                memory(8 * 1024, 2),
+            ],
+            3,
+            256,
+        );
+
+        assert_eq!(margins, vec![256 * MIB, 64 * MIB, 0]);
+    }
+}
 
 /// Parâmetros do modelo já ajustados pelo `common_fit_params`.
 ///
@@ -1619,7 +1727,28 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
         };
         n_overrides
     ];
-    let mut margins = vec![FIT_MEMORY_MARGIN_BYTES; n_devices];
+    let mut device_memories = vec![
+        sys::llama_rs_device_memory {
+            free_bytes: 0,
+            total_bytes: 0,
+        };
+        n_devices
+    ];
+    let memory_count = unsafe {
+        sys::llama_rs_get_device_memory(device_memories.as_mut_ptr(), device_memories.len())
+    };
+    device_memories.truncate(memory_count.min(n_devices));
+    let mut margins = fit_memory_margins(
+        &device_memories
+            .iter()
+            .map(|memory| FitDeviceMemory {
+                total_bytes: memory.total_bytes,
+                free_bytes: memory.free_bytes,
+            })
+            .collect::<Vec<_>>(),
+        n_devices,
+        cfg.fit_memory_margin_mb,
+    );
 
     let mut mparams = unsafe { sys::llama_model_default_params() };
     mparams.n_gpu_layers = -1;
@@ -3534,6 +3663,7 @@ mod pool_tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: true,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 99,
             n_threads: 0,
@@ -4573,6 +4703,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -4682,6 +4813,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 4,
             n_gpu_layers: gpu_layers,
             n_threads: 2,
@@ -4828,6 +4960,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -4886,6 +5019,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 0,
@@ -4957,6 +5091,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 0,
             n_threads: 2,
@@ -4997,6 +5132,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 0,
             n_threads: 2,

@@ -1834,6 +1834,10 @@ pub struct RuntimeParams {
     /// suporta `split-mode tensor`.
     #[serde(default = "d_true")]
     pub fit_memory: bool,
+    /// VRAM que o `fit` deixa livre em cada dispositivo para absorver variação
+    /// de alocador, workspaces tardios e processos que apareçam depois.
+    #[serde(default = "d_fit_memory_margin_mb")]
+    pub fit_memory_margin_mb: u32,
     #[serde(default = "d_n_batch")]
     pub n_batch: u32,
     #[serde(default = "d_max_new")]
@@ -1947,6 +1951,9 @@ fn d_repeat_last_n() -> u32 {
 fn d_true() -> bool {
     true
 }
+fn d_fit_memory_margin_mb() -> u32 {
+    crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB
+}
 fn d_speculative_k() -> u32 {
     4
 }
@@ -1969,6 +1976,7 @@ impl Default for RuntimeParams {
             offload_kqv: d_true(),
             hidden_state_dtype: crate::wire::WireDtype::F16,
             fit_memory: d_true(),
+            fit_memory_margin_mb: d_fit_memory_margin_mb(),
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
@@ -2010,6 +2018,7 @@ impl From<&NodeConfig> for RuntimeParams {
             offload_kqv: c.offload_kqv,
             hidden_state_dtype: c.hidden_state_dtype,
             fit_memory: c.fit_memory,
+            fit_memory_margin_mb: c.fit_memory_margin_mb,
             n_batch: c.n_batch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
@@ -5888,6 +5897,10 @@ mod tests {
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
         assert!(p.fit_memory);
+        assert_eq!(
+            p.fit_memory_margin_mb,
+            crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB
+        );
     }
 
     #[test]
@@ -5923,13 +5936,14 @@ mod tests {
     #[test]
     fn params_accept_partial_overrides() {
         let p: RuntimeParams = serde_json::from_str(
-            r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false,"fit_memory":false}"#,
+            r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false,"fit_memory":false,"fit_memory_margin_mb":512}"#,
         )
         .unwrap();
         assert_eq!(p.n_ctx, 250000);
         assert!(!p.no_thinking);
         assert!(!p.offload_kqv);
         assert!(!p.fit_memory);
+        assert_eq!(p.fit_memory_margin_mb, 512);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
     }
 

@@ -775,6 +775,7 @@ async fn main() -> Result<()> {
             cache_type_k: config::KvCacheType::F16,
             cache_type_v: config::KvCacheType::F16,
             fit_memory: true,
+            fit_memory_margin_mb: runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
             batching_enabled: true,

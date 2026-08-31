@@ -58,6 +58,18 @@ int llama_rs_fit_params(
     uint32_t n_ctx_min,
     enum ggml_log_level log_level);
 
+// Returns the current free and total memory for the devices selected by the
+// default llama.cpp model placement, in the same order used by common_fit_params.
+// The return value is the number of records written, capped by `capacity`.
+struct llama_rs_device_memory {
+    size_t free_bytes;
+    size_t total_bytes;
+};
+
+size_t llama_rs_get_device_memory(
+    struct llama_rs_device_memory * out,
+    size_t capacity);
+
 void llama_rs_memory_breakdown_print(const struct llama_context * ctx);
 
 // Onde cada camada do modelo carregado realmente ficou, em JSON.

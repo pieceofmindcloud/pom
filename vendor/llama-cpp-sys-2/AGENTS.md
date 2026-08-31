@@ -63,6 +63,7 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 |---|---|
 | `llama_rs_model_placement_json` | onde cada camada ficou de verdade, lendo o buffer de cada tensor em `tensors_by_name` mais `dev_layer(il)` |
 | `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV |
+| `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
 
 As duas devolvem JSON de `malloc` que **tem que** voltar por
 `llama_rs_string_free`; do lado Rust quem faz isso é `json_from_wrapper` em

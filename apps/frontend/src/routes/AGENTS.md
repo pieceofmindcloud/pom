@@ -140,7 +140,7 @@ Per-file list:
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
-  repetition, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
+  repetition, cycle detection, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
   types. The two K/V cache combos apply changes immediately through
   `POST /api/ui/cache-types`; the save button, subtitle and `global` badge are
   intentionally absent. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can

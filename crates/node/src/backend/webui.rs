@@ -1872,6 +1872,16 @@ pub struct RuntimeParams {
     pub repeat_penalty: f32,
     #[serde(default = "d_repeat_last_n")]
     pub repeat_last_n: u32,
+    /// Detector conservador de ciclos; fica ligado por padrão e pode ser
+    /// desligado sem alterar os parâmetros do sampler.
+    #[serde(default = "d_cycle_detection_enabled")]
+    pub cycle_detection_enabled: bool,
+    #[serde(default = "d_cycle_detection_min_window_tokens")]
+    pub cycle_detection_min_window_tokens: u32,
+    #[serde(default = "d_cycle_detection_max_window_tokens")]
+    pub cycle_detection_max_window_tokens: u32,
+    #[serde(default = "d_cycle_detection_repetitions")]
+    pub cycle_detection_repetitions: u32,
     #[serde(default = "d_true")]
     pub no_thinking: bool,
     /// Disable embedding extraction in llama.cpp context on this peer.
@@ -1948,6 +1958,18 @@ fn d_repeat_penalty() -> f32 {
 fn d_repeat_last_n() -> u32 {
     64
 }
+fn d_cycle_detection_enabled() -> bool {
+    true
+}
+fn d_cycle_detection_min_window_tokens() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
+}
+fn d_cycle_detection_max_window_tokens() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
+}
+fn d_cycle_detection_repetitions() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_REPETITIONS
+}
 fn d_true() -> bool {
     true
 }
@@ -1992,6 +2014,10 @@ impl Default for RuntimeParams {
             top_k: d_top_k(),
             repeat_penalty: d_repeat_penalty(),
             repeat_last_n: d_repeat_last_n(),
+            cycle_detection_enabled: d_cycle_detection_enabled(),
+            cycle_detection_min_window_tokens: d_cycle_detection_min_window_tokens(),
+            cycle_detection_max_window_tokens: d_cycle_detection_max_window_tokens(),
+            cycle_detection_repetitions: d_cycle_detection_repetitions(),
             no_thinking: d_true(),
             no_embeddings: false,
             speculative_decoding_enabled: false,
@@ -2034,6 +2060,10 @@ impl From<&NodeConfig> for RuntimeParams {
             top_k: c.top_k,
             repeat_penalty: c.repeat_penalty,
             repeat_last_n: c.repeat_last_n,
+            cycle_detection_enabled: c.cycle_detection_enabled,
+            cycle_detection_min_window_tokens: c.cycle_detection_min_window_tokens,
+            cycle_detection_max_window_tokens: c.cycle_detection_max_window_tokens,
+            cycle_detection_repetitions: c.cycle_detection_repetitions,
             no_thinking: c.no_thinking,
             no_embeddings: c.no_embeddings,
             speculative_decoding_enabled: c.speculative_decoding_enabled,
@@ -5901,6 +5931,19 @@ mod tests {
             p.fit_memory_margin_mb,
             crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB
         );
+        assert!(p.cycle_detection_enabled);
+        assert_eq!(
+            p.cycle_detection_min_window_tokens,
+            crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
+        );
+        assert_eq!(
+            p.cycle_detection_max_window_tokens,
+            crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
+        );
+        assert_eq!(
+            p.cycle_detection_repetitions,
+            crate::cycle::DEFAULT_CYCLE_REPETITIONS
+        );
     }
 
     #[test]
@@ -5945,6 +5988,26 @@ mod tests {
         assert!(!p.fit_memory);
         assert_eq!(p.fit_memory_margin_mb, 512);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
+    }
+
+    #[test]
+    fn cycle_detection_can_be_disabled_and_tuned_as_a_runtime_parameter() {
+        let p: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "cycle_detection_enabled": false,
+            "cycle_detection_min_window_tokens": 64,
+            "cycle_detection_max_window_tokens": 256,
+            "cycle_detection_repetitions": 4
+        }))
+        .unwrap();
+
+        assert!(!p.cycle_detection_enabled);
+        assert_eq!(p.cycle_detection_min_window_tokens, 64);
+        assert_eq!(p.cycle_detection_max_window_tokens, 256);
+        assert_eq!(p.cycle_detection_repetitions, 4);
+
+        let encoded = serde_json::to_value(p).unwrap();
+        assert_eq!(encoded["cycle_detection_enabled"], false);
+        assert_eq!(encoded["cycle_detection_repetitions"], 4);
     }
 
     #[test]

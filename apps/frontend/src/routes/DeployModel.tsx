@@ -95,7 +95,10 @@ type NumericRuntimeKey =
   | "top_p"
   | "top_k"
   | "repeat_penalty"
-  | "repeat_last_n";
+  | "repeat_last_n"
+  | "cycle_detection_min_window_tokens"
+  | "cycle_detection_max_window_tokens"
+  | "cycle_detection_repetitions";
 
 const GLOBAL_NUMERIC_KNOBS: Array<{ key: NumericRuntimeKey; label: string; step?: string }> = [
   { key: "n_ctx", label: "Contexto" },
@@ -109,6 +112,9 @@ const GLOBAL_NUMERIC_KNOBS: Array<{ key: NumericRuntimeKey; label: string; step?
   { key: "top_k", label: "Top-k" },
   { key: "repeat_penalty", label: "Penalidade", step: "0.01" },
   { key: "repeat_last_n", label: "Janela repetição" },
+  { key: "cycle_detection_min_window_tokens", label: "Ciclo: janela mínima" },
+  { key: "cycle_detection_max_window_tokens", label: "Ciclo: janela máxima" },
+  { key: "cycle_detection_repetitions", label: "Ciclo: repetições" },
 ];
 
 const DEFAULT_CACHE_TYPES: KvCacheType[] = [
@@ -1283,6 +1289,7 @@ export function DeployModel() {
                 <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
                 <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
                 <CapabilitySwitch capability={p?.capabilities?.no_embeddings} alwaysVisible checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
+                <CapabilitySwitch alwaysVisible checked={eff.cycle_detection_enabled ?? true} onChange={(value) => setParams({ ...eff, cycle_detection_enabled: value })} label={t("deploy.cycleDetection")} hint={t("deploy.cycleDetectionHint")} />
               </div>
             </section>
 

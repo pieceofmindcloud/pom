@@ -64,7 +64,9 @@ haver chave.
   do `n_ctx` confirmado pelo runtime e pelo menor valor entre os peers vivos;
   o `max_new_tokens` da implantação limita apenas uma perna do laço de
   continuação. Se o prompt ocupar todo o contexto, a rota responde 413 antes
-  de abrir o SSE.
+  de abrir o SSE. `finish_reason` e `partial` também aparecem no corpo: uma
+  geração interrompida pelo detector de ciclo tem `finish_reason: "cycle"` e
+  `partial: true`; esse motivo não é um corte silencioso nem uma nova execução.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).
@@ -477,6 +479,13 @@ respostas não-streaming. O formato compatível com OpenAI continua intacto:
 clientes que ignoram `x_pom` continuam lendo `usage`, `choices` e os demais
 campos padrão. A auditoria em `GET /api/ui/requests` devolve esse mesmo objeto
 em `timings`, separado do `telemetry` por hop.
+
+`x_pom.finish_reason: "cycle"` e `x_pom.partial: true` identificam uma parada
+por repetição nos adaptadores OpenAI e Anthropic, no chunk final e na resposta
+não-streaming. O motivo padrão do provedor continua compatível (`stop` na
+OpenAI e `end_turn` na Anthropic); clientes POM-aware devem ler a extensão para
+distinguir ciclo de uma resposta normal. O gateway já transmitiu a ficha que
+confirmou o ciclo, não pede outra ficha, libera a sessão e fecha o fluxo.
 
 ## 5. Testes de rota - o andaime é um só (`gateway::testkit`)
 

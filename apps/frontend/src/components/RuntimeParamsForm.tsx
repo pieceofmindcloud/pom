@@ -43,6 +43,14 @@ export const KNOBS: Knob[] = [
   { key: "repeat_last_n", min: 0 },
 ];
 
+/** Ajustes do detector, mantidos fora da lista de sampling para deixar clara
+ * a diferença entre penalizar a próxima ficha e interromper uma degeneração. */
+export const CYCLE_KNOBS: Knob[] = [
+  { key: "cycle_detection_min_window_tokens", min: 1, max: 1024 },
+  { key: "cycle_detection_max_window_tokens", min: 1, max: 1024 },
+  { key: "cycle_detection_repetitions", min: 2, max: 8 },
+];
+
 /**
  * Só aparecem com a especulação ligada: fora dali são dois números sem efeito
  * nenhum, e a aba já tem onze campos.
@@ -309,6 +317,13 @@ export function RuntimeParamsForm({
           label={t("deploy.noEmbeddings")}
           hint={t("deploy.noEmbeddingsHint")}
         />
+        <Switch
+          checked={value.cycle_detection_enabled ?? true}
+          onChange={(v) => onChange({ ...value, cycle_detection_enabled: v })}
+          disabled={disabled}
+          label={t("deploy.cycleDetection")}
+          hint={t("deploy.cycleDetectionHint")}
+        />
         <CapabilitySwitch
           capability={capabilities?.speculative_decoding}
           checked={value.speculative_decoding_enabled ?? false}
@@ -332,6 +347,12 @@ export function RuntimeParamsForm({
           hint={t("deploy.mtpHint")}
         />
       </div>
+
+      {(value.cycle_detection_enabled ?? true) && (
+        <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
+          {CYCLE_KNOBS.map((k) => numeric(k, true))}
+        </div>
+      )}
 
       {(value.speculative_decoding_enabled ?? false) &&
         capabilities?.speculative_decoding?.state !== "unsupported" && (

@@ -58,7 +58,7 @@ como `primary` na config de inferência montada pela linha de comando),
 `--inference-port`, `--n-gpu-layers` (0), `--n-ctx` (8192 por sessão), `--n-batch` (512),
 `--max-new-tokens` (512), `--max-sessions` (1), `--kv-cache-ram`,
 `--prefill-chunk-tokens` (512), `--temperature`/`--top-p`/`--top-k`/
-`--repeat-penalty`/`--repeat-last-n`, `--no-thinking`, `--single-peer`,
+`--repeat-penalty`/`--repeat-last-n`, `--no-cycle-detection`, `--no-thinking`, `--single-peer`,
 `--pkarr-peers`, `--public-addr`, `--relay-peers`, `--serve-relay`,
 `--no-default-relays`, `--no-discovery`.
 
@@ -132,6 +132,7 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
+  `cycle.rs` (detector de ciclo de saída, lido pelo gateway),
   `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16 e batch
   validado), `relay.rs` (chain relay + agrupamento por próximo hop),
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +

@@ -85,8 +85,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   displaying a first-part byte count while enrichment is pending.
   `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8 choice;
   `RuntimeParams.max_new_tokens` is only the size of one backend leg. The
-  total output capacity comes from live runtime context and `/v1/models`, not
-  from a second deployment field. `PhaseTrace` carries the effective dtype and
+  cycle detector settings in `RuntimeParams` control the gateway's bounded
+  repetition safety stop and can be disabled explicitly. The total output
+  capacity comes from live runtime context and `/v1/models`, not from a second deployment field. `PhaseTrace` carries the effective dtype and
   hidden-state bytes per hop.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 

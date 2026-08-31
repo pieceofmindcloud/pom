@@ -266,6 +266,12 @@ behind an auth extractor.
   orçamento total antes do EOS em cada ramo de decodificação;
   `audit_status_for_summary` registra `length` como `incomplete`, e reserva
   `partial` para falha de transporte com texto salvo.
+  O detector de ciclos (`inference/cycle.rs`) roda depois de cada peça no
+  gateway. Ele exige três janelas canônicas, trata sufixos numéricos de
+  identificadores como a mesma estrutura e preserva números de dados. Quando
+  confirma, termina sem pedir outra ficha, libera a sessão e publica
+  `finish_reason: "cycle"` e `partial: true`; o limite pode ser desligado em
+  `RuntimeParams` ou com `--no-cycle-detection`.
   **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
   aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
   ela foi removida porque nenhum dos dois

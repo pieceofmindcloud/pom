@@ -669,6 +669,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   devolve argmax. `repeat_last_n=64` continua padrão: a penalidade é por token
   e não detecta ciclos de n-gramas, então ampliar a janela não garantiria
   bloquear o ciclo observado e mudaria a política.
+- `cycle.rs` - detector de última linha no gateway, não do servidor de
+  inferência: observa peças já amostradas, normaliza apenas sufixos numéricos
+  embutidos em identificadores e confirma três janelas canônicas consecutivas.
+  A janela padrão é 32..512 tokens; limites e o interruptor ficam em
+  `RuntimeParams`. Ao confirmar, o gateway envia a peça corrente, não pede
+  outro decode, libera a sessão e marca o resumo como `partial` com
+  `finish_reason: "cycle"`. O detector é deliberadamente separado do sampler,
+  do estado recorrente e do contrato de wire.
 - `BatchLayout` - transforma a ordem física das linhas do `llama_batch` em
   ranges por `item_id`; a posição global de logits nunca é inferida pelo índice
   da sessão. Mistura de token e hidden state fica em lanes distintas.

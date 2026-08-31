@@ -145,7 +145,10 @@ mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 `cache_type_v`) e a margem de segurança do fit também são serializados no
 estado efetivo. Os tipos do cache continuam sendo repostos a partir do
 `pom.json` pelo `NodeRuntime` antes de carregar o modelo; a margem vem dos
-parâmetros da implantação.
+parâmetros da implantação. Os parâmetros do detector de ciclos
+(`cycle_detection_*`) também fazem parte do `NodeConfig` achatado, para que o
+gateway preserve a mesma política depois de um restart e a fatia anotada não
+volte a gerar com uma configuração diferente.
 
 O fatiador primeiro classifica arrays GGUF pelo namespace: somente arrays sob o
 namespace da arquitetura, exceto os arrays estruturais de rope, podem ser

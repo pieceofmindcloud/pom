@@ -20,6 +20,8 @@ mod catalog;
 mod collective;
 #[path = "utils/config.rs"]
 mod config;
+#[path = "inference/cycle.rs"]
+mod cycle;
 #[path = "backend/deploy.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
@@ -295,6 +297,10 @@ struct Args {
     #[arg(long, default_value = "64")]
     repeat_last_n: u32,
 
+    /// Disable the conservative cycle detector for this node.
+    #[arg(long)]
+    no_cycle_detection: bool,
+
     /// Disable Qwen3.5 thinking mode (injects empty <think></think> block).
     #[arg(long)]
     no_thinking: bool,
@@ -441,6 +447,7 @@ async fn main() -> Result<()> {
             args.no_default_relays,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
+            !args.no_cycle_detection,
         )
         .await;
     }
@@ -793,6 +800,10 @@ async fn main() -> Result<()> {
             top_k: args.top_k,
             repeat_penalty: args.repeat_penalty,
             repeat_last_n: args.repeat_last_n,
+            cycle_detection_enabled: !args.no_cycle_detection,
+            cycle_detection_min_window_tokens: cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
+            cycle_detection_max_window_tokens: cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
+            cycle_detection_repetitions: cycle::DEFAULT_CYCLE_REPETITIONS,
             no_thinking: args.no_thinking,
             single_peer: args.single_peer,
             no_embeddings: false,
@@ -833,6 +844,10 @@ async fn main() -> Result<()> {
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
+            cycle_config: crate::cycle::CycleConfig {
+                enabled: !args.no_cycle_detection,
+                ..crate::cycle::CycleConfig::default()
+            },
             audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
             gateway_port,
             auth: auth_config,
@@ -1339,6 +1354,7 @@ async fn start_gateway_only(
     no_default_relays: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
+    cycle_detection_enabled: bool,
 ) -> Result<()> {
     use crate::gateway::{start_gateway, GatewayState};
     use crate::pipeline::LoadTracker;
@@ -1452,6 +1468,10 @@ async fn start_gateway_only(
         prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
+        cycle_config: crate::cycle::CycleConfig {
+            enabled: cycle_detection_enabled,
+            ..crate::cycle::CycleConfig::default()
+        },
         audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
         gateway_port,
         auth: auth_state,

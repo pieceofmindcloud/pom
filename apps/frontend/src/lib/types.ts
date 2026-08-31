@@ -123,6 +123,11 @@ export interface NodeConfig {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
+  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
+  cycle_detection_enabled?: boolean;
+  cycle_detection_min_window_tokens?: number;
+  cycle_detection_max_window_tokens?: number;
+  cycle_detection_repetitions?: number;
   no_thinking: boolean;
   single_peer: boolean;
   no_embeddings: boolean;
@@ -1049,6 +1054,11 @@ export interface RuntimeParams {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
+  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
+  cycle_detection_enabled?: boolean;
+  cycle_detection_min_window_tokens?: number;
+  cycle_detection_max_window_tokens?: number;
+  cycle_detection_repetitions?: number;
   no_thinking: boolean;
   no_embeddings: boolean;
   /** Kill-switch do operador: mesmo com todos os peers capazes, a

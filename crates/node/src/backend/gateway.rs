@@ -121,6 +121,10 @@ pub struct GatewayState {
     pub peer_http: Arc<crate::peer_client::PeerClients>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
+    /// Cycle policy used before a deployment exists. A loaded deployment's
+    /// `NodeConfig` takes precedence, so this is also the CLI fallback for a
+    /// gateway-only process.
+    pub cycle_config: crate::cycle::CycleConfig,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
     /// HTTP port this node serves the API and UI on.
@@ -842,7 +846,17 @@ pub struct GenerateResponse {
     pub duration_ms: u64,
     pub timings: Option<GenerationTimings>,
     pub stop_sequence: Option<String>,
+    /// Motivo terminal. `cycle` é uma interrupção explícita do detector de
+    /// degenerescência, distinta de `stop` e do limite `length`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub partial: bool,
     pub trace: Option<crate::prefill::RequestTrace>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize)]
@@ -1240,6 +1254,36 @@ async fn send_length_summary(
     let _ = tx.send(GenEvent::Done(summary)).await;
 }
 
+async fn send_cycle_summary(
+    tx: &mpsc::Sender<GenEvent>,
+    plan: &PipelinePlan,
+    request_started: Instant,
+    first_token_at: Instant,
+    tokens_generated: u32,
+    legs: u32,
+    trace: crate::prefill::RequestTrace,
+    cycle: crate::cycle::CycleMatch,
+) {
+    info!(
+        tokens_generated,
+        period_tokens = cycle.period,
+        repetitions = cycle.repetitions,
+        "ciclo de repetição detectado; encerrando a geração"
+    );
+    let summary = summary_for(
+        plan,
+        request_started,
+        first_token_at,
+        tokens_generated,
+        legs,
+        trace,
+        true,
+        Some("cycle".to_string()),
+        None,
+    );
+    let _ = tx.send(GenEvent::Done(summary)).await;
+}
+
 /// Run one generation, emitting each token as it is decoded.
 ///
 /// This is the single generation path in the gateway: `/api/generate` collects
@@ -1472,6 +1516,18 @@ async fn generate_stream_inner(
     };
 
     let mut stop_matcher = StopMatcher::new(stops);
+    let cycle_config = state
+        .runtime
+        .config()
+        .await
+        .map(|cfg| crate::cycle::CycleConfig {
+            enabled: cfg.cycle_detection_enabled,
+            min_window_tokens: cfg.cycle_detection_min_window_tokens as usize,
+            max_window_tokens: cfg.cycle_detection_max_window_tokens as usize,
+            repetitions: cfg.cycle_detection_repetitions as usize,
+        })
+        .unwrap_or(state.cycle_config);
+    let mut cycle_detector = crate::cycle::CycleDetector::new(cycle_config);
 
     // O evento final não pode sair antes de a sessão estar arrumada.
     //
@@ -1631,6 +1687,25 @@ async fn generate_stream_inner(
                 return;
             }
             StopSend::Continue => {}
+        }
+        if !first.done {
+            if let Some(cycle) = cycle_detector.observe(first.token_id, &first.text) {
+                if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                    return;
+                }
+                send_cycle_summary(
+                    &tx,
+                    &plan,
+                    request_started,
+                    first_token_at,
+                    tokens_generated,
+                    legs,
+                    trace,
+                    cycle,
+                )
+                .await;
+                return;
+            }
         }
         if generation_finish_reason(budget.total, tokens_generated, first.done)
             == Some("length")
@@ -1819,6 +1894,7 @@ async fn generate_stream_inner(
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
+                let mut cycle_match = None;
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
@@ -1844,6 +1920,30 @@ async fn generate_stream_inner(
                         }
                         StopSend::Continue => {}
                     }
+                    if cycle_match.is_none() {
+                        cycle_match = cycle_detector.observe(*token_id, text);
+                    }
+                    if cycle_match.is_some() {
+                        break;
+                    }
+                }
+
+                if let Some(cycle) = cycle_match {
+                    if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                        return;
+                    }
+                    send_cycle_summary(
+                        &tx,
+                        &plan,
+                        request_started,
+                        first_token_at,
+                        tokens_generated,
+                        legs,
+                        trace,
+                        cycle,
+                    )
+                    .await;
+                    return;
                 }
 
                 let finish_reason = generation_finish_reason(
@@ -1981,6 +2081,25 @@ async fn generate_stream_inner(
                             return;
                         }
                         StopSend::Continue => {}
+                    }
+                    if !step.done {
+                        if let Some(cycle) = cycle_detector.observe(*token_id, text) {
+                            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                                return;
+                            }
+                            send_cycle_summary(
+                                &tx,
+                                &plan,
+                                request_started,
+                                first_token_at,
+                                tokens_generated,
+                                legs,
+                                trace,
+                                cycle,
+                            )
+                            .await;
+                            return;
+                        }
                     }
                     let finish_reason =
                         generation_finish_reason(budget.total, tokens_generated, step.done);
@@ -2573,6 +2692,8 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     duration_ms: 0,
                     timings: None,
                     stop_sequence: None,
+                    finish_reason: None,
+                    partial: false,
                     trace: None,
                 }),
             )
@@ -2609,6 +2730,8 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     duration_ms: 0,
                     timings: None,
                     stop_sequence: None,
+                    finish_reason: None,
+                    partial: false,
                     trace: None,
                 }),
             )
@@ -2644,6 +2767,8 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 duration_ms: 0,
                 timings: None,
                 stop_sequence: None,
+                finish_reason: None,
+                partial: false,
                 trace: None,
             }),
         )
@@ -2676,20 +2801,28 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
     )
     .await
     {
-        Ok((text, summary)) => (
-            StatusCode::OK,
-            Json(GenerateResponse {
-                response: text,
-                source: summary.source,
-                tokens_generated: summary.tokens_generated,
-                tokens_per_sec: summary.tokens_per_sec,
-                duration_ms: summary.duration_ms,
-                timings: Some(summary.timings),
-                stop_sequence: summary.stop_sequence,
-                trace: summary.trace,
-            }),
-        )
-            .into_response(),
+        Ok((text, summary)) => {
+            let cycle_interrupted = summary.finish_reason.as_deref() == Some("cycle");
+            (
+                StatusCode::OK,
+                Json(GenerateResponse {
+                    response: text,
+                    source: summary.source,
+                    tokens_generated: summary.tokens_generated,
+                    tokens_per_sec: summary.tokens_per_sec,
+                    duration_ms: summary.duration_ms,
+                    timings: Some(summary.timings),
+                    stop_sequence: summary.stop_sequence,
+                    // Keep the established `/api/generate` shape for ordinary
+                    // stops and transport-partial responses. These fields are
+                    // the explicit public marker for the new cycle interruption.
+                    finish_reason: cycle_interrupted.then(|| "cycle".to_string()),
+                    partial: cycle_interrupted,
+                    trace: summary.trace,
+                }),
+            )
+        }
+        .into_response(),
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(GenerateResponse {
@@ -2702,6 +2835,8 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 duration_ms: 0,
                 timings: None,
                 stop_sequence: None,
+                finish_reason: None,
+                partial: false,
                 trace: None,
             }),
         )
@@ -2855,6 +2990,145 @@ mod tests {
         assert_eq!(generation_finish_reason(4000, 4000, true), Some("length"));
         assert_eq!(generation_finish_reason(4000, 3640, true), Some("stop"));
         assert_eq!(generation_finish_reason(4000, 3640, false), None);
+    }
+
+    /// Exercicio de ponta a ponta do caminho que um consumidor de
+    /// `/api/generate` usa: o gateway transmite as fichas repetidas, para
+    /// antes de pedir a próxima, libera a sessão e publica `cycle` em vez de
+    /// amputar silenciosamente o orçamento.
+    #[tokio::test]
+    async fn api_generate_reports_and_stops_a_detected_cycle() {
+        let steps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let script: std::sync::Arc<Vec<&'static str>> = std::sync::Arc::new(vec![
+            "alpha ", "beta ", "alpha ", "beta ", "alpha ", "beta ",
+        ]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(json!({"status": "ok", "model_loaded": true}))
+                }),
+            )
+            .route(
+                "/v1/prefill",
+                axum::routing::post(|| async {
+                    let response = json!({
+                        "done": false,
+                        "more_chunks": false,
+                        "n_prompt_tokens": 1,
+                        "token_id": 1,
+                        "text": "seed "
+                    });
+                    let bytes = crate::wire::encode_batch_single(
+                        &response,
+                        None,
+                        crate::wire::WireDtype::F16,
+                    )
+                    .unwrap();
+                    (
+                        StatusCode::OK,
+                        [("content-type", "application/octet-stream")],
+                        bytes,
+                    )
+                        .into_response()
+                }),
+            )
+            .route(
+                "/v1/step",
+                axum::routing::post({
+                    let steps = steps.clone();
+                    let script = script.clone();
+                    move || {
+                        let steps = steps.clone();
+                        let script = script.clone();
+                        async move {
+                            let index = steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let text = script.get(index).copied().unwrap_or("unexpected ");
+                            let response = json!({
+                                "done": false,
+                                "token_id": index as u32 + 2,
+                                "text": text
+                            });
+                            let bytes = crate::wire::encode_batch_single(
+                                &response,
+                                None,
+                                crate::wire::WireDtype::F16,
+                            )
+                            .unwrap();
+                            (
+                                StatusCode::OK,
+                                [("content-type", "application/octet-stream")],
+                                bytes,
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/session/release",
+                axum::routing::post(|| async { StatusCode::OK }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut peer = crate::gateway::testkit::peer("head", "head", 8080);
+        peer.model = "lab".into();
+        peer.start_layer = 0;
+        peer.end_layer = 0;
+        peer.total_layers = 1;
+        peer.inference_port = Some(port);
+        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
+        let mut config = crate::gateway::testkit::spec_config();
+        config.total_layers = 1;
+        config.end_layer = 0;
+        config.peer_count = 1;
+        config.speculative_decoding_enabled = false;
+        config.cycle_detection_min_window_tokens = 2;
+        config.cycle_detection_max_window_tokens = 2;
+        config.cycle_detection_repetitions = 3;
+        state.runtime.seed_config_for_test(config).await;
+
+        let request = serde_json::to_vec(&GenerateRequest {
+            model: Some("lab".into()),
+            prompt: "Oi".into(),
+            max_tokens: Some(32),
+            stop: None,
+        })
+        .unwrap();
+        let response = handle_generate(State(state), axum::body::Bytes::from(request))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["response"], "seed alpha beta alpha beta alpha beta ");
+        assert_eq!(body["tokens_generated"], 7);
+        assert_eq!(body["finish_reason"], "cycle");
+        assert_eq!(body["partial"], true);
+        assert_eq!(body["stop_sequence"], Value::Null);
+        assert_eq!(steps.load(std::sync::atomic::Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn normal_api_generate_responses_keep_the_existing_shape() {
+        let response = GenerateResponse {
+            response: "ok".into(),
+            source: "pipeline:head".into(),
+            tokens_generated: 1,
+            tokens_per_sec: 1.0,
+            duration_ms: 1,
+            timings: None,
+            stop_sequence: None,
+            finish_reason: None,
+            partial: false,
+            trace: None,
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("finish_reason"));
+        assert!(!value.as_object().unwrap().contains_key("partial"));
     }
 
     #[test]
@@ -3261,6 +3535,10 @@ mod budget_tests {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
+            cycle_detection_enabled: true,
+            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
+            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
+            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -3503,6 +3781,7 @@ pub(crate) mod testkit {
                 std::time::Duration::from_secs(600),
             )),
             runtime: NodeRuntime::new(net, assignment),
+            cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(std::path::PathBuf::from(":memory:")),
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
@@ -3577,6 +3856,10 @@ pub(crate) mod testkit {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
+            cycle_detection_enabled: true,
+            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
+            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
+            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,

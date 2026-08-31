@@ -722,6 +722,45 @@ não um detector de ciclos de n-gramas ou blocos inteiros, portanto aumentar a
 janela não garantiria prevenir o ciclo observado e mudaria a política de
 amostragem.
 
+### 3.5 Detecção de ciclo na saída
+
+O POM escolhe a família **C, detectar e parar**, como uma rede de segurança no
+gateway. A família **D, repetir a inferência**, é incompatível com o fluxo: no
+momento em que o padrão fica evidente, as fichas já chegaram ao cliente e uma
+segunda execução teria de descartar minutos de saída já transmitida. A família
+**A** pode ser acrescentada ao sampler no futuro, mas uma penalidade estrutural
+precisa ser afinada contra tabelas, listas e código legítimos. A família **B**
+também fica aberta para uma intervenção futura, mas não pode retirar a ficha que
+já saiu nem promete recuperar um modelo que ficou confiante no padrão.
+
+`inference/cycle.rs` observa o texto das peças depois da amostragem, mantém uma
+história limitada e procura três janelas consecutivas iguais. Para o caso de
+nomes incrementados, dígitos no sufixo de um identificador são normalizados para
+uma marca comum (`SRS_FINAL_FULL_2`, `_3`, `_4`); números separados em dados de
+tabela continuam distintos. A janela mínima padrão é 32 fichas, a máxima é
+512 e o detector aceita limites configuráveis de 1 a 1024 fichas e de 2 a 8
+repetições. A confirmação exige três ocorrências para reduzir falsos positivos:
+uma tabela ou lista que repete a moldura com valores novos não casa, porque o
+conteúdo canônico também muda.
+
+O detector é ligado por padrão, não altera logits, temperatura, `top_p`, `top_k`,
+`repeat_penalty`, `repeat_last_n`, o estado recorrente ou `kv_seq_budget`, e não
+faz parte do protocolo entre peers. Quando confirma um ciclo, o gateway inclui
+a ficha que acabou de receber, esvazia o `StopMatcher`, não pede outra rodada de
+decode, libera a sessão e emite um resumo com `partial: true` e
+`finish_reason: "cycle"`. `/api/generate` expõe esses campos diretamente. Nos
+adaptadores OpenAI e Anthropic, o motivo específico fica em `x_pom.finish_reason`
+no quadro final e `x_pom.partial` fica verdadeiro; os motivos padrão dos
+provedores continuam compatíveis (`stop` e `end_turn`). Não há truncamento
+silencioso nem nova inferência.
+
+O operador pode desligar o comportamento com `--no-cycle-detection` no processo
+ou desmarcando `cycle_detection_enabled` na configuração de implantação. Os
+campos `cycle_detection_min_window_tokens`,
+`cycle_detection_max_window_tokens` e `cycle_detection_repetitions` ajustam a
+política pelos parâmetros de runtime da tela de implantação e são propagados a
+todos os peers.
+
 No TP, `handle_prefill` e `handle_step` serializam também o caminho de um
 frame com um único item usando `tp_batch_gate`. O gateway pode enviar esse
 frame pelo `BatchCoordinator`, e outra requisição não pode substituir o decode
@@ -1210,6 +1249,9 @@ parcial normal e um truncamento terminal nunca se confundem. `x_pom` conta a
 verdade:
 `truncated_tool_call` diz se o corte caiu dentro de uma chamada, e `partial` é
 `true` sempre que isso aconteceu ou houve perda de transporte.
+
+Um ciclo detectado também é uma parada terminal explícita, mas usa
+`finish_reason: "cycle"` no `x_pom`, com `partial: true`; ver a seção 3.5.
 
 **Por que não há reprefill.** O laço não reabre geração: ele continua a que já
 está aberta. A alternativa - encerrar a perna, reabrir com o texto gerado como

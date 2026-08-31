@@ -155,6 +155,16 @@ pub struct NodeConfig {
     pub top_k: u32,
     pub repeat_penalty: f32,
     pub repeat_last_n: u32,
+    /// Detecta três janelas consecutivas que repetem a mesma estrutura e
+    /// encerra a resposta com `finish_reason: cycle`.
+    #[serde(default = "default_cycle_detection_enabled")]
+    pub cycle_detection_enabled: bool,
+    #[serde(default = "default_cycle_detection_min_window_tokens")]
+    pub cycle_detection_min_window_tokens: u32,
+    #[serde(default = "default_cycle_detection_max_window_tokens")]
+    pub cycle_detection_max_window_tokens: u32,
+    #[serde(default = "default_cycle_detection_repetitions")]
+    pub cycle_detection_repetitions: u32,
     pub no_thinking: bool,
     pub single_peer: bool,
     /// Disable embedding extraction in llama.cpp. Set on the last (sampling)
@@ -248,6 +258,10 @@ impl NodeConfig {
             top_k: p.top_k,
             repeat_penalty: p.repeat_penalty,
             repeat_last_n: p.repeat_last_n,
+            cycle_detection_enabled: p.cycle_detection_enabled,
+            cycle_detection_min_window_tokens: p.cycle_detection_min_window_tokens,
+            cycle_detection_max_window_tokens: p.cycle_detection_max_window_tokens,
+            cycle_detection_repetitions: p.cycle_detection_repetitions,
             no_thinking: p.no_thinking,
             speculative_decoding_enabled: p.speculative_decoding_enabled,
             speculative_k: p.speculative_k,
@@ -319,6 +333,19 @@ fn default_prefill_max_inflight_chunks() -> u32 {
 }
 fn default_offload_kqv() -> bool {
     true
+}
+
+fn default_cycle_detection_enabled() -> bool {
+    true
+}
+fn default_cycle_detection_min_window_tokens() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
+}
+fn default_cycle_detection_max_window_tokens() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
+}
+fn default_cycle_detection_repetitions() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_REPETITIONS
 }
 
 fn default_fit_memory() -> bool {
@@ -1668,6 +1695,10 @@ mod tests {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
+            cycle_detection_enabled: true,
+            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
+            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
+            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,

@@ -263,6 +263,11 @@ O procedimento de subida está em `operacao.md`.
 - `old/scripts/request.sh` - `POST /api/generate` para o gateway com o prompt
   como primeiro argumento (`GATEWAY`/`PORT` sobrescrevem o host/porta).
 
+O detector conservador de ciclos vem ligado por padrão em cada processo. Para
+manter o comportamento anterior, o operador pode iniciar um nó com
+`--no-cycle-detection`; os limites da janela e o número de repetições são
+parâmetros de runtime persistidos pela tela de implantação.
+
 Não existe `pom-ksia.sh` em lugar nenhum do repositório (nem em histórico de
 git); a referência a ele no plano da etapa não corresponde a artefato
 versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.

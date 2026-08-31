@@ -702,6 +702,24 @@ existia para chamadas internas sem metadado. `no_thinking` controla apenas a
 abertura do bloco de raciocínio e não decide mais se o prompt é conversa. Assim
 o modo de pensamento e o enquadramento de conversa não podem se confundir.
 
+### 3.4 Amostragem da completion
+
+A cauda prepara a distribuição no `LlmEngine` em uma ordem única: copia os
+logits, aplica a penalidade aos ids distintos da janela final de
+`repeat_last_n`, devolve argmax quando a temperatura não é positiva e, para
+temperatura positiva, seleciona no máximo `top_k` logits. Calcula softmax
+estável apenas nesses sobreviventes, normaliza, ordena por probabilidade e
+mantém o menor prefixo cuja massa alcance `top_p`; após renormalizar esse
+núcleo, faz o sorteio multinomial com o LCG protegido por `Mutex`.
+
+Empates no corte de `top_k` são resolvidos pelo id original e não aumentam o
+conjunto além de K. O corte top-p também mantém somente o prefixo mínimo, mesmo
+com empates, para que a massa escolhida seja observável e determinística antes
+do sorteio. `repeat_last_n=64` permanece o padrão: a penalidade é unigramática,
+não um detector de ciclos de n-gramas ou blocos inteiros, portanto aumentar a
+janela não garantiria prevenir o ciclo observado e mudaria a política de
+amostragem.
+
 No TP, `handle_prefill` e `handle_step` serializam também o caminho de um
 frame com um único item usando `tp_batch_gate`. O gateway pode enviar esse
 frame pelo `BatchCoordinator`, e outra requisição não pode substituir o decode

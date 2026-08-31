@@ -1816,9 +1816,9 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
         available_devices.len()
     };
 
-    let memory_snapshot_complete = device_memories.iter().all(|memory| {
-        memory.total_bytes > 0 && memory.free_bytes <= memory.total_bytes
-    });
+    let memory_snapshot_complete = device_memories
+        .iter()
+        .all(|memory| memory.total_bytes > 0 && memory.free_bytes <= memory.total_bytes);
     let speed_scores = if available_devices.len() > 1 && memory_snapshot_complete {
         available_devices
             .iter()
@@ -4263,115 +4263,13 @@ pub fn sample_token_profiled(
     if logits.is_empty() {
         return (0, timings);
     }
-    let clone_started = Instant::now();
-    let mut logits = logits.to_vec();
-    timings.logits_clone_us = clone_started.elapsed().as_micros() as u64;
-
-    // Repetition penalty.
-    let repetition_started = Instant::now();
-    if cfg.repeat_penalty != 1.0 && !recent.is_empty() {
-        let window_start = recent.len().saturating_sub(cfg.repeat_last_n);
-        let window: std::collections::HashSet<i32> =
-            recent[window_start..].iter().copied().collect();
-        for &tok in &window {
-            let t = tok as usize;
-            if t < logits.len() {
-                logits[t] = if logits[t] > 0.0 {
-                    logits[t] / cfg.repeat_penalty
-                } else {
-                    logits[t] * cfg.repeat_penalty
-                };
-            }
-        }
-    }
-    timings.repetition_penalty_us = repetition_started.elapsed().as_micros() as u64;
-
-    if cfg.temperature <= 0.0 {
-        let selection_started = Instant::now();
-        let token = argmax(&logits);
-        timings.selection_us = selection_started.elapsed().as_micros() as u64;
-        return (token, timings);
-    }
-
-    // ── Top-K, on the raw logits ─────────────────────────────────────────────
-    //
-    // `exp` is strictly increasing, so the k largest logits are the k largest
-    // probabilities — the cut can be made before the softmax and without
-    // sorting. `select_nth_unstable_by` partitions in O(V) instead of the
-    // O(V log V) full sort this used to do, and everything downstream then
-    // works on k values instead of the whole vocabulary.
-    //
-    // On a 152k-token vocabulary with the default k of 40, that is the
-    // difference between ~30 ms and a few microseconds per token.
-    let top_k_started = Instant::now();
-    let kept_ids: Vec<usize> = if cfg.top_k > 0 && (cfg.top_k as usize) < logits.len() {
-        let k = cfg.top_k as usize;
-        let mut scratch = logits.clone();
-        let (_, kth, _) = scratch.select_nth_unstable_by(k - 1, |a, b| b.total_cmp(a));
-        let threshold = *kth;
-        // `>=` keeps ties at the cut, exactly as the old `p < threshold` did.
-        (0..logits.len())
-            .filter(|&i| logits[i] >= threshold)
-            .collect()
-    } else {
-        (0..logits.len()).collect()
-    };
-    timings.top_k_us = top_k_started.elapsed().as_micros() as u64;
-
-    // ── Softmax, over the survivors only ─────────────────────────────────────
-    //
-    // The shift uses the largest surviving logit, which is the largest logit
-    // overall — the argmax always survives a top-k. So the values here are bit
-    // for bit what a softmax over the whole vocabulary produced.
-    let softmax_started = Instant::now();
-    let max_l = kept_ids
-        .iter()
-        .map(|&i| logits[i])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let mut kept: Vec<(usize, f32)> = kept_ids
-        .into_iter()
-        .map(|i| (i, ((logits[i] - max_l) / cfg.temperature).exp()))
-        .collect();
-    timings.softmax_us = softmax_started.elapsed().as_micros() as u64;
-
-    // ── Top-P (nucleus) ──────────────────────────────────────────────────────
-    //
-    // Sorting is unavoidable here, but it now runs over k elements. Note that
-    // the walk is over UNNORMALISED probabilities, which is a defect kept
-    // deliberately: the largest is always `exp(0) == 1.0`, so any `top_p <= 1`
-    // is met by the first element and the draw collapses to greedy. Fixing it
-    // changes what the cluster generates, so it is a separate decision — see
-    // `top_p_below_one_currently_collapses_to_greedy`.
-    let top_p_started = Instant::now();
-    if cfg.top_p < 1.0 {
-        let mut by_prob: Vec<f32> = kept.iter().map(|(_, p)| *p).collect();
-        by_prob.sort_unstable_by(|a, b| b.total_cmp(a));
-        let mut cumsum = 0.0f32;
-        let mut cutoff = f32::NEG_INFINITY;
-        for p in &by_prob {
-            cumsum += p;
-            if cumsum >= cfg.top_p {
-                cutoff = *p;
-                break;
-            }
-        }
-        kept.retain(|(_, p)| *p >= cutoff);
-    }
-    timings.top_p_us = top_p_started.elapsed().as_micros() as u64;
+    let kept = sampling_candidates_profiled(logits, recent, cfg, &mut timings);
 
     // ── Multinomial draw ─────────────────────────────────────────────────────
     //
-    // `kept` is still in ascending index order, and the entries left out are
-    // exactly the ones that used to hold 0.0, so this walks the same cumulative
-    // sums as the old full-vocabulary loop and lands on the same token.
+    // The candidates are normalized and in ascending id order, so this is the
+    // only place that draws from the distribution.
     let selection_started = Instant::now();
-    let total: f32 = kept.iter().map(|(_, p)| *p).sum();
-    if total <= 0.0 {
-        let token = argmax(&logits);
-        timings.selection_us = selection_started.elapsed().as_micros() as u64;
-        return (token, timings);
-    }
-
     let rng_val: f32 = {
         // A simple LCG, to avoid pulling in `rand`.
         static RNG: Mutex<u64> = Mutex::new(0x853c49e6748fea9b);
@@ -4386,20 +4284,131 @@ pub fn sample_token_profiled(
     let mut cumsum = 0.0f32;
     let mut best = (0usize, f32::NEG_INFINITY);
     for (i, p) in &kept {
-        let normalised = *p / total;
-        cumsum += normalised;
+        cumsum += *p;
         if rng_val <= cumsum {
             timings.selection_us = selection_started.elapsed().as_micros() as u64;
             return (*i as i32, timings);
         }
         // Rounding can leave `rng_val` just past the final cumulative sum; the
         // most likely token is the answer then, matching the old fallback.
-        if normalised >= best.1 {
-            best = (*i, normalised);
+        if *p >= best.1 {
+            best = (*i, *p);
         }
     }
     timings.selection_us = selection_started.elapsed().as_micros() as u64;
     (best.0 as i32, timings)
+}
+
+fn sampling_candidates_profiled(
+    logits: &[f32],
+    recent: &[i32],
+    cfg: &SamplingConfig,
+    timings: &mut SamplingTimings,
+) -> Vec<(usize, f32)> {
+    let clone_started = Instant::now();
+    let mut adjusted = logits.to_vec();
+    timings.logits_clone_us = clone_started.elapsed().as_micros() as u64;
+
+    let repetition_started = Instant::now();
+    apply_repetition_penalty(&mut adjusted, recent, cfg);
+    timings.repetition_penalty_us = repetition_started.elapsed().as_micros() as u64;
+
+    if cfg.temperature <= 0.0 {
+        return vec![(argmax(&adjusted) as usize, 1.0)];
+    }
+
+    // Selecting the k largest raw logits is O(V): positive-temperature softmax
+    // preserves their order, and index breaks a tie without widening the set.
+    let top_k_started = Instant::now();
+    let ids = top_k_ids(&adjusted, cfg.top_k);
+    timings.top_k_us = top_k_started.elapsed().as_micros() as u64;
+
+    let softmax_started = Instant::now();
+    let max_l = ids
+        .iter()
+        .map(|&i| adjusted[i])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut candidates = ids
+        .into_iter()
+        .map(|i| (i, ((adjusted[i] - max_l) / cfg.temperature).exp()))
+        .collect::<Vec<_>>();
+    normalise_candidates(&mut candidates, &adjusted);
+    timings.softmax_us = softmax_started.elapsed().as_micros() as u64;
+
+    let top_p_started = Instant::now();
+    if cfg.top_p < 1.0 {
+        let mut ranked = candidates.clone();
+        ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let target = cfg.top_p.max(0.0);
+        let mut mass = 0.0;
+        let mut keep = 0;
+        for (_, probability) in &ranked {
+            mass += *probability;
+            keep += 1;
+            if mass >= target {
+                break;
+            }
+        }
+        ranked.truncate(keep);
+        ranked.sort_unstable_by_key(|(id, _)| *id);
+        candidates = ranked;
+        normalise_candidates(&mut candidates, &adjusted);
+    }
+    timings.top_p_us = top_p_started.elapsed().as_micros() as u64;
+    candidates
+}
+
+#[cfg(test)]
+fn sampling_candidates(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> Vec<(usize, f32)> {
+    sampling_candidates_profiled(logits, recent, cfg, &mut SamplingTimings::default())
+}
+
+fn apply_repetition_penalty(logits: &mut [f32], recent: &[i32], cfg: &SamplingConfig) {
+    if cfg.repeat_penalty == 1.0 || recent.is_empty() {
+        return;
+    }
+    let window_start = recent.len().saturating_sub(cfg.repeat_last_n);
+    let window: std::collections::HashSet<i32> = recent[window_start..].iter().copied().collect();
+    for tok in window {
+        let token = tok as usize;
+        if token < logits.len() {
+            logits[token] = if logits[token] > 0.0 {
+                logits[token] / cfg.repeat_penalty
+            } else {
+                logits[token] * cfg.repeat_penalty
+            };
+        }
+    }
+}
+
+fn top_k_ids(logits: &[f32], top_k: i32) -> Vec<usize> {
+    if top_k <= 0 || (top_k as usize) >= logits.len() {
+        return (0..logits.len()).collect();
+    }
+
+    let k = top_k as usize;
+    let mut ids: Vec<usize> = (0..logits.len()).collect();
+    ids.select_nth_unstable_by(k - 1, |&a, &b| {
+        logits[b].total_cmp(&logits[a]).then_with(|| a.cmp(&b))
+    });
+    ids.truncate(k);
+    ids.sort_unstable();
+    ids
+}
+
+fn normalise_candidates(candidates: &mut Vec<(usize, f32)>, adjusted: &[f32]) {
+    let total = candidates
+        .iter()
+        .map(|(_, probability)| *probability)
+        .sum::<f32>();
+    if total > 0.0 {
+        for (_, probability) in candidates {
+            *probability /= total;
+        }
+    } else {
+        candidates.clear();
+        candidates.push((argmax(adjusted) as usize, 1.0));
+    }
 }
 
 /// Index of the largest value, matching `max_by`'s "last one wins" on ties.
@@ -4698,6 +4707,13 @@ mod tests {
             }
         }
 
+        fn candidate_ids(logits: &[f32], c: &SamplingConfig) -> Vec<i32> {
+            sampling_candidates(logits, &[], c)
+                .into_iter()
+                .map(|(id, _)| id as i32)
+                .collect()
+        }
+
         /// Zero temperature is argmax, and argmax is the highest logit.
         #[test]
         fn zero_temperature_is_argmax() {
@@ -4719,20 +4735,10 @@ mod tests {
             }
         }
 
-        /// Ties at the cut are kept rather than broken arbitrarily, so a k of 1
-        /// over three equal maxima can still draw any of them.
         #[test]
-        fn a_tie_at_the_cut_survives() {
+        fn top_k_does_not_expand_past_k_on_a_tie() {
             let logits = [7.0, 7.0, 7.0, 1.0];
-            let c = cfg(1.0, 1, 1.0);
-
-            let mut seen = [false; 3];
-            for _ in 0..500 {
-                let picked = sample_token(&logits, &[], &c);
-                assert!(picked != 3, "o logit baixo nunca deveria sair");
-                seen[picked as usize] = true;
-            }
-            assert!(seen.iter().all(|s| *s), "os três empatados têm que sair");
+            assert_eq!(candidate_ids(&logits, &cfg(1.0, 1, 1.0)).len(), 1);
         }
 
         /// The repetition penalty divides positive logits, which can move a
@@ -4781,25 +4787,47 @@ mod tests {
             );
         }
 
-        /// Documents a real defect, so the rewrite preserves it instead of
-        /// silently changing what the cluster generates. `probs` are NOT
-        /// normalised when top-p walks them: the largest is always exactly
-        /// `exp(0) == 1.0`, so any `top_p <= 1.0` is satisfied by the first
-        /// element alone and everything else is cut. Every request with the
-        /// default `top_p` of 0.9 is therefore greedy, and temperature and
-        /// top_k have no effect at all.
         #[test]
-        fn top_p_below_one_currently_collapses_to_greedy() {
-            let logits = [1.0, 8.0, 7.9, 7.8];
-            let c = cfg(1.0, 40, 0.9);
+        fn top_p_keeps_the_minimum_normalised_nucleus() {
+            let logits = [4.0, 3.0, 2.0, 1.0, -1.0];
+            assert_eq!(candidate_ids(&logits, &cfg(1.0, 40, 0.8)), vec![0, 1]);
+        }
 
-            for _ in 0..200 {
-                assert_eq!(
-                    sample_token(&logits, &[], &c),
-                    1,
-                    "top_p < 1.0 hoje só deixa passar o argmax"
-                );
+        #[test]
+        fn top_p_near_one_keeps_the_tail_and_small_top_p_does_not() {
+            let logits = [4.0, 3.0, 2.0, 1.0, -1.0];
+            assert_eq!(
+                candidate_ids(&logits, &cfg(1.0, 40, 0.999)),
+                vec![0, 1, 2, 3, 4]
+            );
+            assert_eq!(candidate_ids(&logits, &cfg(1.0, 40, 0.2)), vec![0]);
+        }
+
+        #[test]
+        fn temperature_changes_the_nucleus_candidates() {
+            let logits = [4.0, 3.0, 2.0, 1.0, 0.0];
+            assert_eq!(candidate_ids(&logits, &cfg(0.5, 0, 0.9)), vec![0, 1]);
+            assert_eq!(candidate_ids(&logits, &cfg(2.0, 0, 0.9)), vec![0, 1, 2, 3]);
+        }
+
+        #[test]
+        fn non_positive_temperature_remains_deterministic_argmax() {
+            let logits = [0.1, 9.0, 0.3, 2.0];
+            for temperature in [0.0, -1.0] {
+                assert_eq!(sample_token(&logits, &[], &cfg(temperature, 1, 0.01)), 1);
             }
+        }
+
+        #[test]
+        fn top_k_then_top_p_composes_as_count_then_mass() {
+            let logits = [10.0, 9.0, 8.0, 7.0, 6.0];
+            assert_eq!(candidate_ids(&logits, &cfg(1.0, 3, 0.95)), vec![0, 1, 2]);
+        }
+
+        #[test]
+        fn top_p_regression_preserves_multiple_candidates_instead_of_greedy() {
+            let logits = [1.0, 8.0, 7.9, 7.8];
+            assert_eq!(candidate_ids(&logits, &cfg(1.0, 40, 0.9)), vec![1, 2, 3]);
         }
     }
 

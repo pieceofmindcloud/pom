@@ -655,7 +655,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   do Chat não deduz esse estado de um timing zero.
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
-- `SamplingConfig` - temperature/top_p/top_k/repeat_penalty, aplicados por passo.
+- `SamplingConfig` - a cada passo, o sampler aplica a penalidade de repetição,
+  softmax com temperatura positiva, top-k por contagem, núcleo top-p sobre as
+  probabilidades normalizadas e sorteio multinomial. Temperatura não positiva
+  devolve argmax. `repeat_last_n=64` continua padrão: a penalidade é por token
+  e não detecta ciclos de n-gramas, então ampliar a janela não garantiria
+  bloquear o ciclo observado e mudaria a política.
 - `BatchLayout` - transforma a ordem física das linhas do `llama_batch` em
   ranges por `item_id`; a posição global de logits nunca é inferida pelo índice
   da sessão. Mistura de token e hidden state fica em lanes distintas.

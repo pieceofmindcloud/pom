@@ -44,7 +44,9 @@ documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `inferencia.md` e `web-ui.md` também
 documentam o RTT observado do Chat, o RTT direcional por aresta, a leitura
 efetiva de colocação e configuração por peer, a reserva do segundo contexto MTP
-e o recuo dele para a RAM. `implantacao.md` também documenta a
+e o recuo dele para a RAM. Em `inferencia.md`, o fit do modelo principal é a
+autoridade: a reserva do MTP só entra numa tentativa conjunta que não possa
+reduzir suas camadas. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa. `web-ui.md` descreve como essa validação aparece na tela Implantar e

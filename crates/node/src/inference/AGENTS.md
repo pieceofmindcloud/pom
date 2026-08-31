@@ -120,10 +120,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   anexar ou observar guarda o motivo e aparece em `mtp_ready`/
   `mtp_unavailable_reason` no `/health`.
   Quando pronto, `mtp_allocation` diz se o contexto ficou na VRAM ou na RAM.
-  O `fit_plan` mede o segundo contexto antes de ajustar a GPU e, em caso de
-  falha, pode carregar o modelo MTP CPU-only com `offload_kqv=false` e
-  `op_offload=false`. Um override só nos pesos `nextn` não basta porque o
-  scheduler também pode escolher o dispositivo da camada e do output head.
+  O `fit_plan` encaixa primeiro o modelo principal e seu contexto; só aceita a
+  reserva do segundo contexto se o resultado conjunto preservar todas as
+  camadas principais na GPU. Quando não cabe, o alvo fica sem pesos `nextn` na
+  VRAM e, se permitido, carrega o modelo MTP CPU-only com
+  `offload_kqv=false` e `op_offload=false`. Um override só nos pesos `nextn`
+  não basta porque o scheduler também pode escolher o dispositivo da camada e
+  do output head. A sondagem reporta `context` e `compute` por dispositivo;
+  este último pode acompanhar `n_ctx` pela máscara de atenção do grafo, então
+  a janela completa continua necessária para manter o cache pareado.
 - `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
   `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do

@@ -136,10 +136,14 @@ O valor não é consultado quando `fit_memory=false`.
 Quando `mtp_enabled=true`, o fit faz antes uma segunda sondagem seca com
 `ctx_type=MTP`: o modelo é aberto sem pesos alocados, o contexto `nextn` é
 reservado com o mesmo `n_ctx`, `n_seq_max`, cache e microlote, e os bytes de
-`context` + `compute` são somados à margem do dispositivo correspondente. O
-contexto principal só é ajustado depois dessa reserva, portanto o MTP não é
-excluído porque o encaixe encheu a VRAM. MTP desligado não executa essa
-sondagem nem adiciona orçamento.
+`context` + `compute` são somados à margem do dispositivo correspondente para
+uma segunda tentativa opcional. Primeiro, o fit encaixa o modelo principal e
+seu contexto sem MTP. A tentativa conjunta só é aceita quando preserva esse
+encaixe integral; se reduzir `n_gpu_layers` ou falhar, o plano principal vence,
+o alvo fica sem pesos `nextn` na VRAM e o MTP recua para o modelo companheiro em
+RAM, se permitido, ou fica indisponível. Assim a reserva continua valendo por
+dispositivo sem deixar a otimização deslocar camadas que cada token precisa
+executar. MTP desligado não executa essa sondagem nem adiciona orçamento.
 Se a criação do contexto MTP ainda falhar na VRAM, o runtime tenta o recuo
 quando `RuntimeParams.mtp_cpu_fallback_enabled=true`, valor padrão. Esse
 recuo carrega um modelo irmão CPU-only para o contexto `nextn`, com
@@ -151,6 +155,19 @@ O `/health` publica `mtp_ready`, `mtp_allocation` (`vram` ou `ram`) e
 `mtp_unavailable_reason`. A tela mostra a localização em todo sucesso e a
 razão operacional quando o modelo não tem `nextn`, quando o recuo foi recusado
 ou quando VRAM e RAM falharam.
+O campo `context_memory` separa o cache KV (`context`) do buffer de cálculo
+(`compute`). A sondagem seca do MTP soma os dois, por dispositivo. O buffer de
+1.058 MiB observado em um grafo de 62 nós é, portanto, uma reserva do
+scheduler, não outro cache KV. No llama.cpp, `sched_reserve` limita os tokens
+do grafo ao microlote, mas a máscara de atenção é criada com `n_kv` da janela
+inteira do cache; por isso parte do buffer de cálculo acompanha o `n_ctx`
+grande mesmo quando `n_ubatch` é 128. O grafo MTP também cria seus tensores de
+entrada por microlote, mas não elimina essa máscara dependente da janela.
+Reduzir apenas o `n_ctx` do contexto MTP quebraria o pareamento com o cache do
+alvo e a remoção de sequências entre rodadas. Como o buffer e o cache são
+reservados pelo mesmo contexto e o ajuste seguro exigiria uma mudança no
+runtime upstream, o dimensionamento permanece como está; a prioridade agora
+faz o MTP ceder antes de disputar esse buffer com as camadas principais.
 O fork local do llama.cpp captura esse livre antes de criar o contexto seco da
 sondagem. `no_alloc=true` e `LLAMA_LOAD_MODE_NONE` impedem os pesos, mas o
 estado recorrente ainda aloca buffers reais durante `llama_init_from_model`;
@@ -1378,15 +1395,6 @@ aquele salto não deu.
   do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
   Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
   pom é expectativa, não fato.
-- **O fit automático ainda não reserva orçamento para o segundo contexto MTP.**
-  O fit dimensiona o contexto principal antes de `MtpDrafter::attach`, e os
-  dois contextos compartilham os pesos, mas o contexto MTP ainda precisa do
-  próprio KV e dos buffers de computação. O microlote compartilhado reduz a
-  reserva explosiva observada com `n_batch` grande, mas não garante que reste
-  VRAM para o MTP. A correção completa exige um orçamento conjunto dos dois
-  contextos ou uma recusa preventiva; isso fica fora desta alteração. O
-  `health` e o card do Painel tornam a indisponibilidade explícita quando ela
-  ocorrer.
 ## Nota de versão
 
 Documentado a partir dos fontes na branch `fm/pom-linha-2` (2026-08-15):

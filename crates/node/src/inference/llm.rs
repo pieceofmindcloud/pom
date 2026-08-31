@@ -1679,6 +1679,32 @@ fn fit_memory_margins(
 enum MtpFitMode {
     Disabled,
     Vram,
+    Ram,
+}
+
+/// O fit conjunto só pode habilitar o MTP se conservar o encaixe integral que
+/// o modelo principal obteve sozinho. `common_fit_params` usa a mesma contagem
+/// para as camadas principais e as camadas `nextn`; aceitar um resultado
+/// reduzido aqui faria o sufixo MTP empurrar camadas principais para a CPU.
+fn choose_mtp_fit_mode(
+    requested: MtpFitMode,
+    primary_gpu_layers: i32,
+    mtp_gpu_layers: Option<i32>,
+) -> MtpFitMode {
+    match requested {
+        MtpFitMode::Disabled => MtpFitMode::Disabled,
+        MtpFitMode::Vram if primary_gpu_layers == -1 && mtp_gpu_layers == Some(-1) => {
+            MtpFitMode::Vram
+        }
+        MtpFitMode::Vram | MtpFitMode::Ram => MtpFitMode::Ram,
+    }
+}
+
+fn mtp_mode_without_gpu_fit(requested: MtpFitMode) -> MtpFitMode {
+    match requested {
+        MtpFitMode::Disabled => MtpFitMode::Disabled,
+        MtpFitMode::Vram | MtpFitMode::Ram => MtpFitMode::Ram,
+    }
 }
 
 fn fit_memory_margins_with_mtp(
@@ -1808,6 +1834,44 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
+    fn mtp_apertado_nao_pode_reduzir_camadas_principais() {
+        // Reproduz a inversão de 27fda8b: o fit principal cabe inteiro, mas
+        // o fit conjunto só cabe se remover camadas. Nesse caso o MTP cede.
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(50)),
+            MtpFitMode::Ram
+        );
+    }
+
+    #[test]
+    fn mtp_em_vram_so_e_aceito_quando_o_fit_conjunto_tambem_cabe() {
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, Some(-1)),
+            MtpFitMode::Vram
+        );
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, -1, None),
+            MtpFitMode::Ram
+        );
+    }
+
+    #[test]
+    fn principal_reduzido_nao_da_direito_ao_mtp_na_vram() {
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Vram, 50, Some(-1)),
+            MtpFitMode::Ram
+        );
+    }
+
+    #[test]
+    fn mtp_desligado_mantem_a_distribuicao_do_fit_principal() {
+        assert_eq!(
+            choose_mtp_fit_mode(MtpFitMode::Disabled, 50, Some(50)),
+            MtpFitMode::Disabled
+        );
+    }
+
+    #[test]
     fn sonda_sem_nextn_nao_reserva_memoria() {
         let value = serde_json::json!({
             "has_nextn": false,
@@ -1882,6 +1946,10 @@ struct FitPlan {
     /// empty when speed could not be ranked confidently, preserving llama's
     /// default device selection.
     devices: Vec<sys::ggml_backend_dev_t>,
+    /// Whether the target model should load its optional `nextn` weights in
+    /// VRAM. `Ram` keeps those weights out of the target so the CPU companion
+    /// can own them without changing the primary placement.
+    mtp_mode: MtpFitMode,
     applied: bool,
 }
 
@@ -1889,16 +1957,22 @@ fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
     cfg.fit_memory && cfg.n_gpu_layers == DEFAULT_GPU_LAYERS
 }
 
-fn load_mtp_weights(cfg: &EngineConfig) -> bool {
-    cfg.mtp
+fn empty_fit_plan(cfg: &EngineConfig) -> FitPlan {
+    let mtp_mode = if cfg.mtp {
+        MtpFitMode::Vram
+    } else {
+        MtpFitMode::Disabled
+    };
+    empty_fit_plan_with_mtp_mode(cfg, mtp_mode)
 }
 
-fn empty_fit_plan(cfg: &EngineConfig) -> FitPlan {
+fn empty_fit_plan_with_mtp_mode(cfg: &EngineConfig, mtp_mode: MtpFitMode) -> FitPlan {
     FitPlan {
         config: cfg.clone(),
         tensor_split: Vec::new(),
         tensor_buft_overrides: Vec::new(),
         devices: Vec::new(),
+        mtp_mode,
         applied: false,
     }
 }
@@ -1988,7 +2062,10 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
                 cfg.n_gpu_layers
             );
         }
-        return Ok(empty_fit_plan(cfg));
+        return Ok(empty_fit_plan_with_mtp_mode(
+            cfg,
+            mtp_mode_without_gpu_fit(mtp_mode),
+        ));
     }
 
     let path = CString::new(model_path)
@@ -2008,14 +2085,6 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
         sys::llama_rs_get_devices(available_devices.as_mut_ptr(), available_devices.len())
     };
     available_devices.truncate(available_count.min(n_devices));
-    let mut tensor_split = vec![0.0_f32; n_devices];
-    let mut tensor_buft_overrides = vec![
-        sys::llama_model_tensor_buft_override {
-            pattern: ptr::null(),
-            buft: ptr::null_mut(),
-        };
-        n_overrides
-    ];
     let mut device_memories = vec![
         sys::llama_rs_device_memory {
             free_bytes: 0,
@@ -2122,81 +2191,156 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
             "llama.cpp fit memória e orçamento por dispositivo"
         );
     }
-    let mut mparams = unsafe { sys::llama_model_default_params() };
-    mparams.n_gpu_layers = -1;
-    if !ordered_devices.is_empty() {
-        // `ordered_devices` includes the NULL sentinel required by llama.cpp.
-        // Keep it in FitPlan so the same order reaches the real model load.
-        mparams.devices = ordered_devices.as_ptr() as *mut sys::ggml_backend_dev_t;
-    }
-    mparams.load_mtp = mtp_mode == MtpFitMode::Vram;
-    mparams.moe_external_executor = cfg.moe_external_executor;
-    if !cfg.moe_external_executor_layers.is_empty() {
-        mparams.moe_external_executor_layers = cfg.moe_external_executor_layers.as_ptr();
-        mparams.moe_external_executor_layer_count = cfg.moe_external_executor_layers.len();
-    }
-
-    let mut cparams = unsafe { sys::llama_context_default_params() };
-    cparams.n_ctx = cfg.n_ctx;
-    apply_context_batch_params(&mut cparams, cfg);
-    cparams.n_seq_max = kv_seq_budget(cfg.max_sessions);
-    cparams.kv_unified = true;
-    cparams.offload_kqv = cfg.offload_kqv;
-    apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
-    cparams.embeddings = cfg.need_embeddings;
-    cparams.n_rs_seq = cfg.rs_seq_window;
-
-    if mtp_mode == MtpFitMode::Vram {
-        if let Some(mtp_cost) = mtp_vram_costs(&path, &mparams, &cparams, n_devices) {
-            margins = fit_memory_margins_with_mtp(&margins, &mtp_cost, mtp_mode);
-            tracing::info!(
-                mtp_vram_cost = ?mtp_cost,
-                "llama.cpp fit reservou o contexto MTP por dispositivo"
-            );
-        } else {
-            warn!(
-                "llama.cpp não mediu o contexto MTP; a tentativa de recuo para RAM ficará disponível se a GPU falhar"
-            );
+    let make_model_params = |load_mtp: bool| {
+        let mut params = unsafe { sys::llama_model_default_params() };
+        params.n_gpu_layers = -1;
+        if !ordered_devices.is_empty() {
+            // `ordered_devices` includes the NULL sentinel required by
+            // llama.cpp. Keep it in FitPlan so the same order reaches the real
+            // model load.
+            params.devices = ordered_devices.as_ptr() as *mut sys::ggml_backend_dev_t;
         }
-    }
+        params.load_mtp = load_mtp;
+        params.moe_external_executor = cfg.moe_external_executor;
+        if !cfg.moe_external_executor_layers.is_empty() {
+            params.moe_external_executor_layers = cfg.moe_external_executor_layers.as_ptr();
+            params.moe_external_executor_layer_count = cfg.moe_external_executor_layers.len();
+        }
+        params
+    };
+    let make_context_params = || {
+        let mut params = unsafe { sys::llama_context_default_params() };
+        params.n_ctx = cfg.n_ctx;
+        apply_context_batch_params(&mut params, cfg);
+        params.n_seq_max = kv_seq_budget(cfg.max_sessions);
+        params.kv_unified = true;
+        params.offload_kqv = cfg.offload_kqv;
+        apply_cache_types(&mut params, cfg.cache_type_k, cfg.cache_type_v);
+        params.embeddings = cfg.need_embeddings;
+        params.n_rs_seq = cfg.rs_seq_window;
+        params
+    };
 
-    let status = unsafe {
+    // First fit only the work that every token must execute. The MTP pass below
+    // is allowed to reserve its own context only after this plan fits intact.
+    let mut primary_tensor_split = vec![0.0_f32; n_devices];
+    let mut primary_tensor_buft_overrides = vec![
+        sys::llama_model_tensor_buft_override {
+            pattern: ptr::null(),
+            buft: ptr::null_mut(),
+        };
+        n_overrides
+    ];
+    let mut primary_mparams = make_model_params(false);
+    let mut primary_cparams = make_context_params();
+    let primary_status = unsafe {
         sys::llama_rs_fit_params(
             path.as_ptr(),
-            &mut mparams,
-            &mut cparams,
-            tensor_split.as_mut_ptr(),
-            tensor_buft_overrides.as_mut_ptr(),
+            &mut primary_mparams,
+            &mut primary_cparams,
+            primary_tensor_split.as_mut_ptr(),
+            primary_tensor_buft_overrides.as_mut_ptr(),
             margins.as_mut_ptr(),
             FIT_MIN_CONTEXT,
             sys::GGML_LOG_LEVEL_WARN,
         )
     };
 
-    if status != 0 {
+    if primary_status != 0 {
         warn!(
-            "llama.cpp fit não encontrou uma configuração automática (status {status}); usando os parâmetros solicitados"
+            "llama.cpp fit não encontrou uma configuração automática (status {primary_status}); usando os parâmetros solicitados sem MTP na GPU"
         );
-        return Ok(empty_fit_plan(cfg));
+        return Ok(empty_fit_plan_with_mtp_mode(
+            cfg,
+            mtp_mode_without_gpu_fit(mtp_mode),
+        ));
+    }
+
+    let primary_gpu_layers = primary_mparams.n_gpu_layers;
+    let mut selected_mtp_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, None);
+    let mut selected_n_gpu_layers = primary_mparams.n_gpu_layers;
+    let mut selected_n_ctx = primary_cparams.n_ctx;
+    let mut selected_tensor_split = primary_tensor_split;
+    let mut selected_tensor_buft_overrides = primary_tensor_buft_overrides;
+
+    if mtp_mode == MtpFitMode::Vram && primary_gpu_layers == -1 {
+        let mut mtp_mparams = make_model_params(true);
+        let mtp_cparams = make_context_params();
+        let mut joint_margins = if let Some(mtp_cost) =
+            mtp_vram_costs(&path, &mtp_mparams, &mtp_cparams, n_devices)
+        {
+            tracing::info!(
+                mtp_vram_cost = ?mtp_cost,
+                "llama.cpp fit reservou o contexto MTP por dispositivo após preservar o modelo principal"
+            );
+            fit_memory_margins_with_mtp(&margins, &mtp_cost, MtpFitMode::Vram)
+        } else {
+            warn!(
+                "llama.cpp não mediu o contexto MTP; a tentativa de recuo para RAM ficará disponível se a GPU falhar"
+            );
+            margins.clone()
+        };
+        let mut mtp_tensor_split = vec![0.0_f32; n_devices];
+        let mut mtp_tensor_buft_overrides = vec![
+            sys::llama_model_tensor_buft_override {
+                pattern: ptr::null(),
+                buft: ptr::null_mut(),
+            };
+            n_overrides
+        ];
+        let mut mtp_cparams = mtp_cparams;
+        let mtp_status = unsafe {
+            sys::llama_rs_fit_params(
+                path.as_ptr(),
+                &mut mtp_mparams,
+                &mut mtp_cparams,
+                mtp_tensor_split.as_mut_ptr(),
+                mtp_tensor_buft_overrides.as_mut_ptr(),
+                joint_margins.as_mut_ptr(),
+                FIT_MIN_CONTEXT,
+                sys::GGML_LOG_LEVEL_WARN,
+            )
+        };
+        let joint_gpu_layers = (mtp_status == 0).then_some(mtp_mparams.n_gpu_layers);
+        selected_mtp_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, joint_gpu_layers);
+        if selected_mtp_mode == MtpFitMode::Vram {
+            selected_n_gpu_layers = mtp_mparams.n_gpu_layers;
+            selected_n_ctx = mtp_cparams.n_ctx;
+            selected_tensor_split = mtp_tensor_split;
+            selected_tensor_buft_overrides = mtp_tensor_buft_overrides;
+        } else {
+            tracing::info!(
+                primary_gpu_layers,
+                joint_gpu_layers = ?joint_gpu_layers,
+                "llama.cpp fit recusou a reserva MTP para preservar as camadas principais"
+            );
+        }
+    } else if mtp_mode == MtpFitMode::Vram {
+        tracing::info!(
+            primary_gpu_layers,
+            "llama.cpp fit manteve o MTP fora da VRAM porque o encaixe principal já precisou reduzir camadas"
+        );
     }
 
     let mut effective = cfg.clone();
-    effective.n_gpu_layers = mparams.n_gpu_layers;
-    effective.n_ctx = cparams.n_ctx;
+    effective.n_gpu_layers = selected_n_gpu_layers;
+    effective.n_ctx = selected_n_ctx;
 
     tracing::info!(
         requested_gpu_layers = cfg.n_gpu_layers,
         effective_gpu_layers = effective.n_gpu_layers,
         requested_context = cfg.n_ctx,
         effective_context = effective.n_ctx,
+        mtp_fit_mode = ?selected_mtp_mode,
         "llama.cpp fit ajustou os parâmetros de memória"
     );
 
     Ok(FitPlan {
         config: effective,
-        tensor_split,
-        tensor_buft_overrides,
+        tensor_split: selected_tensor_split,
+        tensor_buft_overrides: selected_tensor_buft_overrides,
         devices: ordered_devices,
+        mtp_mode: selected_mtp_mode,
         applied: true,
     })
 }
@@ -2273,6 +2417,9 @@ struct CachedModel {
     loaded: Arc<LoadedModel>,
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
+    /// Whether the cached target actually carries `nextn` weights. This is
+    /// distinct from the operator request: a RAM fallback keeps the target
+    /// model MTP-free.
     mtp_enabled: bool,
     /// A CPU companion is held by the engine, not by this cache entry. Do not
     /// reuse this target model after that fallback or the next reconstruction
@@ -2337,15 +2484,16 @@ impl ModelCache {
         *entry = None;
     }
 
-    /// A cached target after a RAM fallback is not reusable on its own: the
-    /// CPU-only companion belongs to the engine that just ended. Drop that
-    /// target before the next VRAM attempt, or the old weights would remain
-    /// alive while the new copy is loaded.
+    /// A cached target without the requested MTP mode is not reusable on its
+    /// own: the CPU-only companion belongs to the engine that just ended, and
+    /// a target without nextn cannot satisfy a new MTP request. Drop that
+    /// target before the next attempt, or the old weights would remain alive
+    /// while the new copy is loaded.
     fn clear_mtp_fallback(&self) -> bool {
         let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
         let should_clear = entry
             .as_ref()
-            .is_some_and(|cached| cached.mtp_enabled && cached.mtp_fallback_used);
+            .is_some_and(|cached| !cached.mtp_enabled || cached.mtp_fallback_used);
         if should_clear {
             *entry = None;
         }
@@ -2509,7 +2657,7 @@ impl Drop for LlmEngine {
 impl LoadedModel {
     /// Lê os pesos do disco. Uma vez por arquivo, não por contexto.
     fn load(model_path: &str, plan: &FitPlan) -> Result<Arc<Self>> {
-        Self::load_with_mtp(model_path, plan, load_mtp_weights(&plan.config))
+        Self::load_with_mtp(model_path, plan, plan.mtp_mode == MtpFitMode::Vram)
     }
 
     /// Lê os pesos com a opção MTP explícita. O recuo para RAM usa isso para
@@ -2575,7 +2723,7 @@ impl LoadedModel {
         cpu_cfg.moe_external_executor = false;
         cpu_cfg.moe_external_executor_layers.clear();
         let plan = empty_fit_plan(&cpu_cfg);
-        Self::load(model_path, &plan)
+        Self::load_with_mtp(model_path, &plan, true)
     }
 }
 
@@ -2643,22 +2791,37 @@ impl LlmEngine {
         )?;
         let mut mtp_fallback_used = false;
 
-        if cfg.mtp && engine.mtp_initial_context_error.is_some() {
-            let vram_error = engine
-                .mtp_initial_context_error
-                .clone()
-                .expect("a condição acabou de confirmar o erro MTP");
+        let mtp_vram_error = engine.mtp_initial_context_error.clone();
+        let mtp_requires_ram =
+            cfg.mtp && (vram_plan.mtp_mode == MtpFitMode::Ram || mtp_vram_error.is_some());
+        if mtp_requires_ram {
+            let vram_reason = mtp_vram_error.clone().map_or_else(
+                || {
+                    "MTP não foi colocado na VRAM para preservar as camadas e o contexto do modelo principal"
+                        .to_string()
+                },
+                |error| format!("falha ao criar o contexto MTP na VRAM: {error}"),
+            );
             if cfg.mtp_cpu_fallback_enabled {
                 drop(engine);
 
                 let ram_result = (|| -> Result<(Self, Arc<LoadedModel>)> {
                     let mtp_loaded = LoadedModel::load_mtp_cpu(model_path, &vram_plan.config)?;
-                    // The target's nextn weights were loaded in VRAM for the
-                    // first attempt. Release that model before loading the
-                    // target again without MTP weights, otherwise the RAM
-                    // fallback would still pay for the failed GPU copy.
-                    loaded.take();
-                    let target_loaded = LoadedModel::load_with_mtp(model_path, &vram_plan, false)?;
+                    let target_loaded = if vram_plan.mtp_mode == MtpFitMode::Ram {
+                        // The primary-only fit already kept nextn out of the
+                        // target. Reuse it so the fallback cannot reintroduce
+                        // the optional weights in VRAM.
+                        loaded
+                            .take()
+                            .expect("o plano RAM deve manter o alvo carregado")
+                    } else {
+                        // The target's nextn weights were loaded in VRAM for
+                        // the first attempt. Release that model before loading
+                        // the target again without MTP weights, otherwise the
+                        // RAM fallback would still pay for the failed GPU copy.
+                        loaded.take();
+                        LoadedModel::load_with_mtp(model_path, &vram_plan, false)?
+                    };
                     let ram_engine = Self::from_loaded_with_mtp_offload(
                         target_loaded.clone(),
                         &vram_plan.config,
@@ -2680,9 +2843,8 @@ impl LlmEngine {
                                 engine.mtp_initial_context_error.clone().unwrap_or_else(|| {
                                     "o contexto MTP não ficou pronto na RAM".to_string()
                                 });
-                            engine.mtp_unavailable_reason = Some(format!(
-                                "falha ao criar o contexto MTP na VRAM e na RAM: VRAM: {vram_error}; RAM: {ram_error}"
-                            ));
+                            engine.mtp_unavailable_reason =
+                                Some(format!("{vram_reason}; RAM: {ram_error}"));
                         }
                     }
                     Err(ram_error) => {
@@ -2700,14 +2862,13 @@ impl LlmEngine {
                             vram_plan.config.n_gpu_layers,
                         )?;
                         loaded = Some(target_loaded);
-                        engine.mtp_unavailable_reason = Some(format!(
-                            "falha ao criar o contexto MTP na VRAM e na RAM: VRAM: {vram_error}; RAM: {ram_error:#}"
-                        ));
+                        engine.mtp_unavailable_reason =
+                            Some(format!("{vram_reason}; RAM: {ram_error:#}"));
                     }
                 }
             } else {
                 engine.mtp_unavailable_reason = Some(format!(
-                    "falha ao criar o contexto MTP na VRAM; o recuo para a RAM foi recusado pelo operador: {vram_error}"
+                    "{vram_reason}; o recuo para a RAM foi recusado pelo operador"
                 ));
             }
         }
@@ -2718,7 +2879,7 @@ impl LlmEngine {
             loaded,
             engine.fit_memory_applied,
             engine.effective_n_gpu_layers,
-            cfg.mtp,
+            cfg.mtp && vram_plan.mtp_mode == MtpFitMode::Vram,
             mtp_fallback_used,
             engine.moe_external_executor,
             cfg.moe_external_executor_layers.clone(),
@@ -2825,10 +2986,31 @@ impl LlmEngine {
             },
         )?;
         let loaded = LoadedModel::load(model_path, &plan)?;
+        let mtp_loaded =
+            if cfg.mtp && plan.mtp_mode == MtpFitMode::Ram && cfg.mtp_cpu_fallback_enabled {
+                match LoadedModel::load_mtp_cpu(model_path, &plan.config) {
+                    Ok(loaded) => Some(loaded),
+                    Err(error) => {
+                        warn!("recuo do MTP para RAM falhou no pool: {error:#}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
         let por_contexto = per_context_config(&plan.config, n);
         (0..n)
             .map(|_| {
-                let mut engine = Self::with_model(loaded.clone(), &por_contexto)?;
+                let mut engine = if mtp_loaded.is_some() {
+                    Self::with_model_and_mtp_offload(
+                        loaded.clone(),
+                        &por_contexto,
+                        mtp_loaded.clone(),
+                        false,
+                    )?
+                } else {
+                    Self::with_model(loaded.clone(), &por_contexto)?
+                };
                 engine.fit_memory_applied = plan.applied;
                 engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
                 engine.effective_n_ubatch = effective_n_ubatch(&por_contexto);
@@ -4680,10 +4862,10 @@ mod pool_tests {
     #[test]
     fn mtp_configuration_requests_loading_nextn_weights() {
         let mut cfg = cfg();
-        assert!(!load_mtp_weights(&cfg));
+        assert_eq!(empty_fit_plan(&cfg).mtp_mode, MtpFitMode::Disabled);
 
         cfg.mtp = true;
-        assert!(load_mtp_weights(&cfg));
+        assert_eq!(empty_fit_plan(&cfg).mtp_mode, MtpFitMode::Vram);
     }
 
     /// O pool nao pode custar memoria a mais: o cache de cada contexto e o
@@ -5244,6 +5426,31 @@ mod tests {
         assert!(cache.clear_mtp_fallback());
         assert!(cache.get("model.gguf", true, true, false, &[]).is_none());
         assert!(!cache.clear_mtp_fallback());
+        assert_eq!(Arc::strong_count(&loaded), 1);
+    }
+
+    #[test]
+    fn cache_descarta_alvo_sem_mtp_antes_de_uma_nova_tentativa() {
+        let cache = ModelCache::new();
+        let loaded = Arc::new(LoadedModel {
+            model: std::ptr::null_mut(),
+            vocab: std::ptr::null(),
+            n_embd: 1,
+            n_vocab: 1,
+        });
+        cache.put(
+            "model.gguf",
+            loaded.clone(),
+            true,
+            7,
+            false,
+            false,
+            false,
+            Vec::new(),
+        );
+
+        assert!(cache.get("model.gguf", true, false, false, &[]).is_none());
+        assert!(cache.clear_mtp_fallback());
         assert_eq!(Arc::strong_count(&loaded), 1);
     }
 

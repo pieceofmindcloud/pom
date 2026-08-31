@@ -107,21 +107,53 @@ function PeerPlacement({
   nodeId,
   enabled,
   kqvRequested,
+  mtpRequested,
 }: {
   nodeId: string;
   enabled: boolean;
   kqvRequested: boolean;
+  mtpRequested: boolean;
 }) {
+  const { t } = useI18n();
   const { data } = usePeerRuntime(nodeId, enabled);
   const health = data?.health;
   if (!data || !health) return null;
   return (
-    <ModelPlacementSection
-      placement={health.placement ?? null}
-      contextMemory={health.context_memory?.buffers ?? null}
-      offloadKqv={health.offload_kqv ?? kqvRequested}
-      fitApplied={health.fit_memory_applied ?? false}
-    />
+    <>
+      {mtpRequested && (
+        <section
+          role="status"
+          aria-label={t("dashboard.mtpStatus")}
+          className="border-t border-line px-5 py-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="eyebrow">{t("dashboard.mtpStatus")}</span>
+            <Badge
+              tone={health.mtp_ready ? "aqua" : "rose"}
+              className="px-1.5 py-0 text-[0.68rem]"
+            >
+              {health.mtp_ready ? t("dashboard.mtpReady") : t("dashboard.mtpUnavailable")}
+            </Badge>
+          </div>
+          {!health.mtp_ready && (
+            <>
+              <p className="mt-1.5 text-xs leading-relaxed text-rose">
+                {t("dashboard.mtpUnavailableDetail")}
+              </p>
+              <p className="mt-1 break-words text-xs leading-relaxed text-muted">
+                {health.mtp_unavailable_reason ?? t("dashboard.mtpReasonUnknown")}
+              </p>
+            </>
+          )}
+        </section>
+      )}
+      <ModelPlacementSection
+        placement={health.placement ?? null}
+        contextMemory={health.context_memory?.buffers ?? null}
+        offloadKqv={health.offload_kqv ?? kqvRequested}
+        fitApplied={health.fit_memory_applied ?? false}
+      />
+    </>
   );
 }
 
@@ -455,7 +487,12 @@ export function PeerDetailCard({
               não há colocação nenhuma a mostrar, e o `enabled` evita um
               `/health` por card a cada ciclo do Painel. */}
           {serving && (
-            <PeerPlacement nodeId={peer.node_id} enabled={serving} kqvRequested={cfg?.offload_kqv ?? true} />
+            <PeerPlacement
+              nodeId={peer.node_id}
+              enabled={serving}
+              kqvRequested={cfg?.offload_kqv ?? true}
+              mtpRequested={cfg?.mtp_enabled ?? false}
+            />
           )}
 
           {system && system.gpu_processes.length > 0 && (

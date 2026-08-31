@@ -115,6 +115,25 @@ pub fn nextn_layers(model: *mut sys::llama_model) -> i32 {
     unsafe { sys::llama_model_n_layer_nextn(model as *const _) }
 }
 
+fn context_params(cfg: &crate::llm::EngineConfig) -> sys::llama_context_params {
+    let mut cparams = unsafe { sys::llama_context_default_params() };
+    cparams.n_ctx = cfg.n_ctx;
+    crate::llm::apply_context_batch_params(&mut cparams, cfg);
+    cparams.n_seq_max = crate::llm::kv_seq_budget(cfg.max_sessions);
+    cparams.kv_unified = true;
+    cparams.ctx_type = sys::LLAMA_CONTEXT_TYPE_MTP;
+    cparams.offload_kqv = cfg.offload_kqv;
+    crate::llm::apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
+    // Sem instantâneos de estado recorrente: o bloco `nextn` é uma camada
+    // de atenção comum, e o upstream zera este campo pelo mesmo motivo.
+    cparams.n_rs_seq = 0;
+    if cfg.n_threads > 0 {
+        cparams.n_threads = cfg.n_threads;
+        cparams.n_threads_batch = cfg.n_threads;
+    }
+    cparams
+}
+
 impl MtpDrafter {
     /// Monta o contexto de rascunho sobre um modelo já carregado.
     ///
@@ -139,28 +158,15 @@ impl MtpDrafter {
 
         // A janela e o lote acompanham o contexto alvo: o rascunho anda
         // posição a posição com ele, e um cache menor faria o `seq_rm` da
-        // rodada seguinte apagar o que ainda vale.
-        let mut cparams = unsafe { sys::llama_context_default_params() };
-        cparams.n_ctx = cfg.n_ctx;
-        cparams.n_batch = cfg.n_batch;
-        cparams.n_ubatch = cfg.n_batch;
+        // rodada seguinte apagar o que ainda vale. O microlote de computação
+        // segue a política compartilhada do contexto principal, para que a
+        // reserva do grafo não cresça desnecessariamente com n_batch.
+        let cparams = context_params(cfg);
         // Mesmo orçamento de sequências do contexto alvo: `mtp_draft` recebe o
         // `seq_id` de lá, que a partir do desenho de duas sequências por sessão
         // pode ser o da geração (`prompt_seq + max_sessions`). Sem isto o
         // rascunho decodificaria numa sequência fora da faixa deste contexto.
         // Ver `llm::kv_seq_budget`.
-        cparams.n_seq_max = crate::llm::kv_seq_budget(cfg.max_sessions);
-        cparams.kv_unified = true;
-        cparams.ctx_type = sys::LLAMA_CONTEXT_TYPE_MTP;
-        cparams.offload_kqv = cfg.offload_kqv;
-        crate::llm::apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
-        // Sem instantâneos de estado recorrente: o bloco `nextn` é uma camada
-        // de atenção comum, e o upstream zera este campo pelo mesmo motivo.
-        cparams.n_rs_seq = 0;
-        if cfg.n_threads > 0 {
-            cparams.n_threads = cfg.n_threads;
-            cparams.n_threads_batch = cfg.n_threads;
-        }
 
         let ctx = unsafe { sys::llama_init_from_model(model, cparams) };
         if ctx.is_null() {
@@ -437,6 +443,39 @@ fn argmax_with_probability(logits: &[f32]) -> (i32, f32) {
 mod tests {
     use super::*;
 
+    fn cfg() -> crate::llm::EngineConfig {
+        crate::llm::EngineConfig {
+            n_ctx: 4096,
+            offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
+            fit_memory: true,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 4096,
+            n_gpu_layers: 99,
+            n_threads: 0,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn contexto_mtp_aplica_o_microlote_efetivo_do_contexto_principal() {
+        let mut cfg = cfg();
+        let params = context_params(&cfg);
+        assert_eq!(params.n_batch, 4096);
+        assert_eq!(params.n_ubatch, 128);
+
+        cfg.fit_memory = false;
+        let params = context_params(&cfg);
+        assert_eq!(params.n_batch, 4096);
+        assert_eq!(params.n_ubatch, 4096);
+    }
+
     #[test]
     fn argmax_with_probability_finds_the_peak_and_its_share() {
         let (id, p) = argmax_with_probability(&[0.0, 2.0, 1.0]);
@@ -478,8 +517,11 @@ mod tests {
     /// O que ela prova, e que nenhum teste de unidade prova: que os quatro
     /// símbolos da ponte C++ **linkam e executam**, que o contexto
     /// `ctx_type = MTP` sobe sobre os mesmos pesos, e que a cabeça devolve
-    /// tokens plausíveis em vez de lixo. O que ela **não** prova é ganho de
-    /// tok/s - isso é medição de ponta a ponta, e está pendente.
+    /// tokens plausíveis em vez de lixo. O prompt passa de um microlote quando
+    /// o fit automático está ligado, então esta sonda também exerce o
+    /// pareamento `(h_p, x_{p+1})` atravessando a divisão interna do lote.
+    /// O que ela **não** prova é ganho de tok/s - isso é medição de ponta a
+    /// ponta, e está pendente.
     #[test]
     #[ignore]
     fn the_nextn_head_drafts_from_a_real_model() {
@@ -492,7 +534,7 @@ mod tests {
             offload_kqv: true,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
-            fit_memory: false,
+            fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 99,
@@ -516,12 +558,15 @@ mod tests {
             "o modelo em {path} não trouxe bloco nextn — a sonda precisa de um que traga"
         );
 
-        let prompt = engine.tokenize(
-            "The capital of France is Paris. The capital of Italy is",
-            true,
-            false,
+        let prompt_text =
+            std::iter::repeat("The capital of France is Paris. The capital of Italy is Rome. ")
+                .take(40)
+                .collect::<String>();
+        let prompt = engine.tokenize(&prompt_text, true, false);
+        assert!(
+            prompt.len() > 128,
+            "prompt curto demais para cruzar o microlote"
         );
-        assert!(prompt.len() > 4, "prompt curto demais para a sonda");
         engine
             .decode_tokens(&prompt, 0, 0, false)
             .expect("prefill do alvo (e o observe da cabeça, dentro dele)");

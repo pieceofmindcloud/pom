@@ -6539,6 +6539,8 @@ mod peer_runtime_tests {
                 Json(json!({
                     "status": "ok",
                     "offload_kqv": true,
+                    "mtp_ready": false,
+                    "mtp_unavailable_reason": "MTP context allocation failed",
                     "placement": { "n_layer": 1, "layers": [] },
                 }))
             }),
@@ -6595,6 +6597,11 @@ mod peer_runtime_tests {
         let body = body_of(r).await;
         assert_eq!(body["loaded"], true);
         assert_eq!(body["health"]["offload_kqv"], true);
+        assert_eq!(body["health"]["mtp_ready"], false);
+        assert_eq!(
+            body["health"]["mtp_unavailable_reason"],
+            "MTP context allocation failed"
+        );
         assert_eq!(body["health"]["placement"]["n_layer"], 1);
     }
 }

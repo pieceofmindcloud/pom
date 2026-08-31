@@ -1738,13 +1738,23 @@ fn generic_embeddings_compatible(need_embeddings: bool, n_embd: usize, n_embd_ou
     need_embeddings && n_embd == n_embd_out
 }
 
-fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
+pub(crate) fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
         n_batch.min(FIT_MAX_UBATCH)
     } else {
         n_batch
     }
+}
+
+/// Aplica a política única de lote público e microlote de computação a cada
+/// contexto que o motor cria, inclusive o contexto MTP.
+pub(crate) fn apply_context_batch_params(
+    cparams: &mut sys::llama_context_params,
+    cfg: &EngineConfig,
+) {
+    cparams.n_batch = cfg.n_batch;
+    cparams.n_ubatch = effective_n_ubatch(cfg);
 }
 
 fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
@@ -1911,8 +1921,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
 
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
-    cparams.n_batch = cfg.n_batch;
-    cparams.n_ubatch = effective_n_ubatch(cfg);
+    apply_context_batch_params(&mut cparams, cfg);
     cparams.n_seq_max = kv_seq_budget(cfg.max_sessions);
     cparams.kv_unified = true;
     cparams.offload_kqv = cfg.offload_kqv;
@@ -2016,6 +2025,8 @@ pub struct LlmEngine {
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
     mtp: Option<crate::mtp::MtpDrafter>,
+    /// Motivo operacional pelo qual o MTP pedido não está disponível.
+    mtp_unavailable_reason: Option<String>,
     moe_callback: Option<Arc<MoeCallbackState>>,
 }
 
@@ -2423,8 +2434,7 @@ impl LlmEngine {
         // ── Context params ───────────────────────────────────────────────────
         let mut cparams = unsafe { sys::llama_context_default_params() };
         cparams.n_ctx = cfg.n_ctx;
-        cparams.n_batch = cfg.n_batch;
-        cparams.n_ubatch = effective_n_ubatch(cfg);
+        apply_context_batch_params(&mut cparams, cfg);
         cparams.n_seq_max = kv_seq_budget(cfg.max_sessions);
         cparams.kv_unified = true;
         cparams.offload_kqv = cfg.offload_kqv;
@@ -2496,26 +2506,27 @@ impl LlmEngine {
 
         // O contexto de rascunho MTP vem depois do alvo de propósito: ele
         // precisa do `ctx` já criado para ligar a saída do estado oculto nele.
-        let mtp = if cfg.mtp {
+        let (mtp, mtp_unavailable_reason) = if cfg.mtp {
             match crate::mtp::MtpDrafter::attach(model, ctx, cfg, n_embd_out, n_vocab) {
-                Ok(d) => {
-                    if d.is_none() {
-                        tracing::info!(
-                            "MTP pedido, mas este modelo não traz bloco nextn \
-                             (llama_model_n_layer_nextn = 0) — seguindo sem MTP"
-                        );
-                    }
-                    d
+                Ok(Some(d)) => (Some(d), None),
+                Ok(None) => {
+                    let reason = "o modelo carregado não traz o bloco nextn".to_string();
+                    tracing::info!(
+                        "MTP pedido, mas este modelo não traz bloco nextn \
+                         (llama_model_n_layer_nextn = 0) — seguindo sem MTP"
+                    );
+                    (None, Some(reason))
                 }
                 // Falhar aqui derrubaria um nó que serve bem sem MTP. A
                 // aceleração é opcional; a inferência não.
                 Err(e) => {
-                    warn!("MTP indisponível neste nó: {e}");
-                    None
+                    let reason = e.to_string();
+                    warn!("MTP indisponível neste nó: {reason}");
+                    (None, Some(reason))
                 }
             }
         } else {
-            None
+            (None, None)
         };
 
         Ok(LlmEngine {
@@ -2535,6 +2546,7 @@ impl LlmEngine {
             effective_n_ubatch: effective_n_ubatch(cfg),
             moe_external_executor: cfg.moe_external_executor,
             mtp,
+            mtp_unavailable_reason,
             moe_callback: None,
         })
     }
@@ -2549,6 +2561,12 @@ impl LlmEngine {
     /// mora na última camada.
     pub fn mtp_ready(&self) -> bool {
         self.mtp.is_some()
+    }
+
+    /// Explica por que o MTP pedido não está anexado, quando o motor sabe o
+    /// motivo. `None` significa que o MTP não foi pedido ou está pronto.
+    pub fn mtp_unavailable_reason(&self) -> Option<&str> {
+        self.mtp_unavailable_reason.as_deref()
     }
 
     /// Rascunha até `k` tokens com a cabeça `nextn`. Vazio quando não há
@@ -3249,7 +3267,9 @@ impl LlmEngine {
             let mut drafter = self.mtp.take();
             if let Some(d) = drafter.as_mut() {
                 if let Err(e) = d.observe(ctx, tokens, pos_offset, seq_id) {
-                    warn!("MTP desligado nesta sessão: {e}");
+                    let reason = format!("MTP desligado nesta sessão: {e}");
+                    warn!("{reason}");
+                    self.mtp_unavailable_reason = Some(reason);
                     drafter = None;
                 }
             }
@@ -3358,18 +3378,20 @@ impl LlmEngine {
                 let mut drafter = self.mtp.take();
                 if let Some(d) = drafter.as_mut() {
                     if let Err(e) = d.observe(ctx, tokens, pos_offset, seq_id) {
-                        warn!("MTP desligado nesta sessão: {e}");
+                        let reason = format!("MTP desligado nesta sessão: {e}");
+                        warn!("{reason}");
+                        self.mtp_unavailable_reason = Some(reason);
                         drafter = None;
                     }
                 }
                 self.mtp = drafter;
             }
         } else if self.mtp.is_some() {
+            let reason = "MTP desligado: estado oculto recebido sem ids dos tokens".to_string();
             warn!(
-                "MTP desligado: este contexto recebeu estado oculto sem os ids dos \
-                 tokens (peer velho no pipeline?), e a cabeça nextn precisa deles para \
-                 acompanhar o tronco"
+                "{reason} (peer velho no pipeline?), e a cabeça nextn precisa deles para acompanhar o tronco"
             );
+            self.mtp_unavailable_reason = Some(reason);
             self.mtp = None;
         }
         let mut timings = DecodeTimings {
@@ -4175,6 +4197,33 @@ mod pool_tests {
         small_batch.n_batch = 64;
         small_batch.fit_memory = true;
         assert_eq!(effective_n_ubatch(&small_batch), 64);
+    }
+
+    #[test]
+    fn context_batch_params_cap_a_large_mtp_batch_with_fit_enabled() {
+        let mut cfg = cfg();
+        cfg.mtp = true;
+        cfg.n_batch = 4096;
+
+        let mut params = unsafe { sys::llama_context_default_params() };
+        apply_context_batch_params(&mut params, &cfg);
+
+        assert_eq!(params.n_batch, 4096);
+        assert_eq!(params.n_ubatch, 128);
+    }
+
+    #[test]
+    fn context_batch_params_follow_the_requested_batch_when_fit_is_disabled() {
+        let mut cfg = cfg();
+        cfg.mtp = true;
+        cfg.fit_memory = false;
+        cfg.n_batch = 4096;
+
+        let mut params = unsafe { sys::llama_context_default_params() };
+        apply_context_batch_params(&mut params, &cfg);
+
+        assert_eq!(params.n_batch, 4096);
+        assert_eq!(params.n_ubatch, 4096);
     }
 
     #[test]

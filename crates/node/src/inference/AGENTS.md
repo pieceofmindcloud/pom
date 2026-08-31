@@ -113,7 +113,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
   `observe`/`accept`/`draft` portado de `common_speculative_impl_draft_mtp` do
   llama.cpp. O buffer `h` acompanha `n_embd_out`, porque o contexto MTP expõe a
-  largura física de saída quando a arquitetura tem eixos de fluxo.
+  largura física de saída quando a arquitetura tem eixos de fluxo. `observe`
+  passa posições, tokens e estados ocultos explícitos em um batch que pode ser
+  dividido internamente em microlotes sem perder o pareamento; uma falha ao
+  anexar ou observar guarda o motivo e aparece em `mtp_ready`/
+  `mtp_unavailable_reason` no `/health`.
 - `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
   `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do
@@ -606,6 +610,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   continua sendo o limite do pedaço de prompt, mas `fit_memory=true` limita o
   microbatch interno a 128 tokens para reduzir os temporários CUDA que só são
   reservados no primeiro grafo real; sem fit, o microbatch acompanha `n_batch`.
+  `llm::apply_context_batch_params` é a fonte única dessa política e também é
+  usada pelo contexto MTP, que mantém o `n_batch` público mas não herda um
+  microlote de 4096 por engano.
   `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre como o
   total é repartido entre contextos de uma sessão) ainda **não tem chamador**:
   o servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no
@@ -959,7 +966,12 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 ## Defeitos anotados
 
-Nenhum defeito ativo nesta fronteira.
+- **O fit automático ainda não reserva orçamento para o segundo contexto MTP.**
+  O contexto principal é ajustado antes de `MtpDrafter::attach`; o microlote
+  compartilhado reduz os temporários do segundo contexto, mas não garante
+  espaço para seu KV e seus buffers. O runtime mantém a resposta principal e
+  publica o motivo da indisponibilidade para a interface; um orçamento conjunto
+  dos dois contextos continua fora desta alteração.
 
 O que estava anotado aqui - "a captura do residual assume a ordem do
 `split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o

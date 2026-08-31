@@ -148,6 +148,8 @@ chunk, mas usa `n_ubatch=min(n_batch, 128)` no contexto. O prompt continua
 aceitando chunks de até `n_batch`; o custo é mais etapas internas de cálculo em
 troca de uma reserva menor. `/health` expõe esse valor como
 `n_ubatch_effective`. Com `fit_memory=false`, `n_ubatch` acompanha `n_batch`.
+Essa política fica em `llm::apply_context_batch_params` e é aplicada tanto ao
+contexto principal quanto ao contexto MTP, sem reduzir o `n_batch` público.
 
 #### Ordem segura por velocidade
 
@@ -952,6 +954,17 @@ valores são iguais.
 - **Custa um contexto, não um modelo.** O contexto de rascunho é criado sobre
   **os mesmos pesos** (`llama_init_from_model` com `ctx_type = MTP`); o que ele
   acrescenta é um cache KV de uma camada.
+- **O microlote menor preserva o pareamento.** `observe` monta cada linha com
+  posição, sequência, token e estado oculto explícitos: a linha 0 recebe o
+  `pending_h`, e as linhas seguintes recebem `h` do alvo na posição anterior.
+  O alvo emite `h` para todas as posições e o rascunho pede logits apenas nas
+  posições necessárias. O `llama_decode` do rascunho pode dividir esse batch
+  interno em vários `n_ubatch`, mas não recalcula nem infere a correspondência
+  pelas fronteiras do microlote. A sonda
+  `mtp::tests::the_nextn_head_drafts_from_a_real_model` cruza um microlote com
+  `fit_memory=true` e valida o ciclo observe, draft e accept sobre um GGUF real
+  quando executada com `--ignored`; os testes de política cobrem `n_batch=4096`
+  com fit ligado e desligado.
 - **Liga no modelo inteiro e no pipeline fatiado.**
   `NodeConfig::mtp_effective` decide por nó (modelo inteiro, ou a cauda de um
   pipeline fatiado que serve a última camada); `PipelinePlan::supports_mtp`
@@ -986,6 +999,13 @@ valores são iguais.
   direto - ver seção 5.1.
 - A fatia final é a única que carrega o bloco porque `splitter::split` zera
   `<arch>.nextn_predict_layers` fora dela - ver `docs/subsystems/fatiamento.md`.
+
+Quando o operador pede MTP e o contexto de rascunho não pode ser criado, o
+runtime mantém a inferência principal disponível, publica `mtp_ready=false` e
+`mtp_unavailable_reason` em `/health`, e a aba de detalhes do Painel mostra o
+estado e o motivo no card da máquina. Uma falha posterior do `observe` também
+desliga a cabeça e atualiza esse motivo, para que a degradação não dependa da
+leitura do log.
 
 ## 6. Planejamento do pipeline (`routing/pipeline.rs`)
 
@@ -1279,6 +1299,15 @@ aquele salto não deu.
   do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
   Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
   pom é expectativa, não fato.
+- **O fit automático ainda não reserva orçamento para o segundo contexto MTP.**
+  O fit dimensiona o contexto principal antes de `MtpDrafter::attach`, e os
+  dois contextos compartilham os pesos, mas o contexto MTP ainda precisa do
+  próprio KV e dos buffers de computação. O microlote compartilhado reduz a
+  reserva explosiva observada com `n_batch` grande, mas não garante que reste
+  VRAM para o MTP. A correção completa exige um orçamento conjunto dos dois
+  contextos ou uma recusa preventiva; isso fica fora desta alteração. O
+  `health` e o card do Painel tornam a indisponibilidade explícita quando ela
+  ocorrer.
 ## Nota de versão
 
 Documentado a partir dos fontes na branch `fm/pom-linha-2` (2026-08-15):

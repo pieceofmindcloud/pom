@@ -13,10 +13,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { PeerDetailCard, cardRange } from "./PeerDetailCard";
 import { LocaleProvider } from "../i18n/provider";
 import { fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
-import type { PeerView } from "../lib/types";
+import { keys } from "../lib/queries";
+import type { PeerRuntime, PeerView } from "../lib/types";
 
-function mount(peer: PeerView) {
+function mount(peer: PeerView, runtime?: PeerRuntime) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (runtime) client.setQueryData(keys.peerRuntime(peer.node_id), runtime);
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
@@ -66,6 +68,28 @@ describe("PeerDetailCard com fatia", () => {
   it("mostra a faixa que o peer anuncia", () => {
     mount(fakeSlicePeer("a", 0, 15));
     expect(screen.getByText(/0\s*[-–]\s*15/)).toBeTruthy();
+  });
+
+  it("avisa quando o MTP foi pedido mas não ficou disponível", () => {
+    const peer = fakeSlicePeer("mtp", 0, 31, {
+      node: fakeNode({
+        node_id: "mtp",
+        short_id: "mtp",
+        hostname: "node-mtp",
+        config: { mtp_enabled: true } as never,
+      }),
+    });
+    mount(peer, {
+      loaded: true,
+      health: {
+        mtp_ready: false,
+        mtp_unavailable_reason: "falha ao criar o contexto MTP por falta de memória",
+        placement: null,
+      } as never,
+    });
+
+    expect(screen.getByText("MTP indisponível")).toBeTruthy();
+    expect(screen.getByText("falha ao criar o contexto MTP por falta de memória")).toBeTruthy();
   });
 });
 

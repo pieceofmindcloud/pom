@@ -247,6 +247,8 @@ export interface PeerRuntimeHealth {
   /** Caminho selecionado pelo GGUF; o motor por requisição vem da trace. */
   selected_path?: string;
   mtp_ready: boolean;
+  /** Motivo retornado pelo runtime quando o MTP pedido não foi anexado. */
+  mtp_unavailable_reason?: string | null;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
   context_memory: { buffers: ContextMemoryBuffer[] } | null;

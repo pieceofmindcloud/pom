@@ -71,7 +71,9 @@ haver chave.
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (com `inference_port`), `default_model` e
   `runtime_capacity` (`n_ctx`, `max_new_tokens`) quando o runtime local já
-  respondeu `model_loaded`.
+  respondeu `model_loaded`. Na porta de inferência, a resposta também publica
+  `n_ubatch_effective`, `mtp_ready` e `mtp_unavailable_reason`; este último
+  explica por que o contexto MTP pedido não foi anexado.
 - **`POST /handshake`** - corpo `{ node_id, pubkey, connection_key }`; 403
   `invalid_key`, `identity_mismatch` (o `node_id` não é o `SHA256` da `pubkey`,
   ou a chave é malformada) ou `blocked`; 200 com `approved` + `peer_id`.

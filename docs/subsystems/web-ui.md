@@ -288,6 +288,10 @@ descarregada. Os dados vêm de `/api/ui/peer/:node_id/runtime`, que repassa o
 `/health` por peer a cada ciclo seria caro por uma seção quase sempre fechada.
 Nó que não informa a colocação faz a seção dizer que não sabe. Ver
 `inferencia.md`, "Onde as camadas ficaram".
+Quando a configuração da máquina pediu MTP, o mesmo card mostra se a cabeça
+`nextn` ficou ativa. Se a criação do contexto MTP falhar, mostra
+"MTP indisponível" e o `mtp_unavailable_reason` retornado pelo `/health`; o
+operador não precisa inferir a degradação pela ausência de logs.
 
 ## Configurações / Rede: quem decide o TLS
 

@@ -22,6 +22,8 @@ Two files carry all of it: a static message table and a small provider. Tests:
   telemetry label for bytes/dtype are also present in both locale blocks.
   Slicing phase, byte-progress, disk-space, required intermediate-head cost and
   single-range controls also have keys in both locale blocks.
+  Dashboard machine details also has paired labels for requested MTP status and
+  its runtime unavailability reason.
   The Deployments section has separate `nav.history` and `deployments.created`
   labels in both locale blocks for the nested history menu and date column.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,

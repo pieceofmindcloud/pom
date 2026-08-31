@@ -3001,6 +3001,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         // carregado (fatia não-final não tem o bloco) e do interruptor do
         // operador, então nem a configuração nem o nome do arquivo respondem.
         "mtp_ready": s.engine.mtp_ready(),
+        "mtp_unavailable_reason": s.engine.mtp_unavailable_reason(),
     }))
     .into_response()
 }

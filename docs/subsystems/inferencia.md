@@ -144,6 +144,14 @@ o alvo fica sem pesos `nextn` na VRAM e o MTP recua para o modelo companheiro em
 RAM, se permitido, ou fica indisponível. Assim a reserva continua valendo por
 dispositivo sem deixar a otimização deslocar camadas que cada token precisa
 executar. MTP desligado não executa essa sondagem nem adiciona orçamento.
+Antes de criar o contexto de rascunho, o runtime confere a evidência dos
+tensores `nextn` no GGUF e se eles foram pedidos em
+`llama_model_params.load_mtp`; `llama_model_n_layer_nextn` sozinho não basta,
+pois expõe apenas metadata e pode continuar positivo no alvo sem esses pesos.
+No recuo para RAM, a seleção do contexto é feita explicitamente sobre o modelo
+companheiro CPU-only. Se o modelo selecionado não carrega `nextn`, a guarda
+recusa o contexto antes da reserva do grafo, publica a razão exata
+`o modelo carregado não traz o bloco nextn` e mantém a inferência principal.
 Se a criação do contexto MTP ainda falhar na VRAM, o runtime tenta o recuo
 quando `RuntimeParams.mtp_cpu_fallback_enabled=true`, valor padrão. Esse
 recuo carrega um modelo irmão CPU-only para o contexto `nextn`, com

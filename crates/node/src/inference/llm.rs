@@ -1483,6 +1483,8 @@ pub(crate) fn context_allocation(ctx: *const sys::llama_context) -> Option<MtpAl
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
+pub(crate) const MTP_NO_NEXTN_REASON: &str = "o modelo carregado não traz o bloco nextn";
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Capacidade total do cache KV. O runtime já multiplica a janela pública
@@ -1566,6 +1568,10 @@ pub struct LoadedModel {
     vocab: *const sys::llama_vocab,
     pub n_embd: usize,
     pub n_vocab: usize,
+    /// Whether this model instance has the optional `nextn` tensors loaded.
+    /// `llama_model_n_layer_nextn` only reports metadata and remains positive
+    /// when the caller deliberately loaded the target with `load_mtp=false`.
+    mtp_weights_loaded: bool,
 }
 
 // SAFETY: depois da carga o `llama_model` é somente-leitura; é o próprio
@@ -1680,6 +1686,14 @@ enum MtpFitMode {
     Disabled,
     Vram,
     Ram,
+}
+
+fn mtp_mode_for_nextn_availability(requested: MtpFitMode, has_nextn: bool) -> MtpFitMode {
+    if !has_nextn {
+        MtpFitMode::Disabled
+    } else {
+        requested
+    }
 }
 
 /// O fit conjunto só pode habilitar o MTP se conservar o encaixe integral que
@@ -1819,6 +1833,22 @@ mod fit_memory_margin_tests {
                     margin_bytes: 256 * MIB,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn arquivo_sem_nextn_nao_pede_carga_nem_contexto_mtp() {
+        assert_eq!(
+            mtp_mode_for_nextn_availability(MtpFitMode::Vram, false),
+            MtpFitMode::Disabled
+        );
+        assert_eq!(
+            mtp_mode_for_nextn_availability(MtpFitMode::Ram, false),
+            MtpFitMode::Disabled
+        );
+        assert_eq!(
+            mtp_mode_for_nextn_availability(MtpFitMode::Vram, true),
+            MtpFitMode::Vram
         );
     }
 
@@ -2055,6 +2085,20 @@ pub(crate) fn apply_context_batch_params(
 }
 
 fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Result<FitPlan> {
+    let mtp_mode = if mtp_mode == MtpFitMode::Disabled {
+        MtpFitMode::Disabled
+    } else {
+        let has_nextn =
+            crate::gguf::has_nextn_tensors(std::path::Path::new(model_path)).unwrap_or(false);
+        if !has_nextn {
+            tracing::info!(
+                model = %model_path,
+                "MTP indisponível: o arquivo não traz tensores nextn"
+            );
+        }
+        mtp_mode_for_nextn_availability(mtp_mode, has_nextn)
+    };
+
     if !fit_can_adjust_layers(cfg) {
         if cfg.fit_memory && cfg.n_gpu_layers != DEFAULT_GPU_LAYERS {
             warn!(
@@ -2346,6 +2390,14 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
 }
 
 impl LoadedModel {
+    pub(crate) fn model_ptr(&self) -> *mut sys::llama_model {
+        self.model
+    }
+
+    pub(crate) fn has_nextn_weights(&self) -> bool {
+        self.mtp_weights_loaded
+    }
+
     /// Devolve os pesos à GPU agora, em vez de esperar o `Drop`.
     ///
     /// Idempotente: zera o ponteiro, então o `Drop` que vier depois não tem o
@@ -2420,7 +2472,7 @@ struct CachedModel {
     /// Whether the cached target actually carries `nextn` weights. This is
     /// distinct from the operator request: a RAM fallback keeps the target
     /// model MTP-free.
-    mtp_enabled: bool,
+    mtp_weights_loaded: bool,
     /// A CPU companion is held by the engine, not by this cache entry. Do not
     /// reuse this target model after that fallback or the next reconstruction
     /// would need a companion that the cache does not own.
@@ -2437,7 +2489,7 @@ impl ModelCache {
     fn get(
         &self,
         model_path: &str,
-        mtp_enabled: bool,
+        mtp_weights_loaded: bool,
         mtp_fallback_used: bool,
         moe_external_executor: bool,
         moe_external_executor_layers: &[u8],
@@ -2447,7 +2499,7 @@ impl ModelCache {
             .as_ref()
             .filter(|cached| {
                 cached.model_path == model_path
-                    && cached.mtp_enabled == mtp_enabled
+                    && cached.mtp_weights_loaded == mtp_weights_loaded
                     && cached.mtp_fallback_used == mtp_fallback_used
                     && cached.moe_external_executor == moe_external_executor
                     && cached.moe_external_executor_layers == moe_external_executor_layers
@@ -2461,7 +2513,7 @@ impl ModelCache {
         loaded: Arc<LoadedModel>,
         fit_memory_applied: bool,
         effective_n_gpu_layers: i32,
-        mtp_enabled: bool,
+        mtp_weights_loaded: bool,
         mtp_fallback_used: bool,
         moe_external_executor: bool,
         moe_external_executor_layers: Vec<u8>,
@@ -2472,7 +2524,7 @@ impl ModelCache {
             loaded,
             fit_memory_applied,
             effective_n_gpu_layers,
-            mtp_enabled,
+            mtp_weights_loaded,
             mtp_fallback_used,
             moe_external_executor,
             moe_external_executor_layers,
@@ -2493,7 +2545,7 @@ impl ModelCache {
         let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
         let should_clear = entry
             .as_ref()
-            .is_some_and(|cached| !cached.mtp_enabled || cached.mtp_fallback_used);
+            .is_some_and(|cached| !cached.mtp_weights_loaded || cached.mtp_fallback_used);
         if should_clear {
             *entry = None;
         }
@@ -2699,12 +2751,15 @@ impl LoadedModel {
         let vocab = unsafe { sys::llama_model_get_vocab(model) };
         let n_embd = unsafe { sys::llama_n_embd(model) } as usize;
         let n_vocab = unsafe { sys::llama_n_vocab(vocab) } as usize;
+        let mtp_weights_loaded = load_mtp
+            && crate::gguf::has_nextn_tensors(std::path::Path::new(model_path)).unwrap_or(false);
 
         Ok(Arc::new(LoadedModel {
             model,
             vocab,
             n_embd,
             n_vocab,
+            mtp_weights_loaded,
         }))
     }
 
@@ -2728,6 +2783,20 @@ impl LoadedModel {
 }
 
 impl LlmEngine {
+    /// Escolhe o modelo que pode respaldar o contexto MTP.
+    ///
+    /// Um companheiro presente é obrigatório no recuo para RAM: o alvo pode
+    /// ter sido carregado deliberadamente sem `nextn`. A seleção devolve
+    /// `None` antes de qualquer chamada que reserve o grafo MTP quando nem o
+    /// alvo nem o companheiro carregam esses pesos.
+    fn mtp_model_for_attach<'a>(
+        target: &'a LoadedModel,
+        companion: Option<&'a LoadedModel>,
+    ) -> Option<&'a LoadedModel> {
+        let candidate = companion.unwrap_or(target);
+        candidate.has_nextn_weights().then_some(candidate)
+    }
+
     /// Cria um contexto e, quando permitido pelo runtime, reaproveita os
     /// pesos carregados por uma geração anterior.
     pub(crate) fn load_with_cache(
@@ -2736,10 +2805,12 @@ impl LlmEngine {
         cache: &ModelCache,
         reuse_weights: bool,
     ) -> Result<Self> {
+        let mtp_weights_required = cfg.mtp
+            && crate::gguf::has_nextn_tensors(std::path::Path::new(model_path)).unwrap_or(true);
         if reuse_weights {
             if let Some(cached) = cache.get(
                 model_path,
-                cfg.mtp,
+                mtp_weights_required,
                 false,
                 cfg.moe_external_executor,
                 &cfg.moe_external_executor_layers,
@@ -2874,12 +2945,13 @@ impl LlmEngine {
         }
 
         let loaded = loaded.expect("o modelo alvo deve permanecer carregado");
+        let mtp_weights_loaded = loaded.has_nextn_weights();
         cache.put(
             model_path,
             loaded,
             engine.fit_memory_applied,
             engine.effective_n_gpu_layers,
-            cfg.mtp && vram_plan.mtp_mode == MtpFitMode::Vram,
+            mtp_weights_loaded,
             mtp_fallback_used,
             engine.moe_external_executor,
             cfg.moe_external_executor_layers.clone(),
@@ -3119,32 +3191,39 @@ impl LlmEngine {
         // O contexto de rascunho MTP vem depois do alvo de propósito: ele
         // precisa do `ctx` já criado para ligar a saída do estado oculto nele.
         let (mtp, mtp_unavailable_reason, mtp_initial_context_error) = if cfg.mtp {
-            let model_mtp = mtp_loaded.as_ref().map_or(model, |loaded| loaded.model);
-            match crate::mtp::MtpDrafter::attach(
-                model_mtp,
-                ctx,
-                cfg,
-                n_embd_out,
-                n_vocab,
-                mtp_loaded,
-                mtp_offload_kqv,
-            ) {
-                Ok(Some(d)) => (Some(d), None, None),
-                Ok(None) => {
-                    let reason = "o modelo carregado não traz o bloco nextn".to_string();
-                    tracing::info!(
-                        "MTP pedido, mas este modelo não traz bloco nextn \
-                         (llama_model_n_layer_nextn = 0) — seguindo sem MTP"
-                    );
-                    (None, Some(reason), None)
+            if let Some(model_mtp) = Self::mtp_model_for_attach(&loaded, mtp_loaded.as_deref()) {
+                let mtp_model = mtp_loaded.clone();
+                match crate::mtp::MtpDrafter::attach(
+                    model_mtp,
+                    ctx,
+                    cfg,
+                    n_embd_out,
+                    n_vocab,
+                    mtp_model,
+                    mtp_offload_kqv,
+                ) {
+                    Ok(Some(d)) => (Some(d), None, None),
+                    Ok(None) => {
+                        tracing::info!(
+                            "MTP pedido, mas este modelo não traz bloco nextn \
+                             - seguindo sem MTP"
+                        );
+                        (None, Some(MTP_NO_NEXTN_REASON.to_string()), None)
+                    }
+                    // Falhar aqui derrubaria um nó que serve bem sem MTP. A
+                    // aceleração é opcional; a inferência não.
+                    Err(e) => {
+                        let reason = e.to_string();
+                        warn!("MTP indisponível neste nó: {reason}");
+                        (None, Some(reason.clone()), Some(reason))
+                    }
                 }
-                // Falhar aqui derrubaria um nó que serve bem sem MTP. A
-                // aceleração é opcional; a inferência não.
-                Err(e) => {
-                    let reason = e.to_string();
-                    warn!("MTP indisponível neste nó: {reason}");
-                    (None, Some(reason.clone()), Some(reason))
-                }
+            } else {
+                tracing::info!(
+                    "MTP pedido, mas o modelo selecionado não carregou pesos nextn \
+                     - seguindo sem MTP"
+                );
+                (None, Some(MTP_NO_NEXTN_REASON.to_string()), None)
             }
         } else {
             (None, None, None)
@@ -5372,6 +5451,7 @@ mod tests {
             vocab: std::ptr::null(),
             n_embd: 1,
             n_vocab: 1,
+            mtp_weights_loaded: false,
         });
         cache.put(
             "model.gguf",
@@ -5411,13 +5491,14 @@ mod tests {
             vocab: std::ptr::null(),
             n_embd: 1,
             n_vocab: 1,
+            mtp_weights_loaded: false,
         });
         cache.put(
             "model.gguf",
             loaded.clone(),
             true,
             7,
-            true,
+            false,
             true,
             false,
             Vec::new(),
@@ -5437,6 +5518,7 @@ mod tests {
             vocab: std::ptr::null(),
             n_embd: 1,
             n_vocab: 1,
+            mtp_weights_loaded: false,
         });
         cache.put(
             "model.gguf",
@@ -5452,6 +5534,28 @@ mod tests {
         assert!(cache.get("model.gguf", true, false, false, &[]).is_none());
         assert!(cache.clear_mtp_fallback());
         assert_eq!(Arc::strong_count(&loaded), 1);
+    }
+
+    #[test]
+    fn recuo_mtp_seleciona_companheiro_com_nextn_e_nunca_alvo_sem_pesos() {
+        let target = LoadedModel {
+            model: std::ptr::null_mut(),
+            vocab: std::ptr::null(),
+            n_embd: 1,
+            n_vocab: 1,
+            mtp_weights_loaded: false,
+        };
+        let companion = LoadedModel {
+            model: std::ptr::null_mut(),
+            vocab: std::ptr::null(),
+            n_embd: 1,
+            n_vocab: 1,
+            mtp_weights_loaded: true,
+        };
+
+        let selected = LlmEngine::mtp_model_for_attach(&target, Some(&companion));
+        assert!(selected.is_some_and(|model| std::ptr::eq(model, &companion)));
+        assert!(LlmEngine::mtp_model_for_attach(&target, None).is_none());
     }
 
     /// Testes do comportamento vigente do sampler: conjunto de candidatos,
@@ -5640,6 +5744,71 @@ mod tests {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0)
+    }
+
+    fn mtp_attach_refuses_target_without_loaded_nextn(max_sessions: u32) {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(path) = std::env::var("POM_MTP_MODEL") else {
+            eprintln!("skipping: set POM_MTP_MODEL to a .gguf to run this");
+            return;
+        };
+        let target_cfg = EngineConfig {
+            n_ctx: 4096,
+            offload_kqv: false,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
+            fit_memory: false,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 4,
+            n_gpu_layers: 0,
+            n_threads: 2,
+            max_sessions,
+            need_embeddings: false,
+            mtp: false,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+        };
+        let target_plan = empty_fit_plan_with_mtp_mode(&target_cfg, MtpFitMode::Disabled);
+        let target_loaded = LoadedModel::load_with_mtp(&path, &target_plan, false)
+            .expect("o alvo sem pesos nextn deve carregar");
+        let target = LlmEngine::with_model(target_loaded.clone(), &target_cfg)
+            .expect("o contexto principal deve carregar");
+
+        let mtp_cfg = EngineConfig {
+            mtp: true,
+            ..target_cfg
+        };
+        drop(target);
+        let engine = LlmEngine::with_model(target_loaded, &mtp_cfg)
+            .expect("o alvo sem nextn deve continuar servindo sem abortar");
+        assert!(!engine.mtp_ready());
+        assert_eq!(engine.mtp_unavailable_reason(), Some(MTP_NO_NEXTN_REASON));
+
+        let direct = crate::mtp::MtpDrafter::attach(
+            &engine.loaded,
+            engine.ctx,
+            &mtp_cfg,
+            engine.n_embd_out,
+            engine.n_vocab,
+            None,
+            false,
+        )
+        .expect("a guarda interna deve recusar sem abortar");
+        assert!(direct.is_none());
+    }
+
+    #[test]
+    #[ignore = "requires a real Qwen3.5 MTP GGUF"]
+    fn mtp_attach_on_target_without_nextn_is_refused_for_one_session() {
+        mtp_attach_refuses_target_without_loaded_nextn(1);
+    }
+
+    #[test]
+    #[ignore = "requires a real Qwen3.5 MTP GGUF"]
+    fn mtp_attach_on_target_without_nextn_is_refused_for_two_sessions() {
+        mtp_attach_refuses_target_without_loaded_nextn(2);
     }
 
     /// Sonda ao vivo do caminho de recuo: um modelo irmão CPU-only deve deixar

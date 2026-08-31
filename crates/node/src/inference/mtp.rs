@@ -166,7 +166,7 @@ impl MtpDrafter {
     /// posição do lote, não só as com logits). Sem isso não há `h` para
     /// alimentar a cabeça.
     pub fn attach(
-        model_mtp: *mut sys::llama_model,
+        model_mtp: &crate::llm::LoadedModel,
         ctx_tgt: *mut sys::llama_context,
         cfg: &crate::llm::EngineConfig,
         hidden_width: usize,
@@ -174,7 +174,11 @@ impl MtpDrafter {
         mtp_model: Option<std::sync::Arc<crate::llm::LoadedModel>>,
         offload_kqv: bool,
     ) -> Result<Option<Self>> {
-        if nextn_layers(model_mtp) <= 0 {
+        // `llama_model_n_layer_nextn` is metadata only: it stays positive on
+        // a target loaded with `load_mtp=false`, even though its nextn tensor
+        // pointers are null. Check the load capability before llama.cpp can
+        // reserve the MTP graph, because that graph aborts on the null tensor.
+        if !model_mtp.has_nextn_weights() || nextn_layers(model_mtp.model_ptr()) <= 0 {
             return Ok(None);
         }
 
@@ -190,7 +194,7 @@ impl MtpDrafter {
         // rascunho decodificaria numa sequência fora da faixa deste contexto.
         // Ver `llm::kv_seq_budget`.
 
-        let ctx = unsafe { sys::llama_init_from_model(model_mtp, cparams) };
+        let ctx = unsafe { sys::llama_init_from_model(model_mtp.model_ptr(), cparams) };
         if ctx.is_null() {
             bail!("llama_init_from_model falhou para o contexto MTP (ctx_type=MTP)");
         }
@@ -211,7 +215,7 @@ impl MtpDrafter {
 
         tracing::info!(
             "MTP pronto: {} cabeça(s) nextn, contexto de rascunho com n_ctx={}",
-            nextn_layers(model_mtp),
+            nextn_layers(model_mtp.model_ptr()),
             cfg.n_ctx
         );
         tracing::info!(

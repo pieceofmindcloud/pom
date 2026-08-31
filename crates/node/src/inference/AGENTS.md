@@ -916,6 +916,11 @@ que o `wrapper.h` da crate inclui. Daí `llama_mtp_shim.cpp`.
 Ao carregar um motor com MTP ligado, `llama_model_params.load_mtp` também precisa
 ser verdadeiro: sem isso o llama.cpp mantém `n_layer_nextn` nos metadados, mas
 deixa os pesos `nextn.*` nulos e o grafo Qwen3.5 aborta ao construir `eh_proj`.
+`LoadedModel` registra essa decisão de carga junto com a evidência dos tensores
+no GGUF. Antes de `MtpDrafter::attach`, o runtime escolhe o companheiro CPU-only
+quando existe e recusa o contexto se o modelo selecionado não carrega esses
+pesos, publicando `o modelo carregado não traz o bloco nextn`; assim a guarda
+acontece antes de o llama.cpp reservar o grafo.
 
 Ciclo, por rodada (uma sequência, uma cabeça, memória não compartilhada - o
 caminho qwen35/qwen35moe do upstream):

@@ -52,11 +52,15 @@
 - Registrar a relação observada no código upstream entre a reserva do grafo/attention mask e a janela `n_ctx`, sem alterar a justificativa do cache.
 - Se não houver uma redução segura sem redesenhar o pareamento do contexto, manter o dimensionamento e explicar o motivo.
 
-## Task 5: Verificação e entrega - em andamento
+## Task 5: Verificação e entrega - concluída
 
 - Rodar `cargo fmt --check` no escopo tocado e `cargo check` sem novos avisos.
 - Rodar as baterias focadas `mtp`, `fit_memory`, `sampler_behaviour`, `device_placement` e `cycle`, registrando limitações de ambiente sem inventar resultados.
 - Revisar o diff, fazer `git fetch origin`, rebasear sobre `origin/feat/implantar`, integrar/publicar somente nessa linha e registrar o SHA no status.
+
+Verificação executada: `rustfmt --check` do `llm.rs`, `cargo check -p node
+--bin pom` e as cinco baterias focadas passaram. O `cargo fmt --all -- --check`
+amplo continua apontando apenas os cinco arquivos preexistentes fora do escopo.
 
 ## Test Commands
 

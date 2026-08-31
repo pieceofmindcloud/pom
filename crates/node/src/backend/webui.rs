@@ -1905,6 +1905,9 @@ pub struct RuntimeParams {
     pub mtp_draft_tokens: u32,
     #[serde(default = "d_mtp_min_probability")]
     pub mtp_min_probability: f32,
+    /// Permite recuar o MTP para a RAM quando a VRAM não comportar o contexto.
+    #[serde(default = "d_mtp_cpu_fallback_enabled")]
+    pub mtp_cpu_fallback_enabled: bool,
 }
 
 fn d_gpu_layers() -> u32 {
@@ -1988,6 +1991,9 @@ fn d_mtp_draft_tokens() -> u32 {
 fn d_mtp_min_probability() -> f32 {
     0.0
 }
+fn d_mtp_cpu_fallback_enabled() -> bool {
+    true
+}
 
 impl Default for RuntimeParams {
     fn default() -> Self {
@@ -2026,6 +2032,7 @@ impl Default for RuntimeParams {
             mtp_enabled: false,
             mtp_draft_tokens: d_mtp_draft_tokens(),
             mtp_min_probability: d_mtp_min_probability(),
+            mtp_cpu_fallback_enabled: d_mtp_cpu_fallback_enabled(),
         }
     }
 }
@@ -2072,6 +2079,7 @@ impl From<&NodeConfig> for RuntimeParams {
             mtp_enabled: c.mtp_enabled,
             mtp_draft_tokens: c.mtp_draft_tokens,
             mtp_min_probability: c.mtp_min_probability,
+            mtp_cpu_fallback_enabled: c.mtp_cpu_fallback_enabled,
         }
     }
 }
@@ -6603,6 +6611,7 @@ mod peer_runtime_tests {
                     "status": "ok",
                     "offload_kqv": true,
                     "mtp_ready": false,
+                    "mtp_allocation": null,
                     "mtp_unavailable_reason": "MTP context allocation failed",
                     "placement": { "n_layer": 1, "layers": [] },
                 }))
@@ -6661,6 +6670,7 @@ mod peer_runtime_tests {
         assert_eq!(body["loaded"], true);
         assert_eq!(body["health"]["offload_kqv"], true);
         assert_eq!(body["health"]["mtp_ready"], false);
+        assert_eq!(body["health"]["mtp_allocation"], serde_json::Value::Null);
         assert_eq!(
             body["health"]["mtp_unavailable_reason"],
             "MTP context allocation failed"

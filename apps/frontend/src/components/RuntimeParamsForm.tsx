@@ -365,6 +365,14 @@ export function RuntimeParamsForm({
         capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {MTP_KNOBS.map((k) => numeric(k, true))}
+          <CapabilitySwitch
+            alwaysVisible
+            checked={value.mtp_cpu_fallback_enabled ?? true}
+            onChange={(v) => onChange({ ...value, mtp_cpu_fallback_enabled: v })}
+            disabled={disabled}
+            label={t("deploy.mtpCpuFallback")}
+            hint={t("deploy.mtpCpuFallbackHint")}
+          />
         </div>
       )}
     </div>

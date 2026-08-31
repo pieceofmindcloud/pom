@@ -338,6 +338,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            mtp_cpu_fallback_enabled: true,
             tp: None,
         }
     }

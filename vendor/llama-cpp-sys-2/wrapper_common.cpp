@@ -476,6 +476,39 @@ extern "C" llama_rs_status llama_rs_model_placement_json(const struct llama_mode
     }
 }
 
+static nlohmann::ordered_json llama_rs_context_memory_value(
+        const struct llama_context * ctx,
+        const struct llama_model * model) {
+    auto buffers = nlohmann::ordered_json::array();
+    for (const auto & [buft, data] : llama_get_memory_breakdown(ctx)) {
+        if (!buft) {
+            continue;
+        }
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+        int device_index = -1;
+        if (dev && model) {
+            for (int i = 0; i < llama_model_n_devices(model); ++i) {
+                if (dev == llama_model_get_device(model, i)) {
+                    device_index = i;
+                    break;
+                }
+            }
+        }
+        buffers.push_back({
+            {"buffer",       ggml_backend_buft_name(buft)},
+            {"device",       dev ? ggml_backend_dev_name(dev) : "CPU"},
+            {"host",         ggml_backend_buft_is_host(buft)},
+            {"device_index", device_index >= 0 ? nlohmann::ordered_json(device_index) : nullptr},
+            {"model",        data.model},
+            // `context` é o cache KV (mais o estado recorrente, quando o
+            // modelo tem um). É esta linha que responde onde o KV ficou.
+            {"context",      data.context},
+            {"compute",      data.compute},
+        });
+    }
+    return {{"buffers", buffers}};
+}
+
 extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json) {
     if (!ctx || !out_json) {
         return LLAMA_RS_STATUS_INVALID_ARGUMENT;
@@ -483,24 +516,52 @@ extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_conte
     *out_json = nullptr;
 
     try {
-        auto buffers = nlohmann::ordered_json::array();
-        for (const auto & [buft, data] : llama_get_memory_breakdown(ctx)) {
-            if (!buft) {
-                continue;
-            }
-            ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
-            buffers.push_back({
-                {"buffer",  ggml_backend_buft_name(buft)},
-                {"device",  dev ? ggml_backend_dev_name(dev) : "CPU"},
-                {"model",   data.model},
-                // `context` é o cache KV (mais o estado recorrente, quando o
-                // modelo tem um). É esta linha que responde onde o KV ficou.
-                {"context", data.context},
-                {"compute", data.compute},
-            });
+        *out_json = llama_rs_dup_string(llama_rs_context_memory_value(ctx, nullptr).dump());
+        return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
+extern "C" llama_rs_status llama_rs_mtp_context_memory_json(
+        const char * path_model,
+        const struct llama_model_params * mparams,
+        const struct llama_context_params * cparams,
+        char ** out_json) {
+    if (!path_model || !mparams || !cparams || !out_json) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+    *out_json = nullptr;
+
+    try {
+        // The model loader still builds the graph and selects the real
+        // backends, but no weight buffer is allocated during this probe.
+        llama_model_params mparams_copy = *mparams;
+        mparams_copy.no_alloc = true;
+        mparams_copy.load_mode = LLAMA_LOAD_MODE_NONE;
+        mparams_copy.load_mtp = true;
+        std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
+            llama_model_load_from_file(path_model, mparams_copy), &llama_model_free);
+        if (!model) {
+            return LLAMA_RS_STATUS_EXCEPTION;
         }
 
-        const nlohmann::ordered_json out = {{"buffers", buffers}};
+        if (llama_model_n_layer_nextn(model.get()) <= 0) {
+            const nlohmann::ordered_json out = {{"has_nextn", false}, {"buffers", nlohmann::ordered_json::array()}};
+            *out_json = llama_rs_dup_string(out.dump());
+            return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+        }
+
+        llama_context_params cparams_copy = *cparams;
+        cparams_copy.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
+            llama_init_from_model(model.get(), cparams_copy), &llama_free);
+        if (!ctx) {
+            return LLAMA_RS_STATUS_EXCEPTION;
+        }
+
+        nlohmann::ordered_json out = llama_rs_context_memory_value(ctx.get(), model.get());
+        out["has_nextn"] = true;
         *out_json = llama_rs_dup_string(out.dump());
         return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
     } catch (const std::exception &) {

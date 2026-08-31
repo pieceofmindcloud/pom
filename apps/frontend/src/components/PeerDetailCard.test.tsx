@@ -91,6 +91,27 @@ describe("PeerDetailCard com fatia", () => {
     expect(screen.getByText("MTP indisponível")).toBeTruthy();
     expect(screen.getByText("falha ao criar o contexto MTP por falta de memória")).toBeTruthy();
   });
+
+  it("mostra quando o MTP ficou ativo na RAM", () => {
+    const peer = fakeSlicePeer("mtp-ram", 0, 31, {
+      node: fakeNode({
+        node_id: "mtp-ram",
+        short_id: "mtp-ram",
+        hostname: "node-mtp-ram",
+        config: { mtp_enabled: true } as never,
+      }),
+    });
+    mount(peer, {
+      loaded: true,
+      health: {
+        mtp_ready: true,
+        mtp_allocation: "ram",
+        placement: null,
+      } as never,
+    });
+
+    expect(screen.getByText("MTP ativo na RAM")).toBeTruthy();
+  });
 });
 
 describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {

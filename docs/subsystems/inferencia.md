@@ -133,6 +133,24 @@ ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
 margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
 vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
+Quando `mtp_enabled=true`, o fit faz antes uma segunda sondagem seca com
+`ctx_type=MTP`: o modelo é aberto sem pesos alocados, o contexto `nextn` é
+reservado com o mesmo `n_ctx`, `n_seq_max`, cache e microlote, e os bytes de
+`context` + `compute` são somados à margem do dispositivo correspondente. O
+contexto principal só é ajustado depois dessa reserva, portanto o MTP não é
+excluído porque o encaixe encheu a VRAM. MTP desligado não executa essa
+sondagem nem adiciona orçamento.
+Se a criação do contexto MTP ainda falhar na VRAM, o runtime tenta o recuo
+quando `RuntimeParams.mtp_cpu_fallback_enabled=true`, valor padrão. Esse
+recuo carrega um modelo irmão CPU-only para o contexto `nextn`, com
+`offload_kqv=false` e `op_offload=false`; assim o scheduler não arrasta o
+grafo de volta para a GPU do modelo alvo. O modelo alvo continua na colocação
+definida pelo fit. A tentativa só termina em MTP indisponível se o operador
+desligar o recuo ou a carga do modelo/contexto CPU também falhar.
+O `/health` publica `mtp_ready`, `mtp_allocation` (`vram` ou `ram`) e
+`mtp_unavailable_reason`. A tela mostra a localização em todo sucesso e a
+razão operacional quando o modelo não tem `nextn`, quando o recuo foi recusado
+ou quando VRAM e RAM falharam.
 O fork local do llama.cpp captura esse livre antes de criar o contexto seco da
 sondagem. `no_alloc=true` e `LLAMA_LOAD_MODE_NONE` impedem os pesos, mas o
 estado recorrente ainda aloca buffers reais durante `llama_init_from_model`;
@@ -990,9 +1008,25 @@ valores são iguais.
   bindings, porque moram em `llama.cpp/src/llama-ext.h`, fora do `extern "C"`
   de `llama.h` - o único cabeçalho que o `wrapper.h` da crate inclui. Ponte:
   `inference/llama_mtp_shim.cpp`, compilada pelo `crates/node/build.rs`.
-- **Custa um contexto, não um modelo.** O contexto de rascunho é criado sobre
-  **os mesmos pesos** (`llama_init_from_model` com `ctx_type = MTP`); o que ele
-  acrescenta é um cache KV de uma camada.
+- **Custa um contexto no caminho VRAM, e um modelo irmão no recuo.** O contexto
+  de rascunho é criado sobre os pesos do alvo (`llama_init_from_model` com
+  `ctx_type = MTP`); quando precisa ir para a RAM, um segundo modelo CPU-only
+  mantém todo o grafo `nextn` no host. O custo adicional de contexto continua
+  sendo um cache KV de uma camada, e o GGUF pode compartilhar páginas mmap.
+- **A VRAM é tentada com orçamento conjunto.** O `fit_plan` mede o contexto
+  MTP seco por dispositivo e reserva seus bytes de KV e computação junto com o
+  contexto principal. O custo acompanha `n_ctx` e o microlote efetivo, sem
+  constante fixa; com mais de uma GPU cada reserva fica na GPU reportada pela
+  sondagem, não numa soma global.
+- **Há recuo explícito para a RAM.** Se a criação do contexto MTP falhar na
+  VRAM e `mtp_cpu_fallback_enabled` estiver ligado, o carregamento é repetido
+  com um modelo MTP CPU-only e com `offload_kqv=false` e `op_offload=false` no
+  contexto MTP. O alvo é então recarregado sem os pesos `nextn` da tentativa
+  VRAM, para que essa memória também seja devolvida à GPU. Um override apenas
+  nos tensores `nextn` foi investigado, mas não basta porque o scheduler também
+  pode escolher o dispositivo da camada e do output head. O padrão é ligado;
+  o operador pode desligá-lo na implantação quando a medição local não
+  compensar a sincronização CPU/GPU.
 - **O microlote menor preserva o pareamento.** `observe` monta cada linha com
   posição, sequência, token e estado oculto explícitos: a linha 0 recebe o
   `pending_h`, e as linhas seguintes recebem `h` do alvo na posição anterior.
@@ -1042,9 +1076,12 @@ valores são iguais.
 Quando o operador pede MTP e o contexto de rascunho não pode ser criado, o
 runtime mantém a inferência principal disponível, publica `mtp_ready=false` e
 `mtp_unavailable_reason` em `/health`, e a aba de detalhes do Painel mostra o
-estado e o motivo no card da máquina. Uma falha posterior do `observe` também
-desliga a cabeça e atualiza esse motivo, para que a degradação não dependa da
-leitura do log.
+estado e o motivo no card da máquina. A razão distingue modelo sem bloco
+`nextn`, falta de VRAM com recuo recusado e falta de memória nos dois lados.
+Quando pronto, `/health` publica `mtp_allocation` como `vram` ou `ram`, sempre
+com o local medido nos buffers do contexto. Uma falha posterior do `observe`
+também desliga a cabeça e atualiza esse motivo, para que a degradação não
+dependa da leitura do log.
 
 ## 6. Planejamento do pipeline (`routing/pipeline.rs`)
 

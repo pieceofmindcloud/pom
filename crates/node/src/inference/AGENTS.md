@@ -110,7 +110,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   chegadas. Cada processo cria sua própria fila; réplicas da mesma faixa não
   compartilham scheduler, KV ou capacidade de fila.
 - `mtp.rs` (445) - predição multi-token (MTP): contexto de rascunho
-  `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
+  `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre os pesos do alvo na VRAM; um
+  modelo irmão CPU-only no recuo para RAM; e o algoritmo
   `observe`/`accept`/`draft` portado de `common_speculative_impl_draft_mtp` do
   llama.cpp. O buffer `h` acompanha `n_embd_out`, porque o contexto MTP expõe a
   largura física de saída quando a arquitetura tem eixos de fluxo. `observe`
@@ -118,6 +119,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   dividido internamente em microlotes sem perder o pareamento; uma falha ao
   anexar ou observar guarda o motivo e aparece em `mtp_ready`/
   `mtp_unavailable_reason` no `/health`.
+  Quando pronto, `mtp_allocation` diz se o contexto ficou na VRAM ou na RAM.
+  O `fit_plan` mede o segundo contexto antes de ajustar a GPU e, em caso de
+  falha, pode carregar o modelo MTP CPU-only com `offload_kqv=false` e
+  `op_offload=false`. Um override só nos pesos `nextn` não basta porque o
+  scheduler também pode escolher o dispositivo da camada e do output head.
 - `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
   `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do
@@ -826,7 +832,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   max_batch_tokens, prefill_chunk_tokens, max_new_tokens,
   sampling, no_thinking, single_peer, no_embeddings, speculative_decoding_enabled,
   speculative_k/lookup_window, mtp_enabled, mtp_draft_tokens,
-  mtp_min_probability.
+  mtp_min_probability, mtp_cpu_fallback_enabled.
 - `NodeConfig::mtp_effective` - o MTP liga em quem serve a última camada do
   modelo (onde mora o bloco `nextn`): o modelo inteiro (start_layer 0,
   peer_count 1) **ou** a cauda de um pipeline fatiado (start_layer > 0,
@@ -973,15 +979,6 @@ unidade mas **não** tem número medido de ponta a ponta.
 - **Externo**: nenhum processo externo. O modelo carrega em-processo via
   `llm.rs` (llama-cpp-sys-2). `old/python-inference/inference_server.py` e
   `split_model.py` são legado, não são mais invocados.
-
-## Defeitos anotados
-
-- **O fit automático ainda não reserva orçamento para o segundo contexto MTP.**
-  O contexto principal é ajustado antes de `MtpDrafter::attach`; o microlote
-  compartilhado reduz os temporários do segundo contexto, mas não garante
-  espaço para seu KV e seus buffers. O runtime mantém a resposta principal e
-  publica o motivo da indisponibilidade para a interface; um orçamento conjunto
-  dos dois contextos continua fora desta alteração.
 
 O que estava anotado aqui - "a captura do residual assume a ordem do
 `split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o

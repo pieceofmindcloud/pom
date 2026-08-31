@@ -68,13 +68,19 @@ extern "C" {
 /// A cabeça de rascunho `nextn`, com o contexto MTP e o estado que atravessa
 /// as rodadas.
 ///
-/// O contexto de rascunho é criado **sobre os mesmos pesos** do alvo
-/// (`llama_init_from_model` com `ctx_type = LLAMA_CONTEXT_TYPE_MTP`), então
-/// não custa um segundo modelo na memória: o que ele acrescenta é um cache KV
-/// de **uma** camada, que é o tamanho do bloco `nextn`.
+/// O contexto de rascunho é criado sobre os pesos do alvo no caminho VRAM
+/// (`llama_init_from_model` com `ctx_type = LLAMA_CONTEXT_TYPE_MTP`). No
+/// recuo para RAM, ele recebe um modelo CPU-only irmão para impedir que o
+/// scheduler devolva o grafo ao dispositivo do alvo. Nesse caso há dois
+/// objetos de modelo, mas o GGUF pode compartilhar as páginas mmap do arquivo;
+/// o custo adicional relevante continua sendo o cache KV de **uma** camada.
 pub struct MtpDrafter {
     /// O contexto que roda o grafo `DECODER_MTP`. Dono: liberado no `Drop`.
     ctx: *mut sys::llama_context,
+    /// Modelo que sustenta o contexto MTP. No recuo para RAM é um modelo
+    /// CPU-only separado, para que o output head compartilhado não arraste o
+    /// grafo de volta para a GPU do modelo alvo.
+    _mtp_model: Option<std::sync::Arc<crate::llm::LoadedModel>>,
     hidden_width: usize,
     n_vocab: usize,
 
@@ -90,6 +96,7 @@ pub struct MtpDrafter {
     /// tokens do rascunho passaram na verificação.
     verify_h: Vec<f32>,
     verify_rows: usize,
+    allocation: crate::llm::MtpAllocation,
 }
 
 // SAFETY: o `llama_context` é usado sob o mesmo `Mutex` que serializa o
@@ -115,14 +122,26 @@ pub fn nextn_layers(model: *mut sys::llama_model) -> i32 {
     unsafe { sys::llama_model_n_layer_nextn(model as *const _) }
 }
 
+#[cfg(test)]
 fn context_params(cfg: &crate::llm::EngineConfig) -> sys::llama_context_params {
+    context_params_with_offload(cfg, cfg.offload_kqv)
+}
+
+pub(crate) fn context_params_with_offload(
+    cfg: &crate::llm::EngineConfig,
+    offload_kqv: bool,
+) -> sys::llama_context_params {
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
     crate::llm::apply_context_batch_params(&mut cparams, cfg);
     cparams.n_seq_max = crate::llm::kv_seq_budget(cfg.max_sessions);
     cparams.kv_unified = true;
     cparams.ctx_type = sys::LLAMA_CONTEXT_TYPE_MTP;
-    cparams.offload_kqv = cfg.offload_kqv;
+    cparams.offload_kqv = offload_kqv;
+    // `op_offload` is independent of the KV flag. With it left at the
+    // llama.cpp default, a CPU-resident MTP weight can still move a large
+    // operation back to the GPU. The RAM fallback needs host execution too.
+    cparams.op_offload = offload_kqv;
     crate::llm::apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
     // Sem instantâneos de estado recorrente: o bloco `nextn` é uma camada
     // de atenção comum, e o upstream zera este campo pelo mesmo motivo.
@@ -141,18 +160,21 @@ impl MtpDrafter {
     /// resposta certa para a fatia do meio de um pipeline e para qualquer
     /// modelo sem MTP, e quem chama trata como "este nó não anuncia MTP".
     ///
+    /// `model_mtp` pode ser um modelo CPU-only separado no recuo para RAM.
     /// `ctx_tgt` é o contexto alvo, que passa a emitir o estado oculto do
     /// tronco (`llama_set_embeddings_nextn`, sem máscara: para **toda**
     /// posição do lote, não só as com logits). Sem isso não há `h` para
     /// alimentar a cabeça.
     pub fn attach(
-        model: *mut sys::llama_model,
+        model_mtp: *mut sys::llama_model,
         ctx_tgt: *mut sys::llama_context,
         cfg: &crate::llm::EngineConfig,
         hidden_width: usize,
         n_vocab: usize,
+        mtp_model: Option<std::sync::Arc<crate::llm::LoadedModel>>,
+        offload_kqv: bool,
     ) -> Result<Option<Self>> {
-        if nextn_layers(model) <= 0 {
+        if nextn_layers(model_mtp) <= 0 {
             return Ok(None);
         }
 
@@ -161,14 +183,14 @@ impl MtpDrafter {
         // rodada seguinte apagar o que ainda vale. O microlote de computação
         // segue a política compartilhada do contexto principal, para que a
         // reserva do grafo não cresça desnecessariamente com n_batch.
-        let cparams = context_params(cfg);
+        let cparams = context_params_with_offload(cfg, offload_kqv);
         // Mesmo orçamento de sequências do contexto alvo: `mtp_draft` recebe o
         // `seq_id` de lá, que a partir do desenho de duas sequências por sessão
         // pode ser o da geração (`prompt_seq + max_sessions`). Sem isto o
         // rascunho decodificaria numa sequência fora da faixa deste contexto.
         // Ver `llm::kv_seq_budget`.
 
-        let ctx = unsafe { sys::llama_init_from_model(model, cparams) };
+        let ctx = unsafe { sys::llama_init_from_model(model_mtp, cparams) };
         if ctx.is_null() {
             bail!("llama_init_from_model falhou para o contexto MTP (ctx_type=MTP)");
         }
@@ -182,20 +204,35 @@ impl MtpDrafter {
             pom_llama_set_embeddings_nextn(ctx, true, true);
         }
 
+        let Some(allocation) = crate::llm::context_allocation(ctx) else {
+            unsafe { sys::llama_free(ctx) };
+            bail!("não foi possível medir a alocação do contexto MTP");
+        };
+
         tracing::info!(
             "MTP pronto: {} cabeça(s) nextn, contexto de rascunho com n_ctx={}",
-            nextn_layers(model),
+            nextn_layers(model_mtp),
             cfg.n_ctx
+        );
+        tracing::info!(
+            mtp_allocation = allocation.as_str(),
+            "alocação do contexto MTP"
         );
 
         Ok(Some(MtpDrafter {
             ctx,
+            _mtp_model: mtp_model,
             hidden_width,
             n_vocab,
             pending_h: vec![0.0; hidden_width],
             verify_h: Vec::new(),
             verify_rows: 0,
+            allocation,
         }))
+    }
+
+    pub(crate) fn allocation(&self) -> crate::llm::MtpAllocation {
+        self.allocation
     }
 
     /// Acompanha um lote que o contexto **alvo** acabou de decodificar.
@@ -457,6 +494,7 @@ mod tests {
             max_sessions: 1,
             need_embeddings: false,
             mtp: true,
+            mtp_cpu_fallback_enabled: true,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -474,6 +512,15 @@ mod tests {
         let params = context_params(&cfg);
         assert_eq!(params.n_batch, 4096);
         assert_eq!(params.n_ubatch, 4096);
+    }
+
+    #[test]
+    fn contexto_mtp_para_ram_desliga_o_offload_do_cache() {
+        let cfg = cfg();
+        let params = context_params_with_offload(&cfg, false);
+
+        assert!(!params.offload_kqv);
+        assert!(!params.op_offload);
     }
 
     #[test]
@@ -542,6 +589,7 @@ mod tests {
             max_sessions: 1,
             need_embeddings: false,
             mtp: true,
+            mtp_cpu_fallback_enabled: true,
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
@@ -557,10 +605,15 @@ mod tests {
             engine.mtp_ready(),
             "o modelo em {path} não trouxe bloco nextn — a sonda precisa de um que traga"
         );
+        assert!(
+            matches!(engine.mtp_allocation(), Some("vram" | "ram")),
+            "o runtime precisa publicar onde o MTP foi alocado: {:?}",
+            engine.mtp_allocation()
+        );
 
         let prompt_text =
             std::iter::repeat("The capital of France is Paris. The capital of Italy is Rome. ")
-                .take(40)
+                .take(20)
                 .collect::<String>();
         let prompt = engine.tokenize(&prompt_text, true, false);
         assert!(

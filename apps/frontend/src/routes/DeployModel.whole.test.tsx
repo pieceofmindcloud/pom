@@ -715,6 +715,12 @@ describe("DeployModel · MTP", () => {
     expect(switchEl).toBeTruthy();
     fireEvent.click(switchEl);
 
+    const ramFallback = await screen.findByRole("checkbox", {
+      name: "Permitir recuo do MTP para a RAM",
+    });
+    expect(ramFallback.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(ramFallback);
+
     await waitFor(() => {
       expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
       expect(
@@ -749,6 +755,7 @@ describe("DeployModel · MTP", () => {
       };
       expect(body.kind).toBe("whole");
       expect(body.params.mtp_enabled).toBe(true);
+      expect(body.params.mtp_cpu_fallback_enabled).toBe(false);
       expect(body.params.mtp_draft_tokens).toBe(5);
     });
   });

@@ -254,6 +254,8 @@ export interface PeerRuntimeHealth {
   mtp_ready: boolean;
   /** Motivo retornado pelo runtime quando o MTP pedido não foi anexado. */
   mtp_unavailable_reason?: string | null;
+  /** Local dominante dos buffers do contexto MTP pronto. */
+  mtp_allocation?: "vram" | "ram" | null;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
   context_memory: { buffers: ContextMemoryBuffer[] } | null;
@@ -1077,6 +1079,8 @@ export interface RuntimeParams {
   mtp_draft_tokens: number;
   /** Confiança mínima para o rascunho continuar; 0 aceita qualquer palpite. */
   mtp_min_probability: number;
+  /** Permite o recuo do MTP para pesos e cache em RAM quando a VRAM falhar. */
+  mtp_cpu_fallback_enabled?: boolean;
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */

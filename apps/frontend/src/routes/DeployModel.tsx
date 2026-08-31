@@ -1438,6 +1438,13 @@ export function DeployModel() {
                 {eff.mtp_enabled &&
                   p?.capabilities?.mtp?.state !== "unsupported" && (
                   <div className="space-y-1.5">
+                    <CapabilitySwitch
+                      alwaysVisible
+                      checked={eff.mtp_cpu_fallback_enabled ?? true}
+                      onChange={(value) => setParams({ ...eff, mtp_cpu_fallback_enabled: value })}
+                      label={t("deploy.mtpCpuFallback")}
+                      hint={t("deploy.mtpCpuFallbackHint")}
+                    />
                     <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                       <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
                       <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />

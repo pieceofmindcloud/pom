@@ -141,8 +141,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   global controls, including source and reason. The UI does not infer model or
   topology support from names; unknown remains visible but disabled.
   `PeerRuntimeHealth` carries `mtp_ready` and an optional
-  `mtp_unavailable_reason`; the dashboard detail card reads these fields from
-  `usePeerRuntime` so a failed MTP attach is visible.
+  `mtp_allocation` and `mtp_unavailable_reason`; the dashboard detail card
+  reads these fields from `usePeerRuntime` so the actual VRAM/RAM placement and
+  a failed MTP attach are visible.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
   size-, tensor- and budget-driven slicing plans. Budget-driven shards expose

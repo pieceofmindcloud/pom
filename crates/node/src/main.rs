@@ -815,6 +815,7 @@ async fn main() -> Result<()> {
             mtp_enabled: args.mtp,
             mtp_draft_tokens: args.mtp_draft_tokens,
             mtp_min_probability: 0.0,
+            mtp_cpu_fallback_enabled: true,
         };
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");

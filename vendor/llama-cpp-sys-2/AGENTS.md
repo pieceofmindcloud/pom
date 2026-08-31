@@ -62,7 +62,8 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 | Função | O que responde |
 |---|---|
 | `llama_rs_model_placement_json` | onde cada camada ficou de verdade, lendo o buffer de cada tensor em `tensors_by_name` mais `dev_layer(il)` |
-| `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV |
+| `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV e `host` distingue RAM de VRAM |
+| `llama_rs_mtp_context_memory_json` | sondagem seca do contexto `MTP`, sem pesos alocados, devolvendo o custo de `context` + `compute` com `device_index` por GPU |
 | `llama_rs_get_devices` | os handles elegíveis na mesma ordem padrão que o llama.cpp usaria |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
 | `llama_rs_benchmark_device` | uma pontuação de um grafo GGML genérico, com cache por handle no processo; zero significa velocidade indeterminável |

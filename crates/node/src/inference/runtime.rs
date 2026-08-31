@@ -202,6 +202,11 @@ pub struct NodeConfig {
     /// para uma aposta que a verificação vai recusar.
     #[serde(default = "default_mtp_min_probability")]
     pub mtp_min_probability: f32,
+    /// Permite carregar os pesos e o contexto `nextn` na RAM quando a VRAM
+    /// não comportar o MTP pedido. Ligado por padrão para honrar a implantação;
+    /// o operador pode desligar o recuo se a medição local não compensar.
+    #[serde(default = "default_mtp_cpu_fallback_enabled")]
+    pub mtp_cpu_fallback_enabled: bool,
 }
 
 impl NodeConfig {
@@ -269,6 +274,7 @@ impl NodeConfig {
             mtp_enabled: p.mtp_enabled,
             mtp_draft_tokens: p.mtp_draft_tokens,
             mtp_min_probability: p.mtp_min_probability,
+            mtp_cpu_fallback_enabled: p.mtp_cpu_fallback_enabled,
         }
     }
 
@@ -368,6 +374,9 @@ fn default_mtp_draft_tokens() -> u32 {
 /// medição diga que cortar rende mais que rascunhar.
 fn default_mtp_min_probability() -> f32 {
     0.0
+}
+fn default_mtp_cpu_fallback_enabled() -> bool {
+    true
 }
 
 impl NodeConfig {
@@ -1708,6 +1717,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            mtp_cpu_fallback_enabled: true,
             tp: None,
         }
     }

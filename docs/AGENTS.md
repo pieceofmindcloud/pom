@@ -43,8 +43,8 @@ e o rebase de metadata de camadas para a numeração local. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `inferencia.md` e `web-ui.md` também
 documentam o RTT observado do Chat, o RTT direcional por aresta, a leitura
-efetiva de colocação e configuração por peer e a reserva dinâmica do ajuste de
-VRAM. `implantacao.md` também documenta a
+efetiva de colocação e configuração por peer, a reserva do segundo contexto MTP
+e o recuo dele para a RAM. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa. `web-ui.md` descreve como essa validação aparece na tela Implantar e

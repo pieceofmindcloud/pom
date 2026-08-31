@@ -145,6 +145,8 @@ Per-file list:
   `POST /api/ui/cache-types`; the save button, subtitle and `global` badge are
   intentionally absent. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
   then edit that probability before deploying. The machine section includes
+  The MTP section also exposes the safe-by-default RAM fallback switch, so the
+  operator can refuse CPU drafting after measuring it. The machine section includes
   GPU/KV overrides, machine capacity and the available layer ranges that can
   be assigned to the selected peer. Choosing a range replaces that peer's
   active range; the same range on a second peer remains a replica. Coverage is

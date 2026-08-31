@@ -66,8 +66,9 @@ behind an auth extractor.
   per-device safety reserve used by llama.cpp's automatic layer fit (default
   256 MiB).
   `/api/ui/peer/:node_id/runtime` forwards the inference `/health` unchanged,
-  including `mtp_ready` and `mtp_unavailable_reason`, so the dashboard can
-  expose a requested MTP that failed to attach.
+  including `mtp_ready`, `mtp_allocation` and `mtp_unavailable_reason`, so the
+  dashboard can distinguish MTP in VRAM, MTP in RAM, a model without `nextn`,
+  and a memory failure.
   GGUF multipart sources are read through models::multipart::GgufSource:
   slice plans and extraction use all tensor parts, and model identity hashes
   the complete ordered set. An incomplete set is a concrete bad request, so

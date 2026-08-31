@@ -145,8 +145,8 @@ Per-file list:
   faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do
   `usePeerRuntime` é o que impede um `/health` por card a cada ciclo do Painel.
   Quando a configuração pediu MTP, o mesmo card também mostra
-  `mtp_ready`/`mtp_unavailable_reason` do runtime, incluindo a razão da falha
-  de anexação. A seção térmica mostra uma linha por GPU e declara temperatura
+  `mtp_ready`/`mtp_allocation`/`mtp_unavailable_reason` do runtime, incluindo o
+  local medido do contexto e a razão da falha de anexação. A seção térmica mostra uma linha por GPU e declara temperatura
   desconhecida quando o driver não fornece leitura.
 - `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
   camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),

@@ -132,7 +132,13 @@ function PeerPlacement({
               tone={health.mtp_ready ? "aqua" : "rose"}
               className="px-1.5 py-0 text-[0.68rem]"
             >
-              {health.mtp_ready ? t("dashboard.mtpReady") : t("dashboard.mtpUnavailable")}
+              {health.mtp_ready
+                ? health.mtp_allocation === "ram"
+                  ? t("dashboard.mtpReadyRam")
+                  : health.mtp_allocation === "vram"
+                    ? t("dashboard.mtpReadyVram")
+                    : t("dashboard.mtpReadyUnknown")
+                : t("dashboard.mtpUnavailable")}
             </Badge>
           </div>
           {!health.mtp_ready && (

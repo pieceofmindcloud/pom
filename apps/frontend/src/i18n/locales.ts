@@ -711,9 +711,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "dashboard.gpuProcesses": () => "GPU processes",
     "dashboard.mtpStatus": () => "Multi-token prediction (MTP)",
     "dashboard.mtpReady": () => "MTP active",
+    "dashboard.mtpReadyVram": () => "MTP active in VRAM",
+    "dashboard.mtpReadyRam": () => "MTP active in RAM",
+    "dashboard.mtpReadyUnknown": () => "MTP active (location unknown)",
     "dashboard.mtpUnavailable": () => "MTP unavailable",
     "dashboard.mtpUnavailableDetail": () =>
-      "Requested by this deployment, but the runtime did not attach the nextn head.",
+      "This deployment requested MTP, but the runtime could not keep its nextn context active.",
     "dashboard.mtpReasonUnknown": () => "The runtime did not report a reason.",
     "placement.title": () => "How the model was loaded",
     "placement.summary": ({ gpu, total }) => String(gpu) + " of " + String(total) + " layers on the GPU",
@@ -1033,6 +1036,9 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.mtp_min_probability": () => "MTP minimum probability",
     "deploy.knob.mtp_min_probabilityHint": () =>
       "Confidence floor for continuing the draft: a guess below it stops the run. Lower accepts more guesses, weaker ones included; 0 accepts every guess.",
+    "deploy.mtpCpuFallback": () => "Allow MTP fallback to RAM",
+    "deploy.mtpCpuFallbackHint": () =>
+      "If the MTP context does not fit in VRAM, load its weights and cache in host RAM. Turn this off when local measurements show the CPU draft is not worthwhile.",
     "nav.documentation": () => "Documentation",
     "docs.search": () => "Search documentation…",
     "docs.searchAria": () => "Search documentation",
@@ -1915,9 +1921,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "dashboard.gpuProcesses": () => "Processos na GPU",
     "dashboard.mtpStatus": () => "Predição multi-token (MTP)",
     "dashboard.mtpReady": () => "MTP ativo",
+    "dashboard.mtpReadyVram": () => "MTP ativo na VRAM",
+    "dashboard.mtpReadyRam": () => "MTP ativo na RAM",
+    "dashboard.mtpReadyUnknown": () => "MTP ativo (local não informado)",
     "dashboard.mtpUnavailable": () => "MTP indisponível",
     "dashboard.mtpUnavailableDetail": () =>
-      "Pedido nesta implantação, mas o runtime não montou a cabeça nextn.",
+      "Esta implantação pediu MTP, mas o runtime não conseguiu manter o contexto nextn ativo.",
     "dashboard.mtpReasonUnknown": () => "O runtime não informou o motivo.",
     "placement.title": () => "Como o modelo foi carregado",
     "placement.summary": ({ gpu, total }) => String(gpu) + " de " + String(total) + " camadas na GPU",
@@ -2235,6 +2244,9 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.mtp_min_probability": () => "Probabilidade mínima do MTP",
     "deploy.knob.mtp_min_probabilityHint": () =>
       "Piso de confiança para continuar o rascunho: palpite abaixo dele para a rodada. Menor aceita mais palpites, inclusive os fracos; 0 aceita todo palpite.",
+    "deploy.mtpCpuFallback": () => "Permitir recuo do MTP para a RAM",
+    "deploy.mtpCpuFallbackHint": () =>
+      "Se o contexto MTP não couber na VRAM, carrega pesos e cache na RAM. Desligue se as medições locais mostrarem que o rascunho na CPU não compensa.",
     "nav.documentation": () => "Documentação",
     "docs.search": () => "Buscar na documentação…",
     "docs.searchAria": () => "Buscar na documentação",

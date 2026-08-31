@@ -1195,6 +1195,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            mtp_cpu_fallback_enabled: true,
             tp: None,
         };
         cfg.inference_port = port;
@@ -2477,6 +2478,7 @@ pub async fn run(
         max_sessions: cfg.max_sessions.max(1),
         need_embeddings,
         mtp: cfg.mtp_effective(),
+        mtp_cpu_fallback_enabled: cfg.mtp_cpu_fallback_enabled,
         rs_seq_window,
         moe_external_executor,
         moe_external_executor_layers: moe_plan
@@ -3005,6 +3007,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         // carregado (fatia não-final não tem o bloco) e do interruptor do
         // operador, então nem a configuração nem o nome do arquivo respondem.
         "mtp_ready": s.engine.mtp_ready(),
+        "mtp_allocation": s.engine.mtp_allocation(),
         "mtp_unavailable_reason": s.engine.mtp_unavailable_reason(),
     }))
     .into_response()

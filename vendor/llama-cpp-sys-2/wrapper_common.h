@@ -102,6 +102,16 @@ llama_rs_status llama_rs_model_placement_json(const struct llama_model * model, 
 // O chamador é dono da string e a libera com `llama_rs_string_free`.
 llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json);
 
+// Mede o apenas o contexto MTP sem alocar os pesos do modelo. `mparams` e
+// `cparams` seguem a mesma política de dispositivos e lote que o carregamento
+// real; a resposta inclui `device_index` para o POM reservar o custo no GPU
+// correto. O chamador é dono da string e a libera com `llama_rs_string_free`.
+llama_rs_status llama_rs_mtp_context_memory_json(
+    const char * path_model,
+    const struct llama_model_params * mparams,
+    const struct llama_context_params * cparams,
+    char ** out_json);
+
 // CPU reference for the differential MoE proof. It uses the tensors loaded by
 // llama.cpp itself and returns the intermediate expert vectors in execution
 // order: gate, up, activation, down. The caller owns all output buffers.

@@ -656,7 +656,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - a cada passo, o sampler aplica a penalidade de repetição,
-  softmax com temperatura positiva, top-k por contagem, núcleo top-p sobre as
+  top-k por contagem, softmax com temperatura positiva, núcleo top-p sobre as
   probabilidades normalizadas e sorteio multinomial. Temperatura não positiva
   devolve argmax. `repeat_last_n=64` continua padrão: a penalidade é por token
   e não detecta ciclos de n-gramas, então ampliar a janela não garantiria

@@ -4251,14 +4251,14 @@ pub struct SamplingTimings {
     pub selection_us: u64,
 }
 
-/// Temperature + top-k + top-p + repetition-penalty sampling.
-///
-/// Returns the sampled token id. When `temperature <= 0` this is greedy argmax.
 static SAMPLER_RNG: Mutex<u64> = Mutex::new(0x853c49e6748fea9b);
 
 #[cfg(test)]
 static SAMPLER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Temperature + top-k + top-p + repetition-penalty sampling.
+///
+/// Returns the sampled token id. When `temperature <= 0` this is greedy argmax.
 pub fn sample_token_profiled(
     logits: &[f32],
     recent: &[i32],
@@ -4283,11 +4283,7 @@ pub fn sample_token_profiled(
     let rng_val: f32 = {
         // A simple LCG, to avoid pulling in `rand`.
         let mut r = SAMPLER_RNG.lock().unwrap();
-        *r = r
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let bits = ((*r >> 33) as u32) | 0x3f800000;
-        f32::from_bits(bits) - 1.0
+        next_sampler_rng_value(&mut r)
     };
 
     let mut cumsum = 0.0f32;
@@ -4306,6 +4302,15 @@ pub fn sample_token_profiled(
     }
     timings.selection_us = selection_started.elapsed().as_micros() as u64;
     (best.0 as i32, timings)
+}
+
+fn next_sampler_rng_value(state: &mut u64) -> f32 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    let mantissa = ((*state >> 33) as u32) & 0x007f_ffff;
+    let bits = mantissa | 0x3f800000;
+    f32::from_bits(bits) - 1.0
 }
 
 fn sampling_candidates_profiled(
@@ -4700,9 +4705,9 @@ mod tests {
         assert_eq!(Arc::strong_count(&loaded), 1);
     }
 
-    /// Characterisation tests: they pin the sampler's *current* choices so the
-    /// O(V log V) → O(V) rewrite below can be proven not to change which token
-    /// comes out. They are deliberately about behaviour, not speed.
+    /// Testes do comportamento vigente do sampler: conjunto de candidatos,
+    /// limites determinísticos e sorteio. Não são provas de equivalência com
+    /// implementações anteriores, porque top-p e desempates evoluíram.
     mod sampler_behaviour {
         use super::*;
 
@@ -4842,6 +4847,16 @@ mod tests {
             *SAMPLER_RNG.lock().unwrap() = SEED;
             assert_eq!(sample_token(&logits, &[], &deterministic), 0);
             assert_eq!(sample_token(&logits, &[], &stochastic), expected);
+        }
+
+        #[test]
+        fn sampler_lcg_values_are_finite_unit_interval() {
+            let mut state = 0x853c49e6748fea9b;
+            for _ in 0..1024 {
+                let value = next_sampler_rng_value(&mut state);
+                assert!(value.is_finite(), "LCG devolveu {value:?}");
+                assert!((0.0..1.0).contains(&value), "LCG devolveu {value:?}");
+            }
         }
 
         #[test]

@@ -24,6 +24,8 @@ mod config;
 mod deploy;
 #[path = "models/deployment.rs"]
 mod deployment;
+#[path = "inference/device_placement.rs"]
+mod device_placement;
 #[path = "backend/devupdate.rs"]
 mod devupdate;
 #[path = "inference/direct.rs"]

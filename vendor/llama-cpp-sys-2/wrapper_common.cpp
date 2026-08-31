@@ -1,13 +1,16 @@
 #include "wrapper_common.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <stdint.h>
+#include <unordered_map>
 #include <vector>
 
 #include "llama.cpp/common/common.h"
@@ -174,18 +177,10 @@ extern "C" int llama_rs_fit_params(
         log_level));
 }
 
-extern "C" size_t llama_rs_get_device_memory(
-    struct llama_rs_device_memory * out,
-    size_t capacity) {
-    if (!out || capacity == 0) {
-        return 0;
-    }
-
-    // Keep this selection in lockstep with llama_prepare_model_devices for
-    // the default layer-split model params used by common_fit_params: RPC
+static std::vector<ggml_backend_dev_t> llama_rs_default_devices() {
+    // Keep this selection in lockstep with llama_prepare_model_devices: RPC
     // devices first, then discrete GPUs, then integrated GPUs only when there
-    // is no discrete GPU. The query is deliberately backend-native rather
-    // than an nvidia-smi side channel.
+    // is no discrete GPU. This is backend metadata, not a vendor allow-list.
     std::vector<ggml_backend_dev_t> rpc_servers;
     std::vector<ggml_backend_dev_t> gpus;
     std::vector<ggml_backend_dev_t> igpus;
@@ -240,6 +235,30 @@ extern "C" size_t llama_rs_get_device_memory(
     if (gpus.empty()) {
         devices.insert(devices.end(), igpus.begin(), igpus.end());
     }
+    return devices;
+}
+
+extern "C" size_t llama_rs_get_devices(
+    ggml_backend_dev_t * out,
+    size_t capacity) {
+    if (!out || capacity == 0) {
+        return 0;
+    }
+
+    const std::vector<ggml_backend_dev_t> devices = llama_rs_default_devices();
+    const size_t written = std::min(capacity, devices.size());
+    std::copy_n(devices.begin(), written, out);
+    return written;
+}
+
+extern "C" size_t llama_rs_get_device_memory(
+    struct llama_rs_device_memory * out,
+    size_t capacity) {
+    if (!out || capacity == 0) {
+        return 0;
+    }
+
+    const std::vector<ggml_backend_dev_t> devices = llama_rs_default_devices();
 
     const size_t written = std::min(capacity, devices.size());
     for (size_t i = 0; i < written; ++i) {
@@ -249,6 +268,100 @@ extern "C" size_t llama_rs_get_device_memory(
         out[i] = {free_bytes, total_bytes};
     }
     return written;
+}
+
+static float llama_rs_benchmark_device_uncached(ggml_backend_dev_t device) {
+    if (!device) {
+        return 0.0f;
+    }
+
+    // A matrix-vector product approximates the memory-bound shape of one
+    // decode token while keeping the one-time probe below 16 MiB of weights.
+    // It uses only the public ggml backend graph API, so RPC and every other
+    // backend are measured through the same interface.
+    constexpr int n = 2048;
+    constexpr int runs = 3;
+    constexpr size_t context_bytes = 1024 * 1024;
+
+    ggml_backend_t backend = ggml_backend_dev_init(device, nullptr);
+    if (!backend) {
+        return 0.0f;
+    }
+
+    ggml_init_params init_params = {
+        /* .mem_size   = */ context_bytes,
+        /* .mem_buffer = */ nullptr,
+        /* .no_alloc   = */ true,
+    };
+    ggml_context * ctx = ggml_init(init_params);
+    if (!ctx) {
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+
+    ggml_tensor * weights = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, n);
+    ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, 1);
+    ggml_tensor * output = ggml_mul_mat(ctx, weights, input);
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 4, false);
+    if (!weights || !input || !output || !graph) {
+        ggml_free(ctx);
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+    ggml_build_forward_expand(graph, output);
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (!buffer) {
+        ggml_free(ctx);
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+    ggml_backend_buffer_clear(buffer, 1);
+
+    if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+        ggml_backend_buffer_free(buffer);
+        ggml_free(ctx);
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+    ggml_backend_synchronize(backend);
+
+    double elapsed_seconds = 0.0;
+    for (int i = 0; i < runs; ++i) {
+        const auto started = std::chrono::steady_clock::now();
+        if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+            ggml_backend_buffer_free(buffer);
+            ggml_free(ctx);
+            ggml_backend_free(backend);
+            return 0.0f;
+        }
+        ggml_backend_synchronize(backend);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        elapsed_seconds += std::chrono::duration<double>(elapsed).count();
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+
+    return elapsed_seconds > 0.0
+        ? static_cast<float>(runs / elapsed_seconds)
+        : 0.0f;
+}
+
+extern "C" float llama_rs_benchmark_device(ggml_backend_dev_t device) {
+    static std::mutex mutex;
+    static std::unordered_map<ggml_backend_dev_t, float> scores;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto found = scores.find(device);
+    if (found != scores.end()) {
+        return found->second;
+    }
+
+    const float score = llama_rs_benchmark_device_uncached(device);
+    scores.emplace(device, score);
+    return score;
 }
 
 extern "C" void llama_rs_memory_breakdown_print(const struct llama_context * ctx) {

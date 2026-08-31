@@ -47,6 +47,7 @@ use std::sync::{
 use std::time::Instant;
 use tracing::warn;
 
+use crate::device_placement;
 use llama_cpp_sys_2 as sys;
 
 // ── Capture state, one per context ────────────────────────────────────────────
@@ -1714,6 +1715,10 @@ struct FitPlan {
     config: EngineConfig,
     tensor_split: Vec<f32>,
     tensor_buft_overrides: Vec<sys::llama_model_tensor_buft_override>,
+    /// A NULL-terminated device list, kept alive for the model load. It is
+    /// empty when speed could not be ranked confidently, preserving llama's
+    /// default device selection.
+    devices: Vec<sys::ggml_backend_dev_t>,
     applied: bool,
 }
 
@@ -1754,6 +1759,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
             config: cfg.clone(),
             tensor_split: Vec::new(),
             tensor_buft_overrides: Vec::new(),
+            devices: Vec::new(),
             applied: false,
         });
     }
@@ -1766,6 +1772,15 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     unsafe { sys::llama_backend_init() };
     let n_devices = unsafe { sys::llama_max_devices() }.max(1);
     let n_overrides = unsafe { sys::llama_max_tensor_buft_overrides() }.max(1);
+
+    // Take the memory snapshot before the speed probes allocate their small
+    // benchmark graph. This preserves the fit snapshot timing guarantee and
+    // makes the measured order orthogonal to the memory budget.
+    let mut available_devices = vec![ptr::null_mut(); n_devices];
+    let available_count = unsafe {
+        sys::llama_rs_get_devices(available_devices.as_mut_ptr(), available_devices.len())
+    };
+    available_devices.truncate(available_count.min(n_devices));
     let mut tensor_split = vec![0.0_f32; n_devices];
     let mut tensor_buft_overrides = vec![
         sys::llama_model_tensor_buft_override {
@@ -1781,10 +1796,72 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
         };
         n_devices
     ];
-    let memory_count = unsafe {
-        sys::llama_rs_get_device_memory(device_memories.as_mut_ptr(), device_memories.len())
+    let memory_count = if available_devices.is_empty() {
+        // Keep the old wrapper path for an empty device registry so a missing
+        // snapshot continues to take the existing safe fit fallback.
+        let count = unsafe {
+            sys::llama_rs_get_device_memory(device_memories.as_mut_ptr(), device_memories.len())
+        };
+        device_memories.truncate(count.min(n_devices));
+        count
+    } else {
+        for (memory, &device) in device_memories.iter_mut().zip(&available_devices) {
+            let mut free_bytes = 0;
+            let mut total_bytes = 0;
+            unsafe { sys::ggml_backend_dev_memory(device, &mut free_bytes, &mut total_bytes) };
+            memory.free_bytes = free_bytes;
+            memory.total_bytes = total_bytes;
+        }
+        device_memories.truncate(available_devices.len());
+        available_devices.len()
     };
-    device_memories.truncate(memory_count.min(n_devices));
+
+    let memory_snapshot_complete = device_memories.iter().all(|memory| {
+        memory.total_bytes > 0 && memory.free_bytes <= memory.total_bytes
+    });
+    let speed_scores = if available_devices.len() > 1 && memory_snapshot_complete {
+        available_devices
+            .iter()
+            .map(|&device| {
+                let score = unsafe { sys::llama_rs_benchmark_device(device) };
+                if score.is_finite() && score > 0.0 {
+                    Some(f64::from(score))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let ordered_devices = device_placement::confident_slow_to_fast_order(&speed_scores)
+        .filter(|order| {
+            order
+                .iter()
+                .enumerate()
+                .any(|(position, &original)| position != original)
+        })
+        .map(|order| {
+            let mut devices = order
+                .iter()
+                .map(|&index| available_devices[index])
+                .collect::<Vec<_>>();
+            let reordered_memories = order
+                .iter()
+                .map(|&index| device_memories[index])
+                .collect::<Vec<_>>();
+            device_memories = reordered_memories;
+            devices.push(ptr::null_mut());
+            devices
+        })
+        .unwrap_or_default();
+    if available_devices.len() > 1 {
+        tracing::info!(
+            device_speed_scores = ?speed_scores,
+            speed_order_applied = !ordered_devices.is_empty(),
+            "llama.cpp fit sondou a velocidade relativa dos dispositivos"
+        );
+    }
     let fit_memories = device_memories
         .iter()
         .map(|memory| FitDeviceMemory {
@@ -1820,6 +1897,11 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     }
     let mut mparams = unsafe { sys::llama_model_default_params() };
     mparams.n_gpu_layers = -1;
+    if !ordered_devices.is_empty() {
+        // `ordered_devices` includes the NULL sentinel required by llama.cpp.
+        // Keep it in FitPlan so the same order reaches the real model load.
+        mparams.devices = ordered_devices.as_ptr() as *mut sys::ggml_backend_dev_t;
+    }
     mparams.load_mtp = load_mtp_weights(cfg);
     mparams.moe_external_executor = cfg.moe_external_executor;
     if !cfg.moe_external_executor_layers.is_empty() {
@@ -1859,6 +1941,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
             config: cfg.clone(),
             tensor_split: Vec::new(),
             tensor_buft_overrides: Vec::new(),
+            devices: Vec::new(),
             applied: false,
         });
     }
@@ -1879,6 +1962,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
         config: effective,
         tensor_split,
         tensor_buft_overrides,
+        devices: ordered_devices,
         applied: true,
     })
 }
@@ -2164,6 +2248,9 @@ impl LoadedModel {
 
         let mut mparams = unsafe { sys::llama_model_default_params() };
         mparams.n_gpu_layers = plan.config.n_gpu_layers;
+        if !plan.devices.is_empty() {
+            mparams.devices = plan.devices.as_ptr() as *mut sys::ggml_backend_dev_t;
+        }
         mparams.load_mtp = load_mtp_weights(&plan.config);
         mparams.moe_external_executor = plan.config.moe_external_executor;
         if !plan.config.moe_external_executor_layers.is_empty() {

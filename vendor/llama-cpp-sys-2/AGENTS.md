@@ -63,7 +63,16 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 |---|---|
 | `llama_rs_model_placement_json` | onde cada camada ficou de verdade, lendo o buffer de cada tensor em `tensors_by_name` mais `dev_layer(il)` |
 | `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV |
+| `llama_rs_get_devices` | os handles elegíveis na mesma ordem padrão que o llama.cpp usaria |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
+| `llama_rs_benchmark_device` | uma pontuação de um grafo GGML genérico, com cache por handle no processo; zero significa velocidade indeterminável |
+
+`llama_rs_benchmark_device` usa somente a interface pública de backend do GGML
+para executar uma multiplicação matriz-vetor pequena. O POM chama a medição no
+máximo uma vez por dispositivo e só usa a ordem quando todos os resultados são
+válidos e as diferenças superam o limiar de confiança. Backend sem memória,
+inicialização, alocação ou execução compatível devolve zero e conserva a ordem
+padrão. O probe não contém tabela de hardware nem nomes de fabricantes.
 
 `llama_rs_fit_params` eleva temporariamente o limite de verbosidade do logger
 comum para `TRACE` e o restaura ao sair, porque `common_fit_params` registra a

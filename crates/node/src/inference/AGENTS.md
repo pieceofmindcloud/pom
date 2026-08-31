@@ -28,6 +28,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   modelada no `ReplyInbox` de `direct.rs`). O transporte HTTP
   (`POST /v1/tp/reduce`) é uma camada fina, ligada junto com o fork do
   llama.cpp.
+- `device_placement.rs` - ordena handles de dispositivos do mais lento ao
+  mais rápido somente quando as medições sintéticas têm confiança suficiente;
+  sem isso, o fit conserva a ordem padrão do llama.cpp.
 - `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
   por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; inbox de
   tickets, `reply_to`, telemetria acumulada na ida.
@@ -71,6 +74,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
+  Quando `fit_memory` está ativo e há mais de um dispositivo elegível, mede
+  uma vez por handle um grafo GGML genérico e passa ao fit uma lista explícita
+  do mais lento ao mais rápido somente se todas as diferenças forem confiáveis.
+  A lista fica no `FitPlan` até a carga real, fazendo o último dispositivo
+  receber a cabeça de saída e a faixa final. Resultado ausente, equivalente ou
+  inválido mantém a seleção padrão do llama.cpp, inclusive sem microteste para
+  um único dispositivo.
   `fit_plan` registra o snapshot de memória retornado pelo backend, a margem
   efetiva, o orçamento por dispositivo e o uso de VRAM do próprio PID quando
   `nvidia-smi` o fornece. O fit chama a ponte com trace temporariamente visível

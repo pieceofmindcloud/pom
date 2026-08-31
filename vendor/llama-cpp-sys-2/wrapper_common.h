@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama.cpp/include/llama.h"
+#include "llama.cpp/ggml/include/ggml-backend.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -66,9 +67,20 @@ struct llama_rs_device_memory {
     size_t total_bytes;
 };
 
+// Returns the devices selected by llama.cpp's default layer-split policy, in
+// the order it would pass to the model. The handles remain owned by ggml.
+size_t llama_rs_get_devices(
+    ggml_backend_dev_t * out,
+    size_t capacity);
+
 size_t llama_rs_get_device_memory(
     struct llama_rs_device_memory * out,
     size_t capacity);
+
+// Measures one small generic matrix-vector graph on the backend. The result is
+// cached per device for the process; zero means that the backend could not be
+// measured and callers must retain the default device order.
+float llama_rs_benchmark_device(ggml_backend_dev_t device);
 
 void llama_rs_memory_breakdown_print(const struct llama_context * ctx);
 

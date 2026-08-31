@@ -148,6 +148,42 @@ chunk, mas usa `n_ubatch=min(n_batch, 128)` no contexto. O prompt continua
 aceitando chunks de até `n_batch`; o custo é mais etapas internas de cálculo em
 troca de uma reserva menor. `/health` expõe esse valor como
 `n_ubatch_effective`. Com `fit_memory=false`, `n_ubatch` acompanha `n_batch`.
+
+#### Ordem segura por velocidade
+
+Quando o fit automático encontra mais de um dispositivo elegível, o POM coleta
+os handles na mesma seleção padrão do llama.cpp e captura o livre e o total
+antes de qualquer probe. Depois mede uma vez por handle uma multiplicação
+matriz-vetor F32 pequena através da interface genérica de grafo do GGML. A
+pontuação fica em cache durante o processo, portanto a carga seguinte do mesmo
+modelo não repete a medição. Não há API de fabricante, tabela de placas ou
+prioridade fixa por backend.
+
+A ordenação só é aplicada se todos os resultados forem finitos e positivos e
+cada fronteira entre velocidades vizinhas superar 25%. Se um backend não
+informa memória, não inicializa, não aloca ou não executa o grafo, ou se as
+velocidades forem equivalentes, o resultado é indeterminado e o POM não faz
+palpite: deixa `llama_model_params.devices` nulo, mantendo a ordem e o
+comportamento atuais. O mesmo vale para um único dispositivo, que não paga o
+probe. Quando há confiança, a lista explícita é passada tanto ao
+`common_fit_params` quanto à carga real, do mais lento ao mais rápido. Como o
+fit preenche as camadas de trás para a frente, o dispositivo mais rápido fica
+com a faixa final e a cabeça de saída, que é percorrida em cada token, enquanto
+as faixas continuam contíguas e o número de fronteiras do grafo não aumenta.
+
+O cache KV não é deslocado artificialmente para o dispositivo lento. Ele é
+acessado em cada token, cresce com o contexto e segue o dispositivo da camada;
+assim, o dispositivo rápido recebe também o KV das camadas que ele executa e
+a cabeça, dentro do limite de memória. A memória livre ainda é a restrição
+dura para pesos, contexto e temporários. Esta política evita trocar uma
+travessia repetida por uma economia nominal de bytes e mantém o fallback
+existente para `offload_kqv=false` quando o KV não cabe na GPU.
+
+Esta alteração é somente no POM e em `wrapper_common.{h,cpp}`. O
+`common/fit.cpp` do llama.cpp não foi modificado: a lista pública de devices já
+é suficiente para orientar o fit sem permitir que a distribuição de memória
+seja sobrescrita depois da sondagem.
+
 Quando o MTP está ligado, o carregamento também passa
 `llama_model_params.load_mtp=true`, para que os pesos `nextn.*` sejam carregados
 antes de criar o contexto de rascunho; deixar essa flag falsa mantém os

@@ -360,45 +360,40 @@ como o resto do plano).
 
 - **Uma chamada por `Step`** (`POST /api/ui/deploy/capacity-preview`, handler
   em `webui.rs`), só para passos `!merged` com `target_path` resolvido - um
-  passo que ainda depende de cópia ou de junção não tem arquivo local para o
-  `fit` nativo examinar, e a pré-visualização nunca materializa nada. Passos em
-  espera aparecem como "projeção após a cópia". Tensor Parallelism fica de fora
-  nesta versão (a divisão real é `split-mode tensor`, que o `fit` reutilizado
-  não sabe planejar - o mesmo motivo que desliga `fit_memory` em TP).
-- **Dois números, duas fontes.** `llm::preview_fit` roda o mesmo `fit_plan` do
-  carregamento real (`llama_rs_fit_params`), sem chegar a carregar peso, e
-  devolve como as camadas se dividiriam entre GPUs (`tensor_split`), quantas
-  ficariam na GPU e se o contexto pedido encolheria. `plan::range_cost` cobra
-  peso e KV da faixa que ficaria na GPU pela **mesma aritmética** do planejador
-  de fatiamento (`gguf::read_layout` + `kv_budget::kv_bytes_for_layers`). A
-  quantização do cache entra: `cache_type_k`/`cache_type_v` saem da config da
-  instalação (como no launch real) e o `kv_budget` tem o tamanho de bloco de
-  cada tipo. O KV só é somado à VRAM quando `offload_kqv` está ligado - sem
-  ele o cache mora na RAM do host mesmo para as camadas que estão na GPU, e a
-  projeção anota isso numa nota. O buffer de computação do llama.cpp não entra
-  na conta: é o território que `fit_memory_margin_mb` já cobre como reserva, e
-  contá-lo duas vezes superestimaria o uso. O executor externo de MoE também fica de fora - o
-  ownership de experts é uma leitura de GGUF à parte que a pré-visualização não
-  faz, então ela subestima a VRAM só nesse caso.
-- **Divisão multi-GPU.** Com `tensor_split` do `fit` (mesmo tamanho da lista de
-  GPUs), a divisão é a decisão real do llama.cpp. Sem isso - `fit` desligado,
-  `n_gpu_layers` fixado pelo operador, ou uma GPU só - a divisão é proporcional
-  à VRAM livre de cada dispositivo agora, e uma nota diz que é estimativa.
-- **Três estados, todos aviso, nenhum bloqueio.** Coerente com a regra
-  "memória é estimativa" (`a_target_short_on_memory_warns_and_still_deploys`):
-  - **verde** - cabe como pedido;
-  - **amber** (`degraded`) - cabe, mas só porque o `fit_memory` apararia o
-    pedido: o contexto ou as camadas de GPU efetivos do `fit` ficaram abaixo
-    do pedido. A nota diz de quanto para quanto;
-  - **rósea** (`!fits`) - não cabe nem no piso do `fit` (`FIT_MIN_CONTEXT`),
-    ou o `fit` está desligado e a projeção crua estoura a placa.
+  passo que ainda depende de cópia ou de junção não tem arquivo local para a
+  conta examinar, e a pré-visualização nunca materializa nada. Passos em espera
+  aparecem como "projeção após a cópia". Tensor Parallelism fica de fora nesta
+  versão, pois a divisão real é `split-mode tensor`.
+- **Estimativa analítica.** A rota lê `gguf::read_layout` e `gguf::read_info`,
+  cobra peso e KV com `plan::range_cost` e distribui o resultado
+  proporcionalmente à VRAM livre atual de cada GPU. A quantização do cache
+  entra: `cache_type_k`/`cache_type_v` saem da config da instalação e o KV só
+  é somado à VRAM quando `offload_kqv` está ligado. Sem isso, o cache mora na
+  RAM do host e a projeção anota a diferença. O executor externo de MoE fica
+  de fora porque a rota não abre o modelo nem calcula ownership de experts.
+  O compute buffer também fica fora: o resultado é um sinal de planejamento,
+  não uma substituição da carga real.
+- **Divisão multi-GPU.** Sempre proporcional à VRAM livre atual. A resposta
+  identifica a divisão como estimada e o carregamento real continua sendo a
+  autoridade sobre camadas efetivas, contexto e layout final. A rota nunca
+  chama `llama_backend_init`, `llama_rs_fit_params` ou `fit_plan`, e por isso
+  não compete com a carga nativa.
+- **Três estados visíveis, nenhum bloqueio.** Coerente com a regra "memória é
+  estimativa" (`a_target_short_on_memory_warns_and_still_deploys`): **verde**
+  cabe na projeção analítica; **amber** (`fits && degraded`) a conta crua não
+  cabe, mas `fit_memory` está ligado e as camadas foram deixadas no padrão, de
+  modo que a carga real pode aparar o pedido; **rósea** (`!fits`) a conta não
+  cabe e não há ajuste automático autorizado. O amber é uma heurística explícita,
+  não uma alegação sobre o resultado do llama.cpp. Os três estados são aviso e
+  a tela ainda pede `Confirm` antes de implantar.
 
-  Amber e rósea abrem um `Confirm` nomeando as máquinas antes de implantar (o
-  texto muda conforme o caso). `canDeploy` não muda - buraco de cobertura e
-  `blocked` continuam sendo os únicos bloqueios de verdade. `!applied` do
-  `fit` só vira falha quando ele *chegou a rodar* (`FitPreview.attempted` =
-  `fit_memory` ligado e `n_gpu_layers` no padrão); com as camadas fixadas pelo
-  operador o `fit` é pulado de propósito e a projeção crua peso+KV vale.
+  O endpoint admite quatro prévias por processo. Quando todas as vagas estão
+  ocupadas, responde `429` imediatamente; o coordenador limita seu fan-out a
+  quatro chamadas simultâneas com `buffer_unordered`, sem formar fila nativa.
+
+  Rósea abre um `Confirm` nomeando as máquinas antes de implantar. `canDeploy`
+  não muda - buraco de cobertura e `blocked` continuam sendo os únicos
+  bloqueios de verdade; a capacidade continua sendo apenas aviso.
 
 `MachineView.capacity` (`MachineCapacity { fits, degraded, note, gpus }`) é a
 soma por GPU dos passos daquela máquina - dois passos não-adjacentes na mesma
@@ -437,7 +432,7 @@ placa somam. `Step.capacity` (`CapacityPreview`) é o passo isolado.
 | Rota | Papel |
 |---|---|
 | `POST /api/ui/deploy/plan` | prévia (leitura, chamada a cada edição); enriquece os passos com a projeção de capacidade |
-| `POST /api/ui/deploy/capacity-preview` | prévia por passo, local ao peer: roda o `fit` nativo sem carregar peso e devolve a VRAM projetada por GPU (`webui.rs`) |
+| `POST /api/ui/deploy/capacity-preview` | prévia por passo, local ao peer: estima por metadata GGUF e VRAM livre, sem chamar o fit nativo, e devolve a VRAM projetada por GPU (`webui.rs`) |
 | `POST /api/ui/deploy` | executa (re-varre, recusa `blocked`/vazio, job) |
 | `POST /api/ui/deploy/node` | adiciona uma máquina a um pipeline já no ar |
 | `POST /api/ui/deploy/node/remove` | tira uma máquina do modelo (libera a memória) |

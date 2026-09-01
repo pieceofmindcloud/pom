@@ -111,7 +111,11 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
     `thermal` aguarda o cooldown configurado. O `NodeConfig` carregado pela
     implantação leva também a reserva configurável do ajuste automático de
     memória; a consulta de VRAM e a aplicação ficam em `inference/llm.rs`.
-12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI).
+    O gateway é spawnado antes desse `apply`, então lock, fit ou carga de
+    modelo não podem fechar a porta de controle.
+12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI). A rota
+    de prévia de capacidade faz somente estimativa analítica, com quatro
+    admissões por processo e `429` imediato quando todas estão ocupadas.
 13. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
     UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a

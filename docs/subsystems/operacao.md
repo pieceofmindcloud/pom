@@ -43,8 +43,10 @@ ssh root@<peer2> 'cd /caminho/pom && ./old/scripts/run-p2.sh'
 # BOOTSTRAP=<ip-do-peer1>:42777 sobrescreve o endereço do peer 1.
 ```
 
-O carregamento do modelo leva ~1 min; espere o `/health` do servidor de
-inferência antes de mandar requisição:
+O gateway HTTP é ligado antes do carregamento do modelo, então a UI e a API de
+controle ficam disponíveis durante o arranque. O carregamento do modelo leva
+~1 min; espere o `/health` do servidor de inferência antes de mandar
+requisição:
 
 ```bash
 until curl -sf localhost:8181/health; do sleep 5; done

@@ -2103,6 +2103,24 @@ fn generic_embeddings_compatible(need_embeddings: bool, n_embd: usize, n_embd_ou
     need_embeddings && n_embd == n_embd_out
 }
 
+fn backend_registry_name(device: sys::ggml_backend_dev_t) -> Option<String> {
+    if device.is_null() {
+        return None;
+    }
+
+    let registry = unsafe { sys::ggml_backend_dev_backend_reg(device) };
+    if registry.is_null() {
+        return None;
+    }
+
+    let name = unsafe { sys::ggml_backend_reg_name(registry) };
+    if name.is_null() {
+        return None;
+    }
+
+    unsafe { CStr::from_ptr(name).to_str().ok().map(str::to_owned) }
+}
+
 pub(crate) fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
@@ -2219,29 +2237,41 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
     } else {
         Vec::new()
     };
-    let ordered_devices = device_placement::confident_slow_to_fast_order(&speed_scores)
-        .filter(|order| {
-            order
-                .iter()
-                .enumerate()
-                .any(|(position, &original)| position != original)
-        })
-        .map(|order| {
-            let mut devices = order
-                .iter()
-                .map(|&index| available_devices[index])
-                .collect::<Vec<_>>();
-            let reordered_memories = order
-                .iter()
-                .map(|&index| device_memories[index])
-                .collect::<Vec<_>>();
-            device_memories = reordered_memories;
-            devices.push(ptr::null_mut());
-            devices
-        })
-        .unwrap_or_default();
+    let backend_names = available_devices
+        .iter()
+        .map(|&device| backend_registry_name(device))
+        .collect::<Vec<_>>();
+    let backend_name_refs = backend_names
+        .iter()
+        .map(Option::as_deref)
+        .collect::<Vec<_>>();
+    let ordered_devices = device_placement::confident_slow_to_fast_order_for_backends(
+        &speed_scores,
+        &backend_name_refs,
+    )
+    .filter(|order| {
+        order
+            .iter()
+            .enumerate()
+            .any(|(position, &original)| position != original)
+    })
+    .map(|order| {
+        let mut devices = order
+            .iter()
+            .map(|&index| available_devices[index])
+            .collect::<Vec<_>>();
+        let reordered_memories = order
+            .iter()
+            .map(|&index| device_memories[index])
+            .collect::<Vec<_>>();
+        device_memories = reordered_memories;
+        devices.push(ptr::null_mut());
+        devices
+    })
+    .unwrap_or_default();
     if available_devices.len() > 1 {
         tracing::info!(
+            device_backend_names = ?backend_names,
             device_speed_scores = ?speed_scores,
             speed_order_applied = !ordered_devices.is_empty(),
             "llama.cpp fit sondou a velocidade relativa dos dispositivos"
@@ -2437,51 +2467,6 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
         mtp_mode: selected_mtp_mode,
         mtp_unavailable_reason,
         applied: true,
-    })
-}
-
-/// O mesmo `FitPlan` que o carregamento real usa, sem os ponteiros crus que só
-/// fazem sentido a caminho de `LoadedModel::load` (`devices`,
-/// `tensor_buft_overrides`). Existe para a pré-visualização de capacidade do
-/// planejador de implantação (`crate::deploy`): o chamador nunca carrega o
-/// modelo, só quer saber como o `fit` nativo distribuiria as camadas.
-#[derive(Debug, Clone)]
-pub(crate) struct FitPreview {
-    /// Fração de camadas de GPU por dispositivo, na ordem de
-    /// `llama_rs_get_devices`. Vazio quando o `fit` não rodou (ver `applied`).
-    pub tensor_split: Vec<f32>,
-    pub effective_n_gpu_layers: i32,
-    pub effective_n_ctx: u32,
-    /// True quando o `fit` nativo *chegou a rodar* - `fit_memory` ligado e
-    /// `n_gpu_layers` no padrão. False quando o operador fixou as camadas: aí
-    /// o `fit` é pulado de propósito, não falhou, e os campos acima são o
-    /// pedido.
-    pub attempted: bool,
-    /// True só quando `attempted` e o `fit` achou uma configuração. False com
-    /// `attempted` significa que nem no piso (`FIT_MIN_CONTEXT`) coube.
-    pub applied: bool,
-    pub mtp_unavailable_reason: Option<String>,
-}
-
-/// Roda o mesmo `fit_plan` do carregamento real e devolve só os números -
-/// nunca chega a `LoadedModel::load`, então não há peso alocado nem contexto
-/// aberto. Chame de dentro de `spawn_blocking`: por baixo é a mesma FFI
-/// bloqueante (`llama_rs_fit_params`, com o mesmo benchmark de dispositivo em
-/// caso de várias GPUs, cacheado por processo).
-pub(crate) fn preview_fit(model_path: &str, cfg: &EngineConfig) -> Result<FitPreview> {
-    let mtp_mode = if cfg.mtp {
-        MtpFitMode::Vram
-    } else {
-        MtpFitMode::Disabled
-    };
-    let plan = fit_plan(model_path, cfg, mtp_mode)?;
-    Ok(FitPreview {
-        tensor_split: plan.tensor_split,
-        effective_n_gpu_layers: plan.config.n_gpu_layers,
-        effective_n_ctx: plan.config.n_ctx,
-        attempted: fit_can_adjust_layers(cfg),
-        applied: plan.applied,
-        mtp_unavailable_reason: plan.mtp_unavailable_reason,
     })
 }
 

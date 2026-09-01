@@ -137,6 +137,11 @@ ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
 margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
 vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
+Esse encaixe nativo é exclusivo do carregamento real. A pré-visualização de
+capacidade da tela Implantar usa metadata GGUF, `plan::range_cost` e a VRAM
+livre atual para uma estimativa analítica; ela não chama `llama_backend_init`,
+`llama_rs_fit_params` nem `fit_plan`, para não concorrer com a carga em
+andamento.
 Quando `mtp_enabled=true`, o fit primeiro encaixa o modelo principal e seu
 contexto sem MTP. Antes de considerar a reserva opcional, lê
 `general.architecture` e verifica uma lista gerada pelo próprio fork para as
@@ -237,13 +242,17 @@ pontuação fica em cache durante o processo, portanto a carga seguinte do mesmo
 modelo não repete a medição. Não há API de fabricante, tabela de placas ou
 prioridade fixa por backend.
 
-A ordenação só é aplicada se todos os resultados forem finitos e positivos e
-cada fronteira entre velocidades vizinhas superar 25%. Se um backend não
-informa memória, não inicializa, não aloca ou não executa o grafo, ou se as
-velocidades forem equivalentes, o resultado é indeterminado e o POM não faz
-palpite: deixa `llama_model_params.devices` nulo, mantendo a ordem e o
-comportamento atuais. O mesmo vale para um único dispositivo, que não paga o
-probe. Quando há confiança, a lista explícita é passada tanto ao
+A ordenação só é aplicada se todos os resultados forem finitos e positivos,
+cada fronteira entre velocidades vizinhas superar 25% e todos os handles
+usarem o mesmo backend. Se um backend não informa memória, não inicializa, não
+aloca ou não executa o grafo, se as velocidades forem equivalentes, ou se os
+backends forem heterogêneos ou desconhecidos, o resultado é indeterminado e o
+POM não faz palpite: deixa `llama_model_params.devices` nulo, mantendo a ordem
+e o comportamento atuais. O mesmo vale para um único dispositivo, que não paga
+o probe. A guarda de backend é necessária porque uma lista explícita pode
+alterar a topologia de cópia e divisão de um grafo misto Vulkan/CUDA; o fit
+automático não deve transformar uma medição sintética em um novo caminho
+heterogêneo. Quando há confiança, a lista explícita é passada tanto ao
 `common_fit_params` quanto à carga real, do mais lento ao mais rápido. Como o
 fit preenche as camadas de trás para a frente, o dispositivo mais rápido fica
 com a faixa final e a cabeça de saída, que é percorrida em cada token, enquanto
@@ -257,10 +266,21 @@ dura para pesos, contexto e temporários. Esta política evita trocar uma
 travessia repetida por uma economia nominal de bytes e mantém o fallback
 existente para `offload_kqv=false` quando o KV não cabe na GPU.
 
-Esta alteração é somente no POM e em `wrapper_common.{h,cpp}`. O
-`common/fit.cpp` do llama.cpp não foi modificado: a lista pública de devices já
-é suficiente para orientar o fit sem permitir que a distribuição de memória
-seja sobrescrita depois da sondagem.
+Esta política é somente no POM. O `common/fit.cpp` do llama.cpp não foi
+modificado: os nomes de registro já expostos pelo backend são suficientes para
+impedir uma ordenação explícita insegura sem alterar a distribuição de memória
+depois da sondagem.
+
+A guarda também é a fronteira de degradação para o defeito observado em
+01/09/2026: a combinação Vulkan/CUDA mantém a ordem padrão do llama.cpp e não
+recebe a lista que fez a fatia mudar de `CUDA,Vulkan` para `Vulkan,CUDA`. Isso
+protege a carga conhecida antes do primeiro decode. Ainda não existe uma
+fronteira em processo capaz de capturar qualquer `ggml_cuda_error`: o fork
+chama `ggml_abort` e termina o processo depois de um erro CUDA, e
+`catch_unwind`/o código de erro de `llama_decode` não interceptam esse abort.
+Continuar no mesmo contexto CUDA após acesso ilegal também não seria seguro;
+isolamento em processo separado ou mudança da política fatal do fork exigiria
+uma decisão arquitetural própria.
 
 Quando o MTP está ligado, o carregamento também passa
 `llama_model_params.load_mtp=true`, para que os pesos `nextn.*` sejam carregados

@@ -1639,7 +1639,7 @@ const FIT_MIN_CONTEXT: u32 = 4096;
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
-const FIT_MAX_UBATCH: u32 = 512;
+pub(crate) const FIT_MAX_UBATCH: u32 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FitDeviceMemory {
@@ -4764,10 +4764,12 @@ mod pool_tests {
     /// A regressão de 2026-08-21: prompt vindo de um cliente OpenAI externo
     /// morria com "got 655360 floats, expected 2621440 (512x5120)".
     ///
-    /// 655360 = 128 x 5120, e 128 e o `FIT_MAX_UBATCH`. O chunk de 512 tokens
-    /// virava quatro microlotes, a captura substituia a cada um, e sobrava so o
-    /// ultimo quarto. Pela UI passava despercebido porque prompt curto cabe num
-    /// microlote so - e por isso o teste abaixo usa mais de um.
+    /// 655360 = 128 x 5120, e 128 era o `FIT_MAX_UBATCH` da altura - hoje ele
+    /// vale 512, por escolha do operador. O chunk de 512 tokens virava quatro
+    /// microlotes, a captura substituia a cada um, e sobrava so o ultimo
+    /// quarto. Pela UI passava despercebido porque prompt curto cabe num
+    /// microlote so - e por isso o teste abaixo usa mais de um, sem depender
+    /// do valor concreto da constante.
     #[test]
     fn capture_accumulates_every_microbatch_of_one_decode() {
         let mut slot = CaptureSlot {
@@ -5086,7 +5088,9 @@ mod pool_tests {
         apply_context_batch_params(&mut params, &cfg);
 
         assert_eq!(params.n_batch, 4096);
-        assert_eq!(params.n_ubatch, 128);
+        // O microlote efetivo e o tecto da politica, nao um numero fixo: o
+        // valor de FIT_MAX_UBATCH e escolha do operador e ja mudou uma vez.
+        assert_eq!(params.n_ubatch, FIT_MAX_UBATCH);
     }
 
     #[test]

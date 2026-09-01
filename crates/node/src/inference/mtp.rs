@@ -549,7 +549,8 @@ mod tests {
         let mut cfg = cfg();
         let params = context_params(&cfg);
         assert_eq!(params.n_batch, 4096);
-        assert_eq!(params.n_ubatch, 128);
+        // Segue o tecto da politica partilhada, nao um numero fixo.
+        assert_eq!(params.n_ubatch, crate::llm::FIT_MAX_UBATCH);
 
         cfg.fit_memory = false;
         let params = context_params(&cfg);

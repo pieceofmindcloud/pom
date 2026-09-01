@@ -27,7 +27,8 @@ behind an auth extractor.
 - `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
-  direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
+  direct-reply relay route (`POST /v1/relay-result`), the bounded remote-token
+  callback route (`POST /v1/remote-stream-result`), and the `testkit` test
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
@@ -240,7 +241,8 @@ behind an auth extractor.
   next retry, hop or chunk; already accepted peer frames are cleaned up by the
   normal session release. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
-  `POST /handshake` (session::handle_handshake), and `POST /v1/relay-result`
+  `POST /handshake` (session::handle_handshake), `POST /v1/relay-result` and
+  `POST /v1/remote-stream-result`
   (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, deliberately no auth -
   the per-frame `Ticket` is the credential; handler `handle_relay_result`
   delivers into `reply_inbox`); it serves with
@@ -587,7 +589,11 @@ behind an auth extractor.
   (`RequestTrace` in the summaries), `crate::direct` (`ReplyInbox`,
   `DirectReply`, `Ticket`, `self_reply_urls`, `handle_relay_result`,
   `RELAY_RESULT_PATH` - the direct-reply relay that lets the tail answer the
-  originator instead of bubbling through every hop), and
+  originator instead of bubbling through every hop),
+  `REMOTE_STREAM_RESULT_PATH` - the bounded callback inbox used when a remote
+  head owns the decode loop. A remote-capable head is selected by
+  `generate_stream_inner` only when the gateway can receive callbacks; the
+  local path and peers without the capability keep the established route.
   `routing_contract` capability types.
 - Who calls it: `crate::main` (`start_gateway` spawns the router, `warm_catalog`
   runs at startup, setup mode mounts only `webui::get_setup_key`/`save_setup`);

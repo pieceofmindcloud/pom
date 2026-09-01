@@ -12,7 +12,8 @@ stream não é comprimido).
 Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
 gateway HTTP `--gateway-port` (8080), e o servidor de inferência
 `--inference-port` (8181, `inference/infer_server.rs`, um router separado que
-serve `/v1/prefill`, `/v1/step`, `/health` - não passa por este gateway). O
+serve `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/health` - não passa por
+este gateway). O
 `/health` do servidor de inferência responde `model_loaded` (o que promove a
 anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
 a condição de a cabeça rascunhar na decodificação especulativa.
@@ -23,7 +24,9 @@ a condição de a cabeça rascunhar na decodificação especulativa.
 
 - **Base** (`gateway.rs`): `POST /api/generate` (+ alias `POST /generate`),
   `GET /peers`, `GET /health`, `POST /handshake` (`session::handle_handshake`),
-  `POST /v1/relay-result` (`direct::RELAY_RESULT_PATH`, limite de corpo 1 MB).
+  `POST /v1/relay-result` (`direct::RELAY_RESULT_PATH`, limite de corpo 1 MB),
+  `POST /v1/remote-stream-result` (`direct::REMOTE_STREAM_RESULT_PATH`, o
+  callback limitado do transporte remoto).
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
@@ -89,6 +92,10 @@ haver chave.
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Sem auth de chave por desenho (ver
   abaixo); ticket vivo = entrega no `ReplyInbox`, ticket morto = `410 Gone`.
+- **`POST /v1/remote-stream-result`** - callback do head remoto para cada lote
+  oportunista. O ticket é consumido por um `mpsc` limitado a 16 lotes; quando a
+  fila está cheia, o handler espera e aplica contrapressão. Ticket cancelado ou
+  lote terminal encerra o stream; ticket desconhecido responde `410 Gone`.
 - **`GET /api/cluster/tls`** - `{ tls_required }`. É o que a catraca dos outros
   nós consulta no principal. **Exige a chave de conexão**, e é isso que impede
   um intruso de responder pelo principal e rebaixar o cluster para texto claro.
@@ -457,14 +464,17 @@ log atribui cada geração a quem pagou por ela.
 **Rotas sem auth**: `/api/generate`, `/peers`, `/health` (o `/api/generate`
 loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
-`peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). `GET /api/ui/requests` e `/api/ui/requests/stats` são exceções porque podem conter conteúdo sensível e exigem `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
+  `peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), `/v1/relay-result` e
+`/v1/remote-stream-result` (abaixo). `GET /api/ui/requests` e
+`/api/ui/requests/stats` são exceções porque podem conter conteúdo sensível e
+exigem `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
 
 `POST /api/ui/chat/telemetry` fica fora da exceção de leitura: ele exige
 `ConnectionAuth` porque repassa relatórios internos de RTT entre peers.
 
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
-router e também exige credencial em `/v1/prefill`, `/v1/step`,
+router e também exige credencial em `/v1/prefill`, `/v1/step`, `/v1/step-stream`,
 `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce`: aceita a
 `connection_key` compartilhada ou uma API key ativa. Nas chamadas internas
 entre peers, o nó envia a `connection_key` e, quando ela não existe, a primeira
@@ -473,13 +483,15 @@ preferencial entre nós é o túnel
 libp2p/Noise; o cliente direto pinado é fallback quando o túnel não está
 disponível ou falha no transporte.
 
-### `relay-result` sem auth é por desenho
+### `relay-result` e `remote-stream-result` sem auth são por desenho
 
 A rota não tem `ConnectionAuth` porque o hop que responde é um **peer de
 inferência**, que nunca teve a chave do operador. A credencial é o **ticket**:
 um UUID v4 sorteado por quadro, conhecido só pela própria cadeia, removido do
 `ReplyInbox` no `Drop` em qualquer caminho de saída. Uma resposta atrasada leva
-`410` e nunca pode cair no token seguinte.
+`410` e nunca pode cair no token seguinte. O callback remoto mantém essa mesma
+regra, mas entrega vários lotes ao `StreamTicket` limitado em vez de resolver
+um canal oneshot.
 
 ## 4. `x_pom.source` - a prova de execução distribuída
 

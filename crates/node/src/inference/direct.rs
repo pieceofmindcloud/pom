@@ -49,11 +49,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 /// Rota em que o gateway recebe o resultado que a cauda entrega.
 pub const RELAY_RESULT_PATH: &str = "/v1/relay-result";
+/// Callback used by the remote decode transport for each opportunistic batch.
+pub const REMOTE_STREAM_RESULT_PATH: &str = "/v1/remote-stream-result";
 
 /// Quanto o gateway espera pelo resultado direto antes de desistir do quadro.
 ///
@@ -77,7 +79,13 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// gateway que abre a requisição; o handler de `/v1/relay-result` só procura o
 /// ticket aqui.
 #[derive(Clone, Default)]
-pub struct ReplyInbox(Arc<Mutex<HashMap<String, ReplyState>>>);
+pub struct ReplyInbox(Arc<Mutex<InboxState>>);
+
+#[derive(Default)]
+struct InboxState {
+    replies: HashMap<String, ReplyState>,
+    streams: HashMap<String, StreamState>,
+}
 
 struct ReplyState {
     sender: oneshot::Sender<Value>,
@@ -85,6 +93,14 @@ struct ReplyState {
     transport: Vec<Option<Value>>,
     pending_result: Option<Value>,
     transport_trace_expired: bool,
+}
+
+/// Bounded on purpose: a slow gateway must apply backpressure to the remote
+/// emitter and, through it, to the inference producer.
+const REMOTE_STREAM_QUEUE_CAPACITY: usize = 16;
+
+struct StreamState {
+    sender: mpsc::Sender<Value>,
 }
 
 impl ReplyInbox {
@@ -109,7 +125,7 @@ impl ReplyInbox {
     pub fn register_with_expected_transport(&self, expected_transport: usize) -> Ticket {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
-        self.0.lock().unwrap().insert(
+        self.0.lock().unwrap().replies.insert(
             id.clone(),
             ReplyState {
                 sender: tx,
@@ -126,11 +142,27 @@ impl ReplyInbox {
         }
     }
 
+    /// Opens a ticket that can receive several remote decode batches.
+    pub fn register_stream(&self) -> StreamTicket {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (sender, receiver) = mpsc::channel(REMOTE_STREAM_QUEUE_CAPACITY);
+        self.0
+            .lock()
+            .unwrap()
+            .streams
+            .insert(id.clone(), StreamState { sender });
+        StreamTicket {
+            id,
+            inbox: self.clone(),
+            receiver,
+        }
+    }
+
     /// Entrega um resultado. `false` quando o ticket não existe mais — o
     /// gateway já desistiu, e quem entregou precisa saber que chegou tarde.
     pub fn deliver(&self, ticket: &str, meta: Value) -> bool {
         let mut state = self.0.lock().unwrap();
-        let Some(entry) = state.get_mut(ticket) else {
+        let Some(entry) = state.replies.get_mut(ticket) else {
             return false;
         };
         if entry.expected_transport > 0
@@ -150,7 +182,10 @@ impl ReplyInbox {
             }
             return true;
         }
-        let entry = state.remove(ticket).expect("ticket ainda está no inbox");
+        let entry = state
+            .replies
+            .remove(ticket)
+            .expect("ticket ainda está no inbox");
         let meta = complete_transport_trace(&entry, meta);
         meta_sender_send(meta, entry.sender)
     }
@@ -159,7 +194,7 @@ impl ReplyInbox {
     /// Retorna `false` quando o ticket já expirou ou foi removido.
     pub fn record_transport(&self, ticket: &str, hop_index: usize, meta: Value) -> bool {
         let mut state = self.0.lock().unwrap();
-        let Some(entry) = state.get_mut(ticket) else {
+        let Some(entry) = state.replies.get_mut(ticket) else {
             return false;
         };
         if hop_index >= entry.expected_transport {
@@ -171,7 +206,10 @@ impl ReplyInbox {
         if !ready {
             return true;
         }
-        let entry = state.remove(ticket).expect("ticket ainda está no inbox");
+        let entry = state
+            .replies
+            .remove(ticket)
+            .expect("ticket ainda está no inbox");
         let meta = entry
             .pending_result
             .clone()
@@ -184,14 +222,17 @@ impl ReplyInbox {
 
     fn expire_transport_trace(&self, ticket: &str) {
         let mut state = self.0.lock().unwrap();
-        let Some(entry) = state.get_mut(ticket) else {
+        let Some(entry) = state.replies.get_mut(ticket) else {
             return;
         };
         entry.transport_trace_expired = true;
         if entry.pending_result.is_none() {
             return;
         }
-        let entry = state.remove(ticket).expect("ticket ainda está no inbox");
+        let entry = state
+            .replies
+            .remove(ticket)
+            .expect("ticket ainda está no inbox");
         if let Some(meta) = entry
             .pending_result
             .clone()
@@ -202,12 +243,45 @@ impl ReplyInbox {
     }
 
     fn cancel(&self, ticket: &str) {
-        self.0.lock().unwrap().remove(ticket);
+        let mut state = self.0.lock().unwrap();
+        state.replies.remove(ticket);
+        state.streams.remove(ticket);
     }
 
     /// Quantos quadros estão em voo. Só para teste e diagnóstico.
     pub fn outstanding(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.0.lock().unwrap().replies.len()
+    }
+
+    #[cfg(test)]
+    fn stream_outstanding(&self) -> usize {
+        self.0.lock().unwrap().streams.len()
+    }
+
+    /// Delivers a batch without holding the inbox lock across the await. A
+    /// terminal batch removes the stream after its value has entered the
+    /// consumer queue.
+    pub async fn deliver_stream(&self, ticket: &str, meta: Value) -> bool {
+        let terminal = meta.get("done").and_then(Value::as_bool).unwrap_or(false)
+            || meta.get("error").and_then(Value::as_str).is_some();
+        let sender = {
+            let state = self.0.lock().unwrap();
+            state
+                .streams
+                .get(ticket)
+                .map(|stream| stream.sender.clone())
+        };
+        let Some(sender) = sender else {
+            return false;
+        };
+        if sender.send(meta).await.is_err() {
+            self.0.lock().unwrap().streams.remove(ticket);
+            return false;
+        }
+        if terminal {
+            self.0.lock().unwrap().streams.remove(ticket);
+        }
+        true
     }
 }
 
@@ -241,6 +315,29 @@ impl Ticket {
 }
 
 impl Drop for Ticket {
+    fn drop(&mut self) {
+        self.inbox.cancel(&self.id);
+    }
+}
+
+/// Consumer side of a bounded remote decode stream.
+pub struct StreamTicket {
+    id: String,
+    inbox: ReplyInbox,
+    receiver: mpsc::Receiver<Value>,
+}
+
+impl StreamTicket {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub async fn recv(&mut self) -> Option<Value> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for StreamTicket {
     fn drop(&mut self) {
         self.inbox.cancel(&self.id);
     }
@@ -284,6 +381,14 @@ impl DirectReply {
 
     pub fn reply_to(&self, ticket: &str) -> Value {
         json!({ "urls": self.urls, "ticket": ticket, "node_id": self.node_id })
+    }
+
+    pub fn stream_ticket(&self) -> StreamTicket {
+        self.inbox.register_stream()
+    }
+
+    pub fn stream_reply_to(&self, ticket: &str) -> Value {
+        self.reply_to(ticket)
     }
 
     pub fn record_transport(
@@ -414,6 +519,31 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     }
 }
 
+/// Receives one batch from a remote decode producer. Delivery awaits the
+/// bounded inbox queue, so a slow client propagates backpressure all the way
+/// to the remote emitter.
+pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Response {
+    let (mut meta, _tensor) = match crate::wire::decode(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("quadro inválido: {e}")).into_response()
+        }
+    };
+    let Some(ticket) = meta
+        .get("ticket")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return (StatusCode::BAD_REQUEST, "lote sem ticket").into_response();
+    };
+    meta["stream_batch_bytes"] = json!(body.len());
+    if inbox.deliver_stream(&ticket, meta).await {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (StatusCode::GONE, "stream desconhecido").into_response()
+    }
+}
+
 /// Espera o resultado e executa uma ação síncrona quando o ack da cabeça
 /// chega. O ack é observado mesmo se o POST final vencer a corrida, para que
 /// a travessia cabeça→primeiro hop não desapareça da telemetria.
@@ -487,7 +617,18 @@ pub async fn deliver_result(
     reply_to: &Value,
     meta: Value,
 ) -> bool {
-    deliver_meta(http, reply_to, meta).await
+    deliver_meta_at(http, reply_to, RELAY_RESULT_PATH, meta).await
+}
+
+/// Delivers one remote decode batch to the stream inbox. The HTTP response is
+/// intentionally awaited: the gateway's bounded queue is the backpressure
+/// signal for the emitter.
+pub async fn deliver_stream_batch(
+    http: &crate::peer_client::PeerClients,
+    reply_to: &Value,
+    meta: Value,
+) -> bool {
+    deliver_meta_at(http, reply_to, REMOTE_STREAM_RESULT_PATH, meta).await
 }
 
 /// Entrega uma evidência de transporte pelo mesmo retorno autenticado do
@@ -500,12 +641,13 @@ pub async fn deliver_transport(
 ) -> bool {
     let mut meta = transport_receipt(hop_index, sent);
     meta["transport_update"] = json!(true);
-    deliver_meta(http, reply_to, meta).await
+    deliver_meta_at(http, reply_to, RELAY_RESULT_PATH, meta).await
 }
 
-async fn deliver_meta(
+async fn deliver_meta_at(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
+    path: &str,
     mut meta: Value,
 ) -> bool {
     let Some(ticket) = reply_to.get("ticket").and_then(|v| v.as_str()) else {
@@ -543,7 +685,7 @@ async fn deliver_meta(
     };
     let mut last = String::new();
     for url in urls.iter().filter_map(|u| u.as_str()) {
-        let target = format!("{url}{RELAY_RESULT_PATH}");
+        let target = format!("{url}{path}");
         match cliente
             .post(&target)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -702,6 +844,72 @@ mod tests {
         assert_eq!(got["transport_trace_complete"], true);
         assert_eq!(got["transport_traversals"][0]["hop_index"], 0);
         assert_eq!(got["transport_traversals"][1]["hop_index"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_remote_stream_is_bounded_and_applies_backpressure() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_stream();
+        let id = ticket.id().to_string();
+        for index in 0..REMOTE_STREAM_QUEUE_CAPACITY {
+            assert!(inbox.deliver_stream(&id, json!({"index": index})).await);
+        }
+        assert_eq!(inbox.stream_outstanding(), 1);
+
+        let mut pending = Box::pin(inbox.deliver_stream(&id, json!({"index": 99})));
+        tokio::select! {
+            result = &mut pending => panic!("a fila cheia não pode aceitar outro lote: {result}"),
+            got = ticket.recv() => assert_eq!(got.expect("primeiro lote")["index"], 0),
+        }
+        assert!(pending.await);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_remote_stream_batch_removes_the_ticket_after_delivery() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_stream();
+        let id = ticket.id().to_string();
+
+        assert!(inbox.deliver_stream(&id, json!({"done": true})).await);
+        assert_eq!(inbox.stream_outstanding(), 0);
+        assert_eq!(ticket.recv().await.expect("lote terminal")["done"], true);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_remote_stream_refuses_late_batches() {
+        let inbox = ReplyInbox::new();
+        let id = {
+            let ticket = inbox.register_stream();
+            ticket.id().to_string()
+        };
+
+        assert!(!inbox.deliver_stream(&id, json!({"accepted": []})).await);
+        assert_eq!(inbox.stream_outstanding(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_remote_stream_callback_delivers_the_wire_batch_to_its_ticket() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_stream();
+        let body = crate::wire::encode(
+            &json!({
+                "ticket": ticket.id(),
+                "accepted": [{"token_id": 4, "text": "ok"}],
+                "done": true,
+            }),
+            None,
+            crate::wire::WireDtype::F16,
+        )
+        .expect("batch codificável");
+
+        let response = handle_remote_stream_result(&inbox, Bytes::from(body)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let received = ticket.recv().await.expect("batch recebido");
+        assert_eq!(received["accepted"][0]["token_id"], 4);
+        assert_eq!(
+            received["stream_batch_bytes"].as_u64().unwrap_or(0) > 0,
+            true
+        );
     }
 
     /// O guarda tem que limpar o inbox sozinho: o caminho de erro e o de prazo

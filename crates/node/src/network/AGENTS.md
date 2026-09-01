@@ -87,7 +87,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
   atual das interfaces com estável antes de temporário, endereço observado por
   `identify`, demais interfaces locais e o sentinela `0.0.0.0`. Bridges e pares
-  virtuais de container não entram nos candidatos automáticos. A capability
+  virtuais de container não entram nos candidatos automáticos. Quando o
+  servidor de inferência está carregado, o anúncio também inclui
+  `inference/remote-token-stream-v1`, que permite ao gateway remoto pedir o
+  laço de decode com callbacks em lotes limitados. A capability
   `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
   um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
   queda não anunciam capacidade de inferência. `runtime_capacity` só entra

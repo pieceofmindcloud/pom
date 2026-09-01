@@ -80,6 +80,9 @@ pub enum InferenceTransport {
     Local,
     Libp2pTunnel,
     Https,
+    /// The remote decode stream's callback transport. It carries batches
+    /// rather than one request/response per generated token.
+    RemoteStream,
     Unknown,
 }
 
@@ -89,6 +92,7 @@ impl InferenceTransport {
             Self::Local => "local",
             Self::Libp2pTunnel => "libp2p-tunnel",
             Self::Https => "https",
+            Self::RemoteStream => "remote-stream",
             Self::Unknown => "unknown",
         }
     }
@@ -98,6 +102,7 @@ impl InferenceTransport {
             "local" => Self::Local,
             "libp2p-tunnel" => Self::Libp2pTunnel,
             "https" => Self::Https,
+            "remote-stream" => Self::RemoteStream,
             _ => Self::Unknown,
         }
     }

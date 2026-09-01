@@ -5,6 +5,7 @@
 //!   POST /v1/prefill          — one chunk of the prompt
 //!   POST /v1/step             — one autoregressive token step (optionally
 //!                                speculative — see `step_blocking`)
+//!   POST /v1/step-stream      - remote decode stream with opportunistic batches
 //!   POST /v1/session/release  — free a session's KV slot
 //!   POST /v1/session/rewind   - keep the prompt and discard generated suffix
 //!   POST /v1/session/rollback — discard an unconfirmed speculative batch
@@ -32,6 +33,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
@@ -630,6 +632,7 @@ impl crate::relay::InProcessInference for InferenceAppState {
         Ok(match path {
             "/v1/prefill" => handle_prefill(State(self.clone()), headers, body).await,
             "/v1/step" => handle_step(State(self.clone()), headers, body).await,
+            "/v1/step-stream" => handle_step_stream(State(self.clone()), headers, body).await,
             "/v1/session/rewind" => {
                 let request = serde_json::from_slice(&body)
                     .map_err(|e| anyhow::anyhow!("rewind inválido: {e}"))?;
@@ -2573,6 +2576,10 @@ pub async fn run(
             "/v1/step",
             post(handle_step).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
         )
+        .route(
+            "/v1/step-stream",
+            post(handle_step_stream).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
+        )
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rewind", post(handle_rewind))
         .route("/v1/session/rollback", post(handle_rollback));
@@ -2937,6 +2944,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     let mut caps = vec![
         crate::pipeline::CAP_FRAME_BATCH,
         crate::pipeline::CAP_FRAME_DTYPE_F8,
+        crate::pipeline::CAP_REMOTE_TOKEN_STREAM,
         "relay/v1-chain",
         "relay/v2-direct",
         "speculate/v1-lookup",
@@ -3280,36 +3288,40 @@ async fn handle_rollback(
     State(app): State<InferenceAppState>,
     Json(req): Json<RollbackRequest>,
 ) -> Response {
-    let mut s = match lock_inference_state(&app.state) {
-        Ok(s) => s,
-        Err(error) => return err500(error),
-    };
+    match rollback_session(
+        &app.state,
+        &req.session_id,
+        req.accept_count,
+        req.batch_width,
+    ) {
+        Ok(true) => Json(json!({"rolled_back": true})).into_response(),
+        Ok(false) => Json(json!({"rolled_back": false})).into_response(),
+        Err(error) => err500(error),
+    }
+}
+
+fn rollback_session(
+    state: &SharedState,
+    session_id: &str,
+    accept_count: u32,
+    batch_width: u32,
+) -> Result<bool> {
+    let mut s = lock_inference_state(state)?;
     let Some((seq_id, n_past_after_batch)) = s
         .sessions
-        .get(&req.session_id)
-        // A sequência da geração: é lá que o lote especulativo escreveu, e o
-        // prompt fica intocado por construção.
+        .get(session_id)
         .map(|session| (session.seq_id(), session.n_past))
     else {
-        return Json(json!({"rolled_back": false})).into_response();
+        return Ok(false);
     };
-    let new_n_past = rollback_from(n_past_after_batch, req.batch_width, req.accept_count);
+    let new_n_past = rollback_from(n_past_after_batch, batch_width, accept_count);
     if new_n_past < n_past_after_batch && !s.engine.kv_remove(seq_id, new_n_past as i32, -1) {
-        // O cache não recuou. Ajustar `n_past` mesmo assim é o que produz o
-        // "inconsistent sequence positions" da rodada seguinte: a contabilidade
-        // andaria para trás com o cache parado. Melhor manter os dois de acordo
-        // e dizer que não deu.
-        return Json(json!({
-            "rolled_back": false,
-            "n_past": n_past_after_batch,
-            "reason": "este modelo não aceita descartar posições do meio do cache",
-        }))
-        .into_response();
+        return Ok(false);
     }
-    if let Some(session) = s.sessions.get_mut(&req.session_id) {
+    if let Some(session) = s.sessions.get_mut(session_id) {
         session.n_past = new_n_past;
     }
-    Json(json!({"rolled_back": true, "n_past": new_n_past})).into_response()
+    Ok(true)
 }
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
@@ -5487,6 +5499,428 @@ async fn handle_step(
         )
             .into_response(),
         Err(e) => err500(e),
+    }
+}
+
+/// Starts a decode session owned by the remote peer. The response only
+/// acknowledges ownership; generated tokens are sent back through the
+/// bounded callback inbox in opportunistic batches.
+async fn handle_step_stream(
+    State(app): State<InferenceAppState>,
+    _headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    let (meta, tensor) = match wire::decode_inference_request(&body) {
+        Ok(v) => v,
+        Err(error) => return err400(format!("quadro inválido: {error}")),
+    };
+    if tensor.is_some() {
+        return err400("transporte remoto por lotes não aceita estado oculto");
+    }
+    let Some(reply_to) = meta.get("reply_to").cloned() else {
+        return err400("transporte remoto por lotes sem reply_to");
+    };
+    if reply_to.get("ticket").and_then(Value::as_str).is_none() {
+        return err400("transporte remoto por lotes sem ticket");
+    }
+    let Some(dtype) = meta
+        .get("dtype")
+        .and_then(Value::as_str)
+        .and_then(|value| WireDtype::parse(value).ok())
+    else {
+        return err400("quadro sem dtype de estado oculto");
+    };
+    if meta.get("session_id").and_then(Value::as_str).is_none()
+        || meta.get("token_id").and_then(Value::as_i64).is_none()
+    {
+        return err400("transporte remoto por lotes sem sessão ou token inicial");
+    }
+
+    let (producer_tx, producer_rx) = mpsc::channel(16);
+    tokio::spawn(async move {
+        let producer = remote_stream_producer(app, meta, dtype, producer_tx);
+        let emitter = remote_stream_emitter(reply_to, producer_rx);
+        let _ = tokio::join!(producer, emitter);
+    });
+
+    match wire::encode(
+        &json!({"stream_accepted": true, "processing_ms": 0, "node_timings": {}}),
+        None,
+        dtype,
+    ) {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => err500(error),
+    }
+}
+
+struct RemoteStreamToken {
+    token_id: u32,
+    text: String,
+    done: bool,
+    processing_ms: u64,
+    node_timings: Option<Value>,
+}
+
+enum RemoteStreamItem {
+    Token(RemoteStreamToken),
+    Error(String),
+}
+
+async fn remote_stream_producer(
+    app: InferenceAppState,
+    mut step_meta: Value,
+    dtype: WireDtype,
+    sender: mpsc::Sender<RemoteStreamItem>,
+) {
+    step_meta.as_object_mut().map(|object| {
+        object.remove("reply_to");
+    });
+    loop {
+        let body = match wire::encode(&step_meta, None, dtype) {
+            Ok(body) => Bytes::from(body),
+            Err(error) => {
+                let _ = sender
+                    .send(RemoteStreamItem::Error(error.to_string()))
+                    .await;
+                return;
+            }
+        };
+        let response = handle_step(State(app.clone()), axum::http::HeaderMap::new(), body).await;
+        if !response.status().is_success() {
+            let body = axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT)
+                .await
+                .map(|body| String::from_utf8_lossy(&body).into_owned())
+                .unwrap_or_else(|error| error.to_string());
+            let _ = sender
+                .send(RemoteStreamItem::Error(format!(
+                    "step remoto respondeu com erro: {body}"
+                )))
+                .await;
+            return;
+        }
+        let response_body =
+            match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
+                Ok(body) => body,
+                Err(error) => {
+                    let _ = sender
+                        .send(RemoteStreamItem::Error(error.to_string()))
+                        .await;
+                    return;
+                }
+            };
+        let (reply_meta, tensor) = match wire::decode(&response_body) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = sender
+                    .send(RemoteStreamItem::Error(error.to_string()))
+                    .await;
+                return;
+            }
+        };
+        if tensor.is_some() {
+            let _ = sender
+                .send(RemoteStreamItem::Error(
+                    "step remoto devolveu estado oculto em vez de token".into(),
+                ))
+                .await;
+            return;
+        }
+
+        let processing_ms = reply_meta
+            .get("processing_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let node_timings = reply_meta.get("node_timings").cloned();
+        let done = reply_meta
+            .get("done")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let accepted = reply_meta
+            .get("accepted")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some((
+                            entry.get("token_id")?.as_u64()? as u32,
+                            entry.get("text")?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !accepted.is_empty() {
+            for (index, (token_id, text)) in accepted.iter().enumerate() {
+                if sender
+                    .send(RemoteStreamItem::Token(RemoteStreamToken {
+                        token_id: *token_id,
+                        text: text.clone(),
+                        done: done && index + 1 == accepted.len(),
+                        processing_ms: if index == 0 { processing_ms } else { 0 },
+                        node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
+                    }))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if done {
+                return;
+            }
+            let accept_count = reply_meta
+                .get("accept_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(accepted.len() as u64) as u32;
+            let batch_width = reply_meta
+                .get("batch_width")
+                .and_then(Value::as_u64)
+                .unwrap_or(accept_count.max(1) as u64) as u32;
+            if accept_count < batch_width {
+                match rollback_session(
+                    &app.state,
+                    step_meta
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    accept_count,
+                    batch_width,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => {
+                        let _ = sender
+                            .send(RemoteStreamItem::Error(
+                                "rollback especulativo remoto recusado".into(),
+                            ))
+                            .await;
+                        return;
+                    }
+                }
+            }
+            if let Some(token_id) = accepted.last().map(|(token_id, _)| *token_id) {
+                step_meta["token_id"] = json!(token_id);
+            }
+            continue;
+        }
+
+        let Some(token_id) = reply_meta.get("token_id").and_then(Value::as_u64) else {
+            let _ = sender
+                .send(RemoteStreamItem::Error(
+                    "step remoto não devolveu token".into(),
+                ))
+                .await;
+            return;
+        };
+        if sender
+            .send(RemoteStreamItem::Token(RemoteStreamToken {
+                token_id: token_id as u32,
+                text: reply_meta
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                done,
+                processing_ms,
+                node_timings,
+            }))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        if done {
+            return;
+        }
+        step_meta["token_id"] = json!(token_id);
+    }
+}
+
+fn aggregate_remote_node_timings(items: &[RemoteStreamItem]) -> Value {
+    let mut merged = serde_json::Map::new();
+    for item in items {
+        let RemoteStreamItem::Token(token) = item else {
+            continue;
+        };
+        let Some(Value::Object(values)) = &token.node_timings else {
+            continue;
+        };
+        for (key, value) in values {
+            if key.ends_with("_ms") {
+                let total = merged.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+                    + value.as_f64().unwrap_or(0.0);
+                merged.insert(key.clone(), json!(total));
+            } else if key == "engine_mismatch" {
+                let mismatch = merged.get(key).and_then(Value::as_bool).unwrap_or(false)
+                    || value.as_bool().unwrap_or(false);
+                merged.insert(key.clone(), json!(mismatch));
+            } else {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Value::Object(merged)
+}
+
+fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<String>, bool) {
+    let mut tokens = Vec::new();
+    let mut processing_ms = 0_u64;
+    let mut done = false;
+    let mut error = None;
+    for item in items {
+        match item {
+            RemoteStreamItem::Token(token) => {
+                tokens.push(json!({
+                    "token_id": token.token_id,
+                    "text": token.text,
+                }));
+                processing_ms = processing_ms.saturating_add(token.processing_ms);
+                done |= token.done;
+            }
+            RemoteStreamItem::Error(message) => error = Some(message.clone()),
+        }
+    }
+    let terminal = done || error.is_some();
+    let batch = json!({
+        "accepted": tokens,
+        "done": done && error.is_none(),
+        "processing_ms": processing_ms,
+        "node_timings": aggregate_remote_node_timings(items),
+    });
+    (batch, error, terminal)
+}
+
+async fn remote_stream_emitter(reply_to: Value, receiver: mpsc::Receiver<RemoteStreamItem>) {
+    emit_remote_stream_batches(reply_to, receiver, |reply_to, batch| async move {
+        crate::direct::deliver_stream_batch(http_client(), &reply_to, batch).await
+    })
+    .await;
+}
+
+async fn emit_remote_stream_batches<F, Fut>(
+    reply_to: Value,
+    mut receiver: mpsc::Receiver<RemoteStreamItem>,
+    mut deliver: F,
+) where
+    F: FnMut(Value, Value) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    while let Some(first) = receiver.recv().await {
+        let items = crate::prefill::drain_opportunistic_batch(first, &mut receiver);
+        let (batch, error, terminal) = remote_stream_batch(&items);
+        let has_tokens = batch
+            .get("accepted")
+            .and_then(Value::as_array)
+            .is_some_and(|tokens| !tokens.is_empty());
+        if !has_tokens && error.is_some() {
+            let error_batch = json!({
+                "accepted": [],
+                "done": false,
+                "processing_ms": 0,
+                "node_timings": {},
+                "error": error,
+            });
+            let _ = deliver(reply_to.clone(), error_batch).await;
+            return;
+        }
+        if !deliver(reply_to.clone(), batch).await {
+            return;
+        }
+        // Preserve tokens that were already generated before an error. The
+        // error is terminal, but it must not make the gateway discard the
+        // prefix carried by the same opportunistic batch.
+        if let Some(error) = error {
+            let error_batch = json!({
+                "accepted": [],
+                "done": false,
+                "processing_ms": 0,
+                "node_timings": {},
+                "error": error,
+            });
+            let _ = deliver(reply_to.clone(), error_batch).await;
+        }
+        if terminal {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod remote_stream_tests {
+    use super::*;
+
+    fn token(token_id: u32, text: &str, done: bool) -> RemoteStreamItem {
+        RemoteStreamItem::Token(RemoteStreamToken {
+            token_id,
+            text: text.into(),
+            done,
+            processing_ms: 3,
+            node_timings: Some(json!({"decode_ms": 2, "engine_mismatch": false})),
+        })
+    }
+
+    #[test]
+    fn lote_remoto_preserva_conteudo_ordem_e_tempos() {
+        let (batch, error, terminal) =
+            remote_stream_batch(&[token(4, "A", false), token(9, "ção", true)]);
+
+        assert_eq!(batch["accepted"][0], json!({"token_id": 4, "text": "A"}));
+        assert_eq!(batch["accepted"][1], json!({"token_id": 9, "text": "ção"}));
+        assert_eq!(batch["processing_ms"], 6);
+        assert_eq!(batch["node_timings"]["decode_ms"], 4.0);
+        assert_eq!(batch["done"], true);
+        assert!(error.is_none());
+        assert!(terminal);
+    }
+
+    #[test]
+    fn erro_depois_de_tokens_mantem_o_prefixo_e_e_terminal() {
+        let (batch, error, terminal) = remote_stream_batch(&[
+            token(4, "prefixo", false),
+            RemoteStreamItem::Error("falha no peer seguinte".into()),
+        ]);
+
+        assert_eq!(batch["accepted"][0]["text"], "prefixo");
+        assert_eq!(batch["done"], false);
+        assert_eq!(error.as_deref(), Some("falha no peer seguinte"));
+        assert!(terminal);
+    }
+
+    #[tokio::test]
+    async fn oito_tokens_prontos_cruzam_em_um_unico_callback() {
+        let (items_tx, items_rx) = mpsc::channel(16);
+        for id in 0..8 {
+            items_tx
+                .send(token(id, &format!("t{id}"), id == 7))
+                .await
+                .expect("token enfileirado");
+        }
+        drop(items_tx);
+
+        let (deliveries_tx, mut deliveries_rx) = mpsc::channel(8);
+        emit_remote_stream_batches(
+            json!({"ticket": "test"}),
+            items_rx,
+            move |_reply_to, batch| {
+                let deliveries_tx = deliveries_tx.clone();
+                async move { deliveries_tx.send(batch).await.is_ok() }
+            },
+        )
+        .await;
+
+        let batch = deliveries_rx.recv().await.expect("callback");
+        assert_eq!(batch["accepted"].as_array().unwrap().len(), 8);
+        assert_eq!(batch["accepted"][0]["token_id"], 0);
+        assert_eq!(batch["accepted"][7]["token_id"], 7);
+        assert!(
+            deliveries_rx.try_recv().is_err(),
+            "oito tokens, um callback"
+        );
     }
 }
 

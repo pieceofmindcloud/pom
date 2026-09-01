@@ -2,8 +2,9 @@
 
 A porta de inferência (8181) e tudo que roda nela: o axum server
 (`infer_server.rs`), o wrapper FFI do llama.cpp (`llm.rs`), a execução do
-prefill/step nos três modos - hub, anel borbulhado (`relay/v1-chain`) e
-resposta direta (`relay/v2-direct`, `direct.rs`) - a "lei" que mede o modo
+prefill/step nos modos - hub, anel borbulhado (`relay/v1-chain`) e
+resposta direta (`relay/v2-direct`, `direct.rs`) - mais o transporte remoto
+por lotes oportunistas (`/v1/step-stream`) - a "lei" que mede o modo
 direto em pernas de rede (`direct_lab.rs`), a bancada da especulação
 (`spec_lab.rs`), a predição multi-token pelo bloco `nextn` do modelo
 (`mtp.rs` + a ponte C++ `llama_mtp_shim.cpp`), o formato binário do tensor na
@@ -32,13 +33,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   mais rápido somente quando as medições sintéticas têm confiança suficiente;
   sem isso, o fit conserva a ordem padrão do llama.cpp.
 - `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
-  por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; inbox de
-  tickets, `reply_to`, telemetria acumulada na ida.
+  por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; também mantém
+  o inbox limitado do transporte remoto por lotes, entregue por
+  `/v1/remote-stream-result`.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
   somente capabilities que o endpoint falso implementa.
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
+  `/v1/step-stream`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
@@ -68,7 +71,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   mantém seu próprio
   `Utf8Assembler`: `token_to_piece_bytes` preserva os bytes crus, só as
   posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
-  limpeza de erro/cancelamento.
+  limpeza de erro/cancelamento. `/v1/step-stream` inicia um produtor no peer
+  remoto e um emissor separado: cada um usa a mesma decodificação existente,
+  mas os tokens retornam ao gateway em lotes oportunistas limitados, sem
+  temporizador e com contrapressão.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   residual capture, sampling, parada por EOS ou fim de turno do template GGUF,
   renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
@@ -728,13 +734,20 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `step_direct` - o gêmeo de decode: uma chamada de saída (para a cabeça), uma
   espera no ticket. É a diferença entre `2N` travessias (anel) e `N+1` (direto),
   e é por isso que o custo por token deixa de depender de onde mora a camada 0.
+- `step_stream`/`RemoteDecodeStream` - control frame único para o head remoto;
+  o peer continua decodificando e entrega callbacks limitados com no máximo
+  oito itens prontos por lote. Planos com mais de um hop deixam os demais
+  peers dentro do relay do head; o gateway não paga uma chamada por token. A
+  especulação fica habilitada no caso de hop único; planos maiores usam o
+  sampler plain até existir rollback remoto para todos os hops.
 - `direct_failure` - resultado que chega com `error` no lugar do token nomeia o
   hop que morreu e marca **esse** (não a cabeça) com `routes.mark_failure`.
 - `record_direct_hops` - dobra no `RequestTrace` o `hop_timings` e as evidências
   por travessia recebidas no modo direto; não inventa atribuição para o primeiro
   hop quando a medição não existe.
-- `step_speculative` - **NÃO** estendida ao desvio direto: continua no anel/hub
-  (não recebe o parâmetro `direct`).
+- `step_speculative` - continua no anel/hub para o caminho antigo; o transporte
+  remoto novo leva a especulação pelo mesmo `handle_step` do peer que possui a
+  sessão, preservando sampling, conteúdo e ordem.
 - `speculative_step_from_meta` - interpreta a resposta da cauda, e aqui está o
   ponto que matava a geração em silêncio: a recusa de rascunhar é uma resposta
   **válida**. Uma rodada especulativa tem duas formas legítimas -
@@ -769,12 +782,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   denuncia recibos ausentes. `hidden_state_dtype` só é observado quando bytes
   de estado oculto cruzaram o hop; em um plano de modelo inteiro de um único
   nó, a ausência de bytes torna a precisão do fio não aplicável e o campo fica
-  ausente.
+  ausente. O transporte remoto registra `remote-stream` uma vez por callback
+  de lote, com bytes recebidos e processamento agregado; o callback não é uma
+  nova medição de RTT, por isso `round_trip_ms` fica zero nessa entrada.
 
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
-  também identifica `transport` (`local`, `libp2p-tunnel` ou `https`) e se o
+  também identifica `transport` (`local`, `libp2p-tunnel`, `https` ou
+  `remote-stream`) e se o
   HTTPS foi fallback depois de falha do túnel.
 - O transporte normal tenta o túnel libp2p/Noise antes do cliente HTTP pinado;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de
@@ -794,6 +810,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `Drop` remove o ticket do inbox em qualquer caminho de saída (erro, prazo) -
   é o que impede um ticket órfão de segurar memória e um resultado atrasado de
   cair no token seguinte. `deliver` devolve `false` para ticket já desistido.
+- `StreamTicket`/`deliver_stream` - canal mpsc limitado a 16 lotes; um emissor
+  remoto aguarda o receptor quando a fila enche, e `Drop` remove o ticket para
+  que cancelamento, stop, ciclo ou erro não deixem entregas pendentes.
 - `DirectReply::new(inbox, urls)` - `None` quando o nó não conhece nenhum
   endereço de si mesmo; aí o anel assume em vez de despachar quadro que nunca
   volta.
@@ -809,6 +828,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   a autenticação é o próprio ticket (UUID v4 por quadro, só a própria cadeia
   conhece); resultado sem ticket vivo é `410 Gone`. A rota é registrada **sem**
   auth de chave por desenho: o hop que responde nunca teve a chave do operador.
+- `handle_remote_stream_result` - recebe `/v1/remote-stream-result` e aguarda o
+  mpsc limitado antes de responder; lote tardio ou ticket cancelado recebe
+  `410 Gone`.
 - `await_result_with_ack` - `select!` biased entre três coisas: o resultado do inbox
   (caso normal), o ack da cabeça (só interessa quando falha, ou quando um peer
   antigo borbulhou a resposta inteira - `token_id` presente vale como
@@ -994,11 +1016,13 @@ unidade mas **não** tem número medido de ponta a ponta.
 ## Ligações
 
 - **Chamado por**: `backend/gateway.rs` (monta `DirectReply` com `ReplyInbox` +
-  `self_reply_urls`, registra `/v1/relay-result` sem auth de chave, passa
+  `self_reply_urls`, registra `/v1/relay-result` e
+  `/v1/remote-stream-result` sem auth de chave, passa
   `direct.as_ref()` a `prefill::run`/`step`; `step_speculative` vai sem
   direct), `backend/webui.rs` (rollback/release fan-out), `main.rs`
   (`NodeRuntime::apply` no arranque, inclusive com `lastslice::take`),
-  `routing/pipeline.rs` (as capabilities `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
+  `routing/pipeline.rs` (as capabilities `CAP_REMOTE_TOKEN_STREAM`/
+  `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
   `CAP_SPECULATE_LOOKUP`/`CAP_SPECULATE_MTP`/`CAP_SPECULATE_MTP_SLICED` decidem
   anel vs direto vs hub, o wire format por hop e qual das duas especulações
   roda).

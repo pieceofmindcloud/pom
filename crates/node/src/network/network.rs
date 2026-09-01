@@ -1062,6 +1062,7 @@ impl Network {
                 let mut caps = vec![
                     crate::pipeline::CAP_FRAME_BATCH.into(),
                     crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
+                    crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into(),
                     "relay/v1-chain".into(),
                     "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),
@@ -1855,6 +1856,7 @@ mod tests {
             let caps = gossip["inference_frame_capabilities"].as_array().unwrap();
             for cap in [
                 crate::pipeline::CAP_FRAME_BATCH,
+                crate::pipeline::CAP_REMOTE_TOKEN_STREAM,
                 "relay/v1-chain",
                 "relay/v2-direct",
                 "speculate/v1-lookup",

@@ -32,7 +32,7 @@ use std::sync::{
     Arc,
 };
 use std::time::Instant;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 
 /// Prompt tokens pushed through the pipeline per round trip.
@@ -43,6 +43,14 @@ use tracing::info;
 /// this cluster actually has, which keeps a retry cheap while leaving the
 /// per-chunk overhead well under the transfer time it covers.
 pub const DEFAULT_CHUNK_TOKENS: u32 = 512;
+
+/// Maximum number of generated tokens the remote emitter drains from its
+/// queue in one callback. This is a cap, not a target: a token is sent as soon
+/// as the emitter is free, and no timer fills the gap.
+pub(crate) const REMOTE_STREAM_BATCH_LIMIT: usize = 8;
+/// One control frame starts generation on a remote head. Subsequent tokens
+/// return through `crate::direct::REMOTE_STREAM_RESULT_PATH` in batches.
+pub(crate) const REMOTE_STREAM_PATH: &str = "/v1/step-stream";
 
 /// Cancelamento compartilhado entre o stream HTTP e o prefill. O `Notify`
 /// acorda uma chamada em voo; o `AtomicBool` torna as checagens entre hops e
@@ -125,6 +133,22 @@ fn check_cancelled(cancellation: &Cancellation) -> Result<()> {
         return Err(anyhow::Error::new(GenerationCancelled));
     }
     Ok(())
+}
+
+/// Takes the first item and whatever is already ready in the queue. Keeping
+/// this synchronous is intentional: an emitter never waits to complete a
+/// batch, so a slow producer gives one-item batches immediately.
+pub(crate) fn drain_opportunistic_batch<T>(first: T, receiver: &mut mpsc::Receiver<T>) -> Vec<T> {
+    let mut batch = vec![first];
+    while batch.len() < REMOTE_STREAM_BATCH_LIMIT {
+        match receiver.try_recv() {
+            Ok(item) => batch.push(item),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                break
+            }
+        }
+    }
+    batch
 }
 
 async fn cancelable<F, T>(cancellation: &Cancellation, future: F) -> Result<T>
@@ -2828,6 +2852,125 @@ pub struct SpeculativeStep {
     pub trace: RequestTrace,
 }
 
+/// Gateway side of the remote decode stream. The initial call is only a
+/// control/acceptance frame; generated tokens arrive through the bounded
+/// callback inbox and are decoded in opportunistic batches.
+pub(crate) struct RemoteDecodeStream {
+    ticket: crate::direct::StreamTicket,
+    model: String,
+    plan: PipelinePlan,
+    pub(crate) initial_trace: RequestTrace,
+}
+
+impl RemoteDecodeStream {
+    pub(crate) async fn next(&mut self, cancellation: &Cancellation) -> Result<SpeculativeStep> {
+        let meta = cancelable(cancellation, async { Ok(self.ticket.recv().await) })
+            .await?
+            .ok_or_else(|| anyhow!("transporte remoto encerrou sem lote terminal"))?;
+        if let Some(error) = meta.get("error").and_then(|value| value.as_str()) {
+            return Err(anyhow!("peer remoto falhou durante o stream: {error}"));
+        }
+
+        let batch_bytes = meta
+            .get("stream_batch_bytes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let entry = json!({
+            "round_trip_ms": 0,
+            "processing_ms": meta.get("processing_ms").cloned().unwrap_or_else(|| json!(0)),
+            "bytes_sent": 0,
+            "bytes_received": batch_bytes,
+            "client_encode_ms": 0,
+            "response_headers_ms": 0,
+            "response_body_ms": 0,
+            "client_decode_ms": 0,
+            "transport": "remote-stream",
+            "transport_fallback": false,
+            "node_timings": meta.get("node_timings").cloned().unwrap_or_else(|| json!({})),
+        });
+        let mut trace = RequestTrace::from_plan(&self.model, &self.plan);
+        trace.record_hop_from_json(0, Phase::Decode, &entry);
+        speculative_step_from_meta(&meta, trace)
+    }
+}
+
+/// Starts the new remote decode transport. The remote head owns the generation
+/// loop; for a multi-hop plan it relays each decode through the remaining
+/// peers internally, while the gateway sees only the bounded callback stream.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn step_stream(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    token_id: u32,
+    dtype: WireDtype,
+    http: &crate::peer_client::PeerClients,
+    routes: &crate::route::RouteTable,
+    direct: &crate::direct::DirectReply,
+    tunnel: Option<&TunnelOutboundSender>,
+    speculate: Option<Speculate>,
+    cancellation: &Cancellation,
+) -> Result<RemoteDecodeStream> {
+    plan.validate_wire_dtype(dtype)?;
+    let head = &plan.steps[0];
+    let next_hops = &plan.steps[1..];
+    let ticket = direct.stream_ticket();
+    let mut meta = json!({
+        "session_id": session_id,
+        "is_last": next_hops.is_empty(),
+        "token_id": token_id,
+        "next_hops": next_hops,
+        "reply_to": direct.stream_reply_to(ticket.id()),
+        "exec_start": head.exec_start,
+        "exec_end": head.exec_end,
+    });
+    if let Some(speculate) = speculate {
+        meta["speculate"] = speculate.to_meta();
+    }
+
+    let ack = cancelable(
+        cancellation,
+        crate::relay::send_frame_or_tunnel(
+            http,
+            head,
+            tunnel,
+            REMOTE_STREAM_PATH,
+            &meta,
+            None,
+            dtype,
+            dtype.frame_encoding(),
+            1,
+            &head.node_id,
+            |_issue| {},
+        ),
+    )
+    .await
+    .map_err(|error| {
+        if !is_cancelled(&error) {
+            routes.mark_failure(&head.node_id, &head.inference_url);
+        }
+        error
+    })?;
+    if ack
+        .meta
+        .get("stream_accepted")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        return Err(anyhow!("peer não aceitou o transporte remoto por lotes"));
+    }
+
+    let mut initial_trace = RequestTrace::from_plan(model, plan);
+    initial_trace.record_hop_from_sent(0, Phase::Decode, &ack);
+    initial_trace.record_transport(0, Phase::Decode, TransportTrace::from_sent(&ack));
+    Ok(RemoteDecodeStream {
+        ticket,
+        model: model.to_string(),
+        plan: plan.clone(),
+        initial_trace,
+    })
+}
+
 /// One speculative round: the head drafts up to `k` tokens from its own
 /// recent history (searching a trailing window of `m`), the whole batch is
 /// decoded through the pipeline in a single pass, and the tail verifies it —
@@ -3109,6 +3252,24 @@ fn speculative_step_from_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lote_oportunista_drena_o_que_ja_existe_sem_esperar() {
+        let (sender, mut receiver) = mpsc::channel(REMOTE_STREAM_BATCH_LIMIT);
+        for item in 0..REMOTE_STREAM_BATCH_LIMIT {
+            sender.send(item).await.expect("item enfileirado");
+        }
+        let batch =
+            drain_opportunistic_batch(receiver.recv().await.expect("primeiro item"), &mut receiver);
+        assert_eq!(batch, (0..REMOTE_STREAM_BATCH_LIMIT).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn lote_oportunista_envia_um_item_quando_nao_ha_outro_pronto() {
+        let (_sender, mut receiver) = mpsc::channel::<u32>(REMOTE_STREAM_BATCH_LIMIT);
+        let batch = drain_opportunistic_batch(7, &mut receiver);
+        assert_eq!(batch, vec![7]);
+    }
 
     #[tokio::test]
     async fn cancelamento_acorda_chamada_em_voo() {

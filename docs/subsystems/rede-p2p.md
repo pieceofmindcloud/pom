@@ -271,7 +271,8 @@ Comportamento atual do código:
    chamada não informou outro tipo, preservando `application/json` nas rotas de
    ciclo de vida da sessão.
 3. **A porta de inferência exige credencial.** `/v1/prefill`, `/v1/step`,
-   `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce` aceitam a
+   `/v1/step-stream`, `/v1/session/release`, `/v1/session/rollback` e
+   `/v1/tp/reduce` aceitam a
    `connection_key` compartilhada ou uma API key ativa no nó receptor. A
    `connection_key` é a credencial usada nas chamadas internas; API keys são
    aceitas para manter o mesmo contrato de autenticação disponível nas APIs
@@ -389,7 +390,8 @@ pode nem estar no certificado.
 Duas exceções, ambas por um motivo concreto:
 
 - **Rotas exclusivamente de peer** (`/api/transfer/*`, `/v1/relay-result`,
-  `/v1/prefill`, `/v1/step`) respondem **403**, não 301. O `reqwest` segue
+  `/v1/remote-stream-result`, `/v1/prefill`, `/v1/step`, `/v1/step-stream`)
+  respondem **403**, não 301. O `reqwest` segue
   redirecionamento por padrão: um 301 aqui faria um peer antigo tentar TLS sem
   saber verificar nada e falhar com um erro que não diz o motivo.
 - **A porta de inferência (`serve::PlainPolicy::Refuse`)** fecha a conexão, como

@@ -37,6 +37,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   `inference/frame-v1-dtype-f8` e validação all-or-nothing da precisão f8 no
   plano inteiro; uma ausência identificada bloqueia o deploy ou a requisição
   com a razão do peer, sem deixar bytes serem interpretados como outro dtype.
+- `CAP_REMOTE_TOKEN_STREAM` - capability anunciada pelo servidor de inferência
+  para que um head remoto mantenha o laço de decode no peer e entregue tokens
+  ao gateway em callbacks limitados por lotes oportunistas. O gateway exige
+  também um endereço de callback; o atalho local nunca usa este transporte.
 - `PipelinePlan::supports_relay_chain` / `supports_direct_reply` /
   `supports_speculation` - all-or-nothing: um passo sem a capability derruba a
   feature do plano inteiro (`CAP_RELAY_CHAIN`, `CAP_RELAY_DIRECT`,
@@ -75,7 +79,8 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - **Chama**: `network::PeerInfo` e `network::route::RouteTable`
   (`resolve_step_url`).
 - **Consumido por**: `inference/relay.rs` e `inference/infer_server.rs` (as
-  capabilities `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/`CAP_SPECULATE_LOOKUP`/
+  capabilities `CAP_REMOTE_TOKEN_STREAM`/`CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
+  `CAP_SPECULATE_LOOKUP`/
   `CAP_SPECULATE_MTP`/`CAP_SPECULATE_MTP_SLICED` viajam em `next_hops` e no
   wire format); `inference/direct.rs` (o modo direto
   depende de `supports_direct_reply`); `inference/wire.rs` (dtype/codificação

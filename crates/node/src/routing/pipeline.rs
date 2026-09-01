@@ -172,6 +172,10 @@ pub const CAP_FRAME_BATCH: &str = "inference/frame-v1-batch";
 /// sending f8 through one peer that only knows f16 would corrupt the answer.
 pub const CAP_FRAME_DTYPE_F8: &str = "inference/frame-v1-dtype-f8";
 
+/// Advertised when a remote complete-model peer can own the autoregressive
+/// loop and return generated tokens through bounded opportunistic batches.
+pub const CAP_REMOTE_TOKEN_STREAM: &str = "inference/remote-token-stream-v1";
+
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
 /// The layer boundaries let observers attach the edge to the exact advertised

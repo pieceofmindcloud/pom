@@ -352,6 +352,7 @@ impl GatewayState {
                     let mut caps = vec![
                         crate::pipeline::CAP_FRAME_BATCH.into(),
                         crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
+                        crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into(),
                         "relay/v1-chain".into(),
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),
@@ -1287,9 +1288,10 @@ async fn send_cycle_summary(
 /// Run one generation, emitting each token as it is decoded.
 ///
 /// This is the single generation path in the gateway: `/api/generate` collects
-/// the events into one response, the OpenAI endpoints forward them as SSE. The
-/// per-token loop and the peer protocol are unchanged — one round trip through
-/// every peer yields exactly one token.
+/// the events into one response, the OpenAI endpoints forward them as SSE.
+/// The established path keeps one round trip through every peer per token;
+/// `remote-stream` moves the decode loop to the remote head and reports
+/// opportunistic batches through the callback.
 pub async fn generate_stream_with_stops(input: GenerationInput, tx: mpsc::Sender<GenEvent>) {
     let cancellation = crate::prefill::Cancellation::new();
     let monitor_cancel = cancellation.clone();
@@ -1301,6 +1303,17 @@ pub async fn generate_stream_with_stops(input: GenerationInput, tx: mpsc::Sender
 
     generate_stream_inner(input, tx, cancellation).await;
     monitor.abort();
+}
+
+fn remote_stream_capable(
+    plan: &PipelinePlan,
+    local_node_id: &str,
+    direct_reply_available: bool,
+) -> bool {
+    !plan.steps.is_empty()
+        && plan.steps[0].node_id != local_node_id
+        && plan.steps[0].supports(crate::pipeline::CAP_REMOTE_TOKEN_STREAM)
+        && direct_reply_available
 }
 
 async fn generate_stream_inner(
@@ -1442,7 +1455,9 @@ async fn generate_stream_inner(
         &session_id[..8],
         budget.total,
         budget.leg,
-        if direct.is_some() && plan.supports_direct_reply() {
+        if remote_stream_capable(&plan, &state.network.node_id, direct.is_some()) {
+            "remote-stream"
+        } else if direct.is_some() && plan.supports_direct_reply() {
             "direta"
         } else if plan.supports_relay_chain() {
             "anel"
@@ -1646,8 +1661,8 @@ async fn generate_stream_inner(
             Err(e) if crate::prefill::is_cancelled(&e) => {
                 info!("cliente desconectou durante o prefill; cancelando pipeline");
                 return;
-            }
-            Err(e) => {
+                }
+                Err(e) => {
                 let message = if unknown_session_recovery_attempted
                     || crate::relay::is_unknown_session_error(&e)
                 {
@@ -1745,13 +1760,85 @@ async fn generate_stream_inner(
             return;
         }
 
+        // A remote head can own the autoregressive loop. The control frame
+        // below is acknowledged once; all later tokens arrive through its
+        // bounded callback stream. A local head never enters this branch, and
+        // peers without the advertised capability keep the established
+        // /v1/step path.
+        let remote_stream_capable = remote_stream_capable(
+            &plan,
+            &state.network.node_id,
+            direct.is_some(),
+        );
+        let mut remote_stream = if remote_stream_capable {
+            // A multi-hop stream keeps the remaining relay inside the remote
+            // head. Its speculative rollback would also have to fan out to
+            // every downstream session, so keep that plan on the exact plain
+            // sampler until a remote rollback contract exists. Single-hop
+            // streams use the existing local rollback in the producer.
+            let speculate = (plan.steps.len() == 1
+                && plan.supports_speculation()
+                && speculative_enabled)
+                .then(|| {
+                crate::infer_server::Speculate {
+                    k: speculative_k,
+                    m: speculative_m,
+                    source: match draft_source {
+                        crate::prefill::DraftSource::Lookup => {
+                            crate::infer_server::DraftSource::Lookup
+                        }
+                        crate::prefill::DraftSource::Mtp => crate::infer_server::DraftSource::Mtp,
+                    },
+                    draft: None,
+                }
+            });
+            match crate::prefill::step_stream(
+                &plan,
+                model,
+                &session_id,
+                next_token,
+                dtype,
+                &state.peer_http,
+                &state.network.routes,
+                direct.as_ref().expect("stream capability requires reply address"),
+                state.tunnel_tx.as_ref(),
+                speculate,
+                &cancellation,
+            )
+            .await
+            {
+                Ok(stream) => {
+                    trace.merge(&stream.initial_trace);
+                    Some(stream)
+                }
+                Err(error) => {
+                    warn!("transporte remoto por lotes falhou: {error}");
+                    let summary = summary_for(
+                        &plan,
+                        request_started,
+                        first_token_at,
+                        tokens_generated,
+                        legs,
+                        trace,
+                        true,
+                        None,
+                        None,
+                    );
+                    let _ = tx.send(GenEvent::Done(summary)).await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
         if plan.supports_speculation() && speculative_enabled {
             // Vira `false` na primeira rodada em que a cabeça recusar o
             // rascunho. Pedir de novo só repetiria a recusa, e o pedido custa
-            // caro por um motivo que não se vê: `step_speculative` nunca
-            // aprendeu a resposta direta, então insistir mantém a cadeia no
-            // anel borbulhado (2N travessias por token) quando o caminho
-            // direto (N+1) está disponível — ver `crate::direct`.
+            // caro por um motivo que não se vê: no caminho legado,
+            // `step_speculative` continua no anel borbulhado (2N travessias por
+            // token). O transporte remoto já mantém o laço no head e chega
+            // aqui pela fila de callbacks, sem pedir outro quadro ao gateway.
             // O MTP fatiado é a outra metade da mesma rodada: a cauda (dona
             // do bloco `nextn`) rascunha na resposta direta e o gateway
             // injeta o rascunho no `speculate` da rodada seguinte. Só com 2+
@@ -1769,7 +1856,9 @@ async fn generate_stream_inner(
                     return;
                 }
                 let draft_sent = especulando && sliced_mtp && stored_draft.is_some();
-                let res = if especulando {
+                let res = if let Some(stream) = remote_stream.as_mut() {
+                    stream.next(&cancellation).await
+                } else if especulando {
                     if sliced_mtp {
                         crate::prefill::step(
                             &plan,
@@ -2038,71 +2127,95 @@ async fn generate_stream_inner(
         }
 
         while remaining_generation_steps(budget.total, tokens_generated) > 0 {
-            let res = crate::prefill::step(
-                &plan,
-                model,
-                &session_id,
-                next_token,
-                dtype,
-                &state.peer_http,
-                &state.network.routes,
-                direct.as_ref(),
-                state.tunnel_tx.as_ref(),
-                None,
-            )
-            .await;
+            let res = if let Some(stream) = remote_stream.as_mut() {
+                stream.next(&cancellation).await
+            } else {
+                crate::prefill::step(
+                    &plan,
+                    model,
+                    &session_id,
+                    next_token,
+                    dtype,
+                    &state.peer_http,
+                    &state.network.routes,
+                    direct.as_ref(),
+                    state.tunnel_tx.as_ref(),
+                    None,
+                )
+                .await
+            };
 
             match res {
                 Ok(step) => {
                     trace.merge(&step.trace);
-                    // O formato comum de `step` é um único token confirmado.
-                    let (token_id, text) = &step.accepted[0];
-                    next_token = *token_id;
-                    tokens_generated += 1;
-                    note_leg_boundary(budget, tokens_generated, &mut legs);
-                    match send_text_with_stop(&tx, &mut stop_matcher, text).await {
-                        StopSend::Disconnected => {
-                            // Client hung up; stop burning GPU time on a dead request.
-                            info!("cliente desconectou após {tokens_generated} tokens");
-                            return;
-                        }
-                        StopSend::Stopped(stop_sequence) => {
-                            send_stopped_summary(
-                                &tx,
-                                &plan,
-                                request_started,
-                                first_token_at,
-                                tokens_generated,
-                                legs,
-                                trace,
-                                stop_sequence,
-                            )
+                    if step.accepted.is_empty() {
+                        let _ = tx
+                            .send(GenEvent::Failed(
+                                "Pipeline não devolveu token confirmado".to_string(),
+                            ))
                             .await;
-                            return;
-                        }
-                        StopSend::Continue => {}
+                        return;
                     }
-                    if !step.done {
-                        if let Some(cycle) = cycle_detector.observe(*token_id, text) {
-                            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                    let remaining =
+                        remaining_generation_steps(budget.total, tokens_generated) as usize;
+                    let take = step.accepted.len().min(remaining);
+                    let truncated_by_budget = take < step.accepted.len();
+                    let mut cycle_match = None;
+                    for (index, (token_id, text)) in step.accepted.iter().take(take).enumerate() {
+                        next_token = *token_id;
+                        tokens_generated += 1;
+                        note_leg_boundary(budget, tokens_generated, &mut legs);
+                        match send_text_with_stop(&tx, &mut stop_matcher, text).await {
+                            StopSend::Disconnected => {
+                                // Client hung up; stop burning GPU time on a dead request.
+                                info!("cliente desconectou após {tokens_generated} tokens");
                                 return;
                             }
-                            send_cycle_summary(
-                                &tx,
-                                &plan,
-                                request_started,
-                                first_token_at,
-                                tokens_generated,
-                                legs,
-                                trace,
-                                cycle,
-                            )
-                            .await;
-                            return;
+                            StopSend::Stopped(stop_sequence) => {
+                                send_stopped_summary(
+                                    &tx,
+                                    &plan,
+                                    request_started,
+                                    first_token_at,
+                                    tokens_generated,
+                                    legs,
+                                    trace,
+                                    stop_sequence,
+                                )
+                                .await;
+                                return;
+                            }
+                            StopSend::Continue => {}
+                        }
+                        if !step.done || index + 1 < take {
+                            if let Some(cycle) = cycle_detector.observe(*token_id, text) {
+                                cycle_match = Some(cycle);
+                                break;
+                            }
                         }
                     }
-                    let finish_reason =
-                        generation_finish_reason(budget.total, tokens_generated, step.done);
+                    if let Some(cycle) = cycle_match {
+                        if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                            return;
+                        }
+                        send_cycle_summary(
+                            &tx,
+                            &plan,
+                            request_started,
+                            first_token_at,
+                            tokens_generated,
+                            legs,
+                            trace,
+                            cycle,
+                        )
+                        .await;
+                        return;
+                    }
+                    let finish_reason = generation_finish_reason(
+                        budget.total,
+                        tokens_generated,
+                        step.done && !truncated_by_budget,
+                    );
 
                     if finish_reason.is_some() {
                         if !flush_stop_matcher(&tx, &mut stop_matcher).await {
@@ -2615,6 +2728,11 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
             crate::direct::RELAY_RESULT_PATH,
             post(handle_relay_result).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
         )
+        .route(
+            crate::direct::REMOTE_STREAM_RESULT_PATH,
+            post(handle_remote_stream_result)
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
+        )
         .merge(crate::openai::routes())
         .merge(crate::messages::routes())
         .merge(crate::webui::routes())
@@ -2675,6 +2793,13 @@ async fn cluster_tls(
 
 async fn handle_relay_result(State(state): State<GatewayState>, body: Bytes) -> impl IntoResponse {
     crate::direct::handle_relay_result(&state.reply_inbox, body)
+}
+
+async fn handle_remote_stream_result(
+    State(state): State<GatewayState>,
+    body: Bytes,
+) -> impl IntoResponse {
+    crate::direct::handle_remote_stream_result(&state.reply_inbox, body).await
 }
 
 /// Accept raw bytes so callers don't need `Content-Type: application/json`.
@@ -3599,6 +3724,71 @@ mod budget_tests {
 }
 
 #[cfg(test)]
+mod remote_stream_selection_tests {
+    use super::*;
+
+    fn plan(node_id: &str, capabilities: Vec<String>) -> PipelinePlan {
+        PipelinePlan {
+            steps: vec![crate::pipeline::PipelineStep {
+                node_id: node_id.into(),
+                inference_url: "http://127.0.0.1:8181".into(),
+                inference_candidates: Vec::new(),
+                start_layer: 0,
+                end_layer: 31,
+                exec_start: 0,
+                exec_end: 31,
+                inference_frame_capabilities: capabilities,
+                libp2p_peer_id: None,
+                libp2p_addr_candidates: Vec::new(),
+            }],
+            edges: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn remote_stream_never_replaces_the_local_shortcut() {
+        let plan = plan(
+            "local",
+            vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
+        );
+        assert!(!remote_stream_capable(&plan, "local", true));
+    }
+
+    #[test]
+    fn remote_stream_requires_the_new_capability_and_a_callback() {
+        let without_cap = plan("remote", Vec::new());
+        assert!(!remote_stream_capable(&without_cap, "local", true));
+        let with_cap = plan(
+            "remote",
+            vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
+        );
+        assert!(remote_stream_capable(&with_cap, "local", true));
+        assert!(!remote_stream_capable(&with_cap, "local", false));
+    }
+
+    #[test]
+    fn remote_stream_keeps_the_remaining_pipeline_inside_the_remote_head() {
+        let mut multi = plan(
+            "remote-head",
+            vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
+        );
+        multi.steps.push(crate::pipeline::PipelineStep {
+            node_id: "remote-tail".into(),
+            inference_url: "http://127.0.0.1:8182".into(),
+            inference_candidates: Vec::new(),
+            start_layer: 32,
+            end_layer: 63,
+            exec_start: 32,
+            exec_end: 63,
+            inference_frame_capabilities: Vec::new(),
+            libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
+        });
+        assert!(remote_stream_capable(&multi, "local", true));
+    }
+}
+
+#[cfg(test)]
 mod peer_visibility_tests {
     use super::*;
 
@@ -3890,6 +4080,14 @@ pub(crate) mod testkit {
             axum::routing::post(move |body: Bytes| {
                 let inbox = inbox.clone();
                 async move { crate::direct::handle_relay_result(&inbox, body) }
+            }),
+        );
+        let inbox = state.reply_inbox.clone();
+        let router = router.route(
+            crate::direct::REMOTE_STREAM_RESULT_PATH,
+            axum::routing::post(move |body: Bytes| {
+                let inbox = inbox.clone();
+                async move { crate::direct::handle_remote_stream_result(&inbox, body).await }
             }),
         );
         tokio::spawn(async move {

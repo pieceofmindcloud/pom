@@ -37,7 +37,7 @@ export interface RequestTrace {
 }
 
 export interface TransportSummaryEntry {
-  transport: "local" | "libp2p-tunnel" | "https" | "unknown";
+  transport: "local" | "libp2p-tunnel" | "https" | "remote-stream" | "unknown";
   calls: number;
   bytes_sent: number;
   bytes_received: number;

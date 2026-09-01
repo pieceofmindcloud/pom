@@ -6,7 +6,7 @@ Um pedido de geração (OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`,
 `POST /api/generate`) desce por um único caminho: `gateway::generate_stream_with_stops`.
 Ele planeja a cadeia de peers com `routing/pipeline.rs`, manda o prompt e cada
 token pelo pipeline distribuído e devolve tokens ao cliente. Este documento
-descreve os três modos de execução, o formato binário do estado oculto, o
+descreve os modos de execução, o formato binário do estado oculto, o
 prefill em pedaços, a resposta direta, a decodificação especulativa e os
 limites.
 
@@ -311,29 +311,42 @@ sabe em vez de inventar um mapa. Quem os mostra é o card de máquina do Painel,
 que os busca por `/api/ui/peer/:node_id/runtime` só com o card aberto - ver
 `api-http.md` e `web-ui.md`.
 
-## 1. Os três modos de execução
+## 1. Os modos de execução
 
-O dispatch acontece em `inference/prefill.rs` (`run` para o prefill, `step`
-para cada token), nesta ordem:
+O prefill acontece em `inference/prefill.rs` (`run`); no decode, o gateway
+escolhe o transporte remoto quando o head é outro nó e anuncia
+`inference/remote-token-stream-v1`. Caso contrário, `step` usa os três modos
+tradicionais:
 
-1. **Resposta direta** (`relay/v2-direct`, `run_direct`/`step_direct`) - quando
+1. **Transporte remoto por lotes** (`inference/remote-token-stream-v1`,
+   `step_stream`/`/v1/step-stream`) - o gateway envia um control frame ao head
+   remoto e recebe os tokens por callbacks em `/v1/remote-stream-result`. O
+   head mantém o laço de geração; em um pipeline com mais hops, os demais peers
+   continuam dentro do relay do head. O produtor põe cada token numa fila
+   limitada a 16 itens e não espera o callback; o emissor drena, sem sleep ou
+   temporizador, até 8 itens que já estejam prontos. Se a fila enche, o envio
+   do callback espera e aplica contrapressão até a geração. EOS e erro enviam
+   um lote terminal; stop, limite, ciclo e cancelamento removem o ticket e
+   fazem uma entrega atrasada receber `410 Gone`.
+2. **Resposta direta** (`relay/v2-direct`, `run_direct`/`step_direct`) - quando
    `PipelinePlan::supports_direct_reply()`: todos os passos anunciam
    `relay/v2-direct` **e** a cadeia tem pelo menos 2 hops. O gateway despacha
    cada quadro uma vez para a cabeça, carregando um `reply_to`; a cauda entrega
    o resultado direto ao gateway por `/v1/relay-result`.
-2. **Anel borbulhado** (`relay/v1-chain`, `run_ring`/`step_ring`) - quando
+3. **Anel borbulhado** (`relay/v1-chain`, `run_ring`/`step_ring`) - quando
    `supports_relay_chain()`: o gateway faz **uma** chamada (para a cabeça) e
    cada hop repassa ao seu próximo via `next_hops`; o resultado volta borbulhando
    pela pilha de chamadas aninhada.
-3. **Hub** - o resto: o gateway chama cada hop em sequência, recebe o tensor de
+4. **Hub** - o resto: o gateway chama cada hop em sequência, recebe o tensor de
    volta e reenvia ao seguinte.
 
-O log do gateway marca qual modo entrou (`resposta=direta|anel|hub`). A escolha
+O log do gateway marca qual modo entrou (`resposta=remote-stream|direta|anel|hub`). A escolha
 é all-or-nothing por requisição: um único passo sem a capability derruba a
 feature do plano inteiro (`supports_relay_chain`/`supports_direct_reply`/
 `supports_speculation` em `routing/pipeline.rs`), para não misturar modos no
-meio da cadeia. Nada a configurar numa atualização progressiva: um cluster com
-nós velhos cai no anel de sempre.
+meio da cadeia. O transporte remoto exige que o head anuncie a capability e
+que o gateway tenha endereço de callback; sem isso a requisição mantém o
+caminho anterior. Um head local nunca usa o transporte remoto.
 
 ## 2. Protocolo de estado oculto (`wire.rs`)
 
@@ -705,6 +718,12 @@ com validação da ordem GGUF `[input, output, experts]` antes do forward. A Fas
 no runtime. O caminho atual é CPU para router e experts; não afirma
 sobreposição CPU/GPU.
 
+`path/engine mismatch` na UI é um rótulo de telemetria real: o `selected_path`
+registra o caminho escolhido (`moe/q4_0` ou `dense/llama.cpp`) e
+`executed_engine` registra o executor que de fato rodou. A flag aparece quando
+eles divergem, por exemplo, quando o caminho MoE selecionado recua para
+`llama.cpp`; não é sintoma do transporte remoto nem da rede.
+
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser
 prefixo de uma parada, remove a própria parada da saída e encerra a geração com
@@ -949,6 +968,27 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
 - Falha que chega com `error` no lugar do token (`direct_failure`) nomeia o hop
   morto e marca **esse** (não a cabeça) com `routes.mark_failure`.
 
+**Transporte remoto por lotes e a causa da travessia por ficha.** A investigação
+confirmou a travessia por ficha no `step_ring`: `generate_stream_inner` aguardava
+cada `prefill::step`, e o `step_ring` fazia um `/v1/step` para a cabeça antes de
+pedir o próximo token. No túnel, `send_frame_via_tunnel_with_auth` mede a
+resposta inteira e preenche `response_headers_ms` com o mesmo `round_trip_ms`.
+Portanto, `gateway: to headers` é o tempo até o ACK/resposta do túnel, não o
+tempo que o gateway passou escrevendo SSE para o frontend. O código do gateway
+já tinha um pump separado para o cliente e um canal limitado, então a hipótese
+de a escrita SSE ser a causa dos 774 ms não se confirmou.
+
+O transporte novo envia um control frame `/v1/step-stream` uma vez ao head
+remoto. O produtor do peer chama o mesmo `handle_step` e continua a inferência;
+um emissor separado drena no máximo oito tokens que já estejam na fila e faz um
+POST por lote em `/v1/remote-stream-result`, sem sleep nem temporizador. A fila
+de callback tem capacidade 16: um cliente lento bloqueia o emissor quando ela
+enche e, em seguida, o produtor, em vez de deixar memória crescer sem limite.
+Em planos fatiados, o head mantém os demais hops dentro da rede. O trace conta
+`remote-stream` por callback, registra bytes e soma os tempos do nó; a travessia
+de controle aparece separadamente. O conteúdo continua vindo do sampler e do
+UTF-8 assembler existentes, na mesma ordem.
+
 **`prompt_progress`**: sem volta, a cabeça não pode mais sobrepor
 `more_chunks`/`n_prompt_tokens` na resposta que passa por ela (no anel isso era
 `overlay_head_authoritative_fields`). Ela manda os dois **adiante**
@@ -1043,10 +1083,10 @@ requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
   (2N travessias por token).
 - O gateway clampa `speculative_k` a `n_batch` (`speculative_k_of`), porque o
   lote especulativo também é um batch único na cabeça.
-- **DEFEITO/limitação anotado**: `step_speculative` **não** foi estendida ao
-  desvio direto - ela não recebe o parâmetro `direct` e continua no anel/hub
-  mesmo quando o plano suportaria resposta direta. A decodificação especulativa
-  nunca usa o caminho `relay/v2-direct`.
+- A rota legada `step_speculative` continua no anel/hub, sem usar
+  `relay/v2-direct`. O transporte remoto mantém a especulação no peer apenas
+  para plano de um hop; planos remotos com mais hops usam o sampler plain até
+  existir um contrato de rollback que alcance todos os peers.
 
 ### 5.2 Predição multi-token (MTP) - `inference/mtp.rs`
 
@@ -1379,7 +1419,8 @@ cada travessia, e eles aparecem numa linha própria da tabela de telemetria do
 Chat.
 
 - **`transport_summary`** - resumo limitado das travessias deste hop, agrupado
-  por transporte (`local`, `libp2p-tunnel`, `https` ou `unknown`). Cada entrada
+  por transporte (`local`, `libp2p-tunnel`, `https`, `remote-stream` ou
+  `unknown`). Cada entrada
   informa chamadas, bytes enviados e recebidos, RTT mínimo, mediana, p95 e
   máximo, além de quantas chamadas chegaram por fallback naquele transporte.
   O resumo também informa `fallback_calls` total e `transport_switches` agrupadas
@@ -1415,6 +1456,13 @@ coluna.
 ponta a ponta -, mas não por TLS, e dizer `true` ali alegaria uma garantia que
 aquele salto não deu.
 
+No transporte remoto, o registro `remote-stream` representa um callback de
+lote, não uma nova ida e volta de inferência. `bytes_received` é o corpo do
+lote e `processing_ms`/`node_timings` são agregados dos tokens contidos nele;
+`round_trip_ms` fica zero porque o callback é entregue ao inbox do gateway, que
+já separa a espera do cliente da geração. O primeiro control frame mantém a
+medição do transporte usado para iniciar o stream.
+
 ## 11. Defeitos anotados
 
 - (não é defeito, é o comportamento de hoje) Porta ocupada: `runtime::free_port` acha quem segura a porta (`lsof -ti :PORT`
@@ -1425,10 +1473,9 @@ aquele salto não deu.
   em vez do rótulo fixo `inference_server`. O histórico fica em
   `<project_root>/infer_server_<porta>.log` (`runtime::log_file_path`, apontado
   por `status.log_path`), porque a TUI limpa a tela a cada `--refresh`.
-- **Limitação conhecida**: `step_speculative` não foi estendida ao desvio
-  direto (ver seção 5) - a especulação continua no anel/hub.
-- **Sem cobertura de teste**: os quatro modos de falha do modo direto e a
-  especulação no desvio direto (ver seção 8).
+- **Sem cobertura E2E**: os quatro modos de falha do modo direto legado ainda
+  não têm uma bancada ponta a ponta; o transporte remoto novo tem testes de
+  unidade para lote, ordem, erro, terminação e contrapressão.
 - **MTP sem medição de tok/s** (2026-08-16, cortado por cota): a implementação
   está completa e verde nos testes de unidade, mas o ganho ponta a ponta não
   foi medido neste projeto - nem no caso fatiado, onde o que falta medir é a
@@ -1438,7 +1485,8 @@ aquele salto não deu.
   pom é expectativa, não fato.
 ## Nota de versão
 
-Documentado a partir dos fontes na branch `fm/pom-linha-2` (2026-08-15):
+Documentado a partir dos fontes na branch `fm/rdma-gateway-remoto-por-token`
+(2026-09-01):
 `inference/infer_server.rs`, `inference/prefill.rs`, `inference/direct.rs`,
 `inference/direct_lab.rs`, `inference/spec_lab.rs`, `inference/relay.rs`,
 `inference/wire.rs`, `inference/runtime.rs`, `routing/pipeline.rs`,

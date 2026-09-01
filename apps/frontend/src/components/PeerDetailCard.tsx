@@ -37,7 +37,7 @@ import {
 import { hasSlice } from "../lib/networkPeers";
 import { useInvalidate, usePeerRuntime } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import type { PeerView } from "../lib/types";
+import type { PeerLoadParams, PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 /** O botão de atualizar e reiniciar, só visível quando o peer aceita o pedido. */
@@ -153,6 +153,7 @@ function PeerPlacement({
           )}
         </section>
       )}
+      {health.load_params && <LoadParamsSection params={health.load_params} />}
       <ModelPlacementSection
         placement={health.placement ?? null}
         contextMemory={health.context_memory?.buffers ?? null}
@@ -160,6 +161,82 @@ function PeerPlacement({
         fitApplied={health.fit_memory_applied ?? false}
       />
     </>
+  );
+}
+
+/**
+ * Com que parâmetros de llama.cpp o contexto deste nó subiu.
+ *
+ * Existe para o operador que quer comparar a máquina com uma linha de comando
+ * do `llama-cli` sem abrir o `/health` na mão. Todo valor vem do contexto
+ * vivo do nó; nada aqui é derivado da configuração pedida, porque o fallback
+ * de KV em RAM sobe um contexto diferente do que foi pedido.
+ */
+function LoadParamsSection({ params }: { params: PeerLoadParams }) {
+  const { t } = useI18n();
+  // O Flash Attention é o único campo que pode faltar: é o único que depende
+  // da ponte de diagnóstico. `null` vira "não sei", nunca "desligado".
+  const fa =
+    params.flash_attn === null
+      ? t("dashboard.paramsUnknown")
+      : params.flash_attn
+        ? params.flash_attn_auto
+          ? t("dashboard.faOnAuto")
+          : t("dashboard.faOn")
+        : params.flash_attn_auto
+          ? t("dashboard.faOffAuto")
+          : t("dashboard.faOff");
+  return (
+    <section aria-label={t("dashboard.loadParams")} className="border-t border-line px-5 py-4">
+      <div className="eyebrow mb-3">{t("dashboard.loadParams")}</div>
+      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+        <KeyValue label={t("dashboard.paramFlashAttn")}>
+          <Badge
+            tone={params.flash_attn === null ? "neutral" : params.flash_attn ? "aqua" : "amber"}
+            className="px-1.5 py-0 text-[0.68rem]"
+          >
+            {fa}
+          </Badge>
+        </KeyValue>
+        <KeyValue label={t("dashboard.paramBatch")}>
+          <span className="font-mono">
+            {num(params.n_batch)} / {num(params.n_ubatch)}
+          </span>
+        </KeyValue>
+        <KeyValue label={t("dashboard.paramCtx")}>
+          <span className="font-mono">
+            {num(params.n_ctx)} / {num(params.n_ctx_seq)}
+          </span>
+        </KeyValue>
+        <KeyValue label={t("dashboard.paramSeqMax")}>
+          <span className="font-mono">
+            {num(params.n_seq_max)}
+            {params.kv_unified ? " · " + t("dashboard.paramKvUnified") : ""}
+          </span>
+        </KeyValue>
+        <KeyValue label={t("dashboard.paramThreads")}>
+          <span className="font-mono">
+            {num(params.n_threads)} / {num(params.n_threads_batch)}
+          </span>
+        </KeyValue>
+        <KeyValue label={t("dashboard.paramGpuLayers")}>
+          <span className="font-mono">{num(params.n_gpu_layers)}</span>
+        </KeyValue>
+        <KeyValue label={t("dashboard.paramCacheType")}>
+          <span className="font-mono">
+            {params.cache_type_k} / {params.cache_type_v}
+          </span>
+        </KeyValue>
+        <KeyValue label={t("dashboard.paramKqv")}>
+          {t(params.offload_kqv ? "dashboard.paramOnGpu" : "dashboard.paramOnCpu")}
+        </KeyValue>
+      </dl>
+      {params.fit_memory_applied && (
+        <p className="mt-3 text-xs leading-relaxed text-muted">
+          {t("dashboard.paramsFitNote")}
+        </p>
+      )}
+    </section>
   );
 }
 

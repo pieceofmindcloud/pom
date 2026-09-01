@@ -75,7 +75,14 @@ haver chave.
   `runtime_capacity` (`n_ctx`, `max_new_tokens`) quando o runtime local já
   respondeu `model_loaded`. Na porta de inferência, a resposta também publica
   `n_ubatch_effective`, `mtp_ready` e `mtp_unavailable_reason`; este último
-  explica por que o contexto MTP pedido não foi anexado.
+  explica por que o contexto MTP pedido não foi anexado. `load_params` traz os
+  parâmetros de llama.cpp com que o contexto subiu - `n_ctx`, `n_ctx_seq`,
+  `n_batch`, `n_ubatch`, `n_seq_max`, `n_threads`, `n_threads_batch`,
+  `flash_attn`, `flash_attn_auto`, `kv_unified`, `embeddings`, `n_rs_seq`,
+  `offload_kqv`, `cache_type_k`, `cache_type_v`, `n_gpu_layers` e
+  `fit_memory_applied` -, lidos do contexto vivo e não do `EngineConfig`. Com
+  `flash_attn: null` a ponte de diagnóstico não respondeu, e a interface diz
+  que não sabe em vez de mostrar "desligado".
 - **`POST /handshake`** - corpo `{ node_id, pubkey, connection_key }`; 403
   `invalid_key`, `identity_mismatch` (o `node_id` não é o `SHA256` da `pubkey`,
   ou a chave é malformada) ou `blocked`; 200 com `approved` + `peer_id`.

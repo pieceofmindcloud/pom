@@ -236,6 +236,35 @@ export interface ContextMemoryBuffer {
   compute: number;
 }
 
+/**
+ * Os parâmetros de llama.cpp com que o contexto de um nó subiu.
+ *
+ * Vem do contexto vivo, não do `EngineConfig` do nó: o fallback de KV em RAM
+ * reconstrói o contexto com outra configuração, e o operador precisa ver o que
+ * está rodando, não o que foi pedido.
+ */
+export interface PeerLoadParams {
+  n_ctx: number;
+  n_ctx_seq: number;
+  n_batch: number;
+  n_ubatch: number;
+  n_seq_max: number;
+  n_threads: number;
+  n_threads_batch: number;
+  /** `null` quando a ponte de diagnóstico não respondeu. */
+  flash_attn: boolean | null;
+  /** O Flash Attention veio da sonda `AUTO` ou de um pedido explícito? */
+  flash_attn_auto: boolean | null;
+  kv_unified: boolean;
+  embeddings: boolean;
+  n_rs_seq: number;
+  offload_kqv: boolean;
+  cache_type_k: KvCacheType;
+  cache_type_v: KvCacheType;
+  n_gpu_layers: number;
+  fit_memory_applied: boolean;
+}
+
 /** O `/health` do servidor de inferência de uma máquina, como a tela o lê. */
 export interface PeerRuntimeHealth {
   start_layer: number;
@@ -256,6 +285,8 @@ export interface PeerRuntimeHealth {
   mtp_unavailable_reason?: string | null;
   /** Local dominante dos buffers do contexto MTP pronto. */
   mtp_allocation?: "vram" | "ram" | null;
+  /** Com que parâmetros de llama.cpp este contexto subiu. */
+  load_params?: PeerLoadParams;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
   context_memory: { buffers: ContextMemoryBuffer[] } | null;

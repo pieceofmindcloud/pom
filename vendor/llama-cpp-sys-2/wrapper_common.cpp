@@ -14,10 +14,13 @@
 #include <vector>
 
 #include "llama.cpp/common/common.h"
-// Cabeçalhos internos: `llama_model` (`tensors_by_name`, `dev_layer`) e o
-// `llama-ext.h` de estágio (`llama_get_memory_breakdown`). Nada disso está no
-// `llama.h` público, e é justamente o que responde onde cada camada ficou.
+// Cabeçalhos internos: `llama_model` (`tensors_by_name`, `dev_layer`), o
+// `llama-ext.h` de estágio (`llama_get_memory_breakdown`) e o `llama_context`
+// (`get_cparams`, o Flash Attention resolvido). Nada disso está no `llama.h`
+// público, e é justamente o que responde onde cada camada ficou e com que
+// parâmetros o contexto ficou de pé.
 #include "llama.cpp/src/llama-ext.h"
+#include "llama.cpp/src/llama-context.h"
 #include "llama.cpp/src/llama-model.h"
 #include "llama.cpp/ggml/include/ggml-backend.h"
 #include "llama.cpp/ggml/include/ggml-cpu.h"
@@ -518,6 +521,26 @@ extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_conte
     try {
         *out_json = llama_rs_dup_string(llama_rs_context_memory_value(ctx, nullptr).dump());
         return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
+extern "C" llama_rs_status llama_rs_context_flash_attn(
+        const struct llama_context * ctx,
+        bool * out_enabled,
+        bool * out_auto) {
+    if (!ctx || !out_enabled || !out_auto) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+
+    try {
+        // `get_cparams` é a decisão já tomada, não o pedido: o construtor do
+        // contexto resolve `AUTO` sondando o backend antes de gravar aqui.
+        const llama_cparams & cparams = const_cast<llama_context *>(ctx)->get_cparams();
+        *out_enabled = cparams.flash_attn;
+        *out_auto    = cparams.auto_fa;
+        return LLAMA_RS_STATUS_OK;
     } catch (const std::exception &) {
         return LLAMA_RS_STATUS_EXCEPTION;
     }

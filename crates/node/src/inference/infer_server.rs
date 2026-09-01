@@ -2989,6 +2989,11 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         "fit_memory_applied": s.engine.fit_memory_applied(),
         "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
         "n_ubatch_effective": s.engine.effective_n_ubatch(),
+        // Com que parâmetros de llama.cpp este contexto subiu, para o
+        // operador comparar o nó com uma linha de comando do `llama-cli`.
+        // Lido do contexto vivo, não do `EngineConfig` - ver
+        // `LlmEngine::load_params`.
+        "load_params": s.engine.load_params(),
         "profile_sync_enabled": crate::llm::profile_backend_sync_enabled(),
         // Onde as camadas e o cache KV ficaram de verdade, direto do
         // llama.cpp. `null` quando a ponte não respondeu - a interface diz

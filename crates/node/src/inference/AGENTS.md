@@ -644,6 +644,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   parte de uma camada para a CPU. `json_from_wrapper` é quem chama e quem
   libera a string (`llama_rs_string_free`, nunca `free` nem
   `CString::from_raw`).
+- `LlmEngine::flash_attn` / `LlmEngine::load_params` - com que parâmetros de
+  llama.cpp este contexto está de pé, para o `/health` e a tela de Detalhes.
+  Nada aqui é eco do `EngineConfig`: os valores saem do contexto vivo
+  (`llama_n_ctx`, `llama_n_batch`, `llama_n_ubatch`, `llama_n_seq_max`,
+  `llama_n_threads`), porque o fallback de KV em RAM sobe um contexto com outra
+  configuração e o operador precisa ver o que roda. `kv_unified`, `embeddings`
+  e `n_rs_seq` não têm getter, então vêm de um `ContextParamsSnapshot` tirado
+  na linha anterior ao `llama_new_context_with_model`. O Flash Attention é o
+  único campo `Option`: o padrão do llama.cpp é `AUTO` e a decisão só existe
+  em `get_cparams()`, lida por `llama_rs_context_flash_attn`; falha da ponte é
+  `None` e vira `null` no `/health`, nunca `false`.
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data`; o
   DeepSeek4 chama a mesma fronteira de `l_last-<N>`, e o callback aceita os dois

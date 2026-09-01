@@ -1626,7 +1626,7 @@ const FIT_MIN_CONTEXT: u32 = 4096;
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
-const FIT_MAX_UBATCH: u32 = 128;
+const FIT_MAX_UBATCH: u32 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FitDeviceMemory {
@@ -2419,6 +2419,20 @@ impl Drop for LoadedModel {
     }
 }
 
+/// Os parâmetros de contexto que **não** têm getter no `llama.h`.
+///
+/// Tudo o mais (`n_ctx`, `n_batch`, `n_ubatch`, `n_seq_max`, threads, Flash
+/// Attention) é lido do contexto vivo, porque o contexto é a verdade: o
+/// caminho de fallback de KV em RAM reconstrói o contexto com outra
+/// configuração, e ecoar o `EngineConfig` mostraria parâmetros que este nó não
+/// está usando.
+#[derive(Debug, Clone, Copy)]
+struct ContextParamsSnapshot {
+    kv_unified: bool,
+    embeddings: bool,
+    n_rs_seq: u32,
+}
+
 pub struct LlmEngine {
     /// Os pesos. `Arc` porque o último contexto a morrer é quem os libera.
     loaded: Arc<LoadedModel>,
@@ -2438,6 +2452,9 @@ pub struct LlmEngine {
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
     effective_n_ubatch: u32,
+    /// O que foi pedido ao `llama_new_context_with_model` e não pode ser
+    /// consultado de volta. Ver `ContextParamsSnapshot`.
+    cparams_snapshot: ContextParamsSnapshot,
     /// Whether llama.cpp loaded this model in metadata-only external-MoE mode.
     /// This is part of the engine identity because a dense/native context and
     /// an external-executor context cannot share the same loaded model.
@@ -3161,6 +3178,13 @@ impl LlmEngine {
         };
 
         // ── Create context ───────────────────────────────────────────────────
+        // Tirado aqui, com os `cparams` que de fato vão para o llama.cpp: é o
+        // único ponto em que o pedido e o contexto criado são a mesma coisa.
+        let cparams_snapshot = ContextParamsSnapshot {
+            kv_unified: cparams.kv_unified,
+            embeddings: cparams.embeddings,
+            n_rs_seq: cparams.n_rs_seq,
+        };
         let ctx = unsafe { sys::llama_new_context_with_model(model, cparams) };
         if ctx.is_null() {
             bail!(
@@ -3245,6 +3269,7 @@ impl LlmEngine {
             fit_memory_applied: false,
             effective_n_gpu_layers: cfg.n_gpu_layers,
             effective_n_ubatch: effective_n_ubatch(cfg),
+            cparams_snapshot,
             moe_external_executor: cfg.moe_external_executor,
             mtp,
             mtp_unavailable_reason,
@@ -3371,6 +3396,50 @@ impl LlmEngine {
         unsafe {
             json_from_wrapper(|out| sys::llama_rs_model_placement_json(self.loaded.model, out))
         }
+    }
+
+    /// O Flash Attention resolvido deste contexto, ou `None` se a ponte falhar.
+    ///
+    /// O par é `(ligado, decidido_pela_sonda)`. O padrão do llama.cpp é
+    /// `AUTO`, então o pedido não responde a pergunta: quem responde é
+    /// `get_cparams()` depois que o contexto subiu. Ver
+    /// `llama_rs_context_flash_attn` no `wrapper_common.cpp`.
+    pub fn flash_attn(&self) -> Option<(bool, bool)> {
+        let mut enabled = false;
+        let mut auto = false;
+        let status = unsafe { sys::llama_rs_context_flash_attn(self.ctx, &mut enabled, &mut auto) };
+        (status == sys::LLAMA_RS_STATUS_OK).then_some((enabled, auto))
+    }
+
+    /// Com que parâmetros de llama.cpp este contexto está de pé.
+    ///
+    /// Serve ao operador que quer comparar o nó com uma linha de comando do
+    /// `llama-cli`. Os valores vêm do contexto vivo sempre que existe getter,
+    /// e não do `EngineConfig` - ver `ContextParamsSnapshot` para o porquê.
+    pub fn load_params(&self) -> serde_json::Value {
+        let flash = self.flash_attn();
+        serde_json::json!({
+            "n_ctx": self.n_ctx(),
+            "n_ctx_seq": unsafe { sys::llama_n_ctx_seq(self.ctx) },
+            "n_batch": unsafe { sys::llama_n_batch(self.ctx) },
+            "n_ubatch": unsafe { sys::llama_n_ubatch(self.ctx) },
+            "n_seq_max": unsafe { sys::llama_n_seq_max(self.ctx) },
+            "n_threads": unsafe { sys::llama_n_threads(self.ctx) },
+            "n_threads_batch": unsafe { sys::llama_n_threads_batch(self.ctx) },
+            // `null` quando a ponte de diagnóstico não respondeu: a interface
+            // diz que não sabe, em vez de repetir o pedido como se fosse a
+            // decisão.
+            "flash_attn": flash.map(|(enabled, _)| enabled),
+            "flash_attn_auto": flash.map(|(_, auto)| auto),
+            "kv_unified": self.cparams_snapshot.kv_unified,
+            "embeddings": self.cparams_snapshot.embeddings,
+            "n_rs_seq": self.cparams_snapshot.n_rs_seq,
+            "offload_kqv": self.offload_kqv,
+            "cache_type_k": self.cache_type_k.as_str(),
+            "cache_type_v": self.cache_type_v.as_str(),
+            "n_gpu_layers": self.effective_n_gpu_layers,
+            "fit_memory_applied": self.fit_memory_applied,
+        })
     }
 
     /// A memória deste contexto por buffer: pesos, cache KV e cálculo.

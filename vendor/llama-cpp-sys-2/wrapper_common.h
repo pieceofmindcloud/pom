@@ -102,6 +102,18 @@ llama_rs_status llama_rs_model_placement_json(const struct llama_model * model, 
 // O chamador é dono da string e a libera com `llama_rs_string_free`.
 llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json);
 
+// O Flash Attention **resolvido** deste contexto, lido de `get_cparams()`.
+//
+// `llama_context_params::flash_attn_type` é o pedido, e o padrão é `AUTO`: o
+// llama.cpp sonda o backend na criação do contexto e decide. Nada no
+// `llama.h` público devolve a decisão, então derivar a resposta do pedido
+// mentiria sempre que a sonda recusasse o kernel. `out_auto` diz se a decisão
+// veio da sonda (`AUTO`) ou do pedido explícito do operador.
+llama_rs_status llama_rs_context_flash_attn(
+    const struct llama_context * ctx,
+    bool * out_enabled,
+    bool * out_auto);
+
 // Mede o apenas o contexto MTP sem alocar os pesos do modelo. `mparams` e
 // `cparams` seguem a mesma política de dispositivos e lote que o carregamento
 // real; a resposta inclui `device_index` para o POM reservar o custo no GPU

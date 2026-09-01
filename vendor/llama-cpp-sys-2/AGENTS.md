@@ -63,6 +63,7 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 |---|---|
 | `llama_rs_model_placement_json` | onde cada camada ficou de verdade, lendo o buffer de cada tensor em `tensors_by_name` mais `dev_layer(il)` |
 | `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV e `host` distingue RAM de VRAM |
+| `llama_rs_context_flash_attn` | o Flash Attention **resolvido**, de `get_cparams()`. O padrão do `llama.h` é `AUTO`, o llama.cpp sonda o backend ao criar o contexto e nada público devolve a decisão; `out_auto` diz se ela veio da sonda ou do pedido |
 | `llama_rs_mtp_context_memory_json` | sondagem seca do contexto `MTP`, sem pesos alocados, devolvendo o custo de `context` + `compute` com `device_index` por GPU |
 | `llama_rs_get_devices` | os handles elegíveis na mesma ordem padrão que o llama.cpp usaria |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |

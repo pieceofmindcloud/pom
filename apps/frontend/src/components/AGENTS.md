@@ -139,7 +139,12 @@ Per-file list:
   "sem fatia" badge plus `dashboard.noSliceDetail` instead of a range, and does
   not offer "Remover" (`RemoveNode` renders only for `serving && group &&
   range`). `cardRange` falls back to `node.config` when the peer has loaded a
-  slice it has not announced yet. `UpdateNode` (update+restart, dev-only via
+  slice it has not announced yet. `LoadParamsSection` renders the llama.cpp
+  context parameters from `health.load_params` (Flash Attention,
+  `n_batch`/`n_ubatch`, context, KV sequences, threads, GPU layers, KV cache
+  type); it is skipped entirely when the peer's `/health` carries no such
+  field, and `flash_attn: null` reads as "não sei", never as off.
+  `UpdateNode` (update+restart, dev-only via
   `POM_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
   render from here now. `PeerPlacement` (interno) é a única parte do card que
   faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do

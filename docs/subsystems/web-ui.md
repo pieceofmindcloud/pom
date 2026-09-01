@@ -289,6 +289,19 @@ descarregada. Os dados vêm de `/api/ui/peer/:node_id/runtime`, que repassa o
 `/health` por peer a cada ciclo seria caro por uma seção quase sempre fechada.
 Nó que não informa a colocação faz a seção dizer que não sabe. Ver
 `inferencia.md`, "Onde as camadas ficaram".
+O mesmo card traz "Parâmetros de carga do llama.cpp" (`LoadParamsSection`),
+que mostra com que parâmetros o contexto daquela máquina subiu: Flash
+Attention, `n_batch`/`n_ubatch`, `n_ctx` total e por sequência, sequências de
+KV, threads, camadas na GPU e tipo do cache KV. Serve a quem quer comparar o
+nó com uma linha de comando do `llama-cli` sem abrir o `/health` na mão. Os
+valores vêm do `load_params` do `/health`, lido do contexto vivo do peer; um
+nó cujo `/health` não traga o campo simplesmente não mostra a seção. O Flash
+Attention distingue "ligado (auto)" de "ligado (pedido)", porque o padrão do
+llama.cpp é sondar o backend, e mostra "não sei" quando a ponte de
+diagnóstico não respondeu - nunca "desligado". Quando o fit mexeu nos valores,
+uma nota diz que eles podem diferir dos pedidos. Ver `inferencia.md`,
+"Flash Attention e os parâmetros de carga".
+
 Quando a configuração da máquina pediu MTP, o mesmo card mostra se a cabeça
 `nextn` ficou ativa. Se a criação do contexto MTP falhar, mostra
 "MTP indisponível" e o `mtp_unavailable_reason` retornado pelo `/health`; o

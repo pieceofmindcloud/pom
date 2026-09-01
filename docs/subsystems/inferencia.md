@@ -194,6 +194,26 @@ troca de uma reserva menor. `/health` expõe esse valor como
 Essa política fica em `llm::apply_context_batch_params` e é aplicada tanto ao
 contexto principal quanto ao contexto MTP, sem reduzir o `n_batch` público.
 
+#### Flash Attention e os parâmetros de carga
+
+O projeto nunca escreve `flash_attn_type`: todo contexto sai de
+`llama_context_default_params()`, cujo padrão é `LLAMA_FLASH_ATTN_TYPE_AUTO`.
+O llama.cpp sonda o backend ao criar o contexto e decide - o pedido não é a
+resposta. Como nada no `llama.h` público devolve a decisão,
+`llama_rs_context_flash_attn` (em `vendor/llama-cpp-sys-2/wrapper_common.cpp`)
+lê `get_cparams()` e devolve o par `(ligado, veio da sonda)`.
+
+`LlmEngine::load_params` junta essa decisão aos demais parâmetros do contexto e
+o `/health` a publica em `load_params`. Os valores vêm do contexto vivo
+(`llama_n_ctx`, `llama_n_batch`, `llama_n_ubatch`, `llama_n_seq_max`,
+`llama_n_threads`) sempre que existe getter; só `kv_unified`, `embeddings` e
+`n_rs_seq` são guardados num `ContextParamsSnapshot` tirado imediatamente antes
+de `llama_new_context_with_model`, porque não têm getter. **Ecoar o
+`EngineConfig` seria errado**: o fallback de KV em RAM reconstrói o contexto com
+outra configuração, e o operador precisa ver o que está rodando. A tela de
+Detalhes mostra tudo isso em "Parâmetros de carga do llama.cpp"
+(ver `web-ui.md`).
+
 #### Ordem segura por velocidade
 
 Quando o fit automático encontra mais de um dispositivo elegível, o POM coleta

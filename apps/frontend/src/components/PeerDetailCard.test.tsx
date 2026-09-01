@@ -114,6 +114,72 @@ describe("PeerDetailCard com fatia", () => {
   });
 });
 
+describe("PeerDetailCard · parâmetros de carga", () => {
+  const params = {
+    n_ctx: 8192,
+    n_ctx_seq: 8192,
+    n_batch: 512,
+    n_ubatch: 128,
+    n_seq_max: 8,
+    n_threads: 8,
+    n_threads_batch: 8,
+    flash_attn: true,
+    flash_attn_auto: true,
+    kv_unified: true,
+    embeddings: true,
+    n_rs_seq: 0,
+    offload_kqv: true,
+    cache_type_k: "f16",
+    cache_type_v: "f16",
+    n_gpu_layers: 99,
+    fit_memory_applied: true,
+  };
+
+  function montaCom(load_params: unknown) {
+    mount(fakeSlicePeer("lp", 0, 31), {
+      loaded: true,
+      health: { mtp_ready: false, placement: null, load_params } as never,
+    });
+  }
+
+  afterEach(cleanup);
+
+  it("mostra o lote e o microlote com que o contexto subiu", () => {
+    montaCom(params);
+    expect(screen.getByText("Parâmetros de carga do llama.cpp")).toBeTruthy();
+    // O microlote é o que governa o prefill, e ele não é o n_batch: com o fit
+    // ligado o llama.cpp o corta. Mostrar os dois é o ponto da seção.
+    expect(screen.getByText("512 / 128")).toBeTruthy();
+  });
+
+  it("diz que o Flash Attention veio da sonda, não do pedido do operador", () => {
+    montaCom(params);
+    expect(screen.getByText("ligado (auto)")).toBeTruthy();
+  });
+
+  it("distingue o Flash Attention pedido do resolvido automaticamente", () => {
+    montaCom({ ...params, flash_attn: false, flash_attn_auto: false });
+    expect(screen.getByText("desligado (pedido)")).toBeTruthy();
+  });
+
+  it("diz que não sabe quando a ponte de diagnóstico não respondeu", () => {
+    // O caminho que não pode existir é o `null` virar "desligado": isso faria
+    // o operador caçar um problema de Flash Attention que ninguém reportou.
+    montaCom({ ...params, flash_attn: null, flash_attn_auto: null });
+    expect(screen.getByText("não sei")).toBeTruthy();
+  });
+
+  it("avisa que o fit mexeu nos valores pedidos", () => {
+    montaCom(params);
+    expect(screen.getByText(/O fit do llama.cpp ajustou este contexto/)).toBeTruthy();
+  });
+
+  it("omite a seção inteira num nó cujo /health não traz os parâmetros", () => {
+    montaCom(undefined);
+    expect(screen.queryByText("Parâmetros de carga do llama.cpp")).toBeNull();
+  });
+});
+
 describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
   afterEach(cleanup);
 

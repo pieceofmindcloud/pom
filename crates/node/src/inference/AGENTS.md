@@ -127,16 +127,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `offload_kqv=false` e `op_offload=false`. Um override só nos pesos `nextn`
   não basta porque o scheduler também pode escolher o dispositivo da camada e
   do output head. Antes do fit MTP, `llm.rs` lê `general.architecture` e aplica
-  uma lista fechada das arquiteturas cujo grafo `LLM_GRAPH_TYPE_DECODER_MTP`
-  existe no fork local. A API pública do llama.cpp não expõe uma consulta de
-  suporte; arquitetura desconhecida fica indisponível, com razão no
-  `mtp_unavailable_reason`, antes de qualquer contexto MTP. A reserva do fit
-  calcula apenas o KV por geometria GGUF, sem abrir contexto seco ou somar
-  `compute`: uma medição exata teria de construir o grafo e poderia abortar no
-  `GGML_ASSERT` para uma arquitetura sem os resultados esperados. O contexto
-  real MTP desliga explicitamente `embeddings`, pois sua saída é logits e
-  `h_nextn`, não embeddings genéricos. MTP desligado não lê essa metadata, não
-  estima orçamento e não tenta anexar contexto.
+  uma lista gerada pelo próprio fork para as arquiteturas cujo grafo
+  `LLM_GRAPH_TYPE_DECODER_MTP` existe. `build/mtp_arch.rs` encontra a
+  verificação efetiva nos arquivos de modelo, liga a classe ao dispatch de
+  `llama-model.cpp` e resolve o nome GGUF em `llama-arch.cpp`. Comentários
+  que apenas mencionam o símbolo não contam. A API pública do llama.cpp não
+  expõe uma consulta de suporte; arquitetura desconhecida fica indisponível,
+  com razão no `mtp_unavailable_reason`, antes de qualquer contexto MTP. Fork
+  ausente, extração vazia, menor que quatro entradas ou inconsistente faz o
+  build falhar ruidosamente. O contexto real MTP desliga explicitamente `embeddings`, pois
+  sua saída é logits e `h_nextn`, não embeddings genéricos. MTP desligado não
+  lê essa metadata, não estima orçamento e não tenta anexar contexto.
 - `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
   `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do

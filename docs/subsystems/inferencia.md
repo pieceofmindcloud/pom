@@ -139,12 +139,19 @@ vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
 Quando `mtp_enabled=true`, o fit primeiro encaixa o modelo principal e seu
 contexto sem MTP. Antes de considerar a reserva opcional, lê
-`general.architecture` e verifica uma lista fechada das arquiteturas cujo fork
-local implementa `LLM_GRAPH_TYPE_DECODER_MTP`. A API pública do llama.cpp não
-expõe uma consulta de suporte ao grafo; metadata desconhecida ou arquitetura
-fora dessa lista desliga o MTP antes de criar qualquer contexto e publica a
-razão em `mtp_unavailable_reason`. O peso `nextn` sozinho não é prova de que o
-grafo é válido.
+`general.architecture` e verifica uma lista gerada pelo próprio fork para as
+arquiteturas que implementam `LLM_GRAPH_TYPE_DECODER_MTP`. O
+`crates/node/build/mtp_arch.rs` encontra a verificação efetiva em cada
+`src/models/*.cpp`, cruza a classe com o dispatch de `llama-model.cpp` e
+resolve o nome oficial na tabela `LLM_ARCH_NAMES` de `llama-arch.cpp`.
+Comentários que apenas mencionam o símbolo não contam. O build falha se o fork
+estiver ausente, se a extração for vazia, menor que quatro entradas ou
+inconsistente, para que uma mudança incompatível do upstream não desligue o
+MTP em silêncio. A API
+pública do llama.cpp não expõe uma consulta de suporte ao grafo; metadata
+desconhecida ou arquitetura fora da lista gerada desliga o MTP antes de criar
+qualquer contexto e publica a razão em `mtp_unavailable_reason`. O peso `nextn`
+sozinho não é prova de que o grafo é válido.
 
 Para uma arquitetura conhecida, a reserva conjunta calcula somente o KV dos
 blocos `nextn` por geometria GGUF, usando `n_ctx`, `kv_seq_budget` e os tipos de

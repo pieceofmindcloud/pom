@@ -122,29 +122,13 @@ pub fn nextn_layers(model: *mut sys::llama_model) -> i32 {
     unsafe { sys::llama_model_n_layer_nextn(model as *const _) }
 }
 
-/// Arquiteturas para as quais o fork atual implementa `DECODER_MTP`.
-///
-/// `llama.h` expõe `llama_model_n_layer_nextn`, mas esse valor é metadata do
-/// arquivo e não prova que `build_arch_graph(DECODER_MTP)` existe. O loader
-/// também não oferece uma consulta pública para essa segunda capacidade. A
-/// lista é, portanto, deliberadamente fechada e acompanha os arquivos de
-/// `llama.cpp/src/models` que escolhem um `graph_mtp`; arquitetura nova ou
-/// desconhecida fica sem MTP até ganhar uma entrada verificada aqui.
-const MTP_GRAPH_ARCHITECTURES: &[&str] = &[
-    "bailingmoe3",
-    "cohere2moe",
-    "deepseek2",
-    "deepseek32",
-    "deepseek4",
-    "glm-dsa",
-    "hy_v3",
-    "mimo2",
-    "nemotron_h_moe",
-    "qwen3next",
-    "qwen35",
-    "qwen35moe",
-    "step35",
-];
+// O build lê os arquivos do fork que está sendo compilado e gera esta lista em
+// `OUT_DIR`. O arquivo de origem, o dispatch de `llama-model.cpp` e a tabela de
+// nomes de `llama-arch.cpp` são a fonte da verdade - não há uma tabela manual
+// de arquiteturas no POM.
+include!(concat!(env!("OUT_DIR"), "/mtp_graph_architectures.rs"));
+
+const MTP_GRAPH_ARCHITECTURES: &[&str] = GENERATED_MTP_GRAPH_ARCHITECTURES;
 
 /// Retorna a razão operacional para não criar um grafo MTP, ou `None` quando
 /// o fork conhece o grafo da arquitetura. Falhar fechado é importante: um
@@ -594,6 +578,38 @@ mod tests {
     #[test]
     fn qwen35moe_e_uma_arquitetura_de_grafo_mtp_conhecida() {
         assert_eq!(mtp_graph_unavailable_reason(Some("qwen35moe")), None);
+    }
+
+    #[test]
+    fn lista_gerada_contem_as_arquiteturas_mtp_conhecidas_do_fork() {
+        let known = [
+            "bailingmoe3",
+            "cohere2moe",
+            "deepseek2",
+            "deepseek32",
+            "deepseek4",
+            "glm-dsa",
+            "hy_v3",
+            "mimo2",
+            "nemotron_h_moe",
+            "qwen35",
+            "qwen35moe",
+            "qwen3next",
+            "step35",
+        ];
+
+        assert!(
+            MTP_GRAPH_ARCHITECTURES.len() >= 13,
+            "a lista gerada ficou pequena: {:?}",
+            MTP_GRAPH_ARCHITECTURES
+        );
+        for architecture in known {
+            assert!(
+                MTP_GRAPH_ARCHITECTURES.contains(&architecture),
+                "arquitetura MTP ausente: {architecture}"
+            );
+        }
+        assert!(!MTP_GRAPH_ARCHITECTURES.contains(&"hy-v3"));
     }
 
     #[test]

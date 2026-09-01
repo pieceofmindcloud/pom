@@ -9,6 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "build/mtp_arch.rs"]
+mod mtp_arch;
+
 fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -16,6 +19,9 @@ fn main() {
         .expect("workspace root");
 
     emit_build_id(&root);
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    println!("cargo:rerun-if-changed=build/mtp_arch.rs");
+    mtp_arch::generate(&root.join("llama.cpp"), &out_dir);
     build_mtp_shim();
     build_moe_cuda();
     embed_windows_icon(&root);

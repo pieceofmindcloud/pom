@@ -50,6 +50,14 @@ cargo test               # testes do nó
   `POM_CUDA_GRAPHS=1 cargo build --release --features cuda`.
 - O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
   instala `hf`, Python ou outro runtime externo.
+- O `build.rs` lê o checkout local de `llama.cpp` em modo somente leitura para
+  gerar `OUT_DIR/mtp_graph_architectures.rs`. O extrator percorre as
+  verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em `src/models`, cruza
+  cada classe com o dispatch de `src/llama-model.cpp` e usa a tabela
+  `LLM_ARCH_NAMES` de `src/llama-arch.cpp` para obter a cadeia comparada ao
+  `general.architecture` do GGUF. Comentários não contam. Se o fork estiver
+  ausente, se nenhuma verificação for encontrada, se o resultado tiver menos de
+  quatro entradas, ou se for inconsistente, o build falha de forma ruidosa.
 
 ### Validação CUDA isolada na ksia
 

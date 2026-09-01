@@ -1639,7 +1639,7 @@ const FIT_MIN_CONTEXT: u32 = 4096;
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
-pub(crate) const FIT_MAX_UBATCH: u32 = 512;
+const FIT_MAX_UBATCH: u32 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FitDeviceMemory {
@@ -5088,9 +5088,10 @@ mod pool_tests {
         apply_context_batch_params(&mut params, &cfg);
 
         assert_eq!(params.n_batch, 4096);
-        // O microlote efetivo e o tecto da politica, nao um numero fixo: o
-        // valor de FIT_MAX_UBATCH e escolha do operador e ja mudou uma vez.
-        assert_eq!(params.n_ubatch, FIT_MAX_UBATCH);
+        // 512 fixo de proposito: e a escolha do operador para FIT_MAX_UBATCH e
+        // ja foi revertida para 128 uma vez. Comparar com a constante deixaria
+        // o teste passar na mesma; o literal faz esta mudanca ficar vermelha.
+        assert_eq!(params.n_ubatch, 512);
     }
 
     #[test]

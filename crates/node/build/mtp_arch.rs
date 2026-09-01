@@ -6,10 +6,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const GENERATED_FILE: &str = "mtp_graph_architectures.rs";
-// Menos de quatro no resultado derivado é tratado como quebra do extrator, não
-// como uma capacidade upstream que possa desligar o MTP silenciosamente. Este
-// é um piso de segurança, não uma fonte de nomes de arquitetura.
-const MIN_EXPECTED_MTP_ARCHITECTURES: usize = 4;
+// O fork atual tem treze verificações efetivas, uma por arquitetura. Menos que
+// isso é tratado como quebra do extrator, não como uma capacidade upstream que
+// possa desligar o MTP silenciosamente. O piso não fornece nomes: os nomes
+// continuam vindo integralmente das fontes do llama.cpp. Se o upstream remover
+// MTP de forma intencional, o build deve parar para que essa mudança seja
+// auditada em vez de aceitá-la silenciosamente.
+const MIN_EXPECTED_MTP_ARCHITECTURES: usize = 13;
 const MTP_GRAPH_TYPE: &str = "LLM_GRAPH_TYPE_DECODER_MTP";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -116,21 +119,45 @@ pub(crate) fn extract_mtp_architectures(
 
     for (path, source) in model_sources {
         let tokens = tokenize(source)?;
-        if !contains_effective_mtp_check(&tokens) {
+        let check_positions = mtp_check_positions(&tokens)?;
+        if check_positions.is_empty() {
             continue;
         }
         checked_files += 1;
 
-        let classes = graph_classes(&tokens);
-        if classes.len() != 1 {
+        let graph_functions = graph_functions(&tokens);
+        let checked_functions = graph_functions
+            .iter()
+            .filter_map(|function| {
+                let checks = check_positions
+                    .iter()
+                    .filter(|&&position| {
+                        position > function.body_start && position < function.body_end
+                    })
+                    .count();
+                (checks > 0).then_some((function, checks))
+            })
+            .collect::<Vec<_>>();
+        let associated_checks = checked_functions
+            .iter()
+            .map(|(_, checks)| *checks)
+            .sum::<usize>();
+        if associated_checks != check_positions.len() {
             return Err(format!(
-                "{} contém uma verificação MTP, mas {} classes build_arch_graph foram encontradas",
+                "{} contém uma verificação efetiva de MTP fora de um escopo build_arch_graph",
                 path.display(),
-                classes.len()
             ));
         }
-        let class = classes.into_iter().next().expect("len == 1");
-        let arch = dispatch.get(&class).ok_or_else(|| {
+        if checked_functions.len() != 1 || associated_checks != 1 {
+            return Err(format!(
+                "{} contém {} verificações MTP em {} funções build_arch_graph; a associação não é inequívoca",
+                path.display(),
+                associated_checks,
+                checked_functions.len()
+            ));
+        }
+        let class = &checked_functions[0].0.class;
+        let arch = dispatch.get(class).ok_or_else(|| {
             format!(
                 "a classe {class} de {} não foi encontrada no dispatch de llama-model.cpp",
                 path.display()
@@ -270,59 +297,90 @@ fn read_quoted(bytes: &[u8], start: usize, quote: u8) -> Result<(String, usize),
     ))
 }
 
-fn contains_effective_mtp_check(tokens: &[Token]) -> bool {
-    tokens.windows(10).any(|window| {
-        matches!(
-            window,
-            [
-                Token::Identifier(if_keyword),
-                Token::Punctuation(b'('),
-                Token::Identifier(params),
-                Token::Punctuation(b'.'),
-                Token::Identifier(gtype),
-                Token::Punctuation(b'='),
-                Token::Punctuation(b'='),
-                Token::Identifier(mtp_type),
-                Token::Punctuation(b')'),
-                Token::Punctuation(b'{'),
-            ] if if_keyword == "if"
-                && params == "params"
-                && gtype == "gtype"
-                && mtp_type == MTP_GRAPH_TYPE
-        )
-    }) || tokens.windows(9).any(|window| {
-        matches!(
-            window,
-            [
-                Token::Identifier(if_keyword),
-                Token::Punctuation(b'('),
-                Token::Identifier(params),
-                Token::Punctuation(b'.'),
-                Token::Identifier(gtype),
-                Token::Punctuation(b'='),
-                Token::Punctuation(b'='),
-                Token::Identifier(mtp_type),
-                Token::Punctuation(b')'),
-            ] if if_keyword == "if"
-                && params == "params"
-                && gtype == "gtype"
-                && mtp_type == MTP_GRAPH_TYPE
-        )
-    })
+fn mtp_check_positions(tokens: &[Token]) -> Result<Vec<usize>, String> {
+    let marker_positions = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| is_identifier(Some(token), MTP_GRAPH_TYPE).then_some(index))
+        .collect::<Vec<_>>();
+    let mut check_positions = Vec::with_capacity(marker_positions.len());
+
+    for marker_position in marker_positions {
+        let start = marker_position
+            .checked_sub(7)
+            .filter(|&start| is_effective_mtp_check_start(tokens, start));
+        let Some(start) = start else {
+            return Err(
+                "uma ocorrência efetiva de LLM_GRAPH_TYPE_DECODER_MTP não usa a forma esperada de verificação"
+                    .to_string(),
+            );
+        };
+        check_positions.push(start);
+    }
+
+    Ok(check_positions)
 }
 
-fn graph_classes(tokens: &[Token]) -> BTreeSet<String> {
-    let mut classes = BTreeSet::new();
-    for window in tokens.windows(4) {
-        if let [Token::Identifier(class), Token::Punctuation(b':'), Token::Punctuation(b':'), Token::Identifier(function)] =
-            window
-        {
-            if class.starts_with("llama_model_") && function == "build_arch_graph" {
-                classes.insert(class.clone());
+fn is_effective_mtp_check_start(tokens: &[Token], start: usize) -> bool {
+    let Some(window) = tokens.get(start..start + 9) else {
+        return false;
+    };
+    matches!(
+        window,
+        [
+            Token::Identifier(if_keyword),
+            Token::Punctuation(b'('),
+            Token::Identifier(params),
+            Token::Punctuation(b'.'),
+            Token::Identifier(gtype),
+            Token::Punctuation(b'='),
+            Token::Punctuation(b'='),
+            Token::Identifier(mtp_type),
+            Token::Punctuation(b')'),
+        ] if if_keyword == "if"
+            && params == "params"
+            && gtype == "gtype"
+            && mtp_type == MTP_GRAPH_TYPE
+    )
+}
+
+struct GraphFunction {
+    class: String,
+    body_start: usize,
+    body_end: usize,
+}
+
+fn graph_functions(tokens: &[Token]) -> Vec<GraphFunction> {
+    let mut functions = Vec::new();
+    for index in 0..tokens.len().saturating_sub(3) {
+        let [Token::Identifier(class), Token::Punctuation(b':'), Token::Punctuation(b':'), Token::Identifier(function)] =
+            &tokens[index..index + 4]
+        else {
+            continue;
+        };
+        if !class.starts_with("llama_model_") || function != "build_arch_graph" {
+            continue;
+        }
+
+        let mut cursor = index + 4;
+        while cursor < tokens.len() {
+            if is_punctuation(tokens.get(cursor), b';') {
+                break;
             }
+            if is_punctuation(tokens.get(cursor), b'{') {
+                if let Some(body_end) = matching_brace(tokens, cursor) {
+                    functions.push(GraphFunction {
+                        class: class.clone(),
+                        body_start: cursor,
+                        body_end,
+                    });
+                }
+                break;
+            }
+            cursor += 1;
         }
     }
-    classes
+    functions
 }
 
 fn parse_model_dispatch(source: &str) -> Result<BTreeMap<String, String>, String> {
@@ -346,7 +404,11 @@ fn parse_model_dispatch(source: &str) -> Result<BTreeMap<String, String>, String
                 && is_punctuation(tokens.get(cursor + 3), b'(')
             {
                 if let Token::Identifier(class) = &tokens[cursor + 2] {
-                    dispatch.insert(class.clone(), arch.clone());
+                    if dispatch.insert(class.clone(), arch.clone()).is_some() {
+                        return Err(format!(
+                            "a classe {class} aparece mais de uma vez no dispatch de llama-model.cpp"
+                        ));
+                    }
                 }
                 break;
             }
@@ -437,8 +499,17 @@ mod tests {
         [
             ("bailingmoe3.cpp", "bailingmoe3", "BAILINGMOE3"),
             ("cohere2moe.cpp", "cohere2moe", "COHERE2MOE"),
+            ("deepseek2.cpp", "deepseek2", "DEEPSEEK2"),
+            ("deepseek32.cpp", "deepseek32", "DEEPSEEK32"),
+            ("deepseek4.cpp", "deepseek4", "DEEPSEEK4"),
+            ("glm-dsa.cpp", "glm_dsa", "GLM_DSA"),
             ("hy-v3.cpp", "hy_v3", "HY_V3"),
+            ("mimo2.cpp", "mimo2", "MIMO2"),
+            ("nemotron-h-moe.cpp", "nemotron_h_moe", "NEMOTRON_H_MOE"),
             ("qwen35.cpp", "qwen35", "QWEN35"),
+            ("qwen35moe.cpp", "qwen35moe", "QWEN35MOE"),
+            ("qwen3next.cpp", "qwen3next", "QWEN3NEXT"),
+            ("step35.cpp", "step35", "STEP35"),
         ]
         .into_iter()
         .map(|(file, class, _)| {
@@ -464,10 +535,28 @@ mod tests {
                 return new llama_model_bailingmoe3(params);
             case LLM_ARCH_COHERE2MOE:
                 return new llama_model_cohere2moe(params);
+            case LLM_ARCH_DEEPSEEK2:
+                return new llama_model_deepseek2(params);
+            case LLM_ARCH_DEEPSEEK32:
+                return new llama_model_deepseek32(params);
+            case LLM_ARCH_DEEPSEEK4:
+                return new llama_model_deepseek4(params);
+            case LLM_ARCH_GLM_DSA:
+                return new llama_model_glm_dsa(params);
             case LLM_ARCH_HY_V3:
                 return new llama_model_hy_v3(params);
+            case LLM_ARCH_MIMO2:
+                return new llama_model_mimo2(params);
+            case LLM_ARCH_NEMOTRON_H_MOE:
+                return new llama_model_nemotron_h_moe(params);
             case LLM_ARCH_QWEN35:
                 return new llama_model_qwen35(params);
+            case LLM_ARCH_QWEN35MOE:
+                return new llama_model_qwen35moe(params);
+            case LLM_ARCH_QWEN3NEXT:
+                return new llama_model_qwen3next(params);
+            case LLM_ARCH_STEP35:
+                return new llama_model_step35(params);
         "#
     }
 
@@ -476,8 +565,17 @@ mod tests {
             static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
             { LLM_ARCH_BAILINGMOE3, "bailingmoe3" },
             { LLM_ARCH_COHERE2MOE, "cohere2moe" },
+            { LLM_ARCH_DEEPSEEK2, "deepseek2" },
+            { LLM_ARCH_DEEPSEEK32, "deepseek32" },
+            { LLM_ARCH_DEEPSEEK4, "deepseek4" },
+            { LLM_ARCH_GLM_DSA, "glm-dsa" },
             { LLM_ARCH_HY_V3, "hy_v3" },
+            { LLM_ARCH_MIMO2, "mimo2" },
+            { LLM_ARCH_NEMOTRON_H_MOE, "nemotron_h_moe" },
             { LLM_ARCH_QWEN35, "qwen35" },
+            { LLM_ARCH_QWEN35MOE, "qwen35moe" },
+            { LLM_ARCH_QWEN3NEXT, "qwen3next" },
+            { LLM_ARCH_STEP35, "step35" },
             };
         "#
     }
@@ -493,8 +591,17 @@ mod tests {
             vec![
                 "bailingmoe3".to_string(),
                 "cohere2moe".to_string(),
+                "deepseek2".to_string(),
+                "deepseek32".to_string(),
+                "deepseek4".to_string(),
+                "glm-dsa".to_string(),
                 "hy_v3".to_string(),
+                "mimo2".to_string(),
+                "nemotron_h_moe".to_string(),
                 "qwen35".to_string(),
+                "qwen35moe".to_string(),
+                "qwen3next".to_string(),
+                "step35".to_string(),
             ]
         );
     }
@@ -510,8 +617,36 @@ mod tests {
         let names = extract_mtp_architectures(&sources, fixture_dispatch(), fixture_names())
             .expect("uma menção em comentário não deve alterar a extração");
 
-        assert_eq!(names.len(), 4);
+        assert_eq!(names.len(), 13);
         assert!(names.iter().any(|name| name == "hy_v3"));
+    }
+
+    #[test]
+    fn verificacao_fora_de_build_arch_graph_falha() {
+        let mut sources = fixture_sources();
+        sources.push((
+            PathBuf::from("fora-do-grafo.cpp"),
+            "void helper(const llm_graph_params & params) {\n\
+                if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {}\n\
+            }"
+            .to_string(),
+        ));
+
+        let error = extract_mtp_architectures(&sources, fixture_dispatch(), fixture_names())
+            .expect_err("uma verificação fora do grafo não deve ser associada por arquivo");
+
+        assert!(error.contains("build_arch_graph"), "erro: {error}");
+    }
+
+    #[test]
+    fn dispatch_duplicado_falha_de_forma_ruidosa() {
+        let error = parse_model_dispatch(
+            "case LLM_ARCH_QWEN35: return new llama_model_qwen35(params);\n\
+             case LLM_ARCH_QWEN35MOE: return new llama_model_qwen35(params);",
+        )
+        .expect_err("uma classe repetida no dispatch é ambígua");
+
+        assert!(error.contains("mais de uma vez"), "erro: {error}");
     }
 
     #[test]

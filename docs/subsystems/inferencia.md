@@ -144,8 +144,9 @@ arquiteturas que implementam `LLM_GRAPH_TYPE_DECODER_MTP`. O
 `crates/node/build/mtp_arch.rs` encontra a verificação efetiva em cada
 `src/models/*.cpp`, cruza a classe com o dispatch de `llama-model.cpp` e
 resolve o nome oficial na tabela `LLM_ARCH_NAMES` de `llama-arch.cpp`.
-Comentários que apenas mencionam o símbolo não contam. O build falha se o fork
-estiver ausente, se a extração for vazia, menor que quatro entradas ou
+Comentários que apenas mencionam o símbolo não contam, e a verificação precisa
+estar no escopo inequívoco de `build_arch_graph`. O build falha se o fork
+estiver ausente, se a extração for vazia, menor que treze entradas ou
 inconsistente, para que uma mudança incompatível do upstream não desligue o
 MTP em silêncio. A API
 pública do llama.cpp não expõe uma consulta de suporte ao grafo; metadata

@@ -41,9 +41,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
 - Durante o build, `build/mtp_arch.rs` lê o fork local em modo somente leitura:
   descobre as verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em
-  `src/models`, cruza a classe com `llama-model.cpp` e resolve o nome GGUF em
-  `llama-arch.cpp`. Ele gera `OUT_DIR/mtp_graph_architectures.rs`; fork ausente,
-  extração vazia, menor que quatro entradas ou inconsistente interrompe o build.
+  `src/models`, associa a verificação ao `build_arch_graph`, cruza a classe com
+  `llama-model.cpp` e resolve o nome GGUF em `llama-arch.cpp`. Ele gera
+  `OUT_DIR/mtp_graph_architectures.rs`; fork ausente, extração vazia, menor que
+  treze entradas ou mapeamento inconsistente interrompe o build.
   As regras do extrator rodam também em `tests/mtp_arch.rs`.
 - Com a feature `cuda`, `build.rs` compila os kernels MoE com `CUDACXX`; em uma
   validação da ksia, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`

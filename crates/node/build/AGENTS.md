@@ -10,9 +10,10 @@ runtime.
   em `LLM_ARCH_NAMES`, em `llama-arch.cpp`. O resultado é gravado em
   `OUT_DIR` e incluído por `inference/mtp.rs`.
 - A extração falha o build quando o fork está ausente, quando nenhuma
-  verificação efetiva é encontrada, quando o mapeamento é inconsistente ou
-  quando a lista fica menor que quatro entradas, um piso de segurança contra
-  extração parcial. O fork nunca é alterado.
+  verificação efetiva é encontrada, quando ela não está no escopo inequívoco de
+  `build_arch_graph`, quando o mapeamento é inconsistente ou quando a lista fica
+  menor que treze entradas, um piso de segurança contra extração parcial. O fork
+  nunca é alterado.
 
 ## Maintaining this file
 

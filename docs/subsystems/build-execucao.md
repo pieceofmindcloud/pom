@@ -55,9 +55,10 @@ cargo test               # testes do nó
   verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em `src/models`, cruza
   cada classe com o dispatch de `src/llama-model.cpp` e usa a tabela
   `LLM_ARCH_NAMES` de `src/llama-arch.cpp` para obter a cadeia comparada ao
-  `general.architecture` do GGUF. Comentários não contam. Se o fork estiver
+  `general.architecture` do GGUF. A verificação precisa estar no escopo
+  inequívoco de `build_arch_graph`; comentários não contam. Se o fork estiver
   ausente, se nenhuma verificação for encontrada, se o resultado tiver menos de
-  quatro entradas, ou se for inconsistente, o build falha de forma ruidosa.
+  treze entradas, ou se for inconsistente, o build falha de forma ruidosa.
 
 ### Validação CUDA isolada na ksia
 

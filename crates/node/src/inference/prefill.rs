@@ -1332,8 +1332,15 @@ impl RequestTrace {
         };
         slot.hidden_state_bytes_sent += bytes_sent;
         slot.hidden_state_bytes_received += bytes_received;
-        if let Some(dtype) = dtype {
-            slot.observe_hidden_dtype(dtype);
+        // Um plano de um salto que cobre o modelo inteiro não carrega estado
+        // oculto. O relay ainda sabe qual precisão teria usado, mas publicar
+        // essa configuração local do gateway como precisão observada fazia
+        // dois gateways dizerem f8 e f16 para a mesma execução, ambos com 0 B.
+        // Precisão só é evidência quando bytes cruzam o hop.
+        if bytes_sent > 0 || bytes_received > 0 {
+            if let Some(dtype) = dtype {
+                slot.observe_hidden_dtype(dtype);
+            }
         }
     }
 
@@ -3229,6 +3236,17 @@ mod tests {
         assert_eq!(trace.hops[0].prefill.network_ms, 11);
         assert_eq!(trace.hops[0].prefill.bytes_sent, 1_024);
         assert_eq!(trace.hops[0].prefill.bytes_received, 2_048);
+    }
+
+    #[test]
+    fn hop_trace_does_not_claim_a_dtype_when_no_hidden_state_crossed() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+
+        trace.record_hidden_state(0, Phase::Decode, 0, 0, Some(WireDtype::F8));
+
+        assert_eq!(trace.hops[0].decode.hidden_state_dtype, None);
+        assert_eq!(trace.hops[0].decode.hidden_state_bytes_sent, 0);
+        assert_eq!(trace.hops[0].decode.hidden_state_bytes_received, 0);
     }
 
     /// A espera pelo mutex do motor tem que chegar a telemetria com nome.

@@ -83,6 +83,10 @@ usa `/api/ui/chat/telemetry` para buscar separadamente o RTT direcional das
 arestas entre os peers do trace. O `/health` publica `profile_sync_enabled`
 por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
 `node_backend_completion_ms` nunca é usado para deduzir essa flag.
+`hidden_state_dtype` é evidência do fio, não a configuração local do gateway:
+ele só aparece quando bytes de estado oculto cruzaram o hop. Por isso fica
+ausente, em vez de afirmar f8 ou f16, no caso de um plano de modelo inteiro de
+um único nó, que não transmite estado oculto.
 
 ### Cache KV e fallback de VRAM
 

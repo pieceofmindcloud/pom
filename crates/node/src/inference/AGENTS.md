@@ -764,7 +764,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   travessias em `transport_summary`, por transporte, com chamadas, bytes, RTT
   mínimo/mediana/p95/máximo, fallback por destino e trocas de transporte. As
   amostras internas de RTT e decode têm teto fixo; `transport_trace_complete`
-  denuncia recibos ausentes.
+  denuncia recibos ausentes. `hidden_state_dtype` só é observado quando bytes
+  de estado oculto cruzaram o hop; em um plano de modelo inteiro de um único
+  nó, a ausência de bytes torna a precisão do fio não aplicável e o campo fica
+  ausente.
 
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;

@@ -1639,7 +1639,7 @@ const FIT_MIN_CONTEXT: u32 = 4096;
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
-const FIT_MAX_UBATCH: u32 = 128;
+const FIT_MAX_UBATCH: u32 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FitDeviceMemory {

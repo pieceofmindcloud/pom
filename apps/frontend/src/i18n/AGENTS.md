@@ -35,9 +35,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
 - O grupo `huggingFace.*` cobre o campo de token da tela de Rede. O valor
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
   fonte efetiva.
-- O grupo `tokenLogs.*` cobre a auditoria de requisições: filtros por identidade
-  da API key, prompt e período, detalhes do registro, telemetria e estados
-  incompletos. Nenhuma mensagem dessa tela recebe o segredo da chave.
+- O grupo `tokenLogs.*` cobre a auditoria de requisições: barra de filtros,
+  abas de requisições e estatísticas, métricas agregadas, inspetor JSON e
+  cópia segura. Nenhuma mensagem dessa tela recebe o segredo da chave.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured

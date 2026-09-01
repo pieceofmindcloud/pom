@@ -34,6 +34,9 @@ Per-file list:
   focável e acionável por foco ou clique, e o texto completo é renderizado em
   portal fixo, com quebra explícita de palavras para mensagens longas e ids sem
   espaços.
+- `RequestInspector.tsx` - inspetor de objetos usado pela tela Logs. Mantém
+  REQUEST, RESPONSE e TELEMETRIA como JSON formatado e selecionável, e redige
+  campos com formato de credencial antes da cópia para chat.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

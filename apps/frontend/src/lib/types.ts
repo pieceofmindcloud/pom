@@ -808,6 +808,48 @@ export interface RequestLogResponse {
   storage: "sqlite" | string;
 }
 
+export interface RequestUsageStats {
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface RequestModelStats {
+  requests: number;
+  average_tokens_per_sec: number | null;
+  average_inference_ms: number | null;
+}
+
+export interface RequestPeerStats {
+  requests: number;
+  bytes_sent: number;
+  bytes_received: number;
+  network_ms: number;
+}
+
+export interface RequestCacheStats {
+  eligible_requests: number;
+  hit_requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+}
+
+export interface RequestStats {
+  total: number;
+  input_tokens: number;
+  output_tokens: number;
+  average_inference_ms: number | null;
+  average_ttft_ms: number | null;
+  by_token: Record<string, number>;
+  by_node: Record<string, number>;
+  by_day: Record<string, RequestUsageStats>;
+  by_model: Record<string, RequestModelStats>;
+  peer_consumption: Record<string, RequestPeerStats>;
+  terminal_states: Record<string, number>;
+  cache: RequestCacheStats;
+  storage: "sqlite" | string;
+}
+
 /** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */
 export interface SizedRange {
   index: number;

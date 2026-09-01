@@ -157,6 +157,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/leave", post(leave_network))
         .route("/api/ui/rejoin", post(rejoin_network))
         .route("/api/ui/requests", get(crate::reqlog::list_requests))
+        .route("/api/ui/requests/stats", get(crate::reqlog::stats_requests))
     // `/api/setup/key` e `/api/setup/save` NAO entram aqui de proposito.
     //
     // Elas nao tem autenticacao - nao podem ter, e o momento em que a chave do

@@ -94,8 +94,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
   reconfiguração de parâmetros e desimplantação por `deploy_id`)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> LogsByToken, inspetor da auditoria SQLite; `/logs/ao-vivo` ->
-  LogsLive
+- `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
+  requisições paginadas por scroll infinito, estatísticas agregadas e inspetor
+  JSON
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
@@ -132,16 +133,18 @@ opera o cluster; o **nó** cuida da própria máquina, e telas como "Implantar n
 rede" descrevem um trabalho que não é dele. O perfil é o que separa os dois.
 
 `src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
-ausente é livre. Hoje `/implantar`, `/implantacoes` e `/logs` (com a filha
-`/logs/ao-vivo`) são só do administrador. A chave casa **segmento inteiro**, então
-`/logs` cobre `/logs/ao-vivo` sem repetir a filha e não cobre `/logs-antigos`.
+ausente é livre. Hoje `/implantar`, `/implantacoes` e `/logs` são só do
+administrador. A chave casa **segmento inteiro**, então `/logs` não cobre
+`/logs-antigos`.
 
-`LogsByToken` consulta `GET /api/ui/requests` com a chave de conexão do
-operador. A tela filtra por identidade não secreta da API key, texto do prompt,
-nó e período, lista primeiro as entradas mais recentes e abre cada linha para
-mostrar o prompt exato, detalhes da requisição, resultado, telemetria por hop,
-tempos agregados e erro.
-Prompts longos ficam em blocos monoespaçados com quebra e rolagem internas.
+`Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
+barra compacta aplica filtros por identidade não secreta da API key, texto do
+prompt, nó e período, lista primeiro as entradas mais recentes em páginas e
+carrega a próxima quando o sentinela entra na viewport. A aba de estatísticas
+consulta `GET /api/ui/requests/stats`, que agrega no servidor por token, nó,
+dia, modelo e peer, além de tokens de entrada/saída, inferência, TTFT, cache de
+prefixo e estados terminais. O inspetor mostra REQUEST, RESPONSE e TELEMETRIA
+em JSON selecionável; o conjunto copiado é rotulado e redige credenciais.
 `in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais
 distintos. A identidade exibida é o id e o rótulo configurados para a chave;
 nenhum segredo é pedido ao endpoint ou renderizado no navegador.

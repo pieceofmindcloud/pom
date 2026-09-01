@@ -316,7 +316,8 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `peer/:node_id/runtime`, `paths`,
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
-`requests` (a auditoria persistente, `reqlog::list_requests`), `network/rtt` (GET
+`requests` e `requests/stats` (a auditoria persistente, respectivamente
+`reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
 recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
 peers solicitados), `dev/update` +
@@ -345,14 +346,24 @@ a licença no provider antes de a tela oferecer o download.
 `GET /api/ui/requests` exige `ConnectionAuth`, pois devolve prompts e corpos de
 requisição. Os filtros são `node_id`, `api_key` (id, rótulo ou nó associado),
 `prompt` (busca FTS5), `from`, `to`, `limit` e `offset`; a ordenação é por
-`received_at` mais recente. O banco fica em `<project_root>/audit.sqlite3`, é
-criado de forma idempotente no arranque e mantém índice do prompt e dos filtros
-de identidade, nó, estado e horário. O registro nasce como `in_progress` antes
-da inferência e a mesma linha recebe resultado, telemetria, tempos, tokens,
-peers e erro ao terminar. Reinício ou mais de 15 minutos sem conclusão marca a
-linha como `incomplete` com o motivo visível. A escrita usa uma fila limitada e
-um escritor separado; falha de disco é registrada no log do servidor e não é
-propagada à requisição de inferência.
+`received_at` mais recente. A UI usa `limit` e `offset` para scroll infinito,
+sem carregar o histórico inteiro no primeiro pedido. O banco fica em
+`<project_root>/audit.sqlite3`, é criado de forma idempotente no arranque e
+mantém índice do prompt e dos filtros de identidade, nó, estado e horário. O
+registro nasce como `in_progress` antes da inferência e a mesma linha recebe
+resultado, telemetria, tempos, tokens, peers e erro ao terminar. Reinício ou
+mais de 15 minutos sem conclusão marca a linha como `incomplete` com o motivo
+visível. A escrita usa uma fila limitada e um escritor separado; falha de disco
+é registrada no log do servidor e não é propagada à requisição de inferência.
+
+`GET /api/ui/requests/stats` exige a mesma `ConnectionAuth` e aceita os filtros
+`node_id`, `api_key`, `prompt`, `from` e `to`, mas não pagina. O servidor faz uma
+única agregação sobre as linhas filtradas e devolve totais por token, nó, dia e
+modelo, consumo por peer (`bytes_sent`, `bytes_received`, `network_ms`), média
+de inferência, TTFT médio, fichas de entrada/saída, estados terminais e cache
+de prefixo (`input_tokens`, `cached_tokens`, requisições elegíveis e acertos).
+Essa separação evita uma varredura pesada no cliente e deixa a lista de linhas
+pequena no carregamento inicial.
 
 O registro guarda somente a identidade não secreta da API key: `id`, `label` e
 `node_id`. O segredo não entra no SQLite nem na resposta. O corpo salvo é a
@@ -446,8 +457,7 @@ log atribui cada geração a quem pagou por ela.
 **Rotas sem auth**: `/api/generate`, `/peers`, `/health` (o `/api/generate`
 loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
-`peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). `GET /api/ui/requests` é exceção porque contém conteúdo
-sensível e exige `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
+`peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). `GET /api/ui/requests` e `/api/ui/requests/stats` são exceções porque podem conter conteúdo sensível e exigem `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
 
 `POST /api/ui/chat/telemetry` fica fora da exceção de leitura: ele exige

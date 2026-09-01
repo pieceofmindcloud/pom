@@ -15,7 +15,7 @@ use axum::{
 use rusqlite::{params, params_from_iter, types::Value, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -149,6 +149,53 @@ pub struct AuditList {
     pub storage: &'static str,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UsageStats {
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ModelStats {
+    pub requests: u64,
+    pub average_tokens_per_sec: Option<f64>,
+    pub average_inference_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PeerStats {
+    pub requests: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub network_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CacheStats {
+    pub eligible_requests: u64,
+    pub hit_requests: u64,
+    pub input_tokens: u64,
+    pub cached_tokens: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AuditStats {
+    pub total: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub average_inference_ms: Option<f64>,
+    pub average_ttft_ms: Option<f64>,
+    pub by_token: BTreeMap<String, u64>,
+    pub by_node: BTreeMap<String, u64>,
+    pub by_day: BTreeMap<String, UsageStats>,
+    pub by_model: BTreeMap<String, ModelStats>,
+    pub peer_consumption: BTreeMap<String, PeerStats>,
+    pub terminal_states: BTreeMap<String, u64>,
+    pub cache: CacheStats,
+    pub storage: &'static str,
+}
+
 enum Command {
     Begin(AuditRequest),
     Complete {
@@ -203,6 +250,18 @@ impl AuditLog {
         })
         .await
         .context("aguardar consulta do banco de auditoria")?
+    }
+
+    pub async fn stats(&self, query: AuditQuery) -> Result<AuditStats> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = Connection::open(&path)
+                .with_context(|| format!("abrir banco de auditoria em {}", path.display()))?;
+            let mut db = AuditDb::open_for_query(connection)?;
+            db.stats(&query)
+        })
+        .await
+        .context("aguardar agregação do banco de auditoria")?
     }
 }
 
@@ -438,6 +497,197 @@ impl AuditDb {
             storage: "sqlite",
         })
     }
+
+    pub fn stats(&mut self, query: &AuditQuery) -> Result<AuditStats> {
+        self.mark_stale_in_progress()?;
+        let (where_sql, values) = where_clause(query);
+        let mut stmt = self.connection.prepare(&format!(
+            "SELECT received_at, model, api_key_label, entry_node_id, prompt_tokens,
+                    completion_tokens, duration_ms, status, timings, telemetry, hops
+             FROM audit_requests WHERE {where_sql}"
+        ))?;
+        let rows = stmt.query_map(params_from_iter(values), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, String>(10)?,
+            ))
+        })?;
+
+        let mut stats = AuditStats {
+            storage: "sqlite",
+            ..Default::default()
+        };
+        let mut inference_total = 0.0;
+        let mut inference_count = 0_u64;
+        let mut ttft_total = 0.0;
+        let mut ttft_count = 0_u64;
+        let mut model_accumulators: HashMap<String, (u64, f64, u64, f64, u64)> = HashMap::new();
+
+        for row in rows {
+            let (
+                received_at,
+                model,
+                api_key_label,
+                entry_node_id,
+                prompt_tokens,
+                completion_tokens,
+                duration_ms,
+                status,
+                timings_raw,
+                telemetry_raw,
+                hops_raw,
+            ) = row?;
+            stats.total += 1;
+            let input_tokens = prompt_tokens.unwrap_or_default().max(0) as u64;
+            let output_tokens = completion_tokens.unwrap_or_default().max(0) as u64;
+            stats.input_tokens += input_tokens;
+            stats.output_tokens += output_tokens;
+            *stats.by_token.entry(api_key_label).or_default() += 1;
+            let day = received_at
+                .split('T')
+                .next()
+                .unwrap_or(received_at.as_str())
+                .to_string();
+            let day_stats = stats.by_day.entry(day).or_default();
+            day_stats.requests += 1;
+            day_stats.input_tokens += input_tokens;
+            day_stats.output_tokens += output_tokens;
+
+            if let Some(duration_ms) = duration_ms {
+                let duration_ms = duration_ms.max(0) as f64;
+                inference_total += duration_ms;
+                inference_count += 1;
+                let model_stats = model_accumulators.entry(model.clone()).or_default();
+                model_stats.2 += 1;
+                model_stats.3 += duration_ms;
+            }
+            let model_stats = model_accumulators.entry(model).or_default();
+            model_stats.0 += 1;
+            if let Some(timings) = timings_raw
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<crate::gateway::GenerationTimings>(raw).ok())
+            {
+                if timings.total_tokens_per_sec.is_finite() {
+                    model_stats.1 += timings.total_tokens_per_sec;
+                    model_stats.4 += 1;
+                }
+                ttft_total += timings.ttft_ms as f64;
+                ttft_count += 1;
+            }
+
+            if status != "in_progress" {
+                *stats.terminal_states.entry(status).or_default() += 1;
+            }
+
+            let mut request_nodes = HashSet::new();
+            request_nodes.insert(entry_node_id);
+            if let Ok(hops) = serde_json::from_str::<Vec<String>>(&hops_raw) {
+                request_nodes.extend(hops);
+            }
+            for node_id in &request_nodes {
+                *stats.by_node.entry(node_id.clone()).or_default() += 1;
+                stats
+                    .peer_consumption
+                    .entry(node_id.clone())
+                    .or_default()
+                    .requests += 1;
+            }
+
+            if let Some(telemetry) = telemetry_raw
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
+            {
+                if let Some(input_tokens) = json_u64(telemetry.get("input_tokens"))
+                    .or_else(|| prompt_tokens.map(|tokens| tokens.max(0) as u64))
+                {
+                    stats.cache.eligible_requests += 1;
+                    stats.cache.input_tokens += input_tokens;
+                    let cached_tokens =
+                        json_u64(telemetry.get("cached_tokens")).unwrap_or_default();
+                    stats.cache.cached_tokens += cached_tokens;
+                    if cached_tokens > 0 {
+                        stats.cache.hit_requests += 1;
+                    }
+                }
+                if let Some(telemetry_hops) = telemetry.get("hops").and_then(JsonValue::as_array) {
+                    for hop in telemetry_hops {
+                        let Some(node_id) = hop.get("node_id").and_then(JsonValue::as_str) else {
+                            continue;
+                        };
+                        if !request_nodes.contains(node_id) {
+                            stats
+                                .peer_consumption
+                                .entry(node_id.to_string())
+                                .or_default()
+                                .requests += 1;
+                        }
+                        let peer = stats
+                            .peer_consumption
+                            .entry(node_id.to_string())
+                            .or_default();
+                        for phase in ["prefill", "decode"] {
+                            let Some(phase) = hop.get(phase) else {
+                                continue;
+                            };
+                            peer.bytes_sent +=
+                                json_u64(phase.get("bytes_sent")).unwrap_or_default();
+                            peer.bytes_received +=
+                                json_u64(phase.get("bytes_received")).unwrap_or_default();
+                            peer.network_ms +=
+                                json_f64(phase.get("network_ms")).unwrap_or_default();
+                        }
+                    }
+                }
+            }
+        }
+
+        if inference_count > 0 {
+            stats.average_inference_ms = Some(inference_total / inference_count as f64);
+        }
+        if ttft_count > 0 {
+            stats.average_ttft_ms = Some(ttft_total / ttft_count as f64);
+        }
+        for (model, (requests, tokens_per_sec, _duration_count, duration_total, speed_count)) in
+            model_accumulators
+        {
+            stats.by_model.insert(
+                model,
+                ModelStats {
+                    requests,
+                    average_tokens_per_sec: (speed_count > 0)
+                        .then_some(tokens_per_sec / speed_count as f64),
+                    average_inference_ms: (_duration_count > 0)
+                        .then_some(duration_total / _duration_count as f64),
+                },
+            );
+        }
+        Ok(stats)
+    }
+}
+
+fn json_u64(value: Option<&JsonValue>) -> Option<u64> {
+    value.and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_f64().map(|number| number as u64))
+    })
+}
+
+fn json_f64(value: Option<&JsonValue>) -> Option<f64> {
+    value.and_then(|value| {
+        value
+            .as_f64()
+            .or_else(|| value.as_u64().map(|number| number as f64))
+    })
 }
 
 fn configure_connection(connection: &Connection) -> Result<()> {
@@ -656,6 +906,35 @@ pub async fn list_requests(
     }
 }
 
+/// Authenticated aggregate endpoint used by the Logs statistics tab. It keeps
+/// the expensive scan over the SQLite audit trail off the browser.
+pub async fn stats_requests(
+    _auth: ConnectionAuth,
+    State(state): State<crate::gateway::GatewayState>,
+    Query(query): Query<LogQuery>,
+) -> impl IntoResponse {
+    let query = AuditQuery {
+        node_id: query.node_id,
+        api_key: query.api_key,
+        prompt: query.prompt,
+        received_from: query.received_from,
+        received_to: query.received_to,
+        limit: None,
+        offset: None,
+    };
+    match state.audit.stats(query).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "agregação do banco de auditoria falhou");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível agregar a auditoria" })),
+            )
+                .into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,6 +954,12 @@ mod tests {
             prompt: prompt.into(),
             request_details: json!({ "stream": false, "max_tokens": 64 }),
         }
+    }
+
+    fn request_at(id: &str, key_id: &str, prompt: &str, received_at: &str) -> AuditRequest {
+        let mut request = request(id, key_id, prompt);
+        request.received_at = received_at.into();
+        request
     }
 
     fn completion(status: AuditStatus) -> AuditCompletion {
@@ -788,5 +1073,70 @@ mod tests {
             .unwrap();
         assert_eq!(by_prompt.total, 1);
         assert_eq!(by_prompt.entries[0].id, "req-finance");
+    }
+
+    #[test]
+    fn aggregates_usage_by_token_node_day_model_peer_cache_and_status() {
+        let mut db = AuditDb::open(Connection::open_in_memory().unwrap()).unwrap();
+        db.begin(&request_at(
+            "req-one",
+            "key-finance",
+            "one",
+            "2026-08-26T12:00:00Z",
+        ))
+        .unwrap();
+        let mut first = completion(AuditStatus::Ok);
+        first.prompt_tokens = Some(10);
+        first.completion_tokens = Some(4);
+        first.timings = Some(crate::gateway::timing_metrics(2000, 300, 1000, 10, 4));
+        first.hops = vec!["node-a".into(), "node-b".into()];
+        first.telemetry = Some(json!({
+            "input_tokens": 10,
+            "cached_tokens": 4,
+            "hops": [{
+                "node_id": "node-a",
+                "prefill": { "bytes_sent": 100, "bytes_received": 20, "network_ms": 7 },
+                "decode": { "bytes_sent": 30, "bytes_received": 40, "network_ms": 3 }
+            }]
+        }));
+        db.complete("req-one", &first).unwrap();
+
+        let mut second_request =
+            request_at("req-two", "key-support", "two", "2026-08-27T12:00:00Z");
+        second_request.caller.key_label = "suporte".into();
+        db.begin(&second_request).unwrap();
+        let mut second = completion(AuditStatus::Partial);
+        second.prompt_tokens = Some(5);
+        second.completion_tokens = Some(2);
+        second.timings = Some(crate::gateway::timing_metrics(2000, 200, 500, 5, 2));
+        second.hops = vec!["node-b".into()];
+        second.telemetry = Some(json!({
+            "input_tokens": 5,
+            "cached_tokens": 0,
+            "hops": [{
+                "node_id": "node-b",
+                "prefill": { "bytes_sent": 50, "bytes_received": 10, "network_ms": 2 },
+                "decode": { "bytes_sent": 15, "bytes_received": 5, "network_ms": 1 }
+            }]
+        }));
+        db.complete("req-two", &second).unwrap();
+
+        let stats = db.stats(&AuditQuery::default()).unwrap();
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.input_tokens, 15);
+        assert_eq!(stats.output_tokens, 6);
+        assert_eq!(stats.by_token["financeiro"], 1);
+        assert_eq!(stats.by_node["node-b"], 2);
+        assert_eq!(stats.by_day["2026-08-26"].input_tokens, 10);
+        assert_eq!(stats.by_model["qwen"].requests, 2);
+        assert_eq!(stats.by_model["qwen"].average_tokens_per_sec, Some(1.5));
+        assert_eq!(stats.peer_consumption["node-a"].bytes_sent, 130);
+        assert_eq!(stats.peer_consumption["node-b"].bytes_sent, 65);
+        assert_eq!(stats.terminal_states["ok"], 1);
+        assert_eq!(stats.terminal_states["partial"], 1);
+        assert_eq!(stats.cache.eligible_requests, 2);
+        assert_eq!(stats.cache.hit_requests, 1);
+        assert_eq!(stats.cache.cached_tokens, 4);
+        assert_eq!(stats.average_ttft_ms, Some(250.0));
     }
 }

@@ -34,6 +34,7 @@ import type {
   PeerCatalog,
   PeerRuntime,
   RequestLogResponse,
+  RequestStats,
   TransferJob,
   TransferOffer,
 } from "./types";
@@ -67,6 +68,7 @@ export const keys = {
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
+  requestStats: ["request-stats"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
@@ -368,6 +370,31 @@ export function useRequestLog(
         },
       ),
     refetchInterval: 3000,
+  });
+}
+
+export function useRequestStats(
+  params: {
+    node_id?: string;
+    api_key?: string;
+    prompt?: string;
+    from?: string;
+    to?: string;
+  } = {},
+  enabled = true,
+) {
+  const search = new URLSearchParams();
+  if (params.node_id) search.set("node_id", params.node_id);
+  if (params.api_key) search.set("api_key", params.api_key);
+  if (params.prompt) search.set("prompt", params.prompt);
+  if (params.from) search.set("from", params.from);
+  if (params.to) search.set("to", params.to);
+  const qs = search.toString();
+  return useQuery({
+    queryKey: [...keys.requestStats, qs],
+    enabled,
+    queryFn: () => api.get<RequestStats>(`/api/ui/requests/stats${qs ? `?${qs}` : ""}`),
+    refetchInterval: enabled ? 30_000 : false,
   });
 }
 

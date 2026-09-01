@@ -17,8 +17,7 @@ export const routeLoaders = {
   setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
-  logsByToken: () => import("./routes/LogsByToken").then(({ LogsByToken }) => LogsByToken),
-  logsLive: () => import("./routes/LogsLive").then(({ LogsLive }) => LogsLive),
+  logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
@@ -43,8 +42,7 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
 const Setup = lazyRoute(routeLoaders.setup);
 const Chat = lazyRoute(routeLoaders.chat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
-const LogsByToken = lazyRoute(routeLoaders.logsByToken);
-const LogsLive = lazyRoute(routeLoaders.logsLive);
+const Logs = lazyRoute(routeLoaders.logs);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NotFound = lazyRoute(routeLoaders.notFound);
@@ -113,7 +111,7 @@ export default function App() {
   // o layout de tela cheia não rola por dentro.
   const isFullBleed =
     allowed &&
-    (isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar");
+    (isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar" || location.pathname === "/logs");
   /*
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -189,8 +187,7 @@ export default function App() {
                       <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
                       <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                       <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
-                      <Route path="/logs" element={<Page><LogsByToken /></Page>} />
-                      <Route path="/logs/ao-vivo" element={<Page><LogsLive /></Page>} />
+                      <Route path="/logs" element={<Page><Logs /></Page>} />
                       <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                       <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                       <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />

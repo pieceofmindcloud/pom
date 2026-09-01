@@ -3,13 +3,13 @@ import { canAccessRoute, routeProfiles } from "./access";
 
 describe("canAccessRoute", () => {
   it("deixa o administrador entrar nas telas de operação do cluster", () => {
-    for (const path of ["/implantar", "/implantacoes", "/logs", "/logs/ao-vivo"]) {
+    for (const path of ["/implantar", "/implantacoes", "/logs"]) {
       expect(canAccessRoute(path, "admin")).toBe(true);
     }
   });
 
   it("fecha implantar, implantações e logs para o perfil do nó", () => {
-    for (const path of ["/implantar", "/implantacoes", "/logs", "/logs/ao-vivo"]) {
+    for (const path of ["/implantar", "/implantacoes", "/logs"]) {
       expect(canAccessRoute(path, "node")).toBe(false);
     }
   });
@@ -29,7 +29,7 @@ describe("canAccessRoute", () => {
   it("casa por segmento, não por prefixo de texto", () => {
     expect(canAccessRoute("/implantarx", "node")).toBe(true);
     expect(canAccessRoute("/logs-antigos", "node")).toBe(true);
-    expect(canAccessRoute("/logs/ao-vivo/detalhe", "node")).toBe(false);
+    expect(canAccessRoute("/logs/qualquer-filha", "node")).toBe(false);
   });
 
   it("diz que uma rota livre não tem lista de perfis", () => {

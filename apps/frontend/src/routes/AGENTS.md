@@ -210,14 +210,14 @@ Per-file list:
 - `Keys.tsx` — Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses — `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   `ConnectionKeys`: the cluster operator key — `POST /admin/regenerate-key`.
-- `LogsByToken.tsx` - Audit inspector for the persistent request trail. It reads
-  `GET /api/ui/requests` with API-key identity, prompt FTS, node and time-range
-  filters, shows exact prompt/request body/result/telemetry in collapsible
-  details, and labels `in_progress` and `incomplete` separately from success.
-  Reuses `HopChain`, `statusLabel` and `statusTone` in `LogsLive`.
-- `LogsLive.tsx` - Same authenticated SQLite audit source (polled at 3 s),
-  rendered as an animated newest-first stream with pause/resume and a frozen
-  snapshot. It displays the non-secret API-key label and identity.
+- `Logs.tsx` - Full-bleed authenticated audit screen. Its compact toolbar
+  applies API-key, prompt, node and time filters to `GET /api/ui/requests`;
+  the requests tab uses `limit`/`offset` pages and an IntersectionObserver
+  sentinel for infinite scroll. The statistics tab reads the server-aggregated
+  `GET /api/ui/requests/stats` payload for token, node, day, model, peer,
+  prefix-cache, terminal-state and TTFT views. Selecting a row opens the shared
+  object-style inspector in `../components/RequestInspector.tsx`, with
+  selectable JSON REQUEST, RESPONSE and TELEMETRIA sections and redacted copy.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
@@ -334,7 +334,7 @@ Key logic carriers:
 Backend endpoints used (see `src/webui.rs` / `src/gateway.rs` / `src/openai.rs`
 in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/ui/cluster/models`, `/api/ui/node`, `/api/ui/models`, `/api/ui/paths`,
-`/api/ui/jobs`, `/api/ui/requests`, `/api/ui/deploy/plan`, `/api/ui/deploy`,
+`/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/deploy/plan`, `/api/ui/deploy`,
 `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/leave`,
 `/api/ui/rejoin`, `/api/ui/release`, `/api/ui/release/candidate`,
 `/api/ui/unload`, `/api/ui/undeploy`, `/api/ui/dev/update`, `/api/ui/slice/plan`, `/api/ui/slice`,

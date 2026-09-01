@@ -8,7 +8,6 @@ import {
   ListTree,
   MessagesSquare,
   Network,
-  Radio,
   Search,
   Rocket,
   Scissors,
@@ -74,11 +73,8 @@ export const NAV: NavSection[] = [
   },
   {
     labelKey: "nav.logs",
-    icon: Radio,
-    children: [
-      { labelKey: "nav.byToken", to: "/logs", icon: ListTree, end: true },
-      { labelKey: "nav.live", to: "/logs/ao-vivo", icon: Radio },
-    ],
+    icon: ListTree,
+    to: "/logs",
   },
   // The repo's own documentation, not a screen that reads the cluster: the
   // folder AGENTS.md files and subsystem READMEs embedded at build time.

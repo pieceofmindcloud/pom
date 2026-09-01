@@ -44,8 +44,7 @@ vi.mock("./components/Logo", () => ({
 // marcador é escrito à mão em vez de sair de um auxiliar compartilhado.
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
-vi.mock("./routes/LogsByToken", () => ({ LogsByToken: () => <div>tela-logs</div> }));
-vi.mock("./routes/LogsLive", () => ({ LogsLive: () => <div>tela-logs-ao-vivo</div> }));
+vi.mock("./routes/Logs", () => ({ Logs: () => <div>tela-logs</div> }));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
@@ -76,7 +75,6 @@ describe("guarda de perfil por rota", () => {
     ["/implantar", "tela-implantar"],
     ["/implantacoes", "tela-implantacoes"],
     ["/logs", "tela-logs"],
-    ["/logs/ao-vivo", "tela-logs-ao-vivo"],
   ] as const;
 
   for (const [path, marker] of fechadas) {

@@ -20,8 +20,8 @@ import type { Profile } from "./profile";
 /**
  * Prefixo de rota -> perfis que entram.
  *
- * A chave casa por prefixo de segmento, então `/logs` cobre `/logs/ao-vivo`
- * sem repetir a filha, e `/implantar` **não** cobre `/implantarx`.
+ * A chave casa por prefixo de segmento, então uma futura filha de `/logs`
+ * continua protegida, e `/implantar` **não** cobre `/implantarx`.
  */
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/implantar": ["admin"],
@@ -29,15 +29,14 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/logs": ["admin"],
 };
 
-/** `/logs/ao-vivo` está sob `/logs`; `/implantarx` não está sob `/implantar`. */
+/** `/implantarx` não está sob `/implantar`. */
 function isUnder(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix + "/");
 }
 
 /** Os perfis que entram nesta rota, ou `null` quando ela é livre. */
 export function routeProfiles(path: string): readonly Profile[] | null {
-  // A chave mais específica vence: uma futura exceção em `/logs/ao-vivo`
-  // precisa poder contrariar a regra de `/logs`.
+  // A chave mais específica vence para qualquer futura exceção de rota.
   let best: { prefix: string; profiles: readonly Profile[] } | null = null;
   for (const [prefix, profiles] of Object.entries(RESTRICTED)) {
     if (!isUnder(path, prefix)) continue;

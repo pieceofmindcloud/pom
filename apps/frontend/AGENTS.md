@@ -55,9 +55,9 @@ Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`l
   full-bleed Deploy Studio with central cluster map, property inspector and
   draggable peer strip; whole-model mode accepts exactly one map machine)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> LogsByToken, o inspetor autenticado da auditoria SQLite com
-  filtros por identidade da API key, prompt e período; `/logs/ao-vivo` ->
-  LogsLive
+- `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
+  filtros, abas de requisições/estatísticas, tabela densa, scroll infinito e
+  inspetor JSON com redação de credenciais
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys; `/config/pastas` -> ModelPaths
 - `*` -> NotFound
@@ -82,7 +82,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, chat/telemetry, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key.
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, requests/stats, chat/telemetry, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key.
 - Auth: `api.ts` signs requests with the cluster connection key (picked up unauthenticated from `/api/ui/node`), matching `ApiKeyAuth` in the Rust `auth.rs`.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 

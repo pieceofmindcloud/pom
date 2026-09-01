@@ -167,7 +167,8 @@ behind an auth extractor.
 - `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
   writes on a dedicated bounded thread; `AuditDb` creates the schema and FTS5
   prompt index, opens requests in `in_progress`, completes the same row, marks
-  stale rows as `incomplete`, and serves authenticated queries.
+  stale rows as `incomplete`, and serves authenticated paginated queries plus
+  server-side statistics.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
@@ -332,7 +333,8 @@ behind an auth extractor.
   `network/rtt` (GET autenticado, relatório direcional deste nó),
   `chat/telemetry` (POST autenticado, coleta os relatórios direcionais dos
   peers selecionados para o trace e não altera o planner), `requests` (GET ->
-  `crate::reqlog::list_requests`). `leave_network` now takes an optional
+  `crate::reqlog::list_requests`; `requests/stats` (GET ->
+  `crate::reqlog::stats_requests`). `leave_network` now takes an optional
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's
   same route (`forward_leave`, same pattern as `dev/update` - the panel only
@@ -539,8 +541,11 @@ behind an auth extractor.
   generation. `spawn_logged_generation_with_stops` later calls `complete` on
   that id with result, telemetry, timings, token counts, hop chain and error.
   The request body contains no headers or secrets. `list_requests` requires
-  `ConnectionAuth`, supports node, API-key identity, prompt FTS and time-range
-  filters, and returns newest first with incomplete/error tallies.
+  `ConnectionAuth`, supports node, API-key identity, prompt FTS, time-range,
+  limit and offset filters, and returns newest first with incomplete/error
+  tallies. `stats_requests` uses the same auth and filters, scans the filtered
+  rows on the server and returns token, node, day, model, peer, cache, terminal,
+  inference and TTFT aggregates for the Logs statistics tab.
 - `tool_call.rs` - `render_tools_block` (empty when no tools),
   `render_tool_call` (`<tool_call><function=NAME><parameter=P>...</parameter>`,
   string args raw, others re-serialized). `TagScanner` incrementally splits a

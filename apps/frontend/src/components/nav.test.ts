@@ -28,6 +28,13 @@ describe("navigation structure", () => {
     ]);
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });
+
+  it("opens Logs directly without a submenu", () => {
+    const logs = NAV.find((section) => section.labelKey === "nav.logs");
+
+    expect(logs?.to).toBe("/logs");
+    expect(logs?.children).toBeUndefined();
+  });
 });
 
 describe("navForProfile", () => {
@@ -36,11 +43,11 @@ describe("navForProfile", () => {
     expect(labels).toEqual(NAV.map((s) => s.labelKey));
   });
 
-  it("tira do nó implantar, implantações e a seção de logs", () => {
+  it("tira do nó implantar, implantações e logs", () => {
     const labels = navForProfile("node").map((s) => s.labelKey);
     expect(labels).not.toContain("nav.deploy");
     expect(labels).not.toContain("nav.deployments");
-    // A seção some inteira porque as duas filhas moram sob `/logs`.
+    // Logs é uma tela restrita ao administrador.
     expect(labels).not.toContain("nav.logs");
   });
 

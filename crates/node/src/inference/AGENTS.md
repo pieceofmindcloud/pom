@@ -30,8 +30,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   (`POST /v1/tp/reduce`) é uma camada fina, ligada junto com o fork do
   llama.cpp.
 - `device_placement.rs` - ordena handles de dispositivos do mais lento ao
-  mais rápido somente quando as medições sintéticas têm confiança suficiente;
-  sem isso, o fit conserva a ordem padrão do llama.cpp.
+  mais rápido somente quando as medições sintéticas têm confiança suficiente e
+  todos os handles pertencem ao mesmo backend; sem isso, o fit conserva a
+  ordem padrão do llama.cpp.
 - `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
   por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; também mantém
   o inbox limitado do transporte remoto por lotes, entregue por
@@ -82,7 +83,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   devolve a peça sem conversão lossy para o acumulador da sessão.
   Quando `fit_memory` está ativo e há mais de um dispositivo elegível, mede
   uma vez por handle um grafo GGML genérico e passa ao fit uma lista explícita
-  do mais lento ao mais rápido somente se todas as diferenças forem confiáveis.
+  do mais lento ao mais rápido somente se todas as diferenças forem confiáveis
+  e os handles forem do mesmo backend. Uma combinação heterogênea ou um nome de
+  backend ausente conserva a ordem padrão do llama.cpp, pois a ordem explícita
+  pode alterar a topologia de cópia e divisão do grafo entre backends.
   A lista fica no `FitPlan` até a carga real, fazendo o último dispositivo
   receber a cabeça de saída e a faixa final. Resultado ausente, equivalente ou
   inválido mantém a seleção padrão do llama.cpp, inclusive sem microteste para

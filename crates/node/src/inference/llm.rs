@@ -2103,6 +2103,24 @@ fn generic_embeddings_compatible(need_embeddings: bool, n_embd: usize, n_embd_ou
     need_embeddings && n_embd == n_embd_out
 }
 
+fn backend_registry_name(device: sys::ggml_backend_dev_t) -> Option<String> {
+    if device.is_null() {
+        return None;
+    }
+
+    let registry = unsafe { sys::ggml_backend_dev_backend_reg(device) };
+    if registry.is_null() {
+        return None;
+    }
+
+    let name = unsafe { sys::ggml_backend_reg_name(registry) };
+    if name.is_null() {
+        return None;
+    }
+
+    unsafe { CStr::from_ptr(name).to_str().ok().map(str::to_owned) }
+}
+
 pub(crate) fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
@@ -2219,29 +2237,41 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
     } else {
         Vec::new()
     };
-    let ordered_devices = device_placement::confident_slow_to_fast_order(&speed_scores)
-        .filter(|order| {
-            order
-                .iter()
-                .enumerate()
-                .any(|(position, &original)| position != original)
-        })
-        .map(|order| {
-            let mut devices = order
-                .iter()
-                .map(|&index| available_devices[index])
-                .collect::<Vec<_>>();
-            let reordered_memories = order
-                .iter()
-                .map(|&index| device_memories[index])
-                .collect::<Vec<_>>();
-            device_memories = reordered_memories;
-            devices.push(ptr::null_mut());
-            devices
-        })
-        .unwrap_or_default();
+    let backend_names = available_devices
+        .iter()
+        .map(|&device| backend_registry_name(device))
+        .collect::<Vec<_>>();
+    let backend_name_refs = backend_names
+        .iter()
+        .map(Option::as_deref)
+        .collect::<Vec<_>>();
+    let ordered_devices = device_placement::confident_slow_to_fast_order_for_backends(
+        &speed_scores,
+        &backend_name_refs,
+    )
+    .filter(|order| {
+        order
+            .iter()
+            .enumerate()
+            .any(|(position, &original)| position != original)
+    })
+    .map(|order| {
+        let mut devices = order
+            .iter()
+            .map(|&index| available_devices[index])
+            .collect::<Vec<_>>();
+        let reordered_memories = order
+            .iter()
+            .map(|&index| device_memories[index])
+            .collect::<Vec<_>>();
+        device_memories = reordered_memories;
+        devices.push(ptr::null_mut());
+        devices
+    })
+    .unwrap_or_default();
     if available_devices.len() > 1 {
         tracing::info!(
+            device_backend_names = ?backend_names,
             device_speed_scores = ?speed_scores,
             speed_order_applied = !ordered_devices.is_empty(),
             "llama.cpp fit sondou a velocidade relativa dos dispositivos"

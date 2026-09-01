@@ -36,9 +36,30 @@ pub(crate) fn confident_slow_to_fast_order(scores: &[Option<f64>]) -> Option<Vec
     Some(order)
 }
 
+/// Returns a speed order only when all devices use the same backend.
+///
+/// The llama.cpp scheduler supports an explicit device order for a homogeneous
+/// backend, but a mixed backend graph has backend-specific split and copy
+/// paths. Keep llama.cpp's default order when backend identity is incomplete or
+/// heterogeneous, so a benchmark cannot change that graph topology.
+pub(crate) fn confident_slow_to_fast_order_for_backends(
+    scores: &[Option<f64>],
+    backend_names: &[Option<&str>],
+) -> Option<Vec<usize>> {
+    if scores.len() != backend_names.len()
+        || backend_names.len() <= 1
+        || backend_names.iter().any(Option::is_none)
+        || backend_names.windows(2).any(|pair| pair[0] != pair[1])
+    {
+        return None;
+    }
+
+    confident_slow_to_fast_order(scores)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::confident_slow_to_fast_order;
+    use super::{confident_slow_to_fast_order, confident_slow_to_fast_order_for_backends};
 
     #[test]
     fn um_dispositivo_mantem_a_ordem_atual() {
@@ -82,5 +103,27 @@ mod tests {
         let order = confident_slow_to_fast_order(&scores);
 
         assert_eq!(order, Some(vec![0, 1]));
+    }
+
+    #[test]
+    fn backends_heterogeneos_nao_recebem_ordem_explicita() {
+        let scores = [Some(400.0), Some(100.0)];
+        let backends = [Some("Vulkan"), Some("CUDA")];
+
+        assert_eq!(
+            confident_slow_to_fast_order_for_backends(&scores, &backends),
+            None
+        );
+    }
+
+    #[test]
+    fn backend_homogeneo_preserva_ordenacao_confiavel() {
+        let scores = [Some(400.0), Some(100.0)];
+        let backends = [Some("CUDA"), Some("CUDA")];
+
+        assert_eq!(
+            confident_slow_to_fast_order_for_backends(&scores, &backends),
+            Some(vec![1, 0])
+        );
     }
 }

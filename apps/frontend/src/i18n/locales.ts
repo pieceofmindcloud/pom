@@ -1077,6 +1077,50 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.mtpCpuFallback": () => "Allow MTP fallback to RAM",
     "deploy.mtpCpuFallbackHint": () =>
       "If the MTP context does not fit in VRAM, load its weights and cache in host RAM. Turn this off when local measurements show the CPU draft is not worthwhile.",
+    "deploy.knob.n_gpu_layersHint": () =>
+      "How many transformer blocks this machine keeps on the GPU; the rest run on CPU. Blank means all of them. Fewer layers on the GPU frees VRAM but slows this hop.",
+    "deploy.knob.n_ctxHint": () =>
+      "Full attention window per request, in tokens. This is the largest driver of KV-cache VRAM after the weights, and it is multiplied by the concurrent-request count.",
+    "deploy.knob.n_batchHint": () =>
+      "Prompt tokens llama.cpp scores in one forward pass during prefill. Larger fills the GPU better on long prompts but raises the compute-buffer reservation; it does not affect generation speed.",
+    "deploy.knob.fit_memory_margin_mbHint": () =>
+      "VRAM the automatic fit leaves unused on each device, to cover allocator drift and late workspaces. Raise it if a deploy starts then dies with an out-of-memory error.",
+    "deploy.knob.max_new_tokensHint": () =>
+      "Ceiling for one leg of the gateway's continuation loop, not for the request. The client's max_tokens is what actually bounds a response and produces finish_reason length.",
+    "deploy.knob.max_sessionsHint": () =>
+      "Generations served at once. Each one reserves its own full context, so this multiplies the KV-cache VRAM: two sessions at 32k cost the same as one at 64k.",
+    "deploy.knob.prefill_chunk_tokensHint": () =>
+      "Prompt tokens sent through the pipeline per round trip during prefill. Smaller chunks start streaming sooner on a slow link; larger chunks cut the number of round trips.",
+    "deploy.knob.prefill_max_inflight_chunksHint": () =>
+      "How many prefill chunks travel the pipeline at once (1..8). Higher hides per-hop latency on a deep pipeline; 1 turns the overlap off.",
+    "deploy.knob.temperatureHint": () =>
+      "Softens or sharpens the token distribution before sampling. 0 is greedy argmax; above 1 spreads probability toward less likely tokens. Only the last peer samples.",
+    "deploy.knob.top_pHint": () =>
+      "Nucleus sampling: keep the smallest set of tokens whose probabilities sum to this, then renormalize. 1 disables it. Applied after top_k.",
+    "deploy.knob.top_kHint": () =>
+      "Keep only the K highest-probability tokens before sampling. 0 disables it. Applied before top_p.",
+    "deploy.knob.repeat_penaltyHint": () =>
+      "Divides the logit of tokens seen in the recent window before sampling, discouraging loops. 1 is no penalty; values above ~1.3 can distort fluency.",
+    "deploy.knob.repeat_last_nHint": () =>
+      "How many of the most recent tokens the repeat penalty looks back over. 0 disables the window.",
+    "deploy.knob.offload_kqvHint": () =>
+      "Keep this machine's KV cache in VRAM. Turn it off to spend host RAM instead of GPU memory on large contexts, at some latency cost. Set per machine.",
+    "deploy.capacityWarnTitle": () => "Projection exceeds a machine's VRAM",
+    "deploy.capacityWarnDetail": ({ machines }) =>
+      "The projected use is over capacity on " +
+      String(machines) +
+      ". llama.cpp may reduce the context or the GPU layers, or the deploy may fail to start. Lower the context or the concurrent requests, or deploy anyway.",
+    "deploy.capacityDegradedTitle": () => "Auto-fit would trim the request",
+    "deploy.capacityDegradedDetail": ({ machines }) =>
+      "It fits on " +
+      String(machines) +
+      ', but only because "Ajustar à memória" would lower the context or the GPU layers to make room. Deploy with the trimmed config, or lower the context / concurrent requests yourself.',
+    "deploy.capacityOverBar": ({ projected, total }) =>
+      "projects " + String(projected) + " / " + String(total),
+    "deploy.capacityProjected": ({ projected, total }) =>
+      String(projected) + " / " + String(total) + " projected",
+    "deploy.capacityPending": () => "projection after the copy",
+    "deploy.capacityGpuLabel": ({ index }) => "GPU " + String(index),
     "nav.documentation": () => "Documentation",
     "docs.search": () => "Search documentation…",
     "docs.searchAria": () => "Search documentation",
@@ -2323,6 +2367,50 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.mtpCpuFallback": () => "Permitir recuo do MTP para a RAM",
     "deploy.mtpCpuFallbackHint": () =>
       "Se o contexto MTP não couber na VRAM, carrega pesos e cache na RAM. Desligue se as medições locais mostrarem que o rascunho na CPU não compensa.",
+    "deploy.knob.n_gpu_layersHint": () =>
+      "Quantos blocos do transformer esta máquina mantém na GPU; o resto roda na CPU. Em branco são todos. Menos camadas na GPU liberam VRAM, mas deixam este salto mais lento.",
+    "deploy.knob.n_ctxHint": () =>
+      "Janela de atenção completa por requisição, em tokens. É o que mais pesa na VRAM do cache KV depois dos pesos, e é multiplicada pelo número de requisições simultâneas.",
+    "deploy.knob.n_batchHint": () =>
+      "Tokens do prompt que o llama.cpp pontua num passo durante o prefill. Maior enche melhor a GPU em prompts longos, mas aumenta a reserva do buffer de computação; não muda a velocidade da geração.",
+    "deploy.knob.fit_memory_margin_mbHint": () =>
+      "VRAM que o ajuste automático deixa livre em cada dispositivo, para cobrir folga do alocador e buffers tardios. Aumente se uma implantação sobe e cai com erro de falta de memória.",
+    "deploy.knob.max_new_tokensHint": () =>
+      "Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente.",
+    "deploy.knob.max_sessionsHint": () =>
+      "Gerações atendidas ao mesmo tempo. Cada uma reserva o contexto inteiro, então isto multiplica a VRAM do cache KV: duas sessões a 32k custam o mesmo que uma a 64k.",
+    "deploy.knob.prefill_chunk_tokensHint": () =>
+      "Tokens do prompt enviados pelo pipeline a cada ida e volta no prefill. Pedaços menores começam a transmitir antes num link lento; maiores reduzem o número de idas e voltas.",
+    "deploy.knob.prefill_max_inflight_chunksHint": () =>
+      "Quantos pedaços de prefill andam pelo pipeline ao mesmo tempo (1..8). Maior esconde a latência de cada salto num pipeline profundo; 1 desliga a sobreposição.",
+    "deploy.knob.temperatureHint": () =>
+      "Suaviza ou acentua a distribuição dos tokens antes da amostragem. 0 é argmax guloso; acima de 1 espalha probabilidade para tokens menos prováveis. Só o último peer amostra.",
+    "deploy.knob.top_pHint": () =>
+      "Amostragem por núcleo: mantém o menor conjunto de tokens cuja probabilidade soma isto e renormaliza. 1 desliga. Aplicado depois do top_k.",
+    "deploy.knob.top_kHint": () =>
+      "Mantém só os K tokens de maior probabilidade antes da amostragem. 0 desliga. Aplicado antes do top_p.",
+    "deploy.knob.repeat_penaltyHint": () =>
+      "Divide o logit dos tokens vistos na janela recente antes da amostragem, desencorajando laços. 1 é sem penalidade; acima de ~1,3 pode distorcer a fluência.",
+    "deploy.knob.repeat_last_nHint": () =>
+      "Quantos dos tokens mais recentes a penalidade de repetição considera. 0 desliga a janela.",
+    "deploy.knob.offload_kqvHint": () =>
+      "Mantém o cache KV desta máquina na VRAM. Desligue para gastar RAM do host em vez de memória de GPU em contextos grandes, com algum custo de latência. É por máquina.",
+    "deploy.capacityWarnTitle": () => "A projeção passa da VRAM de uma máquina",
+    "deploy.capacityWarnDetail": ({ machines }) =>
+      "O uso projetado passa da capacidade em " +
+      String(machines) +
+      ". O llama.cpp pode reduzir o contexto ou as camadas de GPU, ou a implantação pode não subir. Reduza o contexto ou as requisições simultâneas, ou implante mesmo assim.",
+    "deploy.capacityDegradedTitle": () => "O ajuste automático apararia o pedido",
+    "deploy.capacityDegradedDetail": ({ machines }) =>
+      "Cabe em " +
+      String(machines) +
+      ', mas só porque o "Ajustar à memória" reduziria o contexto ou as camadas de GPU para caber. Implante com a config aparada, ou reduza você mesmo o contexto / as requisições simultâneas.',
+    "deploy.capacityOverBar": ({ projected, total }) =>
+      "projeta " + String(projected) + " / " + String(total),
+    "deploy.capacityProjected": ({ projected, total }) =>
+      String(projected) + " / " + String(total) + " projetado",
+    "deploy.capacityPending": () => "projeção após a cópia",
+    "deploy.capacityGpuLabel": ({ index }) => "GPU " + String(index),
     "nav.documentation": () => "Documentação",
     "docs.search": () => "Buscar na documentação…",
     "docs.searchAria": () => "Buscar na documentação",

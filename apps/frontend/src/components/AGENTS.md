@@ -33,7 +33,13 @@ Per-file list:
 - `AlertTooltip` (ui.tsx) - aviso compacto usado no inspetor: o ícone âmbar é
   focável e acionável por foco ou clique, e o texto completo é renderizado em
   portal fixo, com quebra explícita de palavras para mensagens longas e ids sem
-  espaços.
+  espaços. `InfoTip` é a versão neutra (ícone `[i]`, sem peso de aviso) para
+  explicar um parâmetro no hover/foco/toque; os dois dividem
+  `usePositionedPopover` (estado + posicionamento do balão de portal). `Field`
+  ganhou `tip?: string` - renderiza um `InfoTip` colado à linha do rótulo,
+  **fora** do `<label>` (um `<button>` dentro de `<label>` quebra o nome
+  acessível do controle), então o `<label>` continua embrulhando só texto e
+  controle. `hint` (texto visível) segue existindo para as outras telas.
 - `RequestInspector.tsx` - inspetor de objetos usado pela tela Logs. Mantém
   REQUEST, RESPONSE e TELEMETRIA como JSON formatado e selecionável, e redige
   campos com formato de credencial antes da cópia para chat.
@@ -292,7 +298,13 @@ Key logic carriers:
   local. O card Tensor expõe a ação acessível de marcar primary, removendo o
   mesmo nó dos workers.
   Uma GPU ausente mostra uma trilha estática com o texto `sem GPU`, sem barra
-  indeterminada. A hidratação de posições preserva cards existentes quando um
+  indeterminada. Quando o plano traz `machine.capacity` (projeção pós-deploy
+  vinda de `/api/ui/deploy/plan`), o card troca a barra única de GPU por uma
+  `GpuProjectionBar` por dispositivo: preenchimento = uso projetado
+  (`vram_projected_mb / vram_total_mb`), tracinho = uso de agora, róseo quando
+  a projeção passa da placa, com um `AlertTooltip` listando os números quando
+  `!fits`. Sem `capacity` e com faixa atribuída, a barra diz "projeção após a
+  cópia". A hidratação de posições preserva cards existentes quando um
   peer novo entra sem faixa, então a topologia não se reorganiza por causa de
   uma inclusão ainda não configurada. Em viewport estreito, o mapa usa
   rolagem interna para preservar o tamanho dos cards e alinhar a curva aos
@@ -303,7 +315,10 @@ Key logic carriers:
   inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,
   1..8) e a reserva configurável do fit (`fit_memory_margin_mb`, em MiB), e
   mantém os ajustes por máquina fora do bloco global. Também expõe o detector de
-  ciclos, seus limites de janela e o número de repetições. `CapabilitySwitch` usa o
+  ciclos, seus limites de janela e o número de repetições. Todo campo numérico
+  passa `tip` para o `Field` (dica no `[i]`, sem texto fixo no layout);
+  `deploy.knob.<chave>Hint` no `locales.ts` é a fonte, e todas as chaves de
+  `KNOBS` agora têm uma. `CapabilitySwitch` usa o
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
   indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.

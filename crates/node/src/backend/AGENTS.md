@@ -61,6 +61,22 @@ behind an auth extractor.
   calculating budget-driven ranges, includes the configured context, sessions
   and K/V cache types in the byte arithmetic. The response exposes weight,
   KV and total bytes per shard; absent KV metadata is an explicit bad request.
+  `POST /api/ui/deploy/capacity-preview` (`capacity_preview_endpoint`,
+  `ConnectionAuth`) is the deploy-time, per-step, peer-local version: it
+  resolves a `NodeConfig`/`EngineConfig` for a locally-present slice, runs the
+  same native fit as a real launch via `llm::preview_fit`
+  (`llama_rs_fit_params`, no weights loaded), reads live `SystemLoad.gpus[]`,
+  and returns projected VRAM per GPU plus a three-state verdict: `fits`
+  (green), `degraded` (amber - fits only because the fit trimmed the
+  effective context or GPU layers below the request), or `!fits` (rose). KV
+  quantization is in the byte math (`cache_type_k/v` from the installation);
+  KV only counts toward VRAM when `offload_kqv` is on. `FitPreview.attempted`
+  distinguishes "the fit failed" from "the fit was skipped because
+  `n_gpu_layers` was pinned" - only the former forces `!fits`.
+  `split_projection` divides the projected weight+KV bytes across a machine's
+  GPUs by `tensor_split` when the fit ran, else proportionally to current free
+  VRAM (flagged as an estimate). The compute buffer is deliberately left out -
+  it is what `fit_memory_margin_mb` already reserves.
   `RuntimeParams.prefill_max_inflight_chunks` is persisted with the other
   inference knobs and sets the prefill pipeline depth (1..8, default 8).
   `RuntimeParams.fit_memory_margin_mb` is also persisted and controls the
@@ -98,6 +114,12 @@ behind an auth extractor.
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  Depois de montar os passos (e só com `blocked` vazio), `plan_endpoint` chama
+  `enrich_capacity_previews`: uma requisição `capacity-preview` por `Step`
+  materializado localmente (não `merged`, `target_path` presente), agregada
+  por máquina em `MachineView.capacity` (soma por GPU). TP e passos ainda por
+  copiar/fundir ficam sem projeção. É aviso, nunca bloqueio: a tela mostra a
+  máquina estourada em rósea e pede um `Confirm` antes de implantar.
   Antes de transferir ou lançar, prova a identidade por `pom_id` ou hash do
   GGUF, libera somente a implantação comprovadamente igual e aguarda cada peer
   ficar ocioso dentro de um prazo; recusações de identidade, falhas de unload e

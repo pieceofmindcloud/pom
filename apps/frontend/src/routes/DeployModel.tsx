@@ -64,6 +64,7 @@ import {
   Badge,
   Button,
   ErrorState,
+  InfoTip,
   Input,
   Select,
   Skeleton,
@@ -365,6 +366,10 @@ export function DeployModel() {
   /** Half-typed numbers, so clearing a field does not snap back to a digit. */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [asked, setAsked] = useState(false);
+  /** Segundo confirm, separado do de cobertura parcial: a projeção de VRAM
+   *  passa da capacidade de alguma máquina. Avisa, não bloqueia - o operador
+   *  pode reduzir contexto/sessões ou implantar mesmo assim. */
+  const [capacityAsked, setCapacityAsked] = useState(false);
   const [running, setRunning] = useState(false);
   const [cacheTypeK, setCacheTypeK] = useState<KvCacheType>("f16");
   const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
@@ -767,6 +772,17 @@ export function DeployModel() {
   const f8Unavailable = hiddenStateCapability
     ? hiddenStateCapability.state !== "supported"
     : false;
+  /**
+   * `hidden_state_dtype` só faz algo quando o estado oculto atravessa a
+   * fronteira de um peer - ou seja, num pipeline de fatias com faixas
+   * adjacentes distintas. Modelo inteiro (uma máquina), Tensor Parallelism
+   * (troca por coletiva, não por frame) e um plano de fatias que caiu numa
+   * máquina só nunca serializam o estado, então o seletor seria um controle
+   * sem efeito. Duas máquinas na mesma faixa são réplicas, não hop.
+   */
+  const crossesPeerBoundary =
+    kind === "shards" &&
+    new Set(rows.map((r) => `${r.start_layer}-${r.end_layer}`)).size >= 2;
 
   /** Edit one knob. The draft keeps the field usable while it is half-typed. */
   function setKnob(key: keyof RuntimeParams, text: string) {
@@ -882,6 +898,7 @@ export function DeployModel() {
   async function deploy() {
     setRunning(true);
     setAsked(false);
+    setCapacityAsked(false);
     try {
       const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
         group: chosen,
@@ -1010,6 +1027,28 @@ export function DeployModel() {
     p?.inference_mode_supported !== false &&
     rows.length > 0;
   const bottomMachines = liveMachines.filter((machine) => !mapNodeIds.has(machine.node_id));
+  /** Máquinas cuja projeção estoura a VRAM (rósea) ou que só cabem porque o
+   *  "Ajustar à memória" apararia o pedido (amber) - as duas pedem um aviso
+   *  antes de implantar. */
+  const capacityWarnMachines = (p?.machines ?? []).filter(
+    (machine) =>
+      machine.capacity && (!machine.capacity.fits || machine.capacity.degraded),
+  );
+  const anyOverCapacity = capacityWarnMachines.some((m) => !m.capacity?.fits);
+
+  /** O gesto de implantar, com os confirms possíveis no caminho: cobertura
+   *  parcial (o modelo não fica inteiro no ar) e a projeção de capacidade
+   *  (estoura a VRAM, ou o fit apararia o pedido). O primeiro é mais
+   *  fundamental, então vem antes. */
+  function attemptDeploy() {
+    if (!p?.complete) {
+      setAsked(true);
+    } else if (capacityWarnMachines.length > 0) {
+      setCapacityAsked(true);
+    } else {
+      void deploy();
+    }
+  }
 
   /**
    * Why the button is grey, in one line, next to the button.
@@ -1164,7 +1203,7 @@ export function DeployModel() {
               icon={<Rocket className="h-3.5 w-3.5" />}
               loading={running}
               disabled={!canDeploy}
-              onClick={() => (p?.complete ? void deploy() : setAsked(true))}
+              onClick={attemptDeploy}
             >
               Implantar
             </Button>
@@ -1263,28 +1302,38 @@ export function DeployModel() {
               <p className="border-b border-iris/20 bg-iris/10 px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Configurações globais</p>
               <div className="space-y-1 px-2 pt-2">
                 {GLOBAL_NUMERIC_KNOBS.map(({ key, label, step }) => (
-                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                    <span className="truncate text-muted">{label}</span>
-                    <Input name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
-                  </label>
+                  <div key={key} className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
+                    <span className="flex min-w-0 items-center gap-1 text-muted">
+                      <span className="truncate">{label}</span>
+                      <InfoTip label={label} message={t("deploy.knob." + key + "Hint")} />
+                    </span>
+                    <Input aria-label={label} name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
+                  </div>
                 ))}
-                <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-1.5 text-[0.65rem]">
-                  <span className="truncate text-muted">{t("deploy.knob.hidden_state_dtype")}</span>
-                  <Select
-                    aria-label={t("deploy.knob.hidden_state_dtype")}
-                    name="hidden_state_dtype"
-                    value={hiddenStateDtype}
-                    onChange={(event) => setParams({ ...eff, hidden_state_dtype: event.target.value as WireDtype })}
-                    compact
-                  >
-                    <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
-                    <option value="f8" disabled={f8Unavailable}>{t("deploy.knob.hidden_state_dtypeF8")}</option>
-                  </Select>
-                </label>
-                {hiddenStateCapability && f8Unavailable && (
-                  <p role="alert" className="text-[0.6rem] leading-relaxed text-amber">
-                    {t("deploy.knob.hidden_state_dtypeUnavailable")}{hiddenStateCapability.reason}
-                  </p>
+                {crossesPeerBoundary && (
+                  <>
+                    <div className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-1.5 text-[0.65rem]">
+                      <span className="flex min-w-0 items-center gap-1 text-muted">
+                        <span className="truncate">{t("deploy.knob.hidden_state_dtype")}</span>
+                        <InfoTip label={t("deploy.knob.hidden_state_dtype")} message={t("deploy.knob.hidden_state_dtypeHint")} />
+                      </span>
+                      <Select
+                        aria-label={t("deploy.knob.hidden_state_dtype")}
+                        name="hidden_state_dtype"
+                        value={hiddenStateDtype}
+                        onChange={(event) => setParams({ ...eff, hidden_state_dtype: event.target.value as WireDtype })}
+                        compact
+                      >
+                        <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
+                        <option value="f8" disabled={f8Unavailable}>{t("deploy.knob.hidden_state_dtypeF8")}</option>
+                      </Select>
+                    </div>
+                    {hiddenStateCapability && f8Unavailable && (
+                      <p role="alert" className="text-[0.6rem] leading-relaxed text-amber">
+                        {t("deploy.knob.hidden_state_dtypeUnavailable")}{hiddenStateCapability.reason}
+                      </p>
+                    )}
+                  </>
                 )}
                 <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
                 <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
@@ -1583,8 +1632,8 @@ export function DeployModel() {
                   )}
                   {first && (
                     <div className="mt-3 space-y-2 border-t border-line pt-2">
-                      <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></label>
-                      <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" />
+                      <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="flex min-w-0 items-center gap-1 text-muted"><span className="truncate">Camadas GPU</span><InfoTip label="Camadas GPU" message={t("deploy.knob.n_gpu_layersHint")} /></span><Input aria-label="Camadas GPU" type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></div>
+                      <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" hint={t("deploy.knob.offload_kqvHint")} />
                     </div>
                   )}
                   </div>
@@ -1653,6 +1702,34 @@ export function DeployModel() {
         busy={running}
         onConfirm={() => void deploy()}
         onCancel={() => setAsked(false)}
+      />
+
+      <Confirm
+        open={capacityAsked}
+        title={t(anyOverCapacity ? "deploy.capacityWarnTitle" : "deploy.capacityDegradedTitle")}
+        description={
+          <>
+            {t(anyOverCapacity ? "deploy.capacityWarnDetail" : "deploy.capacityDegradedDetail", {
+              machines: capacityWarnMachines.map((machine) => machine.label).join(", "),
+            })}
+            {capacityWarnMachines.some((machine) => machine.capacity?.note) && (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-[0.72rem] text-muted">
+                {capacityWarnMachines
+                  .filter((machine) => machine.capacity?.note)
+                  .map((machine) => (
+                    <li key={machine.node_id}>
+                      <span className="font-medium text-fg">{machine.label}:</span>{" "}
+                      {machine.capacity?.note}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </>
+        }
+        confirmLabel={t("deploy.deploy")}
+        busy={running}
+        onConfirm={() => void deploy()}
+        onCancel={() => setCapacityAsked(false)}
       />
     </>
   );

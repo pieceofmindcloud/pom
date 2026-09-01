@@ -82,6 +82,11 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 - `PeerRequest` responde com um `Announce` imediato (mesmo sem assignment) e com
   o `PeerList` de peers vivos, fatiado para caber em `MAX_DATAGRAM_PAYLOAD`
   (1200 B, o piso que o IPv6 garante; `PeerList` cresce ~530 B por peer).
+- Um `PeerList` é também uma atualização de estado: se o `last_seen` do
+  snapshot for mais novo, o registro existente é substituído para propagar
+  mudanças de modelo e faixa entre peers transitivos. Snapshots mais antigos
+  não revertem um anúncio recente; candidatos de endereço e verificação local
+  são preservados no refresh.
 - Nó destacado (`is_detached`, `--no-discovery`) não aprende nem responde nada;
   o socket continua bound, e `rejoin` refaz bootstrap + announce.
 

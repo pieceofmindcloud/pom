@@ -1689,11 +1689,12 @@ impl Network {
 
             P2PMessage::PeerList { peers } => {
                 let mut known = self.peers.write().await;
-                for peer in peers {
-                    if peer.node_id != self.node_id
-                        && peer.dialable_addr().is_some()
-                        && !known.contains_key(&peer.node_id)
-                    {
+                for mut peer in peers {
+                    if peer.node_id == self.node_id || peer.dialable_addr().is_none() {
+                        continue;
+                    }
+
+                    let Some(previous) = known.get(&peer.node_id) else {
                         info!(
                             "📋 Learned peer from gossip: {} layers={}-{}",
                             short(&peer.node_id),
@@ -1701,7 +1702,35 @@ impl Network {
                             peer.end_layer
                         );
                         known.insert(peer.node_id.clone(), peer);
+                        continue;
+                    };
+
+                    // PeerList carries a snapshot taken by another node. Do
+                    // not let an older snapshot roll back a fresher Announce,
+                    // but do apply a newer one so transitively learned peers
+                    // do not keep stale layer coverage forever.
+                    if peer.last_seen <= previous.last_seen {
+                        continue;
                     }
+
+                    let address_changed = peer_address_changed(previous, &peer);
+                    let connection_verified = previous.connection_verified;
+                    let api_keys_active = previous.api_keys_active;
+                    for addr in &previous.addr_candidates {
+                        peer.merge_observed(addr);
+                    }
+                    peer.connection_verified = connection_verified;
+                    peer.api_keys_active = api_keys_active;
+                    if address_changed {
+                        self.routes.invalidate(&peer.node_id);
+                    }
+                    info!(
+                        "📋 Refreshed peer from gossip: {} layers={}-{}",
+                        short(&peer.node_id),
+                        peer.start_layer,
+                        peer.end_layer
+                    );
+                    known.insert(peer.node_id.clone(), peer);
                 }
             }
 
@@ -2272,6 +2301,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Uma lista transitiva também é uma atualização, não só descoberta. Se o
+    /// registro antigo ficar preso, dois gateways que conheceram o mesmo peer
+    /// em momentos diferentes calculam buracos diferentes para a mesma fatia.
+    #[tokio::test]
+    async fn a_peer_list_refreshes_existing_peer_coverage() {
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let assignment = Arc::new(RwLock::new(None));
+
+        let mut old = peer_com_candidatos(vec![]);
+        old.node_id = "peer".into();
+        old.end_layer = 15;
+        old.total_layers = 44;
+        let old_seen = old.last_seen;
+        net.insert_peer(old).await;
+
+        let mut refreshed = peer_com_candidatos(vec![]);
+        refreshed.node_id = "peer".into();
+        refreshed.end_layer = 28;
+        refreshed.total_layers = 44;
+        refreshed.last_seen = old_seen + chrono::Duration::seconds(1);
+        net.handle_message(
+            P2PMessage::PeerList {
+                peers: vec![refreshed],
+            },
+            "127.0.0.1:42777".parse().unwrap(),
+            &assignment,
+        )
+        .await;
+
+        let peers = net.peers.read().await;
+        let peer = peers.get("peer").expect("o peer antigo continua conhecido");
+        assert_eq!(peer.end_layer, 28);
+        assert_eq!(peer.total_layers, 44);
     }
 
     fn peer_com_candidatos(candidatos: Vec<&str>) -> PeerInfo {

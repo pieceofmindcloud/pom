@@ -67,8 +67,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   anuncia o túnel e usa o health HTTP apenas para peers antigos.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
   origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
-  `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. Nó destacado
-  (`is_detached`) não aprende nem responde.
+  `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. O `PeerList` também
+  atualiza um peer já conhecido quando o snapshot é mais novo, preservando
+  candidatos de endereço e estado local de verificação; snapshots antigos são
+  ignorados para não reverter a cobertura. Nó destacado (`is_detached`) não
+  aprende nem responde.
 - `Network::discovery_sweep` - PeerRequest rotativo: 3 por varredura, varredura
   a cada 6 tiques (30 s), rodízio cobre o cluster inteiro. É o que aprende peers
   transitivos fora da LAN; sem isto a descoberta é um retrato do arranque.

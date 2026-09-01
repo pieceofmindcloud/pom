@@ -7,7 +7,7 @@
  */
 import clsx from "clsx";
 import { motion } from "framer-motion";
-import { AlertTriangle, Info, Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -195,44 +195,20 @@ export function Select({
 export function Field({
   label,
   hint,
-  tip,
   children,
   className,
 }: {
   label: string;
-  /** Visible helper text under the control. */
   hint?: ReactNode;
-  /** Hover/focus/tap explanation shown as an `[i]` next to the label - the
-   *  same text a `hint` would carry, kept out of the layout until asked for. */
-  tip?: string;
   children: ReactNode;
   className?: string;
 }) {
-  // The `[i]` trigger is a <button>, and a <button> inside a <label> is
-  // invalid HTML that breaks the wrapped control's accessible name. So the
-  // <label> keeps wrapping only the text and the control (name + implicit
-  // association unchanged), and the tip sits outside it, pinned to the label
-  // row.
   return (
-    <div className={clsx("relative min-w-0", className)}>
-      <label className="block min-w-0">
-        <span
-          className={clsx(
-            "mb-1.5 block text-[0.8rem] font-medium text-muted",
-            tip && "pr-5",
-          )}
-        >
-          {label}
-        </span>
-        {children}
-        {hint && <span className="mt-1.5 block text-xs text-faint">{hint}</span>}
-      </label>
-      {tip && (
-        <span className="absolute right-0 top-0">
-          <InfoTip label={label} message={tip} />
-        </span>
-      )}
-    </div>
+    <label className={clsx("block min-w-0", className)}>
+      <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{label}</span>
+      {children}
+      {hint && <span className="mt-1.5 block text-xs text-faint">{hint}</span>}
+    </label>
   );
 }
 
@@ -257,18 +233,24 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /**
- * O estado e o posicionamento de um balão de portal, compartilhados por
- * `AlertTooltip` (aviso âmbar) e `InfoTip` (dica neutra). Portal fixo para não
- * ser cortado pelo scroll do inspetor; a largura máxima mais
- * `overflow-wrap:anywhere` seguram ids sem espaços dentro da viewport. Abre
- * por hover e por foco, fixa no clique, fecha no Escape ou num clique fora.
+ * Avisos compactos que continuam sendo uma superfície de leitura completa.
+ * O balão é um portal fixo para não ser cortado pelo scroll vertical do
+ * inspetor, e a largura máxima mais `overflow-wrap:anywhere` segura ids sem
+ * espaços dentro da viewport.
  */
-function usePositionedPopover() {
+export function AlertTooltip({
+  label,
+  message,
+}: {
+  label: string;
+  message: string;
+}) {
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [position, setPosition] = useState<TooltipPosition>({ top: 8, left: 8 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const tooltipId = `alert-tooltip-${useId().replaceAll(":", "")}`;
 
   const updatePosition = useCallback(() => {
     const trigger = triggerRef.current;
@@ -279,9 +261,11 @@ function usePositionedPopover() {
     const height = tooltip?.offsetHeight || 160;
     const left = clamp(rect.right - width, 8, window.innerWidth - width - 8);
     const below = rect.bottom + 8;
-    const preferredTop =
-      below + height <= window.innerHeight - 8 ? below : rect.top - height - 8;
-    setPosition({ top: clamp(preferredTop, 8, window.innerHeight - height - 8), left });
+    const preferredTop = below + height <= window.innerHeight - 8
+      ? below
+      : rect.top - height - 8;
+    const top = clamp(preferredTop, 8, window.innerHeight - height - 8);
+    setPosition({ top, left });
   }, []);
 
   useLayoutEffect(() => {
@@ -317,22 +301,6 @@ function usePositionedPopover() {
     };
   }, [open]);
 
-  return { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef };
-}
-
-/**
- * Avisos compactos que continuam sendo uma superfície de leitura completa.
- */
-export function AlertTooltip({
-  label,
-  message,
-}: {
-  label: string;
-  message: string;
-}) {
-  const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
-    usePositionedPopover();
-  const tooltipId = `alert-tooltip-${useId().replaceAll(":", "")}`;
   const closeIfUnpinned = () => {
     if (!pinned) setOpen(false);
   };
@@ -352,81 +320,28 @@ export function AlertTooltip({
         onFocus={() => setOpen(true)}
         onBlur={closeIfUnpinned}
         onClick={() => {
-          const next = !pinned;
-          setPinned(next);
-          setOpen(next);
+          setPinned((current) => {
+            const next = !current;
+            setOpen(next);
+            return next;
+          });
         }}
         className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-amber/35 bg-amber/10 text-amber transition-colors hover:bg-amber/20 focus-visible:ring-2 focus-visible:ring-amber/60"
       >
         <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5" />
       </button>
-      {open &&
-        createPortal(
-          <div
-            ref={tooltipRef}
-            id={tooltipId}
-            role="tooltip"
-            className="fixed z-[80] max-h-[min(18rem,calc(100vh-1rem))] w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto break-words whitespace-normal rounded-lg border border-amber/40 bg-ink px-3 py-2.5 text-[0.68rem] leading-relaxed text-fg shadow-lift [overflow-wrap:anywhere]"
-            style={{ top: position.top, left: position.left }}
-          >
-            {message}
-          </div>,
-          document.body,
-        )}
-    </>
-  );
-}
-
-/**
- * Uma dica neutra ao lado de um controle: o `[i]` abre no hover, no foco ou
- * no toque, e o texto explica o que o parâmetro faz e como ele afeta a
- * inferência. Mesma mecânica de portal do `AlertTooltip`, sem o peso visual
- * de um aviso - a informação fica escondida até ser pedida para não poluir o
- * painel.
- */
-export function InfoTip({ label, message }: { label: string; message: string }) {
-  const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
-    usePositionedPopover();
-  const tooltipId = `info-tip-${useId().replaceAll(":", "")}`;
-  const closeIfUnpinned = () => {
-    if (!pinned) setOpen(false);
-  };
-
-  return (
-    <>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={`O que é ${label}`}
-        aria-expanded={open}
-        aria-controls={open ? tooltipId : undefined}
-        aria-describedby={open ? tooltipId : undefined}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={closeIfUnpinned}
-        onFocus={() => setOpen(true)}
-        onBlur={closeIfUnpinned}
-        onClick={() => {
-          const next = !pinned;
-          setPinned(next);
-          setOpen(next);
-        }}
-        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-faint transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris/50"
-      >
-        <Info aria-hidden="true" className="h-3.5 w-3.5" />
-      </button>
-      {open &&
-        createPortal(
-          <div
-            ref={tooltipRef}
-            id={tooltipId}
-            role="tooltip"
-            className="fixed z-[80] max-h-[min(18rem,calc(100vh-1rem))] w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto break-words whitespace-normal rounded-lg border border-line-strong bg-ink px-3 py-2.5 text-[0.68rem] leading-relaxed text-fg shadow-lift [overflow-wrap:anywhere]"
-            style={{ top: position.top, left: position.left }}
-          >
-            {message}
-          </div>,
-          document.body,
-        )}
+      {open && createPortal(
+        <div
+          ref={tooltipRef}
+          id={tooltipId}
+          role="tooltip"
+          className="fixed z-[80] max-h-[min(18rem,calc(100vh-1rem))] w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto break-words whitespace-normal rounded-lg border border-amber/40 bg-ink px-3 py-2.5 text-[0.68rem] leading-relaxed text-fg shadow-lift [overflow-wrap:anywhere]"
+          style={{ top: position.top, left: position.left }}
+        >
+          {message}
+        </div>,
+        document.body,
+      )}
     </>
   );
 }

@@ -70,9 +70,9 @@ use crate::gateway::GatewayState;
 use crate::network::PeerInfo;
 use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
-    jobs, launch, new_job, set_job, set_job_progress, CapacityPreview, CapacityPreviewRequest,
-    InferenceMode, LaunchRequest, LaunchTarget, LayerCut, MergeSource, ModelLayerOptions,
-    RuntimeParams, SliceRange, SliceRangesRequest, PEER_TIMEOUT,
+    jobs, launch, new_job, set_job, set_job_progress, InferenceMode, LaunchRequest, LaunchTarget,
+    LayerCut, MergeSource, ModelLayerOptions, RuntimeParams, SliceRange, SliceRangesRequest,
+    PEER_TIMEOUT,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -1273,27 +1273,6 @@ pub struct MachineView {
     holds: Vec<[u32; 2]>,
     /// Range it takes in the plan being shown, if any.
     taking: Option<[u32; 2]>,
-    /// Projeção de capacidade desta máquina para o plano em preparo - soma dos
-    /// passos que ela levaria, por GPU. `None` até a pré-visualização
-    /// terminar (ou quando nenhum passo desta máquina está materializado
-    /// localmente ainda). Ver `enrich_capacity_previews`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    capacity: Option<MachineCapacity>,
-}
-
-/// Projeção de VRAM de uma máquina inteira: a soma, por GPU, de todo passo do
-/// plano que ela levaria. Uma máquina com dois passos não-adjacentes (dois
-/// arquivos, dois processos) soma os dois sobre o mesmo inventário de
-/// dispositivos - é a mesma placa física recebendo os dois.
-#[derive(Debug, Clone, Serialize)]
-pub struct MachineCapacity {
-    fits: bool,
-    /// Algum passo desta máquina cabe só porque o `fit_memory` aparou o
-    /// pedido (contexto ou camadas de GPU abaixo do pedido).
-    degraded: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-    gpus: Vec<crate::webui::GpuCapacityProjection>,
 }
 
 /// One machine offered as the target of one slice, with the reason it works.
@@ -1381,12 +1360,6 @@ pub struct Step {
     /// The slices this step is assembled from, in layer order. Empty for a
     /// plain step.
     parts: Vec<StepPart>,
-    /// Projeção de VRAM/RAM que este passo levaria neste alvo, com os
-    /// parâmetros do plano em preparo. `None` até um passo materializado
-    /// localmente (`target_path.is_some() && !merged`) ser consultado, ou
-    /// quando essa consulta falhou - ver `enrich_capacity_previews`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    capacity: Option<crate::webui::CapacityPreview>,
 }
 
 /// Um rank de uma rodada TP já fatiada. Diferente de um `Step`, cada rank
@@ -2652,9 +2625,6 @@ fn plan_with_rtt_options(
                 note,
                 merged: true,
                 parts,
-                // A junção ainda não aconteceu - não há arquivo local para
-                // consultar (ver `enrich_capacity_previews`).
-                capacity: None,
             });
         } else {
             // Plain steps: one range, one file. A separated range has its own
@@ -2774,7 +2744,6 @@ fn plan_with_rtt_options(
                     note,
                     merged: false,
                     parts: Vec::new(),
-                    capacity: None,
                 });
             }
         }
@@ -2863,10 +2832,6 @@ fn plan_with_rtt_options(
                 .iter()
                 .find(|s| s.target_node_id == m.node_id)
                 .map(|s| [s.start_layer, s.end_layer]),
-            // Preenchida depois, de forma assíncrona, por
-            // `enrich_capacity_previews` - este planejador é síncrono e não
-            // fala com a rede.
-            capacity: None,
         })
         .collect();
 
@@ -3237,142 +3202,7 @@ async fn plan_endpoint(
     if let Some(reason) = survey.metadata_pending {
         p.blocked = Some(reason);
     }
-    // Um plano já recusado não ganha nada de saber se caberia na VRAM - e
-    // poupa uma rodada de rede por máquina a cada tecla que não muda o
-    // resultado.
-    if p.blocked.is_none() {
-        enrich_capacity_previews(&state, &machines, &mut p).await;
-    }
     Json(p).into_response()
-}
-
-// ── Pré-visualização de capacidade ───────────────────────────────────────────
-
-/// Depois que o planejador (síncrono) monta os passos, pergunta a cada alvo já
-/// materializado localmente como aquele passo ocuparia sua VRAM com os
-/// parâmetros deste plano - e soma o resultado por máquina.
-///
-/// Só passos prontos e não fundidos (`target_path.is_some() && !merged`) são
-/// consultados: um passo que ainda depende de cópia ou de junção não tem
-/// arquivo local para o `fit` nativo examinar, e a pré-visualização nunca
-/// materializa nada para descobrir - ela só lê. Tensor Parallelism fica de
-/// fora desta primeira versão: a divisão real é `split-mode tensor`, que o
-/// `fit` nativo reaproveitado aqui não sabe planejar (o mesmo motivo que
-/// desliga `fit_memory` em TP, ver `effective_params_for_kind`).
-///
-/// Uma máquina que serve duas faixas não-adjacentes soma os dois passos sobre
-/// o mesmo inventário de GPUs - são dois processos na mesma placa física.
-async fn enrich_capacity_previews(state: &GatewayState, machines: &[Machine], plan: &mut Plan) {
-    if plan.kind == DeployKind::TensorParallel || plan.steps.is_empty() {
-        return;
-    }
-    let peer_count = plan.steps.len() as u32;
-    let key = state.auth.read().await.connection_key.clone();
-
-    let calls = plan.steps.iter().enumerate().map(|(index, step)| {
-        let key = key.clone();
-        let http = state.peer_http.for_peer(&step.target_node_id);
-        let base = machines
-            .iter()
-            .find(|m| m.node_id == step.target_node_id)
-            .and_then(|m| m.gateway_url.clone());
-        let model_path = step.target_path.clone();
-        let eligible = !step.merged;
-        let total_layers = step.total_layers.or(plan.total_layers);
-        let req = CapacityPreviewRequest {
-            model_path: String::new(),
-            start_layer: step.start_layer,
-            end_layer: step.end_layer,
-            total_layers: total_layers.unwrap_or(0),
-            peer_count,
-            peer_index: index as u32,
-            single_peer: peer_count <= 1,
-            params: plan.params.clone(),
-            n_gpu_layers: step.n_gpu_layers,
-            offload_kqv: step.offload_kqv,
-        };
-        async move {
-            let (Some(base), Ok(http), Some(model_path), Some(_)) =
-                (base, http, model_path, total_layers.filter(|_| eligible))
-            else {
-                return (index, None);
-            };
-            let req = CapacityPreviewRequest {
-                model_path,
-                ..req
-            };
-            let resp = http
-                .post(format!("{base}/api/ui/deploy/capacity-preview"))
-                .bearer_auth(&key)
-                .timeout(PEER_TIMEOUT)
-                .json(&req)
-                .send()
-                .await
-                .ok();
-            let Some(resp) = resp.filter(|r| r.status().is_success()) else {
-                return (index, None);
-            };
-            (index, resp.json::<CapacityPreview>().await.ok())
-        }
-    });
-
-    for (index, preview) in futures::future::join_all(calls).await {
-        if let Some(step) = plan.steps.get_mut(index) {
-            step.capacity = preview;
-        }
-    }
-
-    for machine in &mut plan.machines {
-        let mut by_device: std::collections::BTreeMap<u32, crate::webui::GpuCapacityProjection> =
-            std::collections::BTreeMap::new();
-        let mut notes = Vec::new();
-        let mut checked = 0u32;
-        let mut assigned = 0u32;
-        let mut fits = true;
-        let mut degraded = false;
-        for step in plan
-            .steps
-            .iter()
-            .filter(|s| s.target_node_id == machine.node_id)
-        {
-            assigned += 1;
-            let Some(capacity) = &step.capacity else {
-                continue;
-            };
-            checked += 1;
-            fits &= capacity.fits;
-            degraded |= capacity.degraded;
-            if let Some(note) = &capacity.note {
-                notes.push(note.clone());
-            }
-            for gpu in &capacity.gpus {
-                by_device
-                    .entry(gpu.index)
-                    .and_modify(|acc| {
-                        acc.vram_projected_mb = acc.vram_projected_mb.saturating_add(
-                            gpu.vram_projected_mb.saturating_sub(gpu.vram_used_mb),
-                        );
-                    })
-                    .or_insert(*gpu);
-            }
-        }
-        if checked == 0 {
-            continue;
-        }
-        if checked < assigned {
-            notes.push(format!(
-                "{} de {} faixas desta máquina ainda não têm projeção (aguardando cópia)",
-                assigned - checked,
-                assigned
-            ));
-        }
-        machine.capacity = Some(MachineCapacity {
-            fits,
-            degraded,
-            note: (!notes.is_empty()).then(|| notes.join("; ")),
-            gpus: by_device.into_values().collect(),
-        });
-    }
 }
 
 // ── Carrying it out ──────────────────────────────────────────────────────────

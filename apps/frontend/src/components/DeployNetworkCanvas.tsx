@@ -18,7 +18,7 @@ import {
 import type { DeployMachine, DeployPlan, DeploySelection } from "../lib/types";
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
 import { RouteRttLabel } from "./RouteRttLabel";
-import { AlertTooltip, Badge, Button, Dot, Progress } from "./ui";
+import { Badge, Button, Dot, Progress } from "./ui";
 
 type DeployNetworkCanvasProps = {
   plan: DeployPlan;
@@ -103,54 +103,6 @@ function CapacityBar({
       ) : (
         <Progress value={value} tone={tone} />
       )}
-    </div>
-  );
-}
-
-/**
- * Uma GPU depois da implantação: a barra é o uso **projetado**
- * (`vram_projected_mb / vram_total_mb`), o tracinho é o uso de agora
- * (`vram_used_mb`), e a barra fica rósea quando a projeção passa da placa.
- * É o preview que o operador ajusta mexendo no contexto e nas sessões.
- */
-function GpuProjectionBar({
-  index,
-  usedMb,
-  projectedMb,
-  totalMb,
-}: {
-  index: number;
-  usedMb: number;
-  projectedMb: number;
-  totalMb: number;
-}) {
-  const over = projectedMb > totalMb;
-  const projectedPct = totalMb > 0 ? Math.min(100, (projectedMb / totalMb) * 100) : 0;
-  const usedPct = totalMb > 0 ? Math.min(100, (usedMb / totalMb) * 100) : 0;
-  return (
-    <div className="min-w-0">
-      <div className="mb-1 flex items-baseline justify-between gap-1 text-[9px]">
-        <span className="truncate uppercase tracking-[0.1em] text-faint">GPU {index}</span>
-        <span
-          className={clsx(
-            "shrink-0 font-mono tabular-nums",
-            over ? "text-rose" : "text-muted",
-          )}
-        >
-          {megabytes(projectedMb)} / {megabytes(totalMb)}
-        </span>
-      </div>
-      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-line">
-        <div
-          className={clsx("h-full rounded-full", over ? "bg-rose" : "bg-aqua")}
-          style={{ width: `${Math.max(2, projectedPct)}%` }}
-        />
-        <span
-          aria-hidden="true"
-          className="absolute inset-y-0 w-px bg-fg/70"
-          style={{ left: `${usedPct}%` }}
-        />
-      </div>
     </div>
   );
 }
@@ -273,74 +225,12 @@ function NodeCard({
         )) : <span className="font-mono text-[10px] text-faint">solte aqui para incluir</span>}
       </div>
       <div className="mt-3 space-y-2">
-        {machine.capacity && machine.capacity.gpus.length > 0 ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-1">
-              <span
-                className={clsx(
-                  "text-[9px] uppercase tracking-[0.1em]",
-                  !machine.capacity.fits
-                    ? "text-rose"
-                    : machine.capacity.degraded
-                      ? "text-amber"
-                      : "text-faint",
-                )}
-              >
-                GPU · projeção
-                {machine.capacity.fits && machine.capacity.degraded && " · aparada"}
-              </span>
-              {(!machine.capacity.fits || machine.capacity.degraded) && (
-                <AlertTooltip
-                  label={`projeção de VRAM de ${machine.label}`}
-                  message={
-                    (!machine.capacity.fits
-                      ? `A projeção passa da VRAM ${machine.capacity.gpus.length > 1 ? "de uma das GPUs" : "da GPU"} de ${machine.label}. `
-                      : `Cabe em ${machine.label}, mas o "Ajustar à memória" apararia o pedido. `) +
-                    (machine.capacity.note ? machine.capacity.note + ". " : "") +
-                    machine.capacity.gpus
-                      .map(
-                        (g) =>
-                          `GPU ${g.index}: ${megabytes(g.vram_projected_mb)} de ${megabytes(g.vram_total_mb)}`,
-                      )
-                      .join("; ")
-                  }
-                />
-              )}
-            </div>
-            {machine.capacity.gpus.map((g) => (
-              <GpuProjectionBar
-                key={g.index}
-                index={g.index}
-                usedMb={g.vram_used_mb}
-                projectedMb={g.vram_projected_mb}
-                totalMb={g.vram_total_mb}
-              />
-            ))}
-            {machine.capacity.note && machine.capacity.fits && (
-              <p
-                className={clsx(
-                  "text-[9px] leading-snug",
-                  machine.capacity.degraded ? "text-amber" : "text-faint",
-                )}
-              >
-                {machine.capacity.note}
-              </p>
-            )}
-          </div>
-        ) : (
-          <CapacityBar
-            label="GPU"
-            value={machine.gpu_used_pct ?? null}
-            detail={
-              machine.gpu_used_pct == null
-                ? "sem GPU"
-                : active
-                  ? `agora ${machine.gpu_used_pct.toFixed(0)}% · projeção após a cópia`
-                  : `${machine.gpu_used_pct.toFixed(0)}% · ${megabytes(machine.gpu_free_mb)}`
-            }
-            tone={machine.gpu_used_pct != null && machine.gpu_used_pct >= 88 ? "amber" : "aqua"}
-          />
-        )}
+        <CapacityBar
+          label="GPU"
+          value={machine.gpu_used_pct ?? null}
+          detail={machine.gpu_used_pct == null ? "sem GPU" : `${machine.gpu_used_pct.toFixed(0)}% · ${megabytes(machine.gpu_free_mb)}`}
+          tone={machine.gpu_used_pct != null && machine.gpu_used_pct >= 88 ? "amber" : "aqua"}
+        />
         <CapacityBar
           label="RAM"
           value={machine.ram_used_pct ?? null}

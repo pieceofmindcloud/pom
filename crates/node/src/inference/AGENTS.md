@@ -89,20 +89,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   um único dispositivo.
   `fit_plan` registra o snapshot de memória retornado pelo backend, a margem
   efetiva, o orçamento por dispositivo e o uso de VRAM do próprio PID quando
-  `nvidia-smi` o fornece.
-  `preview_fit(model_path, &EngineConfig) -> FitPreview` roda o mesmo
-  `fit_plan` sem seguir para `LoadedModel::load` - devolve só os números
-  (`tensor_split`, camadas de GPU e contexto efetivos, `applied`) e larga os
-  ponteiros crus. É o que a pré-visualização de capacidade do deploy
-  (`webui::capacity_preview_endpoint`) chama, de dentro de `spawn_blocking`;
-  quando `fit_memory` está desligado ou `n_gpu_layers` foi fixado, `fit_plan`
-  retorna cedo e barato, sem tocar a FFI - `FitPreview.attempted`
-  (`fit_can_adjust_layers`) diz se ele chegou a rodar, para o chamador não
-  confundir "fit pulado de propósito" com "fit não coube". `runtime::engine_config_from_node`
-  é a conversão `NodeConfig -> EngineConfig` extraída de `infer_server::run`,
-  reusada pelos dois caminhos; `need_embeddings` continua parâmetro porque a
-  carga real também soma `inference_path.is_moe()`, e o executor externo de
-  MoE fica de fora da pré-visualização. A reserva MTP não abre um modelo nem constrói um
+  `nvidia-smi` o fornece. A reserva MTP não abre um modelo nem constrói um
   grafo especulativo: para arquiteturas conhecidas, `fit_plan` calcula somente
   o KV determinístico dos blocos `nextn` a partir da metadata GGUF, e o coloca
   no último dispositivo da ordem slow-to-fast. O custo de compute fica para a

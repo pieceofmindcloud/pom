@@ -263,11 +263,7 @@ fn usable_memory_bytes(budget_mb: f64, reserve: f64) -> Result<u64> {
     Ok(bytes.floor() as u64)
 }
 
-/// `pub(crate)`: também usado pela pré-visualização de capacidade do
-/// planejador de implantação (`crate::deploy::capacity_preview_endpoint`),
-/// que cobra peso e KV de uma faixa exatamente como o planejador de
-/// fatiamento faz aqui.
-pub(crate) fn range_cost(
+fn range_cost(
     layout: &GgufLayout,
     info: Option<&GgufInfo>,
     kv: Option<KvPlanParams>,

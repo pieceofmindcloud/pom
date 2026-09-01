@@ -1024,48 +1024,6 @@ export interface DeployStep {
   /** The slices this step is assembled from, in layer order. Empty for a
    *  plain step. */
   parts: DeployStepPart[];
-  /** Projected VRAM/RAM this step would take on its target, under the plan's
-   *  settings. Absent until a locally-materialized step is previewed, or when
-   *  that preview failed. TP plans and not-yet-merged steps never carry it. */
-  capacity?: CapacityPreview | null;
-}
-
-/** One GPU's projected use for a deploy step or an aggregated machine.
- *  `src/backend/webui.rs` — `GpuCapacityProjection`. */
-export interface GpuCapacityProjection {
-  index: number;
-  vram_total_mb: number;
-  /** Measured now, before this deployment. */
-  vram_used_mb: number;
-  /** `vram_used_mb` plus the share of this step/machine that would land here. */
-  vram_projected_mb: number;
-}
-
-/** A single deploy step's capacity projection. `src/backend/webui.rs` —
- *  `CapacityPreview`. */
-export interface CapacityPreview {
-  /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
-   *  machine with no discrete GPU — nothing to run out of. */
-  fits: boolean;
-  /** `fits`, but only because `fit_memory` trimmed the request — the
-   *  effective context or GPU layers came back below what was asked. Amber. */
-  degraded?: boolean;
-  /** Operator-ready sentence when there is something to say: context would
-   *  shrink, split is estimated rather than from the native fit, etc. */
-  note?: string | null;
-  effective_n_gpu_layers?: number | null;
-  effective_n_ctx?: number | null;
-  gpus: GpuCapacityProjection[];
-}
-
-/** A whole machine's projection: the sum, per GPU, of every step it would
- *  take. `src/backend/deploy.rs` — `MachineCapacity`. */
-export interface MachineCapacity {
-  fits: boolean;
-  /** Some step of this machine fits only because `fit_memory` trimmed it. */
-  degraded?: boolean;
-  note?: string | null;
-  gpus: GpuCapacityProjection[];
 }
 
 /** One pre-sliced tensor-parallel rank in a deploy plan. */
@@ -1118,10 +1076,6 @@ export interface DeployMachine {
   load: number;
   holds: Array<[number, number]>;
   taking: [number, number] | null;
-  /** Post-deployment projection for this machine — the sum of the steps it
-   *  would take, per GPU. Absent until previewed, or when no step of this
-   *  machine is materialized locally yet. */
-  capacity?: MachineCapacity | null;
 }
 
 export type DeployStrategy = "simple" | "complete";

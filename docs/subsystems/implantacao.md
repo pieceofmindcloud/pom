@@ -360,38 +360,45 @@ como o resto do plano).
 
 - **Uma chamada por `Step`** (`POST /api/ui/deploy/capacity-preview`, handler
   em `webui.rs`), só para passos `!merged` com `target_path` resolvido - um
-  passo que ainda depende de cópia ou de junção não tem arquivo local para ler.
-  Passos em espera aparecem como "projeção após a cópia". Tensor Parallelism
-  fica de fora nesta versão (a divisão real é `split-mode tensor`, o mesmo
-  motivo que desliga `fit_memory` em TP).
-- **Só contas de cabeçalho, nenhum `fit` nativo.** `plan::range_cost` cobra
+  passo que ainda depende de cópia ou de junção não tem arquivo local para o
+  `fit` nativo examinar, e a pré-visualização nunca materializa nada. Passos em
+  espera aparecem como "projeção após a cópia". Tensor Parallelism fica de fora
+  nesta versão (a divisão real é `split-mode tensor`, que o `fit` reutilizado
+  não sabe planejar - o mesmo motivo que desliga `fit_memory` em TP).
+- **Dois números, duas fontes.** `llm::preview_fit` roda o mesmo `fit_plan` do
+  carregamento real (`llama_rs_fit_params`), sem chegar a carregar peso, e
+  devolve como as camadas se dividiriam entre GPUs (`tensor_split`), quantas
+  ficariam na GPU e se o contexto pedido encolheria. `plan::range_cost` cobra
   peso e KV da faixa que ficaria na GPU pela **mesma aritmética** do planejador
-  de fatiamento (`gguf::read_layout` + `kv_budget::kv_bytes_for_layers`) - I/O
-  de cabeçalho GGUF, sem CUDA. A quantização do cache entra:
-  `cache_type_k`/`cache_type_v` saem da config da instalação (como no launch
-  real) e o `kv_budget` tem o tamanho de bloco de cada tipo. O KV só é somado à
-  VRAM quando `offload_kqv` está ligado - sem ele o cache mora na RAM do host
-  mesmo para camadas na GPU, e a projeção anota isso. O buffer de computação do
-  llama.cpp não entra na conta: é o território que `fit_memory_margin_mb` já
-  cobre como reserva. O `fit` nativo (`common_fit_params`) *saberia* dizer se
-  encolheria contexto/camadas, mas carrega o modelo e reserva o grafo de
-  compute para medir - caro e instável fora do caminho de carga real. Ver
-  `## Defeitos anotados`.
-- **Divisão multi-GPU.** Proporcional à VRAM livre de cada dispositivo agora, e
-  uma nota diz que é estimativa - o `split-mode` real do llama.cpp pode diferir.
+  de fatiamento (`gguf::read_layout` + `kv_budget::kv_bytes_for_layers`). A
+  quantização do cache entra: `cache_type_k`/`cache_type_v` saem da config da
+  instalação (como no launch real) e o `kv_budget` tem o tamanho de bloco de
+  cada tipo. O KV só é somado à VRAM quando `offload_kqv` está ligado - sem
+  ele o cache mora na RAM do host mesmo para as camadas que estão na GPU, e a
+  projeção anota isso numa nota. O buffer de computação do llama.cpp não entra
+  na conta: é o território que `fit_memory_margin_mb` já cobre como reserva, e
+  contá-lo duas vezes superestimaria o uso. O executor externo de MoE também fica de fora - o
+  ownership de experts é uma leitura de GGUF à parte que a pré-visualização não
+  faz, então ela subestima a VRAM só nesse caso.
+- **Divisão multi-GPU.** Com `tensor_split` do `fit` (mesmo tamanho da lista de
+  GPUs), a divisão é a decisão real do llama.cpp. Sem isso - `fit` desligado,
+  `n_gpu_layers` fixado pelo operador, ou uma GPU só - a divisão é proporcional
+  à VRAM livre de cada dispositivo agora, e uma nota diz que é estimativa.
 - **Três estados, todos aviso, nenhum bloqueio.** Coerente com a regra
   "memória é estimativa" (`a_target_short_on_memory_warns_and_still_deploys`):
-  - **verde** (`fits`) - a conta crua cabe;
-  - **amber** (`degraded`) - a conta crua não cabe, mas `fit_memory` está
-    ligado e `n_gpu_layers` no padrão, então o "Ajustar à memória" apararia o
-    contexto ou as camadas para caber: a implantação sobe, só não com o pedido
-    inteiro. Heurística a partir da flag, não simulação;
-  - **rósea** (`!fits`) - a conta crua não cabe e o `fit` não pode ajustar
-    (desligado, ou camadas fixadas pelo operador): risco real de OOM na subida.
+  - **verde** - cabe como pedido;
+  - **amber** (`degraded`) - cabe, mas só porque o `fit_memory` apararia o
+    pedido: o contexto ou as camadas de GPU efetivos do `fit` ficaram abaixo
+    do pedido. A nota diz de quanto para quanto;
+  - **rósea** (`!fits`) - não cabe nem no piso do `fit` (`FIT_MIN_CONTEXT`),
+    ou o `fit` está desligado e a projeção crua estoura a placa.
 
   Amber e rósea abrem um `Confirm` nomeando as máquinas antes de implantar (o
   texto muda conforme o caso). `canDeploy` não muda - buraco de cobertura e
-  `blocked` continuam sendo os únicos bloqueios de verdade.
+  `blocked` continuam sendo os únicos bloqueios de verdade. `!applied` do
+  `fit` só vira falha quando ele *chegou a rodar* (`FitPreview.attempted` =
+  `fit_memory` ligado e `n_gpu_layers` no padrão); com as camadas fixadas pelo
+  operador o `fit` é pulado de propósito e a projeção crua peso+KV vale.
 
 `MachineView.capacity` (`MachineCapacity { fits, degraded, note, gpus }`) é a
 soma por GPU dos passos daquela máquina - dois passos não-adjacentes na mesma
@@ -588,17 +595,6 @@ axum na loopback (no caso do undeploy, contando os hits em `/api/ui/unload`).
   recebeu o clique, não de quem foi chamado - as chamadas aos peers usam
   `/api/ui/unload`, que continua valendo para qualquer nó. Registrado também em
   `crates/node/src/backend/AGENTS.md` (Defeitos anotados).
-- **DEFEITO ANOTADO: o `fit` nativo não roda na pré-visualização de capacidade**
-  (§3.1) - `common_fit_params` (`llama_rs_fit_params`) carrega o modelo,
-  cria um contexto e reserva o grafo de compute para **medir**, iterando por
-  vários splits candidatos. Chamá-lo do caminho do plano - por passo, a cada
-  edição, com debounce curto - fez o processo cair com SIGSEGV (exit 139) num
-  modelo DeepSeek-V4 (Gated Delta Net / Lightning Indexer), com muito tráfego
-  de llama.cpp no log antes. A pré-visualização foi trocada para contas de
-  cabeçalho GGUF puras (`plan::range_cost`), sem CUDA; a degradação virou
-  heurística a partir da flag `fit_memory` em vez de simulação. Rodar o `fit`
-  de forma segura exigiria isolá-lo (subprocesso curto, ou um passo explícito
-  "conferir encaixe") - fica em aberto.
 - **DEFEITO ANOTADO: interferência na bateria paralela do plano HTTP** -
   `deploy::whole_route_tests::the_route_plans_a_whole_model_from_the_machines_own_catalog`
   falha na bateria completa paralela, mas passa isoladamente e com

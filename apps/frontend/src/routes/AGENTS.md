@@ -164,14 +164,12 @@ Per-file list:
   `<button>` dentro de `<label>` quebra o nome acessível.
   Os cards do mapa são um **preview do pós-deploy**, não do estado atual: com
   `machine.capacity` no plano, mostram VRAM projetada por GPU que se recalcula
-  a cada ajuste de contexto/lote/sessões (mesmo debounce). A projeção é conta
-  de cabeçalho GGUF pura, sem `fit` nativo (ver `implantacao.md` §3.1). Três
-  estados: verde (`fits` - a conta cabe), amber (`degraded` - não cabe, mas
-  `fit_memory` ligado apararia contexto/camadas para caber), rósea (`!fits` -
-  não cabe e o `fit` não pode ajustar). Amber e rósea abrem um `Confirm`
-  (`capacityAsked`, separado do de cobertura parcial) nomeando as máquinas e a
-  razão, com título/texto conforme o caso; `canDeploy` não muda - é aviso,
-  não bloqueio.
+  a cada ajuste de contexto/lote/sessões (mesmo debounce). Três estados:
+  verde (cabe), amber (`degraded` - cabe só porque o `fit_memory` apararia o
+  contexto ou as camadas), rósea (`!fits` - não cabe nem no piso). Amber e
+  rósea abrem um `Confirm` (`capacityAsked`, separado do de cobertura parcial)
+  nomeando as máquinas e a razão, com título/texto conforme o caso;
+  `canDeploy` não muda - é aviso, não bloqueio.
   Plan edits are debounced 260 ms and validated by `POST /api/ui/deploy/plan`;
   the deploy itself re-surveys the cluster via `POST /api/ui/deploy`, returning
   a job shown through `useJobs`. A failed preflight keeps the backend's reason

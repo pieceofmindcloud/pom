@@ -1047,13 +1047,14 @@ export interface CapacityPreview {
   /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
    *  machine with no discrete GPU — nothing to run out of. */
   fits: boolean;
-  /** The raw projection does not fit, but `fit_memory` is on and would trim
-   *  the context or GPU layers to make room — the deploy starts, just not
-   *  with the requested config. Amber; a warning, not a block. */
+  /** `fits`, but only because `fit_memory` trimmed the request — the
+   *  effective context or GPU layers came back below what was asked. Amber. */
   degraded?: boolean;
-  /** Operator-ready sentence when there is something to say: request that
-   *  won't fit whole, estimated multi-GPU split, KV in RAM, etc. */
+  /** Operator-ready sentence when there is something to say: context would
+   *  shrink, split is estimated rather than from the native fit, etc. */
   note?: string | null;
+  effective_n_gpu_layers?: number | null;
+  effective_n_ctx?: number | null;
   gpus: GpuCapacityProjection[];
 }
 

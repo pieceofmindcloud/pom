@@ -1,6 +1,9 @@
 import { Check, Clipboard, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { CodeViewer } from "./CodeViewer";
+import { ExecutionTelemetry } from "./ExecutionTelemetry";
 import { Button, Mono } from "./ui";
+import type { RequestTrace } from "../lib/chatStream";
 import type { RequestLogEntry } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -38,13 +41,28 @@ function isSensitiveKey(key: string) {
   );
 }
 
+// API credentials use a recognizable provider prefix. Requiring the separator
+// for sk/rk/pk/hf avoids treating ordinary words such as "sketch" as secrets.
+const SECRET_SHAPE = /^(?:(?:sk|rk|pk|hf)[-_][-A-Za-z0-9]+|ghp_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+|AIza[A-Za-z0-9_-]+|AKIA[A-Z0-9]{12,})$/i;
+
+function isCredentialRecord(record: Record<string, unknown>, parentKey?: string) {
+  const key = record.key;
+  if (typeof key !== "string" || !SECRET_SHAPE.test(key)) return false;
+  const parent = normalizedKey(parentKey ?? "");
+  const isApiKeyCollection = parent === "api_keys" || parent.endsWith("_api_keys");
+  const hasCredentialContext = [record.provider, record.service].some(
+    (field) => typeof field === "string" && field.trim().length > 0,
+  );
+  return isApiKeyCollection || hasCredentialContext;
+}
+
 /**
  * Request logs intentionally omit secrets server-side, but this second guard
  * protects copy-to-chat when a request body contains headers or credentials.
  */
 export function redactSensitive(value: unknown, parentKey?: string): unknown {
   if (parentKey && isSensitiveKey(parentKey)) return "[REDACTED]";
-  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
+  if (Array.isArray(value)) return value.map((item) => redactSensitive(item, parentKey));
   if (value === null || typeof value !== "object") return value;
 
   const record = value as Record<string, unknown>;
@@ -54,11 +72,25 @@ export function redactSensitive(value: unknown, parentKey?: string): unknown {
   return Object.fromEntries(
     Object.entries(record).map(([key, child]) => [
       key,
-      namedField && key === "value" && isSensitiveKey(namedField)
+      normalizedKey(key) === "key" && isCredentialRecord(record, parentKey)
+        ? "[REDACTED]"
+        : namedField && key === "value" && isSensitiveKey(namedField)
         ? "[REDACTED]"
         : redactSensitive(child, key),
     ]),
   );
+}
+
+function isRequestTrace(value: unknown): value is RequestTrace {
+  if (value === null || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.model === "string"
+    && typeof record.input_tokens === "number"
+    && typeof record.output_tokens === "number"
+    && typeof record.prefill_ms === "number"
+    && typeof record.total_bytes_sent === "number"
+    && typeof record.total_bytes_received === "number"
+    && Array.isArray(record.hops);
 }
 
 function formatJson(value: unknown) {
@@ -99,6 +131,26 @@ function requestBundle(entry: RequestLogEntry) {
   };
 }
 
+function RequestPath({ entry }: { entry: RequestLogEntry }) {
+  const { t } = useI18n();
+  const source = entry.source !== "none" ? entry.source : null;
+  return (
+    <section className="rounded-lg border border-line/70 bg-surface/30 px-3 py-2.5">
+      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("tokenLogs.requestPath")}</p>
+      <Mono className="mt-1 block break-path text-[0.72rem] text-fg">{source ?? t("tokenLogs.requestPathNone")}</Mono>
+      {entry.hops.length > 0 && (
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5" aria-label={t("tokenLogs.requestPath")}>
+          {entry.hops.map((hop, index) => (
+            <span key={`${hop}:${index}`} className="min-w-0 max-w-full break-path rounded-md border border-line px-2 py-1 font-mono text-[0.66rem] text-muted">
+              {hop}
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function RequestInspector({
   entry,
   onClose,
@@ -110,6 +162,7 @@ export function RequestInspector({
   const [tab, setTab] = useState<InspectorTab>("request");
   const [copied, setCopied] = useState(false);
   const bundle = useMemo(() => requestBundle(entry), [entry]);
+  const trace = useMemo(() => isRequestTrace(entry.telemetry) ? entry.telemetry : null, [entry.telemetry]);
   const sections: Record<InspectorTab, unknown> = {
     request: bundle.REQUEST,
     response: bundle.RESPONSE,
@@ -186,17 +239,20 @@ export function RequestInspector({
           {copied ? t("tokenLogs.copied") : t("tokenLogs.copyRequestData")}
         </Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        <label className="sr-only" htmlFor="request-inspector-json">{labels[tab]}</label>
-        <textarea
-          id="request-inspector-json"
-          readOnly
-          value={formatJson(sections[tab])}
-          spellCheck={false}
-          className="min-h-[18rem] w-full resize-y rounded-lg border border-line bg-ink p-3 font-mono text-[0.72rem] leading-relaxed text-fg outline-none focus:border-iris"
-          aria-label={labels[tab]}
-        />
-        <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t("tokenLogs.copyHint")}</p>
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+        {tab === "telemetry" && (
+          <>
+            <RequestPath entry={entry} />
+            {trace && (
+              <div className="mt-3 shrink-0">
+                <ExecutionTelemetry trace={trace} source={entry.source !== "none" ? entry.source : undefined} />
+              </div>
+            )}
+          </>
+        )}
+        <div className={tab === "telemetry" ? "mt-3 h-[28rem] min-h-[18rem] shrink-0" : "flex min-h-0 flex-1"}>
+          <CodeViewer value={formatJson(sections[tab])} label={labels[tab]} />
+        </div>
       </div>
     </aside>
   );

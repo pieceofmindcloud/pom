@@ -225,7 +225,10 @@ describe("SliceModels", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/modelos/fatiar"]}>
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <SliceModels />
         </LocaleProvider>
@@ -281,7 +284,10 @@ describe("SliceModels", () => {
     };
 
     render(
-      <MemoryRouter initialEntries={["/modelos/fatiar"]}>
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <SliceModels />
         </LocaleProvider>
@@ -314,7 +320,10 @@ describe("SliceModels", () => {
     // The mock hook reads mutable state on render; remount to model the next poll.
     cleanup();
     render(
-      <MemoryRouter initialEntries={["/modelos/fatiar"]}>
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <SliceModels />
         </LocaleProvider>
@@ -362,7 +371,10 @@ describe("SliceModels", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/modelos/fatiar"]}>
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <SliceModels />
         </LocaleProvider>

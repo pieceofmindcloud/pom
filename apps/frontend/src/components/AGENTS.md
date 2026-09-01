@@ -41,8 +41,17 @@ Per-file list:
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
 - `RequestInspector.tsx` - inspetor de objetos usado pela tela Logs. Mantém
-  REQUEST, RESPONSE e TELEMETRIA como JSON formatado e selecionável, e redige
-  campos com formato de credencial antes da cópia para chat.
+  REQUEST, RESPONSE e TELEMETRIA como JSON formatado, colorido e selecionável,
+  ocupa a coluna inteira e redige campos com formato de credencial antes da
+  cópia para chat. O prompt e todos os campos do registro de auditoria ficam
+  na seção correspondente; TELEMETRIA também mostra o caminho da requisição e
+  reutiliza o cartão `ExecutionTelemetry`.
+- `CodeViewer.tsx` - superfície de leitura flexível com realce JSON por
+  `highlight.js`. É somente leitura, mas permanece selecionável e copiável pelo
+  navegador, e é usada nas três seções do inspetor.
+- `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
+  pelo Chat e pelo inspetor de Logs. Mantém a tabela de fases, tempos por hop,
+  rede, ambiente, diagnóstico e demais detalhes em um único componente.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

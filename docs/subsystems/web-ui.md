@@ -143,8 +143,13 @@ prompt, nó e período, lista primeiro as entradas mais recentes em páginas e
 carrega a próxima quando o sentinela entra na viewport. A aba de estatísticas
 consulta `GET /api/ui/requests/stats`, que agrega no servidor por token, nó,
 dia, modelo e peer, além de tokens de entrada/saída, inferência, TTFT, cache de
-prefixo e estados terminais. O inspetor mostra REQUEST, RESPONSE e TELEMETRIA
-em JSON selecionável; o conjunto copiado é rotulado e redige credenciais.
+  prefixo e estados terminais. O inspetor mostra REQUEST, RESPONSE e TELEMETRIA
+  num visualizador JSON colorido, selecionável e de altura total. REQUEST
+  conserva o prompt e os campos completos do registro; TELEMETRIA separa o
+  caminho da requisição do cartão visual `ExecutionTelemetry`, compartilhado
+  com o Chat, e do JSON completo. A cópia é rotulada e redige credenciais,
+  inclusive `key` de registros em `api_keys` quando o valor tem formato de
+  segredo conhecido, sem ocultar campos `key` inocentes.
 `in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais
 distintos. A identidade exibida é o id e o rótulo configurados para a chave;
 nenhum segredo é pedido ao endpoint ou renderizado no navegador.
@@ -335,7 +340,7 @@ harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
 cap 50 sessões, sincronizado entre abas), não do nó. Três coisas a conversa
 guarda além das falas:
 
-- **A telemetria da execução chega fechada** (`ExecutionTelemetry`): a tabela
+- **A telemetria da execução chega fechada** (`components/ExecutionTelemetry.tsx`): a tabela
   de fases e as seções densas de rede e ambiente ficam embaixo da resposta;
   abrir é um clique. A linha de resumo mostra `N do cache` ao lado dos tokens
   de entrada quando o turno reaproveitou o prefixo do turno anterior

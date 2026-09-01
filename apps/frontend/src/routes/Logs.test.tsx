@@ -80,7 +80,7 @@ describe("Logs", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <Logs />
         </LocaleProvider>
@@ -111,12 +111,84 @@ describe("Logs", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Inspecionar requisição" }));
 
-    const requestJson = screen.getByRole("textbox", { name: "REQUEST" }) as HTMLTextAreaElement;
-    expect(requestJson.value).toContain("relatorio trimestral confidencial");
-    expect(requestJson.value).toContain('"stream": false');
+    const requestJson = screen.getByRole("textbox", { name: "REQUEST" });
+    expect(requestJson.textContent).toContain("relatorio trimestral confidencial");
+    expect(requestJson.textContent).toContain('"stream": false');
+    expect(requestJson.querySelector("code.hljs.language-json")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "RESPONSE" }));
-    const responseJson = screen.getByRole("textbox", { name: "RESPONSE" }) as HTMLTextAreaElement;
-    expect(responseJson.value).toContain("servidor reiniciou antes do fim");
+    const responseJson = screen.getByRole("textbox", { name: "RESPONSE" });
+    expect(responseJson.textContent).toContain("servidor reiniciou antes do fim");
+  });
+
+  it("keeps every field returned by the audit record in its inspector section", () => {
+    mocks.useRequestLog.mockReturnValue({
+      data: {
+        ...result,
+        entries: [{
+          ...result.entries[0],
+          completed_at: "2026-08-26T12:00:01Z",
+          result: "resposta gravada",
+          source: "pipeline:node-a→node-b",
+          hops: ["node-a", "node-b"],
+          prompt_tokens: 10,
+          completion_tokens: 4,
+          duration_ms: 1000,
+          timings: {
+            ttft_ms: 25,
+            prefill_ms: 20,
+            prefill_tokens: 10,
+            prefill_tokens_per_sec: 500,
+            generation_ms: 75,
+            generation_tokens: 4,
+            generation_tokens_per_sec: 53.3,
+            total_ms: 100,
+            total_tokens_per_sec: 40,
+          },
+          telemetry: { model: "qwen", input_tokens: 10, output_tokens: 4 },
+          status: "ok",
+          error: null,
+        }],
+      },
+      isError: false,
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <Logs />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspecionar requisição" }));
+    const requestJson = screen.getByRole("textbox", { name: "REQUEST" });
+    expect(requestJson.textContent).toContain('"id": "req-1"');
+    expect(requestJson.textContent).toContain('"received_at": "2026-08-26T12:00:00Z"');
+    expect(requestJson.textContent).toContain('"route": "/v1/chat/completions"');
+    expect(requestJson.textContent).toContain('"model": "qwen"');
+    expect(requestJson.textContent).toContain('"api_key_identity"');
+    expect(requestJson.textContent).toContain('"node_id": "node-a"');
+    expect(requestJson.textContent).toContain('"entry_node_id": "node-a"');
+    expect(requestJson.textContent).toContain('"prompt": "relatorio trimestral confidencial"');
+    expect(requestJson.textContent).toContain('"request_details"');
+
+    fireEvent.click(screen.getByRole("tab", { name: "RESPONSE" }));
+    const responseJson = screen.getByRole("textbox", { name: "RESPONSE" });
+    expect(responseJson.textContent).toContain('"completed_at": "2026-08-26T12:00:01Z"');
+    expect(responseJson.textContent).toContain('"status": "ok"');
+    expect(responseJson.textContent).toContain('"result": "resposta gravada"');
+    expect(responseJson.textContent).toContain('"error": null');
+    expect(responseJson.textContent).toContain('"source": "pipeline:node-a→node-b"');
+    expect(responseJson.textContent).toContain('"hops"');
+    expect(responseJson.textContent).toContain('"prompt_tokens": 10');
+    expect(responseJson.textContent).toContain('"completion_tokens": 4');
+    expect(responseJson.textContent).toContain('"duration_ms": 1000');
+
+    fireEvent.click(screen.getByRole("tab", { name: "TELEMETRIA" }));
+    const telemetryJson = screen.getByRole("textbox", { name: "TELEMETRIA" });
+    expect(telemetryJson.textContent).toContain('"timings"');
+    expect(telemetryJson.textContent).toContain('"telemetry"');
   });
 
   it("passes key and prompt searches to the request query", () => {
@@ -212,6 +284,27 @@ describe("Logs", () => {
     expect(copied).not.toContain("sk-live-secret");
     expect(copied).not.toContain("connection-secret");
     expect(copied).not.toContain("sk-body-secret");
+  });
+
+  it("does not render the removed copy warning", () => {
+    mocks.useRequestLog.mockReturnValue({
+      data: result,
+      isError: false,
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <Logs />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspecionar requisição" }));
+
+    expect(screen.queryByText(/Credenciais viram \[REDACTED\]/)).toBeNull();
+    expect(screen.queryByText(/JSON pode ser selecionado/)).toBeNull();
   });
 
   it("loads the server-aggregated statistics tab", () => {

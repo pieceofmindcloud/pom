@@ -32,7 +32,7 @@ describe("Transfers", () => {
   it("shows remote model downloads in the in-progress screen", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
-        <MemoryRouter>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Transfers />
         </MemoryRouter>
       </LocaleProvider>,

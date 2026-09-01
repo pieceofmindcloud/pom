@@ -6,7 +6,8 @@
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatError, ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
+import { ChatError } from "./Chat";
+import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { LocaleProvider } from "../i18n/provider";
 import type { GenerationTimings, PhaseTrace, RequestTrace } from "../lib/chatStream";
 

@@ -228,8 +228,10 @@ Per-file list:
   sentinel for infinite scroll. The statistics tab reads the server-aggregated
   `GET /api/ui/requests/stats` payload for token, node, day, model, peer,
   prefix-cache, terminal-state and TTFT views. Selecting a row opens the shared
-  object-style inspector in `../components/RequestInspector.tsx`, with
-  selectable JSON REQUEST, RESPONSE and TELEMETRIA sections and redacted copy.
+  object-style inspector in `../components/RequestInspector.tsx`. REQUEST
+  retains the prompt and the complete audit record, RESPONSE and TELEMETRIA
+  use the full-height highlighted viewer, and TELEMETRIA separates the request
+  path from the shared execution card and its JSON. Copy remains redacted.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
@@ -308,8 +310,9 @@ Key logic carriers:
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
   aborts via `AbortController`, persists the session on finish. The only screen
   that talks to the OpenAI-compatible surface.
-- `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` - the
-  closed-by-default telemetry table: per-hop prefill/decode phases, selected
+- `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
+  closed-by-default telemetry card shared by Chat and Logs: per-hop
+  prefill/decode phases, selected
   path versus backend-reported executed engine, mixed/mismatch evidence,
   gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
   optional TP collective table, aggregate transport identity/RTT distribution/

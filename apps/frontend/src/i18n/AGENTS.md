@@ -36,8 +36,10 @@ Two files carry all of it: a static message table and a small provider. Tests:
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
   fonte efetiva.
 - O grupo `tokenLogs.*` cobre a auditoria de requisições: barra de filtros,
-  abas de requisições e estatísticas, métricas agregadas, inspetor JSON e
-  cópia segura. Nenhuma mensagem dessa tela recebe o segredo da chave.
+  abas de requisições e estatísticas, métricas agregadas, inspetor JSON
+  colorido, caminho da requisição e cópia segura. O aviso sobre JSON
+  selecionável foi removido; nenhuma mensagem dessa tela recebe o segredo da
+  chave.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured

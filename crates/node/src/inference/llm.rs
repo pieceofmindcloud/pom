@@ -1416,6 +1416,19 @@ unsafe fn json_from_wrapper(
     }
 }
 
+fn model_metadata_string(model: *const sys::llama_model, key: &str) -> Option<String> {
+    let key = CString::new(key).ok()?;
+    let mut buf = vec![0u8; 32768];
+    let n = unsafe {
+        sys::llama_model_meta_val_str(model, key.as_ptr(), buf.as_mut_ptr() as *mut i8, buf.len())
+    };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// O lado dominante dos buffers `context` + `compute` de um contexto MTP.
 /// Buffers host pequenos de staging não transformam um contexto cujo KV e
 /// grafo estão na VRAM em um recuo para RAM; quando a maioria fica no host, o
@@ -1626,7 +1639,7 @@ const FIT_MIN_CONTEXT: u32 = 4096;
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
-const FIT_MAX_UBATCH: u32 = 512;
+const FIT_MAX_UBATCH: u32 = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FitDeviceMemory {
@@ -1688,6 +1701,22 @@ enum MtpFitMode {
     Ram,
 }
 
+fn mtp_fit_mode_for_model(
+    requested: MtpFitMode,
+    has_nextn: bool,
+    architecture: Option<&str>,
+) -> (MtpFitMode, Option<String>) {
+    if requested == MtpFitMode::Disabled || !has_nextn {
+        return (mtp_mode_for_nextn_availability(requested, has_nextn), None);
+    }
+
+    if let Some(reason) = crate::mtp::mtp_graph_unavailable_reason(architecture) {
+        return (MtpFitMode::Disabled, Some(reason));
+    }
+
+    (requested, None)
+}
+
 fn mtp_mode_for_nextn_availability(requested: MtpFitMode, has_nextn: bool) -> MtpFitMode {
     if !has_nextn {
         MtpFitMode::Disabled
@@ -1737,6 +1766,40 @@ fn fit_memory_margins_with_mtp(
             }
         })
         .collect()
+}
+
+/// Calcula apenas o cache KV do contexto MTP, sem abrir o modelo nem montar
+/// seu grafo. O espaço de compute é deliberadamente deixado para a tentativa
+/// real de `llama_init_from_model`, que pode recuar para a RAM se não couber.
+/// Como o bloco nextn fica no fim, sua reserva vai para o último dispositivo
+/// na ordem slow-to-fast usada pelo fit.
+fn estimate_mtp_vram_costs(
+    info: &crate::gguf::GgufInfo,
+    cfg: &EngineConfig,
+    n_devices: usize,
+) -> Option<Vec<usize>> {
+    let mut costs = vec![0usize; n_devices];
+    if !cfg.offload_kqv || n_devices == 0 {
+        return Some(costs);
+    }
+
+    let block_count = info.block_count?;
+    let last_layer = block_count.checked_sub(1)?;
+    let nextn_layers = info.nextn_predict_layers.unwrap_or(1).max(1);
+    let first_nextn_layer = block_count.checked_sub(nextn_layers)?;
+    let geometry = info
+        .kv_geometry_for_range(first_nextn_layer, last_layer)
+        .ok()?;
+    let bytes = crate::kv_budget::kv_bytes_for_layers(
+        u64::from(cfg.n_ctx),
+        u64::from(kv_seq_budget(cfg.max_sessions)),
+        &geometry,
+        cfg.cache_type_k,
+        cfg.cache_type_v,
+    )
+    .ok()?;
+    costs[n_devices - 1] = usize::try_from(bytes).ok()?;
+    Some(costs)
 }
 
 fn fit_memory_snapshots(memories: &[FitDeviceMemory], margins: &[usize]) -> Vec<FitMemorySnapshot> {
@@ -1853,6 +1916,60 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
+    fn arquitetura_com_nextn_sem_grafo_desliga_o_fit_mtp_com_motivo() {
+        let (mode, reason) = mtp_fit_mode_for_model(MtpFitMode::Vram, true, Some("graniteswitch"));
+
+        assert_eq!(mode, MtpFitMode::Disabled);
+        assert_eq!(
+            reason.as_deref(),
+            Some("a arquitetura graniteswitch não possui grafo MTP suportado pelo llama.cpp")
+        );
+    }
+
+    #[test]
+    fn arquitetura_com_grafo_mtp_mantem_a_tentativa_em_vram() {
+        assert_eq!(
+            mtp_fit_mode_for_model(MtpFitMode::Vram, true, Some("qwen35moe")),
+            (MtpFitMode::Vram, None)
+        );
+    }
+
+    #[test]
+    fn reserva_mtp_analitica_calcula_so_o_kv_e_coloca_no_ultimo_dispositivo() {
+        let info = crate::gguf::GgufInfo {
+            block_count: Some(41),
+            nextn_predict_layers: Some(1),
+            attention_head_count_kv: Some(vec![2]),
+            attention_key_length: Some(vec![64]),
+            attention_value_length: Some(vec![64]),
+            ..Default::default()
+        };
+        let cfg = EngineConfig {
+            n_ctx: 4096,
+            max_sessions: 1,
+            offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
+            fit_memory: true,
+            fit_memory_margin_mb: 256,
+            n_batch: 128,
+            n_gpu_layers: 99,
+            n_threads: 0,
+            need_embeddings: false,
+            mtp: true,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+        };
+
+        assert_eq!(
+            estimate_mtp_vram_costs(&info, &cfg, 2),
+            Some(vec![0, 2 * 4096 * 2 * 64 * 2 * 2])
+        );
+    }
+
+    #[test]
     fn pedido_mtp_reserva_o_custo_do_segundo_contexto_em_cada_dispositivo() {
         let margins = vec![256 * MIB, 256 * MIB];
         let mtp_cost = vec![727 * MIB, 311 * MIB];
@@ -1902,30 +2019,6 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn sonda_sem_nextn_nao_reserva_memoria() {
-        let value = serde_json::json!({
-            "has_nextn": false,
-            "buffers": []
-        });
-
-        assert_eq!(mtp_vram_costs_from_json(&value, 2), Some(vec![0, 0]));
-    }
-
-    #[test]
-    fn sonda_mtp_distribui_o_custo_pelo_dispositivo_do_buffer() {
-        let value = serde_json::json!({
-            "has_nextn": true,
-            "buffers": [
-                {"host": false, "device_index": 1, "context": 300, "compute": 11},
-                {"host": false, "device_index": 0, "context": 700, "compute": 13},
-                {"host": true, "device_index": null, "context": 99, "compute": 99}
-            ]
-        });
-
-        assert_eq!(mtp_vram_costs_from_json(&value, 2), Some(vec![713, 311]));
-    }
-
-    #[test]
     fn mtp_desmarcado_nao_reserva_orcamento() {
         let margins = vec![256 * MIB, 256 * MIB];
         let mtp_cost = vec![727 * MIB, 311 * MIB];
@@ -1937,27 +2030,10 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
-    fn local_do_mtp_e_dominado_pelos_bytes_de_contexto_e_compute() {
-        let vram = serde_json::json!({
-            "buffers": [
-                {"device": "MTL0", "host": false, "context": 900, "compute": 700},
-                {"device": "CPU", "host": true, "context": 0, "compute": 100}
-            ]
-        });
-        let ram = serde_json::json!({
-            "buffers": [
-                {"device": "CPU", "host": true, "context": 900, "compute": 700},
-                {"device": "CPU", "host": true, "context": 0, "compute": 100}
-            ]
-        });
-
+    fn mtp_desmarcado_nao_ativa_o_preflight_da_arquitetura() {
         assert_eq!(
-            mtp_allocation_from_context_memory(&vram),
-            Some(MtpAllocation::Vram)
-        );
-        assert_eq!(
-            mtp_allocation_from_context_memory(&ram),
-            Some(MtpAllocation::Ram)
+            mtp_fit_mode_for_model(MtpFitMode::Disabled, true, Some("graniteswitch")),
+            (MtpFitMode::Disabled, None)
         );
     }
 }
@@ -1980,6 +2056,9 @@ struct FitPlan {
     /// VRAM. `Ram` keeps those weights out of the target so the CPU companion
     /// can own them without changing the primary placement.
     mtp_mode: MtpFitMode,
+    /// Razão para manter o MTP desligado quando a metadata anuncia `nextn`,
+    /// mas o fork não possui um grafo seguro para a arquitetura.
+    mtp_unavailable_reason: Option<String>,
     applied: bool,
 }
 
@@ -1997,64 +2076,23 @@ fn empty_fit_plan(cfg: &EngineConfig) -> FitPlan {
 }
 
 fn empty_fit_plan_with_mtp_mode(cfg: &EngineConfig, mtp_mode: MtpFitMode) -> FitPlan {
+    empty_fit_plan_with_mtp_mode_and_reason(cfg, mtp_mode, None)
+}
+
+fn empty_fit_plan_with_mtp_mode_and_reason(
+    cfg: &EngineConfig,
+    mtp_mode: MtpFitMode,
+    mtp_unavailable_reason: Option<String>,
+) -> FitPlan {
     FitPlan {
         config: cfg.clone(),
         tensor_split: Vec::new(),
         tensor_buft_overrides: Vec::new(),
         devices: Vec::new(),
         mtp_mode,
+        mtp_unavailable_reason,
         applied: false,
     }
-}
-
-fn mtp_vram_costs(
-    model_path: &CStr,
-    mparams: &sys::llama_model_params,
-    cparams: &sys::llama_context_params,
-    n_devices: usize,
-) -> Option<Vec<usize>> {
-    let value = unsafe {
-        json_from_wrapper(|out| {
-            sys::llama_rs_mtp_context_memory_json(model_path.as_ptr(), mparams, cparams, out)
-        })
-    }?;
-    mtp_vram_costs_from_json(&value, n_devices)
-}
-
-fn mtp_vram_costs_from_json(value: &serde_json::Value, n_devices: usize) -> Option<Vec<usize>> {
-    if value.get("has_nextn").and_then(serde_json::Value::as_bool) == Some(false) {
-        return Some(vec![0; n_devices]);
-    }
-    let mut costs = vec![0usize; n_devices];
-    for buffer in value.get("buffers")?.as_array()? {
-        if buffer
-            .get("host")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let Some(index) = buffer
-            .get("device_index")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|index| usize::try_from(index).ok())
-            .filter(|&index| index < n_devices)
-        else {
-            continue;
-        };
-        let bytes = buffer
-            .get("context")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-            .saturating_add(
-                buffer
-                    .get("compute")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0),
-            );
-        costs[index] = costs[index].saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX));
-    }
-    Some(costs)
 }
 
 /// O POM exporta o residual pelo callback, mas o llama.cpp também pode tentar
@@ -2085,18 +2123,24 @@ pub(crate) fn apply_context_batch_params(
 }
 
 fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Result<FitPlan> {
-    let mtp_mode = if mtp_mode == MtpFitMode::Disabled {
-        MtpFitMode::Disabled
+    let (mtp_mode, mtp_unavailable_reason) = if mtp_mode == MtpFitMode::Disabled {
+        (MtpFitMode::Disabled, None)
     } else {
-        let has_nextn =
-            crate::gguf::has_nextn_tensors(std::path::Path::new(model_path)).unwrap_or(false);
+        let path = std::path::Path::new(model_path);
+        let has_nextn = crate::gguf::has_nextn_tensors(path).unwrap_or(false);
+        let architecture = crate::gguf::read_info(path)
+            .ok()
+            .and_then(|info| info.architecture);
+        let (mode, reason) = mtp_fit_mode_for_model(mtp_mode, has_nextn, architecture.as_deref());
         if !has_nextn {
             tracing::info!(
                 model = %model_path,
                 "MTP indisponível: o arquivo não traz tensores nextn"
             );
+        } else if let Some(reason) = reason.as_deref() {
+            warn!(model = %model_path, reason, "MTP indisponível para a arquitetura do modelo");
         }
-        mtp_mode_for_nextn_availability(mtp_mode, has_nextn)
+        (mode, reason)
     };
 
     if !fit_can_adjust_layers(cfg) {
@@ -2106,9 +2150,10 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
                 cfg.n_gpu_layers
             );
         }
-        return Ok(empty_fit_plan_with_mtp_mode(
+        return Ok(empty_fit_plan_with_mtp_mode_and_reason(
             cfg,
             mtp_mode_without_gpu_fit(mtp_mode),
+            mtp_unavailable_reason,
         ));
     }
 
@@ -2294,9 +2339,10 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
         warn!(
             "llama.cpp fit não encontrou uma configuração automática (status {primary_status}); usando os parâmetros solicitados sem MTP na GPU"
         );
-        return Ok(empty_fit_plan_with_mtp_mode(
+        return Ok(empty_fit_plan_with_mtp_mode_and_reason(
             cfg,
             mtp_mode_without_gpu_fit(mtp_mode),
+            mtp_unavailable_reason,
         ));
     }
 
@@ -2310,19 +2356,23 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
     if mtp_mode == MtpFitMode::Vram && primary_gpu_layers == -1 {
         let mut mtp_mparams = make_model_params(true);
         let mtp_cparams = make_context_params();
-        let mut joint_margins = if let Some(mtp_cost) =
-            mtp_vram_costs(&path, &mtp_mparams, &mtp_cparams, n_devices)
+        let mut joint_margins = match crate::gguf::read_info(std::path::Path::new(model_path))
+            .ok()
+            .and_then(|info| estimate_mtp_vram_costs(&info, cfg, n_devices))
         {
-            tracing::info!(
-                mtp_vram_cost = ?mtp_cost,
-                "llama.cpp fit reservou o contexto MTP por dispositivo após preservar o modelo principal"
-            );
-            fit_memory_margins_with_mtp(&margins, &mtp_cost, MtpFitMode::Vram)
-        } else {
-            warn!(
-                "llama.cpp não mediu o contexto MTP; a tentativa de recuo para RAM ficará disponível se a GPU falhar"
-            );
-            margins.clone()
+            Some(mtp_cost) => {
+                tracing::info!(
+                    mtp_vram_cost_estimate = ?mtp_cost,
+                    "llama.cpp fit reservou o KV estimado do contexto MTP por dispositivo"
+                );
+                fit_memory_margins_with_mtp(&margins, &mtp_cost, MtpFitMode::Vram)
+            }
+            None => {
+                warn!(
+                    "não foi possível estimar o KV do contexto MTP; o grafo não será sondado e o recuo para RAM ficará disponível se a GPU falhar"
+                );
+                margins.clone()
+            }
         };
         let mut mtp_tensor_split = vec![0.0_f32; n_devices];
         let mut mtp_tensor_buft_overrides = vec![
@@ -2385,6 +2435,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
         tensor_buft_overrides: selected_tensor_buft_overrides,
         devices: ordered_devices,
         mtp_mode: selected_mtp_mode,
+        mtp_unavailable_reason,
         applied: true,
     })
 }
@@ -2396,6 +2447,10 @@ impl LoadedModel {
 
     pub(crate) fn has_nextn_weights(&self) -> bool {
         self.mtp_weights_loaded
+    }
+
+    pub(crate) fn model_architecture(&self) -> Option<String> {
+        model_metadata_string(self.model, "general.architecture")
     }
 
     /// Devolve os pesos à GPU agora, em vez de esperar o `Drop`.
@@ -2877,6 +2932,12 @@ impl LlmEngine {
             vram_plan.applied,
             vram_plan.config.n_gpu_layers,
         )?;
+        if let Some(reason) = vram_plan.mtp_unavailable_reason.clone() {
+            // The plan deliberately loaded the target without nextn after
+            // rejecting its architecture. Preserve that more useful reason
+            // instead of exposing the later, generic no-nextn consequence.
+            engine.mtp_unavailable_reason = Some(reason);
+        }
         let mut mtp_fallback_used = false;
 
         let mtp_vram_error = engine.mtp_initial_context_error.clone();
@@ -3075,6 +3136,7 @@ impl LlmEngine {
             },
         )?;
         let loaded = LoadedModel::load(model_path, &plan)?;
+        let mtp_unavailable_reason = plan.mtp_unavailable_reason.clone();
         let mtp_loaded =
             if cfg.mtp && plan.mtp_mode == MtpFitMode::Ram && cfg.mtp_cpu_fallback_enabled {
                 match LoadedModel::load_mtp_cpu(model_path, &plan.config) {
@@ -3103,6 +3165,9 @@ impl LlmEngine {
                 engine.fit_memory_applied = plan.applied;
                 engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
                 engine.effective_n_ubatch = effective_n_ubatch(&por_contexto);
+                if let Some(reason) = mtp_unavailable_reason.clone() {
+                    engine.mtp_unavailable_reason = Some(reason);
+                }
                 Ok(engine)
             })
             .collect()
@@ -3216,30 +3281,45 @@ impl LlmEngine {
         // precisa do `ctx` já criado para ligar a saída do estado oculto nele.
         let (mtp, mtp_unavailable_reason, mtp_initial_context_error) = if cfg.mtp {
             if let Some(model_mtp) = Self::mtp_model_for_attach(&loaded, mtp_loaded.as_deref()) {
-                let mtp_model = mtp_loaded.clone();
-                match crate::mtp::MtpDrafter::attach(
-                    model_mtp,
-                    ctx,
-                    cfg,
-                    n_embd_out,
-                    n_vocab,
-                    mtp_model,
-                    mtp_offload_kqv,
-                ) {
-                    Ok(Some(d)) => (Some(d), None, None),
-                    Ok(None) => {
-                        tracing::info!(
-                            "MTP pedido, mas este modelo não traz bloco nextn \
-                             - seguindo sem MTP"
-                        );
-                        (None, Some(MTP_NO_NEXTN_REASON.to_string()), None)
-                    }
-                    // Falhar aqui derrubaria um nó que serve bem sem MTP. A
-                    // aceleração é opcional; a inferência não.
-                    Err(e) => {
-                        let reason = e.to_string();
-                        warn!("MTP indisponível neste nó: {reason}");
-                        (None, Some(reason.clone()), Some(reason))
+                let preflight_reason = if !model_mtp.has_nextn_weights()
+                    || crate::mtp::nextn_layers(model_mtp.model_ptr()) <= 0
+                {
+                    Some(MTP_NO_NEXTN_REASON.to_string())
+                } else {
+                    crate::mtp::mtp_graph_unavailable_reason(
+                        model_mtp.model_architecture().as_deref(),
+                    )
+                };
+
+                if let Some(reason) = preflight_reason {
+                    tracing::info!(reason, "MTP indisponível antes da criação do contexto");
+                    (None, Some(reason), None)
+                } else {
+                    let mtp_model = mtp_loaded.clone();
+                    match crate::mtp::MtpDrafter::attach(
+                        model_mtp,
+                        ctx,
+                        cfg,
+                        n_embd_out,
+                        n_vocab,
+                        mtp_model,
+                        mtp_offload_kqv,
+                    ) {
+                        Ok(Some(d)) => (Some(d), None, None),
+                        Ok(None) => {
+                            tracing::info!(
+                                "MTP pedido, mas este modelo não traz bloco nextn \
+                                 - seguindo sem MTP"
+                            );
+                            (None, Some(MTP_NO_NEXTN_REASON.to_string()), None)
+                        }
+                        // Falhar aqui derrubaria um nó que serve bem sem MTP. A
+                        // aceleração é opcional; a inferência não.
+                        Err(e) => {
+                            let reason = e.to_string();
+                            warn!("MTP indisponível neste nó: {reason}");
+                            (None, Some(reason.clone()), Some(reason))
+                        }
                     }
                 }
             } else {
@@ -3575,21 +3655,7 @@ impl LlmEngine {
     }
 
     fn model_metadata_string(&self, key: &str) -> Option<String> {
-        let key = CString::new(key).ok()?;
-        let mut buf = vec![0u8; 32768];
-        let n = unsafe {
-            sys::llama_model_meta_val_str(
-                self.loaded.model,
-                key.as_ptr(),
-                buf.as_mut_ptr() as *mut i8,
-                buf.len(),
-            )
-        };
-        if n <= 0 {
-            return None;
-        }
-        buf.truncate(n as usize);
-        Some(String::from_utf8_lossy(&buf).into_owned())
+        model_metadata_string(self.loaded.model, key)
     }
 
     /// Apply the model's built-in Jinja2 chat template.

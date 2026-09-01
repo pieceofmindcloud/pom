@@ -6,7 +6,6 @@
 #include <cstring>
 #include <exception>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <stdint.h>
@@ -541,52 +540,6 @@ extern "C" llama_rs_status llama_rs_context_flash_attn(
         *out_enabled = cparams.flash_attn;
         *out_auto    = cparams.auto_fa;
         return LLAMA_RS_STATUS_OK;
-    } catch (const std::exception &) {
-        return LLAMA_RS_STATUS_EXCEPTION;
-    }
-}
-
-extern "C" llama_rs_status llama_rs_mtp_context_memory_json(
-        const char * path_model,
-        const struct llama_model_params * mparams,
-        const struct llama_context_params * cparams,
-        char ** out_json) {
-    if (!path_model || !mparams || !cparams || !out_json) {
-        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
-    }
-    *out_json = nullptr;
-
-    try {
-        // The model loader still builds the graph and selects the real
-        // backends, but no weight buffer is allocated during this probe.
-        llama_model_params mparams_copy = *mparams;
-        mparams_copy.no_alloc = true;
-        mparams_copy.load_mode = LLAMA_LOAD_MODE_NONE;
-        mparams_copy.load_mtp = true;
-        std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
-            llama_model_load_from_file(path_model, mparams_copy), &llama_model_free);
-        if (!model) {
-            return LLAMA_RS_STATUS_EXCEPTION;
-        }
-
-        if (llama_model_n_layer_nextn(model.get()) <= 0) {
-            const nlohmann::ordered_json out = {{"has_nextn", false}, {"buffers", nlohmann::ordered_json::array()}};
-            *out_json = llama_rs_dup_string(out.dump());
-            return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
-        }
-
-        llama_context_params cparams_copy = *cparams;
-        cparams_copy.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
-        std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
-            llama_init_from_model(model.get(), cparams_copy), &llama_free);
-        if (!ctx) {
-            return LLAMA_RS_STATUS_EXCEPTION;
-        }
-
-        nlohmann::ordered_json out = llama_rs_context_memory_value(ctx.get(), model.get());
-        out["has_nextn"] = true;
-        *out_json = llama_rs_dup_string(out.dump());
-        return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
     } catch (const std::exception &) {
         return LLAMA_RS_STATUS_EXCEPTION;
     }

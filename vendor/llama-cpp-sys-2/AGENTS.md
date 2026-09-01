@@ -64,7 +64,6 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 | `llama_rs_model_placement_json` | onde cada camada ficou de verdade, lendo o buffer de cada tensor em `tensors_by_name` mais `dev_layer(il)` |
 | `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV e `host` distingue RAM de VRAM |
 | `llama_rs_context_flash_attn` | o Flash Attention **resolvido**, de `get_cparams()`. O padrão do `llama.h` é `AUTO`, o llama.cpp sonda o backend ao criar o contexto e nada público devolve a decisão; `out_auto` diz se ela veio da sonda ou do pedido |
-| `llama_rs_mtp_context_memory_json` | sondagem seca do contexto `MTP`, sem pesos alocados, devolvendo o custo de `context` + `compute` com `device_index` por GPU |
 | `llama_rs_get_devices` | os handles elegíveis na mesma ordem padrão que o llama.cpp usaria |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
 | `llama_rs_benchmark_device` | uma pontuação de um grafo GGML genérico, com cache por handle no processo; zero significa velocidade indeterminável |
@@ -78,15 +77,16 @@ padrão. O probe não contém tabela de hardware nem nomes de fabricantes.
 
 `llama_rs_fit_params` eleva temporariamente o limite de verbosidade do logger
 comum para `TRACE` e o restaura ao sair, porque `common_fit_params` registra a
-decisão nesses níveis e não é thread-safe. O `common/fit.cpp` do checkout local
-também captura `free` e `total` antes de criar o contexto seco: mesmo com
-`no_alloc=true`, o contexto aloca o estado recorrente, que já aparece no
-breakdown e não pode ser descontado do livre antes da projeção. Essa é uma
-divergência local do fork e precisa acompanhar a branch `pom-tensor-parallel`
-usada no build. A regressão da contabilidade sintética fica em
-`llama.cpp/tests/test-fit-memory.cpp` e no alvo CTest `test-fit-memory`.
+decisão nesses níveis e não é thread-safe. O fit MTP no POM não usa um wrapper
+de sondagem seca: calcula o KV determinístico a partir da metadata GGUF e
+deixa a construção do grafo para a tentativa real, que tem recuo recuperável
+para a RAM. O `common/fit.cpp` do checkout local captura `free` e `total` antes
+de criar seu contexto de medição genérico. Essa é uma divergência local do
+fork e precisa acompanhar a branch `pom-tensor-parallel` usada no build. A
+regressão da contabilidade sintética fica em `llama.cpp/tests/test-fit-memory.cpp`
+e no alvo CTest `test-fit-memory`.
 
-As duas devolvem JSON de `malloc` que **tem que** voltar por
+As funções que devolvem JSON retornam strings de `malloc` que **têm que** voltar por
 `llama_rs_string_free`; do lado Rust quem faz isso é `json_from_wrapper` em
 `crates/node/src/inference/llm.rs`, e é por isso que a liberação mora lá e não
 em cada chamador.

@@ -122,6 +122,54 @@ pub fn nextn_layers(model: *mut sys::llama_model) -> i32 {
     unsafe { sys::llama_model_n_layer_nextn(model as *const _) }
 }
 
+/// Arquiteturas para as quais o fork atual implementa `DECODER_MTP`.
+///
+/// `llama.h` expõe `llama_model_n_layer_nextn`, mas esse valor é metadata do
+/// arquivo e não prova que `build_arch_graph(DECODER_MTP)` existe. O loader
+/// também não oferece uma consulta pública para essa segunda capacidade. A
+/// lista é, portanto, deliberadamente fechada e acompanha os arquivos de
+/// `llama.cpp/src/models` que escolhem um `graph_mtp`; arquitetura nova ou
+/// desconhecida fica sem MTP até ganhar uma entrada verificada aqui.
+const MTP_GRAPH_ARCHITECTURES: &[&str] = &[
+    "bailingmoe3",
+    "cohere2moe",
+    "deepseek2",
+    "deepseek32",
+    "deepseek4",
+    "glm-dsa",
+    "hy_v3",
+    "mimo2",
+    "nemotron_h_moe",
+    "qwen3next",
+    "qwen35",
+    "qwen35moe",
+    "step35",
+];
+
+/// Retorna a razão operacional para não criar um grafo MTP, ou `None` quando
+/// o fork conhece o grafo da arquitetura. Falhar fechado é importante: um
+/// `GGML_ASSERT` no construtor do grafo aborta o processo e não pode ser
+/// convertido em um `Result` depois do fato.
+pub(crate) fn mtp_graph_unavailable_reason(architecture: Option<&str>) -> Option<String> {
+    let architecture = architecture
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if architecture.is_some_and(|value| {
+        MTP_GRAPH_ARCHITECTURES
+            .iter()
+            .any(|supported| supported.eq_ignore_ascii_case(value))
+    }) {
+        return None;
+    }
+
+    Some(match architecture {
+        Some(value) => {
+            format!("a arquitetura {value} não possui grafo MTP suportado pelo llama.cpp")
+        }
+        None => "a arquitetura do modelo não foi informada; grafo MTP não habilitado".to_string(),
+    })
+}
+
 #[cfg(test)]
 fn context_params(cfg: &crate::llm::EngineConfig) -> sys::llama_context_params {
     context_params_with_offload(cfg, cfg.offload_kqv)
@@ -181,13 +229,20 @@ impl MtpDrafter {
         if !model_mtp.has_nextn_weights() || nextn_layers(model_mtp.model_ptr()) <= 0 {
             return Ok(None);
         }
+        if mtp_graph_unavailable_reason(model_mtp.model_architecture().as_deref()).is_some() {
+            return Ok(None);
+        }
 
         // A janela e o lote acompanham o contexto alvo: o rascunho anda
         // posição a posição com ele, e um cache menor faria o `seq_rm` da
         // rodada seguinte apagar o que ainda vale. O microlote de computação
         // segue a política compartilhada do contexto principal, para que a
         // reserva do grafo não cresça desnecessariamente com n_batch.
-        let cparams = context_params_with_offload(cfg, offload_kqv);
+        let mut cparams = context_params_with_offload(cfg, offload_kqv);
+        // The MTP graph exposes logits and `h_nextn`, not generic embeddings.
+        // Keeping this explicit protects the context if the shared config
+        // later starts requesting residual embeddings for a MoE target.
+        cparams.embeddings = false;
         // Mesmo orçamento de sequências do contexto alvo: `mtp_draft` recebe o
         // `seq_id` de lá, que a partir do desenho de duas sequências por sessão
         // pode ser o da geração (`prompt_seq + max_sessions`). Sem isto o
@@ -525,6 +580,20 @@ mod tests {
 
         assert!(!params.offload_kqv);
         assert!(!params.op_offload);
+    }
+
+    #[test]
+    fn arquitetura_com_nextn_mas_sem_grafo_mtp_e_recusada_antes_do_contexto() {
+        let reason = mtp_graph_unavailable_reason(Some("graniteswitch"))
+            .expect("arquitetura sem grafo MTP precisa ser recusada");
+
+        assert!(reason.contains("graniteswitch"));
+        assert!(reason.contains("grafo MTP"));
+    }
+
+    #[test]
+    fn qwen35moe_e_uma_arquitetura_de_grafo_mtp_conhecida() {
+        assert_eq!(mtp_graph_unavailable_reason(Some("qwen35moe")), None);
     }
 
     #[test]

@@ -83,11 +83,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   um único dispositivo.
   `fit_plan` registra o snapshot de memória retornado pelo backend, a margem
   efetiva, o orçamento por dispositivo e o uso de VRAM do próprio PID quando
-  `nvidia-smi` o fornece. O fit chama a ponte com trace temporariamente visível
-  para que o raciocínio do llama.cpp fique no log. O estado recorrente da
-  sondagem seca é contado no breakdown, mas o fork captura `free` antes de
-  criar esse contexto, pois os buffers recorrentes são reais mesmo com
-  `no_alloc=true`.
+  `nvidia-smi` o fornece. A reserva MTP não abre um modelo nem constrói um
+  grafo especulativo: para arquiteturas conhecidas, `fit_plan` calcula somente
+  o KV determinístico dos blocos `nextn` a partir da metadata GGUF, e o coloca
+  no último dispositivo da ordem slow-to-fast. O custo de compute fica para a
+  criação real do contexto, que pode recuar para a RAM sem abortar o processo.
   A captura identifica o eixo de tokens pela quantidade conhecida de tokens do
   microlote físico e pela forma do tensor. `n_embd_inp` valida a forma 2D ou
   com eixos extras singleton; quando há um eixo extra não singleton,
@@ -126,9 +126,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   VRAM e, se permitido, carrega o modelo MTP CPU-only com
   `offload_kqv=false` e `op_offload=false`. Um override só nos pesos `nextn`
   não basta porque o scheduler também pode escolher o dispositivo da camada e
-  do output head. A sondagem reporta `context` e `compute` por dispositivo;
-  este último pode acompanhar `n_ctx` pela máscara de atenção do grafo, então
-  a janela completa continua necessária para manter o cache pareado.
+  do output head. Antes do fit MTP, `llm.rs` lê `general.architecture` e aplica
+  uma lista fechada das arquiteturas cujo grafo `LLM_GRAPH_TYPE_DECODER_MTP`
+  existe no fork local. A API pública do llama.cpp não expõe uma consulta de
+  suporte; arquitetura desconhecida fica indisponível, com razão no
+  `mtp_unavailable_reason`, antes de qualquer contexto MTP. A reserva do fit
+  calcula apenas o KV por geometria GGUF, sem abrir contexto seco ou somar
+  `compute`: uma medição exata teria de construir o grafo e poderia abortar no
+  `GGML_ASSERT` para uma arquitetura sem os resultados esperados. O contexto
+  real MTP desliga explicitamente `embeddings`, pois sua saída é logits e
+  `h_nextn`, não embeddings genéricos. MTP desligado não lê essa metadata, não
+  estima orçamento e não tenta anexar contexto.
 - `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
   `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do

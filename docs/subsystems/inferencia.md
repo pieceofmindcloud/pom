@@ -133,17 +133,29 @@ ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
 margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
 vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
-Quando `mtp_enabled=true`, o fit faz antes uma segunda sondagem seca com
-`ctx_type=MTP`: o modelo é aberto sem pesos alocados, o contexto `nextn` é
-reservado com o mesmo `n_ctx`, `n_seq_max`, cache e microlote, e os bytes de
-`context` + `compute` são somados à margem do dispositivo correspondente para
-uma segunda tentativa opcional. Primeiro, o fit encaixa o modelo principal e
-seu contexto sem MTP. A tentativa conjunta só é aceita quando preserva esse
-encaixe integral; se reduzir `n_gpu_layers` ou falhar, o plano principal vence,
-o alvo fica sem pesos `nextn` na VRAM e o MTP recua para o modelo companheiro em
-RAM, se permitido, ou fica indisponível. Assim a reserva continua valendo por
-dispositivo sem deixar a otimização deslocar camadas que cada token precisa
-executar. MTP desligado não executa essa sondagem nem adiciona orçamento.
+Quando `mtp_enabled=true`, o fit primeiro encaixa o modelo principal e seu
+contexto sem MTP. Antes de considerar a reserva opcional, lê
+`general.architecture` e verifica uma lista fechada das arquiteturas cujo fork
+local implementa `LLM_GRAPH_TYPE_DECODER_MTP`. A API pública do llama.cpp não
+expõe uma consulta de suporte ao grafo; metadata desconhecida ou arquitetura
+fora dessa lista desliga o MTP antes de criar qualquer contexto e publica a
+razão em `mtp_unavailable_reason`. O peso `nextn` sozinho não é prova de que o
+grafo é válido.
+
+Para uma arquitetura conhecida, a reserva conjunta calcula somente o KV dos
+blocos `nextn` por geometria GGUF, usando `n_ctx`, `kv_seq_budget` e os tipos de
+cache configurados, e coloca esse custo no último dispositivo da ordem
+slow-to-fast. Ela não abre modelo nem constrói um contexto MTP seco para medir
+`compute`: a medição exata exigiria construir o grafo, e um assert interno do
+llama.cpp nessa etapa abortaria o nó antes que o POM pudesse recuar. O custo de
+compute é, portanto, validado apenas na tentativa real de criar o contexto,
+que pode recuar para a RAM. A tentativa conjunta só é aceita quando preserva
+esse encaixe integral; se reduzir `n_gpu_layers` ou falhar, o plano principal
+vence, o alvo fica sem pesos `nextn` na VRAM e o MTP recua para o modelo
+companheiro em RAM, se permitido, ou fica indisponível. Assim a reserva
+conservadora protege as camadas que cada token precisa executar sem tornar o
+fit uma fonte de abortos. MTP desligado não lê metadata MTP, não estima
+orçamento e não tenta anexar contexto.
 Antes de criar o contexto de rascunho, o runtime confere a evidência dos
 tensores `nextn` no GGUF e se eles foram pedidos em
 `llama_model_params.load_mtp`; `llama_model_n_layer_nextn` sozinho não basta,
@@ -163,26 +175,15 @@ O `/health` publica `mtp_ready`, `mtp_allocation` (`vram` ou `ram`) e
 `mtp_unavailable_reason`. A tela mostra a localização em todo sucesso e a
 razão operacional quando o modelo não tem `nextn`, quando o recuo foi recusado
 ou quando VRAM e RAM falharam.
-O campo `context_memory` separa o cache KV (`context`) do buffer de cálculo
-(`compute`). A sondagem seca do MTP soma os dois, por dispositivo. O buffer de
-1.058 MiB observado em um grafo de 62 nós é, portanto, uma reserva do
-scheduler, não outro cache KV. No llama.cpp, `sched_reserve` limita os tokens
-do grafo ao microlote, mas a máscara de atenção é criada com `n_kv` da janela
-inteira do cache; por isso parte do buffer de cálculo acompanha o `n_ctx`
-grande mesmo quando `n_ubatch` é 128. O grafo MTP também cria seus tensores de
-entrada por microlote, mas não elimina essa máscara dependente da janela.
-Reduzir apenas o `n_ctx` do contexto MTP quebraria o pareamento com o cache do
-alvo e a remoção de sequências entre rodadas. Como o buffer e o cache são
-reservados pelo mesmo contexto e o ajuste seguro exigiria uma mudança no
-runtime upstream, o dimensionamento permanece como está; a prioridade agora
-faz o MTP ceder antes de disputar esse buffer com as camadas principais.
-O fork local do llama.cpp captura esse livre antes de criar o contexto seco da
-sondagem. `no_alloc=true` e `LLAMA_LOAD_MODE_NONE` impedem os pesos, mas o
-estado recorrente ainda aloca buffers reais durante `llama_init_from_model`;
-medir o livre depois desse ponto descontava o estado e o somava de novo no
-breakdown projetado. O wrapper eleva temporariamente a verbosidade comum para
-`TRACE` durante o fit e restaura o limite anterior, deixando visíveis o
-snapshot, o breakdown e as decisões sem alterar o limite global do processo.
+O campo `context_memory` continua separando o cache KV (`context`) do buffer de
+cálculo (`compute`) para os contextos vivos. O fit MTP não tenta projetar o
+`compute` por uma sondagem seca: `sched_reserve` e os grafos variam por
+arquitetura, e construir esse grafo como medição não é uma operação recuperável
+quando o llama.cpp encontra uma entrada inválida. A decisão é deliberadamente
+conservadora: reservar o KV calculável é menos exato, mas mantém a possibilidade
+de recuo para a RAM e não pode derrubar o processo. O wrapper ainda pode
+reportar os buffers reais depois que o contexto MTP foi criado; isso é
+telemetria, não parte do orçamento especulativo do fit.
 `fit_plan` também registra o PID, a memória GPU do próprio processo quando
 `nvidia-smi` a fornece, o total, o livre e a margem por dispositivo.
 Para evitar que a reserva tardia de temporários CUDA derrube o processo quando a

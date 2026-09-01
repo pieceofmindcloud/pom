@@ -14,7 +14,7 @@
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
 //! Decode calls run in `spawn_blocking` so they don't starve the tokio runtime.
 
-use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, ModelCache, SamplingConfig};
+use crate::llm::{sample_token_profiled, LlmEngine, ModelCache, SamplingConfig};
 use crate::pipeline::PipelineStep;
 use crate::runtime::NodeConfig;
 use crate::wire::{self, TensorShape, WireDtype};
@@ -2444,11 +2444,9 @@ pub async fn run(
     // own executor can run before the response is sampled. Dense single-peer
     // contexts keep the old fast path without installing the callback.
     let need_embeddings = cfg.needs_residual_export() || inference_path.is_moe();
-    // Maior largura de lote especulativo que este nó pode receber, dos dois
-    // mecanismos (lookup e MTP) - é o que `cparams.n_rs_seq` precisa cobrir
-    // para um modelo híbrido/recorrente aceitar desfazer um rascunho
-    // recusado. Ver o doc de `EngineConfig::rs_seq_window`.
-    let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
+    // `rs_seq_window` (maior largura de lote especulativo, dos dois mecanismos
+    // lookup e MTP) é computado dentro de `engine_config_from_node` agora -
+    // ver o doc de `EngineConfig::rs_seq_window`.
     let moe_plan = if inference_path.is_moe() {
         Some(
             crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path).map_err(
@@ -2468,27 +2466,15 @@ pub async fn run(
             "experts permanecem no llama.cpp por falta de executor device"
         );
     }
-    let engine_cfg = EngineConfig {
-        n_ctx: crate::runtime::total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
-        offload_kqv: cfg.offload_kqv,
-        cache_type_k: cfg.cache_type_k,
-        cache_type_v: cfg.cache_type_v,
-        fit_memory: cfg.fit_memory && cfg.tp.is_none(),
-        fit_memory_margin_mb: cfg.fit_memory_margin_mb,
-        n_batch: cfg.n_batch,
-        n_gpu_layers: cfg.n_gpu_layers as i32,
-        n_threads: 0,
-        max_sessions: cfg.max_sessions.max(1),
+    let engine_cfg = crate::runtime::engine_config_from_node(
+        &cfg,
         need_embeddings,
-        mtp: cfg.mtp_effective(),
-        mtp_cpu_fallback_enabled: cfg.mtp_cpu_fallback_enabled,
-        rs_seq_window,
         moe_external_executor,
-        moe_external_executor_layers: moe_plan
+        moe_plan
             .as_ref()
             .map(|plan| plan.layers.clone())
             .unwrap_or_default(),
-    };
+    )?;
 
     let model_path = cfg.model_path.clone();
     let mut engine = tokio::task::spawn_blocking(move || {

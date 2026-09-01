@@ -32,6 +32,48 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
         .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions excede o limite numérico"))
 }
 
+/// A mesma conversão `NodeConfig` -> `EngineConfig` que `infer_server::run`
+/// monta antes de carregar o modelo de verdade.
+///
+/// Extraída para ser reutilizada pela pré-visualização de capacidade
+/// (`crate::deploy::capacity_preview_endpoint`), que roda o mesmo `fit`
+/// nativo sem chegar a carregar pesos. `need_embeddings` continua parâmetro
+/// em vez de recomputado aqui: o carregamento real também considera o
+/// caminho de inferência MoE (`inference_path.is_moe()`), que depende de uma
+/// leitura de GGUF que o chamador já fez; a pré-visualização usa só
+/// `cfg.needs_residual_export()`, que é a metade que não depende do
+/// executor. `moe_external_executor`/`moe_external_executor_layers` ficam de
+/// fora da pré-visualização pelo mesmo motivo — o ownership de experts é
+/// decidido por `MoeRuntime::external_executor_plan`, uma leitura de GGUF à
+/// parte que a pré-visualização não faz; ela sempre reporta `false`/vazio, o
+/// que subestima o uso de VRAM só no caso MoE com executor externo ligado.
+pub(crate) fn engine_config_from_node(
+    cfg: &NodeConfig,
+    need_embeddings: bool,
+    moe_external_executor: bool,
+    moe_external_executor_layers: Vec<u8>,
+) -> Result<crate::llm::EngineConfig> {
+    let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
+    Ok(crate::llm::EngineConfig {
+        n_ctx: total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
+        offload_kqv: cfg.offload_kqv,
+        cache_type_k: cfg.cache_type_k,
+        cache_type_v: cfg.cache_type_v,
+        fit_memory: cfg.fit_memory && cfg.tp.is_none(),
+        fit_memory_margin_mb: cfg.fit_memory_margin_mb,
+        n_batch: cfg.n_batch,
+        n_gpu_layers: cfg.n_gpu_layers as i32,
+        n_threads: 0,
+        max_sessions: cfg.max_sessions.max(1),
+        need_embeddings,
+        mtp: cfg.mtp_effective(),
+        mtp_cpu_fallback_enabled: cfg.mtp_cpu_fallback_enabled,
+        rs_seq_window,
+        moe_external_executor,
+        moe_external_executor_layers,
+    })
+}
+
 /// Converte a prova de prontidão do servidor numa capacidade publicável.
 /// `n_ctx_per_session` é a janela que o llama.cpp conseguiu reservar de fato;
 /// `max_new_tokens` continua sendo apenas o tamanho de uma perna. A capacidade

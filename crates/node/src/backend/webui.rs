@@ -139,6 +139,10 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
         .route("/api/ui/network/tls", post(save_tls))
         .route("/api/ui/plan", post(plan_split_endpoint))
+        .route(
+            "/api/ui/deploy/capacity-preview",
+            post(capacity_preview_endpoint),
+        )
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
         .route("/api/ui/model-identity", post(model_identity))
@@ -1792,6 +1796,356 @@ async fn plan_split_endpoint(
         Ok(p) => Json(p).into_response(),
         Err(e) => bad_request(e.to_string()),
     }
+}
+
+// ── Deploy Studio: capacity preview ──────────────────────────────────────────
+//
+// Pré-visualização de VRAM/RAM para uma faixa que este peer já serve *neste
+// instante* - nunca fatia, nunca funde, nunca escreve. `crate::deploy` chama
+// esta rota uma vez por passo (`Step`) do plano em preparo, com o caminho
+// local que a própria varredura já leu do catálogo do peer
+// (`HeldShard.path`), então não há resolução por hash aqui: um arquivo que
+// não existe no caminho informado é recusado, não procurado.
+//
+// Dois números, de duas fontes diferentes, como o resto do produto já faz
+// para "cabe na memória": `crate::llm::preview_fit` roda o `fit` nativo do
+// llama.cpp (o mesmo `fit_plan` do carregamento real, sem chegar a carregar
+// peso) para saber como as camadas se dividiriam entre GPUs e se o contexto
+// pedido precisaria encolher; `plan::range_cost` cobra peso e KV pela mesma
+// aritmética do planejador de fatiamento (`gguf::read_layout` +
+// `kv_budget::kv_bytes_for_layers`). O buffer de computação do llama.cpp não
+// entra na conta - é o mesmo território que `fit_memory_margin_mb` já cobre
+// como reserva de segurança, e contá-lo duas vezes superestimaria o uso.
+
+/// Pedido de uma pré-visualização, para exatamente um passo do plano.
+///
+/// Um peer que serve duas faixas não-adjacentes carrega dois arquivos em dois
+/// processos - a pré-visualização segue essa mesma granularidade, uma
+/// chamada por `Step`; `crate::deploy` soma os resultados por máquina.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapacityPreviewRequest {
+    /// Caminho local já resolvido pelo coordenador (`HeldShard.path` do
+    /// próprio catálogo deste peer). Nunca é uma faixa virtual: o coordenador
+    /// só chama esta rota para um passo `ready`.
+    pub model_path: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub total_layers: u32,
+    #[serde(default = "default_preview_peer_count")]
+    pub peer_count: u32,
+    #[serde(default)]
+    pub peer_index: u32,
+    #[serde(default)]
+    pub single_peer: bool,
+    pub params: RuntimeParams,
+    #[serde(default)]
+    pub n_gpu_layers: Option<u32>,
+    #[serde(default)]
+    pub offload_kqv: Option<bool>,
+}
+
+fn default_preview_peer_count() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct GpuCapacityProjection {
+    pub index: u32,
+    pub vram_total_mb: u64,
+    /// Uso atual medido agora, antes desta implantação.
+    pub vram_used_mb: u64,
+    /// Uso projetado: `vram_used_mb` mais a fração deste passo que cairia
+    /// neste dispositivo.
+    pub vram_projected_mb: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapacityPreview {
+    /// `vram_projected_mb <= vram_total_mb` em todo dispositivo, com a
+    /// margem de segurança configurada. `true` também numa máquina sem GPU -
+    /// não há VRAM para faltar.
+    pub fits: bool,
+    /// `fits`, mas só porque o `fit_memory` aparou o pedido - o contexto ou as
+    /// camadas de GPU efetivas ficaram abaixo do pedido. Amber na tela.
+    #[serde(default)]
+    pub degraded: bool,
+    /// Frase pronta para o operador, quando há algo a dizer: contexto que
+    /// encolheria, divisão estimada em vez de vinda do `fit`, etc.
+    pub note: Option<String>,
+    pub effective_n_gpu_layers: Option<u32>,
+    pub effective_n_ctx: Option<u32>,
+    pub gpus: Vec<GpuCapacityProjection>,
+}
+
+/// Distribui `projected_bytes` entre as GPUs da máquina.
+///
+/// Com `tensor_split` vindo do `fit` nativo (mesmo tamanho de `gpus`), a
+/// divisão é a decisão real do llama.cpp. Sem isso - `fit` desligado,
+/// `n_gpu_layers` fixado pelo operador, ou uma única GPU - a divisão é
+/// proporcional à VRAM livre de cada dispositivo agora, e `note` diz que é
+/// estimativa.
+fn split_projection(
+    projected_bytes: u64,
+    gpus: &[sysmon::GpuStat],
+    tensor_split: Option<&[f32]>,
+) -> (Vec<GpuCapacityProjection>, bool, Option<String>) {
+    let devices: Vec<(u32, u64, u64)> = gpus
+        .iter()
+        .filter_map(|g| {
+            let total = g.vram_total_mb?.max(0.0) as u64;
+            let used = g.vram_used_mb.unwrap_or(0.0).max(0.0) as u64;
+            Some((g.index, total, used))
+        })
+        .collect();
+    if devices.is_empty() {
+        return (Vec::new(), true, None);
+    }
+    let ratios: Vec<f64> = match tensor_split.filter(|split| split.len() == devices.len()) {
+        Some(split) if split.iter().any(|value| *value > 0.0) => {
+            let sum: f64 = split.iter().map(|v| f64::from(*v)).sum();
+            split.iter().map(|v| f64::from(*v) / sum).collect()
+        }
+        _ => {
+            let free: Vec<f64> = devices
+                .iter()
+                .map(|(_, total, used)| total.saturating_sub(*used) as f64)
+                .collect();
+            let sum: f64 = free.iter().sum();
+            if sum > 0.0 {
+                free.iter().map(|v| v / sum).collect()
+            } else {
+                vec![1.0 / devices.len() as f64; devices.len()]
+            }
+        }
+    };
+    // Uma única GPU não tem divisão nenhuma para estimar - a fração é sempre
+    // 1.0, exata, com ou sem `tensor_split`.
+    let estimated = devices.len() > 1
+        && tensor_split
+            .filter(|split| split.len() == devices.len())
+            .is_none();
+    let mib = 1024u64 * 1024;
+    let mut fits = true;
+    let projections = devices
+        .iter()
+        .zip(ratios.iter())
+        .map(|((index, total, used), ratio)| {
+            let added_mb = ((projected_bytes as f64 * ratio) / mib as f64).ceil() as u64;
+            let projected = used.saturating_add(added_mb);
+            if projected > *total {
+                fits = false;
+            }
+            GpuCapacityProjection {
+                index: *index,
+                vram_total_mb: *total,
+                vram_used_mb: *used,
+                vram_projected_mb: projected,
+            }
+        })
+        .collect();
+    let note = estimated.then(|| {
+        "divisão entre GPUs estimada pela VRAM livre atual, não pelo fit automático do llama.cpp"
+            .to_string()
+    });
+    (projections, fits, note)
+}
+
+async fn capacity_preview_endpoint(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<CapacityPreviewRequest>,
+) -> Response {
+    let path = std::path::PathBuf::from(&req.model_path);
+    if !path.is_file() {
+        return bad_request(format!(
+            "arquivo não encontrado localmente: {}",
+            req.model_path
+        ));
+    }
+
+    let mut cfg = NodeConfig {
+        deploy_id: String::new(),
+        model_path: req.model_path.clone(),
+        model_label: String::new(),
+        deployment_name: String::new(),
+        start_layer: req.start_layer,
+        end_layer: req.end_layer,
+        total_layers: req.total_layers,
+        peer_count: req.peer_count.max(1),
+        peer_index: req.peer_index,
+        primary: req.start_layer == 0,
+        tp: None,
+        inference_mode: req.params.inference_mode,
+        inference_port: 0,
+        single_peer: req.single_peer,
+        no_embeddings: req.params.no_embeddings,
+        ..NodeConfig::from_params(&req.params, true)
+    };
+    {
+        let installation = state.auth.read().await;
+        cfg.cache_type_k = installation.cache_type_k;
+        cfg.cache_type_v = installation.cache_type_v;
+    }
+    if let Some(n) = req.n_gpu_layers {
+        cfg.n_gpu_layers = n;
+    }
+    if let Some(offload) = req.offload_kqv {
+        cfg.offload_kqv = offload;
+    }
+
+    let need_embeddings = cfg.needs_residual_export();
+    let engine_cfg =
+        match crate::runtime::engine_config_from_node(&cfg, need_embeddings, false, Vec::new()) {
+            Ok(engine_cfg) => engine_cfg,
+            Err(e) => return bad_request(format!("configuração inválida: {e}")),
+        };
+
+    let fit_path = req.model_path.clone();
+    let fit_cfg = engine_cfg.clone();
+    let preview = match tokio::task::spawn_blocking(move || crate::llm::preview_fit(&fit_path, &fit_cfg)).await
+    {
+        Ok(Ok(preview)) => Some(preview),
+        Ok(Err(e)) => {
+            warn!(
+                model = %req.model_path,
+                "pré-visualização de capacidade: fit nativo falhou, seguindo sem tensor_split: {e}"
+            );
+            None
+        }
+        Err(e) => {
+            warn!("pré-visualização de capacidade: tarefa do fit falhou: {e}");
+            None
+        }
+    };
+
+    let effective_n_gpu_layers = preview
+        .as_ref()
+        .filter(|p| p.applied)
+        .map(|p| p.effective_n_gpu_layers)
+        .unwrap_or(engine_cfg.n_gpu_layers);
+    let effective_n_ctx = preview
+        .as_ref()
+        .filter(|p| p.applied)
+        .map(|p| p.effective_n_ctx)
+        .unwrap_or(engine_cfg.n_ctx);
+
+    let layout_path = path.clone();
+    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&layout_path)).await {
+        Ok(Ok(l)) => l,
+        Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
+        Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
+    };
+    let info_path = path.clone();
+    let info = match tokio::task::spawn_blocking(move || gguf::read_info(&info_path)).await {
+        Ok(Ok(info)) => info,
+        Ok(Err(e)) => {
+            return bad_request(format!(
+                "não foi possível ler a geometria KV do GGUF: {e}"
+            ))
+        }
+        Err(e) => return bad_request(format!("leitura da geometria KV falhou: {e}")),
+    };
+
+    // Camadas locais ao arquivo desta fatia - `blk.0..`, não a numeração
+    // global do modelo (ver `split_model.py`).
+    let local_layer_count = layout.layer_count();
+    let gpu_layers_local = effective_n_gpu_layers.max(0).min(local_layer_count as i32) as u32;
+    let is_last = req.end_layer + 1 >= req.total_layers;
+    let (weight_bytes, kv_bytes) = if gpu_layers_local == 0 {
+        (0, 0)
+    } else {
+        // `cache_type_k`/`cache_type_v` vêm da config da instalação (como no
+        // launch real), então a quantização do cache já entra na conta: o
+        // `kv_budget::row_bytes` tem o tamanho de bloco de cada tipo.
+        let kv = plan::KvPlanParams {
+            n_ctx: effective_n_ctx,
+            max_sessions: req.params.max_sessions.max(1),
+            cache_type_k: cfg.cache_type_k,
+            cache_type_v: cfg.cache_type_v,
+        };
+        match plan::range_cost(&layout, Some(&info), Some(kv), 0, gpu_layers_local - 1, is_last) {
+            Ok((weight_bytes, kv_bytes, _total)) => (weight_bytes, kv_bytes),
+            Err(e) => {
+                return bad_request(format!(
+                    "não foi possível calcular a projeção de memória: {e}"
+                ))
+            }
+        }
+    };
+    // O cache KV só pesa na VRAM quando fica na GPU (`offload_kqv`). Sem isso
+    // ele mora na RAM do host, mesmo para as camadas que estão na GPU, e não
+    // deve inflar a projeção de VRAM.
+    let kv_in_vram = cfg.offload_kqv;
+    let projected_bytes =
+        weight_bytes.saturating_add(if kv_in_vram { kv_bytes } else { 0 });
+
+    let system = sysmon::sample().await;
+    let (gpus, mut fits, split_note) = split_projection(
+        projected_bytes,
+        &system.gpus,
+        preview
+            .as_ref()
+            .filter(|p| p.applied)
+            .map(|p| p.tensor_split.as_slice()),
+    );
+
+    // Degradação: o `fit` rodou e teve que aparar o pedido para caber. É
+    // amber na tela, distinto do rósea "nem assim cabe".
+    let mut degraded = false;
+    let mut notes = Vec::new();
+    if let Some(preview) = preview.as_ref() {
+        // `!applied` só é falha quando o `fit` *chegou a rodar*. Com as
+        // camadas fixadas pelo operador ele é pulado de propósito, e aí a
+        // projeção crua peso+KV contra a capacidade é o veredito válido.
+        if preview.attempted && !preview.applied {
+            notes.push(
+                "o fit automático do llama.cpp não achou uma configuração nem no piso; os números acima são o pedido, não uma decisão do llama.cpp"
+                    .to_string(),
+            );
+            fits = false;
+        }
+        if preview.applied && preview.effective_n_ctx < engine_cfg.n_ctx {
+            degraded = true;
+            notes.push(format!(
+                "o llama.cpp reduziria o contexto de {} para {}",
+                engine_cfg.n_ctx, preview.effective_n_ctx
+            ));
+        }
+        // `-1` é a convenção do llama.cpp para "todas as camadas na GPU" - não
+        // é redução. Só um contador positivo abaixo do total desta fatia é.
+        if preview.applied
+            && preview.effective_n_gpu_layers >= 0
+            && (preview.effective_n_gpu_layers as u32) < local_layer_count
+        {
+            degraded = true;
+            notes.push(format!(
+                "o llama.cpp deixaria só {} das {} camadas desta fatia na GPU",
+                preview.effective_n_gpu_layers, local_layer_count
+            ));
+        }
+        if let Some(reason) = preview.mtp_unavailable_reason.as_ref() {
+            notes.push(format!("MTP indisponível: {reason}"));
+        }
+    }
+    if let Some(note) = split_note {
+        notes.push(note);
+    }
+    if !kv_in_vram && kv_bytes > 0 {
+        notes.push(format!(
+            "cache KV na RAM (offload desligado): ~{} MiB fora da VRAM",
+            kv_bytes / (1024 * 1024)
+        ));
+    }
+
+    Json(CapacityPreview {
+        fits,
+        degraded,
+        note: (!notes.is_empty()).then(|| notes.join("; ")),
+        effective_n_gpu_layers: Some(effective_n_gpu_layers.max(0) as u32),
+        effective_n_ctx: Some(effective_n_ctx),
+        gpus,
+    })
+    .into_response()
 }
 
 // ── Applying a configuration ─────────────────────────────────────────────────
@@ -6795,5 +7149,78 @@ mod chat_telemetry_tests {
                 transport: "libp2p".into(),
             }]
         );
+    }
+}
+
+#[cfg(test)]
+mod capacity_preview_tests {
+    use super::*;
+
+    fn gpu(index: u32, total_mb: f64, used_mb: f64) -> sysmon::GpuStat {
+        sysmon::GpuStat {
+            index,
+            name: format!("gpu{index}"),
+            vendor: sysmon::GpuVendor::Nvidia,
+            vram_total_mb: Some(total_mb),
+            vram_used_mb: Some(used_mb),
+            vram_used_pct: None,
+            utilization_pct: None,
+            temperature_c: None,
+        }
+    }
+
+    #[test]
+    fn single_gpu_takes_the_whole_projection() {
+        let gpus = vec![gpu(0, 16_000.0, 2_000.0)];
+        let (projections, fits, note) = split_projection(4_000 * 1024 * 1024, &gpus, None);
+        assert_eq!(projections.len(), 1);
+        assert_eq!(projections[0].vram_used_mb, 2_000);
+        assert_eq!(projections[0].vram_projected_mb, 6_000);
+        assert!(fits);
+        // Uma única GPU não precisa de nota de divisão estimada - não há
+        // divisão nenhuma a fazer.
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn tensor_split_from_the_native_fit_drives_the_division() {
+        let gpus = vec![gpu(0, 8_000.0, 0.0), gpu(1, 8_000.0, 0.0)];
+        let split = [0.25_f32, 0.75_f32];
+        let (projections, fits, note) =
+            split_projection(4_000 * 1024 * 1024, &gpus, Some(&split));
+        assert_eq!(projections[0].vram_projected_mb, 1_000);
+        assert_eq!(projections[1].vram_projected_mb, 3_000);
+        assert!(fits);
+        assert!(note.is_none(), "tensor_split real não é estimativa");
+    }
+
+    #[test]
+    fn without_a_native_split_the_estimate_follows_free_capacity_and_says_so() {
+        // GPU 0 já tem menos livre que a GPU 1, então recebe menos do peso
+        // novo - e a nota tem que dizer que é estimativa.
+        let gpus = vec![gpu(0, 8_000.0, 6_000.0), gpu(1, 8_000.0, 0.0)];
+        let (projections, _fits, note) = split_projection(2_000 * 1024 * 1024, &gpus, None);
+        let added0 = projections[0].vram_projected_mb - projections[0].vram_used_mb;
+        let added1 = projections[1].vram_projected_mb - projections[1].vram_used_mb;
+        // GPU 0 tinha 2 GiB livres contra 8 GiB da GPU 1, então recebe uma
+        // fatia proporcionalmente menor do peso novo.
+        assert!(added0 < added1, "added0={added0} added1={added1}");
+        assert!(note.is_some());
+    }
+
+    #[test]
+    fn a_projection_over_capacity_does_not_fit() {
+        let gpus = vec![gpu(0, 4_000.0, 3_500.0)];
+        let (projections, fits, _note) = split_projection(1_000 * 1024 * 1024, &gpus, None);
+        assert!(projections[0].vram_projected_mb > projections[0].vram_total_mb);
+        assert!(!fits);
+    }
+
+    #[test]
+    fn a_machine_with_no_gpu_always_fits() {
+        let (projections, fits, note) = split_projection(999 * 1024 * 1024, &[], None);
+        assert!(projections.is_empty());
+        assert!(fits);
+        assert!(note.is_none());
     }
 }

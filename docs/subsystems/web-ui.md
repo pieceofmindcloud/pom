@@ -514,16 +514,32 @@ impressão digital é só modelo + conjunto de faixas.
   carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
   exibe hops, capacidade e latência conhecida, além de rotas alternativas e
   distribuição projetada de carga. Cada card separa a faixa física carregada da
-  sub-faixa efetivamente executada. As arestas vêm do grafo de execução do
+  sub-faixa efetivamente executada.
+  Os cards são um **preview de como o sistema fica depois da implantação**, não
+  do estado atual: cada GPU de cada máquina ganha uma barra de VRAM projetada
+  (uso previsto contra o total, com o uso de agora como tracinho) que se
+  recalcula a cada ajuste de contexto, lote ou requisições simultâneas. A
+  projeção vem de `POST /api/ui/deploy/capacity-preview`, que roda o mesmo
+  ajuste automático do llama.cpp no peer sem carregar peso (ver
+  `implantacao.md` §3.1). O card fica amber quando cabe só porque o "Ajustar à
+  memória" apararia o contexto ou as camadas de GPU, e rósea quando não cabe
+  nem no piso; os dois casos pedem uma confirmação nomeando as máquinas ao
+  `Implantar` - é aviso, não bloqueio, para o operador reduzir ou aumentar o
+  contexto como quiser. Cada parâmetro do painel direito tem um `[i]` que abre
+  no hover/foco/toque com o que ele significa e como afeta a inferência. As arestas vêm do grafo de execução do
   planejador: ligam apenas sub-faixas contíguas, mantêm ramos equivalentes de
   entrada e mostram o RTT direcional usado para escolher entre eles. O canvas
   não inventa pontes pela ordem dos cards, o que preserva uma entrada rápida
   quando outra faixa carregada se sobrepõe. O Tensor usa o modelo inteiro em todos os
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
-  (contexto, batch, amostragem, sessões e precisão do estado oculto) ficam
+  (contexto, batch, amostragem, sessões) ficam
   separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
-  inspetor também mostra as camadas que ela executará. Nas globais, a seção
+  inspetor também mostra as camadas que ela executará. A precisão do estado
+  oculto (f16/f8) só aparece quando o estado atravessa a fronteira de um peer -
+  um pipeline de fatias com faixas adjacentes distintas; em modelo inteiro,
+  Tensor ou fatias numa máquina só, o estado nunca é serializado e o seletor
+  seria inerte. Nas globais, a seção
   de fatos do modelo inteiro e seu seletor de máquina não são exibidos: a
   máquina escolhida no mapa é a única que vale para a implantação. Nas globais,
   a seção de execução separa a especulação por lookup do MTP; ao marcar MTP, a

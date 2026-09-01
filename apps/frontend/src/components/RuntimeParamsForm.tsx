@@ -234,11 +234,11 @@ export function RuntimeParamsForm({
     }
   }
 
-  const numeric = (k: Knob, withHint: boolean) => (
+  const numeric = (k: Knob) => (
     <Field
       key={k.key}
       label={t("deploy.knob." + k.key)}
-      hint={withHint ? t("deploy.knob." + k.key + "Hint") : undefined}
+      tip={t("deploy.knob." + k.key + "Hint")}
     >
       <Input
         type="number"
@@ -262,7 +262,7 @@ export function RuntimeParamsForm({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-        {KNOBS.map((k) => numeric(k, false))}
+        {KNOBS.map((k) => numeric(k))}
       </div>
 
       <div className="border-t border-line pt-4">
@@ -350,21 +350,21 @@ export function RuntimeParamsForm({
 
       {(value.cycle_detection_enabled ?? true) && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-          {CYCLE_KNOBS.map((k) => numeric(k, true))}
+          {CYCLE_KNOBS.map((k) => numeric(k))}
         </div>
       )}
 
       {(value.speculative_decoding_enabled ?? false) &&
         capabilities?.speculative_decoding?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-          {SPECULATIVE_KNOBS.map((k) => numeric(k, true))}
+          {SPECULATIVE_KNOBS.map((k) => numeric(k))}
         </div>
       )}
 
       {(value.mtp_enabled ?? false) &&
         capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-          {MTP_KNOBS.map((k) => numeric(k, true))}
+          {MTP_KNOBS.map((k) => numeric(k))}
           <CapabilitySwitch
             alwaysVisible
             checked={value.mtp_cpu_fallback_enabled ?? true}

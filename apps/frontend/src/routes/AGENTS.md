@@ -165,8 +165,9 @@ Per-file list:
   Os cards do mapa são um **preview do pós-deploy**, não do estado atual: com
   `machine.capacity` no plano, mostram VRAM projetada por GPU que se recalcula
   a cada ajuste de contexto/lote/sessões (mesmo debounce). Três estados:
-  verde (cabe), amber (`degraded` - cabe só porque o `fit_memory` apararia o
-  contexto ou as camadas), rósea (`!fits` - não cabe nem no piso). Amber e
+  verde (cabe), amber (`degraded` - a conta crua não cabe, mas o `fit_memory`
+  pode aparar o pedido; é heurística), rósea (`!fits` - a conta não cabe sem
+  ajuste automático). Amber e
   rósea abrem um `Confirm` (`capacityAsked`, separado do de cobertura parcial)
   nomeando as máquinas e a razão, com título/texto conforme o caso;
   `canDeploy` não muda - é aviso, não bloqueio.

@@ -761,6 +761,58 @@ async fn main() -> Result<()> {
     // restart que nunca seria lida de volta.
     let _ = lastslice::take();
 
+    // ── HTTP API server - every node serves it ───────────────────────────────
+    // Bind before scheduling the model load. A model, fit, or runtime lock is
+    // allowed to take as long as it needs without hiding the control plane.
+    {
+        let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
+        peer_clients.apply_cluster_policy(app_config.tls_required);
+        peer_clients.set_auth_state(auth_config.clone());
+        // A catraca do TLS: escuta o gatilho do gossip e confirma a política
+        // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
+        tls_policy::spawn_ratchet(
+            net.clone(),
+            peer_clients.clone(),
+            auth_config.clone(),
+            tls_server.clone(),
+        );
+
+        let gw_state = GatewayState {
+            network: net.clone(),
+            ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
+            default_model: profile.name.clone(),
+            local_assignment: assignment_shared.clone(),
+            loads: Arc::new(LoadTracker::new()),
+            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
+            peer_http: peer_clients.clone(),
+            runtime: node_runtime.clone(),
+            cycle_config: crate::cycle::CycleConfig {
+                enabled: !args.no_cycle_detection,
+                ..crate::cycle::CycleConfig::default()
+            },
+            audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
+            gateway_port,
+            auth: auth_config,
+            transfers: Default::default(),
+            reply_inbox: crate::direct::ReplyInbox::new(),
+            tunnel_tx: Some(tunnel_tx.clone()),
+            tls_server: tls_server.clone(),
+            cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
+                Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
+                    hf_token_store.clone(),
+                )),
+                hf_token_store,
+            )),
+        };
+        let gw_port = gateway_port;
+        tokio::spawn(async move {
+            if let Err(e) = start_gateway(gw_state, gw_port).await {
+                error!("HTTP API server error: {}", e);
+            }
+        });
+    }
+
     if let Some(port) = inference_port {
         let cfg = runtime::NodeConfig {
             deploy_id: String::new(),
@@ -820,56 +872,6 @@ async fn main() -> Result<()> {
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");
         }
-    }
-
-    // ── HTTP API server — every node serves it ───────────────────────────────
-    {
-        let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-        peer_clients.apply_cluster_policy(app_config.tls_required);
-        peer_clients.set_auth_state(auth_config.clone());
-        // A catraca do TLS: escuta o gatilho do gossip e confirma a política
-        // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
-        tls_policy::spawn_ratchet(
-            net.clone(),
-            peer_clients.clone(),
-            auth_config.clone(),
-            tls_server.clone(),
-        );
-
-        let gw_state = GatewayState {
-            network: net.clone(),
-            ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
-            default_model: profile.name.clone(),
-            local_assignment: assignment_shared.clone(),
-            loads: Arc::new(LoadTracker::new()),
-            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
-            peer_http: peer_clients.clone(),
-            runtime: node_runtime.clone(),
-            cycle_config: crate::cycle::CycleConfig {
-                enabled: !args.no_cycle_detection,
-                ..crate::cycle::CycleConfig::default()
-            },
-            audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
-            gateway_port,
-            auth: auth_config,
-            transfers: Default::default(),
-            reply_inbox: crate::direct::ReplyInbox::new(),
-            tunnel_tx: Some(tunnel_tx.clone()),
-            tls_server: tls_server.clone(),
-            cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
-                Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
-                    hf_token_store.clone(),
-                )),
-                hf_token_store,
-            )),
-        };
-        let gw_port = gateway_port;
-        tokio::spawn(async move {
-            if let Err(e) = start_gateway(gw_state, gw_port).await {
-                error!("HTTP API server error: {}", e);
-            }
-        });
     }
 
     // ── Resolve pkarr peers and dial on startup ──────────────────────────────
@@ -1427,28 +1429,8 @@ async fn start_gateway_only(
     );
     node_runtime.start_thermal_monitor(auth_state.clone()).await;
 
-    // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
-    // nova: o nó volta servindo o que servia. Só aqui, porque este é o
-    // caminho sem `--model`: quando a linha de comando pede um modelo, essa é
-    // a intenção explícita e não deve ser sobreposta por uma fatia velha.
-    match lastslice::take() {
-        lastslice::LastSlice::Serving(cfg) => {
-            let label = cfg.model_label.clone();
-            let (a, b) = (cfg.start_layer, cfg.end_layer);
-            match node_runtime.apply(cfg).await {
-                Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
-                Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
-            }
-        }
-        // A fatia foi aplicada e o processo morreu antes de ela carregar uma
-        // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o
-        // processo, o Docker religa o container, e assim para sempre. O nó
-        // sobe vazio — mas dizendo por quê, senão o operador não tem como
-        // saber que a máquina não aguentou a fatia que recebeu.
-        lastslice::LastSlice::NeverLoaded(cfg) => node_runtime.note_unloadable_slice(&cfg).await,
-        lastslice::LastSlice::Nothing => {}
-    }
-
+    // Bind the gateway before restoring a persisted slice. Applying it may
+    // schedule a model load, but that load must never hide the control plane.
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
     peer_clients.apply_cluster_policy(app_config.tls_required);
     peer_clients.set_auth_state(auth_state.clone());
@@ -1479,9 +1461,9 @@ async fn start_gateway_only(
         transfers: Default::default(),
         reply_inbox: crate::direct::ReplyInbox::new(),
         // `start_p2p_stack` always hands back a working sender, even when
-        // `Discovery::new` itself failed — sending on it then just fails
+        // `Discovery::new` itself failed - sending on it then just fails
         // fast with a closed-channel error, the same already-handled
-        // "no tunnel available" outcome `send_frame_via_tunnel` treats it as.
+        // "no tunnel available" outcome `send_frame_via_tunnel` treats as.
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
@@ -1497,7 +1479,31 @@ async fn start_gateway_only(
         "Gateway running at http://localhost:{} (model not yet configured)",
         gateway_port
     );
-    start_gateway(gw_state, gateway_port).await?;
+    let gateway_task = tokio::spawn(async move { start_gateway(gw_state, gateway_port).await });
+
+    // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
+    // nova: o nó volta servindo o que servia. Só aqui, porque este é o
+    // caminho sem `--model`: quando a linha de comando pede um modelo, essa é
+    // a intenção explícita e não deve ser sobreposta por uma fatia velha.
+    match lastslice::take() {
+        lastslice::LastSlice::Serving(cfg) => {
+            let label = cfg.model_label.clone();
+            let (a, b) = (cfg.start_layer, cfg.end_layer);
+            match node_runtime.apply(cfg).await {
+                Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
+                Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+            }
+        }
+        // A fatia foi aplicada e o processo morreu antes de ela carregar uma
+        // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o
+        // processo, o Docker religa o container, e assim para sempre. O nó
+        // sobe vazio - mas dizendo por quê, senão o operador não tem como
+        // saber que a máquina não aguentou a fatia que recebeu.
+        lastslice::LastSlice::NeverLoaded(cfg) => node_runtime.note_unloadable_slice(&cfg).await,
+        lastslice::LastSlice::Nothing => {}
+    }
+
+    gateway_task.await??;
     Ok(())
 }
 
@@ -1509,6 +1515,38 @@ mod main_tests {
     fn gateway_only_honors_the_default_relay_switch() {
         assert!(gateway_only_use_default_relays(false));
         assert!(!gateway_only_use_default_relays(true));
+    }
+
+    #[test]
+    fn cli_starts_the_gateway_before_scheduling_model_load() {
+        let source = include_str!("main.rs");
+        let gateway = source
+            .find("Bind before scheduling the model load")
+            .expect("o caminho CLI precisa iniciar o gateway");
+        let apply = source[gateway..]
+            .find("node_runtime.apply(cfg).await")
+            .map(|offset| gateway + offset)
+            .expect("o caminho CLI precisa agendar o carregamento");
+        assert!(
+            gateway < apply,
+            "o carregamento do modelo não pode atrasar o bind do gateway"
+        );
+    }
+
+    #[test]
+    fn gateway_only_starts_the_gateway_before_restoring_a_slice() {
+        let source = include_str!("main.rs");
+        let gateway = source
+            .find("Bind the gateway before restoring a persisted slice")
+            .expect("o caminho sem --model precisa iniciar o gateway");
+        let restore = source[gateway..]
+            .find("match lastslice::take()")
+            .map(|offset| gateway + offset)
+            .expect("o caminho sem --model precisa tratar a fatia persistida");
+        assert!(
+            gateway < restore,
+            "a restauração da fatia não pode atrasar o bind do gateway"
+        );
     }
 
     /// A porta do Ollama anunciada não pode depender de `--gateway`: a flag está

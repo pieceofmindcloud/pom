@@ -2440,51 +2440,6 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
     })
 }
 
-/// O mesmo `FitPlan` que o carregamento real usa, sem os ponteiros crus que só
-/// fazem sentido a caminho de `LoadedModel::load` (`devices`,
-/// `tensor_buft_overrides`). Existe para a pré-visualização de capacidade do
-/// planejador de implantação (`crate::deploy`): o chamador nunca carrega o
-/// modelo, só quer saber como o `fit` nativo distribuiria as camadas.
-#[derive(Debug, Clone)]
-pub(crate) struct FitPreview {
-    /// Fração de camadas de GPU por dispositivo, na ordem de
-    /// `llama_rs_get_devices`. Vazio quando o `fit` não rodou (ver `applied`).
-    pub tensor_split: Vec<f32>,
-    pub effective_n_gpu_layers: i32,
-    pub effective_n_ctx: u32,
-    /// True quando o `fit` nativo *chegou a rodar* - `fit_memory` ligado e
-    /// `n_gpu_layers` no padrão. False quando o operador fixou as camadas: aí
-    /// o `fit` é pulado de propósito, não falhou, e os campos acima são o
-    /// pedido.
-    pub attempted: bool,
-    /// True só quando `attempted` e o `fit` achou uma configuração. False com
-    /// `attempted` significa que nem no piso (`FIT_MIN_CONTEXT`) coube.
-    pub applied: bool,
-    pub mtp_unavailable_reason: Option<String>,
-}
-
-/// Roda o mesmo `fit_plan` do carregamento real e devolve só os números -
-/// nunca chega a `LoadedModel::load`, então não há peso alocado nem contexto
-/// aberto. Chame de dentro de `spawn_blocking`: por baixo é a mesma FFI
-/// bloqueante (`llama_rs_fit_params`, com o mesmo benchmark de dispositivo em
-/// caso de várias GPUs, cacheado por processo).
-pub(crate) fn preview_fit(model_path: &str, cfg: &EngineConfig) -> Result<FitPreview> {
-    let mtp_mode = if cfg.mtp {
-        MtpFitMode::Vram
-    } else {
-        MtpFitMode::Disabled
-    };
-    let plan = fit_plan(model_path, cfg, mtp_mode)?;
-    Ok(FitPreview {
-        tensor_split: plan.tensor_split,
-        effective_n_gpu_layers: plan.config.n_gpu_layers,
-        effective_n_ctx: plan.config.n_ctx,
-        attempted: fit_can_adjust_layers(cfg),
-        applied: plan.applied,
-        mtp_unavailable_reason: plan.mtp_unavailable_reason,
-    })
-}
-
 impl LoadedModel {
     pub(crate) fn model_ptr(&self) -> *mut sys::llama_model {
         self.model

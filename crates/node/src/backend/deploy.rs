@@ -59,6 +59,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -1288,8 +1289,8 @@ pub struct MachineView {
 #[derive(Debug, Clone, Serialize)]
 pub struct MachineCapacity {
     fits: bool,
-    /// Algum passo desta máquina cabe só porque o `fit_memory` aparou o
-    /// pedido (contexto ou camadas de GPU abaixo do pedido).
+    /// Algum passo desta máquina foi marcado pela heurística de que o
+    /// `fit_memory` pode aparar o pedido (contexto ou camadas de GPU).
     degraded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
@@ -3254,11 +3255,11 @@ async fn plan_endpoint(
 ///
 /// Só passos prontos e não fundidos (`target_path.is_some() && !merged`) são
 /// consultados: um passo que ainda depende de cópia ou de junção não tem
-/// arquivo local para o `fit` nativo examinar, e a pré-visualização nunca
+/// arquivo local para a conta analítica examinar, e a pré-visualização nunca
 /// materializa nada para descobrir - ela só lê. Tensor Parallelism fica de
-/// fora desta primeira versão: a divisão real é `split-mode tensor`, que o
-/// `fit` nativo reaproveitado aqui não sabe planejar (o mesmo motivo que
-/// desliga `fit_memory` em TP, ver `effective_params_for_kind`).
+/// fora desta primeira versão: a divisão real é `split-mode tensor`, que a
+/// conta por faixa não representa (o mesmo motivo que desliga `fit_memory` em
+/// TP, ver `effective_params_for_kind`).
 ///
 /// Uma máquina que serve duas faixas não-adjacentes soma os dois passos sobre
 /// o mesmo inventário de GPUs - são dois processos na mesma placa física.
@@ -3269,54 +3270,73 @@ async fn enrich_capacity_previews(state: &GatewayState, machines: &[Machine], pl
     let peer_count = plan.steps.len() as u32;
     let key = state.auth.read().await.connection_key.clone();
 
-    let calls = plan.steps.iter().enumerate().map(|(index, step)| {
-        let key = key.clone();
-        let http = state.peer_http.for_peer(&step.target_node_id);
-        let base = machines
-            .iter()
-            .find(|m| m.node_id == step.target_node_id)
-            .and_then(|m| m.gateway_url.clone());
-        let model_path = step.target_path.clone();
-        let eligible = !step.merged;
-        let total_layers = step.total_layers.or(plan.total_layers);
-        let req = CapacityPreviewRequest {
-            model_path: String::new(),
-            start_layer: step.start_layer,
-            end_layer: step.end_layer,
-            total_layers: total_layers.unwrap_or(0),
-            peer_count,
-            peer_index: index as u32,
-            single_peer: peer_count <= 1,
-            params: plan.params.clone(),
-            n_gpu_layers: step.n_gpu_layers,
-            offload_kqv: step.offload_kqv,
-        };
-        async move {
-            let (Some(base), Ok(http), Some(model_path), Some(_)) =
-                (base, http, model_path, total_layers.filter(|_| eligible))
-            else {
-                return (index, None);
-            };
+    let calls = plan
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let key = key.clone();
+            let http = state.peer_http.for_peer(&step.target_node_id);
+            let base = machines
+                .iter()
+                .find(|m| m.node_id == step.target_node_id)
+                .and_then(|m| m.gateway_url.clone());
+            let model_path = step.target_path.clone();
+            let eligible = !step.merged;
+            let total_layers = step.total_layers.or(plan.total_layers);
             let req = CapacityPreviewRequest {
+                model_path: String::new(),
+                start_layer: step.start_layer,
+                end_layer: step.end_layer,
+                total_layers: total_layers.unwrap_or(0),
+                peer_count,
+                peer_index: index as u32,
+                single_peer: peer_count <= 1,
+                params: plan.params.clone(),
+                n_gpu_layers: step.n_gpu_layers,
+                offload_kqv: step.offload_kqv,
+            };
+            (
+                index,
+                key,
+                http,
+                base,
                 model_path,
-                ..req
-            };
-            let resp = http
-                .post(format!("{base}/api/ui/deploy/capacity-preview"))
-                .bearer_auth(&key)
-                .timeout(PEER_TIMEOUT)
-                .json(&req)
-                .send()
-                .await
-                .ok();
-            let Some(resp) = resp.filter(|r| r.status().is_success()) else {
-                return (index, None);
-            };
-            (index, resp.json::<CapacityPreview>().await.ok())
-        }
-    });
+                eligible,
+                total_layers,
+                req,
+            )
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(
+            |(index, key, http, base, model_path, eligible, total_layers, req)| async move {
+                let (Some(base), Ok(http), Some(model_path), Some(_)) =
+                    (base, http, model_path, total_layers.filter(|_| eligible))
+                else {
+                    return (index, None);
+                };
+                let req = CapacityPreviewRequest { model_path, ..req };
+                let resp = http
+                    .post(format!("{base}/api/ui/deploy/capacity-preview"))
+                    .bearer_auth(&key)
+                    .timeout(PEER_TIMEOUT)
+                    .json(&req)
+                    .send()
+                    .await
+                    .ok();
+                let Some(resp) = resp.filter(|r| r.status().is_success()) else {
+                    return (index, None);
+                };
+                (index, resp.json::<CapacityPreview>().await.ok())
+            },
+        );
 
-    for (index, preview) in futures::future::join_all(calls).await {
+    let previews = futures::stream::iter(calls)
+        .buffer_unordered(crate::webui::CAPACITY_PREVIEW_MAX_PEER_REQUESTS)
+        .collect::<Vec<_>>()
+        .await;
+    for (index, preview) in previews {
         if let Some(step) = plan.steps.get_mut(index) {
             step.capacity = preview;
         }
@@ -3349,9 +3369,9 @@ async fn enrich_capacity_previews(state: &GatewayState, machines: &[Machine], pl
                 by_device
                     .entry(gpu.index)
                     .and_modify(|acc| {
-                        acc.vram_projected_mb = acc.vram_projected_mb.saturating_add(
-                            gpu.vram_projected_mb.saturating_sub(gpu.vram_used_mb),
-                        );
+                        acc.vram_projected_mb = acc
+                            .vram_projected_mb
+                            .saturating_add(gpu.vram_projected_mb.saturating_sub(gpu.vram_used_mb));
                     })
                     .or_insert(*gpu);
             }

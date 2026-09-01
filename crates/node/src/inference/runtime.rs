@@ -36,17 +36,16 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
 /// monta antes de carregar o modelo de verdade.
 ///
 /// Extraída para ser reutilizada pela pré-visualização de capacidade
-/// (`crate::deploy::capacity_preview_endpoint`), que roda o mesmo `fit`
-/// nativo sem chegar a carregar pesos. `need_embeddings` continua parâmetro
-/// em vez de recomputado aqui: o carregamento real também considera o
-/// caminho de inferência MoE (`inference_path.is_moe()`), que depende de uma
+/// (`crate::deploy::capacity_preview_endpoint`), que precisa dos mesmos
+/// parâmetros normalizados sem chamar a FFI. `need_embeddings` continua
+/// parâmetro em vez de recomputado aqui: o carregamento real também considera
+/// o caminho de inferência MoE (`inference_path.is_moe()`), que depende de uma
 /// leitura de GGUF que o chamador já fez; a pré-visualização usa só
-/// `cfg.needs_residual_export()`, que é a metade que não depende do
-/// executor. `moe_external_executor`/`moe_external_executor_layers` ficam de
-/// fora da pré-visualização pelo mesmo motivo — o ownership de experts é
-/// decidido por `MoeRuntime::external_executor_plan`, uma leitura de GGUF à
-/// parte que a pré-visualização não faz; ela sempre reporta `false`/vazio, o
-/// que subestima o uso de VRAM só no caso MoE com executor externo ligado.
+/// `cfg.needs_residual_export()`, que é a metade que não depende do executor.
+/// `moe_external_executor`/`moe_external_executor_layers` ficam de fora da
+/// pré-visualização porque o ownership de experts é decidido por
+/// `MoeRuntime::external_executor_plan`, uma leitura de GGUF à parte que ela
+/// não faz. A carga real recebe esses valores completos.
 pub(crate) fn engine_config_from_node(
     cfg: &NodeConfig,
     need_embeddings: bool,

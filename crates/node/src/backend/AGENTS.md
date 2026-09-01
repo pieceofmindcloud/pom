@@ -63,20 +63,21 @@ behind an auth extractor.
   KV and total bytes per shard; absent KV metadata is an explicit bad request.
   `POST /api/ui/deploy/capacity-preview` (`capacity_preview_endpoint`,
   `ConnectionAuth`) is the deploy-time, per-step, peer-local version: it
-  resolves a `NodeConfig`/`EngineConfig` for a locally-present slice, runs the
-  same native fit as a real launch via `llm::preview_fit`
-  (`llama_rs_fit_params`, no weights loaded), reads live `SystemLoad.gpus[]`,
-  and returns projected VRAM per GPU plus a three-state verdict: `fits`
-  (green), `degraded` (amber - fits only because the fit trimmed the
-  effective context or GPU layers below the request), or `!fits` (rose). KV
-  quantization is in the byte math (`cache_type_k/v` from the installation);
-  KV only counts toward VRAM when `offload_kqv` is on. `FitPreview.attempted`
-  distinguishes "the fit failed" from "the fit was skipped because
-  `n_gpu_layers` was pinned" - only the former forces `!fits`.
-  `split_projection` divides the projected weight+KV bytes across a machine's
-  GPUs by `tensor_split` when the fit ran, else proportionally to current free
-  VRAM (flagged as an estimate). The compute buffer is deliberately left out -
-  it is what `fit_memory_margin_mb` already reserves.
+  resolves a `NodeConfig`/`EngineConfig` for a locally-present slice, reads
+  the GGUF layout and live `SystemLoad.gpus[]`, and returns projected VRAM per
+  GPU. Weight and KV are calculated analytically; the endpoint never calls
+  `llama_backend_init`, `llama_rs_fit_params` or the real-load `fit_plan`.
+  `fits` is therefore an estimate. When the raw projection does not fit,
+  `degraded` is true only when `fit_memory` is enabled and the requested layer
+  count is the default all-layers value, which signals that the real load may
+  trim the request; it does not claim a native result. The response note tells
+  the operator that the real load confirms the final layout. KV quantization is in the byte math
+  (`cache_type_k/v` from the installation); KV only counts toward VRAM when
+  `offload_kqv` is on. A process admits four previews at once and returns
+  `429` immediately when all slots are occupied. `split_projection` always
+  divides projected weight+KV bytes proportionally to current free VRAM. The
+  compute buffer is deliberately left out because the estimate is a planning
+  signal, not a replacement for the real load.
   `RuntimeParams.prefill_max_inflight_chunks` is persisted with the other
   inference knobs and sets the prefill pipeline depth (1..8, default 8).
   `RuntimeParams.fit_memory_margin_mb` is also persisted and controls the
@@ -117,9 +118,10 @@ behind an auth extractor.
   Depois de montar os passos (e só com `blocked` vazio), `plan_endpoint` chama
   `enrich_capacity_previews`: uma requisição `capacity-preview` por `Step`
   materializado localmente (não `merged`, `target_path` presente), agregada
-  por máquina em `MachineView.capacity` (soma por GPU). TP e passos ainda por
-  copiar/fundir ficam sem projeção. É aviso, nunca bloqueio: a tela mostra a
-  máquina estourada em rósea e pede um `Confirm` antes de implantar.
+  por máquina em `MachineView.capacity` (soma por GPU). O fan-out usa no máximo
+  quatro chamadas simultâneas; TP e passos ainda por copiar/fundir ficam sem
+  projeção. É aviso, nunca bloqueio: a tela mostra a máquina estourada em
+  rósea e pede um `Confirm` antes de implantar.
   Antes de transferir ou lançar, prova a identidade por `pom_id` ou hash do
   GGUF, libera somente a implantação comprovadamente igual e aguarda cada peer
   ficar ocioso dentro de um prazo; recusações de identidade, falhas de unload e

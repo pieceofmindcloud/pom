@@ -1047,11 +1047,11 @@ export interface CapacityPreview {
   /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
    *  machine with no discrete GPU — nothing to run out of. */
   fits: boolean;
-  /** `fits`, but only because `fit_memory` trimmed the request — the
-   *  effective context or GPU layers came back below what was asked. Amber. */
+  /** Raw estimate does not fit, but the default all-layers request has
+   *  `fit_memory` enabled and the real load may trim it. This is a heuristic. */
   degraded?: boolean;
-  /** Operator-ready sentence when there is something to say: context would
-   *  shrink, split is estimated rather than from the native fit, etc. */
+  /** Operator-ready sentence: possible adjustment, analytic split, or KV in
+   *  host RAM. The real load confirms the final placement. */
   note?: string | null;
   effective_n_gpu_layers?: number | null;
   effective_n_ctx?: number | null;
@@ -1062,7 +1062,7 @@ export interface CapacityPreview {
  *  take. `src/backend/deploy.rs` — `MachineCapacity`. */
 export interface MachineCapacity {
   fits: boolean;
-  /** Some step of this machine fits only because `fit_memory` trimmed it. */
+  /** Some step of this machine received the same possible-adjustment heuristic. */
   degraded?: boolean;
   note?: string | null;
   gpus: GpuCapacityProjection[];

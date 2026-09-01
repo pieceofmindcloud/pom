@@ -137,6 +137,11 @@ ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
 margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
 vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
+Esse encaixe nativo é exclusivo do carregamento real. A pré-visualização de
+capacidade da tela Implantar usa metadata GGUF, `plan::range_cost` e a VRAM
+livre atual para uma estimativa analítica; ela não chama `llama_backend_init`,
+`llama_rs_fit_params` nem `fit_plan`, para não concorrer com a carga em
+andamento.
 Quando `mtp_enabled=true`, o fit primeiro encaixa o modelo principal e seu
 contexto sem MTP. Antes de considerar a reserva opcional, lê
 `general.architecture` e verifica uma lista gerada pelo próprio fork para as

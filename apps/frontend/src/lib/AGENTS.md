@@ -137,6 +137,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   node's GGUF expert metadata; the deploy screen must not infer MoE from a
   filename. `inference_mode_supported` and `inference_mode_reason` keep an
   unsupported path visible instead of presenting a misleading selection.
+  The capacity preview is an analytic planning estimate, not the effective
+  placement reported by the real load; the deploy screen keeps that distinction
+  visible in its capacity warning.
   `DeployPlan.capabilities` is the backend tri-state contract for conditional
   global controls, including source and reason. The UI does not infer model or
   topology support from names; unknown remains visible but disabled.

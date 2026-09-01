@@ -62,21 +62,20 @@ behind an auth extractor.
   and K/V cache types in the byte arithmetic. The response exposes weight,
   KV and total bytes per shard; absent KV metadata is an explicit bad request.
   `POST /api/ui/deploy/capacity-preview` (`capacity_preview_endpoint`,
-  `ConnectionAuth`) is the deploy-time, per-step, peer-local version: it
-  resolves a `NodeConfig`/`EngineConfig` for a locally-present slice, runs the
-  same native fit as a real launch via `llm::preview_fit`
-  (`llama_rs_fit_params`, no weights loaded), reads live `SystemLoad.gpus[]`,
-  and returns projected VRAM per GPU plus a three-state verdict: `fits`
-  (green), `degraded` (amber - fits only because the fit trimmed the
-  effective context or GPU layers below the request), or `!fits` (rose). KV
-  quantization is in the byte math (`cache_type_k/v` from the installation);
-  KV only counts toward VRAM when `offload_kqv` is on. `FitPreview.attempted`
-  distinguishes "the fit failed" from "the fit was skipped because
-  `n_gpu_layers` was pinned" - only the former forces `!fits`.
-  `split_projection` divides the projected weight+KV bytes across a machine's
-  GPUs by `tensor_split` when the fit ran, else proportionally to current free
-  VRAM (flagged as an estimate). The compute buffer is deliberately left out -
-  it is what `fit_memory_margin_mb` already reserves.
+  `ConnectionAuth`) is the deploy-time, per-step, peer-local version. It is
+  header-math only - `plan::range_cost` (`gguf::read_layout` +
+  `kv_budget`) for weight+KV bytes of the requested GPU layers, `sysmon` for
+  live per-GPU VRAM, no CUDA. KV quantization is in the math (`cache_type_k/v`
+  from the installation); KV only counts toward VRAM with `offload_kqv` on.
+  Three-state verdict: `fits` (raw math fits), `degraded` (raw math overflows
+  but `fit_memory` is on and `n_gpu_layers` at default, so the auto-fit would
+  trim context/layers to fit - a heuristic, not a simulation), `!fits` (raw
+  overflow with no auto-fit rescue). `split_projection` divides the bytes
+  across GPUs proportionally to current free VRAM (flagged as an estimate).
+  The compute buffer is left out - `fit_memory_margin_mb` reserves it. The
+  native fit (`common_fit_params`) is NOT called from here - it loads the
+  model and reserves the compute graph to measure, which segfaulted from this
+  path; see `docs/subsystems/implantacao.md` Defeitos anotados.
   `RuntimeParams.prefill_max_inflight_chunks` is persisted with the other
   inference knobs and sets the prefill pipeline depth (1..8, default 8).
   `RuntimeParams.fit_memory_margin_mb` is also persisted and controls the

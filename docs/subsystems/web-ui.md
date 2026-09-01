@@ -519,13 +519,13 @@ impressão digital é só modelo + conjunto de faixas.
   do estado atual: cada GPU de cada máquina ganha uma barra de VRAM projetada
   (uso previsto contra o total, com o uso de agora como tracinho) que se
   recalcula a cada ajuste de contexto, lote ou requisições simultâneas. A
-  projeção vem de `POST /api/ui/deploy/capacity-preview`, que roda o mesmo
-  ajuste automático do llama.cpp no peer sem carregar peso (ver
-  `implantacao.md` §3.1). O card fica amber quando cabe só porque o "Ajustar à
-  memória" apararia o contexto ou as camadas de GPU, e rósea quando não cabe
-  nem no piso; os dois casos pedem uma confirmação nomeando as máquinas ao
-  `Implantar` - é aviso, não bloqueio, para o operador reduzir ou aumentar o
-  contexto como quiser. Cada parâmetro do painel direito tem um `[i]` que abre
+  projeção vem de `POST /api/ui/deploy/capacity-preview`, conta de peso e KV a
+  partir do cabeçalho GGUF no peer, sem `fit` nativo (ver `implantacao.md`
+  §3.1). O card fica amber quando a conta não cabe mas o "Ajustar à memória"
+  apararia o contexto ou as camadas de GPU para caber, e rósea quando não cabe
+  e o `fit` não pode ajustar; os dois casos pedem uma confirmação nomeando as
+  máquinas ao `Implantar` - é aviso, não bloqueio, para o operador reduzir ou
+  aumentar o contexto como quiser. Cada parâmetro do painel direito tem um `[i]` que abre
   no hover/foco/toque com o que ele significa e como afeta a inferência. As arestas vêm do grafo de execução do
   planejador: ligam apenas sub-faixas contíguas, mantêm ramos equivalentes de
   entrada e mostram o RTT direcional usado para escolher entre eles. O canvas

@@ -848,7 +848,8 @@ impl PhaseTrace {
         } else {
             crate::executor::ExecutionEngine::Unknown
         };
-        self.engine_mismatch = expected != crate::executor::ExecutionEngine::Unknown
+        self.engine_mismatch = !self.executed_engines.is_empty()
+            && expected != crate::executor::ExecutionEngine::Unknown
             && !self.executed_engines.contains(&expected);
     }
 
@@ -3535,6 +3536,7 @@ mod tests {
             old.hops[0].decode.executed_engine,
             crate::executor::ExecutionEngine::Unknown
         );
+        assert!(!old.hops[0].decode.engine_mismatch);
     }
 
     #[test]

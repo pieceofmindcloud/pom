@@ -242,6 +242,14 @@ fn route_diagnostic_should_emit(first_callback: bool, raw_non_finite: bool) -> b
     first_callback || raw_non_finite
 }
 
+fn first_non_finite(values: &[f32]) -> Option<(usize, f32)> {
+    values
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+}
+
 struct MoeCallbackState {
     runtime: Arc<crate::moe::runtime::MoeRuntime>,
     telemetry: Mutex<MoeCallbackTelemetry>,
@@ -463,6 +471,14 @@ unsafe extern "C" fn moe_ffn_callback(
             .to_string_lossy()
             .into_owned()
     };
+    if let Some((index, value)) = first_non_finite(hidden) {
+        let kind = if value.is_nan() { "NaN" } else { "infinito" };
+        state.fail(format!(
+            "entrada hidden do hook MoE da arquitetura {architecture}, camada {}, índice {index} tem valor não finito ({kind}); o forward MoE anterior contaminou esta camada",
+            descriptor.layer
+        ));
+        diagnostic_return!("hidden_input_non_finite");
+    }
     let raw_non_finite = weights.iter().any(|weight| !weight.is_finite());
     let emit_route_diagnostic = state.claim_route_diagnostic()
         || (diagnostics_enabled && route_diagnostic_should_emit(false, raw_non_finite));
@@ -617,6 +633,14 @@ unsafe extern "C" fn moe_ffn_callback(
             diagnostic_return!("forward_failed");
         }
     };
+    if let Some((index, value)) = first_non_finite(&values) {
+        let kind = if value.is_nan() { "NaN" } else { "infinito" };
+        state.fail(format!(
+            "executor MoE da arquitetura {architecture}, camada {}, devolveu saída não finita no índice {index} ({kind}); o resultado não será enviado ao llama.cpp",
+            descriptor.layer
+        ));
+        diagnostic_return!("forward_output_non_finite");
+    }
     unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), output, expected) };
     let mut telemetry = state
         .telemetry
@@ -791,6 +815,15 @@ fn normalize_moe_route(
 #[cfg(test)]
 mod moe_route_tests {
     use super::*;
+
+    #[test]
+    fn primeira_saida_nao_finita_e_identificada_antes_da_copia() {
+        assert!(first_non_finite(&[0.0, 1.0, f32::NAN])
+            .is_some_and(|(index, value)| index == 2 && value.is_nan()));
+        assert!(first_non_finite(&[0.0, f32::INFINITY])
+            .is_some_and(|(index, value)| index == 1 && value == f32::INFINITY));
+        assert_eq!(first_non_finite(&[0.0, -1.0]), None);
+    }
 
     #[test]
     fn rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major() {

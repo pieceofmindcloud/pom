@@ -280,6 +280,12 @@ export interface PeerRuntimeHealth {
   profile_sync_enabled?: boolean;
   /** Caminho selecionado pelo GGUF; o motor por requisição vem da trace. */
   selected_path?: string;
+  /** Ownership efetivo dos experts neste nó, separado do caminho selecionado. */
+  moe_requested?: boolean;
+  moe_executor?: "cpu-reference" | "cuda" | "not-installed" | "not-requested" | "not-run" | "mixed";
+  moe_executor_dtypes?: number[];
+  /** Razão concreta quando o executor MoE não foi instalado ou usa CPU. */
+  moe_executor_reason?: string | null;
   mtp_ready: boolean;
   /** Motivo retornado pelo runtime quando o MTP pedido não foi anexado. */
   mtp_unavailable_reason?: string | null;

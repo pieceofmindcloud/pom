@@ -189,6 +189,9 @@ impl NodeTimings {
 
     fn engine_mismatch(&self) -> bool {
         let expected = self.selected_path.execution_engine();
+        if self.executed_engines.is_empty() {
+            return false;
+        }
         if self.mixed_execution() {
             return !self.executed_engines.contains(&expected);
         }
@@ -290,6 +293,28 @@ impl NodeTimings {
                 .map(|tp| serde_json::to_value(tp).unwrap_or(Value::Null)),
         })
     }
+}
+
+fn moe_health_summary(
+    inference_path: crate::executor::InferencePath,
+    telemetry: Option<&crate::moe::runtime::MoeExecutorTelemetry>,
+    fallback_reason: Option<&str>,
+) -> (bool, &'static str, Vec<u32>, Option<String>) {
+    let requested = inference_path.is_moe();
+    let executor = telemetry
+        .map(|value| value.executor.as_str())
+        .unwrap_or(if requested {
+            "not-installed"
+        } else {
+            "not-requested"
+        });
+    let dtypes = telemetry
+        .map(|value| value.dtypes.clone())
+        .unwrap_or_default();
+    let reason = telemetry
+        .and_then(|value| value.reason.clone())
+        .or_else(|| fallback_reason.map(str::to_owned));
+    (requested, executor, dtypes, reason)
 }
 
 struct TimedReply {
@@ -918,6 +943,36 @@ mod tests {
         assert_eq!(value["executed_engines"], serde_json::json!(["llama.cpp"]));
         assert!(value["engine_mismatch"].as_bool().unwrap());
         assert!(!value["mixed_execution"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn telemetria_sem_executor_observado_nao_inventa_divergencia() {
+        let timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::DenseLlamaCpp,
+            ..Default::default()
+        };
+
+        let value = timings.json();
+
+        assert_eq!(value["executed_engine"], "unknown");
+        assert_eq!(value["executed_engines"], serde_json::json!([]));
+        assert!(!value["engine_mismatch"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn health_moe_expõe_pedido_sem_executor_e_motivo() {
+        let (requested, executor, dtypes, reason) = moe_health_summary(
+            crate::executor::InferencePath::MoeQ4_0,
+            None,
+            Some("executor MoE indisponível: formato sem decoder"),
+        );
+        assert!(requested);
+        assert_eq!(executor, "not-installed");
+        assert!(dtypes.is_empty());
+        assert_eq!(
+            reason.as_deref(),
+            Some("executor MoE indisponível: formato sem decoder")
+        );
     }
 
     #[test]
@@ -2944,6 +2999,13 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     }
     let n_ctx_total = s.engine.n_ctx();
     let n_ctx_per_session = context_per_session(n_ctx_total, s.max_sessions);
+    let moe_telemetry = s.moe.as_ref().map(|runtime| runtime.executor_telemetry());
+    let (moe_requested, moe_executor, moe_executor_dtypes, moe_executor_reason) =
+        moe_health_summary(
+            s.inference_path,
+            moe_telemetry.as_ref(),
+            s.moe_fallback_reason.as_deref(),
+        );
     Json(json!({
         "status": "ok",
         "model_loaded": true,
@@ -2951,6 +3013,10 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         "end_layer": s.end_layer,
         "original_block_count": s.original_block_count,
         "selected_path": s.inference_path.as_str(),
+        "moe_requested": moe_requested,
+        "moe_executor": moe_executor,
+        "moe_executor_dtypes": moe_executor_dtypes,
+        "moe_executor_reason": moe_executor_reason,
         "hidden_dim": s.engine.n_embd,
         "vocab_size": s.engine.n_vocab,
         "max_sessions": s.max_sessions,

@@ -18,7 +18,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; derives the observed execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
@@ -143,10 +143,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `DeployPlan.capabilities` is the backend tri-state contract for conditional
   global controls, including source and reason. The UI does not infer model or
   topology support from names; unknown remains visible but disabled.
-  `PeerRuntimeHealth` carries `mtp_ready` and an optional
-  `mtp_allocation` and `mtp_unavailable_reason`; the dashboard detail card
-  reads these fields from `usePeerRuntime` so the actual VRAM/RAM placement and
-  a failed MTP attach are visible.
+  `PeerRuntimeHealth` carries the selected path and effective MoE ownership
+  (`moe_requested`, `moe_executor`, dtypes and `moe_executor_reason`) alongside
+  `mtp_ready` and an optional `mtp_allocation` and `mtp_unavailable_reason`;
+  the dashboard detail card reads these fields from `usePeerRuntime` so a
+  requested-but-unused executor, actual VRAM/RAM placement and a failed MTP
+  attach are visible.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
   size-, tensor- and budget-driven slicing plans. Budget-driven shards expose

@@ -25,7 +25,9 @@ Per-file list:
   while the request trace shows the executed engine and mixed/mismatch flags.
   The runtime record keeps stable identity between unchanged polls so the
   telemetry snapshot cannot trigger a render loop that freezes navigation.
-  Missing snapshots stay visible as missing data. Phase rows also render
+  Missing snapshots stay visible as missing data. The environment card also
+  renders the effective MoE executor and its concrete reason from `/health`.
+  Phase rows also render
   hidden-state bytes sent/received and the effective f16/f8 dtype. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
   resolution retain those ids. Um frame de erro compatível com OpenAI dentro

@@ -268,8 +268,10 @@ cálculo restante ao redor do bloco próprio.
 Cada resposta de inferência publica `selected_path`, `executed_engine`, a lista
 `executed_engines` e as flags `engine_mismatch`/`mixed_execution`. O primeiro
 vem da seleção GGUF; os demais só são gravados depois que o decode llama.cpp
-ou o forward MoE retornam. `/health` publica somente `selected_path`, porque
-não é uma medição de uma requisição. O gateway agrega os campos por fase de
+ou o forward MoE retornam. `/health` publica `selected_path` e o estado
+efetivo do executor MoE (`moe_requested`, `moe_executor`, dtypes e motivo),
+porque uma seleção sem executor precisa ser visível mesmo antes de uma
+requisição. O gateway agrega os campos por fase de
 cada hop, sem deduzi-los do nome do modelo, da arquitetura ou de tempos. A
 interface mostra o caminho selecionado e o motor observado; mistura e
 divergência ficam visíveis como diagnóstico, nunca são reduzidas a um rótulo
@@ -285,9 +287,10 @@ CUDA NVFP4; `cpu-reference` significa o decoder de referência; nesse caso a
 telemetria lista os dtypes GGML concretos e informa que não há ponte CUDA;
 `not-run` é uma seleção MoE sem forward registrado e `mixed` denuncia mais de
 um backend no mesmo hop. O `PhaseTrace` do gateway preserva os campos por hop
-e por fase. Um binário sem a feature `cuda` não transforma NVFP4 em CPU por
-acidente: ele recusa a carga com a mensagem nominal do executor, salvo quando
-`POM_MOE_NVFP4_BACKEND=cpu` pede explicitamente o executor de referência.
+e por fase. Um binário sem a feature `cuda` usa o executor CPU próprio para os
+formatos suportados. NVFP4 continua recusando a carga com a mensagem nominal
+do executor, salvo quando `POM_MOE_NVFP4_BACKEND=cpu` pede explicitamente o
+executor de referência.
 
 No Qwen3.6-35B-A3B-UD-IQ3_S real, a ponte agora está autorizada a publicar
 `moe_executor=cuda`, `moe_executor_dtypes=[21,22,23]` e nenhum motivo de
@@ -316,6 +319,12 @@ processo, uma linha adicional no target padrão registra uma vez o valor bruto
 da variável e o booleano efetivo do gate. Assim o log do próximo deploy mostra
 se o `OnceLock` reconheceu o ambiente, antes da primeira rota.
 
+Antes de normalizar a rota, o callback também valida que o hidden de entrada é
+finito. Depois do forward, valida a saída do executor antes de copiá-la para o
+llama.cpp. NaN ou infinito publica uma falha com camada, índice e estágio
+(`hidden_input_non_finite` ou `forward_output_non_finite`), interrompendo a
+requisição em vez de contaminar a camada seguinte silenciosamente.
+
 O teste ignorado
 `llm::moe_route_tests::callback_global_emite_diagnostico_em_thread_externa_e_registra_gate`
 instala o dispatcher global com `.init` equivalente, cria uma thread
@@ -343,7 +352,9 @@ pelos logs da entrada do callback.
 Esta foi a fase formal da ponte por dtype. O executor CUDA cobre NVFP4 (40),
 escalares, Q4_K/Q6_K e, após prova diferencial na `ksia`, IQ3_S (21), IQ2_S
 (22) e IQ4_XS (23). IQ-quants restantes, K-quants restantes, legacy e low-bit
-continuam no `CPUReference`, com a escolha visível na telemetria. Cada tensor
+continuam no `CPUReference`, com a escolha visível na telemetria. Quando uma
+combinação heterogênea contém dtype sem ponte CUDA, a camada inteira também
+usa `CPUReference`, em vez de devolver os experts ao llama.cpp. Cada tensor
 conserva seu dtype, o decoder CUDA correspondente é escolhido por tensor e um
 dtype sem kernel recusa nominalmente com o dtype e o motivo.
 
@@ -1629,12 +1640,12 @@ metadata sozinha não fecha o marco.
 A ordem vigente passa a ser:
 
 1. **Salvaguarda por dtype e reserva de VRAM.** A reserva medida de
-   `53decb4` e o ownership por camada chegam juntos. Somente uma camada cujos
-   tensores de experts tenham executor device disponível pode ser retirada do
-   llama.cpp. Dtypes sem cache device, inclusive combinações heterogêneas que
-   incluam um dtype fora de IQ3_S/IQ2_S/IQ4_XS, permanecem com o llama.cpp. A
-   recusa ou a preservação deve nomear os dtypes concretos, nunca deixar a
-   placa sem dono.
+`53decb4` e o ownership por camada chegam juntos. Uma camada cujos tensores de
+experts tenham executor CUDA ou `CPUReference` disponível pode ser retirada do
+llama.cpp. Dtypes sem cache device, inclusive combinações heterogêneas que
+incluam um dtype fora de IQ3_S/IQ2_S/IQ4_XS, usam `CPUReference` e publicam os
+dtypes concretos. Somente uma limitação real do runtime mantém a camada nativa,
+com motivo visível, nunca deixando a placa sem dono.
 2. **Cobertura do marco.** NVFP4, Q4_K/Q6_K e, em seguida, IQ3_S/IQ2_S/IQ4_XS
    por tensor, incluindo o cache device e a combinação heterogênea usada pelos
    dois UD. O decoder é escolhido por tensor e dtype; arquitetura, nomes,
@@ -2110,3 +2121,9 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
   `13.464294 != 164.57135`. A prova IQ de `86226c7` não reproduziu as antigas
   diferenças IQ; os três dtypes passaram a prova diferencial e não devem ser
   protegidos por uma tolerância mais larga.
+- A ponte CUDA heterogênea ainda não tem prova E2E do Ornith 1.5 neste
+  worktree. O callback agora recusa hidden de entrada e saída não finitos com
+  camada e índice, mas a causa do primeiro NaN observado em
+  `ffn_moe_weights` continua pendente de uma prova diferencial no GGUF real.
+  Não há fallback nativo silencioso: falha numérica aborta a requisição e
+  publica o motivo.

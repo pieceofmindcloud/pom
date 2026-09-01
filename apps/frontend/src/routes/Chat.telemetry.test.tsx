@@ -101,7 +101,7 @@ const environment: ExecutionTelemetryEnvironment = {
   } as unknown as ExecutionTelemetryEnvironment["cluster"],
   network: { measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: 12.5, transport: "libp2p" }] },
   runtimes: {
-    "abcdef0123456789": { loaded: true, health: { profile_sync_enabled: true, selected_path: "moe/q4_0", placement: { layers: [
+    "abcdef0123456789": { loaded: true, health: { profile_sync_enabled: true, selected_path: "moe/q4_0", moe_requested: true, moe_executor: "cpu-reference", moe_executor_reason: "dtype IQ3_S sem ponte CUDA; CPUReference selecionado", placement: { layers: [
       { layer: 0, device: "CUDA0", buffers: [{ buffer: "CUDA0", bytes: 10 }] },
       { layer: 1, device: "CUDA0", buffers: [{ buffer: "CPU", bytes: 10 }, { buffer: "CUDA0", bytes: 10 }] },
     ] } } as never },
@@ -211,6 +211,8 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText(/Pedido de offload KV: ligado/)).toBeTruthy();
     expect(screen.getByText(/Pedido de offload KV: desligado/)).toBeTruthy();
     expect(screen.getByText("caminho selecionado: moe/q4_0")).toBeTruthy();
+    expect(screen.getByText("executor MoE: cpu-reference")).toBeTruthy();
+    expect(screen.getByText(/motivo do executor MoE: dtype IQ3_S/)).toBeTruthy();
     expect(screen.getByText("caminho selecionado: desconhecido")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: ativo")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: desligado")).toBeTruthy();

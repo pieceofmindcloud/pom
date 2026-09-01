@@ -735,14 +735,18 @@ delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
 transformer MoE completo. NVFP4, K-quants e IQ-quants usam loaders próprios
 com validação da ordem GGUF `[input, output, experts]` antes do forward. A Fase
 5 ainda não está ativa: não há executor GPU próprio nem perfil medido carregado
-no runtime. O caminho atual é CPU para router e experts; não afirma
-sobreposição CPU/GPU.
+no runtime. O plano de ownership externaliza todos os formatos que o runtime
+próprio consegue executar em CPU, mesmo sem ponte CUDA; só NVFP4 sem feature
+CUDA e sem pedido explícito de CPU fica indisponível. O caminho CUDA continua
+reservado aos dtypes com ponte validada e não há afirmação de sobreposição
+CPU/GPU além da telemetria publicada.
 
 `path/engine mismatch` na UI é um rótulo de telemetria real: o `selected_path`
 registra o caminho escolhido (`moe/q4_0` ou `dense/llama.cpp`) e
 `executed_engine` registra o executor que de fato rodou. A flag aparece quando
 eles divergem, por exemplo, quando o caminho MoE selecionado recua para
-`llama.cpp`; não é sintoma do transporte remoto nem da rede.
+`llama.cpp`; não é sintoma do transporte remoto nem da rede. Ausência total de
+amostra mantém o motor como desconhecido e não é chamada de divergência.
 
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser

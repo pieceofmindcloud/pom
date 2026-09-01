@@ -501,11 +501,11 @@ pub struct MoeRouteBatch<'a> {
 
 /// Ownership decision made before loading the llama.cpp model.
 ///
-/// A `1` means that every expert tensor in that local layer has a device
-/// executor and may be metadata-only in llama.cpp. A `0` is an explicit
-/// native-ownership decision: llama.cpp keeps and executes that layer's
-/// experts. Keeping this list data-driven prevents F5-E2 from turning an
-/// unsupported dtype into a model with no executor at all.
+/// A `1` means that every expert tensor in that local layer has an external
+/// executor, CPU or device, and may be metadata-only in llama.cpp. A `0` is an
+/// explicit native-ownership decision: llama.cpp keeps and executes that
+/// layer's experts. Keeping this list data-driven prevents an unavailable
+/// dtype from turning a model with a usable CPU decoder into a silent fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MoeExternalExecutorPlan {
     pub layers: Vec<u8>,
@@ -573,6 +573,19 @@ fn make_external_executor_plan(
         };
     }
 
+    // The CPU reference blocks are also executors. A missing CUDA bridge must
+    // not hand the layer back to llama.cpp when the Rust runtime can execute
+    // the exact GGML format itself. NVFP4 is the one exception: without CUDA
+    // it requires the explicit CPU opt-in enforced by its constructor.
+    let cpu_reference_supported = !matches!(detected, ExpertFormat::Nvfp4) || nvfp4_cpu_requested;
+    if cpu_reference_supported {
+        return MoeExternalExecutorPlan {
+            layers: vec![1; layers],
+            dtypes,
+            reason: None,
+        };
+    }
+
     let reason = if !cuda_compiled {
         format!(
             "executor CUDA recusado para dtype(s) [{dtype_list}]: binário sem feature cuda; experts permanecem no llama.cpp"
@@ -603,8 +616,10 @@ fn cuda_heterogeneous_dtype_supported(dtype: u32) -> bool {
 }
 
 impl MoeRuntime {
-    /// Decides ownership before `llama_model_load_from_file` so unsupported
-    /// formats never have their experts removed from the native model.
+    /// Decides ownership before `llama_model_load_from_file` so every format
+    /// with a usable external CPU or device executor has its experts removed
+    /// from the native model, while a truly unavailable format stays native
+    /// with a concrete reason.
     pub fn external_executor_plan(
         path: impl AsRef<Path>,
     ) -> Result<MoeExternalExecutorPlan, MoeRuntimeError> {
@@ -628,9 +643,11 @@ impl MoeRuntime {
                 .is_ok_and(|value| value.eq_ignore_ascii_case("cpu")),
         );
         if profile_requests_cpu {
-            plan.layers.fill(0);
-            plan.reason =
-                Some("perfil CUDA medido escolheu CPUReference para esta geometria".into());
+            // Keep ownership external while letting Nvfp4MoeBlock select its
+            // measured CPU backend. Zero would silently return the experts to
+            // llama.cpp and make a performance policy look like a fallback.
+            plan.layers.fill(1);
+            plan.reason = None;
         }
         Ok(plan)
     }
@@ -1854,15 +1871,31 @@ mod tests {
     }
 
     #[test]
-    fn dtype_sem_cache_device_permanece_com_experts_nativos() {
+    fn dtype_sem_ponte_cuda_usa_executor_cpu_reference() {
         let plan = make_external_executor_plan(ExpertFormat::Q4_0, vec![2], 4, true, false);
-        assert!(!plan.enabled());
-        assert_eq!(plan.layers, vec![0, 0, 0, 0]);
-        assert!(plan.reason.unwrap().contains("Q4_0"));
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1, 1, 1, 1]);
+        assert!(plan.reason.is_none());
     }
 
     #[test]
-    fn dtypes_heterogeneos_com_dtype_nao_validado_ficam_nativos() {
+    fn nvfp4_sem_backend_disponivel_fica_recusado_com_motivo() {
+        let plan = make_external_executor_plan(ExpertFormat::Nvfp4, vec![39], 2, false, false);
+        assert!(!plan.enabled());
+        assert_eq!(plan.layers, vec![0, 0]);
+        assert!(plan
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("feature cuda")));
+
+        let cpu_plan = make_external_executor_plan(ExpertFormat::Nvfp4, vec![39], 2, false, true);
+        assert!(cpu_plan.enabled());
+        assert_eq!(cpu_plan.layers, vec![1, 1]);
+        assert!(cpu_plan.reason.is_none());
+    }
+
+    #[test]
+    fn dtypes_heterogeneos_com_dtype_nao_validado_usam_cpu_reference() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
             vec![12, 18, 23],
@@ -1870,12 +1903,9 @@ mod tests {
             true,
             false,
         );
-        assert!(!plan.enabled());
-        assert_eq!(plan.layers, vec![0, 0, 0]);
-        let reason = plan.reason.unwrap();
-        assert!(reason.contains("[18 (IQ3_XXS)]"));
-        assert!(!reason.contains("12 (Q4_K)"));
-        assert!(!reason.contains("23 (IQ4_XS)"));
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1, 1, 1]);
+        assert!(plan.reason.is_none());
     }
 
     #[test]
@@ -1888,7 +1918,7 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_heterogeneos_com_iq_nao_validado_ficam_nativos() {
+    fn dtypes_heterogeneos_com_iq_nao_validado_usam_cpu_reference() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
             vec![21, 18, 23],
@@ -1896,11 +1926,9 @@ mod tests {
             true,
             false,
         );
-        assert!(!plan.enabled());
-        assert_eq!(plan.layers, vec![0, 0, 0]);
-        let reason = plan.reason.unwrap();
-        assert!(reason.contains("18 (IQ3_XXS)"));
-        assert!(!reason.contains("23 (IQ4_XS)"));
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1, 1, 1]);
+        assert!(plan.reason.is_none());
     }
 
     #[test]
@@ -1930,9 +1958,18 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("pom-ftk-moe-runtime-{}.gguf", std::process::id()));
         let (hidden, _) = write_q4_source(&path);
+        let plan = make_external_executor_plan(ExpertFormat::Q4_0, vec![2], 1, false, false);
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1]);
+        assert!(plan.reason.is_none());
         let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
+        assert_eq!(
+            runtime.executor_telemetry().executor,
+            MoeExecutorKind::CpuReference
+        );
         let output = runtime.forward_batch(0, &[1.0; 64], 2).unwrap();
         assert_eq!(output.len(), hidden * 2);
+        assert!(output.iter().all(|value| value.is_finite()));
         assert!(runtime.forward_batch(1, &[1.0; 32], 1).is_err());
         std::fs::remove_file(path).unwrap();
     }

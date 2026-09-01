@@ -181,6 +181,7 @@ function ExecutionEnvironment({
                     <div className="flex shrink-0 flex-wrap justify-end gap-1">
                       <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.selectedPath", { value: selectedPath })}</span>
                       <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.profileSync", { state: syncState })}</span>
+                      {health?.moe_executor && <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.moeExecutor", { value: health.moe_executor })}</span>}
                     </div>
                   </div>
                   <div className="mt-2 grid min-w-0 gap-2 text-[0.68rem] sm:grid-cols-2">
@@ -203,6 +204,7 @@ function ExecutionEnvironment({
                     </div>
                   </div>
                   <div className="mt-2 border-t border-line/50 pt-2 text-[0.68rem]">
+                    {health?.moe_executor_reason && <p className="mb-2 break-words text-amber-300">{t("chat.telemetry.moeExecutorReason", { reason: health.moe_executor_reason })}</p>}
                     <p className="mb-1 font-medium uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.effectivePlacement")}</p>
                     {environment.runtimesLoading && !runtime ? (
                       <p className="text-muted">{t("chat.telemetry.runtimeLoading")}</p>
@@ -370,6 +372,7 @@ function PhaseRow({
         )}
         <span className="block">{tlsLine(t, phase)}</span>
         <span className="block break-words">{transportLine(t, phase)}</span>
+        {phase.moe_executor_reason && <span className="block break-words text-amber-300">{t("chat.telemetry.moeExecutorReason", { reason: phase.moe_executor_reason })}</span>}
       </td>
     </tr>
   </>;

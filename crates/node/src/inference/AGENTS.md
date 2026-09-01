@@ -55,7 +55,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `moe_executor`, `moe_executors`, `moe_executor_dtypes`,
   `moe_executor_reason` e `moe_forward_ms`, além das flags
   `engine_mismatch`/`mixed_execution` em `node_timings`; `/health` publica
-  apenas o caminho selecionado, pois não representa uma requisição. O
+  o caminho selecionado e o estado efetivo do executor MoE
+  (`moe_requested`, `moe_executor`, dtypes e motivo), pois não representa uma
+  requisição. O
   estado é acessado por `lock_inference_state`: um mutex envenenado vira erro
   HTTP ou falha da requisição em lote, nunca um novo panic em `unwrap`. EOS
   fecha apenas o acumulador da resposta; a sessão permanece disponível para
@@ -65,7 +67,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   só é publicado depois do forward NVFP4 real; `cpu-reference` inclui os
   dtypes GGML e o motivo da ausência de ponte CUDA. O `PhaseTrace` do gateway
   preserva esses campos por hop e por fase; `not-run` expõe a ausência de
-  execução e não há fallback implícito para CPU.
+  execução. Quando o runtime CPU suporta o formato, ele é instalado como
+  executor externo, sem fallback nativo implícito.
   Os handlers decodificam o frame e entregam
   comandos a uma fila local limitada; o worker seleciona uma entrada por
   sessão e pode chamar o decode multi-sequência. Cada `Session`
@@ -264,8 +267,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   no payload/descriptor e aplicam as escalas nos estágios gate, up e down.
   O helper `llama_moe_reshape_route_2d` do fork materializa sempre a rota com
   `ggml_cont` antes do reshape: `ggml_is_contiguous` sozinho não prova que a
-  área do produtor já está pronta para a cópia entre backends. Isso protege o
-  primeiro token/slot contra leitura não inicializada. `qwen35moe` mantém
+  área do produtor já está pronta para a cópia entre backends. Além disso,
+  `llm.rs` recusa hidden de entrada e saída do executor com NaN ou infinito,
+  identificando camada e índice antes de deixar o valor contaminar o próximo
+  hop. Isso torna observável uma falha numérica, mas não substitui a prova do
+  kernel CUDA. `qwen35moe` mantém
   `ffn_*_shexp` fora do inventário: o callback recebe apenas `ffn_*_exps`, e o
   expert compartilhado continua no `build_ffn` nativo.
   Na carga do primeiro `LoadedModel` do processo, o servidor registra uma vez,
@@ -313,10 +319,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   silenciosamente em outro formato.
   Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
   Antes da carga, `MoeRuntime::external_executor_plan` publica ownership por
-  camada: somente camadas com ponte device têm seus experts omitidos do
-  llama.cpp; dtypes sem cache device e combinações heterogêneas fora do
-  conjunto Q4_K/Q6_K/IQ3_S/IQ2_S/IQ4_XS ficam nativas e registram o dtype que
-  barrou na telemetria. O
+  camada: camadas com ponte device ou decoder CPU próprio têm seus experts
+  omitidos do llama.cpp; dtypes sem cache device e combinações heterogêneas
+  fora do conjunto CUDA validado usam `CPUReference` e registram o dtype na
+  telemetria. Somente NVFP4 sem CUDA e sem pedido explícito de CPU permanece
+  indisponível com motivo visível. O
   fork mantém a lista como metadata
   copiada no modelo e o grafo escolhe external/native pela camada, nunca por
   uma flag global que possa deixar experts sem executor.

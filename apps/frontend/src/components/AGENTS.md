@@ -51,7 +51,9 @@ Per-file list:
   navegador, e é usada nas três seções do inspetor.
 - `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
   pelo Chat e pelo inspetor de Logs. Mantém a tabela de fases, tempos por hop,
-  rede, ambiente, diagnóstico e demais detalhes em um único componente.
+  rede, ambiente, diagnóstico e demais detalhes em um único componente. Mostra
+  também o executor MoE efetivo e o motivo publicado pelo runtime quando há
+  fallback CPU ou indisponibilidade.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

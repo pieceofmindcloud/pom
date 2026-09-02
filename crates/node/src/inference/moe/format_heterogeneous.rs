@@ -16,6 +16,7 @@ use super::format_q4_0::{
     decode_row as q4_decode_row, parse_tensor_table, read_scalar_vector, Q4LoadError, TensorSpec,
 };
 use memmap2::Mmap;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
@@ -388,7 +389,7 @@ impl HeterogeneousMoeSource {
     pub fn validate_metadata(
         &self,
         layer: u32,
-        metadata: &[(TensorRole, &str, u32)],
+        metadata: &[(TensorRole, &str, u32, u32, [i64; 4])],
     ) -> Result<(), Q4LoadError> {
         let inventory = self
             .layers
@@ -396,17 +397,34 @@ impl HeterogeneousMoeSource {
             .ok_or(Q4LoadError::InvalidTensor(
                 "camada MoE fora do inventário heterogêneo",
             ))?;
-        for (role, name, dtype) in metadata {
+        for (role, name, dtype, n_dims, dims) in metadata {
             let expected = self.entry_for_role(inventory, *role).ok_or_else(|| {
                 Q4LoadError::MissingTensor(format!("tensor {role} ausente no inventário"))
             })?;
             let tensor = &self.tensors[expected.spec_index];
+            let actual_dims = usize::try_from(*n_dims)
+                .ok()
+                .filter(|count| *count <= dims.len())
+                .map_or_else(Vec::new, |count| dims[..count].to_vec());
+            let geometry_matches = actual_dims.len() == tensor.dims.len()
+                && actual_dims
+                    .iter()
+                    .zip(&tensor.dims)
+                    .all(|(actual, expected)| u64::try_from(*actual) == Ok(*expected));
             if tensor.name != *name || expected.decoder.dtype() != *dtype {
                 return Err(Q4LoadError::TensorMetadataMismatch {
                     name: (*name).to_string(),
                     dtype: *dtype,
                     expected_name: tensor.name.clone(),
                     expected_dtype: expected.decoder.dtype(),
+                });
+            }
+            if !geometry_matches {
+                return Err(Q4LoadError::TensorGeometryMismatch {
+                    name: (*name).to_string(),
+                    dtype: *dtype,
+                    dims: actual_dims,
+                    expected_dims: tensor.dims.clone(),
                 });
             }
         }
@@ -598,7 +616,7 @@ impl HeterogeneousMoeSource {
             .ok_or(Q4LoadError::InvalidTensor("escala de expert ausente"))
     }
 
-    fn matrix(
+    fn packed_tensor(
         &self,
         cache: &Arc<ExpertCache>,
         model: &str,
@@ -607,7 +625,7 @@ impl HeterogeneousMoeSource {
         entry: ExpertTensor,
         rows: usize,
         columns: usize,
-    ) -> Result<Vec<f32>, String> {
+    ) -> Result<Vec<u8>, String> {
         let tensor = &self.tensors[entry.spec_index];
         let key = ExpertKey::new(
             model,
@@ -625,22 +643,258 @@ impl HeterogeneousMoeSource {
                 )
                 .map_err(|error: CacheError| error.to_string())?,
         };
+        Ok(lease.bytes().to_vec())
+    }
+
+    fn decode_payload_row(
+        &self,
+        entry: ExpertTensor,
+        payload: &[u8],
+        row: usize,
+        columns: usize,
+    ) -> Result<Vec<f32>, String> {
+        let tensor = &self.tensors[entry.spec_index];
         let row_bytes = entry
             .decoder
             .row_bytes(columns)
             .map_err(|error| error.to_string())?;
-        let values = lease.bytes();
+        let start = row
+            .checked_mul(row_bytes)
+            .ok_or_else(|| format!("tensor {}: offset de linha excede usize", tensor.name))?;
+        let end = start
+            .checked_add(row_bytes)
+            .ok_or_else(|| format!("tensor {}: fim de linha excede usize", tensor.name))?;
+        let encoded = payload.get(start..end).ok_or_else(|| {
+            format!(
+                "tensor {}: linha {row} exige bytes [{start}, {end}), payload tem {}",
+                tensor.name,
+                payload.len()
+            )
+        })?;
+        entry
+            .decoder
+            .decode_row(encoded, columns)
+            .map_err(|error| format!("tensor {}: {error}", tensor.name))
+    }
+
+    fn matrix(
+        &self,
+        cache: &Arc<ExpertCache>,
+        model: &str,
+        layer: u32,
+        expert: u32,
+        entry: ExpertTensor,
+        rows: usize,
+        columns: usize,
+    ) -> Result<Vec<f32>, String> {
+        let payload = self.packed_tensor(cache, model, layer, expert, entry, rows, columns)?;
         (0..rows)
-            .map(|row| {
-                let start = row * row_bytes;
-                let end = start + row_bytes;
-                entry
-                    .decoder
-                    .decode_row(&values[start..end], columns)
-                    .map_err(|error| format!("tensor {}: {error}", tensor.name))
-            })
+            .map(|row| self.decode_payload_row(entry, &payload, row, columns))
             .collect::<Result<Vec<_>, _>>()
             .map(|rows| rows.into_iter().flatten().collect())
+    }
+
+    fn accumulate_matrix_rows(
+        &self,
+        entry: ExpertTensor,
+        payload: &[u8],
+        first_row: usize,
+        rows: usize,
+        columns: usize,
+        routes: &[(usize, f32)],
+        hidden: &[f32],
+        hidden_width: usize,
+        values: &mut [f32],
+        scale: f32,
+    ) -> Result<(), String> {
+        for row in 0..rows {
+            let decoded = self.decode_payload_row(entry, payload, first_row + row, columns)?;
+            for (route_index, &(token, _)) in routes.iter().enumerate() {
+                let token_start = token
+                    .checked_mul(hidden_width)
+                    .ok_or_else(|| "índice de token excede usize".to_string())?;
+                let token_hidden = hidden
+                    .get(token_start..token_start + hidden_width)
+                    .ok_or_else(|| "hidden não contém o token da rota heterogênea".to_string())?;
+                values[route_index * rows + row] = dot(&decoded, token_hidden) * scale;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_expert_batch(
+        &self,
+        cache: &Arc<ExpertCache>,
+        model: &str,
+        layer: u32,
+        expert: u32,
+        routes: &[(usize, f32)],
+        hidden: &[f32],
+        output: &mut [f32],
+        activation: i32,
+    ) -> Result<(), String> {
+        let inventory = self
+            .layers
+            .get(layer as usize)
+            .ok_or_else(|| "camada MoE fora do inventário heterogêneo".to_string())?;
+        let hidden_width = inventory.hidden;
+        let intermediate = inventory.intermediate;
+        let route_values = routes
+            .len()
+            .checked_mul(intermediate)
+            .ok_or_else(|| "shape da rota heterogênea excede usize".to_string())?;
+        let mut gate = vec![0.0; route_values];
+        let mut up = vec![0.0; route_values];
+        if let Some(entry) = inventory.gate_up {
+            let payload = self.packed_tensor(
+                cache,
+                model,
+                layer,
+                expert,
+                entry,
+                2 * intermediate,
+                hidden_width,
+            )?;
+            let scales = TensorScales {
+                primary: self
+                    .sidecar_scale(entry, "scale", expert, 0, inventory.gate)
+                    .map_err(|error| error.to_string())?,
+                secondary: self
+                    .sidecar_scale(entry, "scale", expert, 1, inventory.up)
+                    .map_err(|error| error.to_string())?,
+                input_primary: self
+                    .sidecar_scale(entry, "input_scale", expert, 0, inventory.gate)
+                    .map_err(|error| error.to_string())?,
+                input_secondary: self
+                    .sidecar_scale(entry, "input_scale", expert, 1, inventory.up)
+                    .map_err(|error| error.to_string())?,
+            };
+            self.accumulate_matrix_rows(
+                entry,
+                &payload,
+                0,
+                intermediate,
+                hidden_width,
+                routes,
+                hidden,
+                hidden_width,
+                &mut gate,
+                scales.primary * scales.input_primary,
+            )?;
+            self.accumulate_matrix_rows(
+                entry,
+                &payload,
+                intermediate,
+                intermediate,
+                hidden_width,
+                routes,
+                hidden,
+                hidden_width,
+                &mut up,
+                scales.secondary * scales.input_secondary,
+            )?;
+        } else {
+            let gate_entry = inventory.gate.ok_or("gate ausente")?;
+            let up_entry = inventory.up.ok_or("up ausente")?;
+            let gate_payload = self.packed_tensor(
+                cache,
+                model,
+                layer,
+                expert,
+                gate_entry,
+                intermediate,
+                hidden_width,
+            )?;
+            let up_payload = self.packed_tensor(
+                cache,
+                model,
+                layer,
+                expert,
+                up_entry,
+                intermediate,
+                hidden_width,
+            )?;
+            let gate_scale = self
+                .sidecar_scale(gate_entry, "scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
+            let up_scale = self
+                .sidecar_scale(up_entry, "scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
+            let gate_input_scale = self
+                .sidecar_scale(gate_entry, "input_scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
+            let up_input_scale = self
+                .sidecar_scale(up_entry, "input_scale", expert, 0, None)
+                .map_err(|error| error.to_string())?;
+            self.accumulate_matrix_rows(
+                gate_entry,
+                &gate_payload,
+                0,
+                intermediate,
+                hidden_width,
+                routes,
+                hidden,
+                hidden_width,
+                &mut gate,
+                gate_scale * gate_input_scale,
+            )?;
+            self.accumulate_matrix_rows(
+                up_entry,
+                &up_payload,
+                0,
+                intermediate,
+                hidden_width,
+                routes,
+                hidden,
+                hidden_width,
+                &mut up,
+                up_scale * up_input_scale,
+            )?;
+        }
+        for route_index in 0..routes.len() {
+            for row in 0..intermediate {
+                gate[route_index * intermediate + row] = match activation {
+                    1 => {
+                        silu(gate[route_index * intermediate + row])
+                            * up[route_index * intermediate + row]
+                    }
+                    2 => {
+                        gelu(gate[route_index * intermediate + row])
+                            * up[route_index * intermediate + row]
+                    }
+                    other => return Err(format!("ativação MoE não suportada: {other}")),
+                };
+            }
+        }
+        let down = inventory.down.ok_or("down ausente")?;
+        let down_payload = self.packed_tensor(
+            cache,
+            model,
+            layer,
+            expert,
+            down,
+            hidden_width,
+            intermediate,
+        )?;
+        let down_scale = self
+            .sidecar_scale(down, "scale", expert, 0, None)
+            .map_err(|error| error.to_string())?;
+        let down_input_scale = self
+            .sidecar_scale(down, "input_scale", expert, 0, None)
+            .map_err(|error| error.to_string())?;
+        for row in 0..hidden_width {
+            let decoded = self.decode_payload_row(down, &down_payload, row, intermediate)?;
+            for (route_index, &(token, weight)) in routes.iter().enumerate() {
+                let gated = &gate[route_index * intermediate..(route_index + 1) * intermediate];
+                let output_index = token
+                    .checked_mul(hidden_width)
+                    .and_then(|index| index.checked_add(row))
+                    .ok_or_else(|| "índice de saída excede usize".to_string())?;
+                output[output_index] +=
+                    weight * dot(&decoded, gated) * down_scale * down_input_scale;
+            }
+        }
+        Ok(())
     }
 
     pub fn run_expert(
@@ -808,6 +1062,102 @@ impl HeterogeneousMoeSource {
         }
         Ok(output)
     }
+
+    pub fn run_route_batch_from_source(
+        &self,
+        cache: &Arc<ExpertCache>,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+        activation: i32,
+    ) -> Result<Vec<f32>, String> {
+        let (hidden_width, _) = self
+            .layer_geometry(layer)
+            .map_err(|error| error.to_string())?;
+        let expected_hidden = tokens
+            .checked_mul(hidden_width)
+            .ok_or_else(|| "shape hidden heterogêneo excede usize".to_string())?;
+        if tokens == 0 || hidden.len() != expected_hidden {
+            return Err(format!(
+                "lote heterogêneo recebeu hidden com {} floats, esperado {} × {}",
+                hidden.len(),
+                tokens,
+                hidden_width
+            ));
+        }
+        if experts.is_empty() || experts.len() != token_ids.len() || experts.len() != weights.len()
+        {
+            return Err(format!(
+                "lote heterogêneo tem rotas incompatíveis: experts={}, token_ids={}, weights={}",
+                experts.len(),
+                token_ids.len(),
+                weights.len()
+            ));
+        }
+        if token_offsets.len() != tokens.checked_add(1).unwrap_or(usize::MAX)
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&experts.len())
+            || token_offsets.windows(2).any(|window| window[0] > window[1])
+        {
+            return Err(format!(
+                "lote heterogêneo tem offsets inválidos: {} offsets para {} tokens e {} rotas",
+                token_offsets.len(),
+                tokens,
+                experts.len()
+            ));
+        }
+        if !matches!(activation, 1 | 2) {
+            return Err(format!("ativação MoE não suportada: {activation}"));
+        }
+
+        let mut by_expert = BTreeMap::<u32, Vec<(usize, f32)>>::new();
+        for token in 0..tokens {
+            let start = token_offsets[token];
+            let end = token_offsets[token + 1];
+            for index in start..end {
+                if token_ids[index] != token as u32 {
+                    return Err(format!(
+                        "rota heterogênea fora do formato token-major: índice {index} declara token {}, esperado {token}",
+                        token_ids[index]
+                    ));
+                }
+                let expert = experts[index];
+                if expert >= self.experts {
+                    return Err(format!(
+                        "id de expert {} fora de [0, {}) na rota heterogênea",
+                        expert, self.experts
+                    ));
+                }
+                let weight = weights[index];
+                if !weight.is_finite() {
+                    return Err(format!(
+                        "peso de rota heterogênea não finito no token {token}, slot {}",
+                        index - start
+                    ));
+                }
+                by_expert.entry(expert).or_default().push((token, weight));
+            }
+        }
+        let mut output = vec![0.0; expected_hidden];
+        for (expert, routes) in by_expert {
+            self.run_expert_batch(
+                cache,
+                model,
+                layer,
+                expert,
+                &routes,
+                hidden,
+                &mut output,
+                activation,
+            )?;
+        }
+        Ok(output)
+    }
 }
 
 fn role_for_name(name: &str) -> Option<TensorRole> {
@@ -863,6 +1213,13 @@ fn mat_vec(matrix: &[f32], rows: usize, columns: usize, input: &[f32]) -> Vec<f3
         .collect()
 }
 
+fn dot(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right)
+        .map(|(weight, value)| weight * value)
+        .sum()
+}
+
 fn silu(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
@@ -873,8 +1230,11 @@ fn gelu(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::admission::MemoryAccount;
+    use super::super::cache::{ExpertCache, FreeMemoryProbe};
     use super::*;
     use std::collections::BTreeSet;
+    use std::io;
     use std::io::Write;
 
     fn test_source_with_scalar_data(
@@ -923,6 +1283,61 @@ mod tests {
             decoder: TensorDecoder::Q4_0,
             role,
         }
+    }
+
+    fn test_plain_expert_tensor(spec_index: usize, role: TensorRole) -> ExpertTensor {
+        ExpertTensor {
+            spec_index,
+            decoder: TensorDecoder::Plain(PlainFormat::F32),
+            role,
+        }
+    }
+
+    struct FixedProbe;
+
+    impl FreeMemoryProbe for FixedProbe {
+        fn free_bytes(&self) -> io::Result<u64> {
+            Ok(1 << 30)
+        }
+    }
+
+    fn scalar_execution_source() -> HeterogeneousMoeSource {
+        let tensors = vec![
+            TensorSpec {
+                name: "blk.0.ffn_gate_exps.weight".into(),
+                dims: vec![2, 2, 2],
+                dtype: 0,
+                offset: 0,
+            },
+            TensorSpec {
+                name: "blk.0.ffn_up_exps.weight".into(),
+                dims: vec![2, 2, 2],
+                dtype: 0,
+                offset: 32,
+            },
+            TensorSpec {
+                name: "blk.0.ffn_down_exps.weight".into(),
+                dims: vec![2, 2, 2],
+                dtype: 0,
+                offset: 64,
+            },
+        ];
+        let mut source = test_source_with_scalar_data(
+            tensors,
+            &[
+                1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0,
+                1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0,
+            ],
+        );
+        source.layers = vec![LayerInventory {
+            gate_up: None,
+            gate: Some(test_plain_expert_tensor(0, TensorRole::Gate)),
+            up: Some(test_plain_expert_tensor(1, TensorRole::Up)),
+            down: Some(test_plain_expert_tensor(2, TensorRole::Down)),
+            hidden: 2,
+            intermediate: 2,
+        }];
+        source
     }
 
     #[test]
@@ -1071,6 +1486,83 @@ mod tests {
                 .unwrap(),
             400.0
         );
+    }
+
+    #[test]
+    fn lote_heterogeneo_preserva_a_travessia_por_token() {
+        let source = scalar_execution_source();
+        let cache = ExpertCache::new(
+            MemoryAccount {
+                baseline_free_bytes: 1 << 30,
+                weights_bytes: 0,
+                fixed_bytes: 0,
+                reserve_bytes: 0,
+            },
+            Arc::new(FixedProbe),
+        );
+        let hidden = vec![1.0, 2.0, 2.0, 3.0];
+        let experts = vec![0, 1, 1, 0];
+        let token_ids = vec![0, 0, 1, 1];
+        let weights = vec![0.25, 0.75, 0.6, 0.4];
+        let token_offsets = vec![0, 2, 4];
+
+        let mut expected = Vec::new();
+        for token in 0..2 {
+            let start = token * 2;
+            expected.extend(
+                source
+                    .run_from_source_with_route(
+                        &cache,
+                        "fixture",
+                        0,
+                        &hidden[token * 2..(token + 1) * 2],
+                        &experts[start..start + 2],
+                        &weights[start..start + 2],
+                        1,
+                    )
+                    .unwrap(),
+            );
+        }
+        let actual = source
+            .run_route_batch_from_source(
+                &cache,
+                "fixture",
+                0,
+                &experts,
+                &token_ids,
+                &weights,
+                &token_offsets,
+                &hidden,
+                2,
+                1,
+            )
+            .unwrap();
+
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn metadata_heterogenea_explica_a_geometria_incompativel() {
+        let source = scalar_execution_source();
+        let error = source
+            .validate_metadata(
+                0,
+                &[(
+                    TensorRole::Gate,
+                    "blk.0.ffn_gate_exps.weight",
+                    0,
+                    3,
+                    [512, 2, 2, 0],
+                )],
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("[512, 2, 2]"), "{error}");
+        assert!(error.contains("[2, 2, 2]"), "{error}");
     }
 
     #[test]

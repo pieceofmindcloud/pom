@@ -131,11 +131,17 @@ O runtime HTTP agora detecta o dtype dos bancos de experts, abre o decoder
 próprio correspondente e calcula os logits do router antes de aplicar o bloco
 ao hidden state recebido ou ao residual que será encaminhado. Q4_0 e NVFP4
 compartilham a mesma fronteira de cache e dispatch, e Q4_K (12), Q6_K (14),
-IQ3_S (21), IQ2_S (22) e IQ4_XS (23) agora também passam por essa seleção. O
+IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e MXFP4 (39) agora também
+passam por essa seleção. O
 decoder K-quant valida a ordem GGUF
 `[columns, rows, experts]`, os blocos de 256 elementos e a convenção fundida ou
 separada dos bancos gate/up antes de copiar um expert. O frame continua em f16
 e não leva pesos.
+Na convenção separada, gate e up têm a geometria GGUF
+`[hidden, intermediate, experts]`; o loader não pode trocar `dims[0]` e
+`dims[1]` ao transformar essa metadata em `hidden` e `intermediate`. O callback
+valida também o rank e as dimensões recebidas do llama.cpp e, em caso de
+divergência, informa a forma observada e a esperada.
 O decoder NVFP4 aplica a mesma regra de dimensões: no GGUF, uma matriz de peso
 é `[input, output, experts]`. Portanto gate/up usam
 `[hidden, intermediate, experts]` e down usa
@@ -152,14 +158,16 @@ convenções de nomes, e com `MoeRuntime::open` seguido de `forward_batch`. A
 falha inicial era uma inversão no validator: GGUF declara a dimensão de
 colunas em `dims[0]`, enquanto o contrato do mat-vec recebe `rows, columns`.
 O validator agora checa as duas dimensões e o eixo de experts antes do forward.
-Não há ainda uma prova física de Qwen3.6 na ksia neste worktree.
+O teste retangular usa `hidden=2048` e `intermediate=512`, portanto falha se os
+eixos forem trocados. Não há ainda uma prova física de Qwen3.6 neste worktree.
 
-Os três IQ-quants priorizados usam o mesmo loader e a mesma fronteira de cache.
+Os IQ-quants priorizados usam o mesmo loader e a mesma fronteira de cache.
 O executor próprio mantém parser, mmap, router, top-k e mat-vec; a expansão do
 bloco usa as primitivas de dequantização GGML linkadas pelo crate nativo, sem
 duplicar os codebooks oficiais em Rust. Fixtures locais cobrem IQ3_S, IQ2_S e
-IQ4_XS, os dois nomes de gate/up e a execução ponta a ponta do runtime. Um
-dtype diferente de 21, 22 ou 23 continua recusado pelo dispatch com ID e nome.
+IQ4_XS, os dois nomes de gate/up e a execução ponta a ponta do runtime. A ponte
+CUDA cobre IQ3_XXS, IQ3_S, IQ2_S e IQ4_XS; um dtype fora dos decoders externos
+continua recusado pelo dispatch com ID e nome.
 
 ### Fase 4A: F32, F16 e BF16
 
@@ -250,6 +258,27 @@ fora da enumeração, gate/up fundidos e separados e forward do `MoeRuntime`.
 Não há GGUF MoE real IQ disponível neste worktree; os seis formatos novos estão
 **implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
 afirmado.
+
+### Travessia UD heterogênea
+
+`format_heterogeneous.rs` mantém o dtype e a geometria de cada papel do expert
+separadamente. O callback e o inventário Rust falam a mesma forma GGML
+`[columns, rows, experts]`, enquanto ids e pesos da rota continuam em ordem
+token-major `[token, slot]`. No CPU, o lote agrupa temporariamente as entradas
+por expert e percorre cada linha de gate, up e down uma vez para todos os tokens
+que a selecionaram; isso evita a descodificação integral repetida que fazia
+combinações grandes falharem como timeout no prefill. A saída é reconstruída
+na posição original de cada token e mantém os pesos da rota, tanto para bancos
+fundidos quanto separados.
+
+Essa é a combinação observada no `deepseek4` real da ksia: IQ3_XXS (18) em
+gate/up e MXFP4 (39) em down, com 256 experts e top-6. Esses dois formatos têm
+decoders CPU externos e ponte CUDA heterogênea; o plano mantém os experts fora
+do buffer de pesos do llama.cpp e a execução em lote não cai na execução token a
+token. Para
+uma combinação sem decoder CPU ou ponte CUDA, `MoeRuntime::external_executor_plan`
+devolve a razão com os dtypes e o servidor recusa a carga antes de abrir o
+modelo; não há retorno silencioso ao MoE nativo.
 
 ### Ligação e telemetria do hop
 
@@ -350,13 +379,14 @@ pelos logs da entrada do callback.
 ### Fase 5.1: ponte CUDA por dtype
 
 Esta foi a fase formal da ponte por dtype. O executor CUDA cobre NVFP4 (40),
-escalares, Q4_K/Q6_K e, após prova diferencial na `ksia`, IQ3_S (21), IQ2_S
-(22) e IQ4_XS (23). IQ-quants restantes, K-quants restantes, legacy e low-bit
-continuam no `CPUReference`, com a escolha visível na telemetria. Quando uma
-combinação heterogênea contém dtype sem ponte CUDA, a camada inteira também
-usa `CPUReference`, em vez de devolver os experts ao llama.cpp. Cada tensor
-conserva seu dtype, o decoder CUDA correspondente é escolhido por tensor e um
-dtype sem kernel recusa nominalmente com o dtype e o motivo.
+escalares, Q4_K/Q6_K e IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e
+MXFP4 (39) na ponte heterogênea. A prova diferencial desses dois novos dtypes
+e o E2E real continuam pendentes. IQ-quants
+restantes, K-quants restantes, legacy e low-bit continuam no `CPUReference`,
+com a escolha visível na telemetria. Quando uma combinação heterogênea contém
+dtype sem ponte CUDA, a camada inteira usa `CPUReference` se houver decoder
+externo; sem decoder, a carga é recusada antes do modelo. Cada tensor conserva
+seu dtype e o decoder correspondente é escolhido por tensor.
 
 Critério de pronto por bloco: prova numérica contra o oráculo GGML para cada
 dtype, telemetria por hop/fase mostrando `cuda` sem `moe_executor_reason` de
@@ -1372,16 +1402,16 @@ promoção.
 Um dtype sem ponte permanece explicitamente visível como `CPUReference`, com
 `dtype=<id> (<nome>)` e motivo, ou é recusado no limite de uma chamada CUDA
 quando o contrato exigir CUDA. Nunca se interpreta um payload não coberto como
-outro formato. Nesta entrega a ponte é declarada para Q4_K, Q6_K, IQ3_S, IQ2_S
-e IQ4_XS somente depois das respectivas provas; os demais IQ continuam
-protegidos pela recusa nominal.
+outro formato. Nesta entrega a ponte é declarada para Q4_K, Q6_K, IQ3_XXS,
+IQ3_S, IQ2_S, IQ4_XS e MXFP4 somente depois das respectivas provas; os demais
+IQ continuam protegidos pela recusa nominal.
 
-Quando uma rota heterogênea combina somente esses cinco dtypes, a decisão CUDA é
+Quando uma rota heterogênea combina somente esses sete dtypes, a decisão CUDA é
 feita por tensor, e não pela igualdade de um `KQuantFormat` global. Assim, uma
 combinação Q4_K/Q6_K como a do Ornith pode usar o mesmo executor heterogêneo,
 com `k_dot` escolhendo o decoder já validado de cada tensor. Um dtype fora desse
-conjunto mantém todos os experts da camada no llama.cpp; o diagnóstico lista
-somente os dtypes que bloquearam a ponte. A comparação diferencial específica
+conjunto usa o decoder CPU externo quando ele existe; se não existe, a admissão
+recusa a combinação antes da carga e lista os dtypes que bloquearam a ponte. A comparação diferencial específica
 da rota mista está no teste
 `executor_cuda_k_quants_heterogeneos_preserva_gate_up_down_do_decoder_cpu`, com
 tolerância absoluta de `1e-4` e relatório também da diferença relativa; ela deve
@@ -1642,10 +1672,10 @@ A ordem vigente passa a ser:
 1. **Salvaguarda por dtype e reserva de VRAM.** A reserva medida de
 `53decb4` e o ownership por camada chegam juntos. Uma camada cujos tensores de
 experts tenham executor CUDA ou `CPUReference` disponível pode ser retirada do
-llama.cpp. Dtypes sem cache device, inclusive combinações heterogêneas que
-incluam um dtype fora de IQ3_S/IQ2_S/IQ4_XS, usam `CPUReference` e publicam os
-dtypes concretos. Somente uma limitação real do runtime mantém a camada nativa,
-com motivo visível, nunca deixando a placa sem dono.
+llama.cpp. Dtypes sem cache device usam `CPUReference` e publicam os dtypes
+concretos; uma combinação sem decoder externo é recusada antes da carga.
+Somente uma limitação real do runtime mantém a camada nativa, com motivo
+visível, nunca deixando a placa sem dono.
 2. **Cobertura do marco.** NVFP4, Q4_K/Q6_K e, em seguida, IQ3_S/IQ2_S/IQ4_XS
    por tensor, incluindo o cache device e a combinação heterogênea usada pelos
    dois UD. O decoder é escolhido por tensor e dtype; arquitetura, nomes,
@@ -1918,11 +1948,12 @@ produz o nome do tensor, o ID e o nome GGML, sem interpretar os bytes por outro
 formato.
 
 Na ponte CUDA, o subconjunto heterogêneo validado é Q4_K (12), Q6_K (14),
-IQ3_S (21), IQ2_S (22) e IQ4_XS (23). Os kernels recebem um descriptor por
-expert e papel, validam o tamanho da matriz segundo o dtype e despacham para o
-decoder K ou IQ existente. Isso preserva o caminho IQ anterior e permite que
-gate, up e down usem dtypes diferentes; a ausência de uma ponte em qualquer
-tensor mantém a camada nativa e informa o dtype bloqueador.
+IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e MXFP4 (39). Os kernels
+recebem um descriptor por expert e papel, validam o tamanho da matriz segundo o
+dtype e despacham para o decoder K, IQ ou MXFP4 correspondente. Isso preserva
+o caminho IQ anterior e permite que gate, up e down usem dtypes diferentes; a
+ausência de uma ponte com decoder externo em qualquer tensor recusa a carga e
+informa o dtype bloqueador.
 
 O teste ignorado
 `qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` exige
@@ -2111,6 +2142,24 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
 - O cache LRU de experts é local à máquina. Ele nunca atravessa o fatiamento e
   não transforma peso em tráfego de rede.
 
+### Estado da travessia MoE - 2026-09-01
+
+O layout separado dos experts K-quant segue `[hidden, intermediate, experts]`;
+o loader agora preserva essa ordem, inclusive quando `hidden != intermediate`.
+O callback valida nome, dtype, rank e dimensões contra a fonte e informa as
+duas geometrias quando divergem. A fonte dos experts continua externa ao
+buffer de pesos do llama.cpp: a medição da ksia encontrou 2.531,86 MiB nesse
+buffer para um modelo com 256 experts, enquanto os payloads roteados ficam no
+cache próprio.
+
+O caminho heterogêneo agrupa as rotas em lote e cobre IQ3_XXS (18) mais MXFP4
+(39), a combinação do `deepseek4`, na ponte CUDA e no decoder CPU de referência.
+Os índices da rota são lidos como I32 em ordem token-major, inclusive valores
+acima de 127. Uma combinação sem decoder externo é recusada antes da carga do
+modelo, com os dtypes que a bloquearam; não há fallback nativo silencioso.
+Ainda não há prova CUDA nesta máquina, porque não existe compilador CUDA local;
+a prova diferencial e o E2E nos GGUF reais precisam ser executados na ksia.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis
@@ -2121,9 +2170,3 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
   `13.464294 != 164.57135`. A prova IQ de `86226c7` não reproduziu as antigas
   diferenças IQ; os três dtypes passaram a prova diferencial e não devem ser
   protegidos por uma tolerância mais larga.
-- A ponte CUDA heterogênea ainda não tem prova E2E do Ornith 1.5 neste
-  worktree. O callback agora recusa hidden de entrada e saída não finitos com
-  camada e índice, mas a causa do primeiro NaN observado em
-  `ffn_moe_weights` continua pendente de uma prova diferencial no GGUF real.
-  Não há fallback nativo silencioso: falha numérica aborta a requisição e
-  publica o motivo.

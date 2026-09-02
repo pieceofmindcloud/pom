@@ -402,8 +402,8 @@ impl KQuantSource {
             }
             (
                 format,
-                dimension(gate, 1, "hidden")?,
-                dimension(gate, 0, "intermediate")?,
+                dimension(gate, 0, "hidden")?,
+                dimension(gate, 1, "intermediate")?,
                 dimension_u32(gate, 2, "experts")?,
             )
         };
@@ -1493,6 +1493,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn source_mmap_preserva_hidden_e_intermediate_no_layout_split_ggml() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-ftk-k-source-split-rectangular-{}.gguf",
+            std::process::id()
+        ));
+        let hidden = 2048;
+        let intermediate = 512;
+        write_k_source_with_dimensions(
+            &path,
+            KQuantFormat::Q6K.dtype(),
+            KQuantFormat::Q6K,
+            GateUpLayout::Split,
+            false,
+            hidden,
+            intermediate,
+        );
+
+        let source = KQuantSource::open_infer(&path, 2).unwrap();
+
+        assert_eq!(source.hidden(), hidden);
+        assert_eq!(source.intermediate(), intermediate);
+        drop(source);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn source_mmap_prefere_fundido_quando_o_gguf_tem_as_duas_convencoes() {
         let path = std::env::temp_dir().join(format!(
             "pom-ftk-k-source-mixed-{}.gguf",
@@ -1563,11 +1589,21 @@ pub(crate) mod tests {
         layout: GateUpLayout,
         with_sidecars: bool,
     ) {
+        write_k_source_with_dimensions(path, dtype, format, layout, with_sidecars, 256, 256);
+    }
+
+    fn write_k_source_with_dimensions(
+        path: &std::path::Path,
+        dtype: u32,
+        format: KQuantFormat,
+        layout: GateUpLayout,
+        with_sidecars: bool,
+        hidden: usize,
+        intermediate: usize,
+    ) {
         use std::fs::File;
         use std::io::Write;
 
-        let hidden = 256usize;
-        let intermediate = 256usize;
         let experts = 2usize;
         let row_bytes = format.block_bytes();
         let gate_up = packed_rows(experts * 2 * intermediate, hidden, format);
@@ -1578,7 +1614,10 @@ pub(crate) mod tests {
                 router.extend_from_slice(&((expert + 1) as f32).to_le_bytes());
             }
         }
-        assert_eq!(gate_up.len(), experts * 2 * intermediate * row_bytes);
+        assert_eq!(
+            gate_up.len(),
+            experts * 2 * intermediate * (hidden / BLOCK_ELEMENTS) * row_bytes
+        );
         let gate = packed_rows(experts * intermediate, hidden, format);
         let up = packed_rows(experts * intermediate, hidden, format);
         let mut file = Vec::new();

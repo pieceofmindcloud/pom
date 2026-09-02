@@ -862,10 +862,10 @@ impl IqQuantCudaExecutor {
     }
 }
 
-/// Executor CUDA para uma rota cujos tensores podem usar Q4_K, Q6_K, IQ3_S,
-/// IQ2_S ou IQ4_XS independentemente por papel. Os descritores carregam
-/// ponteiro, tamanho e dtype de cada tensor; o cache residente mantém os bytes
-/// no device entre tokens.
+/// Executor CUDA para uma rota cujos tensores podem usar Q4_K, Q6_K, IQ3_XXS,
+/// IQ3_S, IQ2_S, IQ4_XS ou MXFP4 independentemente por papel. Os descritores
+/// carregam ponteiro, tamanho e dtype de cada tensor; o cache residente mantém
+/// os bytes no device entre tokens.
 pub struct HeterogeneousCudaExecutor {
     hidden: usize,
     intermediate: usize,
@@ -1529,6 +1529,7 @@ mod tests {
     use super::super::format_k_quants::{
         dequantize_row as dequantize_k_row, KQuantExpert, KQuantFormat,
     };
+    use super::super::format_low_bits::{decode_row as decode_low_bit_row, LowBitFormat};
     use super::super::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
     use super::super::format_plain::{PlainExpert, PlainFormat};
     use super::super::format_q4_0::parse_tensor_table;
@@ -1635,6 +1636,7 @@ mod tests {
 
     fn iq_payload(format: IqQuantFormat, hidden: usize, intermediate: usize) -> Vec<u8> {
         let block_bytes = match format {
+            IqQuantFormat::Iq3XXS => 98,
             IqQuantFormat::Iq3S => 110,
             IqQuantFormat::Iq2S => 82,
             IqQuantFormat::Iq4XS => 136,
@@ -1653,6 +1655,14 @@ mod tests {
                         block[66..74].fill(0x55);
                         block[74..106].fill(0x33);
                         block[106..110].fill(0x21);
+                    }
+                    IqQuantFormat::Iq3XXS => {
+                        block[2..66].iter_mut().enumerate().for_each(|(i, value)| {
+                            *value = (i as u8).wrapping_mul(19);
+                        });
+                        block[66..98].iter_mut().enumerate().for_each(|(i, value)| {
+                            *value = (i as u8).wrapping_mul(23);
+                        });
                     }
                     IqQuantFormat::Iq2S => {
                         block[2..66].iter_mut().enumerate().for_each(|(i, value)| {
@@ -1700,6 +1710,39 @@ mod tests {
             gate_up[gate_bytes..].to_vec(),
             payload[8 + gate_up_len..].to_vec(),
         )
+    }
+
+    fn mxfp4_matrix(rows: usize, columns: usize, nibble: u8) -> Vec<u8> {
+        let row_size = columns / 32 * 17;
+        let mut bytes = vec![0u8; rows * row_size];
+        for block in bytes.chunks_exact_mut(17) {
+            block[0] = 128;
+            block[1..].fill(nibble | (nibble << 4));
+        }
+        bytes
+    }
+
+    fn mxfp4_mat_vec(
+        matrix: &[u8],
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+    ) -> Vec<f32> {
+        let row_size = LowBitFormat::Mxfp4.row_bytes(columns).unwrap();
+        (0..rows)
+            .map(|row| {
+                decode_low_bit_row(
+                    LowBitFormat::Mxfp4,
+                    &matrix[row * row_size..(row + 1) * row_size],
+                    columns,
+                )
+                .unwrap()
+                .into_iter()
+                .zip(input)
+                .map(|(weight, value)| weight * value)
+                .sum()
+            })
+            .collect()
     }
 
     fn iq_mat_vec(
@@ -1981,6 +2024,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut failures = Vec::new();
         for format in [
+            IqQuantFormat::Iq3XXS,
             IqQuantFormat::Iq3S,
             IqQuantFormat::Iq2S,
             IqQuantFormat::Iq4XS,
@@ -2215,6 +2259,114 @@ mod tests {
                 data: down_lease.handle() as *const u8,
                 bytes: down.len(),
                 dtype: 23,
+                ..CudaHeterogeneousTensor::default()
+            },
+            ..CudaHeterogeneousExpert::default()
+        };
+        let actual = executor
+            .run_route_batch_resident(
+                &[descriptor],
+                &[0],
+                &[0],
+                &[1.0],
+                &[0, 1],
+                &hidden_values,
+                1,
+                1,
+            )
+            .unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn executor_cuda_heterogeneo_preserva_iq3xxs_e_mxfp4_do_deepseek() {
+        let hidden = 256;
+        let intermediate = 256;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 - 127.0) * 0.0078125)
+            .collect::<Vec<_>>();
+        let (gate, _, _) = split_iq_payload(IqQuantFormat::Iq3XXS, hidden, intermediate);
+        let (_, up, _) = split_iq_payload(IqQuantFormat::Iq3XXS, hidden, intermediate);
+        let down = mxfp4_matrix(hidden, intermediate, 0x22);
+        let gate_values = iq_mat_vec(
+            IqQuantFormat::Iq3XXS,
+            &gate,
+            intermediate,
+            hidden,
+            &hidden_values,
+        );
+        let up_values = iq_mat_vec(
+            IqQuantFormat::Iq3XXS,
+            &up,
+            intermediate,
+            hidden,
+            &hidden_values,
+        );
+        let activated = gate_values
+            .iter()
+            .zip(up_values)
+            .map(|(gate, up)| gate / (1.0 + (-gate).exp()) * up)
+            .collect::<Vec<_>>();
+        let expected = mxfp4_mat_vec(&down, hidden, intermediate, &activated);
+
+        let executor = HeterogeneousCudaExecutor::new_with_cache(
+            hidden,
+            intermediate,
+            measured_device_cache(1_000_000).unwrap(),
+        );
+        let gate_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new(
+                    "cuda-deepseek-heterogeneous",
+                    0,
+                    0,
+                    "gate-18",
+                ),
+                &gate,
+            )
+            .unwrap();
+        let up_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new(
+                    "cuda-deepseek-heterogeneous",
+                    0,
+                    0,
+                    "up-18",
+                ),
+                &up,
+            )
+            .unwrap();
+        let down_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new(
+                    "cuda-deepseek-heterogeneous",
+                    0,
+                    0,
+                    "down-39",
+                ),
+                &down,
+            )
+            .unwrap();
+        let descriptor = CudaHeterogeneousExpert {
+            gate: CudaHeterogeneousTensor {
+                data: gate_lease.handle() as *const u8,
+                bytes: gate.len(),
+                dtype: 18,
+                ..CudaHeterogeneousTensor::default()
+            },
+            up: CudaHeterogeneousTensor {
+                data: up_lease.handle() as *const u8,
+                bytes: up.len(),
+                dtype: 18,
+                ..CudaHeterogeneousTensor::default()
+            },
+            down: CudaHeterogeneousTensor {
+                data: down_lease.handle() as *const u8,
+                bytes: down.len(),
+                dtype: 39,
                 ..CudaHeterogeneousTensor::default()
             },
             ..CudaHeterogeneousExpert::default()

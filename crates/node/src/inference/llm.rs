@@ -583,11 +583,13 @@ unsafe extern "C" fn moe_ffn_callback(
                 diagnostic_return!("negative_tensor_dtype");
             }
         };
-        metadata_owned.push((role, name, dtype));
+        metadata_owned.push((role, name, dtype, tensor.n_dims, tensor.ne));
     }
     let metadata = metadata_owned
         .iter()
-        .map(|(role, name, dtype)| (*role, name.as_str(), *dtype))
+        .map(|(role, name, dtype, n_dims, dims)| {
+            (*role, name.as_str(), *dtype, *n_dims, *dims)
+        })
         .collect::<Vec<_>>();
     if let Err(error) = state
         .runtime
@@ -836,6 +838,18 @@ mod moe_route_tests {
 
         let (selected, normalized) =
             normalize_moe_route("qwen35moe", 7, &selected_experts, &weights, 3, 2).unwrap();
+
+        assert_eq!(selected, selected_experts);
+        assert_eq!(normalized, weights);
+    }
+
+    #[test]
+    fn indices_de_expert_acima_de_127_preservam_i32() {
+        let selected_experts = [132, 129, 38, 253];
+        let weights = [0.4, 0.3, 0.2, 0.1];
+
+        let (selected, normalized) =
+            normalize_moe_route("qwen35moe", 1, &selected_experts, &weights, 1, 4).unwrap();
 
         assert_eq!(selected, selected_experts);
         assert_eq!(normalized, weights);

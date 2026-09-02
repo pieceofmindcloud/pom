@@ -181,7 +181,23 @@ pub enum MoeRuntimeError {
     Cache(CacheError),
     Format(Q4Error),
     Block(String),
-    FormatMismatch,
+    FormatMismatch {
+        source: String,
+        block: String,
+    },
+    InvalidRoute {
+        layer: u32,
+        source: String,
+        expert_count: usize,
+        expected_expert_count: usize,
+        expert_count_used: usize,
+        hidden_values: usize,
+        expected_hidden_values: usize,
+        selected_values: usize,
+        expected_selected_values: usize,
+        weight_values: usize,
+        expected_weight_values: usize,
+    },
     MissingLayer {
         layer: u32,
         layers: u32,
@@ -200,9 +216,26 @@ impl fmt::Display for MoeRuntimeError {
             Self::Cache(error) => error.fmt(formatter),
             Self::Format(error) => error.fmt(formatter),
             Self::Block(error) => formatter.write_str(error),
-            Self::FormatMismatch => {
-                formatter.write_str("fonte e bloco MoE usam formatos diferentes")
-            }
+            Self::FormatMismatch { source, block } => write!(
+                formatter,
+                "formatos MoE diferentes: fonte={source}, bloco={block}"
+            ),
+            Self::InvalidRoute {
+                layer,
+                source,
+                expert_count,
+                expected_expert_count,
+                expert_count_used,
+                hidden_values,
+                expected_hidden_values,
+                selected_values,
+                expected_selected_values,
+                weight_values,
+                expected_weight_values,
+            } => write!(
+                formatter,
+                "rota MoE inválida na camada {layer} (fonte={source}): expert_count={expert_count}, esperado={expected_expert_count}; expert_count_used={expert_count_used}; hidden={hidden_values}, esperado={expected_hidden_values}; selected={selected_values}, esperado={expected_selected_values}; weights={weight_values}, esperado={expected_weight_values}"
+            ),
             Self::MissingLayer { layer, layers } => {
                 write!(formatter, "camada MoE local {layer} fora de [0, {layers})")
             }
@@ -274,6 +307,19 @@ enum MoeSource {
 }
 
 impl MoeSource {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "legacy",
+            Self::Plain(_) => "plain",
+            Self::Q4(_) => "q4_0",
+            Self::K(_) => "k_quant",
+            Self::Iq(_) => "iq_quant",
+            Self::Nvfp4(_) => "nvfp4",
+            Self::LowBit(_) => "low_bit",
+            Self::Heterogeneous(_) => "heterogeneous",
+        }
+    }
+
     fn hidden(&self) -> usize {
         match self {
             Self::Legacy(source) => source.hidden(),
@@ -284,6 +330,21 @@ impl MoeSource {
             Self::Nvfp4(source) => source.hidden(),
             Self::LowBit(source) => source.hidden(),
             Self::Heterogeneous(source) => source.hidden(),
+        }
+    }
+
+    fn geometry(&self, layer: u32) -> Result<(usize, usize), MoeRuntimeError> {
+        match self {
+            Self::Legacy(source) => Ok((source.hidden(), source.intermediate())),
+            Self::Plain(source) => Ok((source.hidden(), source.intermediate())),
+            Self::Q4(source) => Ok((source.hidden(), source.intermediate())),
+            Self::K(source) => Ok((source.hidden(), source.intermediate())),
+            Self::Iq(source) => Ok((source.hidden(), source.intermediate())),
+            Self::Nvfp4(source) => Ok((source.hidden(), source.intermediate())),
+            Self::LowBit(source) => Ok((source.hidden(), source.intermediate())),
+            Self::Heterogeneous(source) => source
+                .layer_geometry(layer)
+                .map_err(MoeRuntimeError::Source),
         }
     }
 
@@ -474,6 +535,21 @@ enum MoeBlock {
     Heterogeneous(HeterogeneousMoeBlock),
 }
 
+impl MoeBlock {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "legacy",
+            Self::Plain(_) => "plain",
+            Self::Q4(_) => "q4_0",
+            Self::K(_) => "k_quant",
+            Self::Iq(_) => "iq_quant",
+            Self::Nvfp4(_) => "nvfp4",
+            Self::LowBit(_) => "low_bit",
+            Self::Heterogeneous(_) => "heterogeneous",
+        }
+    }
+}
+
 pub struct MoeRuntime {
     source: MoeSource,
     blocks: Vec<MoeBlock>,
@@ -502,10 +578,10 @@ pub struct MoeRouteBatch<'a> {
 /// Ownership decision made before loading the llama.cpp model.
 ///
 /// A `1` means that every expert tensor in that local layer has an external
-/// executor, CPU or device, and may be metadata-only in llama.cpp. A `0` is an
-/// explicit native-ownership decision: llama.cpp keeps and executes that
-/// layer's experts. Keeping this list data-driven prevents an unavailable
-/// dtype from turning a model with a usable CPU decoder into a silent fallback.
+/// executor, CPU or device, and may be metadata-only in llama.cpp. A `0` means
+/// that the combination has no supported external executor and must be
+/// rejected before loading the model. Keeping this list data-driven prevents
+/// an unavailable dtype from turning into a silent native fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MoeExternalExecutorPlan {
     pub layers: Vec<u8>,
@@ -577,7 +653,13 @@ fn make_external_executor_plan(
     // not hand the layer back to llama.cpp when the Rust runtime can execute
     // the exact GGML format itself. NVFP4 is the one exception: without CUDA
     // it requires the explicit CPU opt-in enforced by its constructor.
-    let cpu_reference_supported = !matches!(detected, ExpertFormat::Nvfp4) || nvfp4_cpu_requested;
+    let cpu_reference_supported = match detected {
+        ExpertFormat::Nvfp4 => nvfp4_cpu_requested,
+        ExpertFormat::Heterogeneous => dtypes
+            .iter()
+            .all(|dtype| heterogeneous_cpu_dtype_supported(*dtype)),
+        _ => true,
+    };
     if cpu_reference_supported {
         return MoeExternalExecutorPlan {
             layers: vec![1; layers],
@@ -586,21 +668,31 @@ fn make_external_executor_plan(
         };
     }
 
-    let reason = if !cuda_compiled {
+    let cpu_unsupported_dtype_list = dtypes
+        .iter()
+        .filter(|dtype| !heterogeneous_cpu_dtype_supported(**dtype))
+        .map(|dtype| format!("{dtype} ({})", ggml_type_name(*dtype)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reason = if !cpu_unsupported_dtype_list.is_empty() {
         format!(
-            "executor CUDA recusado para dtype(s) [{dtype_list}]: binário sem feature cuda; experts permanecem no llama.cpp"
+            "dtypes heterogêneos [{cpu_unsupported_dtype_list}] não têm decoder CPU externo; a carga MoE deve ser recusada antes do modelo"
+        )
+    } else if !cuda_compiled {
+        format!(
+            "executor externo recusado para dtype(s) [{dtype_list}]: binário sem feature cuda; a carga MoE deve ser recusada antes do modelo"
         )
     } else if detected == ExpertFormat::Heterogeneous {
         format!(
-            "executor CUDA recusado para dtypes heterogêneos [{unsupported_dtype_list}]: tensor(es) com esses dtypes não têm ponte CUDA numericamente validada; experts permanecem no llama.cpp"
+            "executor externo recusado para dtypes heterogêneos [{unsupported_dtype_list}]: tensor(es) com esses dtypes não têm decoder externo suportado; a carga MoE deve ser recusada antes do modelo"
         )
     } else if detected == ExpertFormat::Nvfp4 && nvfp4_cpu_requested {
         format!(
-            "executor CUDA recusado para dtype [{dtype_list}]: POM_MOE_NVFP4_BACKEND=cpu; experts permanecem no llama.cpp"
+            "executor externo recusado para dtype [{dtype_list}]: POM_MOE_NVFP4_BACKEND=cpu; a carga MoE deve ser recusada antes do modelo"
         )
     } else {
         format!(
-            "executor CUDA recusado para dtype [{dtype_list}]: ponte device não suportada; experts permanecem no llama.cpp"
+            "executor externo recusado para dtype [{dtype_list}]: ponte device não suportada; a carga MoE deve ser recusada antes do modelo"
         )
     };
     MoeExternalExecutorPlan {
@@ -612,7 +704,18 @@ fn make_external_executor_plan(
 
 fn cuda_heterogeneous_dtype_supported(dtype: u32) -> bool {
     KQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
-        || IqQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
+        || IqQuantFormat::from_dtype(dtype).is_ok_and(|format| {
+            format.cuda_supported() || matches!(format, IqQuantFormat::Iq3XXS)
+        })
+        || LowBitFormat::from_dtype(dtype)
+            .is_ok_and(|format| matches!(format, LowBitFormat::Mxfp4))
+}
+
+fn heterogeneous_cpu_dtype_supported(dtype: u32) -> bool {
+    matches!(
+        dtype,
+        0 | 1 | 2 | 3 | 6 | 7 | 8 | 10..=23 | 29 | 30 | 34 | 35 | 39 | 41 | 42
+    )
 }
 
 impl MoeRuntime {
@@ -678,7 +781,10 @@ impl MoeRuntime {
                 };
                 let source = LegacyQuantSource::open_infer(&path, experts)?;
                 if source.format() != format {
-                    return Err(MoeRuntimeError::FormatMismatch);
+                    return Err(MoeRuntimeError::FormatMismatch {
+                        source: source.format().name().into(),
+                        block: format.name().into(),
+                    });
                 }
                 if !source.has_router() {
                     return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
@@ -728,7 +834,10 @@ impl MoeRuntime {
                 };
                 let source = PlainSource::open_infer(&path, experts)?;
                 if source.format() != format {
-                    return Err(MoeRuntimeError::FormatMismatch);
+                    return Err(MoeRuntimeError::FormatMismatch {
+                        source: source.format().name().into(),
+                        block: format.name().into(),
+                    });
                 }
                 if !source.has_router() {
                     return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
@@ -923,7 +1032,10 @@ impl MoeRuntime {
                 };
                 let source = LowBitSource::open_infer(&path, experts)?;
                 if source.format() != format {
-                    return Err(MoeRuntimeError::FormatMismatch);
+                    return Err(MoeRuntimeError::FormatMismatch {
+                        source: source.format().name().into(),
+                        block: format.name().into(),
+                    });
                 }
                 if !source.has_router() {
                     return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
@@ -981,7 +1093,10 @@ impl MoeRuntime {
                 };
                 let source = KQuantSource::open_infer(&path, experts)?;
                 if source.format() != format {
-                    return Err(MoeRuntimeError::FormatMismatch);
+                    return Err(MoeRuntimeError::FormatMismatch {
+                        source: source.format().name().into(),
+                        block: format.name().into(),
+                    });
                 }
                 if !source.has_router() {
                     return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
@@ -1075,7 +1190,10 @@ impl MoeRuntime {
                 };
                 let source = IqQuantSource::open_infer(&path, experts)?;
                 if source.format() != format {
-                    return Err(MoeRuntimeError::FormatMismatch);
+                    return Err(MoeRuntimeError::FormatMismatch {
+                        source: source.format().name().into(),
+                        block: format.name().into(),
+                    });
                 }
                 if !source.has_router() {
                     return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
@@ -1522,7 +1640,7 @@ impl MoeRuntime {
     pub fn validate_callback_metadata(
         &self,
         layer: u32,
-        metadata: &[(TensorRole, &str, u32)],
+        metadata: &[(TensorRole, &str, u32, u32, [i64; 4])],
     ) -> Result<(), MoeRuntimeError> {
         if let MoeSource::Heterogeneous(source) = &self.source {
             return source
@@ -1530,11 +1648,39 @@ impl MoeRuntime {
                 .map_err(MoeRuntimeError::Source);
         }
         let expected = self.source.dtype();
-        for (role, name, dtype) in metadata {
+        let (hidden, intermediate) = self.source.geometry(layer)?;
+        let experts = self.source.experts() as u64;
+        for (role, name, dtype, n_dims, dims) in metadata {
             if *dtype != expected {
                 return Err(MoeRuntimeError::Block(format!(
                     "tensor {name} ({role}) usa dtype GGML {dtype}, mas o runtime homogêneo abriu dtype GGML {expected}"
                 )));
+            }
+            let actual_dims = usize::try_from(*n_dims)
+                .ok()
+                .filter(|count| *count <= dims.len())
+                .map_or_else(Vec::new, |count| dims[..count].to_vec());
+            let expected_dims = match role {
+                TensorRole::GateUp => vec![hidden as u64, (2 * intermediate) as u64, experts],
+                TensorRole::Gate | TensorRole::Up => {
+                    vec![hidden as u64, intermediate as u64, experts]
+                }
+                TensorRole::Down => vec![intermediate as u64, hidden as u64, experts],
+            };
+            let geometry_matches = actual_dims.len() == expected_dims.len()
+                && actual_dims
+                    .iter()
+                    .zip(&expected_dims)
+                    .all(|(actual, expected)| u64::try_from(*actual).ok() == Some(*expected));
+            if !geometry_matches {
+                return Err(MoeRuntimeError::Source(
+                    Q4LoadError::TensorGeometryMismatch {
+                        name: (*name).to_string(),
+                        dtype: *dtype,
+                        dims: actual_dims,
+                        expected_dims,
+                    },
+                ));
             }
         }
         Ok(())
@@ -1576,7 +1722,19 @@ impl MoeRuntime {
             || selected_experts.len() != expected_ids
             || weights.len() != expected_ids
         {
-            return Err(MoeRuntimeError::FormatMismatch);
+            return Err(MoeRuntimeError::InvalidRoute {
+                layer,
+                source: format!("{} dtypes={:?}", self.source.kind(), self.source.dtypes()),
+                expert_count,
+                expected_expert_count: self.source.experts() as usize,
+                expert_count_used,
+                hidden_values: hidden.len(),
+                expected_hidden_values: tokens.saturating_mul(self.source.hidden()),
+                selected_values: selected_experts.len(),
+                expected_selected_values: expected_ids,
+                weight_values: weights.len(),
+                expected_weight_values: expected_ids,
+            });
         }
         if let Some(expected_activation) = self.source.activation() {
             if activation != expected_activation {
@@ -1747,6 +1905,33 @@ impl MoeRuntime {
             }
         }
 
+        if let (MoeSource::Heterogeneous(source), MoeBlock::Heterogeneous(block)) =
+            (&self.source, block)
+        {
+            let token_ids = (0..tokens)
+                .flat_map(|token| std::iter::repeat(token as u32).take(expert_count_used))
+                .collect::<Vec<_>>();
+            let token_offsets = (0..=tokens)
+                .map(|token| token.saturating_mul(expert_count_used))
+                .collect::<Vec<_>>();
+            let output = block.forward_batch_from_source_with_route_cpu(
+                source,
+                &resolved_ids,
+                &token_ids,
+                weights,
+                &token_offsets,
+                hidden,
+                tokens,
+                activation,
+            )?;
+            let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
+            self.runtime_diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .runtime_forward_ms += elapsed_ms;
+            return Ok(output);
+        }
+
         let hidden_width = self.source.hidden();
         let mut output = Vec::with_capacity(hidden.len());
         for token in 0..tokens {
@@ -1777,7 +1962,12 @@ impl MoeRuntime {
                         route_weights,
                         activation,
                     )?,
-                _ => return Err(MoeRuntimeError::FormatMismatch),
+                _ => {
+                    return Err(MoeRuntimeError::FormatMismatch {
+                        source: self.source.kind().into(),
+                        block: block.kind().into(),
+                    });
+                }
             };
             output.extend(values);
         }
@@ -1846,7 +2036,12 @@ impl MoeRuntime {
                         "runtime heterogêneo exige a rota resolvida do llama.cpp".into(),
                     ))
                 }
-                _ => return Err(MoeRuntimeError::FormatMismatch),
+                _ => {
+                    return Err(MoeRuntimeError::FormatMismatch {
+                        source: self.source.kind().into(),
+                        block: block.kind().into(),
+                    });
+                }
             };
             output.extend(values);
         }
@@ -1895,16 +2090,47 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_heterogeneos_com_dtype_nao_validado_usam_cpu_reference() {
+    fn dtypes_heterogeneos_sem_ponte_cuda_usam_cpu_reference() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
-            vec![12, 18, 23],
+            vec![12, 23, 34],
             3,
             true,
             false,
         );
         assert!(plan.enabled());
         assert_eq!(plan.layers, vec![1, 1, 1]);
+        assert!(plan.reason.is_none());
+    }
+
+    #[test]
+    fn dtype_heterogeneo_sem_decoder_externo_e_recusado_antes_da_carga() {
+        let plan = make_external_executor_plan(
+            ExpertFormat::Heterogeneous,
+            vec![18, 39, 40],
+            3,
+            true,
+            false,
+        );
+
+        assert!(!plan.enabled());
+        assert_eq!(plan.layers, vec![0, 0, 0]);
+        let reason = plan.reason.as_deref().unwrap();
+        assert!(reason.contains("40 (NVFP4)"), "{reason}");
+        assert!(reason.contains("antes do modelo"), "{reason}");
+    }
+
+    #[test]
+    fn deepseek_dtypes_heterogeneos_tem_ponte_cuda() {
+        let plan = make_external_executor_plan(
+            ExpertFormat::Heterogeneous,
+            vec![18, 39],
+            14,
+            true,
+            false,
+        );
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1; 14]);
         assert!(plan.reason.is_none());
     }
 
@@ -1918,10 +2144,10 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_heterogeneos_com_iq_nao_validado_usam_cpu_reference() {
+    fn dtypes_heterogeneos_com_iq_sem_ponte_usam_cpu_reference() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
-            vec![21, 18, 23],
+            vec![16, 21, 23],
             3,
             true,
             false,

@@ -245,9 +245,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o runtime consome somente a saída do expert; `cuda.rs` mais
   `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
   feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
-  Q6_K (14) e IQ3_S (21), IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa
-  descritores por papel e dtype para Q4_K/Q6_K e esses três IQ, sem converter a
-  combinação para um dtype global. O hook comum recebe a rota do llama.cpp já
+  Q6_K (14), IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e MXFP4 (39).
+  A ponte heterogênea usa descritores por papel e dtype para esses formatos, sem
+  converter a combinação para um dtype global. O hook comum recebe a rota do llama.cpp já
   em ordem token-major, a ordem física produzida por `ggml_get_rows`; `llm.rs`
   valida e preserva essa ordem antes do runtime. A ponte escalar reutiliza o
   payload de `format_plain.rs` e valida o cabeçalho antes do kernel.
@@ -259,7 +259,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   misturam dtypes: o inventário registra cada tensor por camada e papel, e o
   decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
-  uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  uma divergência expõe as duas geometrias concretas. A execução CPU em lote
+  agrupa as rotas por expert, descodifica cada linha uma vez e preserva a ordem
+  token-major na saída, inclusive para combinações como IQ3_XXS + MXFP4 do
+  `deepseek4`. Uma combinação sem decoder externo é recusada antes da carga,
+  nomeando os dtypes, sem fallback nativo silencioso.
   Quando `ffn_gate_up_exps.weight` e os tensores split coexistem, o inventário
   segue a prioridade do llama.cpp e usa somente o fundido, sem contar os
   duplicados como uma segunda rota. Os loaders K e heterogêneo resolvem os

@@ -605,6 +605,34 @@ __device__ __forceinline__ float iq3s_value(const uint8_t *matrix, int index) {
         ((signs & kmask_iq2xs[element]) != 0 ? -1.0f : 1.0f);
 }
 
+__device__ __forceinline__ float iq3xxs_value(const uint8_t *matrix, int index) {
+    constexpr int block_bytes = 98;
+    const int block_index = index / 256;
+    const int within = index % 256;
+    const uint8_t *block = matrix + block_index * block_bytes;
+    const int group = within / 32;
+    const int in_group = within % 32;
+    const int il = in_group / 8;
+    const int element = in_group % 8;
+    const uint8_t *q3 = block + 2 + group * 8;
+    const uint8_t grid_index = q3[2 * il + element / 4];
+    const uint32_t grid = iq3xxs_grid[grid_index];
+    const uint32_t aux32 =
+        static_cast<uint32_t>(block[66 + group * 4]) |
+        (static_cast<uint32_t>(block[67 + group * 4]) << 8) |
+        (static_cast<uint32_t>(block[68 + group * 4]) << 16) |
+        (static_cast<uint32_t>(block[69 + group * 4]) << 24);
+    const float d = __half2float(__ushort_as_half(
+        static_cast<uint16_t>(block[0]) |
+        (static_cast<uint16_t>(block[1]) << 8))) *
+        (0.5f + static_cast<float>(aux32 >> 28)) * 0.5f;
+    const uint8_t signs = ksigns_iq2xs[(aux32 >> (7 * il)) & 127];
+    const int shift = 8 * (element % 4);
+    const uint8_t code = static_cast<uint8_t>((grid >> shift) & 0xffu);
+    return d * static_cast<float>(code) *
+        ((signs & kmask_iq2xs[element]) != 0 ? -1.0f : 1.0f);
+}
+
 __device__ __forceinline__ float iq4xs_value(const uint8_t *matrix, int index) {
     constexpr int block_bytes = 136;
     const int block_index = index / 256;
@@ -622,6 +650,38 @@ __device__ __forceinline__ float iq4xs_value(const uint8_t *matrix, int index) {
         static_cast<float>(kvalues_iq4nl[code]);
 }
 
+__device__ __forceinline__ float e8m0_to_f32(uint8_t value) {
+    if (value < 2) {
+        return __uint_as_float(0x00200000u << value);
+    }
+    return __uint_as_float(static_cast<uint32_t>(value - 1) << 23);
+}
+
+__device__ __forceinline__ float mxfp4_value(const uint8_t *matrix, int index) {
+    constexpr int block_bytes = 17;
+    const int block_index = index / 32;
+    const int within = index % 32;
+    const uint8_t *block = matrix + block_index * block_bytes;
+    const uint8_t packed = block[1 + (within % 16)];
+    const uint8_t nibble = within < 16 ? packed & 0x0f : packed >> 4;
+    return e8m0_to_f32(block[0]) * fp4_value(nibble);
+}
+
+__device__ float mxfp4_dot(
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    const int row_bytes = (columns / 32) * 17;
+    const uint8_t *encoded = matrix + row * row_bytes;
+    float result = 0.0f;
+    for (int index = 0; index < columns; ++index) {
+        result += mxfp4_value(encoded, index) * input[index];
+    }
+    return result;
+}
+
 __device__ float iq_dot(
     uint32_t dtype,
     const uint8_t *matrix,
@@ -629,12 +689,14 @@ __device__ float iq_dot(
     int columns,
     const float *input
 ) {
-    const int row_bytes = (dtype == 21 ? 110 : dtype == 22 ? 82 : 136) *
+    const int row_bytes = (dtype == 18 ? 98 : dtype == 21 ? 110 : dtype == 22 ? 82 : 136) *
         (columns / 256);
     const uint8_t *encoded = matrix + row * row_bytes;
     float result = 0.0f;
     for (int index = 0; index < columns; ++index) {
-        const float weight = dtype == 21
+        const float weight = dtype == 18
+            ? iq3xxs_value(encoded, index)
+            : dtype == 21
             ? iq3s_value(encoded, index)
             : dtype == 22 ? iq2s_value(encoded, index) : iq4xs_value(encoded, index);
         result += weight * input[index];
@@ -652,6 +714,9 @@ __device__ float heterogeneous_quant_dot(
 ) {
     if (tensor.dtype == 12 || tensor.dtype == 14) {
         return k_dot(tensor.dtype, tensor.data, row, columns, input) * scale * input_scale;
+    }
+    if (tensor.dtype == 39) {
+        return mxfp4_dot(tensor.data, row, columns, input) * scale * input_scale;
     }
     return iq_dot(tensor.dtype, tensor.data, row, columns, input) * scale * input_scale;
 }
@@ -1983,11 +2048,15 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     }
 
     const auto valid_dtype = [](uint32_t dtype) {
-        return dtype == 12 || dtype == 14 || dtype == 21 || dtype == 22 || dtype == 23;
+        return dtype == 12 || dtype == 14 || dtype == 18 || dtype == 21 ||
+            dtype == 22 || dtype == 23 || dtype == 39;
     };
     const auto row_bytes = [&](uint32_t dtype, std::size_t columns) -> std::size_t {
+        if (dtype == 39) {
+            return (columns / 32) * 17;
+        }
         const std::size_t block_bytes = dtype == 12 ? 144 : dtype == 14 ? 210 :
-            dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
+            dtype == 18 ? 98 : dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
         return (columns / 256) * block_bytes;
     };
     const auto valid_tensor = [&](const CudaHeterogeneousTensor & tensor,

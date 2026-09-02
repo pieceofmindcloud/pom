@@ -2513,13 +2513,14 @@ pub async fn run(
     };
     let moe_external_executor = moe_plan.as_ref().is_some_and(|plan| plan.enabled());
     if let Some(plan) = moe_plan.as_ref().filter(|plan| !plan.enabled()) {
-        warn!(
-            reason = plan
-                .reason
-                .as_deref()
-                .unwrap_or("executor device não disponível"),
-            "experts permanecem no llama.cpp por falta de executor device"
-        );
+        let reason = plan
+            .reason
+            .as_deref()
+            .unwrap_or("nenhuma camada tem executor externo disponível");
+        return Err(anyhow::anyhow!(
+            "combinação MoE não suportada antes da carga do modelo: dtypes GGML {:?}; {reason}; o caminho MoE exige um executor externo e não usará o llama.cpp nativo",
+            plan.dtypes
+        ));
     }
     let engine_cfg = crate::runtime::engine_config_from_node(
         &cfg,

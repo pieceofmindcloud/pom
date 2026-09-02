@@ -287,6 +287,12 @@ pub enum Q4LoadError {
         expected_name: String,
         expected_dtype: u32,
     },
+    TensorGeometryMismatch {
+        name: String,
+        dtype: u32,
+        dims: Vec<i64>,
+        expected_dims: Vec<u64>,
+    },
     MissingTensor(String),
     InvalidTensor(&'static str),
     ExpertOutOfRange {
@@ -322,6 +328,18 @@ impl fmt::Display for Q4LoadError {
                 "metadata do tensor de expert {name} (dtype GGML {dtype}, {}) não corresponde ao inventário {expected_name} (dtype GGML {expected_dtype}, {})",
                 ggml_type_name(*dtype),
                 ggml_type_name(*expected_dtype)
+            ),
+            Self::TensorGeometryMismatch {
+                name,
+                dtype,
+                dims,
+                expected_dims,
+            } => write!(
+                formatter,
+                "geometria do tensor de expert {name} (dtype GGML {dtype}, {}) é {:?}, mas o inventário exige {:?}",
+                ggml_type_name(*dtype),
+                dims,
+                expected_dims
             ),
             Self::MissingTensor(name) => write!(formatter, "tensor de expert ausente: {name}"),
             Self::InvalidTensor(reason) => write!(formatter, "tensor de expert inválido: {reason}"),

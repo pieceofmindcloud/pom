@@ -1066,6 +1066,46 @@ impl HeterogeneousMoeBlock {
             .map_err(MoeBlockError::Executor)
     }
 
+    pub fn forward_batch_from_source_with_route_cpu(
+        &self,
+        source: &HeterogeneousMoeSource,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+        activation: i32,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if experts.is_empty() || experts.len() != token_ids.len() || experts.len() != weights.len()
+        {
+            return Err(MoeBlockError::Route(RouteError::MismatchedRouteLengths {
+                ids: experts.len(),
+                weights: weights.len(),
+            }));
+        }
+        if experts.len() > self.top_k.saturating_mul(tokens.max(1)) {
+            return Err(MoeBlockError::Route(RouteError::InvalidTopK {
+                top_k: experts.len(),
+                experts: self.top_k,
+            }));
+        }
+        source
+            .run_route_batch_from_source(
+                &self.cache,
+                &self.model,
+                self.layer,
+                experts,
+                token_ids,
+                weights,
+                token_offsets,
+                hidden,
+                tokens,
+                activation,
+            )
+            .map_err(MoeBlockError::Executor)
+    }
+
     #[cfg(feature = "cuda")]
     pub fn forward_batch_from_source_with_route(
         &self,

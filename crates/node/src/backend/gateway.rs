@@ -1381,6 +1381,10 @@ fn sliced_mtp_round_continues(
     }
 }
 
+fn gateway_rollback_needed(remote_stream_mode: bool, accept_count: u32, batch_width: u32) -> bool {
+    !remote_stream_mode && accept_count < batch_width
+}
+
 async fn generate_stream_inner(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
@@ -2159,7 +2163,11 @@ async fn generate_stream_inner(
                 // finishing above — `release_sessions` right after this
                 // block wipes the whole session anyway, making a partial
                 // rollback moot.
-                if step.accept_count < step.batch_width {
+                if gateway_rollback_needed(
+                    remote_stream_mode,
+                    step.accept_count,
+                    step.batch_width,
+                ) {
                     let ok = rollback_sessions(
                         &plan,
                         &session_id,
@@ -3935,6 +3943,13 @@ mod remote_stream_selection_tests {
         };
 
         assert!(sliced_mtp_round_continues(true, false, &step));
+    }
+
+    #[test]
+    fn stream_remoto_nao_pede_rollback_extra_por_lote() {
+        assert!(!gateway_rollback_needed(true, 1, 4));
+        assert!(gateway_rollback_needed(false, 1, 4));
+        assert!(!gateway_rollback_needed(true, 4, 4));
     }
 
     #[test]

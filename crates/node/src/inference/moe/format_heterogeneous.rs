@@ -1313,6 +1313,95 @@ mod tests {
         assert_eq!(expert_bank, one_expert * 8);
     }
 
+    #[test]
+    fn q6_k_gate_up_heterogeneo_oito_experts_hidden_2048_e_finito() {
+        let experts = 8u32;
+        let hidden = 2048usize;
+        let intermediate = 256usize;
+        let format = KQuantFormat::Q6K;
+        let gate_up_rows = 2 * intermediate;
+        let gate_up_expert_bytes = gate_up_rows * k_row_bytes(format, hidden).unwrap();
+        let down_expert_bytes = hidden * k_row_bytes(format, intermediate).unwrap();
+        let mut data =
+            Vec::with_capacity(experts as usize * (gate_up_expert_bytes + down_expert_bytes));
+        for _ in 0..experts {
+            data.extend(q6_matrix(gate_up_rows, hidden));
+        }
+        for _ in 0..experts {
+            data.extend(q6_matrix(hidden, intermediate));
+        }
+
+        let tensors = vec![
+            TensorSpec {
+                name: "blk.0.ffn_gate_up_exps.weight".into(),
+                dims: vec![hidden as u64, gate_up_rows as u64, u64::from(experts)],
+                dtype: format.dtype(),
+                offset: 0,
+            },
+            TensorSpec {
+                name: "blk.0.ffn_down_exps.weight".into(),
+                dims: vec![intermediate as u64, hidden as u64, u64::from(experts)],
+                dtype: format.dtype(),
+                offset: (gate_up_expert_bytes * experts as usize) as u64,
+            },
+        ];
+        let source = test_source_with_bytes(
+            tensors,
+            &data,
+            experts,
+            vec![LayerInventory {
+                gate_up: Some(ExpertTensor {
+                    spec_index: 0,
+                    decoder: TensorDecoder::K(format),
+                    role: TensorRole::GateUp,
+                }),
+                gate: None,
+                up: None,
+                down: Some(ExpertTensor {
+                    spec_index: 1,
+                    decoder: TensorDecoder::K(format),
+                    role: TensorRole::Down,
+                }),
+                hidden,
+                intermediate,
+            }],
+        );
+        let cache = ExpertCache::new(
+            MemoryAccount {
+                baseline_free_bytes: 1 << 30,
+                compute_bytes: 0,
+                weights_bytes: 0,
+                fixed_bytes: 0,
+                reserve_bytes: 0,
+            },
+            Arc::new(FixedProbe),
+        );
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 * 0.001).sin())
+            .collect::<Vec<_>>();
+        let expert_ids = (0..experts).collect::<Vec<_>>();
+        let token_ids = vec![0; experts as usize];
+        let weights = vec![1.0 / experts as f32; experts as usize];
+
+        let output = source
+            .run_route_batch_from_source(
+                &cache,
+                "fixture",
+                0,
+                &expert_ids,
+                &token_ids,
+                &weights,
+                &[0, experts as usize],
+                &hidden_values,
+                1,
+                1,
+            )
+            .unwrap();
+
+        assert_eq!(output.len(), hidden);
+        assert!(output.iter().all(|value| value.is_finite()));
+    }
+
     fn test_source_with_scalar_data(
         tensors: Vec<TensorSpec>,
         values: &[f32],
@@ -1338,6 +1427,50 @@ mod tests {
             tensors,
             layers: Vec::new(),
         }
+    }
+
+    fn test_source_with_bytes(
+        tensors: Vec<TensorSpec>,
+        data: &[u8],
+        experts: u32,
+        layers: Vec<LayerInventory>,
+    ) -> HeterogeneousMoeSource {
+        let path = std::env::temp_dir().join(format!(
+            "pom-ftk-heterogeneous-q6-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(data).unwrap();
+        drop(file);
+        let file = std::fs::File::open(&path).unwrap();
+        // SAFETY: the mapping owns the file contents independently after the
+        // descriptor is closed; the test removes only its unique path.
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        std::fs::remove_file(path).unwrap();
+        HeterogeneousMoeSource {
+            mmap,
+            data_start: 0,
+            experts,
+            tensors,
+            layers,
+        }
+    }
+
+    fn q6_matrix(rows: usize, columns: usize) -> Vec<u8> {
+        let block_bytes = 210usize;
+        let row_bytes = columns / 256 * block_bytes;
+        let mut output = vec![0u8; rows * row_bytes];
+        for block in output.chunks_exact_mut(block_bytes) {
+            block[..128].fill(0x11);
+            // These bytes are valid Q6_K low quants but spell an f16 NaN if
+            // mistaken for the super-block scale at the old offset.
+            block[0] = 0;
+            block[1] = 0x7e;
+            block[128..192].fill(0xaa);
+            block[192..208].fill(1);
+            block[208..210].copy_from_slice(&0x3c00u16.to_le_bytes());
+        }
+        output
     }
 
     fn scalar_tensor_with_len(name: &str, offset: usize, elements: usize) -> TensorSpec {

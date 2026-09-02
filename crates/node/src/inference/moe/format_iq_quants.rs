@@ -87,6 +87,13 @@ impl IqQuantFormat {
         }
     }
 
+    fn block_elements(self) -> usize {
+        match self {
+            Self::Iq4NL => 32,
+            _ => BLOCK_ELEMENTS,
+        }
+    }
+
     /// Ponte CUDA dirigida pelo dtype. IQ3_S é o único IQ validado
     /// numericamente nesta ponte neste momento.
     pub fn cuda_supported(self) -> bool {
@@ -877,13 +884,14 @@ impl IqQuantExecutor {
 }
 
 pub fn row_bytes(format: IqQuantFormat, columns: usize) -> Result<usize, IqQuantError> {
-    if columns == 0 || !columns.is_multiple_of(BLOCK_ELEMENTS) {
+    let block_elements = format.block_elements();
+    if columns == 0 || !columns.is_multiple_of(block_elements) {
         return Err(IqQuantError::Geometry(
-            "dimensão precisa fechar blocos de 256",
+            "dimensão não fecha blocos do formato",
         ));
     }
     columns
-        .checked_div(BLOCK_ELEMENTS)
+        .checked_div(block_elements)
         .and_then(|blocks| blocks.checked_mul(format.block_bytes()))
         .ok_or(IqQuantError::Geometry("overflow na linha"))
 }
@@ -1003,11 +1011,11 @@ pub fn dequantize_row(format: IqQuantFormat, packed: &[u8]) -> Result<Vec<f32>, 
     }
     let blocks = packed.len() / block_bytes;
     let elements = blocks
-        .checked_mul(BLOCK_ELEMENTS)
+        .checked_mul(format.block_elements())
         .ok_or(IqQuantError::Geometry("overflow no resultado IQ-quant"))?;
     let mut output = vec![0.0; elements];
     // SAFETY: each branch checks the exact C block size and the output has
-    // 256 f32 values per block, matching GGML's dequantizer contract.
+    // the format's block element count per block, matching GGML's contract.
     unsafe {
         match format {
             IqQuantFormat::Iq2XXS => dequantize_row_iq2_xxs(
@@ -1095,7 +1103,7 @@ pub(crate) mod tests {
             (IqQuantFormat::Iq1M, 56usize),
         ] {
             let values = dequantize_row(format, &vec![0; bytes]).unwrap();
-            assert_eq!(values.len(), BLOCK_ELEMENTS);
+            assert_eq!(values.len(), format.block_elements());
             if let Some((index, value)) = values
                 .iter()
                 .enumerate()

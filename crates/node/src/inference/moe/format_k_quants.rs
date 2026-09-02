@@ -1263,10 +1263,11 @@ fn get_scale_min_k4(index: usize, scales: &[u8]) -> (f32, f32) {
 }
 
 fn dequantize_q6_k_block(block: &[u8], output: &mut Vec<f32>) {
-    let d = f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
-    let ql = &block[2..130];
-    let qh = &block[130..194];
-    let scales = &block[194..210];
+    // GGML block_q6_K: ql[128], qh[64], scales[16], d[2].
+    let ql = &block[..128];
+    let qh = &block[128..192];
+    let scales = &block[192..208];
+    let d = f16_to_f32(u16::from_le_bytes([block[208], block[209]]));
     for half in 0..2 {
         let ql = &ql[half * 64..(half + 1) * 64];
         let qh = &qh[half * 32..(half + 1) * 32];
@@ -1438,13 +1439,13 @@ pub(crate) mod tests {
     #[test]
     fn q6_k_decodifica_bits_altos_baixos_e_escalas_por_grupo() {
         let mut block = vec![0u8; 210];
-        block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
-        block[2..130].fill(0x11);
-        block[130..194].fill(0xaa);
-        block[194] = 2;
-        block[196] = 3;
-        block[198] = 4;
-        block[200] = 5;
+        block[..128].fill(0x11);
+        block[128..192].fill(0xaa);
+        block[192] = 2;
+        block[194] = 3;
+        block[196] = 4;
+        block[198] = 5;
+        block[208..210].copy_from_slice(&0x3c00u16.to_le_bytes());
 
         let values = dequantize_row(KQuantFormat::Q6K, &block).unwrap();
         assert_eq!(values.len(), 256);
@@ -1455,6 +1456,99 @@ pub(crate) mod tests {
         assert_eq!(values[64], 4.0);
         assert_eq!(values[96], 5.0);
         assert_eq!(values[128], 0.0);
+    }
+
+    #[test]
+    fn q6_k_decodifica_bloco_ggml_real_com_referencia() {
+        let mut block = vec![0u8; Q6_K_BLOCK_BYTES];
+        block[..128].fill(0x11);
+        block[128..192].fill(0xaa);
+        for (index, scale) in block[192..208].iter_mut().enumerate() {
+            *scale = (index + 2) as u8;
+        }
+        block[208..210].copy_from_slice(&0x3c00u16.to_le_bytes());
+
+        let values = dequantize_row(KQuantFormat::Q6K, &block).unwrap();
+
+        assert_eq!(values.len(), 256);
+        assert_eq!(values[0], 2.0);
+        assert_eq!(values[15], 2.0);
+        assert_eq!(values[16], 3.0);
+        assert_eq!(values[31], 3.0);
+        assert_eq!(values[32], 4.0);
+        assert_eq!(values[64], 6.0);
+        assert_eq!(values[96], 8.0);
+        assert_eq!(values[128], 10.0);
+    }
+
+    #[test]
+    fn q6_k_gate_up_oito_experts_hidden_2048_e_finito() {
+        let format = KQuantFormat::Q6K;
+        let hidden = 2048;
+        let intermediate = 256;
+        let gate_up = q6_matrix(2 * intermediate, hidden, true);
+        let down = q6_matrix(hidden, intermediate, true);
+        let payload = pack_payload(&gate_up, &down, KQuantScales::default()).unwrap();
+        let input = (0..hidden)
+            .map(|index| (index as f32 * 0.001).sin())
+            .collect::<Vec<_>>();
+
+        for expert_index in 0..8 {
+            let expert =
+                KQuantExpert::from_payload(format, hidden, intermediate, &payload).unwrap();
+            let gate_up =
+                mat_vec(format, expert.gate_up, 2 * intermediate, hidden, &input).unwrap();
+            assert!(
+                gate_up.iter().all(|value| value.is_finite()),
+                "expert {expert_index} produziu gate_up não finito"
+            );
+            let output = expert.run(&input).unwrap();
+            assert_eq!(output.len(), hidden);
+            assert!(
+                output.iter().all(|value| value.is_finite()),
+                "expert {expert_index} produziu saída não finita"
+            );
+        }
+    }
+
+    #[test]
+    fn source_q6_k_carrega_oito_experts_hidden_2048_e_executa_saida_finita() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-ftk-k-source-eight-q6-{}.gguf",
+            uuid::Uuid::new_v4()
+        ));
+        let format = KQuantFormat::Q6K;
+        let hidden = 2048;
+        let intermediate = 256;
+        write_k_source_with_dimensions_and_experts(
+            &path,
+            format.dtype(),
+            format,
+            GateUpLayout::Fused,
+            false,
+            hidden,
+            intermediate,
+            8,
+        );
+        let source = KQuantSource::open_infer(&path, 8).unwrap();
+        let input = (0..hidden)
+            .map(|index| (index as f32 * 0.001).sin())
+            .collect::<Vec<_>>();
+
+        for expert_index in 0..8 {
+            let payload = source.load_expert(0, expert_index).unwrap();
+            let expert =
+                KQuantExpert::from_payload(format, hidden, intermediate, &payload).unwrap();
+            let output = expert.run(&input).unwrap();
+            assert_eq!(output.len(), hidden);
+            assert!(
+                output.iter().all(|value| value.is_finite()),
+                "expert {expert_index} produziu saída não finita"
+            );
+        }
+
+        drop(source);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1701,10 +1795,31 @@ pub(crate) mod tests {
         hidden: usize,
         intermediate: usize,
     ) {
+        write_k_source_with_dimensions_and_experts(
+            path,
+            dtype,
+            format,
+            layout,
+            with_sidecars,
+            hidden,
+            intermediate,
+            2,
+        );
+    }
+
+    fn write_k_source_with_dimensions_and_experts(
+        path: &std::path::Path,
+        dtype: u32,
+        format: KQuantFormat,
+        layout: GateUpLayout,
+        with_sidecars: bool,
+        hidden: usize,
+        intermediate: usize,
+        experts: usize,
+    ) {
         use std::fs::File;
         use std::io::Write;
 
-        let experts = 2usize;
         let row_bytes = format.block_bytes();
         let gate_up = packed_rows(experts * 2 * intermediate, hidden, format);
         let down = packed_rows(experts * hidden, intermediate, format);
@@ -1866,10 +1981,12 @@ pub(crate) mod tests {
                         block[48..].fill(0x11);
                     }
                     KQuantFormat::Q6K => {
-                        block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
-                        block[2..130].fill(0x11);
-                        block[130..194].fill(0xaa);
-                        block[194..].fill(1);
+                        block[..128].fill(0x11);
+                        block[0] = 0;
+                        block[1] = 0x7e;
+                        block[128..192].fill(0xaa);
+                        block[192..208].fill(1);
+                        block[208..210].copy_from_slice(&0x3c00u16.to_le_bytes());
                     }
                     KQuantFormat::Q8K => {
                         block[0..4].copy_from_slice(&1.0f32.to_le_bytes());
@@ -1877,6 +1994,22 @@ pub(crate) mod tests {
                     }
                 }
             }
+        }
+        output
+    }
+
+    fn q6_matrix(rows: usize, columns: usize, trap_wrong_d_offset: bool) -> Vec<u8> {
+        let row_size = columns / BLOCK_ELEMENTS * Q6_K_BLOCK_BYTES;
+        let mut output = vec![0u8; rows * row_size];
+        for block in output.chunks_exact_mut(Q6_K_BLOCK_BYTES) {
+            block[..128].fill(0x11);
+            if trap_wrong_d_offset {
+                block[0] = 0;
+                block[1] = 0x7e;
+            }
+            block[128..192].fill(0xaa);
+            block[192..208].fill(1);
+            block[208..210].copy_from_slice(&0x3c00u16.to_le_bytes());
         }
         output
     }

@@ -248,6 +248,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `format_low_bits.rs` implementa MXFP4/TQ1_0/TQ2_0/Q1_0/Q2_0,
   `format_k_quants.rs` implementa Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K, `format_iq_quants.rs`
   implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M,
+  com IQ4_NL usando blocos de 32 elementos e os demais IQ blocos de 256,
   `format_nvfp4.rs` implementa o decoder NVFP4 em CPU; o rastro completo
   `Nvfp4Trace`/`run_trace` fica restrito à prova diferencial de testes, enquanto
   o runtime consome somente a saída do expert; `cuda.rs` mais
@@ -303,8 +304,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   contar `shexp` nem sidecars. O teste
   `sidecars_fundidos_usam_componente_e_fallback_separado_corretos` verifica os
   nomes canônicos e a associação componente 0/1 do fundido, além do fallback
-  para gate/up separados. Essas provas não encontraram a origem do NaN do
-  Ornith.
+  para gate/up separados. A prova `q6_k_decodifica_bloco_ggml_real_com_referencia`
+  fixa a convenção `block_q6_K` do GGML (`ql[128]`, `qh[64]`, `scales[16]`,
+  `d[2]` no fim do bloco), e as provas de oito experts com hidden 2048 cobrem
+  o `gate_up` K-quant e o caminho heterogêneo sem aceitar saída não finita.
   A prova diferencial CUDA do Ornith ainda depende de um GGUF completo fora do
   worktree. O comando preparado, sem execução local ou remota nesta etapa, é:
   `POM_MOE_NUMERIC_MODEL=/caminho/absoluto/Ornith-1.5-35B-Q4_K_M.gguf`
@@ -378,7 +381,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   contaminação a montante de falha em um executor.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
   acumulação inteira por subbloco NVFP4 e decodificação direta dos superblocos
-  Q4_K/Q6_K com SiLU no caminho K. O
+  Q4_K/Q6_K com SiLU no caminho K. Em Q6_K, ambos os decoders leem o layout
+  `ql[128]`, `qh[64]`, `scales[16]`, `d[2]`, com `d` nos dois últimos bytes. O
   caminho CUDA agrupa os experts ativos de uma rota em índices `(expert, linha)`;
   depois do cache residente, o payload de peso é enviado uma vez por miss e o
   lote recebe ponteiros de device nos hits; cada lease também conserva o

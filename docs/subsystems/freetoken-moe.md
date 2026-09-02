@@ -161,6 +161,23 @@ O validator agora checa as duas dimensões e o eixo de experts antes do forward.
 O teste retangular usa `hidden=2048` e `intermediate=512`, portanto falha se os
 eixos forem trocados. Não há ainda uma prova física de Qwen3.6 neste worktree.
 
+Em 2026-09-02, a prova de um bloco Q6_K real fechou a causa do NaN do caminho
+`k_quant`: o layout GGML é `ql[128]`, `qh[64]`, `scales[16]` e `d[2]` no fim
+dos 210 bytes. O decoder Rust e `k_dot_q6_k` liam `d` no início, deslocando
+também todos os demais campos. A correção usa os offsets do `block_q6_K` real
+nos dois executores. As provas
+`q6_k_gate_up_oito_experts_hidden_2048_e_finito` e
+`q6_k_gate_up_heterogeneo_oito_experts_hidden_2048_e_finito` usam entrada
+finita e oito experts, e a primeira também verifica os índices de expert
+carregados pelo GGUF. A validação CUDA exige `nvcc` na máquina de GPU; não há
+GGUF Qwen3.6 nem compilador CUDA neste worktree local.
+
+Durante essa validação também foi corrigida uma inconsistência preexistente no
+decoder IQ: `IQ4_NL` tem blocos GGML de 32 elementos, enquanto os demais IQ
+priorizados usam blocos de 256. O cálculo de bytes por linha e o tamanho
+passado ao dequantizador agora respeitam essa diferença; a prova local de
+dequantização deixa de ler além de um bloco de 18 bytes.
+
 Os IQ-quants priorizados usam o mesmo loader e a mesma fronteira de cache.
 O executor próprio mantém parser, mmap, router, top-k e mat-vec; a expansão do
 bloco usa as primitivas de dequantização GGML linkadas pelo crate nativo, sem
@@ -1889,7 +1906,7 @@ remoto foi feito nesta validação.
 | 11 | Q3_K | implementado e NÃO PROVADO |
 | 12 | Q4_K | implementado e NÃO PROVADO |
 | 13 | Q5_K | implementado e NÃO PROVADO |
-| 14 | Q6_K | implementado e NÃO PROVADO |
+| 14 | Q6_K | implementado; prova local de formato e `gate_up` CPU; CUDA/E2E real pendentes |
 | 15 | Q8_K | implementado e NÃO PROVADO |
 | 16 | IQ2_XXS | implementado e NÃO PROVADO |
 | 17 | IQ2_XS | implementado e NÃO PROVADO |

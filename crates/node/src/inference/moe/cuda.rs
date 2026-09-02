@@ -1742,8 +1742,12 @@ mod tests {
                     block[4..16].fill(1);
                     block[16..].fill(0x22);
                 } else {
-                    block[194..210].fill(1);
-                    block[2..194].fill(0);
+                    block[..128].fill(0x11);
+                    block[0] = 0;
+                    block[1] = 0x7e;
+                    block[128..192].fill(0xaa);
+                    block[192..208].fill(1);
+                    block[208..210].copy_from_slice(&0x3c00u16.to_le_bytes());
                 }
             }
             bytes
@@ -2052,6 +2056,59 @@ mod tests {
     }
 
     #[test]
+    fn executor_cuda_q6_k_gate_up_oito_experts_hidden_2048_e_finito() {
+        let format = KQuantFormat::Q6K;
+        let hidden = 2048;
+        let intermediate = 256;
+        let payloads = (0..8)
+            .map(|_| k_payload(format, hidden, intermediate))
+            .collect::<Vec<_>>();
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 * 0.001).sin())
+            .collect::<Vec<_>>();
+        let executor = KQuantCudaExecutor::new_with_cache(
+            format,
+            hidden,
+            intermediate,
+            measured_device_cache(64 * 1024 * 1024).unwrap(),
+        )
+        .unwrap();
+        let leases = payloads
+            .iter()
+            .enumerate()
+            .map(|(expert, payload)| {
+                executor
+                    .resident_admit(
+                        super::super::cache::ExpertKey::new(
+                            "cuda-q6-gate-up",
+                            0,
+                            expert as u32,
+                            format.name(),
+                        ),
+                        payload,
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let token_ids = vec![0u32; leases.len()];
+        let weights = vec![1.0 / leases.len() as f32; leases.len()];
+
+        let output = executor
+            .run_route_batch_resident(
+                &leases,
+                &token_ids,
+                &weights,
+                &[0, leases.len()],
+                &hidden_values,
+                1,
+            )
+            .unwrap();
+
+        assert_eq!(output.len(), hidden);
+        assert!(output.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
     fn executor_cuda_k_quants_heterogeneos_preserva_gate_up_down_do_decoder_cpu() {
         let hidden = 256;
         let intermediate = 256;
@@ -2063,10 +2120,11 @@ mod tests {
         let down_payload = k_payload(KQuantFormat::Q4K, hidden, intermediate);
         let split = |payload: &[u8]| {
             let gate_up_len = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
-            let down_start = 8 + gate_up_len;
+            let matrix_start = 32;
+            let down_start = matrix_start + gate_up_len;
             (
-                &payload[8..8 + gate_up_len / 2],
-                &payload[8 + gate_up_len / 2..down_start],
+                &payload[matrix_start..matrix_start + gate_up_len / 2],
+                &payload[matrix_start + gate_up_len / 2..down_start],
                 &payload[down_start..],
             )
         };

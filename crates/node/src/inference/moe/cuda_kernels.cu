@@ -562,10 +562,11 @@ __device__ float k_dot_q6_k(
     float result = 0.0f;
     for (int block = 0; block < columns / 256; ++block) {
         const uint8_t *packed = encoded + block * block_bytes;
-        const float d = k_f16(k_u16(packed));
-        const uint8_t *ql = packed + 2;
-        const uint8_t *qh = packed + 130;
-        const uint8_t *scales = packed + 194;
+        // GGML block_q6_K: ql[128], qh[64], scales[16], d[2].
+        const uint8_t *ql = packed;
+        const uint8_t *qh = packed + 128;
+        const uint8_t *scales = packed + 192;
+        const float d = k_f16(k_u16(packed + 208));
         for (int half = 0; half < 2; ++half) {
             const uint8_t *low = ql + half * 64;
             const uint8_t *high = qh + half * 32;

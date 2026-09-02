@@ -6,7 +6,7 @@
 
 use super::cache::{ExpertCache, ExpertKey};
 #[cfg(feature = "cuda")]
-use super::cuda::{CudaHeterogeneousExpert, CudaHeterogeneousTensor};
+use super::cuda::{CudaHeterogeneousExpert, CudaHeterogeneousTensor, CudaMoeError};
 use super::format_heterogeneous::HeterogeneousMoeSource;
 #[cfg(feature = "cuda")]
 use super::format_heterogeneous::{HeterogeneousTensorPayload, TensorRole};
@@ -31,6 +31,8 @@ use std::sync::Arc;
 pub enum MoeBlockError {
     Route(RouteError),
     Executor(String),
+    #[cfg(feature = "cuda")]
+    CudaNonFinite(String),
 }
 
 impl fmt::Display for MoeBlockError {
@@ -38,6 +40,8 @@ impl fmt::Display for MoeBlockError {
         match self {
             Self::Route(error) => error.fmt(formatter),
             Self::Executor(error) => error.fmt(formatter),
+            #[cfg(feature = "cuda")]
+            Self::CudaNonFinite(error) => error.fmt(formatter),
         }
     }
 }
@@ -58,7 +62,20 @@ impl From<Nvfp4ExecuteError> for MoeBlockError {
 
 impl From<KQuantExecuteError> for MoeBlockError {
     fn from(error: KQuantExecuteError) -> Self {
-        Self::Executor(error.to_string())
+        match error {
+            #[cfg(feature = "cuda")]
+            KQuantExecuteError::CudaNonFinite {
+                stage,
+                index,
+                count,
+                kind,
+            } => {
+                Self::CudaNonFinite(format!(
+                    "executor CUDA MoE produziu {count} valores não finitos ({kind}) no estágio {stage}, primeiro índice da saída {index}"
+                ))
+            }
+            error => Self::Executor(error.to_string()),
+        }
     }
 }
 
@@ -695,6 +712,58 @@ impl KQuantMoeBlock {
             )
             .map_err(MoeBlockError::from)
     }
+
+    #[cfg(feature = "cuda")]
+    pub fn forward_batch_from_source_with_route_cpu(
+        &self,
+        source: &KQuantSource,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if experts.is_empty() || experts.len() != token_ids.len() || experts.len() != weights.len()
+        {
+            return Err(MoeBlockError::Route(RouteError::MismatchedRouteLengths {
+                ids: experts.len(),
+                weights: weights.len(),
+            }));
+        }
+        if token_offsets.len() != tokens.saturating_add(1)
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&experts.len())
+            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+            || hidden.len() != tokens.saturating_mul(source.hidden())
+        {
+            return Err(MoeBlockError::Executor(
+                "lote CPU K-quant tem geometria de rota inválida".into(),
+            ));
+        }
+        let mut output = vec![0.0; hidden.len()];
+        for token in 0..tokens {
+            let token_start = token * source.hidden();
+            let token_hidden = &hidden[token_start..token_start + source.hidden()];
+            for index in token_offsets[token]..token_offsets[token + 1] {
+                if token_ids[index] != token as u32 {
+                    return Err(MoeBlockError::Executor(
+                        "lote CPU K-quant não está em ordem token-major".into(),
+                    ));
+                }
+                let key =
+                    ExpertKey::new(&self.model, self.layer, experts[index], self.format.name());
+                let values =
+                    self.executor
+                        .run_from_source_cpu(source, key, self.layer, token_hidden)?;
+                let output_slice = &mut output[token_start..token_start + source.hidden()];
+                for (out, value) in output_slice.iter_mut().zip(values) {
+                    *out += weights[index] * value;
+                }
+            }
+        }
+        Ok(output)
+    }
 }
 
 /// Forward de um bloco MoE Q4_0 para uma camada GGUF.
@@ -1201,7 +1270,17 @@ impl HeterogeneousMoeBlock {
                 tokens,
                 activation,
             )
-            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+            .map_err(|error| match error {
+                CudaMoeError::NonFinite {
+                    stage,
+                    index,
+                    count,
+                    kind,
+                } => MoeBlockError::CudaNonFinite(format!(
+                    "executor CUDA MoE produziu {count} valores não finitos ({kind}) no estágio {stage}, primeiro índice da saída {index}"
+                )),
+                error => MoeBlockError::Executor(error.to_string()),
+            })?;
         drop(leases);
         Ok(output)
     }

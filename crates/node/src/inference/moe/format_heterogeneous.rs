@@ -157,6 +157,32 @@ impl TensorDecoder {
     }
 }
 
+/// Tamanho de uma linha no payload que a ponte CUDA heterogênea entende.
+///
+/// MXFP4 usa blocos de 32 elementos, enquanto os K/IQ-quants que a ponte
+/// aceita usam blocos de 256. Manter essa tabela junto do inventário impede
+/// que o validador Rust confunda o tamanho do MXFP4 com o dos outros dtypes.
+#[cfg(any(feature = "cuda", test))]
+pub(crate) fn cuda_tensor_row_bytes(dtype: u32, columns: usize) -> Option<usize> {
+    let (block_elements, block_bytes) = match dtype {
+        12 => (256, 144),
+        14 => (256, 210),
+        18 => (256, 98),
+        21 => (256, 110),
+        22 => (256, 82),
+        23 => (256, 136),
+        39 => (32, 17),
+        _ => return None,
+    };
+    (columns > 0 && columns.is_multiple_of(block_elements))
+        .then(|| columns / block_elements * block_bytes)
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
+    matches!(dtype, 12 | 14 | 18 | 21 | 22 | 23 | 39)
+}
+
 #[derive(Clone, Copy)]
 struct ExpertTensor {
     spec_index: usize,
@@ -1221,10 +1247,25 @@ fn dot(left: &[f32], right: &[f32]) -> f32 {
 }
 
 fn silu(value: f32) -> f32 {
-    value / (1.0 + (-value).exp())
+    if value == f32::NEG_INFINITY {
+        return 0.0;
+    }
+    let value_exp = if value < 0.0 {
+        value.exp()
+    } else {
+        (-value).exp()
+    };
+    if value < 0.0 {
+        value * value_exp / (1.0 + value_exp)
+    } else {
+        value / (1.0 + value_exp)
+    }
 }
 
 fn gelu(value: f32) -> f32 {
+    if value == f32::NEG_INFINITY {
+        return 0.0;
+    }
     0.5 * value * (1.0 + (0.797_884_6 * (value + 0.044_715 * value.powi(3))).tanh())
 }
 
@@ -1236,6 +1277,13 @@ mod tests {
     use std::collections::BTreeSet;
     use std::io;
     use std::io::Write;
+
+    #[test]
+    fn ativacoes_estaveis_nao_transformam_limites_em_nan() {
+        assert_eq!(silu(f32::NEG_INFINITY), 0.0);
+        assert_eq!(gelu(f32::NEG_INFINITY), 0.0);
+        assert!(silu(-1_000.0).is_finite());
+    }
 
     fn test_source_with_scalar_data(
         tensors: Vec<TensorSpec>,
@@ -1564,6 +1612,11 @@ mod tests {
 
         assert!(error.contains("[512, 2, 2]"), "{error}");
         assert!(error.contains("[2, 2, 2]"), "{error}");
+    }
+
+    #[test]
+    fn layout_cuda_heterogeneo_calcula_linhas_mxfp4_para_down() {
+        assert_eq!(cuda_tensor_row_bytes(39, 2_048), Some(1_088));
     }
 
     #[test]

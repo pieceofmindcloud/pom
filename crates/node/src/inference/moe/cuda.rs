@@ -235,10 +235,22 @@ impl Nvfp4CudaDiagnostics {
 pub enum CudaMoeError {
     Geometry(String),
     Payload(String),
-    PayloadLength { expected: usize, actual: usize },
+    PayloadLength {
+        expected: usize,
+        actual: usize,
+    },
     BackendUnavailable(String),
     Cache(String),
-    HiddenWidth { expected: usize, actual: usize },
+    HiddenWidth {
+        expected: usize,
+        actual: usize,
+    },
+    NonFinite {
+        stage: &'static str,
+        index: usize,
+        count: usize,
+        kind: &'static str,
+    },
     Launch(i32),
 }
 
@@ -261,6 +273,15 @@ impl fmt::Display for CudaMoeError {
                     "hidden CUDA MoE tem {actual}, esperado {expected}"
                 )
             }
+            Self::NonFinite {
+                stage,
+                index,
+                count,
+                kind,
+            } => write!(
+                formatter,
+                "executor CUDA MoE produziu {count} valores não finitos ({kind}) no estágio {stage}, primeiro índice da saída {index}"
+            ),
             Self::Launch(code) => write!(formatter, "kernel CUDA MoE falhou (código {code})"),
         }
     }
@@ -665,6 +686,9 @@ impl KQuantCudaExecutor {
             expert_calls: payloads.len() as u64,
             ..CudaMoeCallTiming::default()
         };
+        let mut nonfinite_stage = 0;
+        let mut nonfinite_index = 0;
+        let mut nonfinite_count = 0;
         let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_kquant_forward_route_batch_resident(
@@ -682,6 +706,9 @@ impl KQuantCudaExecutor {
                 output.len(),
                 self.hidden,
                 self.intermediate,
+                &mut nonfinite_stage,
+                &mut nonfinite_index,
+                &mut nonfinite_count,
                 if self.profile {
                     &mut timing
                 } else {
@@ -692,6 +719,25 @@ impl KQuantCudaExecutor {
         let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
+        }
+        let stage = match nonfinite_stage {
+            1 => Some("gate_up"),
+            2 => Some("ativação"),
+            3 => Some("down"),
+            4 => Some("agregação"),
+            _ => None,
+        };
+        if let Some(stage) = stage {
+            let kind = output
+                .get(nonfinite_index)
+                .map(|value| if value.is_nan() { "NaN" } else { "infinito" })
+                .unwrap_or("não identificado");
+            return Err(CudaMoeError::NonFinite {
+                stage,
+                index: nonfinite_index,
+                count: nonfinite_count,
+                kind,
+            });
         }
         if self.profile {
             let mut diagnostics = self
@@ -1001,6 +1047,9 @@ impl HeterogeneousCudaExecutor {
             expert_calls: experts.len() as u64,
             ..CudaMoeCallTiming::default()
         };
+        let mut nonfinite_stage = 0;
+        let mut nonfinite_index = 0;
+        let mut nonfinite_count = 0;
         let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_heterogeneous_quant_forward_route_batch_resident(
@@ -1018,6 +1067,9 @@ impl HeterogeneousCudaExecutor {
                 self.hidden,
                 self.intermediate,
                 activation,
+                &mut nonfinite_stage,
+                &mut nonfinite_index,
+                &mut nonfinite_count,
                 if self.profile {
                     &mut timing
                 } else {
@@ -1028,6 +1080,25 @@ impl HeterogeneousCudaExecutor {
         let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
+        }
+        let stage = match nonfinite_stage {
+            1 => Some("gate_up"),
+            2 => Some("ativação"),
+            3 => Some("down"),
+            4 => Some("agregação"),
+            _ => None,
+        };
+        if let Some(stage) = stage {
+            let kind = output
+                .get(nonfinite_index)
+                .map(|value| if value.is_nan() { "NaN" } else { "infinito" })
+                .unwrap_or("não identificado");
+            return Err(CudaMoeError::NonFinite {
+                stage,
+                index: nonfinite_index,
+                count: nonfinite_count,
+                kind,
+            });
         }
         if self.profile {
             let mut diagnostics = self
@@ -1063,15 +1134,19 @@ fn validate_heterogeneous_tensor(
             "{label} contém escala não finita"
         )));
     }
-    let row_bytes = match tensor.dtype {
-        12 => 144,
-        14 => 210,
-        21 => 110,
-        22 => 82,
-        23 => 136,
-        dtype => {
+    let row_bytes = match super::format_heterogeneous::cuda_tensor_row_bytes(tensor.dtype, columns)
+    {
+        Some(row_bytes) => row_bytes,
+        None if !super::format_heterogeneous::cuda_tensor_dtype_supported(tensor.dtype) => {
             return Err(CudaMoeError::BackendUnavailable(format!(
-                "dtype GGML {dtype} em {label} não tem ponte CUDA heterogênea"
+                "dtype GGML {} em {label} não tem ponte CUDA heterogênea",
+                tensor.dtype
+            )))
+        }
+        None => {
+            return Err(CudaMoeError::Geometry(format!(
+                "{label} tem colunas que não fecham blocos do dtype GGML {}",
+                tensor.dtype
             )))
         }
     };
@@ -1441,6 +1516,9 @@ unsafe extern "C" {
         output_len: usize,
         hidden_width: usize,
         intermediate_width: usize,
+        nonfinite_stage: *mut i32,
+        nonfinite_index: *mut usize,
+        nonfinite_count: *mut usize,
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
@@ -1495,6 +1573,9 @@ unsafe extern "C" {
         hidden_width: usize,
         intermediate_width: usize,
         activation: i32,
+        nonfinite_stage: *mut i32,
+        nonfinite_index: *mut usize,
+        nonfinite_count: *mut usize,
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
@@ -1722,12 +1803,7 @@ mod tests {
         bytes
     }
 
-    fn mxfp4_mat_vec(
-        matrix: &[u8],
-        rows: usize,
-        columns: usize,
-        input: &[f32],
-    ) -> Vec<f32> {
+    fn mxfp4_mat_vec(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> Vec<f32> {
         let row_size = LowBitFormat::Mxfp4.row_bytes(columns).unwrap();
         (0..rows)
             .map(|row| {
@@ -2319,34 +2395,19 @@ mod tests {
         );
         let gate_lease = executor
             .resident_admit(
-                super::super::cache::ExpertKey::new(
-                    "cuda-deepseek-heterogeneous",
-                    0,
-                    0,
-                    "gate-18",
-                ),
+                super::super::cache::ExpertKey::new("cuda-deepseek-heterogeneous", 0, 0, "gate-18"),
                 &gate,
             )
             .unwrap();
         let up_lease = executor
             .resident_admit(
-                super::super::cache::ExpertKey::new(
-                    "cuda-deepseek-heterogeneous",
-                    0,
-                    0,
-                    "up-18",
-                ),
+                super::super::cache::ExpertKey::new("cuda-deepseek-heterogeneous", 0, 0, "up-18"),
                 &up,
             )
             .unwrap();
         let down_lease = executor
             .resident_admit(
-                super::super::cache::ExpertKey::new(
-                    "cuda-deepseek-heterogeneous",
-                    0,
-                    0,
-                    "down-39",
-                ),
+                super::super::cache::ExpertKey::new("cuda-deepseek-heterogeneous", 0, 0, "down-39"),
                 &down,
             )
             .unwrap();

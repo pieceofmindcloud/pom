@@ -278,6 +278,37 @@ impl From<MoeBlockError> for MoeRuntimeError {
 }
 
 #[cfg(any(feature = "cuda", test))]
+fn accept_cpu_replay_after_cuda_nonfinite(
+    cuda_error: &str,
+    output: Vec<f32>,
+) -> Result<Vec<f32>, MoeRuntimeError> {
+    if let Some((index, count, value)) = nonfinite_summary(&output) {
+        let kind = if value.is_nan() { "NaN" } else { "infinito" };
+        return Err(MoeRuntimeError::Block(format!(
+            "{cuda_error}; replay CPU também devolveu {count} valores não finitos, primeiro índice {index} ({kind})"
+        )));
+    }
+    tracing::warn!(
+        error = cuda_error,
+        "replay CPU do MoE produziu saída finita; resposta preservada, ponte CUDA precisa de revisão"
+    );
+    Ok(output)
+}
+
+#[cfg(any(feature = "cuda", test))]
+fn nonfinite_summary(values: &[f32]) -> Option<(usize, usize, f32)> {
+    let mut first = None;
+    let mut count = 0;
+    for (index, &value) in values.iter().enumerate() {
+        if !value.is_finite() {
+            first.get_or_insert(index);
+            count += 1;
+        }
+    }
+    first.map(|index| (index, count, values[index]))
+}
+
+#[cfg(any(feature = "cuda", test))]
 fn require_cuda_compute_bytes(compute_bytes: Option<u64>) -> Result<u64, MoeRuntimeError> {
     compute_bytes.filter(|bytes| *bytes > 0).ok_or_else(|| {
         MoeRuntimeError::Block(
@@ -704,11 +735,9 @@ fn make_external_executor_plan(
 
 fn cuda_heterogeneous_dtype_supported(dtype: u32) -> bool {
     KQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
-        || IqQuantFormat::from_dtype(dtype).is_ok_and(|format| {
-            format.cuda_supported() || matches!(format, IqQuantFormat::Iq3XXS)
-        })
-        || LowBitFormat::from_dtype(dtype)
-            .is_ok_and(|format| matches!(format, LowBitFormat::Mxfp4))
+        || IqQuantFormat::from_dtype(dtype)
+            .is_ok_and(|format| format.cuda_supported() || matches!(format, IqQuantFormat::Iq3XXS))
+        || LowBitFormat::from_dtype(dtype).is_ok_and(|format| matches!(format, LowBitFormat::Mxfp4))
 }
 
 fn heterogeneous_cpu_dtype_supported(dtype: u32) -> bool {
@@ -1803,7 +1832,7 @@ impl MoeRuntime {
                 let token_offsets = (0..=tokens)
                     .map(|token| token.saturating_mul(expert_count_used))
                     .collect::<Vec<_>>();
-                let output = block.forward_batch_from_source_with_route(
+                let output = match block.forward_batch_from_source_with_route(
                     source,
                     hidden,
                     &resolved_ids,
@@ -1811,7 +1840,35 @@ impl MoeRuntime {
                     weights,
                     &token_offsets,
                     tokens,
-                )?;
+                ) {
+                    Ok(output) => output,
+                    Err(MoeBlockError::CudaNonFinite(error)) => {
+                        tracing::error!(
+                            layer,
+                            model = %self.model,
+                            source = self.source.kind(),
+                            dtypes = ?self.source.dtypes(),
+                            tokens,
+                            experts = expert_count_used,
+                            hidden_width = self.source.hidden(),
+                            error = %error,
+                            "CUDA MoE devolveu valor não finito; iniciando replay CPU"
+                        );
+                        accept_cpu_replay_after_cuda_nonfinite(
+                            &error,
+                            block.forward_batch_from_source_with_route_cpu(
+                                source,
+                                &resolved_ids,
+                                &token_ids,
+                                weights,
+                                &token_offsets,
+                                hidden,
+                                tokens,
+                            )?,
+                        )?
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
                 self.runtime_diagnostics
                     .lock()
@@ -1886,7 +1943,7 @@ impl MoeRuntime {
                 let token_offsets = (0..=tokens)
                     .map(|token| token.saturating_mul(expert_count_used))
                     .collect::<Vec<_>>();
-                let output = block.forward_batch_from_source_with_route(
+                let output = match block.forward_batch_from_source_with_route(
                     source,
                     &resolved_ids,
                     &token_ids,
@@ -1895,7 +1952,36 @@ impl MoeRuntime {
                     hidden,
                     tokens,
                     activation,
-                )?;
+                ) {
+                    Ok(output) => output,
+                    Err(MoeBlockError::CudaNonFinite(error)) => {
+                        tracing::error!(
+                            layer,
+                            model = %self.model,
+                            source = self.source.kind(),
+                            dtypes = ?self.source.dtypes(),
+                            tokens,
+                            experts = expert_count_used,
+                            hidden_width = self.source.hidden(),
+                            error = %error,
+                            "CUDA MoE heterogêneo devolveu valor não finito; iniciando replay CPU"
+                        );
+                        accept_cpu_replay_after_cuda_nonfinite(
+                            &error,
+                            block.forward_batch_from_source_with_route_cpu(
+                                source,
+                                &resolved_ids,
+                                &token_ids,
+                                weights,
+                                &token_offsets,
+                                hidden,
+                                tokens,
+                                activation,
+                            )?,
+                        )?
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
                 self.runtime_diagnostics
                     .lock()
@@ -2066,6 +2152,40 @@ mod tests {
     }
 
     #[test]
+    fn diagnostico_nao_finito_distingue_primeiro_indice_e_contagem() {
+        let summary = nonfinite_summary(&[1.0, f32::NAN, 2.0, f32::INFINITY]).unwrap();
+        assert_eq!(summary.0, 1);
+        assert_eq!(summary.1, 2);
+        assert!(summary.2.is_nan());
+        assert!(nonfinite_summary(&[1.0, 2.0]).is_none());
+    }
+
+    #[test]
+    fn replay_cpu_finito_substitui_saida_cuda_nao_finita() {
+        let output = vec![1.0, 2.0];
+
+        assert_eq!(
+            accept_cpu_replay_after_cuda_nonfinite("estágio agregação", output.clone()).unwrap(),
+            output
+        );
+    }
+
+    #[test]
+    fn replay_cpu_nao_finito_mantem_diagnostico_global() {
+        let error = accept_cpu_replay_after_cuda_nonfinite(
+            "estágio gate_up",
+            vec![f32::NAN, 2.0, f32::INFINITY],
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("replay CPU"), "{error}");
+        assert!(error.contains("2 valores não finitos"), "{error}");
+        assert!(error.contains("primeiro índice 0"), "{error}");
+        assert!(error.contains("NaN"), "{error}");
+    }
+
+    #[test]
     fn dtype_sem_ponte_cuda_usa_executor_cpu_reference() {
         let plan = make_external_executor_plan(ExpertFormat::Q4_0, vec![2], 4, true, false);
         assert!(plan.enabled());
@@ -2122,13 +2242,8 @@ mod tests {
 
     #[test]
     fn deepseek_dtypes_heterogeneos_tem_ponte_cuda() {
-        let plan = make_external_executor_plan(
-            ExpertFormat::Heterogeneous,
-            vec![18, 39],
-            14,
-            true,
-            false,
-        );
+        let plan =
+            make_external_executor_plan(ExpertFormat::Heterogeneous, vec![18, 39], 14, true, false);
         assert!(plan.enabled());
         assert_eq!(plan.layers, vec![1; 14]);
         assert!(plan.reason.is_none());

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <limits>
 #include <new>
+#include <vector>
 
 // Os layouts e codebooks IQ são parte da convenção GGML. Incluí-los aqui
 // evita uma segunda tabela que poderia divergir do decoder de referência;
@@ -765,8 +766,13 @@ __global__ void kquant_silu_kernel(
     }
     const float gate = gate_up_values[pair * 2 * intermediate + row];
     const float up = gate_up_values[pair * 2 * intermediate + intermediate + row];
-    activated[pair * intermediate + row] =
-        (gate / (1.0f + expf(-gate))) * up;
+    const float gate_exp = gate < 0.0f ? expf(gate) : expf(-gate);
+    const float silu = gate == -CUDART_INF_F
+        ? 0.0f
+        : gate < 0.0f
+            ? gate * gate_exp / (1.0f + gate_exp)
+            : gate / (1.0f + gate_exp);
+    activated[pair * intermediate + row] = silu * up;
 }
 
 __global__ void kquant_down_route_kernel(
@@ -987,11 +993,20 @@ __global__ void heterogeneous_quant_gate_up_route_kernel(
 
 __device__ float heterogeneous_activation(float value, int activation) {
     if (activation == 2) {
+        if (value == -CUDART_INF_F) {
+            return 0.0f;
+        }
         return 0.5f * value *
             (1.0f + tanhf(0.7978845608028654f * value *
                 (1.0f + 0.044715f * value * value)));
     }
-    return value / (1.0f + expf(-value));
+    if (value == -CUDART_INF_F) {
+        return 0.0f;
+    }
+    const float value_exp = value < 0.0f ? expf(value) : expf(-value);
+    return value < 0.0f
+        ? value * value_exp / (1.0f + value_exp)
+        : value / (1.0f + value_exp);
 }
 
 __global__ void heterogeneous_activation_kernel(
@@ -1034,6 +1049,45 @@ __global__ void heterogeneous_quant_down_route_kernel(
 
 int cuda_status(cudaError_t error) {
     return error == cudaSuccess ? 0 : static_cast<int>(error);
+}
+
+bool first_nonfinite(
+    const float *values,
+    std::size_t count,
+    std::size_t *index,
+    std::size_t *nonfinite_count
+) {
+    std::size_t found = 0;
+    for (std::size_t current = 0; current < count; ++current) {
+        if (!std::isfinite(values[current])) {
+            if (found == 0 && index != nullptr) {
+                *index = current;
+            }
+            found += 1;
+        }
+    }
+    if (nonfinite_count != nullptr) {
+        *nonfinite_count = found;
+    }
+    return found != 0;
+}
+
+bool device_has_nonfinite(
+    const float *device_values,
+    std::size_t count,
+    std::vector<float> &host_values,
+    int *copy_status,
+    std::size_t *index,
+    std::size_t *nonfinite_count
+) {
+    host_values.resize(count);
+    *copy_status = cuda_status(cudaMemcpy(
+        host_values.data(),
+        device_values,
+        count * sizeof(float),
+        cudaMemcpyDeviceToHost));
+    return *copy_status == 0 && first_nonfinite(
+        host_values.data(), count, index, nonfinite_count);
 }
 
 struct Nvfp4RouteSlot {
@@ -1438,8 +1492,20 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
     std::size_t output_len,
     std::size_t hidden_width,
     std::size_t intermediate_width,
+    int *nonfinite_stage,
+    std::size_t *nonfinite_index,
+    std::size_t *nonfinite_count,
     CudaMoeCallTiming *timing
 ) {
+    if (nonfinite_stage != nullptr) {
+        *nonfinite_stage = 0;
+    }
+    if (nonfinite_index != nullptr) {
+        *nonfinite_index = 0;
+    }
+    if (nonfinite_count != nullptr) {
+        *nonfinite_count = 0;
+    }
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(payload_count);
@@ -1593,6 +1659,60 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
         if (timing != nullptr) {
             timing->d2h_ms = elapsed_ms(d2h_start, Clock::now());
             timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
+        }
+        if (result == 0 && first_nonfinite(
+                output,
+                hidden_bytes / sizeof(float),
+                nonfinite_index,
+                nonfinite_count)) {
+            std::vector<float> stage_values;
+            int copy_status = 0;
+            if (device_has_nonfinite(
+                    d_gate_up,
+                    gate_up_bytes / sizeof(float),
+                    stage_values,
+                    &copy_status,
+                    nullptr,
+                    nullptr)) {
+                if (nonfinite_stage != nullptr) *nonfinite_stage = 1;
+                result = 0;
+                break;
+            }
+            if (copy_status != 0) {
+                result = copy_status;
+                break;
+            }
+            if (device_has_nonfinite(
+                    d_activated,
+                    activated_bytes / sizeof(float),
+                    stage_values,
+                    &copy_status,
+                    nullptr,
+                    nullptr)) {
+                if (nonfinite_stage != nullptr) *nonfinite_stage = 2;
+                result = 0;
+                break;
+            }
+            if (copy_status != 0) {
+                result = copy_status;
+                break;
+            }
+            if (device_has_nonfinite(
+                    d_pair_output,
+                    pair_output_bytes / sizeof(float),
+                    stage_values,
+                    &copy_status,
+                    nullptr,
+                    nullptr)) {
+                if (nonfinite_stage != nullptr) *nonfinite_stage = 3;
+                result = 0;
+                break;
+            }
+            if (copy_status != 0) {
+                result = copy_status;
+                break;
+            }
+            if (nonfinite_stage != nullptr) *nonfinite_stage = 4;
         }
     } while (false);
 
@@ -2028,8 +2148,20 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     std::size_t hidden_width,
     std::size_t intermediate_width,
     int activation,
+    int *nonfinite_stage,
+    std::size_t *nonfinite_index,
+    std::size_t *nonfinite_count,
     CudaMoeCallTiming * timing
 ) {
+    if (nonfinite_stage != nullptr) {
+        *nonfinite_stage = 0;
+    }
+    if (nonfinite_index != nullptr) {
+        *nonfinite_index = 0;
+    }
+    if (nonfinite_count != nullptr) {
+        *nonfinite_count = 0;
+    }
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(expert_count);
@@ -2222,6 +2354,60 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
         if (timing != nullptr) {
             timing->d2h_ms = elapsed_ms(d2h_start, Clock::now());
             timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
+        }
+        if (result == 0 && first_nonfinite(
+                output,
+                hidden_bytes / sizeof(float),
+                nonfinite_index,
+                nonfinite_count)) {
+            std::vector<float> stage_values;
+            int copy_status = 0;
+            if (device_has_nonfinite(
+                    d_gate_up,
+                    gate_up_bytes / sizeof(float),
+                    stage_values,
+                    &copy_status,
+                    nullptr,
+                    nullptr)) {
+                if (nonfinite_stage != nullptr) *nonfinite_stage = 1;
+                result = 0;
+                break;
+            }
+            if (copy_status != 0) {
+                result = copy_status;
+                break;
+            }
+            if (device_has_nonfinite(
+                    d_activated,
+                    activated_bytes / sizeof(float),
+                    stage_values,
+                    &copy_status,
+                    nullptr,
+                    nullptr)) {
+                if (nonfinite_stage != nullptr) *nonfinite_stage = 2;
+                result = 0;
+                break;
+            }
+            if (copy_status != 0) {
+                result = copy_status;
+                break;
+            }
+            if (device_has_nonfinite(
+                    d_pair_output,
+                    pair_output_bytes / sizeof(float),
+                    stage_values,
+                    &copy_status,
+                    nullptr,
+                    nullptr)) {
+                if (nonfinite_stage != nullptr) *nonfinite_stage = 3;
+                result = 0;
+                break;
+            }
+            if (copy_status != 0) {
+                result = copy_status;
+                break;
+            }
+            if (nonfinite_stage != nullptr) *nonfinite_stage = 4;
         }
     } while (false);
 

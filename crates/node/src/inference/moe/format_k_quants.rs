@@ -1,4 +1,6 @@
 use super::cache::{CacheError, ExpertCache, ExpertKey};
+#[cfg(feature = "cuda")]
+use super::cuda::CudaMoeError;
 use super::format_q4_0::{parse_tensor_table, read_scalar_vector, Q4LoadError, TensorSpec};
 use memmap2::Mmap;
 use std::fmt;
@@ -90,6 +92,13 @@ pub enum KQuantExecuteError {
     },
     #[cfg(feature = "cuda")]
     Cuda(String),
+    #[cfg(feature = "cuda")]
+    CudaNonFinite {
+        stage: &'static str,
+        index: usize,
+        count: usize,
+        kind: &'static str,
+    },
 }
 
 impl fmt::Display for KQuantExecuteError {
@@ -106,6 +115,16 @@ impl fmt::Display for KQuantExecuteError {
             }
             #[cfg(feature = "cuda")]
             Self::Cuda(error) => write!(formatter, "executor CUDA K-quant recusou: {error}"),
+            #[cfg(feature = "cuda")]
+            Self::CudaNonFinite {
+                stage,
+                index,
+                count,
+                kind,
+            } => write!(
+                formatter,
+                "executor CUDA MoE produziu {count} valores não finitos ({kind}) no estágio {stage}, primeiro índice da saída {index}"
+            ),
         }
     }
 }
@@ -1035,7 +1054,20 @@ impl KQuantExecutor {
             );
         }
         cuda.run_route_batch_resident(&resident, token_ids, weights, token_offsets, hidden, tokens)
-            .map_err(|error| KQuantExecuteError::Cuda(error.to_string()))
+            .map_err(|error| match error {
+                CudaMoeError::NonFinite {
+                    stage,
+                    index,
+                    count,
+                    kind,
+                } => KQuantExecuteError::CudaNonFinite {
+                    stage,
+                    index,
+                    count,
+                    kind,
+                },
+                error => KQuantExecuteError::Cuda(error.to_string()),
+            })
     }
 
     fn run_with_loader<F, E>(
@@ -1058,6 +1090,26 @@ impl KQuantExecutor {
         let expert =
             KQuantExpert::from_payload(self.format, self.hidden, self.intermediate, lease.bytes())?;
         expert.run(hidden)
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn run_from_source_cpu(
+        &self,
+        source: &KQuantSource,
+        key: ExpertKey,
+        layer: u32,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, KQuantExecuteError> {
+        let expert = key.expert;
+        self.run_with_loader(
+            key,
+            || {
+                source
+                    .load_expert(layer, expert)
+                    .map_err(KQuantExecuteError::Source)
+            },
+            hidden,
+        )
     }
 }
 
@@ -1331,12 +1383,30 @@ fn mat_vec(
 }
 
 fn silu(value: f32) -> f32 {
-    value / (1.0 + (-value).exp())
+    if value == f32::NEG_INFINITY {
+        return 0.0;
+    }
+    let value_exp = if value < 0.0 {
+        value.exp()
+    } else {
+        (-value).exp()
+    };
+    if value < 0.0 {
+        value * value_exp / (1.0 + value_exp)
+    } else {
+        value / (1.0 + value_exp)
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn silu_estavel_trata_infinito_negativo() {
+        assert_eq!(silu(f32::NEG_INFINITY), 0.0);
+        assert!(silu(-1_000.0).is_finite());
+    }
 
     #[test]
     fn q4_k_decodifica_escala_minimo_e_nibbles_na_ordem_ggml() {

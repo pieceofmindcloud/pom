@@ -422,7 +422,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let Ingerido {
         n_tokens,
         is_final_chunk,
-        local,
+        mut local,
     } = match ingerir(&hop, &inc, &sid) {
         Ok(ok) => ok,
         Err(msg) if msg.contains("sessão") && msg.contains("desconhecida") => {
@@ -439,6 +439,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         n_tokens as u64 * FAKE_PREFILL_MS_PER_TOKEN,
     ))
     .await;
+    local["processing_ms"] = json!(n_tokens as u64 * FAKE_PREFILL_MS_PER_TOKEN);
 
     let residual = vec![0.0f32; n_tokens * HIDDEN_DIM];
     let shape = vec![n_tokens, HIDDEN_DIM];
@@ -702,6 +703,10 @@ struct Turno {
     /// O que o gateway reportou como aproveitado do cache.
     cached_tokens: u32,
     prompt_tokens: u32,
+    /// Tempo de prefill declarado pelo caminho de inferência. É a métrica
+    /// determinística do trabalho simulado; `first_word_us` inclui escalonamento
+    /// do processo e serve apenas para verificar que a telemetria existe.
+    prefill_ms: u64,
     first_word_us: u128,
     /// Maior profundidade do pipeline de prefill observada e o teto efetivo.
     pipeline_depth: u32,
@@ -851,6 +856,7 @@ async fn conversa_com_hops_fault(
             pedacos: 0,
             cached_tokens: 0,
             prompt_tokens: 0,
+            prefill_ms: 0,
             first_word_us: 0,
             pipeline_depth: 0,
             max_inflight: 0,
@@ -873,6 +879,7 @@ async fn conversa_com_hops_fault(
                     if let Some(trace) = &s.trace {
                         medido.cached_tokens = trace.cached_tokens;
                         medido.prompt_tokens = trace.input_tokens;
+                        medido.prefill_ms = s.timings.prefill_ms;
                         medido.pipeline_depth = trace.prefill_pipeline_depth_max;
                         medido.max_inflight = trace.prefill_max_inflight_chunks;
                         medido.overlap_enabled = trace.prefill_overlap_enabled;
@@ -929,8 +936,8 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
                 .iter()
                 .enumerate()
                 .map(|(i, t)| format!(
-                    "turn={i} cached={} ttft_us={} chunks={} prompt={} reprocessed={}",
-                    t.cached_tokens, t.first_word_us, t.pedacos, t.prompt_tokens, t.reprocessados
+                    "turn={i} cached={} prefill_ms={} ttft_us={} chunks={} prompt={} reprocessed={}",
+                    t.cached_tokens, t.prefill_ms, t.first_word_us, t.pedacos, t.prompt_tokens, t.reprocessados
                 ))
                 .collect::<Vec<_>>()
                 .join("; ")
@@ -998,9 +1005,9 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
         assert!(
             turnos[1..]
                 .iter()
-                .all(|t| t.first_word_us < turnos[0].first_word_us),
-            "[{contexto}] TTFT não caiu depois do primeiro turno: {:?}",
-            turnos.iter().map(|t| t.first_word_us).collect::<Vec<_>>()
+                .all(|t| t.prefill_ms < turnos[0].prefill_ms),
+            "[{contexto}] o prefill medido não caiu depois do primeiro turno: {:?}",
+            turnos.iter().map(|t| t.prefill_ms).collect::<Vec<_>>()
         );
         // Menos tokens para ingerir são menos pedaços atravessando o pipeline,
         // que é o número que o log de produção mostra.
@@ -1048,7 +1055,11 @@ async fn prefill_multi_pedaco_enche_o_pipeline() {
     for transporte in [Transporte::Hub, Transporte::Direto] {
         let medida = conversa_com_hops(transporte, 1, true, 4).await;
         let t = &medida.turnos[0];
-        assert!(t.falhou.is_none(), "[{transporte:?}] turno falhou: {:?}", t.falhou);
+        assert!(
+            t.falhou.is_none(),
+            "[{transporte:?}] turno falhou: {:?}",
+            t.falhou
+        );
         assert!(
             t.pedacos >= 2,
             "[{transporte:?}] o prompt frio tinha que ter mais de um pedaço: {}",

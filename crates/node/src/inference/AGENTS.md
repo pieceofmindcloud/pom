@@ -222,8 +222,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   turnos pelo caminho de `/v1/chat/completions`, nos três transportes (hub,
   anel, direto). Afirma que do turno 2 em diante
   `cached_tokens > 0`, que o trabalho por turno para de crescer com a conversa,
-  registra o tempo até a primeira palavra e afirma que ele cai depois do turno
-  frio, além de verificar que nenhum hop recebeu pedido de remoção parcial de
+  registra o tempo até a primeira palavra e verifica a queda pelo `prefill_ms`
+  declarado pelo hop, não pelo relógio de parede sujeito ao escalonamento do
+  processo. Também verifica que nenhum hop recebeu pedido de remoção parcial de
   KV. O contrato de posição repete anel e resposta direta com N=3 e N=5 hops;
   o teste SSE de `openai.rs` reproduz a sessão em 42 sem `next_pos` e impede o
   envio de chunk 1 em 512. Os hops falsos imitam o motor mais restrito que o

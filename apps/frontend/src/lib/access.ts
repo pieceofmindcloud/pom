@@ -11,7 +11,7 @@
  * não é daquele perfil; quem protege a API é a chave de conexão, no nó.
  *
  * Rota que não aparece em `RESTRICTED` é livre para todo perfil, exceto o
- * `infernode`, que tem uma vista reduzida explícita abaixo. O padrão é
+ * `inference`, que tem uma vista reduzida explícita abaixo. O padrão é
  * permissivo de propósito: a restrição é a exceção que alguém escreveu
  * deliberadamente, e uma tela nova não deixa de abrir porque foi esquecida
  * numa lista.
@@ -31,14 +31,14 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
 };
 
 /**
- * Vista reduzida do InferNode, não fronteira de segurança.
+ * Vista reduzida do inference, não fronteira de segurança.
  *
  * O captain decidiu entregar a interface agora e deixar autenticação,
  * escopos da credencial e recusa no servidor para
  * `rdma-perfis-escopo-backend`. Até lá, a chave de conexão continua sendo
  * aceita pelo backend como hoje.
  */
-const INFERNODE_ROUTES = ["/chat", "/config/keys/api"] as const;
+const INFERENCE_ROUTES = ["/chat", "/documentacao", "/config/keys/api"] as const;
 
 /** `/implantarx` não está sob `/implantar`. */
 function isUnder(path: string, prefix: string): boolean {
@@ -58,8 +58,8 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 
 /** Se este perfil pode abrir esta rota. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
-  if (profile === "infernode") {
-    return INFERNODE_ROUTES.some((prefix) => isUnder(path, prefix));
+  if (profile === "inference") {
+    return INFERENCE_ROUTES.some((prefix) => isUnder(path, prefix));
   }
   const allowed = routeProfiles(path);
   return allowed === null || allowed.includes(profile);

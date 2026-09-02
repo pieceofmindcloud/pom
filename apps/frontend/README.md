@@ -153,7 +153,7 @@ a versão anterior tinha um `mock-server.mjs` e ele foi removido.
 | Tela | Rotas |
 |---|---|
 | Painel (fluxo e detalhes) | `GET /api/ui/node`, `/api/ui/cluster`, `/peers` |
-| Chat de teste | `POST /v1/chat/completions` (SSE, token a token) |
+| Chat | `POST /v1/chat/completions` (SSE, token a token) |
 | Modelos inteiros | `GET /api/ui/models` |
 | Fatiar modelos | `POST /api/ui/slice/plan`, `POST /api/ui/slice` |
 | Fatias / Fatiamentos | `GET /api/ui/cluster/models`, `/api/ui/jobs`, `/api/ui/jobs/:id` |

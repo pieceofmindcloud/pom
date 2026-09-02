@@ -1,5 +1,5 @@
 /**
- * The test chat.
+ * The chat.
  *
  * It talks to the cluster the same way any other client does — `POST
  * /v1/chat/completions` with `stream: true`, signed with the connection key —
@@ -60,6 +60,7 @@ import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
+import { useProfile } from "../lib/profile";
 
 export { ExecutionTelemetry } from "../components/ExecutionTelemetry";
 export type { ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
@@ -137,7 +138,7 @@ export function ChatError({ message }: { message: string }) {
   );
 }
 
-function Bubble({
+export function Bubble({
   message,
   streaming,
   onAnalyze,
@@ -151,6 +152,8 @@ function Bubble({
   telemetryEnvironment?: ExecutionTelemetryEnvironment;
 }) {
   const { t } = useI18n();
+  const { profile } = useProfile();
+  const showTelemetry = profile !== "inference";
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
   return (
@@ -178,17 +181,17 @@ function Bubble({
           {message.error && (
             <ChatError message={message.error} />
           )}
-          {message.source && (
+          {showTelemetry && message.source && (
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
           )}
-          {message.timings ? (
+          {showTelemetry && message.timings ? (
             <TimingSummary timings={message.timings} />
-          ) : message.tokensPerSecond != null && (
+          ) : showTelemetry && message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
               <span>{t("chat.legacyTotalSpeed", { value: num(message.tokensPerSecond, 1) })}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${ms(message.durationMs)}`}</span>
             </div>
           )}
-          {message.trace && (
+          {showTelemetry && message.trace && (
             <div className="mt-2">
               <ExecutionTelemetry
                 trace={message.trace}
@@ -393,6 +396,8 @@ function SessionList({
 
 export function Chat() {
   const { t, locale } = useI18n();
+  const { profile } = useProfile();
+  const showTelemetry = profile !== "inference";
   const { sessions, upsert, remove } = useChatSessions();
   const models = useServableModels();
   const cluster = useCluster();
@@ -425,8 +430,8 @@ export function Chat() {
     () => Array.from(new Set(telemetryCapture?.trace.hops.map((hop) => hop.node_id) ?? [])).sort(),
     [telemetryCapture],
   );
-  const telemetryNetwork = useChatTelemetryNetwork(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
-  const runtimeQueries = usePeerRuntimes(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
+  const telemetryNetwork = useChatTelemetryNetwork(telemetryNodeIds, showTelemetry && telemetryCapture != null, telemetryCapture?.messageId);
+  const runtimeQueries = usePeerRuntimes(telemetryNodeIds, showTelemetry && telemetryCapture != null, telemetryCapture?.messageId);
   const runtimeByNode = useStableRecord(
     Object.fromEntries(
       telemetryNodeIds.map((nodeId, index) => [nodeId, runtimeQueries[index]?.data]),
@@ -593,7 +598,7 @@ export function Chat() {
       }
       streamed = finishChatStream(streamed);
       patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
-      if (streamed.trace) {
+      if (showTelemetry && streamed.trace) {
         setTelemetryCapture({ messageId: reply.id, trace: streamed.trace, cluster: cluster.data ?? null });
       }
       if (!streamed.content && !streamed.reasoning && !streamed.error) {
@@ -714,7 +719,7 @@ export function Chat() {
             <TitleField
               // A conversation nobody has spoken in has no name to keep, so it
               // shows what the screen is instead of an empty title to rename.
-              title={session.messages.length ? session.title : t("chat.test")}
+              title={session.messages.length ? session.title : t("chat.title")}
               onRename={rename}
             />
             {cluster.data && !cluster.data.complete && (

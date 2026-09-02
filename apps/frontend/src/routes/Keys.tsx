@@ -88,7 +88,7 @@ export function TokenKeys() {
   const cluster = useCluster();
   const node = useNode();
   const toast = useToast();
-  const inferNode = profile === "infernode";
+  const inference = profile === "inference";
 
   const [label, setLabel] = useState("");
   const [nodeId, setNodeId] = useState("");
@@ -96,10 +96,10 @@ export function TokenKeys() {
   const [revoking, setRevoking] = useState<{ key: string; label: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const visibleKeys = inferNode
+  const visibleKeys = inference
     ? (keys.data?.filter((key) => key.node_id === node.data?.node_id && key.active) ?? [])
     : keys.data;
-  const previousKeys = inferNode ? visibleKeys ?? [] : [];
+  const previousKeys = inference ? visibleKeys ?? [] : [];
 
   const nameOf = (id: string) =>
     cluster.data?.peers.find((p) => p.node_id === id)?.node?.hostname ??
@@ -109,10 +109,10 @@ export function TokenKeys() {
     setCreating(true);
     try {
       const created = await api.post<ApiKey>("/admin/api-keys", {
-        label: label.trim() || (inferNode ? t("keys.inferNodeLabel") : t("keys.unnamed")),
-        node_id: inferNode ? node.data?.node_id ?? null : nodeId || null,
+        label: label.trim() || (inference ? t("keys.inferenceLabel") : t("keys.unnamed")),
+        node_id: inference ? node.data?.node_id ?? null : nodeId || null,
       });
-      if (inferNode && previousKeys.length > 0) {
+      if (inference && previousKeys.length > 0) {
         try {
           await Promise.all(
             previousKeys.map((key) =>
@@ -132,7 +132,7 @@ export function TokenKeys() {
       }
       toast.success(
         t("keys.created"),
-        t(inferNode ? "keys.inferNodeCreatedDetail" : "keys.createdDetail"),
+        t(inference ? "keys.inferenceCreatedDetail" : "keys.createdDetail"),
       );
       setLabel("");
       void keys.refetch();
@@ -160,8 +160,8 @@ export function TokenKeys() {
   return (
     <>
       <PageHeader
-        title={t(inferNode ? "keys.inferNodeTitle" : "keys.title")}
-        subtitle={t(inferNode ? "keys.inferNodeSubtitle" : "keys.tokenSubtitle")}
+        title={t(inference ? "keys.inferenceTitle" : "keys.title")}
+        subtitle={t(inference ? "keys.inferenceSubtitle" : "keys.tokenSubtitle")}
       />
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
@@ -175,7 +175,7 @@ export function TokenKeys() {
             <Panel>
               <PanelHeader
                 title={t("keys.tokenCount", { count: visibleKeys?.length ?? 0 })}
-                subtitle={t(inferNode ? "keys.inferNodeSingle" : "keys.tokensCoexist")}
+                subtitle={t(inference ? "keys.inferenceSingle" : "keys.tokensCoexist")}
                 actions={
                   <Button
                     size="sm"
@@ -189,7 +189,7 @@ export function TokenKeys() {
               />
               {visibleKeys?.length === 0 ? (
                 <Empty icon={<KeyRound className="h-5 w-5" />} title={t("keys.empty")}>
-                  {t(inferNode ? "keys.inferNodeEmptyDetail" : "keys.connectionOnly")}
+                  {t(inference ? "keys.inferenceEmptyDetail" : "keys.connectionOnly")}
                 </Empty>
               ) : (
                 <div className="divide-y divide-line">
@@ -208,7 +208,7 @@ export function TokenKeys() {
                           <span className="text-[0.72rem] text-faint">
                             {t("keys.createdAt")} {since(k.created_at)}
                           </span>
-                          {!inferNode && (
+                          {!inference && (
                             <Button
                               size="sm"
                               variant="ghost"
@@ -231,7 +231,7 @@ export function TokenKeys() {
         </div>
 
         <Panel className="self-start">
-          <PanelHeader title={t(inferNode ? "keys.inferNodeNewToken" : "keys.newToken")} />
+          <PanelHeader title={t(inference ? "keys.inferenceNewToken" : "keys.newToken")} />
           <div className="space-y-4 px-5 py-4">
             <Field label={t("keys.purpose")} hint={t("keys.purposeHint")}>
               <Input
@@ -240,7 +240,7 @@ export function TokenKeys() {
                 placeholder="opencode, painel, CI…"
               />
             </Field>
-            {!inferNode && (
+            {!inference && (
               <Field
                 label={t("keys.networkNode")}
                 hint={t("keys.nodeHint")}
@@ -259,10 +259,10 @@ export function TokenKeys() {
               variant="primary"
               icon={<Plus className="h-3.5 w-3.5" />}
               loading={creating}
-              disabled={inferNode && !node.data?.node_id}
+              disabled={inference && !node.data?.node_id}
               onClick={() => void create()}
             >
-              {t(inferNode ? "keys.inferNodeCreate" : "keys.create")}
+              {t(inference ? "keys.inferenceCreate" : "keys.create")}
             </Button>
           </div>
         </Panel>

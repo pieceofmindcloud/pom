@@ -130,14 +130,16 @@ credencial sem reiniciar o processo; a precedência segue a documentada em
 ### Perfis: o que cada um enxerga
 
 Duas pessoas abrem a mesma interface com trabalhos diferentes. O **administrador**
-opera o cluster; o **nó** cuida da própria máquina; o **InferNode** tem uma vista
-reduzida para conversar com os modelos disponíveis e cuidar da própria API key.
+opera o cluster; o **nó** cuida da própria máquina; o **Inference** tem uma vista
+reduzida para conversar com os modelos disponíveis, ler a documentação e cuidar
+da própria API key.
 O perfil é o que separa essas vistas.
 
 `src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
 ausente é livre para `admin` e `node`. Hoje `/implantar`, `/implantacoes` e
-`/logs` são só do administrador. Para `infernode`, `canAccessRoute` permite
-somente `/chat` e `/config/keys/api`. A chave casa **segmento inteiro**, então
+`/logs` são só do administrador. Para `inference`, `canAccessRoute` permite
+somente `/chat`, `/documentacao` e `/config/keys/api`. No Chat, a telemetria da
+execução e seus resumos também ficam ocultos. A chave casa **segmento inteiro**, então
 `/logs` não cobre `/logs-antigos`.
 
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
@@ -176,12 +178,12 @@ sendo a chave de conexão, verificada no gateway (ver *Autenticação*). Um perf
 trocado na tela não abre nem fecha rota nenhuma da API. A decisão do captain foi
 entregar esta vista reduzida agora e deixar autenticação, escopos da credencial e
 recusa no servidor para a tarefa `rdma-perfis-escopo-backend`. Até lá, não há
-fronteira real de permissão para InferNode.
+fronteira real de permissão para inference.
 
-O seletor `Administrador | Nó | InferNode` na barra superior (`components/ProfileSwitcher.tsx`)
+O seletor `Administrador | Nó | Inferência` na barra superior (`components/ProfileSwitcher.tsx`)
 é **andaime de desenvolvimento**: existe para conferir a tela pelos olhos de cada
-perfil, e por isso usa borda tracejada e âmbar, para não se confundir com um
-controle de operação. `PROFILE_SWITCHER_ENABLED` (`lib/profile.tsx`) em `false`
+perfil, inclusive o id `inference`, e por isso usa borda tracejada e âmbar, para não
+se confundir com um controle de operação. `PROFILE_SWITCHER_ENABLED` (`lib/profile.tsx`) em `false`
 apaga o botão; quando o perfil chegar do nó, o componente e a constante saem.
 
 A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
@@ -193,7 +195,7 @@ o TLS caísse seria pior que nenhum**: a ausência se lê como "a tela não most
 isso", não como "está em texto claro" - por isso os dois estados têm formas e
 cores diferentes.
 
-Na tela `TokenKeys`, o perfil `infernode` vê apenas as chaves ativas do próprio
+Na tela `TokenKeys`, o perfil `inference` vê apenas as chaves ativas do próprio
 nó, não escolhe outro nó e não oferece revogação manual. Gerar uma nova chave usa
 o endpoint atual e, em seguida, revoga a anterior; a semântica da vista é uma
 chave ativa por nó, com a nova substituindo a anterior. Esse fluxo ainda não é
@@ -356,7 +358,7 @@ Virar não pede reinício e vale nos dois sentidos; o toast diz que os demais n�
 adotam em poucos segundos, que é o ciclo de gossip mais a busca autenticada da
 catraca (ver `rede-p2p.md`, seção 5).
 
-## Chat de teste
+## Chat
 
 `src/routes/Chat.tsx` fala com o cluster por `POST /v1/chat/completions` com
 `stream: true`, igual a qualquer harness - o que aparece ali é o que um

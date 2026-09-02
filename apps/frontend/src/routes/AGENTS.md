@@ -10,7 +10,7 @@ writes as translation keys.
 
 Per-file list:
 
-- `Chat.tsx` — The test chat: `POST /v1/chat/completions` with `stream: true`,
+- `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage),
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
@@ -25,6 +25,9 @@ Per-file list:
   while the request trace shows the executed engine and mixed/mismatch flags.
   The runtime record keeps stable identity between unchanged polls so the
   telemetry snapshot cannot trigger a render loop that freezes navigation.
+  O perfil `inference` oculta desta tela a origem, os resumos de tempo e
+  throughput e o painel detalhado de telemetria; isso é apresentação, não
+  autorização.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
   Phase rows also render
@@ -224,7 +227,7 @@ Per-file list:
   parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
-  No perfil `infernode`, mostra só a chave ativa deste nó, esconde o seletor de
+  No perfil `inference`, mostra só a chave ativa deste nó, esconde o seletor de
   nó e, ao gerar uma chave nova, revoga a anterior. É fluxo de interface: o
   backend ainda não impõe o escopo nem a unicidade; isso ficou para
   `rdma-perfis-escopo-backend`. `ConnectionKeys`: the cluster operator key -

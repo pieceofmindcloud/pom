@@ -23,7 +23,7 @@ dele é lá, não aqui.
 | `freetoken-moe.md` | medições do goal FreeToken, orçamento de KV e caminho MoE próprio |
 | `transferencia.md` | puxar/oferecer arquivos entre máquinas, retomada, MD5, concessões |
 | `api-http.md` | todas as rotas, autenticação, `x_pom.source`, `gateway::testkit` |
-| `web-ui.md` | como a UI sobe, menu, modais, Painel, chat de teste, telas de fatiar/implantar |
+| `web-ui.md` | como a UI sobe, menu, modais, Painel, Chat, telas de fatiar/implantar |
 
 **Por pasta** (`AGENTS.md`) - o que cada arquivo faz, função a função, e as
 ligações com outras pastas: `crates/`, `crates/node/`, e dentro de

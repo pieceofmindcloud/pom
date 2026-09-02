@@ -13,8 +13,8 @@ const mocks = vi.hoisted(() => ({
   oldKey: {
     id: "old-id",
     key: "sk-old",
-    label: "InferNode",
-    node_id: "infer-node",
+    label: "Inferência",
+    node_id: "inference-node",
     active: true,
     created_at: "2026-08-31T00:00:00Z",
   },
@@ -36,7 +36,7 @@ vi.mock("../lib/api", async (original) => ({
 vi.mock("../lib/queries", () => ({
   useApiKeys: () => ({ data: [mocks.oldKey, mocks.foreignKey], isLoading: false, isError: false, isFetching: false, refetch: mocks.refetch }),
   useCluster: () => ({ data: { peers: [] } }),
-  useNode: () => ({ data: fakeNode({ node_id: "infer-node", role: "InferNode" }) }),
+  useNode: () => ({ data: fakeNode({ node_id: "inference-node", role: "inference" }) }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -55,7 +55,7 @@ function mount() {
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       <LocaleProvider initialLocale="pt-BR">
-        <ProfileProvider initialProfile="infernode">
+        <ProfileProvider initialProfile="inference">
           <TokenKeys />
         </ProfileProvider>
       </LocaleProvider>
@@ -63,7 +63,7 @@ function mount() {
   );
 }
 
-describe("TokenKeys no perfil InferNode", () => {
+describe("TokenKeys no perfil inference", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -72,7 +72,7 @@ describe("TokenKeys no perfil InferNode", () => {
   it("mostra apenas a chave do próprio nó e esconde a seleção de outros nós", () => {
     mount();
 
-    expect(screen.getByText("InferNode")).toBeTruthy();
+    expect(screen.getByText("Inferência")).toBeTruthy();
     expect(screen.queryByText("Outra máquina")).toBeNull();
     expect(screen.queryByText("Toda a rede")).toBeNull();
     expect(screen.queryByLabelText("Nó da rede")).toBeNull();
@@ -92,8 +92,8 @@ describe("TokenKeys no perfil InferNode", () => {
 
     await waitFor(() => expect(mocks.del).toHaveBeenCalledWith("/admin/api-keys/sk-old"));
     expect(mocks.post).toHaveBeenCalledWith("/admin/api-keys", {
-      label: "InferNode",
-      node_id: "infer-node",
+      label: "Inferência",
+      node_id: "inference-node",
     });
     expect(mocks.refetch).toHaveBeenCalled();
   });

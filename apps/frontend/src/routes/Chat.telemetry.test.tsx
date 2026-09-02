@@ -6,9 +6,11 @@
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatError } from "./Chat";
+import { Bubble, ChatError } from "./Chat";
 import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { LocaleProvider } from "../i18n/provider";
+import { ProfileProvider } from "../lib/profile";
+import type { ChatMessage } from "../lib/chatStore";
 import type { GenerationTimings, PhaseTrace, RequestTrace } from "../lib/chatStream";
 
 function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
@@ -282,6 +284,54 @@ describe("ExecutionTelemetry", () => {
     // ...and the row says why there is no prefill/decode split, rather than
     // printing one total twice under two labels.
     expect(screen.getByText(/telemetria antiga/i)).toBeTruthy();
+  });
+});
+
+describe("telemetria no chat por perfil", () => {
+  const tracedMessage: ChatMessage = {
+    id: "assistant-1",
+    role: "assistant",
+    content: "resposta",
+    at: "2026-09-02T00:00:00Z",
+    source: "pipeline:abc→def",
+    tokensPerSecond: 4,
+    timings: {
+      ttft_ms: 100,
+      prefill_ms: 80,
+      prefill_tokens: 8,
+      prefill_tokens_per_sec: 100,
+      generation_ms: 500,
+      generation_tokens: 2,
+      generation_tokens_per_sec: 4,
+      total_ms: 600,
+      total_tokens_per_sec: 3.3,
+    },
+    trace,
+  };
+
+  function mountBubble(profile: "admin" | "node" | "inference") {
+    return render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile={profile}>
+          <Bubble message={tracedMessage} streaming={false} />
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+  }
+
+  it("não mostra telemetria no chat para inference", () => {
+    mountBubble("inference");
+
+    expect(screen.getByText("resposta")).toBeTruthy();
+    expect(screen.queryByText("pipeline:abc→def")).toBeNull();
+    expect(screen.queryByText(/Primeiro token|RTT agregado da execução/)).toBeNull();
+  });
+
+  it.each(["admin", "node"] as const)("mantém telemetria no chat para o perfil %s", (profile) => {
+    mountBubble(profile);
+
+    expect(screen.getAllByText("pipeline:abc→def").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Primeiro token/).length).toBeGreaterThan(0);
   });
 });
 

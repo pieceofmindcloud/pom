@@ -2,7 +2,7 @@
 
 ## Objetivo
 
-Melhorar o chat de teste sem criar um caminho de inferência paralelo: ao fim de
+Melhorar o Chat sem criar um caminho de inferência paralelo: ao fim de
 cada resposta, mostrar a velocidade medida pelo backend; exibir separadamente
 o raciocínio produzido por modelos com thinking habilitado; e não reposicionar
 quem estiver lendo o histórico durante o streaming.

@@ -64,7 +64,7 @@ describe("navForProfile", () => {
     const sections = navForProfile("node");
     const labels = sections.map((s) => s.labelKey);
     expect(labels).toContain("nav.dashboard");
-    expect(labels).toContain("nav.testChat");
+    expect(labels).toContain("nav.chat");
     expect(labels).toContain("nav.models");
     expect(labels).toContain("nav.settings");
     const models = sections.find((s) => s.labelKey === "nav.models");
@@ -83,11 +83,11 @@ describe("navForProfile", () => {
     expect(JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)))).toBe(before);
   });
 
-  it("deixa o InferNode apenas com conversa e API keys", () => {
-    const sections = navForProfile("infernode");
+  it("deixa o inference apenas com conversa, documentação e API keys", () => {
+    const sections = navForProfile("inference");
     expect(sections.flatMap((section) => section.children ?? []).map((child) => child.to)).toEqual([
       "/config/keys/api",
     ]);
-    expect(sections.map((section) => section.to)).toEqual(["/chat", undefined]);
+    expect(sections.map((section) => section.to)).toEqual(["/chat", "/documentacao", undefined]);
   });
 });

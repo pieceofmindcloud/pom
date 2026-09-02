@@ -5,14 +5,14 @@
  * máquina que só empresta camadas, telas como "Implantar na rede" descrevem um
  * trabalho que não é daquela máquina fazer. O perfil é o que separa os dois
  * papéis - `admin` opera o cluster inteiro, `node` cuida da própria máquina e
- * `infernode` só conversa com os modelos disponíveis e administra sua API key.
+ * `inference` só conversa com os modelos disponíveis e administra sua API key.
  *
  * **Isto não é autorização.** É apresentação: esconde e bloqueia telas no
  * navegador, e nada mais. A credencial que o nó exige continua sendo a chave de
  * conexão (`api.ts`), verificada no gateway; um perfil trocado aqui não abre
  * nem fecha nenhuma rota da API. Quando o perfil passar a valer de verdade,
  * quem decide é o nó, e esta tela passa a refletir o que ele responder - não o
- * contrário. A autorização do InferNode fica para a tarefa
+ * contrário. A autorização do Inference fica para a tarefa
  * `rdma-perfis-escopo-backend`.
  *
  * Hoje o perfil é escolhido à mão pelo seletor da barra superior, que existe
@@ -29,7 +29,7 @@ import {
 } from "react";
 import { storageKey } from "./brand";
 
-export const PROFILES = ["admin", "node", "infernode"] as const;
+export const PROFILES = ["admin", "node", "inference"] as const;
 
 export type Profile = (typeof PROFILES)[number];
 

@@ -95,7 +95,7 @@ Per-file list:
   and tone for encrypted versus cleartext and the meaning in
   `aria-label`/`title`.
 - `ProfileSwitcher.tsx` — **Andaime de desenvolvimento.** Alterna o perfil ativo
-  (`admin`/`node`/`infernode`) direto na barra superior para conferir a tela pelos olhos de
+  (`admin`/`node`/`inference`) direto na barra superior para conferir a tela pelos olhos de
   cada perfil. Borda tracejada e âmbar de propósito: não é controle de operação
   e não concede permissão nenhuma - quem manda é `../lib/profile.tsx`.
   `PROFILE_SWITCHER_ENABLED` false faz o componente renderizar `null`; quando o

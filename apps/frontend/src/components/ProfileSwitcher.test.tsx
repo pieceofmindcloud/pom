@@ -35,7 +35,7 @@ describe("ProfileSwitcher", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: "Nó" }).getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByRole("button", { name: "InferNode" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "Inferência" }).getAttribute("aria-pressed")).toBe("false");
   });
 
   it("troca o perfil ativo e lembra a escolha", () => {

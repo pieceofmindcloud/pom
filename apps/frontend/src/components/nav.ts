@@ -42,7 +42,7 @@ export interface NavSection {
  */
 export const NAV: NavSection[] = [
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
-  { labelKey: "nav.testChat", icon: MessagesSquare, to: "/chat" },
+  { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat" },
   {
       labelKey: "nav.models",
       icon: Boxes,

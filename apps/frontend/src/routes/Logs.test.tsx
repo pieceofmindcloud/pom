@@ -245,7 +245,7 @@ describe("Logs", () => {
     expect(screen.getByRole("tab", { name: "Resposta" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "TELEMETRIA" })).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
-    expect(screen.getByRole("textbox", { name: "Resposta" })).toBeTruthy();
+    expect(screen.getByLabelText("Resposta")).toBeTruthy();
   });
 
   it("opens the inspector from any non-interactive part of a row and highlights it", () => {
@@ -268,7 +268,8 @@ describe("Logs", () => {
 
     expect(screen.getByRole("heading", { name: "Inspetor de requisição" })).toBeTruthy();
     expect(row.getAttribute("aria-selected")).toBe("true");
-    expect(row.className).toContain("bg-iris/8");
+    expect(row.className).toContain("bg-iris/20");
+    expect(row.className).toContain("ring-iris/60");
   });
 
   it("does not move the error badge when loading more appears and disappears", () => {
@@ -313,6 +314,7 @@ describe("Logs", () => {
   });
 
   it("copies a labelled request bundle without credentials", async () => {
+    window.localStorage.setItem("pom.logs.inspector.format", "raw");
     mocks.useRequestLog.mockReturnValue({
       data: {
         ...result,
@@ -341,12 +343,13 @@ describe("Logs", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Inspecionar requisição" }));
+    fireEvent.click(screen.getByRole("tab", { name: "REQUEST" }));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Copiar dados da requisição" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copiar conteúdo da aba REQUEST" }));
     });
 
     const copied = writeText.mock.calls[0]?.[0] as string;
-    expect(copied).toContain('"REQUEST"');
+    expect(copied).toContain('"id": "req-1"');
     expect(copied).toContain('"api_key_identity"');
     expect(copied).toContain("[REDACTED]");
     expect(copied).not.toContain("super-secret");

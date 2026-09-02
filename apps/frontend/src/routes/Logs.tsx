@@ -425,7 +425,7 @@ function RequestsView({ filters, name, selected, setSelected }: {
                         setSelected(entry);
                       }
                     }}
-                    className={`cursor-pointer border-b border-line transition-colors hover:bg-raised ${selected?.id === entry.id ? "bg-iris/8" : ""}`}
+                    className={`cursor-pointer border-b border-line transition-colors ${selected?.id === entry.id ? "bg-iris/20 ring-1 ring-inset ring-iris/60 hover:bg-iris/25" : "hover:bg-raised"}`}
                   >
                     <td className="whitespace-nowrap px-3 py-1.5">
                       <Mono className="text-fg">{clock(entry.received_at)}</Mono>

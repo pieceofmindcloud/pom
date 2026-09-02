@@ -43,15 +43,22 @@ Per-file list:
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
 - `RequestInspector.tsx` - inspetor da tela Logs. A aba ENVIADO vem antes de
-  REQUEST e separa prompt novo e contexto anterior em duas áreas de markdown;
-  Resposta usa o mesmo editor. O seletor global entre pré-formatado e JSON cru
-  persiste em `storageKey("logs.inspector.format")`. O cabeçalho repete os
-  detalhes exibidos na linha, e a telemetria continua usando JSON, caminho da
-  requisição e o cartão compartilhado `ExecutionTelemetry`. A cópia sempre
-  redige credenciais.
+  REQUEST e separa prompt novo e contexto anterior em duas superfícies de
+  Markdown renderizado; Resposta usa o mesmo visualizador. `MDEditor.Markdown`
+  de `@uiw/react-md-editor/nohighlight` é somente leitura, sem barra de edição,
+  sem cópia interna, com HTML desabilitado, sanitização de links e sem imagens;
+  cada superfície é limitada a 64 KiB para manter a tela responsiva. O toggle
+  global entre Markdown renderizado e JSON cru persiste em
+  `storageKey("logs.inspector.format")`. O cabeçalho repete os detalhes da
+  linha, reúne cópia da aba ativa, toggle e fechar, e a telemetria continua
+  usando JSON, caminho da requisição e o cartão compartilhado
+  `ExecutionTelemetry`. Cada área Markdown tem um botão de expansão no canto
+  superior direito que abre uma janela `Modal` grande; ela acompanha o toggle
+  global e usa a mesma sanitização e censura de credenciais.
+  A cópia sempre redige credenciais.
 - `CodeViewer.tsx` - superfície de leitura flexível com realce JSON por
   `highlight.js`. É somente leitura, mas permanece selecionável e copiável pelo
-  navegador, e é usada nas três seções do inspetor.
+  navegador, e é usada nas abas REQUEST e TELEMETRIA do inspetor.
 - `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
   pelo Chat e pelo inspetor de Logs. Mantém a tabela de fases, tempos por hop,
   rede, ambiente, diagnóstico e demais detalhes em um único componente. Mostra

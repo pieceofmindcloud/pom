@@ -30,7 +30,7 @@ global gap or overlap blocks the plan.
 - `preview` - `vite preview --port 5199 --strictPort`.
 - `test` - `vitest run`.
 - `predev`/`prebuild`/`pretest` - `node scripts/build-docs.mjs` (regenerate `src/docs/` so the embedded documentation is fresh for the dev server, the build and the tests).
-- Dependencies: `@tanstack/react-query`, `react-router-dom` (v6 with v7 future flags), `framer-motion`, `react-markdown` + `remark-gfm` + `rehype-highlight`, `highlight.js`, `lucide-react`, `recharts`, `clsx`, fontsource font packages.
+- Dependencies: `@tanstack/react-query`, `react-router-dom` (v6 with v7 future flags), `framer-motion`, `react-markdown` + `remark-gfm` + `rehype-highlight`, `@uiw/react-md-editor` + `@uiw/react-markdown-preview` + `rehype-sanitize` for trusted read-only Markdown surfaces, `highlight.js`, `lucide-react`, `recharts`, `clsx`, fontsource font packages.
 
 ## src root
 
@@ -61,7 +61,8 @@ aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
   filtros, abas de requisições/estatísticas, tabela densa, scroll infinito e
-  inspetor JSON com redação de credenciais
+  inspetor com Markdown renderizado, expansão para leitura e redação de
+  credenciais
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
   `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys;

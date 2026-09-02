@@ -149,15 +149,22 @@ carrega a próxima quando o sentinela entra na viewport. A aba de estatísticas
 consulta `GET /api/ui/requests/stats`, que agrega no servidor por token, nó,
 dia, modelo e peer, além de tokens de entrada/saída, inferência, TTFT, cache de
 prefixo e estados terminais. Clicar em qualquer área não interativa da linha
-abre o inspetor, preserva a lupa e destaca a linha selecionada. O cabeçalho do
-inspetor repete os detalhes da linha. ENVIADO separa prompt novo e contexto
-anterior em dois editores markdown de altura dividida; Resposta usa o mesmo
-editor. A preferência global entre conteúdo pré-formatado e JSON cru fica em
-`localStorage` e é restaurada em visitas futuras. REQUEST e TELEMETRIA mantêm
-o JSON completo, com TELEMETRIA separando o caminho da requisição do cartão
-visual `ExecutionTelemetry`, compartilhado com o Chat. O indicador de
-carregamento ocupa um slot à esquerda do badge de erros, mantendo o badge fixo
-à direita. A cópia é rotulada e redige credenciais, inclusive `key` de
+  abre o inspetor, preserva a lupa e destaca a linha selecionada com cor de
+  acento distinta do hover. O cabeçalho do inspetor repete os detalhes da linha.
+  ENVIADO separa prompt novo e contexto anterior em duas superfícies Markdown
+  renderizado de altura dividida; Resposta usa o mesmo visualizador somente para
+  leitura, sem barra de edição, HTML, imagens ou links com protocolo inseguro.
+  O conteúdo exibido é limitado a 64 KiB para preservar a responsividade. A
+  preferência global entre Markdown renderizado e JSON cru fica em `localStorage`
+  e é restaurada em visitas futuras. A tablist tem somente as quatro abas;
+  cópia da aba ativa e toggle de formato ficam no cabeçalho junto ao fechamento.
+  Cada área Markdown também tem um botão icon-only de expansão no canto
+  superior direito; a leitura abre em uma janela grande, acompanha o toggle
+  global e mantém a mesma sanitização e censura de credenciais.
+  REQUEST e TELEMETRIA mantêm o JSON completo, com TELEMETRIA separando o caminho
+  da requisição do cartão visual `ExecutionTelemetry`, compartilhado com o Chat.
+  O indicador de carregamento ocupa um slot à esquerda do badge de erros,
+  mantendo o badge fixo à direita. A cópia redige credenciais, inclusive `key` de
 registros em `api_keys` quando o valor tem formato de segredo conhecido, sem
 ocultar campos `key` inocentes.
 `in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais

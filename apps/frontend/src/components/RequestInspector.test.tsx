@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import type { RequestTrace, PhaseTrace } from "../lib/chatStream";
 import type { RequestLogEntry } from "../lib/types";
@@ -134,7 +134,7 @@ describe("RequestInspector", () => {
     window.localStorage.clear();
   });
 
-  it("shows the new prompt and previous context as separate markdown editors", () => {
+  it("renders the new prompt and previous context as separate markdown views", () => {
     const conversationalEntry = {
       ...entry,
       request_details: {
@@ -156,16 +156,14 @@ describe("RequestInspector", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "ENVIADO" }));
 
-    const prompt = screen.getByRole("textbox", { name: "Prompt novo" }) as HTMLTextAreaElement;
-    const context = screen.getByRole("textbox", { name: "Contexto anterior" }) as HTMLTextAreaElement;
-    expect(prompt.value).toContain("A pergunta nova");
-    expect(context.value).toContain("### system");
-    expect(context.value).toContain("A resposta anterior");
-    expect(context.value).not.toContain("A pergunta nova");
-    expect(prompt.value).not.toContain('"messages"');
+    expect(screen.getByText("A pergunta nova")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "system" })).toBeTruthy();
+    expect(screen.getByText("A resposta anterior")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Prompt novo" })).toBeNull();
+    expect(screen.queryByText('"messages"')).toBeNull();
   });
 
-  it("keeps the response in the same markdown editor", () => {
+  it("renders the response as markdown", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <RequestInspector entry={entry} onClose={() => undefined} />
@@ -174,12 +172,11 @@ describe("RequestInspector", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
 
-    const response = screen.getByRole("textbox", { name: "Resposta" }) as HTMLTextAreaElement;
-    expect(response.value).toBe("resposta");
-    expect(response.value).not.toContain('"result"');
+    expect(screen.getByText("resposta")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Resposta" })).toBeNull();
   });
 
-  it("persists and respects the raw versus formatted preference", () => {
+  it("persists and communicates the raw versus formatted preference", () => {
     window.localStorage.setItem("pom.logs.inspector.format", "raw");
     const view = render(
       <LocaleProvider initialLocale="pt-BR">
@@ -187,15 +184,15 @@ describe("RequestInspector", () => {
       </LocaleProvider>,
     );
 
-    const preference = screen.getByLabelText("Formato do inspetor") as HTMLSelectElement;
-    expect(preference.value).toBe("raw");
+    const preference = screen.getByRole("button", { name: "Formato atual: JSON cru. Alternar para Markdown renderizado" });
+    expect(preference.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("tab", { name: "REQUEST" }));
     expect(screen.getByRole("textbox", { name: "REQUEST" }).textContent).toContain('"request_details"');
 
-    fireEvent.change(preference, { target: { value: "formatted" } });
+    fireEvent.click(preference);
     expect(window.localStorage.getItem("pom.logs.inspector.format")).toBe("formatted");
     fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
-    expect((screen.getByRole("textbox", { name: "Resposta" }) as HTMLTextAreaElement).value).toBe("resposta");
+    expect(screen.getByText("resposta")).toBeTruthy();
 
     view.unmount();
     render(
@@ -203,7 +200,82 @@ describe("RequestInspector", () => {
         <RequestInspector entry={entry} onClose={() => undefined} />
       </LocaleProvider>,
     );
-    expect((screen.getByLabelText("Formato do inspetor") as HTMLSelectElement).value).toBe("formatted");
+    expect(screen.getByRole("button", { name: "Formato atual: pré-formatado. Alternar para JSON cru" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps only four tabs in the tablist and makes every tab reachable", () => {
+    mountInspector();
+
+    const tablist = screen.getByRole("tablist");
+    expect(tablist.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(tablist.querySelectorAll("button")).toHaveLength(4);
+    expect(screen.getByRole("button", { name: "Copiar conteúdo da aba ENVIADO" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Formato atual: pré-formatado. Alternar para JSON cru" })).toBeTruthy();
+
+    for (const label of ["ENVIADO", "REQUEST", "Resposta", "TELEMETRIA"]) {
+      fireEvent.click(screen.getByRole("tab", { name: label }));
+      expect(screen.getByRole("tab", { name: label }).getAttribute("aria-selected")).toBe("true");
+    }
+  });
+
+  it("copies only the content of the active tab", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    mountInspector();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copiar conteúdo da aba Resposta" }));
+    });
+
+    expect(writeText).toHaveBeenCalledWith("resposta");
+    expect(writeText.mock.calls[0]?.[0]).not.toContain('"REQUEST"');
+  });
+
+  it("sanitizes hostile markdown without enabling remote images or javascript links", () => {
+    const unsafeEntry = {
+      ...entry,
+      prompt: "**seguro** <script>alert(1)</script> [link](javascript:alert(1)) ![pixel](https://evil.test/x.png)",
+      result: "**resposta segura** [link](javascript:alert(1)) ![pixel](https://evil.test/x.png)",
+    };
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RequestInspector entry={unsafeEntry} onClose={() => undefined} />
+      </LocaleProvider>,
+    );
+
+    expect(screen.getByText("seguro").tagName).toBe("STRONG");
+    fireEvent.click(screen.getByRole("button", { name: "Expandir conteúdo: Prompt novo" }));
+    expect(screen.getByRole("dialog", { name: "Leitura ampliada: Prompt novo" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Fechar" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+    expect(screen.getByText("resposta segura").tagName).toBe("STRONG");
+    expect(document.querySelector("script")).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+    expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
+  });
+
+  it("expands every markdown area and follows the format toggle", () => {
+    mountInspector();
+
+    for (const label of ["Prompt novo", "Contexto anterior"]) {
+      fireEvent.click(screen.getByRole("button", { name: `Expandir conteúdo: ${label}` }));
+      expect(screen.getByRole("dialog", { name: `Leitura ampliada: ${label}` })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Fechar" }));
+    }
+
+    fireEvent.click(screen.getByRole("tab", { name: "REQUEST" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expandir conteúdo: REQUEST" }));
+    expect(screen.getByRole("dialog", { name: "Leitura ampliada: REQUEST" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Fechar" }));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expandir conteúdo: Resposta" }));
+    expect(screen.getByRole("dialog", { name: "Leitura ampliada: Resposta" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Formato atual: pré-formatado. Alternar para JSON cru" }));
+    expect(within(screen.getByRole("dialog", { name: "Leitura ampliada: Resposta" })).getByRole("textbox", { name: "Resposta" })).toBeTruthy();
   });
 
   it("shows the request path separately from the shared telemetry card", () => {

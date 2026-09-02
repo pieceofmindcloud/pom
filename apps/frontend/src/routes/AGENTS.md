@@ -237,11 +237,15 @@ Per-file list:
   requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
   A aba de estatísticas lê `GET /api/ui/requests/stats`. Clicar em qualquer
   ponto não interativo da linha abre o inspetor e mantém a linha selecionada
-  destacada; a lupa continua disponível. O cabeçalho do inspetor repete as
-  métricas da linha. ENVIADO separa prompt novo e contexto anterior em markdown,
-  Resposta usa o mesmo editor e a preferência entre markdown e JSON cru fica
-  no localStorage. O slot reservado do carregamento deixa o badge de erros
-  fixo à direita.
+  destacada com acento visível, inclusive enquanto o mouse está em outra linha;
+  a lupa continua disponível. O cabeçalho do inspetor repete as métricas da
+  linha. ENVIADO separa prompt novo e contexto anterior em Markdown renderizado,
+  Resposta usa o mesmo visualizador e a preferência entre Markdown e JSON cru
+  fica no localStorage. A tablist contém somente as quatro abas; cópia da aba
+  ativa e toggle de formato ficam no cabeçalho. O slot reservado do carregamento
+  deixa o badge de erros fixo à direita. Cada superfície Markdown pode ser
+  aberta em uma janela grande de leitura, que acompanha o toggle e a censura
+  de segredos.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and

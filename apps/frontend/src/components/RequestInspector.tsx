@@ -1,18 +1,34 @@
-import { Check, Clipboard, X } from "lucide-react";
+import MDEditor from "@uiw/react-md-editor/nohighlight";
+import { defaultSchema } from "hast-util-sanitize";
+import rehypeSanitize from "rehype-sanitize";
+import { Check, Code2, Copy, Maximize2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CodeViewer } from "./CodeViewer";
+import { Modal } from "./Confirm";
 import { ExecutionTelemetry } from "./ExecutionTelemetry";
-import { Button, Mono, Select } from "./ui";
+import { Button, Mono } from "./ui";
 import type { RequestTrace } from "../lib/chatStream";
 import { clock, ms, num, since } from "../lib/format";
 import type { RequestLogEntry } from "../lib/types";
 import { storageKey } from "../lib/brand";
 import { useI18n } from "../i18n/provider";
+import { useTheme } from "../lib/theme";
 
 type InspectorTab = "sent" | "request" | "response" | "telemetry";
 type InspectorFormat = "formatted" | "raw";
+type ExpandedMarkdown = {
+  tab: Exclude<InspectorTab, "telemetry">;
+  value: string;
+  label: string;
+};
 
 const INSPECTOR_FORMAT_STORAGE = storageKey("logs.inspector.format");
+const MAX_MARKDOWN_CHARS = 64 * 1024;
+
+const SAFE_MARKDOWN_SCHEMA = {
+  ...defaultSchema,
+  tagNames: defaultSchema.tagNames?.filter((tagName) => tagName !== "img"),
+};
 
 const SENSITIVE_KEYS = new Set([
   "authorization",
@@ -175,6 +191,19 @@ function requestMarkdown(entry: RequestLogEntry) {
   return lines.join("\n");
 }
 
+function sentCopyText(sent: { prompt: string; context: string }, labels: { prompt: string; context: string }) {
+  return [`## ${labels.prompt}`, "", sent.prompt, "", `## ${labels.context}`, "", sent.context].join("\n");
+}
+
+function safeUrlTransform(url: string) {
+  return /^(?:https?:|mailto:)/i.test(url.trim()) ? url : "";
+}
+
+function displayMarkdown(value: string) {
+  if (value.length <= MAX_MARKDOWN_CHARS) return value;
+  return `${value.slice(0, MAX_MARKDOWN_CHARS)}\n\n> Conteúdo truncado para manter a tela responsiva.`;
+}
+
 function rateText(value: number | null | undefined, unavailable: string, unit: string) {
   return value == null ? unavailable : `${num(value, 1)} ${unit}`;
 }
@@ -264,15 +293,47 @@ function RequestSummary({ entry, name }: { entry: RequestLogEntry; name: (id: st
   );
 }
 
-function MarkdownEditor({ value, label, className = "" }: { value: string; label: string; className?: string }) {
+function MarkdownViewer({
+  value,
+  label,
+  className = "",
+  onExpand,
+  expandLabel,
+}: {
+  value: string;
+  label: string;
+  className?: string;
+  onExpand?: () => void;
+  expandLabel?: string;
+}) {
+  const { theme } = useTheme();
   return (
-    <textarea
-      readOnly
-      value={value}
-      spellCheck={false}
+    <div
       aria-label={label}
-      className={`min-h-0 w-full resize-none rounded-lg border border-line bg-ink p-3 font-mono text-[0.75rem] leading-relaxed text-fg outline-none focus:border-iris ${className}`}
-    />
+      className={`relative min-h-0 w-full min-w-0 overflow-auto rounded-lg border border-line bg-ink p-3 text-[0.82rem] leading-relaxed text-fg ${onExpand ? "pt-10" : ""} ${className}`}
+    >
+      {onExpand && (
+        <button
+          type="button"
+          aria-label={expandLabel}
+          title={expandLabel}
+          className="absolute right-2 top-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-line/40 hover:text-fg focus:outline-none focus:ring-2 focus:ring-iris/40"
+          onClick={onExpand}
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+      <MDEditor.Markdown
+        source={displayMarkdown(value)}
+        disableCopy
+        skipHtml
+        allowElement={(element) => element.tagName !== "img"}
+        urlTransform={safeUrlTransform}
+        rehypePlugins={[[rehypeSanitize, SAFE_MARKDOWN_SCHEMA]]}
+        className="!max-w-none !bg-transparent !text-fg"
+        wrapperElement={{ "data-color-mode": theme }}
+      />
+    </div>
   );
 }
 
@@ -289,6 +350,7 @@ export function RequestInspector({
   const [tab, setTab] = useState<InspectorTab>("sent");
   const [format, setFormat] = useState<InspectorFormat>(readInspectorFormat);
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState<ExpandedMarkdown | null>(null);
   const bundle = useMemo(() => requestBundle(entry), [entry]);
   const trace = useMemo(() => isRequestTrace(entry.telemetry) ? entry.telemetry : null, [entry.telemetry]);
   const sent = useMemo(() => sentMarkdown(entry, t("tokenLogs.noPreviousContext")), [entry, t]);
@@ -308,8 +370,23 @@ export function RequestInspector({
     }
   }, [format]);
 
-  async function copyBundle() {
-    const text = formatJson(bundle);
+  const formatToggleLabel = format === "raw"
+    ? t("tokenLogs.inspectorFormatRawState")
+    : t("tokenLogs.inspectorFormatFormattedState");
+
+  function expandMarkdown(tab: Exclude<InspectorTab, "telemetry">, value: string, label: string) {
+    setExpanded({ tab, value, label });
+  }
+
+  function activeTabText() {
+    if (format === "raw" || tab === "telemetry") return formatJson(sections[tab]);
+    if (tab === "sent") return sentCopyText(sent, { prompt: t("tokenLogs.newPrompt"), context: t("tokenLogs.previousContext") });
+    if (tab === "response") return responseMarkdown(entry, t("tokenLogs.noResult"));
+    return requestMarkdown(entry);
+  }
+
+  async function copyActiveTab() {
+    const text = activeTabText();
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
@@ -331,23 +408,47 @@ export function RequestInspector({
   }
 
   return (
-    <aside className="flex min-h-0 min-w-0 flex-col border-t border-line bg-surface lg:border-l lg:border-t-0">
+    <>
+      <aside className="flex min-h-0 min-w-0 flex-col border-t border-line bg-surface lg:border-l lg:border-t-0">
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-line px-4 py-3">
         <div className="min-w-0">
           <h2 className="eyebrow">{t("tokenLogs.inspectorTitle")}</h2>
           <Mono className="mt-1 block truncate text-[0.68rem] text-muted">{entry.id}</Mono>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={<X className="h-3.5 w-3.5" />}
-          aria-label={t("tokenLogs.closeInspector")}
-          onClick={onClose}
-        />
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0"
+            icon={copied ? <Check className="h-3.5 w-3.5 text-aqua" /> : <Copy className="h-3.5 w-3.5" />}
+            aria-label={t("tokenLogs.copyInspectorTab", { tab: labels[tab] })}
+            title={t("tokenLogs.copyInspectorTab", { tab: labels[tab] })}
+            onClick={() => void copyActiveTab()}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className={format === "raw" ? "h-8 w-8 bg-iris/15 p-0 text-iris" : "h-8 w-8 p-0"}
+            icon={<Code2 className="h-3.5 w-3.5" />}
+            aria-label={formatToggleLabel}
+            title={formatToggleLabel}
+            aria-pressed={format === "raw"}
+            onClick={() => setFormat((current) => current === "raw" ? "formatted" : "raw")}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0"
+            icon={<X className="h-3.5 w-3.5" />}
+            aria-label={t("tokenLogs.closeInspector")}
+            title={t("tokenLogs.closeInspector")}
+            onClick={onClose}
+          />
+        </div>
       </div>
       <RequestSummary entry={entry} name={name} />
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2">
-        <div role="tablist" aria-label={t("tokenLogs.inspectorTabs")} className="flex min-w-0 gap-1">
+        <div role="tablist" aria-label={t("tokenLogs.inspectorTabs")} className="flex min-w-0 flex-wrap gap-1">
           {(Object.keys(labels) as InspectorTab[]).map((key) => (
             <button
               key={key}
@@ -365,21 +466,6 @@ export function RequestInspector({
             </button>
           ))}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <label className="sr-only" htmlFor="request-inspector-format">{t("tokenLogs.inspectorFormat")}</label>
-          <Select id="request-inspector-format" compact value={format} onChange={(event) => setFormat(event.target.value as InspectorFormat)} aria-label={t("tokenLogs.inspectorFormat")}>
-            <option value="formatted">{t("tokenLogs.inspectorFormatted")}</option>
-            <option value="raw">{t("tokenLogs.inspectorRaw")}</option>
-          </Select>
-          <Button
-            variant="outline"
-            size="sm"
-            icon={copied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
-            onClick={() => void copyBundle()}
-          >
-            {copied ? t("tokenLogs.copied") : t("tokenLogs.copyRequestData")}
-          </Button>
-        </div>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
         {tab === "telemetry" && (
@@ -396,15 +482,39 @@ export function RequestInspector({
           {format === "raw" || tab === "telemetry" ? (
             <CodeViewer value={formatJson(sections[tab])} label={labels[tab]} />
           ) : tab === "sent" ? (
-            <div className="grid min-h-0 flex-1 grid-rows-2 gap-3">
-              <div className="flex min-h-0 flex-col gap-1.5"><label className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-faint" htmlFor="request-inspector-new-prompt">{t("tokenLogs.newPrompt")}</label><MarkdownEditor value={sent.prompt} label={t("tokenLogs.newPrompt")} className="flex-1" /></div>
-              <div className="flex min-h-0 flex-col gap-1.5"><label className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-faint" htmlFor="request-inspector-previous-context">{t("tokenLogs.previousContext")}</label><MarkdownEditor value={sent.context} label={t("tokenLogs.previousContext")} className="flex-1" /></div>
+              <div className="grid min-h-0 flex-1 grid-rows-2 gap-3">
+              <div className="flex min-h-0 flex-col gap-1.5"><span className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("tokenLogs.newPrompt")}</span><MarkdownViewer value={sent.prompt} label={t("tokenLogs.newPrompt")} expandLabel={t("tokenLogs.expandInspectorContent", { label: t("tokenLogs.newPrompt") })} onExpand={() => expandMarkdown("sent", sent.prompt, t("tokenLogs.newPrompt"))} className="flex-1" /></div>
+              <div className="flex min-h-0 flex-col gap-1.5"><span className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("tokenLogs.previousContext")}</span><MarkdownViewer value={sent.context} label={t("tokenLogs.previousContext")} expandLabel={t("tokenLogs.expandInspectorContent", { label: t("tokenLogs.previousContext") })} onExpand={() => expandMarkdown("sent", sent.context, t("tokenLogs.previousContext"))} className="flex-1" /></div>
             </div>
           ) : (
-            <MarkdownEditor value={tab === "response" ? responseMarkdown(entry, t("tokenLogs.noResult")) : requestMarkdown(entry)} label={tab === "response" ? t("tokenLogs.inspectorResponse") : labels[tab]} className="flex-1" />
+            <MarkdownViewer
+              value={tab === "response" ? responseMarkdown(entry, t("tokenLogs.noResult")) : requestMarkdown(entry)}
+              label={tab === "response" ? t("tokenLogs.inspectorResponse") : labels[tab]}
+              expandLabel={t("tokenLogs.expandInspectorContent", { label: tab === "response" ? t("tokenLogs.inspectorResponse") : labels[tab] })}
+              onExpand={() => expandMarkdown(tab, tab === "response" ? responseMarkdown(entry, t("tokenLogs.noResult")) : requestMarkdown(entry), tab === "response" ? t("tokenLogs.inspectorResponse") : labels[tab])}
+              className="flex-1"
+            />
           )}
         </div>
       </div>
-    </aside>
+      </aside>
+      {expanded && (
+        <Modal
+          open
+          size="lg"
+          title={t("tokenLogs.expandedInspectorTitle", { label: expanded.label })}
+          onClose={() => setExpanded(null)}
+          footer={<Button variant="ghost" onClick={() => setExpanded(null)}>{t("common.close")}</Button>}
+        >
+          <div className="h-[min(68vh,42rem)] min-h-0">
+            {format === "raw" ? (
+              <CodeViewer value={formatJson(sections[expanded.tab])} label={expanded.label} className="h-full" />
+            ) : (
+              <MarkdownViewer value={expanded.value} label={expanded.label} className="h-full" />
+            )}
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }

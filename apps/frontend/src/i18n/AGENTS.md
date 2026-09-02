@@ -37,8 +37,10 @@ Two files carry all of it: a static message table and a small provider. Tests:
   fonte efetiva.
 - O grupo `tokenLogs.*` cobre a auditoria de requisições: barra de filtros,
   abas de requisições e estatísticas, métricas agregadas, abas ENVIADO,
-  REQUEST, Resposta e TELEMETRIA, editores markdown, seletor persistente de
-  JSON cru ou pré-formatado, caminho da requisição e cópia segura. O aviso
+  REQUEST, Resposta e TELEMETRIA, visualizadores Markdown, toggle persistente
+  de JSON cru ou Markdown renderizado, caminho da requisição e cópia segura da
+  aba ativa. Também nomeia os botões de expansão e a janela grande de leitura.
+  O aviso
   sobre JSON selecionável foi removido; nenhuma mensagem dessa tela recebe o
   segredo da chave.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.

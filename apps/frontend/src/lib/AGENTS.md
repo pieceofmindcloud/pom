@@ -47,13 +47,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   values remain unchanged. It prevents effects that capture `useQueries` data
   from writing state on every render; the Chat regression test covers this
   navigation freeze.
-- `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`): tipo, provider,
+- `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`/`infernode`): tipo, provider,
   `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
   desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia
   telas no navegador e nada mais; a credencial continua sendo a chave de conexão
   verificada no nó.
 - `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
-  para a lista de perfis; rota ausente é livre. `canAccessRoute(path, profile)` é
+  para a lista de perfis; para `infernode`, só `/chat` e `/config/keys/api` são
+  visíveis. `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
   a rota recusa. Testes em `access.test.ts`.
@@ -203,7 +204,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `usableSelection(remembered, ranges, machineIds)` - prunes remembered rows against what the cluster still offers (deleted slices, left machines); returns `null` when nothing survives so the caller keeps the node's own suggestion.
 
 ### profile.tsx / access.ts
-- `PROFILES` / `Profile` - `["admin", "node"]` e a união literal.
+- `PROFILES` / `Profile` - `["admin", "node", "infernode"]` e a união literal.
 - `DEFAULT_PROFILE` - `admin`. Abrir como `node` esconderia telas de quem sempre
   as teve, sem a pessoa saber que existe perfil para trocar.
 - `ProfileProvider({ children, initialProfile })` - estado inicial de
@@ -212,6 +213,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `routeProfiles(path)` - os perfis que entram, ou `null` quando a rota é livre.
   Casa por segmento (`/logs` cobre futuras filhas, e **não** `/logs-antigos`) e
   a chave mais específica vence.
+- `canAccessRoute(path, profile)` - para o `infernode`, permite somente a vista de
+  conversa e API keys. É apresentação, não escopo de credencial; a fronteira
+  real ficou para `rdma-perfis-escopo-backend`.
 
 ### theme.tsx
 - `ThemeProvider` / `useTheme` - reads the theme from `document.documentElement.dataset.theme` (index.html stamped it pre-paint), writes `data-theme` + `localStorage` `codai.theme`. Dark is the default; the system preference does not override.

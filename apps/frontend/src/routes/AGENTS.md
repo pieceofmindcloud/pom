@@ -222,9 +222,13 @@ Per-file list:
   `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
   criação mais recente e mostra a coluna "Criada". Permite reimplantar só
   parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.
-- `Keys.tsx` — Two screens in one file. `TokenKeys`: per-node API tokens for
-  harnesses — `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
-  `ConnectionKeys`: the cluster operator key — `POST /admin/regenerate-key`.
+- `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
+  harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
+  No perfil `infernode`, mostra só a chave ativa deste nó, esconde o seletor de
+  nó e, ao gerar uma chave nova, revoga a anterior. É fluxo de interface: o
+  backend ainda não impõe o escopo nem a unicidade; isso ficou para
+  `rdma-perfis-escopo-backend`. `ConnectionKeys`: the cluster operator key -
+  `POST /admin/regenerate-key`.
 - `Logs.tsx` - Full-bleed authenticated audit screen. Its compact toolbar
   applies API-key, prompt, node and time filters to `GET /api/ui/requests`;
   the requests tab uses `limit`/`offset` pages and an IntersectionObserver

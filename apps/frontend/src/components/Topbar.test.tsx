@@ -22,7 +22,7 @@ vi.mock("../lib/queries", async (original) => ({
   useNode: () => ({ data: nodeData }),
 }));
 
-const { TlsChip } = await import("./Topbar");
+const { TlsChip } = await import("./TlsIndicator");
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -40,16 +40,22 @@ function mount() {
 describe("TlsChip", () => {
   afterEach(cleanup);
 
-  it("diz que o cluster está cifrado quando a política está ligada", () => {
+  it("distingue TLS ligado só pelo ícone, com nome acessível", () => {
     nodeData = fakeNode({ tls_required: true });
     mount();
-    expect(screen.getByText("TLS")).toBeTruthy();
+    const indicator = screen.getByTestId("tls-indicator");
+    expect(indicator.getAttribute("data-tls-state")).toBe("on");
+    expect(indicator.getAttribute("aria-label")).toMatch(/cifrada/i);
+    expect(screen.queryByText("TLS")).toBeNull();
   });
 
-  it("diz que não está, quando desligada", () => {
+  it("distingue texto claro só pelo ícone, com nome acessível", () => {
     nodeData = fakeNode({ tls_required: false });
     mount();
-    expect(screen.getByText(/sem TLS/i)).toBeTruthy();
+    const indicator = screen.getByTestId("tls-indicator");
+    expect(indicator.getAttribute("data-tls-state")).toBe("off");
+    expect(indicator.getAttribute("aria-label")).toMatch(/texto claro/i);
+    expect(screen.queryByText(/sem TLS/i)).toBeNull();
   });
 
   it("leva a Configurações / Rede, que é onde se muda isso", () => {

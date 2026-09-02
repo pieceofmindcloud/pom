@@ -52,8 +52,9 @@ reduzir suas camadas. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa, além da prévia analítica de capacidade sem chamada ao fit nativo.
-`web-ui.md` descreve como essa validação aparece na tela Implantar e
-como o mapa apresenta hops e RTTs direcionais. `inferencia.md` registra também
+`web-ui.md` descreve como essa validação aparece na tela Implantar, como o mapa
+apresenta hops e RTTs direcionais e como o perfil InferNode reduz a vista sem
+criar autorização no backend. `inferencia.md` registra também
 as causas conhecidas de perda do estado de sessão, o estado de disponibilidade
 do MTP no `/health` e a tarefa de observabilidade recomendada para distingui-las
 em campo.

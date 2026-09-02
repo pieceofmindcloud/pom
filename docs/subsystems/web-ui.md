@@ -130,13 +130,15 @@ credencial sem reiniciar o processo; a precedência segue a documentada em
 ### Perfis: o que cada um enxerga
 
 Duas pessoas abrem a mesma interface com trabalhos diferentes. O **administrador**
-opera o cluster; o **nó** cuida da própria máquina, e telas como "Implantar na
-rede" descrevem um trabalho que não é dele. O perfil é o que separa os dois.
+opera o cluster; o **nó** cuida da própria máquina; o **InferNode** tem uma vista
+reduzida para conversar com os modelos disponíveis e cuidar da própria API key.
+O perfil é o que separa essas vistas.
 
 `src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
-ausente é livre. Hoje `/implantar`, `/implantacoes` e `/logs` são só do
-administrador. A chave casa **segmento inteiro**, então `/logs` não cobre
-`/logs-antigos`.
+ausente é livre para `admin` e `node`. Hoje `/implantar`, `/implantacoes` e
+`/logs` são só do administrador. Para `infernode`, `canAccessRoute` permite
+somente `/chat` e `/config/keys/api`. A chave casa **segmento inteiro**, então
+`/logs` não cobre `/logs-antigos`.
 
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
 barra compacta aplica filtros por identidade não secreta da API key, texto do
@@ -166,25 +168,32 @@ fechasse.
 **Isto não é autorização, é apresentação.** O perfil vive no navegador
 (`localStorage` `pom.profile`) e não muda nada do lado do nó: a credencial continua
 sendo a chave de conexão, verificada no gateway (ver *Autenticação*). Um perfil
-trocado na tela não abre nem fecha rota nenhuma da API. Quando o perfil passar a
-vir do nó, quem decide é ele e a tela reflete a resposta - não o contrário.
+trocado na tela não abre nem fecha rota nenhuma da API. A decisão do captain foi
+entregar esta vista reduzida agora e deixar autenticação, escopos da credencial e
+recusa no servidor para a tarefa `rdma-perfis-escopo-backend`. Até lá, não há
+fronteira real de permissão para InferNode.
 
-O seletor `Administrador | Nó` na barra superior (`components/ProfileSwitcher.tsx`)
+O seletor `Administrador | Nó | InferNode` na barra superior (`components/ProfileSwitcher.tsx`)
 é **andaime de desenvolvimento**: existe para conferir a tela pelos olhos de cada
 perfil, e por isso usa borda tracejada e âmbar, para não se confundir com um
 controle de operação. `PROFILE_SWITCHER_ENABLED` (`lib/profile.tsx`) em `false`
 apaga o botão; quando o perfil chegar do nó, o componente e a constante saem.
 
-A **Topbar** traz, antes do sino de notificações, o selo de criptografia do
-cluster (`TlsChip`): `ShieldCheck` em `aqua` com "TLS" quando a política está
-ligada, `ShieldOff` em `amber` com "sem TLS" quando não, e um link para
-`/config/rede`. Ele fica em toda tela porque "o cluster está cifrado?" é uma
-pergunta que o operador faz a qualquer momento, e uma virada pela metade -
-enquanto os peers ainda não adotaram a política nova - precisa ser vista sem
-ninguém ir procurar. O dado sai do `useNode()`, que já é polled: nenhuma chamada
-nova. Em tela estreita fica só o ícone. **Um selo que sumisse quando o TLS
-caísse seria pior que nenhum**: a ausência se lê como "a tela não mostra isso",
-não como "está em texto claro" - por isso ele diz os dois estados.
+A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
+cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em `aqua` quando a política
+está ligada e `ShieldOff` em `amber` quando não. Ele é só ícone, mas o link para
+`/config/rede` conserva o significado em `aria-label` e `title`. O dado sai do
+`useNode()`, que já é polled: nenhuma chamada nova. **Um selo que sumisse quando
+o TLS caísse seria pior que nenhum**: a ausência se lê como "a tela não mostra
+isso", não como "está em texto claro" - por isso os dois estados têm formas e
+cores diferentes.
+
+Na tela `TokenKeys`, o perfil `infernode` vê apenas as chaves ativas do próprio
+nó, não escolhe outro nó e não oferece revogação manual. Gerar uma nova chave usa
+o endpoint atual e, em seguida, revoga a anterior; a semântica da vista é uma
+chave ativa por nó, com a nova substituindo a anterior. Esse fluxo ainda não é
+uma garantia do servidor nem uma operação atômica: o escopo e a autorização da
+credencial aguardam `rdma-perfis-escopo-backend`.
 
 Sidebar e Topbar vivem em `ErrorBoundary` próprio, então uma tela quebrada não
 derruba o menu. O **cabeçalho** da Sidebar traz só o lockup da marca, numa faixa de borda a

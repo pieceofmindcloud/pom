@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 import { ProfileProvider } from "../lib/profile";
+import { fakeNode } from "../test/fixtures";
+import type { NodeInfo } from "../lib/types";
+
+let sidebarNodeData: NodeInfo | null = null;
 
 vi.mock("../lib/queries", () => ({
-  useNode: () => ({ data: null }),
+  useNode: () => ({ data: sidebarNodeData }),
 }));
 
 vi.mock("../lib/theme", () => ({
@@ -23,6 +27,7 @@ import { Sidebar } from "./Sidebar";
 describe("Sidebar", () => {
   afterEach(() => {
     cleanup();
+    sidebarNodeData = null;
     vi.useRealTimers();
     window.localStorage.clear();
   });
@@ -135,5 +140,24 @@ describe("Sidebar", () => {
     expect(screen.getByText("Implantar na rede")).toBeTruthy();
     expect(screen.getByText("Histórico")).toBeTruthy();
     expect(screen.getByText("Logs")).toBeTruthy();
+  });
+
+  it("mostra o estado TLS junto às bandeiras e sem texto visível", () => {
+    sidebarNodeData = fakeNode({ tls_required: true });
+    render(
+      <MemoryRouter
+        initialEntries={["/"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <Sidebar />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    const controls = screen.getByRole("group", { name: "Idioma" });
+    const indicator = within(controls).getByTestId("tls-indicator");
+    expect(indicator.getAttribute("data-tls-state")).toBe("on");
+    expect(indicator.textContent).toBe("");
   });
 });

@@ -82,4 +82,12 @@ describe("navForProfile", () => {
     navForProfile("node");
     expect(JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)))).toBe(before);
   });
+
+  it("deixa o InferNode apenas com conversa e API keys", () => {
+    const sections = navForProfile("infernode");
+    expect(sections.flatMap((section) => section.children ?? []).map((child) => child.to)).toEqual([
+      "/config/keys/api",
+    ]);
+    expect(sections.map((section) => section.to)).toEqual(["/chat", undefined]);
+  });
 });

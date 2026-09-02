@@ -10,6 +10,7 @@ import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
+import { TlsChip } from "./TlsIndicator";
 
 /**
  * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
@@ -106,6 +107,7 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
             />
           </button>
         ))}
+        <TlsChip />
         {!collapsed && node?.build_commit && (
           <span
             title={t("sidebar.buildTitle")}

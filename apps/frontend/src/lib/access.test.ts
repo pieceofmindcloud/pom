@@ -36,4 +36,12 @@ describe("canAccessRoute", () => {
     expect(routeProfiles("/modelos")).toBeNull();
     expect(routeProfiles("/implantar")).toEqual(["admin"]);
   });
+
+  it("limita o InferNode à conversa e à sua tela de chave", () => {
+    expect(canAccessRoute("/chat", "infernode")).toBe(true);
+    expect(canAccessRoute("/config/keys/api", "infernode")).toBe(true);
+    for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/rede", "/config/keys/conexao"]) {
+      expect(canAccessRoute(path, "infernode")).toBe(false);
+    }
+  });
 });

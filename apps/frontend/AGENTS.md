@@ -45,6 +45,10 @@ global gap or overlap blocks the plan.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
+O terceiro perfil, `infernode`, é uma vista reduzida da interface: só conversa e
+API keys do próprio nó. Isso não é autorização e não altera a chave de conexão
+aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
+
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels (busca,
@@ -77,7 +81,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, tipos compartilhados e o contrato de métricas de TTFT, prefill, geração e total. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
 - `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
-- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog). `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
+- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog). `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.

@@ -39,6 +39,8 @@ import { since } from "../lib/format";
 import { useApiKeys, useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
+import { useProfile } from "../lib/profile";
+import type { ApiKey } from "../lib/types";
 
 function Secret({ value, label }: { value: string; label: string }) {
   const { t } = useI18n();
@@ -81,15 +83,23 @@ function Secret({ value, label }: { value: string; label: string }) {
 
 export function TokenKeys() {
   const { t } = useI18n();
+  const { profile } = useProfile();
   const keys = useApiKeys();
   const cluster = useCluster();
+  const node = useNode();
   const toast = useToast();
+  const inferNode = profile === "infernode";
 
   const [label, setLabel] = useState("");
   const [nodeId, setNodeId] = useState("");
   const [creating, setCreating] = useState(false);
   const [revoking, setRevoking] = useState<{ key: string; label: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const visibleKeys = inferNode
+    ? (keys.data?.filter((key) => key.node_id === node.data?.node_id && key.active) ?? [])
+    : keys.data;
+  const previousKeys = inferNode ? visibleKeys ?? [] : [];
 
   const nameOf = (id: string) =>
     cluster.data?.peers.find((p) => p.node_id === id)?.node?.hostname ??
@@ -98,11 +108,32 @@ export function TokenKeys() {
   async function create() {
     setCreating(true);
     try {
-      await api.post("/admin/api-keys", {
-        label: label.trim() || t("keys.unnamed"),
-        node_id: nodeId || null,
+      const created = await api.post<ApiKey>("/admin/api-keys", {
+        label: label.trim() || (inferNode ? t("keys.inferNodeLabel") : t("keys.unnamed")),
+        node_id: inferNode ? node.data?.node_id ?? null : nodeId || null,
       });
-      toast.success(t("keys.created"), t("keys.createdDetail"));
+      if (inferNode && previousKeys.length > 0) {
+        try {
+          await Promise.all(
+            previousKeys.map((key) =>
+              api.del(`/admin/api-keys/${encodeURIComponent(key.key)}`),
+            ),
+          );
+        } catch (error) {
+          // Keep the UI promise of one active key if the backend cannot revoke
+          // the previous one: remove the just-created replacement instead.
+          try {
+            await api.del(`/admin/api-keys/${encodeURIComponent(created.key)}`);
+          } catch {
+            // Preserve the original error. The next refresh exposes the state.
+          }
+          throw error;
+        }
+      }
+      toast.success(
+        t("keys.created"),
+        t(inferNode ? "keys.inferNodeCreatedDetail" : "keys.createdDetail"),
+      );
       setLabel("");
       void keys.refetch();
     } catch (e) {
@@ -129,8 +160,8 @@ export function TokenKeys() {
   return (
     <>
       <PageHeader
-        title={t("keys.title")}
-        subtitle={t("keys.tokenSubtitle")}
+        title={t(inferNode ? "keys.inferNodeTitle" : "keys.title")}
+        subtitle={t(inferNode ? "keys.inferNodeSubtitle" : "keys.tokenSubtitle")}
       />
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
@@ -143,8 +174,8 @@ export function TokenKeys() {
           {keys.data && (
             <Panel>
               <PanelHeader
-                title={t("keys.tokenCount", { count: keys.data.length })}
-                subtitle={t("keys.tokensCoexist")}
+                title={t("keys.tokenCount", { count: visibleKeys?.length ?? 0 })}
+                subtitle={t(inferNode ? "keys.inferNodeSingle" : "keys.tokensCoexist")}
                 actions={
                   <Button
                     size="sm"
@@ -156,13 +187,13 @@ export function TokenKeys() {
                   </Button>
                 }
               />
-              {keys.data.length === 0 ? (
+              {visibleKeys?.length === 0 ? (
                 <Empty icon={<KeyRound className="h-5 w-5" />} title={t("keys.empty")}>
-                  {t("keys.connectionOnly")}
+                  {t(inferNode ? "keys.inferNodeEmptyDetail" : "keys.connectionOnly")}
                 </Empty>
               ) : (
                 <div className="divide-y divide-line">
-                  {keys.data.map((k) => (
+                  {visibleKeys?.map((k) => (
                     <div key={k.key} className="px-5 py-3.5">
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -177,13 +208,15 @@ export function TokenKeys() {
                           <span className="text-[0.72rem] text-faint">
                             {t("keys.createdAt")} {since(k.created_at)}
                           </span>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            aria-label={t("keys.revoke", { label: k.label })}
-                            icon={<Trash2 className="h-3.5 w-3.5" />}
-                            onClick={() => setRevoking({ key: k.key, label: k.label })}
-                          />
+                          {!inferNode && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              aria-label={t("keys.revoke", { label: k.label })}
+                              icon={<Trash2 className="h-3.5 w-3.5" />}
+                              onClick={() => setRevoking({ key: k.key, label: k.label })}
+                            />
+                          )}
                         </div>
                       </div>
                       <div className="mt-2.5">
@@ -198,7 +231,7 @@ export function TokenKeys() {
         </div>
 
         <Panel className="self-start">
-          <PanelHeader title={t("keys.newToken")} />
+          <PanelHeader title={t(inferNode ? "keys.inferNodeNewToken" : "keys.newToken")} />
           <div className="space-y-4 px-5 py-4">
             <Field label={t("keys.purpose")} hint={t("keys.purposeHint")}>
               <Input
@@ -207,26 +240,29 @@ export function TokenKeys() {
                 placeholder="opencode, painel, CI…"
               />
             </Field>
-            <Field
-              label={t("keys.networkNode")}
-              hint={t("keys.nodeHint")}
-            >
-              <Select value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
-                <option value="">{t("keys.allNetwork")}</option>
-                {(cluster.data?.peers ?? []).map((p) => (
-                  <option key={p.node_id} value={p.node_id}>
-                    {p.node?.hostname || p.short_id}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            {!inferNode && (
+              <Field
+                label={t("keys.networkNode")}
+                hint={t("keys.nodeHint")}
+              >
+                <Select value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
+                  <option value="">{t("keys.allNetwork")}</option>
+                  {(cluster.data?.peers ?? []).map((p) => (
+                    <option key={p.node_id} value={p.node_id}>
+                      {p.node?.hostname || p.short_id}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
             <Button
               variant="primary"
               icon={<Plus className="h-3.5 w-3.5" />}
               loading={creating}
+              disabled={inferNode && !node.data?.node_id}
               onClick={() => void create()}
             >
-              {t("keys.create")}
+              {t(inferNode ? "keys.inferNodeCreate" : "keys.create")}
             </Button>
           </div>
         </Panel>

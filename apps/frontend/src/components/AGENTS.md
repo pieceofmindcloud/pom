@@ -89,9 +89,12 @@ Per-file list:
   text label only helps someone who already knows what the code means and the
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
-  screen reader. Plus the dark/light toggle (`../lib/theme`).
+  screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
+  keeps the TLS policy link beside those flags: icon-only, with different icon
+  and tone for encrypted versus cleartext and the meaning in
+  `aria-label`/`title`.
 - `ProfileSwitcher.tsx` — **Andaime de desenvolvimento.** Alterna o perfil ativo
-  (`admin`/`node`) direto na barra superior para conferir a tela pelos olhos de
+  (`admin`/`node`/`infernode`) direto na barra superior para conferir a tela pelos olhos de
   cada perfil. Borda tracejada e âmbar de propósito: não é controle de operação
   e não concede permissão nenhuma - quem manda é `../lib/profile.tsx`.
   `PROFILE_SWITCHER_ENABLED` false faz o componente renderizar `null`; quando o
@@ -102,7 +105,7 @@ Per-file list:
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
-  coverage), o `ProfileSwitcher`, the bell (`Notifications`), and `NodeActions` — a menu to unload
+  coverage), o `ProfileSwitcher`, the bell (`Notifications`), and `NodeActions` - a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network
   (`POST /api/ui/leave`), each behind a `Confirm`. Mobile drawer renders
   `SidebarContent` inside an animated panel.

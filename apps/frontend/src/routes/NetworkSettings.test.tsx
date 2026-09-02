@@ -11,23 +11,44 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { ThermalPanel, TlsPanel } from "./NetworkSettings";
+import { NetworkSettings, TlsPanel } from "./NetworkSettings";
+
+const queryMocks = vi.hoisted(() => ({
+  node: {
+    data: {
+      hostname: "salem",
+      node_id: "a",
+      p2p_port: 42777,
+      gateway_port: 8080,
+      inference_port: 8181,
+      role: "principal",
+      detached: false,
+      advertise_addr: null,
+      effective_address: "127.0.0.1:42777",
+      tls_required: false,
+      tls_authority: true,
+      thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
+    },
+  },
+  cluster: { data: { peers: [] } },
+  nodes: { data: [], isError: false, isLoading: false },
+}));
+
+vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
+vi.mock("../lib/toast", () => ({
+  useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
+}));
+vi.mock("../lib/queries", () => ({
+  useNode: () => queryMocks.node,
+  useCluster: () => queryMocks.cluster,
+  useAdminNodes: () => queryMocks.nodes,
+  useInvalidate: () => vi.fn(),
+}));
 
 function mount(props: Parameters<typeof TlsPanel>[0]) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
       <TlsPanel {...props} />
-    </LocaleProvider>,
-  );
-}
-
-function mountThermal(onSave: (policy: { limit_c: number; hysteresis_c: number; cooldown_secs: number }) => void) {
-  return render(
-    <LocaleProvider initialLocale="pt-BR">
-      <ThermalPanel
-        policy={{ limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 }}
-        onSave={onSave}
-      />
     </LocaleProvider>,
   );
 }
@@ -64,17 +85,18 @@ describe("TlsPanel", () => {
   });
 });
 
-describe("ThermalPanel", () => {
+describe("NetworkSettings", () => {
   afterEach(cleanup);
 
-  it("expõe histerese e cooldown e envia a política editada", () => {
-    const onSave = vi.fn();
-    mountThermal(onSave);
-    fireEvent.change(screen.getByLabelText(/desimplantar acima/i), { target: { value: "82" } });
-    fireEvent.change(screen.getByLabelText(/margem de segurança/i), { target: { value: "7" } });
-    fireEvent.change(screen.getByLabelText(/tempo de resfriamento/i), { target: { value: "45" } });
-    fireEvent.click(screen.getByRole("button", { name: /salvar política térmica/i }));
-    expect(onSave).toHaveBeenCalledWith({ limit_c: 82, hysteresis_c: 7, cooldown_secs: 45 });
-    expect(screen.getByText(/limite de retomada automática: 75 °C/i)).toBeTruthy();
+  it("não mostra as preferências que agora vivem na tela Preferências", () => {
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    expect(screen.queryByText("Proteção térmica da GPU")).toBeNull();
+    expect(screen.queryByText("Hugging Face")).toBeNull();
+    expect(screen.getByText("Criptografia entre nós")).toBeTruthy();
   });
 });

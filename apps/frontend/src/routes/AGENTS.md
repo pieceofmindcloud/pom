@@ -242,9 +242,11 @@ Per-file list:
 - `NetworkSettings.tsx` — Admin view: this node's membership
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
-  Também monta o `HuggingFaceSettingsPanel`, que salva o token local sem
-  receber o segredo de volta. O `ThermalPanel` grava a política local em
-  `POST /api/ui/thermal`, incluindo limite, margem de histerese e cooldown.
+- `Preferences.tsx` - Local settings screen under Configurações: mounts the
+  `ThermalPanel`, which reads and writes the node's thermal policy through
+  `POST /api/ui/thermal`, and the `HuggingFaceSettingsPanel`, which saves the
+  local token without receiving the secret back. Both panels retain their
+  existing persistence behavior after moving out of Network.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e

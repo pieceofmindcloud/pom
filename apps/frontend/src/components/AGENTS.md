@@ -9,7 +9,7 @@ for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
 `UndeployPipeline`), and `PeerDetailCard`, the one card for a machine shown in
 the Dashboard details tab and in the window the Flow canvas opens. Test files
-present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `LeaveNode.test.tsx`,
+present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`, `LeaveNode.test.tsx`,
 `UndeployPipeline.test.tsx`, `ModelNetworkCanvas.test.tsx`,
 `PeerDetailCard.test.tsx`, `ProfileSwitcher.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves - a
@@ -19,9 +19,11 @@ crashes the next.
 Per-file list:
 
 - `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine
-  details. It keeps `null` as "temperature unknown" only when a GPU exists;
-  cards with no GPU omit the temperature section. Normal, attention, critical
-  and unavailable-sensor readings use the existing design-system tones.
+  details. It uses `SystemLoad.gpu_kind` as the source of truth: `none` returns
+  no markup, while a real GPU with a missing reading shows only the unavailable
+  sensor message. Flow and machine details pass through this component so the
+  no-GPU guard cannot be forgotten by a caller. Normal, attention, critical and
+  unavailable-sensor readings use the existing design-system tones.
 
 - `ui.tsx` — The design system in one file on purpose. `Panel`/`PanelHeader`/
   `PageHeader` (surfaces), `Button` (4 variants, sizes, loading spinner),

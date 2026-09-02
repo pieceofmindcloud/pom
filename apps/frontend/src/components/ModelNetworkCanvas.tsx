@@ -156,7 +156,12 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
     <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
     {placement && <LayerPlacementMeter placement={placement} />}
     <Meter label="VRAM" used={vramUsed} total={vramTotal} unknown={!gpu || vramTotal == null} />
-    {system?.gpus.length ? <GpuTemperature temperature={temperature} policy={range.node?.thermal} compact /> : null}
+    <GpuTemperature
+      gpuKind={system?.gpu_kind ?? "none"}
+      temperature={temperature}
+      policy={range.node?.thermal}
+      compact
+    />
     <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
     <Meter label={t("canvas.load")} used={range.load} total={8} />
   </article>;

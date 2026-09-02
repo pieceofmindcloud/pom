@@ -115,6 +115,38 @@ describe("ModelNetworkCanvas: camadas na GPU e na CPU", () => {
   });
 });
 
+describe("ModelNetworkCanvas: temperatura", () => {
+  afterEach(cleanup);
+
+  it("não mostra temperatura quando gpu_kind informa que a máquina não tem GPU", () => {
+    const peer = fakeSlicePeer("cpu-only", 0, 31, {
+      node: fakeNode({
+        node_id: "cpu-only",
+        short_id: "cpu-only",
+        system: {
+          ...fakeNode().system,
+          hostname: "cpu-only",
+          gpu_kind: "none",
+          gpus: [{
+            index: 0,
+            name: "stale device",
+            vendor: "nvidia",
+            vram_total_mb: null,
+            vram_used_mb: null,
+            vram_used_pct: null,
+            utilization_pct: null,
+            temperature_c: null,
+          }],
+        },
+      }),
+    });
+
+    mount(fakeCluster([peer]));
+
+    expect(screen.queryByText(/temperatura da gpu/i)).toBeNull();
+  });
+});
+
 /**
  * O card do Fluxo e a aba Detalhes mostram a mesma coisa, e o caminho até ela é
  * o duplo clique. Um clique só continua sendo seleção e arrasto.

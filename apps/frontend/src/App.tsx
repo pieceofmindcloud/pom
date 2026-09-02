@@ -20,6 +20,7 @@ export const routeLoaders = {
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
+  preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
@@ -45,6 +46,7 @@ const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
+const Preferences = lazyRoute(routeLoaders.preferences);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
 const Deployments = lazyRoute(routeLoaders.deployments);
@@ -190,6 +192,7 @@ export default function App() {
                       <Route path="/logs" element={<Page><Logs /></Page>} />
                       <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                       <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
+                      <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
                       <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                       <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
                       <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />

@@ -2,7 +2,7 @@ import { Thermometer } from "lucide-react";
 import { useI18n } from "../i18n/provider";
 import { num } from "../lib/format";
 import { temperatureBand } from "../lib/thermal";
-import type { ThermalPolicy } from "../lib/types";
+import type { GpuKind, ThermalPolicy } from "../lib/types";
 import { Badge } from "./ui";
 
 const FALLBACK_POLICY: ThermalPolicy = {
@@ -19,27 +19,31 @@ const toneByBand = {
 } as const;
 
 export function GpuTemperature({
+  gpuKind,
   temperature,
   policy,
   label,
   compact = false,
 }: {
+  gpuKind: GpuKind;
   temperature: number | null | undefined;
   policy?: ThermalPolicy;
   label?: string;
   compact?: boolean;
 }) {
   const { t } = useI18n();
+  if (gpuKind === "none") return null;
+
   const band = temperatureBand(temperature, policy ?? FALLBACK_POLICY);
-  const value = band === "unknown"
-    ? t("dashboard.temperatureUnknown")
-    : `${num(temperature, 1)} °C`;
   const bandLabel = {
     unknown: t("dashboard.temperatureSensorUnavailable"),
     normal: t("dashboard.temperatureNormal"),
     attention: t("dashboard.temperatureAttention"),
     critical: t("dashboard.temperatureCritical"),
   }[band];
+  const value = band === "unknown"
+    ? bandLabel
+    : `${num(temperature, 1)} °C · ${bandLabel}`;
 
   return (
     <div
@@ -53,7 +57,7 @@ export function GpuTemperature({
         <span className="truncate">{label ?? t("dashboard.gpuTemperature")}</span>
       </span>
       <Badge tone={toneByBand[band]} className="shrink-0 px-1.5 py-0 text-[0.65rem]">
-        {value} · {bandLabel}
+        {value}
       </Badge>
     </div>
   );

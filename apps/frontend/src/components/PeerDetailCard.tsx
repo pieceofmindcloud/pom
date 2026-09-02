@@ -273,7 +273,7 @@ export function PeerDetailCard({
   const kind = machineKind(system);
   const cfg = n?.config;
   const serving = isServing(n?.status.state);
-  const hasGpu = (system?.gpus.length ?? 0) > 0;
+  const hasGpu = system != null && system.gpu_kind !== "none" && system.gpus.length > 0;
   // Só as que reportam VRAM: memória unificada cai no ramo `unified` abaixo,
   // que mede outra coisa (wired), e uma barra sem valor viraria animação de
   // "carregando" para sempre.
@@ -337,7 +337,11 @@ export function PeerDetailCard({
       {peer.unreachable ? (
         <div className="space-y-3 px-5 py-5 text-sm text-muted">
           {t("dashboard.unreachable", { error: peer.unreachable })}
-          {hasGpu && <GpuTemperature temperature={null} policy={n?.thermal} />}
+          <GpuTemperature
+            gpuKind={system?.gpu_kind ?? "none"}
+            temperature={null}
+            policy={n?.thermal}
+          />
         </div>
       ) : (
         <>
@@ -412,6 +416,7 @@ export function PeerDetailCard({
                 {system?.gpus.map((g) => (
                   <GpuTemperature
                     key={g.index}
+                    gpuKind={system?.gpu_kind ?? "none"}
                     temperature={g.temperature_c}
                     policy={n?.thermal}
                     label={gpuLabel(g)}

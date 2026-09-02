@@ -48,6 +48,7 @@ vi.mock("./routes/Logs", () => ({ Logs: () => <div>tela-logs</div> }));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
+vi.mock("./routes/Preferences", () => ({ Preferences: () => <div>tela-preferencias</div> }));
 
 import App from "./App";
 
@@ -94,6 +95,11 @@ describe("guarda de perfil por rota", () => {
   it("não mexe nas rotas que ninguém restringiu", async () => {
     open("/modelos", "node");
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
+  });
+
+  it("abre Preferências para o perfil do nó", async () => {
+    open("/config/preferencias", "node");
+    expect(await screen.findByText("tela-preferencias")).toBeTruthy();
   });
 
   /**

@@ -194,7 +194,23 @@ describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
       node_id: "cpu-only",
       short_id: "cpu-only",
       hostname: "node-cpu-1",
-      system: fakeSystem({ hostname: "node-cpu-1", os: "linux", gpu_kind: "none", wired_mb: null }),
+      system: fakeSystem({
+        hostname: "node-cpu-1",
+        os: "linux",
+        gpu_kind: "none",
+        wired_mb: null,
+        // A stale device entry must not make a `none` machine render thermal UI.
+        gpus: [{
+          index: 0,
+          name: "stale device",
+          vendor: "nvidia",
+          vram_total_mb: null,
+          vram_used_mb: null,
+          vram_used_pct: null,
+          utilization_pct: null,
+          temperature_c: null,
+        }],
+      }),
     }),
   });
 
@@ -260,7 +276,8 @@ describe("temperatura das GPUs", () => {
       }),
     });
     mount(peer);
-    expect(screen.getByText("temperatura desconhecida · sensor indisponível")).toBeTruthy();
+    expect(screen.getByText("sensor indisponível")).toBeTruthy();
+    expect(screen.queryByText("temperatura desconhecida")).toBeNull();
   });
 });
 

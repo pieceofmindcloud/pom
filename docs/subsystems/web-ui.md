@@ -38,7 +38,7 @@ omitem a seção de temperatura, enquanto uma GPU cujo sensor não responde most
 `GET /api/ui/node` leva a política térmica junto com a máquina, e
 `GET/POST /api/ui/thermal` lê ou grava seus três valores.
 
-O painel de proteção térmica fica em Configurações > Rede. O backend valida a
+O painel de proteção térmica fica em Configurações > Preferências. O backend valida a
 política antes de persistir, e o runtime do próprio nó aplica a histerese e o
 cooldown. Quando o modelo é pausado por calor, o estado do servidor aparece
 como "aguardando resfriar", distinto de peer indisponível ou falha.
@@ -98,7 +98,8 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   requisições paginadas por scroll infinito, estatísticas agregadas e inspetor
   JSON
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
-- `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys;
+- `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
+  `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias)
 - `*` -> NotFound
@@ -119,7 +120,7 @@ persistido em `GET /api/ui/jobs` registra o caminho final e o
 `ModelDownloadsPanel` mostra progresso, cancelamento e retry. Esse painel
 também aparece em `/transferencias`, junto das transferências de arquivos.
 
-Em `/config/rede`, o `HuggingFaceSettingsPanel` oferece o token opcional para
+Em `/config/preferencias`, o `HuggingFaceSettingsPanel` oferece o token opcional para
 modelos privados e gated. O campo é `password`, começa vazio e mostra apenas a
 máscara devolvida pelo backend. Salvar ou remover chama
 `/api/ui/model-provider/config`, invalida o status e faz o provider reler a
@@ -314,6 +315,15 @@ Quando a configuração da máquina pediu MTP, o mesmo card mostra se a cabeça
 `nextn` ficou ativa. Se a criação do contexto MTP falhar, mostra
 "MTP indisponível" e o `mtp_unavailable_reason` retornado pelo `/health`; o
 operador não precisa inferir a degradação pela ausência de logs.
+
+## Configurações / Preferências: proteção local
+
+`/config/preferencias` monta o `ThermalPanel` e o
+`HuggingFaceSettingsPanel`. O primeiro lê e grava a política térmica em
+`GET/POST /api/ui/thermal`; o segundo lê e grava a credencial opcional em
+`/api/ui/model-provider/config`. A mudança de tela não altera a persistência,
+as máscaras nem a invalidação do cache. `/config/rede` fica concentrada em
+membership, TLS, endereços e nós conhecidos.
 
 ## Configurações / Rede: quem decide o TLS
 

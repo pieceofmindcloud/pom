@@ -59,7 +59,9 @@ Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`l
   filtros, abas de requisições/estatísticas, tabela densa, scroll infinito e
   inspetor JSON com redação de credenciais
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
-- `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys; `/config/pastas` -> ModelPaths
+- `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
+  `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys;
+  `/config/pastas` -> ModelPaths
 - `*` -> NotFound
 
 Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.

@@ -87,6 +87,9 @@ que está sendo usado. Há teste disso em `src/network.rs`
 Um nó destacado mostra "Fora da rede" em Configurações › Rede, com um botão
 "Voltar para a rede" que chama `/api/ui/rejoin`.
 
+As preferências locais ficam em Configurações › Preferências: proteção térmica
+da GPU e credencial opcional do Hugging Face.
+
 ### A tela abriu sem estilo? Reinicie o dev server
 
 Sintoma: a página aparece crua, fontes com serifa, sem layout — e junto,

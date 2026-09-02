@@ -84,6 +84,7 @@ export const NAV: NavSection[] = [
     icon: Settings,
     children: [
       { labelKey: "nav.network", to: "/config/rede", icon: Network },
+      { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
       { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },
       { labelKey: "nav.modelFolders", to: "/config/armazenamento", icon: FolderTree },

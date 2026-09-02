@@ -35,6 +35,15 @@ describe("navigation structure", () => {
     expect(logs?.to).toBe("/logs");
     expect(logs?.children).toBeUndefined();
   });
+
+  it("places Preferences under Settings", () => {
+    const settings = NAV.find((section) => section.labelKey === "nav.settings");
+
+    expect(settings?.children?.map((child) => [child.labelKey, child.to])).toContainEqual([
+      "nav.preferences",
+      "/config/preferencias",
+    ]);
+  });
 });
 
 describe("navForProfile", () => {

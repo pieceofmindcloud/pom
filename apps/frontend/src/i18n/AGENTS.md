@@ -18,8 +18,8 @@ Two files carry all of it: a static message table and a small provider. Tests:
   refusals are rendered from the backend's selection-specific `blocked` reason;
   the whole-model single-machine warning and cache update failure are paired
   in both locales. Dashboard GPU temperature badges distinguish an unavailable
-  sensor from a machine with no GPU, and the Network thermal policy panel has
-  keys in both locale blocks. Deployment-wide hidden-state dtype controls and
+  sensor from a machine with no GPU, and the Preferences thermal policy panel
+  has keys in both locale blocks. Deployment-wide hidden-state dtype controls and
   the Chat telemetry label for bytes/dtype are also present in both locale blocks.
   Slicing phase, byte-progress, disk-space, required intermediate-head cost and
   single-range controls also have keys in both locale blocks.
@@ -32,7 +32,7 @@ Two files carry all of it: a static message table and a small provider. Tests:
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
   caminho local nesses valores.
-- O grupo `huggingFace.*` cobre o campo de token da tela de Rede. O valor
+- O grupo `huggingFace.*` cobre o campo de token da tela de Preferências. O valor
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
   fonte efetiva.
 - O grupo `tokenLogs.*` cobre a auditoria de requisições: barra de filtros,

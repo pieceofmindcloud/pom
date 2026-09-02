@@ -1240,6 +1240,7 @@ mod tests {
         let cache = ExpertCache::new(
             MemoryAccount {
                 baseline_free_bytes: 100_000,
+                compute_bytes: 0,
                 weights_bytes: 0,
                 fixed_bytes: 0,
                 reserve_bytes: 0,

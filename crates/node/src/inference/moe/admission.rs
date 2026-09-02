@@ -8,25 +8,66 @@
 pub struct MemoryAccount {
     /// Memória livre medida antes de reservar pesos e caches deste executor.
     pub baseline_free_bytes: u64,
+    /// Buffer de computação que motivou a margem, para diagnóstico.
+    pub compute_bytes: u64,
     /// Peso já residente, contado contra o baseline.
     pub weights_bytes: u64,
     /// Buffers fixos que não entram no LRU.
     pub fixed_bytes: u64,
-    /// Margem que deve continuar livre para ativações e alocações transitórias.
+    /// Margem adicional que deve continuar livre para crescimento de grafos,
+    /// fragmentação e alocações transitórias.
     pub reserve_bytes: u64,
 }
 
-/// Margem relativa ao buffer de computação medido no contexto llama.cpp.
+/// Snapshot dos dois limites usados para admitir bytes no cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheBudgetSnapshot {
+    pub baseline_free_bytes: u64,
+    pub compute_bytes: u64,
+    pub weights_bytes: u64,
+    pub fixed_bytes: u64,
+    pub reserve_bytes: u64,
+    pub current_free_bytes: u64,
+    pub resident_bytes: u64,
+    pub baseline_limit_bytes: Option<u64>,
+    pub dynamic_limit_bytes: Option<u64>,
+    pub effective_limit_bytes: Option<u64>,
+}
+
+impl CacheBudgetSnapshot {
+    #[cfg(any(feature = "cuda", test))]
+    pub fn summary(self) -> String {
+        fn value(bytes: Option<u64>) -> String {
+            bytes.map_or_else(|| "indisponível".to_owned(), |bytes| bytes.to_string())
+        }
+
+        format!(
+            "baseline={} bytes, compute={} bytes, reserva={} bytes, livre atual={} bytes, residentes={} bytes, limite baseline={} bytes, limite dinâmico={} bytes, limite efetivo={} bytes",
+            self.baseline_free_bytes,
+            self.compute_bytes,
+            self.reserve_bytes,
+            self.current_free_bytes,
+            self.resident_bytes,
+            value(self.baseline_limit_bytes),
+            value(self.dynamic_limit_bytes),
+            value(self.effective_limit_bytes),
+        )
+    }
+}
+
+/// Margem adicional relativa ao buffer de computação medido no contexto
+/// llama.cpp.
 ///
-/// O valor não é uma capacidade de placa: ele é aplicado ao número que o
-/// próprio llama.cpp reportou para acomodar crescimento de grafo e
-/// fragmentação do allocator. Uma margem de 25% preserva um quarto do buffer
-/// medido além do tamanho observado, sem depender de modelo, contexto ou
-/// hardware específicos.
+/// O buffer de computação já foi alocado quando esta política mede o baseline.
+/// Portanto a reserva não deve contar o buffer inteiro novamente: conserva 25%
+/// dele como margem adicional, mas limita essa margem a 512 MiB para que um
+/// microlote e contexto grandes não consumam todo o orçamento do cache.
 #[cfg(any(feature = "cuda", test))]
-const COMPUTE_HEADROOM_NUMERATOR: u64 = 5;
+const COMPUTE_HEADROOM_NUMERATOR: u64 = 1;
 #[cfg(any(feature = "cuda", test))]
 const COMPUTE_HEADROOM_DENOMINATOR: u64 = 4;
+#[cfg(any(feature = "cuda", test))]
+const COMPUTE_HEADROOM_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Converte o tamanho observado do compute buffer em reserva de admissão.
 #[cfg(any(feature = "cuda", test))]
@@ -38,6 +79,7 @@ pub fn device_cache_reserve_bytes(compute_bytes: u64) -> Option<u64> {
         .checked_mul(COMPUTE_HEADROOM_NUMERATOR)?
         .checked_add(COMPUTE_HEADROOM_DENOMINATOR - 1)?
         .checked_div(COMPUTE_HEADROOM_DENOMINATOR)
+        .map(|headroom| headroom.min(COMPUTE_HEADROOM_CAP_BYTES))
 }
 
 /// Extrai os compute buffers residentes na memória CUDA do relatório do
@@ -74,15 +116,46 @@ impl MemoryAccount {
     ///
     /// Os pesos e buffers do contexto já estão refletidos na leitura de VRAM
     /// livre feita depois da criação do contexto. O compute buffer medido fica
-    /// como reserva adicional, com a margem definida acima.
+    /// registrado para diagnóstico, com a margem adicional definida acima.
     #[cfg(any(feature = "cuda", test))]
     pub fn for_device_cache(baseline_free_bytes: u64, compute_bytes: u64) -> Option<Self> {
         Some(Self {
             baseline_free_bytes,
+            compute_bytes,
             weights_bytes: 0,
             fixed_bytes: 0,
             reserve_bytes: device_cache_reserve_bytes(compute_bytes)?,
         })
+    }
+
+    pub fn budget_snapshot(
+        &self,
+        current_free_bytes: u64,
+        resident_bytes: u64,
+    ) -> CacheBudgetSnapshot {
+        let fixed_without_reserve = self.weights_bytes.checked_add(self.fixed_bytes);
+        let baseline_limit_bytes = fixed_without_reserve
+            .and_then(|fixed| fixed.checked_add(self.reserve_bytes))
+            .and_then(|fixed| self.baseline_free_bytes.checked_sub(fixed));
+        let dynamic_limit_bytes = current_free_bytes
+            .checked_add(resident_bytes)
+            .and_then(|available| available.checked_sub(self.reserve_bytes));
+        let effective_limit_bytes = baseline_limit_bytes
+            .zip(dynamic_limit_bytes)
+            .map(|(baseline, dynamic)| baseline.min(dynamic));
+
+        CacheBudgetSnapshot {
+            baseline_free_bytes: self.baseline_free_bytes,
+            compute_bytes: self.compute_bytes,
+            weights_bytes: self.weights_bytes,
+            fixed_bytes: self.fixed_bytes,
+            reserve_bytes: self.reserve_bytes,
+            current_free_bytes,
+            resident_bytes,
+            baseline_limit_bytes,
+            dynamic_limit_bytes,
+            effective_limit_bytes,
+        }
     }
 
     /// Limite total de bytes do cache neste instante.
@@ -91,15 +164,8 @@ impl MemoryAccount {
     /// nova leitura de memória livre e o cache já residente, protegendo contra
     /// outro processo que tenha consumido memória desde a inicialização.
     pub fn cache_limit_bytes(&self, current_free_bytes: u64, resident_bytes: u64) -> Option<u64> {
-        let fixed = self
-            .weights_bytes
-            .checked_add(self.fixed_bytes)?
-            .checked_add(self.reserve_bytes)?;
-        let baseline_limit = self.baseline_free_bytes.checked_sub(fixed)?;
-        let dynamic_limit = current_free_bytes
-            .checked_add(resident_bytes)?
-            .checked_sub(self.reserve_bytes)?;
-        Some(baseline_limit.min(dynamic_limit))
+        self.budget_snapshot(current_free_bytes, resident_bytes)
+            .effective_limit_bytes
     }
 }
 
@@ -111,6 +177,7 @@ mod tests {
     fn limita_pelo_baseline_medido_descontando_peso_e_reserva() {
         let account = MemoryAccount {
             baseline_free_bytes: 1_000,
+            compute_bytes: 0,
             weights_bytes: 200,
             fixed_bytes: 100,
             reserve_bytes: 100,
@@ -123,6 +190,7 @@ mod tests {
     fn uma_nova_medicao_reduz_o_limite_sem_expulsar_o_cache_existente() {
         let account = MemoryAccount {
             baseline_free_bytes: 1_000,
+            compute_bytes: 0,
             weights_bytes: 200,
             fixed_bytes: 100,
             reserve_bytes: 100,
@@ -137,6 +205,7 @@ mod tests {
     fn recusa_aritmetica_sem_orcamento() {
         let account = MemoryAccount {
             baseline_free_bytes: 100,
+            compute_bytes: 0,
             weights_bytes: 80,
             fixed_bytes: 30,
             reserve_bytes: 20,
@@ -149,6 +218,7 @@ mod tests {
     fn recusa_overflow_na_soma_do_orcamento() {
         let account = MemoryAccount {
             baseline_free_bytes: u64::MAX,
+            compute_bytes: 0,
             weights_bytes: u64::MAX,
             fixed_bytes: 1,
             reserve_bytes: 1,
@@ -184,16 +254,35 @@ mod tests {
 
     #[test]
     fn reserva_do_cache_e_derivada_do_compute_medido_com_margem() {
-        assert_eq!(device_cache_reserve_bytes(1_000), Some(1_250));
-        assert_eq!(device_cache_reserve_bytes(1), Some(2));
+        assert_eq!(device_cache_reserve_bytes(1_000), Some(250));
+        assert_eq!(device_cache_reserve_bytes(1), Some(1));
         assert_eq!(device_cache_reserve_bytes(0), None);
+    }
+
+    #[test]
+    fn compute_grande_tem_margem_limitada_e_nao_zera_o_cache() {
+        let gib = 1024 * 1024 * 1024;
+        let compute = 8 * gib;
+        let baseline = 10 * gib;
+        let account = MemoryAccount::for_device_cache(baseline, compute).unwrap();
+
+        assert_eq!(account.reserve_bytes, 512 * 1024 * 1024);
+        assert_eq!(
+            account.cache_limit_bytes(baseline, 0),
+            Some(baseline - account.reserve_bytes)
+        );
+    }
+
+    #[test]
+    fn compute_pequeno_conserva_margem_proporcional() {
+        assert_eq!(device_cache_reserve_bytes(1_000), Some(250));
     }
 
     #[test]
     fn account_do_cache_de_device_preserva_a_reserva_medida() {
         let account = MemoryAccount::for_device_cache(10_000, 1_000).unwrap();
 
-        assert_eq!(account.reserve_bytes, 1_250);
-        assert_eq!(account.cache_limit_bytes(10_000, 0), Some(8_750));
+        assert_eq!(account.reserve_bytes, 250);
+        assert_eq!(account.cache_limit_bytes(10_000, 0), Some(9_750));
     }
 }

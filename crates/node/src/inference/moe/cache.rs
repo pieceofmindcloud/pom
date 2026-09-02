@@ -5,6 +5,8 @@
 //! entrada de uma requisição pode ser reutilizada por outra sem misturar
 //! pesos. Leases mantêm entradas ativas protegidas contra eviction.
 
+#[cfg(any(feature = "cuda", test))]
+use super::admission::CacheBudgetSnapshot;
 use super::admission::MemoryAccount;
 use std::collections::HashMap;
 use std::fmt;
@@ -243,6 +245,7 @@ impl ExpertCache {
         Ok(Self::new(
             MemoryAccount {
                 baseline_free_bytes: baseline,
+                compute_bytes: 0,
                 weights_bytes,
                 fixed_bytes,
                 reserve_bytes,
@@ -430,12 +433,18 @@ pub enum DeviceCacheError {
         device: String,
         bytes: usize,
         limit: u64,
+        budget: CacheBudgetSnapshot,
+    },
+    BudgetExhausted {
+        device: String,
+        budget: CacheBudgetSnapshot,
     },
     BusyAndNoEviction {
         key: ExpertKey,
         device: String,
         bytes: usize,
         limit: u64,
+        budget: CacheBudgetSnapshot,
     },
 }
 
@@ -455,18 +464,27 @@ impl fmt::Display for DeviceCacheError {
                 device,
                 bytes,
                 limit,
+                budget,
             } => write!(
                 formatter,
-                "expert {key:?} de {bytes} bytes não cabe no orçamento medido de {limit} bytes em {device}"
+                "expert {key:?} de {bytes} bytes não cabe no orçamento medido de {limit} bytes em {device}: {}",
+                budget.summary()
+            ),
+            Self::BudgetExhausted { device, budget } => write!(
+                formatter,
+                "orçamento global do cache CUDA insuficiente em {device}: {}; reduza contexto/microlote ou aceite experts fora do cache",
+                budget.summary()
             ),
             Self::BusyAndNoEviction {
                 key,
                 device,
                 bytes,
                 limit,
+                budget,
             } => write!(
                 formatter,
-                "não há entrada ociosa para admitir expert {key:?} de {bytes} bytes no limite de {limit} bytes em {device}"
+                "não há entrada ociosa para admitir expert {key:?} de {bytes} bytes no limite de {limit} bytes em {device}: {}",
+                budget.summary()
             ),
         }
     }
@@ -550,10 +568,12 @@ pub struct DeviceWarmupReport {
     pub stop: DeviceWarmupStop,
     pub candidates: u64,
     pub admitted: u64,
+    /// Total de bytes aceitos nesta tentativa, sem contar hits.
     pub admitted_bytes: u64,
     pub error: Option<String>,
     pub elapsed_ms: f64,
     pub resident_bytes: usize,
+    pub budget_limit_bytes: u64,
 }
 
 #[cfg(any(feature = "cuda", test))]
@@ -618,7 +638,30 @@ impl DeviceExpertCache {
             error: None,
             elapsed_ms: 0.0,
             resident_bytes: self.stats().resident_bytes,
+            budget_limit_bytes: 0,
         };
+        let initial_budget = match self.budget_snapshot() {
+            Ok(budget) => budget,
+            Err(error) => {
+                report.stop = DeviceWarmupStop::Failed;
+                report.error = Some(error.to_string());
+                report.elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+                return report;
+            }
+        };
+        report.budget_limit_bytes = initial_budget.effective_limit_bytes.unwrap_or(0);
+        if report.budget_limit_bytes == 0 {
+            report.stop = DeviceWarmupStop::BudgetExhausted;
+            report.error = Some(
+                DeviceCacheError::BudgetExhausted {
+                    device: self.allocator.device_name().to_owned(),
+                    budget: initial_budget,
+                }
+                .to_string(),
+            );
+            report.elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            return report;
+        }
         let mut candidates = candidates.into_iter();
 
         loop {
@@ -643,15 +686,22 @@ impl DeviceExpertCache {
                 }
             };
             let bytes = payload.len() as u64;
-            match self.admit(key, &payload) {
+            match self.admit_inner(key, &payload, false) {
                 Ok(lease) => {
                     report.admitted = report.admitted.saturating_add(1);
                     report.admitted_bytes = report.admitted_bytes.saturating_add(bytes);
                     drop(lease);
                 }
-                Err(DeviceCacheError::NoBudget { .. })
-                | Err(DeviceCacheError::BusyAndNoEviction { .. }) => {
+                Err(error)
+                    if matches!(
+                        error,
+                        DeviceCacheError::BudgetExhausted { .. }
+                            | DeviceCacheError::NoBudget { .. }
+                            | DeviceCacheError::BusyAndNoEviction { .. }
+                    ) =>
+                {
                     report.stop = DeviceWarmupStop::BudgetExhausted;
+                    report.error = Some(error.to_string());
                     break;
                 }
                 Err(error) => {
@@ -667,10 +717,32 @@ impl DeviceExpertCache {
         report
     }
 
+    pub fn budget_snapshot(&self) -> Result<CacheBudgetSnapshot, DeviceCacheError> {
+        let device = self.allocator.device_name().to_owned();
+        let current_free =
+            self.allocator
+                .free_bytes()
+                .map_err(|error| DeviceCacheError::MemoryProbe {
+                    device,
+                    reason: error.to_string(),
+                })?;
+        let resident = self.stats().resident_bytes as u64;
+        Ok(self.account.budget_snapshot(current_free, resident))
+    }
+
     pub fn admit(
         self: &Arc<Self>,
         key: ExpertKey,
         payload: &[u8],
+    ) -> Result<DeviceExpertLease, DeviceCacheError> {
+        self.admit_inner(key, payload, true)
+    }
+
+    fn admit_inner(
+        self: &Arc<Self>,
+        key: ExpertKey,
+        payload: &[u8],
+        allow_eviction: bool,
     ) -> Result<DeviceExpertLease, DeviceCacheError> {
         if payload.is_empty() {
             return Err(DeviceCacheError::EmptyExpert { key });
@@ -701,10 +773,14 @@ impl DeviceExpertCache {
                     device: device.clone(),
                     reason: error.to_string(),
                 })?;
-        let limit = self
+        let budget = self
             .account
-            .cache_limit_bytes(current_free, state.stats.resident_bytes as u64)
-            .unwrap_or(0);
+            .budget_snapshot(current_free, state.stats.resident_bytes as u64);
+        let limit = budget.effective_limit_bytes.unwrap_or(0);
+        if limit == 0 {
+            state.stats.rejections = state.stats.rejections.saturating_add(1);
+            return Err(DeviceCacheError::BudgetExhausted { device, budget });
+        }
         if bytes as u64 > limit {
             state.stats.rejections = state.stats.rejections.saturating_add(1);
             return Err(DeviceCacheError::NoBudget {
@@ -712,10 +788,15 @@ impl DeviceExpertCache {
                 device,
                 bytes,
                 limit,
+                budget,
             });
         }
 
         while state.stats.resident_bytes.saturating_add(bytes) as u64 > limit {
+            if !allow_eviction {
+                state.stats.rejections = state.stats.rejections.saturating_add(1);
+                return Err(DeviceCacheError::BudgetExhausted { device, budget });
+            }
             let victim = state
                 .entries
                 .iter()
@@ -729,6 +810,7 @@ impl DeviceExpertCache {
                     device,
                     bytes,
                     limit,
+                    budget,
                 });
             };
             if let Some(entry) = state.entries.remove(&victim) {
@@ -838,6 +920,7 @@ mod tests {
         ExpertCache::new(
             MemoryAccount {
                 baseline_free_bytes,
+                compute_bytes: 0,
                 weights_bytes: 0,
                 fixed_bytes: 0,
                 reserve_bytes: 0,
@@ -986,6 +1069,7 @@ mod tests {
         DeviceExpertCache::new(
             MemoryAccount {
                 baseline_free_bytes: baseline,
+                compute_bytes: 0,
                 weights_bytes: 0,
                 fixed_bytes: 0,
                 reserve_bytes: 0,
@@ -1035,8 +1119,8 @@ mod tests {
 
     #[test]
     fn cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento() {
-        let allocator = FakeDeviceAllocator::new(1_250);
-        let account = MemoryAccount::for_device_cache(1_250, 1_000).unwrap();
+        let allocator = FakeDeviceAllocator::new(250);
+        let account = MemoryAccount::for_device_cache(250, 1_000).unwrap();
         let cache =
             DeviceExpertCache::new(account, Arc::clone(&allocator) as Arc<dyn DeviceAllocator>);
         let key = ExpertKey::new("Gemma4", 29, 7, "nvfp4");
@@ -1046,9 +1130,10 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(matches!(error, DeviceCacheError::NoBudget { limit: 0, .. }));
-        assert!(error.to_string().contains("Gemma4"));
-        assert!(error.to_string().contains("nvfp4"));
+        assert!(matches!(error, DeviceCacheError::BudgetExhausted { .. }));
+        assert!(error.to_string().contains("orçamento global"));
+        assert!(!error.to_string().contains("Gemma4"));
+        assert!(!error.to_string().contains("nvfp4"));
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
     }
 
@@ -1098,5 +1183,54 @@ mod tests {
         assert_eq!(report.stop, DeviceWarmupStop::TimedOut);
         assert_eq!(report.candidates, 0);
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn warmup_para_ao_encher_sem_repetir_evictions() {
+        let allocator = FakeDeviceAllocator::new(5);
+        let cache = device_cache(&allocator, 5);
+        let candidates = vec![
+            Ok((key(1), vec![1; 3])),
+            Ok((key(2), vec![2; 3])),
+            Ok((key(3), vec![3; 3])),
+        ];
+
+        let report = cache.warm(
+            candidates,
+            &DeviceWarmupOptions::new(Duration::from_secs(1)),
+        );
+
+        assert_eq!(report.stop, DeviceWarmupStop::BudgetExhausted);
+        assert_eq!(report.candidates, 2);
+        assert_eq!(report.admitted, 1);
+        assert_eq!(report.admitted_bytes, 3);
+        assert_eq!(report.resident_bytes, 3);
+        assert_eq!(cache.stats().evictions, 0);
+    }
+
+    #[test]
+    fn orcamento_zero_e_diagnosticado_sem_falar_de_um_expert() {
+        let allocator = FakeDeviceAllocator::new(1);
+        let cache = DeviceExpertCache::new(
+            MemoryAccount {
+                baseline_free_bytes: 1,
+                compute_bytes: 0,
+                weights_bytes: 2,
+                fixed_bytes: 0,
+                reserve_bytes: 0,
+            },
+            Arc::clone(&allocator) as Arc<dyn DeviceAllocator>,
+        );
+        let error = match cache.admit(key(1), &[1]) {
+            Ok(_) => panic!("admissão deveria expor orçamento zero"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+
+        assert!(message.contains("orçamento global"), "{message}");
+        assert!(message.contains("baseline"), "{message}");
+        assert!(message.contains("compute"), "{message}");
+        assert!(message.contains("reserva"), "{message}");
+        assert!(!message.contains("expert ExpertKey"), "{message}");
     }
 }

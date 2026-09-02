@@ -1820,7 +1820,8 @@ pub async fn run_with_options(
     let token_id = final_meta
         .get("token_id")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))? as u32;
+        .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))?
+        as u32;
     info!("prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens ({prompt_tokens} tokens)");
     Ok(PrefillOutcome {
         token_id,
@@ -2311,7 +2312,8 @@ async fn run_direct(
     let token_id = final_meta
         .get("token_id")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))? as u32;
+        .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))?
+        as u32;
     info!(
         "prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens \
          ({prompt_tokens} tokens) [resposta direta]"
@@ -2844,11 +2846,16 @@ pub struct SpeculativeStep {
     /// happened, and asking the same chain to speculate again would just
     /// repeat the refusal.
     pub speculated: bool,
+    /// Whether the remote stream will use a draft in a subsequent round.
+    /// This is separate from `speculated`: the first plain token can produce
+    /// the draft that makes the next round speculative.
+    pub speculation_active: bool,
+    /// Stable reason why a requested speculative cycle was disabled.
+    pub speculation_disabled_reason: Option<String>,
     /// Rascunho que a cauda de um pipeline fatiado produziu para a **próxima**
-    /// rodada (bloco `nextn`), trazido na resposta direta. O gateway o guarda
-    /// e o injeta no `speculate.draft` da rodada seguinte — zero travessia
-    /// extra. `None` quando esta rodada não foi uma cauda de pipeline, ou a
-    /// geração terminou.
+    /// rodada (bloco `nextn`). No stream remoto, a cabeça o instala
+    /// internamente antes de continuar o ciclo. `None` quando esta rodada não
+    /// produziu um rascunho ou a geração terminou.
     pub next_draft: Option<Vec<i32>>,
     pub trace: RequestTrace,
 }
@@ -2919,6 +2926,7 @@ pub(crate) async fn step_stream(
     let mut meta = json!({
         "session_id": session_id,
         "is_last": next_hops.is_empty(),
+        "remote_stream": true,
         "token_id": token_id,
         "next_hops": next_hops,
         "reply_to": direct.stream_reply_to(ticket.id()),
@@ -3187,12 +3195,22 @@ fn speculative_step_from_meta(
     let done = meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
     // O rascunho da cauda para a próxima rodada (pipeline fatiado) — presente
     // nas duas formas de resposta quando a cauda tem o bloco `nextn`.
-    let next_draft: Option<Vec<i32>> = meta.get("next_draft").and_then(|v| v.as_array()).map(|a| {
-        a.iter()
-            .filter_map(|v| v.as_i64())
-            .map(|v| v as i32)
-            .collect()
-    });
+    let next_draft: Option<Vec<i32>> = meta
+        .get("next_draft")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_i64())
+                .map(|v| v as i32)
+                .collect()
+        })
+        .filter(|draft: &Vec<i32>| !draft.is_empty());
+    let explicit_speculated = meta.get("speculated").and_then(|v| v.as_bool());
+    let explicit_active = meta.get("speculation_active").and_then(|v| v.as_bool());
+    let speculation_disabled_reason = meta
+        .get("speculation_disabled_reason")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
     let accepted: Vec<(u32, String)> = meta
         .get("accepted")
         .and_then(|v| v.as_array())
@@ -3225,7 +3243,9 @@ fn speculative_step_from_meta(
             done,
             accept_count: 1,
             batch_width: 1,
-            speculated: false,
+            speculated: explicit_speculated.unwrap_or(false),
+            speculation_active: explicit_active.unwrap_or(next_draft.is_some()),
+            speculation_disabled_reason,
             next_draft,
             trace,
         });
@@ -3244,7 +3264,9 @@ fn speculative_step_from_meta(
         done,
         accept_count,
         batch_width,
-        speculated: true,
+        speculated: explicit_speculated.unwrap_or(true),
+        speculation_active: explicit_active.unwrap_or(true),
+        speculation_disabled_reason,
         next_draft,
         trace,
     })
@@ -3899,6 +3921,7 @@ mod tests {
         );
         assert!(!passo.done);
         assert!(!passo.speculated, "esta rodada não especulou");
+        assert!(!passo.speculation_active);
     }
 
     /// Sem isto a geração ignoraria o EOS e só pararia no teto de tokens.
@@ -3929,6 +3952,50 @@ mod tests {
         assert_eq!(passo.accept_count, 2);
         assert_eq!(passo.batch_width, 4);
         assert!(passo.speculated);
+        assert!(passo.speculation_active);
+    }
+
+    #[test]
+    fn callback_remoto_reporta_estado_da_especulacao_explicitamente() {
+        let passo = speculative_step_from_meta(
+            &json!({
+                "done": false,
+                "accepted": [{"token_id": 4, "text": "A"}],
+                "speculated": false,
+                "speculation_active": true,
+                "next_draft": [5, 6],
+            }),
+            trace_vazio(),
+        )
+        .expect("callback remoto válido");
+
+        assert!(!passo.speculated);
+        assert!(passo.speculation_active);
+        assert_eq!(passo.next_draft, Some(vec![5, 6]));
+        assert!(passo.speculation_disabled_reason.is_none());
+    }
+
+    #[test]
+    fn callback_remoto_reporta_a_razao_de_desativacao() {
+        let passo = speculative_step_from_meta(
+            &json!({
+                "done": false,
+                "token_id": 4,
+                "text": "A",
+                "speculated": false,
+                "speculation_active": false,
+                "speculation_disabled_reason": "hybrid_tail_no_rollback",
+            }),
+            trace_vazio(),
+        )
+        .expect("callback remoto válido");
+
+        assert!(!passo.speculated);
+        assert!(!passo.speculation_active);
+        assert_eq!(
+            passo.speculation_disabled_reason.as_deref(),
+            Some("hybrid_tail_no_rollback")
+        );
     }
 
     /// Uma resposta que não é nem uma coisa nem outra continua sendo erro:
@@ -4013,7 +4080,10 @@ mod tests {
             window.reserve_bytes(budget.saturating_mul(4)),
         )
         .await;
-        assert!(huge.is_ok(), "um pedaço gigante passa segurando a janela inteira");
+        assert!(
+            huge.is_ok(),
+            "um pedaço gigante passa segurando a janela inteira"
+        );
     }
 
     #[test]

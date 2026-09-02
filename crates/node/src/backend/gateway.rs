@@ -1316,6 +1316,71 @@ fn remote_stream_capable(
         && direct_reply_available
 }
 
+fn remote_stream_speculation(
+    plan: &PipelinePlan,
+    speculative_enabled: bool,
+    mtp_enabled: bool,
+    speculative_k: u32,
+    speculative_m: u32,
+    mtp_k: u32,
+    draft_source: crate::prefill::DraftSource,
+) -> Option<crate::infer_server::Speculate> {
+    let sliced_mtp = mtp_enabled && plan.supports_mtp() && plan.steps.len() >= 2;
+    if sliced_mtp {
+        return Some(crate::infer_server::Speculate {
+            k: mtp_k,
+            m: speculative_m,
+            source: crate::infer_server::DraftSource::Mtp,
+            draft: None,
+        });
+    }
+    (plan.steps.len() == 1 && plan.supports_speculation() && speculative_enabled).then(|| {
+        crate::infer_server::Speculate {
+            k: speculative_k,
+            m: speculative_m,
+            source: match draft_source {
+                crate::prefill::DraftSource::Lookup => crate::infer_server::DraftSource::Lookup,
+                crate::prefill::DraftSource::Mtp => crate::infer_server::DraftSource::Mtp,
+            },
+            draft: None,
+        }
+    })
+}
+
+fn sliced_mtp_disable_reason(plan: &PipelinePlan) -> &'static str {
+    if !plan
+        .steps
+        .iter()
+        .all(|step| step.supports(crate::pipeline::CAP_SPECULATE_MTP_SLICED))
+        || !plan
+            .steps
+            .iter()
+            .all(|step| step.supports(crate::pipeline::CAP_SPECULATE_LOOKUP))
+    {
+        crate::infer_server::SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE
+    } else if !plan
+        .steps
+        .last()
+        .is_some_and(|step| step.supports(crate::pipeline::CAP_SPECULATE_MTP))
+    {
+        crate::infer_server::SPECULATION_REASON_MODEL_WITHOUT_MTP
+    } else {
+        crate::infer_server::SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE
+    }
+}
+
+fn sliced_mtp_round_continues(
+    remote_stream_mode: bool,
+    draft_sent: bool,
+    step: &crate::prefill::SpeculativeStep,
+) -> bool {
+    if remote_stream_mode {
+        step.speculation_active
+    } else {
+        !((draft_sent && !step.speculated) || (!draft_sent && step.next_draft.is_none()))
+    }
+}
+
 async fn generate_stream_inner(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
@@ -1770,28 +1835,27 @@ async fn generate_stream_inner(
             &state.network.node_id,
             direct.is_some(),
         );
+        let sliced_mtp = mtp_enabled && plan.supports_mtp() && plan.steps.len() >= 2;
+        if mtp_enabled && plan.steps.len() >= 2 && !sliced_mtp {
+            info!(
+                reason = sliced_mtp_disable_reason(&plan),
+                "pipeline fatiado sem MTP: seguindo com a capacidade disponível"
+            );
+        }
         let mut remote_stream = if remote_stream_capable {
-            // A multi-hop stream keeps the remaining relay inside the remote
-            // head. Its speculative rollback would also have to fan out to
-            // every downstream session, so keep that plan on the exact plain
-            // sampler until a remote rollback contract exists. Single-hop
-            // streams use the existing local rollback in the producer.
-            let speculate = (plan.steps.len() == 1
-                && plan.supports_speculation()
-                && speculative_enabled)
-                .then(|| {
-                crate::infer_server::Speculate {
-                    k: speculative_k,
-                    m: speculative_m,
-                    source: match draft_source {
-                        crate::prefill::DraftSource::Lookup => {
-                            crate::infer_server::DraftSource::Lookup
-                        }
-                        crate::prefill::DraftSource::Mtp => crate::infer_server::DraftSource::Mtp,
-                    },
-                    draft: None,
-                }
-            });
+            // The remote head owns the autoregressive cycle. For a sliced MTP
+            // plan it also receives the first MTP request and installs every
+            // following draft locally, so the gateway never adds a per-token
+            // reinjection round trip.
+            let speculate = remote_stream_speculation(
+                &plan,
+                speculative_enabled,
+                mtp_enabled,
+                speculative_k,
+                speculative_m,
+                mtp_k,
+                draft_source,
+            );
             match crate::prefill::step_stream(
                 &plan,
                 model,
@@ -1839,11 +1903,11 @@ async fn generate_stream_inner(
             // `step_speculative` continua no anel borbulhado (2N travessias por
             // token). O transporte remoto já mantém o laço no head e chega
             // aqui pela fila de callbacks, sem pedir outro quadro ao gateway.
-            // O MTP fatiado é a outra metade da mesma rodada: a cauda (dona
-            // do bloco `nextn`) rascunha na resposta direta e o gateway
-            // injeta o rascunho no `speculate` da rodada seguinte. Só com 2+
-            // hops — com um é o modelo inteiro, que já usa `step_speculative`.
-            let sliced_mtp = mtp_enabled && plan.supports_mtp() && plan.steps.len() >= 2;
+            // O MTP fatiado é a outra metade da mesma rodada: no caminho
+            // legado a cauda devolve o rascunho e o gateway o injeta; no
+            // stream remoto a cabeça o instala dentro do próprio ciclo. Só
+            // há MTP fatiado com 2+ hops - com um é o modelo inteiro, que já
+            // usa `step_speculative`.
             let mut especulando = true;
             // Rascunho que a cauda devolveu na rodada anterior, esperando
             // para ser injetado na próxima. `draft_sent` é lido antes do
@@ -1855,7 +1919,11 @@ async fn generate_stream_inner(
                 if cancellation.is_cancelled() {
                     return;
                 }
-                let draft_sent = especulando && sliced_mtp && stored_draft.is_some();
+                let remote_stream_mode = remote_stream.is_some();
+                let draft_sent = especulando
+                    && sliced_mtp
+                    && !remote_stream_mode
+                    && stored_draft.is_some();
                 let res = if let Some(stream) = remote_stream.as_mut() {
                     stream.next(&cancellation).await
                 } else if especulando {
@@ -1945,24 +2013,39 @@ async fn generate_stream_inner(
                 };
                 if especulando {
                     if sliced_mtp {
-                        // Dois motivos para desistir, e só dois. (a) O rascunho
-                        // foi mandado e a cabeça o ignorou — só acontece hoje
-                        // se ela não é da versão nova (`should_draft` aceita
-                        // todo `draft` pronto incondicionalmente), e pedir de
-                        // novo só repetiria a recusa. (b) A rodada 1 não
-                        // mandou rascunho (ainda não havia um pronto) e a
-                        // cauda não devolveu nenhum — este pipeline fatiado
-                        // não rascunha por aqui.
-                        if (draft_sent && !step.speculated)
-                            || (!draft_sent && step.next_draft.is_none())
-                        {
-                            info!(
-                                "pipeline fatiado sem rascunho MTP: seguindo \
-                                 sem especulação"
-                            );
-                            especulando = false;
+                        if remote_stream_mode {
+                            if !sliced_mtp_round_continues(remote_stream_mode, draft_sent, &step) {
+                                let reason = step
+                                    .speculation_disabled_reason
+                                    .as_deref()
+                                    .unwrap_or(
+                                        crate::infer_server::SPECULATION_REASON_MODEL_WITHOUT_MTP,
+                                    );
+                                info!(
+                                    reason,
+                                    "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
+                                );
+                                especulando = false;
+                            }
                         } else {
-                            stored_draft = step.next_draft;
+                            // Dois motivos para desistir: um rascunho já
+                            // enviado foi recusado, ou a rodada inicial não
+                            // produziu o primeiro rascunho.
+                            if !sliced_mtp_round_continues(remote_stream_mode, draft_sent, &step) {
+                                let reason = step
+                                    .speculation_disabled_reason
+                                    .as_deref()
+                                    .unwrap_or(
+                                        crate::infer_server::SPECULATION_REASON_MODEL_WITHOUT_MTP,
+                                    );
+                                info!(
+                                    reason,
+                                    "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
+                                );
+                                especulando = false;
+                            } else {
+                                stored_draft = step.next_draft;
+                            }
                         }
                     } else if !step.speculated {
                         // A cabeça recusou rascunhar — hoje só acontece se
@@ -3727,6 +3810,14 @@ mod budget_tests {
 mod remote_stream_selection_tests {
     use super::*;
 
+    fn mtp_capabilities() -> Vec<String> {
+        vec![
+            crate::pipeline::CAP_SPECULATE_LOOKUP.into(),
+            crate::pipeline::CAP_SPECULATE_MTP_SLICED.into(),
+            crate::pipeline::CAP_SPECULATE_MTP.into(),
+        ]
+    }
+
     fn plan(node_id: &str, capabilities: Vec<String>) -> PipelinePlan {
         PipelinePlan {
             steps: vec![crate::pipeline::PipelineStep {
@@ -3785,6 +3876,100 @@ mod remote_stream_selection_tests {
             libp2p_addr_candidates: Vec::new(),
         });
         assert!(remote_stream_capable(&multi, "local", true));
+    }
+
+    #[test]
+    fn stream_de_dois_hops_inicia_mtp_na_cabeca_remota() {
+        let mut multi = plan(
+            "remote-head",
+            [
+                vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
+                mtp_capabilities(),
+            ]
+            .concat(),
+        );
+        multi.steps[0]
+            .inference_frame_capabilities
+            .extend(mtp_capabilities());
+        multi.steps.push(crate::pipeline::PipelineStep {
+            node_id: "remote-tail".into(),
+            inference_url: "http://127.0.0.1:8182".into(),
+            inference_candidates: Vec::new(),
+            start_layer: 32,
+            end_layer: 63,
+            exec_start: 32,
+            exec_end: 63,
+            inference_frame_capabilities: mtp_capabilities(),
+            libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
+        });
+
+        let speculate = remote_stream_speculation(
+            &multi,
+            true,
+            true,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Lookup,
+        )
+        .expect("MTP fatiado deve entrar no stream remoto");
+
+        assert_eq!(speculate.source, crate::infer_server::DraftSource::Mtp);
+        assert_eq!(speculate.k, 4);
+        assert!(speculate.draft.is_none());
+    }
+
+    #[test]
+    fn stream_de_dois_hops_nao_desliga_mtp_apos_o_token_de_aquecimento() {
+        let step = crate::prefill::SpeculativeStep {
+            accepted: vec![(4, "A".into())],
+            done: false,
+            accept_count: 1,
+            batch_width: 1,
+            speculated: false,
+            speculation_active: true,
+            speculation_disabled_reason: None,
+            next_draft: Some(vec![5, 6]),
+            trace: crate::prefill::RequestTrace::new("qwen", &[("remote-head", 0, 31)]),
+        };
+
+        assert!(sliced_mtp_round_continues(true, false, &step));
+    }
+
+    #[test]
+    fn peer_sem_capacidade_mtp_fatiado_degrada_com_razao() {
+        let mut multi = plan(
+            "remote-head",
+            vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
+        );
+        multi.steps.push(crate::pipeline::PipelineStep {
+            node_id: "remote-tail".into(),
+            inference_url: "http://127.0.0.1:8182".into(),
+            inference_candidates: Vec::new(),
+            start_layer: 32,
+            end_layer: 63,
+            exec_start: 32,
+            exec_end: 63,
+            inference_frame_capabilities: Vec::new(),
+            libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
+        });
+
+        assert_eq!(
+            sliced_mtp_disable_reason(&multi),
+            crate::infer_server::SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE
+        );
+        assert!(remote_stream_speculation(
+            &multi,
+            true,
+            true,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Mtp,
+        )
+        .is_none());
     }
 }
 

@@ -237,13 +237,15 @@ behind an auth extractor.
   response contract; the request trace reports pipeline depth, prefix reuse and
   transport per traversal;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
-  the tail drafts on its own reply (`next_draft`), the gateway stores it and
-  injects it as `speculate.draft` on the next round, and the head only
-  decodes; `especulando` stops when the head refused a ready draft
-  (`draft_sent && !step.speculated`) or the tail returned no `next_draft`
-  (`!draft_sent && step.next_draft.is_none()`), then the gateway calls
-  `prefill::step` (the direct reply) for the rest of the request - insisting
-  would pin the chain to the bubbled ring (2N hops per token);
+  the tail produces `next_draft` and the remote head installs it in the next
+  internal `step` metadata before continuing its owned loop. The existing
+  callback carries that draft and explicit `speculated`, `speculation_active`
+  and `speculation_disabled_reason` fields in the same frame; the gateway uses
+  the state for telemetry and does not reinject a draft in remote-stream mode.
+  The legacy direct path keeps the gateway-side store and injection. A remote
+  stream stops MTP only when `speculation_active` is false, while the legacy
+  path stops when the head refuses a sent draft or the tail returns no draft;
+  both paths continue with `prefill::step` and a named reason;
   the gateway still chooses the pipeline replica per session. Continuous
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
@@ -616,8 +618,12 @@ behind an auth extractor.
   originator instead of bubbling through every hop),
   `REMOTE_STREAM_RESULT_PATH` - the bounded callback inbox used when a remote
   head owns the decode loop. A remote-capable head is selected by
-  `generate_stream_inner` only when the gateway can receive callbacks; the
-  local path and peers without the capability keep the established route.
+  `generate_stream_inner` only when the gateway can receive callbacks. A
+  sliced MTP plan sends the initial MTP request to that head; every hop rolls
+  back its own rejected KV suffix before bubbling the existing reply, so no
+  rollback request or probe frame is added per token. The local path and peers
+  without the capability keep the established route. The stream degrades with
+  `peer_without_sliced_mtp_wire` when a peer lacks the MTP wire capability.
   `routing_contract` capability types.
 - Who calls it: `crate::main` (`start_gateway` spawns the router, `warm_catalog`
   runs at startup, setup mode mounts only `webui::get_setup_key`/`save_setup`);

@@ -4434,12 +4434,10 @@ impl LlmEngine {
 
     /// `llama_memory_can_shift` - se o llama.cpp consegue reindexar (RoPE) as
     /// posições já cacheadas, o "K-shift" que o llama.cpp de referência usa
-    /// para `--ctx-shift`/geração infinita quando o contexto enche. **Não
-    /// governa remoção de posições do meio do cache** - isso é `kv_remove`
-    /// (`llama_memory_seq_rm`), uma operação diferente que este projeto usa
-    /// para desfazer um rascunho especulativo recusado (`handle_rollback`) e
-    /// que não depende deste valor. Nada aqui liga `--ctx-shift`; exposto só
-    /// como diagnóstico em `/health`.
+    /// para `--ctx-shift`/geração infinita quando o contexto enche. A cauda
+    /// usa este valor como guarda antes de produzir o próximo `next_draft` em
+    /// modelos híbridos/recorrentes; a remoção efetiva continua sendo
+    /// `kv_remove` (`llama_memory_seq_rm`), uma operação separada.
     pub fn kv_can_shift(&self) -> bool {
         unsafe {
             let mem = sys::llama_get_memory(self.ctx);

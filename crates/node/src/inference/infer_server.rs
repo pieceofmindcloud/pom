@@ -48,6 +48,13 @@ const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 const INFERENCE_FRAME_BODY_LIMIT: usize = wire::MAX_FRAME_PAYLOAD_BYTES;
 const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
 
+pub(crate) const SPECULATION_REASON_TAIL_WITHOUT_NEXTN: &str = "tail_without_nextn";
+pub(crate) const SPECULATION_REASON_MODEL_WITHOUT_MTP: &str = "model_without_mtp";
+pub(crate) const SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK: &str = "hybrid_tail_no_rollback";
+pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
+    "peer_without_sliced_mtp_wire";
+const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
+
 /// Resolve a preferência persistida pelo deploy para o seletor operacional.
 ///
 /// Uma escolha explícita na UI não pode ser sobrescrita por uma variável do
@@ -352,6 +359,7 @@ struct PrefillJob {
 struct StepJob {
     sid_key: String,
     is_last: bool,
+    remote_stream: bool,
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, TensorShape)>,
@@ -837,6 +845,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 state,
                 job.sid_key,
                 job.is_last,
+                job.remote_stream,
                 job.wire_dtype,
                 job.token_id,
                 job.tensor,
@@ -1509,8 +1518,12 @@ mod relay_tests {
             "mtp_k": 3,
         });
 
-        let forwarded =
-            step_forward_meta("sess-1", &json!({"item_id": "item-1"}), &local_meta, &next);
+        let forwarded = step_forward_meta(
+            "sess-1",
+            &json!({"item_id": "item-1", "remote_stream": true}),
+            &local_meta,
+            &next,
+        );
 
         assert_eq!(forwarded["session_id"], "sess-1");
         assert_eq!(forwarded["item_id"], "item-1");
@@ -1519,6 +1532,7 @@ mod relay_tests {
         assert_eq!(forwarded["draft"], json!([11, 12]));
         assert_eq!(forwarded["tokens"], json!([10, 11, 12]));
         assert_eq!(forwarded["mtp_k"], 3);
+        assert_eq!(forwarded["remote_stream"], true);
     }
 
     #[test]
@@ -4906,7 +4920,10 @@ fn step_batch_blocking(
     jobs: Vec<(StepJob, oneshot::Sender<Result<TimedReply>>)>,
 ) -> Vec<(oneshot::Sender<Result<TimedReply>>, Result<TimedReply>)> {
     if jobs.iter().any(|(job, _)| {
-        job.speculate.is_some() || job.incoming_draft.is_some() || job.mtp_k.is_some()
+        job.remote_stream
+            || job.speculate.is_some()
+            || job.incoming_draft.is_some()
+            || job.mtp_k.is_some()
     }) {
         return jobs
             .into_iter()
@@ -4915,6 +4932,7 @@ fn step_batch_blocking(
                     state.clone(),
                     job.sid_key,
                     job.is_last,
+                    job.remote_stream,
                     job.wire_dtype,
                     job.token_id,
                     job.tensor,
@@ -5324,6 +5342,10 @@ async fn handle_step(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         });
+    let remote_stream = meta
+        .get("remote_stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
     let token_id = meta
         .get("token_id")
@@ -5389,6 +5411,7 @@ async fn handle_step(
     let result = match scheduler.submit_step(StepJob {
         sid_key,
         is_last,
+        remote_stream,
         wire_dtype,
         token_id,
         tensor,
@@ -5544,6 +5567,24 @@ async fn handle_step(
         Ok(bubbled) => bubbled,
         Err(resp) => return resp,
     };
+    if remote_stream {
+        let accept_count = bubbled
+            .get("accept_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let batch_width = bubbled
+            .get("batch_width")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        if batch_width > 0 && accept_count < batch_width {
+            match rollback_session(&state, &sid_for_forward, accept_count, batch_width) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => {
+                    return err500("rollback especulativo remoto recusado no hop");
+                }
+            }
+        }
+    }
     match wire::encode_batch_single(&bubbled, None, wire_dtype) {
         Ok(bytes) => (
             StatusCode::OK,
@@ -5617,11 +5658,38 @@ struct RemoteStreamToken {
     done: bool,
     processing_ms: u64,
     node_timings: Option<Value>,
+    speculated: bool,
+    speculation_active: bool,
+    speculation_disabled_reason: Option<String>,
+    next_draft: Option<Vec<i32>>,
 }
 
 enum RemoteStreamItem {
     Token(RemoteStreamToken),
     Error(String),
+}
+
+fn remote_stream_install_draft(
+    step_meta: &mut Value,
+    next_draft: Option<&[i32]>,
+    disabled_reason: Option<&str>,
+) -> bool {
+    let Some(object) = step_meta.as_object_mut() else {
+        return false;
+    };
+    let Some(speculate) = object.get_mut("speculate").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    if let Some(draft) = next_draft.filter(|draft| !draft.is_empty()) {
+        speculate.insert("draft".into(), json!(draft));
+        true
+    } else {
+        object.remove("speculate");
+        if let Some(reason) = disabled_reason {
+            object.insert("speculation_disabled_reason".into(), json!(reason));
+        }
+        false
+    }
 }
 
 async fn remote_stream_producer(
@@ -5708,6 +5776,47 @@ async fn remote_stream_producer(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let requested_mtp = Speculate::from_meta(&step_meta)
+            .is_some_and(|speculate| speculate.source == DraftSource::Mtp);
+        let next_draft = reply_meta
+            .get("next_draft")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(Value::as_i64)
+                    .map(|value| value as i32)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|draft| !draft.is_empty());
+        let speculated = reply_meta
+            .get("speculated")
+            .and_then(Value::as_bool)
+            .unwrap_or(!accepted.is_empty());
+        let speculation_active = reply_meta
+            .get("speculation_active")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| {
+                if requested_mtp {
+                    next_draft.is_some()
+                } else {
+                    speculated
+                }
+            });
+        let speculation_disabled_reason = (!speculation_active && requested_mtp).then(|| {
+            reply_meta
+                .get("speculation_disabled_reason")
+                .and_then(Value::as_str)
+                .unwrap_or(SPECULATION_REASON_MODEL_WITHOUT_MTP)
+                .to_string()
+        });
+        if requested_mtp {
+            remote_stream_install_draft(
+                &mut step_meta,
+                next_draft.as_deref(),
+                speculation_disabled_reason.as_deref(),
+            );
+        }
         if !accepted.is_empty() {
             for (index, (token_id, text)) in accepted.iter().enumerate() {
                 if sender
@@ -5717,6 +5826,10 @@ async fn remote_stream_producer(
                         done: done && index + 1 == accepted.len(),
                         processing_ms: if index == 0 { processing_ms } else { 0 },
                         node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
+                        speculated,
+                        speculation_active,
+                        speculation_disabled_reason: speculation_disabled_reason.clone(),
+                        next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
                     }))
                     .await
                     .is_err()
@@ -5727,35 +5840,10 @@ async fn remote_stream_producer(
             if done {
                 return;
             }
-            let accept_count = reply_meta
-                .get("accept_count")
-                .and_then(Value::as_u64)
-                .unwrap_or(accepted.len() as u64) as u32;
-            let batch_width = reply_meta
-                .get("batch_width")
-                .and_then(Value::as_u64)
-                .unwrap_or(accept_count.max(1) as u64) as u32;
-            if accept_count < batch_width {
-                match rollback_session(
-                    &app.state,
-                    step_meta
-                        .get("session_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default(),
-                    accept_count,
-                    batch_width,
-                ) {
-                    Ok(true) => {}
-                    Ok(false) | Err(_) => {
-                        let _ = sender
-                            .send(RemoteStreamItem::Error(
-                                "rollback especulativo remoto recusado".into(),
-                            ))
-                            .await;
-                        return;
-                    }
-                }
-            }
+            // Every hop in a remote stream already rolled back its own KV
+            // before bubbling this reply. The counts remain in the callback
+            // for the gateway's telemetry, but no rollback request is sent
+            // after the frame.
             if let Some(token_id) = accepted.last().map(|(token_id, _)| *token_id) {
                 step_meta["token_id"] = json!(token_id);
             }
@@ -5781,6 +5869,10 @@ async fn remote_stream_producer(
                 done,
                 processing_ms,
                 node_timings,
+                speculated,
+                speculation_active,
+                speculation_disabled_reason,
+                next_draft,
             }))
             .await
             .is_err()
@@ -5825,6 +5917,8 @@ fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<String>, bo
     let mut processing_ms = 0_u64;
     let mut done = false;
     let mut error = None;
+    let mut status = None;
+    let mut next_draft = None;
     for item in items {
         match item {
             RemoteStreamItem::Token(token) => {
@@ -5834,16 +5928,30 @@ fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<String>, bo
                 }));
                 processing_ms = processing_ms.saturating_add(token.processing_ms);
                 done |= token.done;
+                status = Some((
+                    token.speculated,
+                    token.speculation_active,
+                    token.speculation_disabled_reason.clone(),
+                ));
+                if next_draft.is_none() {
+                    next_draft = token.next_draft.clone();
+                }
             }
             RemoteStreamItem::Error(message) => error = Some(message.clone()),
         }
     }
     let terminal = done || error.is_some();
+    let (speculated, speculation_active, speculation_disabled_reason) =
+        status.unwrap_or((false, false, None));
     let batch = json!({
         "accepted": tokens,
         "done": done && error.is_none(),
         "processing_ms": processing_ms,
         "node_timings": aggregate_remote_node_timings(items),
+        "speculated": speculated,
+        "speculation_active": speculation_active,
+        "speculation_disabled_reason": speculation_disabled_reason,
+        "next_draft": next_draft,
     });
     (batch, error, terminal)
 }
@@ -5908,12 +6016,27 @@ mod remote_stream_tests {
     use super::*;
 
     fn token(token_id: u32, text: &str, done: bool) -> RemoteStreamItem {
+        token_state(token_id, text, done, false, false, None)
+    }
+
+    fn token_state(
+        token_id: u32,
+        text: &str,
+        done: bool,
+        speculated: bool,
+        speculation_active: bool,
+        next_draft: Option<Vec<i32>>,
+    ) -> RemoteStreamItem {
         RemoteStreamItem::Token(RemoteStreamToken {
             token_id,
             text: text.into(),
             done,
             processing_ms: 3,
             node_timings: Some(json!({"decode_ms": 2, "engine_mismatch": false})),
+            speculated,
+            speculation_active,
+            speculation_disabled_reason: None,
+            next_draft,
         })
     }
 
@@ -5932,6 +6055,70 @@ mod remote_stream_tests {
     }
 
     #[test]
+    fn lote_remoto_transporta_o_rascunho_no_mesmo_callback() {
+        let item = RemoteStreamItem::Token(RemoteStreamToken {
+            token_id: 4,
+            text: "A".into(),
+            done: false,
+            processing_ms: 3,
+            node_timings: None,
+            speculated: false,
+            speculation_active: true,
+            speculation_disabled_reason: None,
+            next_draft: Some(vec![5, 6]),
+        });
+
+        let (batch, error, terminal) = remote_stream_batch(&[item]);
+
+        assert_eq!(batch["next_draft"], json!([5, 6]));
+        assert_eq!(batch["speculated"], false);
+        assert_eq!(batch["speculation_active"], true);
+        assert!(error.is_none());
+        assert!(!terminal);
+    }
+
+    #[test]
+    fn rascunho_remoto_e_instalado_sem_criar_rodada_extra() {
+        let mut step_meta = json!({
+            "token_id": 4,
+            "speculate": {"k": 4, "m": 0, "source": "mtp"}
+        });
+
+        assert!(remote_stream_install_draft(
+            &mut step_meta,
+            Some(&[5, 6]),
+            None,
+        ));
+        assert_eq!(step_meta["speculate"]["draft"], json!([5, 6]));
+
+        // The next invocation consumes this installed draft. The transport
+        // still has one metadata frame per decode round, with no probe frame
+        // inserted solely to carry the draft.
+        assert_eq!(
+            Speculate::from_meta(&step_meta).unwrap().draft,
+            Some(vec![5, 6])
+        );
+    }
+
+    #[test]
+    fn rascunho_remoto_desativado_remove_o_estado_com_razao() {
+        let mut step_meta = json!({
+            "speculate": {"k": 4, "m": 0, "source": "mtp", "draft": [5, 6]}
+        });
+
+        assert!(!remote_stream_install_draft(
+            &mut step_meta,
+            None,
+            Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK),
+        ));
+        assert!(step_meta.get("speculate").is_none());
+        assert_eq!(
+            step_meta["speculation_disabled_reason"],
+            SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK
+        );
+    }
+
+    #[test]
     fn erro_depois_de_tokens_mantem_o_prefixo_e_e_terminal() {
         let (batch, error, terminal) = remote_stream_batch(&[
             token(4, "prefixo", false),
@@ -5945,11 +6132,22 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn oito_tokens_prontos_cruzam_em_um_unico_callback() {
+    async fn oito_tokens_e_rascunho_cruzam_em_um_unico_callback() {
         let (items_tx, items_rx) = mpsc::channel(16);
-        for id in 0..8 {
+        items_tx
+            .send(token_state(0, "t0", false, false, true, Some(vec![8, 9])))
+            .await
+            .expect("token enfileirado");
+        for id in 1..8 {
             items_tx
-                .send(token(id, &format!("t{id}"), id == 7))
+                .send(token_state(
+                    id,
+                    &format!("t{id}"),
+                    id == 7,
+                    false,
+                    true,
+                    None,
+                ))
                 .await
                 .expect("token enfileirado");
         }
@@ -5970,9 +6168,10 @@ mod remote_stream_tests {
         assert_eq!(batch["accepted"].as_array().unwrap().len(), 8);
         assert_eq!(batch["accepted"][0]["token_id"], 0);
         assert_eq!(batch["accepted"][7]["token_id"], 7);
+        assert_eq!(batch["next_draft"], json!([8, 9]));
         assert!(
             deliveries_rx.try_recv().is_err(),
-            "oito tokens, um callback"
+            "oito tokens e o rascunho, um callback"
         );
     }
 }
@@ -5995,8 +6194,8 @@ fn step_forward_meta(
         "exec_end": next.exec_end,
     });
     preserve_batch_identity(request_meta, &mut meta);
-    for field in ["draft", "tokens", "mtp_k"] {
-        if let Some(value) = local_meta.get(field) {
+    for field in ["draft", "tokens", "mtp_k", "remote_stream"] {
+        if let Some(value) = local_meta.get(field).or_else(|| request_meta.get(field)) {
             meta[field] = value.clone();
         }
     }
@@ -6273,20 +6472,35 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// antes da rodada seguinte (`gateway::rollback_sessions`, via
 /// `/v1/session/rollback` -> `kv_remove` -> `llama_memory_seq_rm`).
 ///
-/// **Não é `kv_can_shift`/`llama_memory_can_shift` quem decide isso** - essa
-/// flag é sobre outra coisa (o "K-shift" de reposicionar RoPE quando o
-/// contexto some por cima, `common.cpp`'s `ctx_shift` no llama.cpp de
-/// referência; nenhum código deste projeto ativa esse recurso). A
-/// especulação de verdade só depende de `seq_rm` aceitar remover o fim da
-/// sequência, e isso já é decidido - e reportado de volta - em tempo real
-/// por `handle_rollback`; não há necessidade de adivinhar antes. Um modelo
-/// híbrido/recorrente (Qwen3.5+) só aceita esse `seq_rm` parcial se o
-/// contexto foi criado com `n_rs_seq > 0` (`EngineConfig::rs_seq_window`,
-/// `llm_arch_supports_rs_rollback` no llama.cpp) - sem isso `seq_rm`
-/// simplesmente recusa, `rollback_sessions` percebe pela resposta e encerra
-/// a geração com o que já foi confirmado (ver seu call site em
-/// `gateway::generate_stream_with_stops`) em vez de deixar o `n_past` do nó divergir do
-/// cache, que é o que produzia "inconsistent sequence positions".
+/// `kv_can_shift` não decide se a cabeça monta o lote. A cauda, porém, usa
+/// essa evidência antes de criar o próximo `next_draft`: em modelos
+/// híbridos/recorrentes que reportam `false`, não há rollback especulativo
+/// seguro para iniciar outra rodada e a resposta leva
+/// `hybrid_tail_no_rollback`. O caminho remoto faz o rollback local em cada
+/// hop antes de borbulhar a resposta; o caminho legado mantém o endpoint
+/// `handle_rollback` e o fan-out do gateway.
+pub(crate) fn mtp_tail_speculation_reason(
+    mtp_ready: bool,
+    mtp_unavailable_reason: Option<&str>,
+    kv_can_shift: bool,
+) -> Option<&'static str> {
+    if !mtp_ready {
+        return Some(
+            if mtp_unavailable_reason
+                .is_some_and(|reason| reason == crate::llm::MTP_NO_NEXTN_REASON)
+            {
+                SPECULATION_REASON_TAIL_WITHOUT_NEXTN
+            } else {
+                SPECULATION_REASON_MODEL_WITHOUT_MTP
+            },
+        );
+    }
+    if !kv_can_shift {
+        return Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK);
+    }
+    None
+}
+
 pub(crate) fn should_draft(speculate: Option<Speculate>, mtp_ready: bool) -> bool {
     match speculate {
         None => false,
@@ -6365,10 +6579,10 @@ impl Speculate {
         })
     }
 
-    /// Serializa o convite para o campo `speculate` do quadro — a contraparte
-    /// de `from_meta`. O gateway a usa para injetar, no `step` de um pipeline
-    /// fatiado, o rascunho que a cauda produziu na rodada anterior
-    /// (`draft` preenchido).
+    /// Serializa o convite para o campo `speculate` do quadro - a contraparte
+    /// de `from_meta`. O caminho direto legado usa o valor preenchido pelo
+    /// gateway; no stream remoto, a cabeça preenche o próprio valor antes da
+    /// rodada seguinte.
     pub(crate) fn to_meta(&self) -> Value {
         let mut v = json!({"k": self.k, "m": self.m, "source": self.source.wire()});
         if let Some(draft) = &self.draft {
@@ -6486,6 +6700,23 @@ mod speculative_tests {
     fn mtp_asked_of_an_engine_without_the_nextn_head_is_refused() {
         assert!(!should_draft(mtp(4), false));
         assert!(should_draft(mtp(4), true));
+    }
+
+    #[test]
+    fn razoes_da_cauda_separam_nextn_modelo_e_hibrido() {
+        assert_eq!(
+            mtp_tail_speculation_reason(false, Some(crate::llm::MTP_NO_NEXTN_REASON), true,),
+            Some(SPECULATION_REASON_TAIL_WITHOUT_NEXTN)
+        );
+        assert_eq!(
+            mtp_tail_speculation_reason(false, Some("falha de alocação"), true),
+            Some(SPECULATION_REASON_MODEL_WITHOUT_MTP)
+        );
+        assert_eq!(
+            mtp_tail_speculation_reason(true, None, false),
+            Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK)
+        );
+        assert_eq!(mtp_tail_speculation_reason(true, None, true), None);
     }
 
     /// Um rascunho MTP já pronto (a cauda de um pipeline fatiado produziu na
@@ -6636,6 +6867,7 @@ fn step_blocking(
     state: SharedState,
     sid_key: String,
     is_last: bool,
+    remote_stream: bool,
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, TensorShape)>,
@@ -6911,16 +7143,25 @@ fn step_blocking(
             }
 
             // Rascunho para a rodada seguinte. Numa máquina só ele alimenta
-            // o mesmo processo; num pipeline fatiado ele viaja na resposta
-            // direta de volta ao gateway (`relay/v2-direct`), que o injeta
-            // no `speculate.draft` da próxima rodada — zero travessia extra.
+            // o mesmo processo; num pipeline fatiado ele viaja no reply que já
+            // sobe pela cadeia. O stream remoto o instala na cabeça antes do
+            // próximo `step`; o caminho direto legado o leva ao gateway para
+            // injeção - sempre sem travessia extra.
             //
             // O `batch_tokens` presente é o que garante que esta é a cauda de
             // um pipeline (a composição do lote veio de fora, via `tokens`):
             // numa máquina só a cabeça é a própria cauda e não há para onde
             // devolver o rascunho.
+            let mut speculation_disabled_reason = None;
+            let mtp_tail_reason = mtp_k.is_some().then(|| {
+                mtp_tail_speculation_reason(
+                    s.engine.mtp_ready(),
+                    s.engine.mtp_unavailable_reason(),
+                    s.engine.kv_can_shift(),
+                )
+            });
             let next_draft: Option<Vec<i32>> =
-                if s.engine.mtp_ready() && !done && batch_tokens.is_some() {
+                if !done && batch_tokens.is_some() && mtp_tail_reason.flatten().is_none() {
                     // A sessão já avançou `n_tokens`; só as primeiras `keep`
                     // posições foram confirmadas, então o próximo slot livre do
                     // tronco é `n_past - (n_tokens - keep)`.
@@ -6932,13 +7173,26 @@ fn step_blocking(
                         s.engine
                             .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
                     if dr.is_empty() {
+                        speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                         None
                     } else {
                         Some(dr)
                     }
                 } else {
+                    speculation_disabled_reason = mtp_tail_reason.flatten();
                     None
                 };
+
+            if remote_stream {
+                let n_past_after_batch = s.sessions[&sid_key].n_past;
+                let new_n_past = rollback_from(n_past_after_batch, n_tokens as u32, keep as u32);
+                if new_n_past < n_past_after_batch
+                    && !s.engine.kv_remove(seq_id, new_n_past as i32, -1)
+                {
+                    bail!("rollback especulativo remoto recusado na cauda");
+                }
+                s.sessions.get_mut(&sid_key).unwrap().n_past = new_n_past;
+            }
 
             s.sessions
                 .get_mut(&sid_key)
@@ -6963,6 +7217,9 @@ fn step_blocking(
                     "accepted": accepted,
                     "accept_count": keep as u32,
                     "batch_width": n_tokens as u32,
+                    "speculated": true,
+                    "speculation_active": next_draft.is_some(),
+                    "speculation_disabled_reason": speculation_disabled_reason,
                     "next_draft": next_draft,
                 }),
                 None,
@@ -7028,7 +7285,15 @@ fn step_blocking(
         // decodificado; sem ele o draft seguinte usaria a linha de uma posição
         // anterior e parearia errado. Rodada de modelo inteiro recusada não
         // tem `mtp_k` — nada a devolver, e não há segunda máquina esperando.
-        let next_draft: Option<Vec<i32>> = if s.engine.mtp_ready() && !done {
+        let mut speculation_disabled_reason = None;
+        let mtp_tail_reason = mtp_k.is_some().then(|| {
+            mtp_tail_speculation_reason(
+                s.engine.mtp_ready(),
+                s.engine.mtp_unavailable_reason(),
+                s.engine.kv_can_shift(),
+            )
+        });
+        let next_draft: Option<Vec<i32>> = if !done && mtp_tail_reason.flatten().is_none() {
             if let Some(k) = mtp_k {
                 s.engine.mtp_accept(0);
                 let session_n_past = s.sessions[&sid_key].n_past;
@@ -7037,6 +7302,7 @@ fn step_blocking(
                     s.engine
                         .mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
                 if dr.is_empty() {
+                    speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                     None
                 } else {
                     Some(dr)
@@ -7045,10 +7311,14 @@ fn step_blocking(
                 None
             }
         } else {
+            speculation_disabled_reason = mtp_tail_reason.flatten();
             None
         };
         let encode_started = Instant::now();
         let mut reply = json!({"done": done, "token_id": next_id, "text": text});
+        reply["speculated"] = json!(false);
+        reply["speculation_active"] = json!(next_draft.is_some());
+        reply["speculation_disabled_reason"] = json!(speculation_disabled_reason);
         if let Some(nd) = &next_draft {
             reply["next_draft"] = json!(nd);
         }

@@ -454,10 +454,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   valor até o próximo runtime pronto.
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream_with_stops` de verdade contra hops falsos que decidem com
-  `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
-  como botão. O fixture não anuncia batching, pois o endpoint falso atende
-  frames unitários. Os cenários também conferem que a resposta real do gateway
-  traz `GenerationTimings` agregados, inclusive no limite de um token.
+  `should_draft`/`find_draft`/`longest_match` de produção. O fixture não
+  anuncia batching, pois o endpoint falso atende frames unitários. Os cenários
+  também conferem que a resposta real do gateway traz `GenerationTimings`
+  agregados, inclusive no limite de um token; a política de
+  `kv_can_shift=false` e o estado do stream remoto ficam cobertos nos testes
+  de `infer_server`/`prefill`.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
   lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o
@@ -638,10 +640,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `node_timings.executed_engine` e `executed_engines` em cada hop do
   prefill/decode e é agregado no `RequestTrace` sem inferência da tela.
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
-  rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
-  legítima, não erro: a cabeça omite `draft` no quadro e a cauda responde no
-  formato antigo de um token (ver `step_blocking::incoming_draft` e a seção de
-  duas formas de resposta em `prefill.rs`).
+  rascunha com base no convite e em `mtp_ready` ou em um draft pré-fabricado.
+  Recusar é resposta legítima, não erro: a cabeça omite `draft` no quadro e a
+  cauda responde no formato antigo de um token (ver
+  `step_blocking::incoming_draft` e a seção de duas formas de resposta em
+  `prefill.rs`). A cauda aplica separadamente o gate
+  `kv_can_shift=false` para não produzir o próximo draft em modelos
+  híbridos/recorrentes.
 
 `llm.rs`:
 - `LlmEngine::load_with_cache` - carga com `EngineConfig` (n_ctx total, n_batch,
@@ -762,9 +767,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `step_stream`/`RemoteDecodeStream` - control frame único para o head remoto;
   o peer continua decodificando e entrega callbacks limitados com no máximo
   oito itens prontos por lote. Planos com mais de um hop deixam os demais
-  peers dentro do relay do head; o gateway não paga uma chamada por token. A
-  especulação fica habilitada no caso de hop único; planos maiores usam o
-  sampler plain até existir rollback remoto para todos os hops.
+  peers dentro do relay do head; o gateway não paga uma chamada por token.
+  Quando o plano anuncia MTP fatiado, o callback leva `next_draft` junto com
+  `speculated`, `speculation_active` e `speculation_disabled_reason`, e o head
+  instala o rascunho na próxima rodada local. Cada hop faz o rollback do seu
+  próprio sufixo antes de borbulhar a resposta, sem uma chamada adicional.
 - `direct_failure` - resultado que chega com `error` no lugar do token nomeia o
   hop que morreu e marca **esse** (não a cabeça) com `routes.mark_failure`.
 - `record_direct_hops` - dobra no `RequestTrace` o `hop_timings` e as evidências
@@ -781,19 +788,25 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `should_draft` falso). Quem lê a resposta tem que aceitar as duas; tratar a
   antiga como erro fatal derrubava a geração com um token e `partial: true` em
   toda requisição (2026-08-15, Qwen3.8-27B). Sem `draft`, `speculated` é
-  `false` e `batch_width` é 1.
+  `false` e `batch_width` é 1. Callbacks do stream podem declarar
+  `speculation_active=false` e uma razão nomeada; sem os campos novos, o
+  parser preserva o fallback antigo.
 - `Speculate`/`DraftSource` (`infer_server.rs`) - o convite a rascunhar que
-  viaja no campo `speculate` do quadro: `{k, m, source, draft?}` (`draft` é o
-  rascunho pré-fabricado que o gateway injeta no modo fatiado - a cabeça só
-  decodifica). `source` é o que separa os **dois** mecanismos, e eles não são o
-  mesmo com números diferentes. Quadro sem `source` é gateway antigo e vale
-  `Lookup`. `Speculate::to_meta`/`from_meta` e `DraftSource::wire` são o par
-  de serialização.
-- `should_draft(speculate, kv_can_shift, mtp_ready)` - `Mtp` exige as duas
-  condições; `Lookup` só a primeira. Pedir MTP a um motor sem a cabeça `nextn`
-  é recusa, nunca troca silenciosa por lookup. Na cauda de um pipeline fatiado
-  (`mtp_ready` falso) a cabeça ainda aceita rascunho pronto: `kv_can_shift` e
-  `speculate.draft` presente bastam.
+  viaja no campo `speculate` do quadro: `{k, m, source, draft?}`. No caminho
+  legado, `draft` é o rascunho pré-fabricado que o gateway injeta no modo
+  fatiado; no stream remoto a cabeça instala o rascunho recebido da cauda no
+  próprio `step_meta` antes da próxima rodada. `source` é o que separa os
+  **dois** mecanismos, e eles não são o mesmo com números diferentes. Quadro
+  sem `source` é gateway antigo e vale `Lookup`.
+  `Speculate::to_meta`/`from_meta` e `DraftSource::wire` são o par de
+  serialização.
+- `should_draft(speculate, mtp_ready)` - `Mtp` exige a cabeça local pronta ou
+  um draft pré-fabricado; `Lookup` só exige o convite. Pedir MTP a um motor sem
+  a cabeça `nextn` é recusa, nunca troca silenciosa por lookup. A cauda de um
+  pipeline ainda aplica um gate próprio: se `kv_can_shift=false`, não devolve
+  `next_draft` e informa `hybrid_tail_no_rollback`. As demais recusas usam
+  `tail_without_nextn`, `model_without_mtp` ou
+  `peer_without_sliced_mtp_wire` conforme a evidência disponível.
 - `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
 - `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; `round_trip_ms`
@@ -1020,18 +1033,19 @@ Duas coisas que parecem zelo e são a correção:
 **Liga no modelo inteiro e no pipeline fatiado.** Quem rascunha é a máquina que
 serve a última camada (o bloco `nextn` mora aí) e quem monta o lote é a cabeça;
 no caso fatiado são máquinas diferentes, e o rascunho viaja de trás para a
-frente **sem custo extra de travessia**: a cauda anexa `next_draft` à resposta
-da `relay/v2-direct` que já volta ao gateway, o gateway o injeta no
-`speculate.draft` da rodada seguinte, e a cabeça só decodifica (`should_draft`
-aceita draft pronto com `kv_can_shift`, mesmo sem `mtp_ready`). A cabeça ecoa a
-composição do lote (`tokens`) e a largura pedida (`mtp_k`) no reply, os hops do
-meio repassam, e a cauda alimenta o `observe` com isso
-(`decode_hidden(..., tokens)`) - sem o eco, o `observe` desliga o MTP com aviso,
-e a resposta continua correta, só não especulativa. `PipelinePlan::supports_mtp`
-exige `speculate/v1-mtp-sliced` em **todos** os hops (o protocolo `tokens`/
-`mtp_k`/`next_draft` só existe em build novo) e `speculate/v1-mtp` na cauda.
-Cauda híbrida/recorrente (`kv_can_shift` falso) não devolve `next_draft`; o
-gateway para de pedir pelo resto da requisição, como no prompt-lookup.
+frente **sem custo extra de travessia**: a cauda anexa `next_draft` ao frame
+do stream que já seria enviado, e a cabeça remota o instala em seu próximo
+`step`. O gateway recebe o mesmo campo e o estado explícito
+(`speculated`, `speculation_active`, `speculation_disabled_reason`) para
+telemetria, mas não faz reinjeção no stream. No caminho direto legado, o
+gateway ainda injeta `speculate.draft` na rodada seguinte. A cabeça ecoa a
+composição do lote (`tokens`) e a largura pedida (`mtp_k`) no reply, os hops
+do meio repassam, e a cauda alimenta o `observe` com isso
+(`decode_hidden(..., tokens)`). `PipelinePlan::supports_mtp` exige
+`speculate/v1-mtp-sliced` em **todos** os hops e `speculate/v1-mtp` na cauda.
+Cauda híbrida/recorrente (`kv_can_shift` falso) não devolve `next_draft` e
+informa `hybrid_tail_no_rollback`; o gateway para de pedir pelo resto da
+requisição.
 
 **Ainda sem medição de tok/s** (cortado por cota em 2026-08-16): o ganho
 prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S,

@@ -347,7 +347,11 @@ tradicionais:
    temporizador, até 8 itens que já estejam prontos. Se a fila enche, o envio
    do callback espera e aplica contrapressão até a geração. EOS e erro enviam
    um lote terminal; stop, limite, ciclo e cancelamento removem o ticket e
-   fazem uma entrega atrasada receber `410 Gone`.
+   fazem uma entrega atrasada receber `410 Gone`. Em plano MTP fatiado, o
+   control frame inicial leva `speculate.source="mtp"`; a cauda devolve
+   `next_draft` no mesmo callback e o head instala o draft no próximo `step`
+   interno. O callback também informa `speculated`, `speculation_active` e
+   `speculation_disabled_reason`, sem travessia ou chamada adicional por token.
 2. **Resposta direta** (`relay/v2-direct`, `run_direct`/`step_direct`) - quando
    `PipelinePlan::supports_direct_reply()`: todos os passos anunciam
    `relay/v2-direct` **e** a cadeia tem pelo menos 2 hops. O gateway despacha
@@ -1068,21 +1072,14 @@ extra), `accept_count` e `batch_width`.
   `rollback_from` descartam do KV o que não foi confirmado; sessão desconhecida
   é no-op, não erro). Todo hop decodificou o lote inteiro, então todo hop
   precisa do rollback - não só a cauda.
-- **Modelo híbrido/recorrente aceita rascunhar - `n_rs_seq` é quem decide, não
-  `kv_can_shift`.** Achava-se (até 2026-08-16) que `should_draft` tinha que
-  recusar sempre que `llama_memory_can_shift` fosse falso em modelo híbrido -
-  engano duplo: essa flag é sobre o K-shift do `--ctx-shift` de referência do
-  llama.cpp (reindexar RoPE quando o contexto estoura), que este projeto nunca
-  liga; e o Qwen3.5/3.8 (`LLM_ARCH_QWEN35`) tem suporte dedicado a rollback
-  recorrente parcial no llama.cpp vendorizado
-  (`llm_arch_supports_rs_rollback`/`cparams.n_rs_seq`, "\[EXPERIMENTAL\]" no
-  `llama.h`), só que **desligado por padrão** (`n_rs_seq = 0` = "sem
-  rollback"). `EngineConfig::rs_seq_window` (`llm.rs`) pede
-  `max(speculative_k, mtp_draft_tokens + 1)` - a maior largura de lote que este
-  nó pode receber -, e arquitetura sem esse suporte simplesmente zera o pedido
-  de volta (`llama-context.cpp`), então pedir aqui não machuca modelo comum.
-  `should_draft` não recebe mais `kv_can_shift`: hoje toda rodada de lookup
-  rascunha, e MTP só recusa sem cabeça `nextn` local e sem `draft` pronto.
+- **Modelo híbrido/recorrente não produz draft quando
+  `kv_can_shift=false`.** A cauda aplica essa guarda no momento de produzir o
+  `next_draft`, informa `hybrid_tail_no_rollback` e o gateway desativa MTP pelo
+  restante da requisição. A cabeça ainda pode aceitar um draft que já tenha
+  chegado para concluir uma rodada; o que não pode acontecer é iniciar outra
+  rodada com estado cuja cauda não consegue reverter. `should_draft` continua
+  decidindo apenas se a cabeça monta o lote, com base em `mtp_ready` ou em
+  draft pronto.
 - **A prova de verdade não é mais estática, é o `seq_rm` de cada rodada.**
   `handle_rollback` (`/v1/session/rollback`) chama `kv_remove`
   (`llama_memory_seq_rm`) e devolve `{rolled_back, reason}` no corpo -
@@ -1097,9 +1094,9 @@ extra), `accept_count` e `batch_width`.
   responde no formato antigo de um token (`{done, token_id, text}`) em vez de
   `{done, accepted, accept_count, batch_width}` - `speculated` fica `false` e
   `batch_width` é 1. `prefill::speculative_step_from_meta` aceita as duas
-  formas; tratar a antiga como erro fatal derrubava a geração com um token e
-  `partial: true` em toda requisição (2026-08-15, Qwen3.8-27B) - esse defeito
-  era real e independente do engano do `kv_can_shift` acima.
+  formas e também lê `speculation_active` e
+  `speculation_disabled_reason` dos callbacks novos. A ausência desses campos
+  preserva a compatibilidade com peers antigos.
 - **Recusada a especulação, o gateway para de insistir** pelo resto da
 requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
   `prefill::step`, que já usa a resposta direta (N+1 travessias). Não é só
@@ -1108,9 +1105,11 @@ requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
 - O gateway clampa `speculative_k` a `n_batch` (`speculative_k_of`), porque o
   lote especulativo também é um batch único na cabeça.
 - A rota legada `step_speculative` continua no anel/hub, sem usar
-  `relay/v2-direct`. O transporte remoto mantém a especulação no peer apenas
-  para plano de um hop; planos remotos com mais hops usam o sampler plain até
-  existir um contrato de rollback que alcance todos os peers.
+  `relay/v2-direct`. O transporte remoto usa a mesma especulação em planos de
+  um ou mais hops quando todos anunciam `speculate/v1-mtp-sliced` e a cauda
+  anuncia `speculate/v1-mtp`; cada hop faz rollback local no reply já em voo.
+  Peer sem a capacidade nova degrada para o sampler plain com a razão
+  `peer_without_sliced_mtp_wire`.
 
 ### 5.2 Predição multi-token (MTP) - `inference/mtp.rs`
 
@@ -1166,13 +1165,13 @@ valores são iguais.
   confere no plano. Quem rascunha é a máquina que serve a última camada - no
   caso fatiado, a cauda, que tem o bloco `nextn`; quem monta o lote é a cabeça.
 - **A cauda rascunha na própria resposta.** O rascunho viaja de trás para a
-  frente **sem custo extra de travessia**: a cauda anexa `next_draft` ao reply
-  da `relay/v2-direct` que já volta ao gateway, o gateway o injeta no
-  `speculate.draft` da rodada seguinte, e a cabeça decodifica o lote sem
-  rascunhar (`should_draft` aceita todo `draft` pronto incondicionalmente,
-  mesmo sem `mtp_ready`). O custo real a medir no caso fatiado é a taxa de
-  aceitação (o rascunho nasce uma rodada antes de ser usado, então prevê `p+2`
-  a partir de `p`, exatamente como no caso local) - e não a rede.
+  frente **sem custo extra de travessia**: no stream remoto, a cauda anexa
+  `next_draft` ao callback que já seria enviado e a cabeça o instala no
+  `speculate.draft` do próximo `step` interno. O gateway recebe esse campo e
+  os metadados de estado, mas não reinjeta o draft nesse modo. No caminho
+  `relay/v2-direct` legado, o gateway continua fazendo a injeção na rodada
+  seguinte. O custo real a medir no caso fatiado é a taxa de aceitação - e não
+  a rede.
 - **A composição do lote viaja até a cauda.** A cabeça ecoa no reply o lote
   decodificado (campo `tokens`) e a largura do rascunho pedida (`mtp_k`); os
   hops do meio repassam; a cauda alimenta o `observe` do MTP com essa
@@ -1183,15 +1182,15 @@ valores são iguais.
   `speculate/v1-mtp-sliced` em cada step (o protocolo `tokens`/`mtp_k`/
   `next_draft` só existe em build novo - um peer velho no anel receberia um
   `speculate` que não entende) **e** `speculate/v1-mtp` na cauda.
-- **Modelo híbrido/recorrente rascunha no caso fatiado, desde que `n_rs_seq`
-  esteja pedido** (ver a entrada de `should_draft` na seção 5.1 - mesmo
-  mecanismo, mesma correção de 2026-08-16). Se mesmo assim o rollback de uma
-  rodada falhar (`rolled_back: false`), o gateway encerra a geração em vez de
-  seguir sem especular - mesmo flip de resultado que o prompt-lookup, causa
-  diferente.
-- O MTP fatiado roda pelo caminho direto (`prefill::step` + `relay/v2-direct`,
-  N+1 travessias); `step_speculative` (prompt-lookup) continua sem desvio
-  direto - ver seção 5.1.
+- **Modelo híbrido/recorrente não rascunha quando `kv_can_shift=false`.** A
+  cauda informa `hybrid_tail_no_rollback` e não devolve `next_draft`; o gateway
+  encerra a especulação de forma limpa. Em stream remoto, cada hop faz
+  rollback local antes de a resposta subir, sem endpoint extra. No caminho
+  legado, permanece o fan-out de `/v1/session/rollback`.
+- O MTP fatiado usa `step_stream` quando o head é remoto: um control frame
+  inicia o ciclo e os callbacks carregam os tokens e o estado. Se o head é
+  local, o gateway mantém o caminho direto `prefill::step` +
+  `relay/v2-direct`.
 - A fatia final é a única que carrega o bloco porque `splitter::split` zera
   `<arch>.nextn_predict_layers` fora dela - ver `docs/subsystems/fatiamento.md`.
 

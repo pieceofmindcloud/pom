@@ -96,6 +96,11 @@ haver chave.
   oportunista. O ticket é consumido por um `mpsc` limitado a 16 lotes; quando a
   fila está cheia, o handler espera e aplica contrapressão. Ticket cancelado ou
   lote terminal encerra o stream; ticket desconhecido responde `410 Gone`.
+  Além de `accepted`, `done`, tempos e `node_timings`, o lote pode trazer
+  `next_draft`, `speculated`, `speculation_active` e
+  `speculation_disabled_reason`. O draft viaja nesse mesmo callback, mas a
+  cabeça remota o instala internamente no próximo `step`; o gateway não faz
+  uma chamada de reinjeção. Peers antigos sem esses campos continuam válidos.
 - **`GET /api/cluster/tls`** - `{ tls_required }`. É o que a catraca dos outros
   nós consulta no principal. **Exige a chave de conexão**, e é isso que impede
   um intruso de responder pelo principal e rebaixar o cluster para texto claro.

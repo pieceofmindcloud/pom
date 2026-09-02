@@ -453,6 +453,11 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 inc.inbound_bytes,
             ),
         );
+        let progress = local
+            .get("owns_tokens")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .then(|| crate::infer_server::prompt_progress_for_forward(&inc.meta, &local));
         if inc.next_hops.is_empty() {
             let mut result = local;
             crate::infer_server::apply_prompt_progress(&inc.meta, &mut result);
@@ -492,7 +497,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 reply_to,
             ));
         }
-        return crate::infer_server::direct_ack();
+        return crate::infer_server::direct_ack_with_progress(progress);
     }
 
     // ── Anel ────────────────────────────────────────────────────────────────

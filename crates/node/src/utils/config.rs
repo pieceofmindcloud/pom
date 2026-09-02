@@ -630,7 +630,12 @@ mod tests {
 
     #[test]
     fn reference_config_has_no_absolute_output_capacity_field() {
-        let cfg: Config = serde_json::from_str(include_str!("../../pom.json")).unwrap();
+        // Keep this fixture in the test source. `pom.json` is runtime state and
+        // intentionally ignored by Git, so a compile must never depend on it.
+        let cfg: Config = serde_json::from_str(
+            r#"{"role":"principal","connection_key":"reference-test","gateway_port":8080,"p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#,
+        )
+        .unwrap();
         let value = serde_json::to_value(cfg).unwrap();
         assert!(!value
             .as_object()
@@ -640,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_node_config() {
-        let mut cfg = Config {
+        let cfg = Config {
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,

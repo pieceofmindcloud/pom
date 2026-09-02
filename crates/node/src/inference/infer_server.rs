@@ -1277,6 +1277,7 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             None,
             None,
+            None,
             Arc::new(ModelCache::new()),
             false,
         )
@@ -2107,7 +2108,7 @@ fn terminal_prefill_meta(
 /// API key ativa. O gateway usa a connection_key nas chamadas internas; a
 /// alternativa de API key mantém o contrato dos clientes OpenAI/Anthropic.
 async fn require_inference_auth(
-    State(config): State<crate::auth::AuthState>,
+    State((config, database)): State<(crate::auth::AuthState, Option<Arc<crate::db::PomDb>>)>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
@@ -2129,7 +2130,13 @@ async fn require_inference_auth(
 
     let valid = {
         let cfg = config.read().await;
-        crate::auth::is_valid_inference_token(&cfg, token)
+        if !cfg.connection_key.is_empty() && token == cfg.connection_key {
+            true
+        } else if let Some(database) = database {
+            database.api_key_for_token(token).ok().flatten().is_some()
+        } else {
+            crate::auth::is_valid_inference_token(&cfg, token)
+        }
     };
     if !valid {
         return (StatusCode::FORBIDDEN, "invalid inference credential").into_response();
@@ -2469,6 +2476,7 @@ pub async fn run(
     batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
     auth: Option<crate::auth::AuthState>,
+    database: Option<Arc<crate::db::PomDb>>,
     model_cache: Arc<ModelCache>,
     reuse_weights: bool,
 ) -> Result<()> {
@@ -2640,7 +2648,10 @@ pub async fn run(
         .route("/v1/session/rewind", post(handle_rewind))
         .route("/v1/session/rollback", post(handle_rollback));
     let inference_routes = if let Some(auth) = auth.clone() {
-        inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
+        inference_routes.layer(middleware::from_fn_with_state(
+            (auth, database.clone()),
+            require_inference_auth,
+        ))
     } else {
         inference_routes
     };
@@ -2651,7 +2662,10 @@ pub async fn run(
         post(handle_tp_reduce).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
     );
     let tp_routes = if let Some(auth) = auth {
-        tp_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
+        tp_routes.layer(middleware::from_fn_with_state(
+            (auth, database),
+            require_inference_auth,
+        ))
     } else {
         tp_routes
     };

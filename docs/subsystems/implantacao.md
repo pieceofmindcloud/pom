@@ -9,6 +9,13 @@ pelas máquinas do cluster. Vive em `crates/node/src/backend/deploy.rs`
 "a escolha do operador é parte do pedido": o nó sugere, o operador decide, e o
 deploy re-varre o cluster em vez de confiar na prévia.
 
+O registro durável de cada implantação fica em `pom.db`, em
+`POM_DB_DIR` quando definido ou na raiz do projeto por padrão. O JSON validado
+continua completo para permitir listar e recuperar a intenção do operador;
+desimplantação marca o registro inativo e guarda um tombstone. A pasta legada
+`deployments/` não é apagada nem escrita pelo runtime. A cópia opcional é feita
+somente pelo script descartável `scripts/migrate_pom_db.py`.
+
 ## 1. Visão geral: o plano, a fusão e a ordem
 
 Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
@@ -87,7 +94,7 @@ Três regras saem da arquitetura, não do gosto:
 
 ## 1.4 Proteção térmica da implantação
 
-Cada nó grava `thermal` no `pom.json`, com `limit_c` padrão de 85 °C,
+Cada nó grava `thermal` no `pom.db`, com `limit_c` padrão de 85 °C,
 `hysteresis_c` de 8 °C e `cooldown_secs` de 30 segundos. O monitor usa a mesma
 lista `SystemLoad.gpus` que a tela exibe. Uma leitura conhecida acima do limite
 descarrega o modelo, remove o anúncio das camadas e publica o estado

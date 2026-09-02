@@ -416,16 +416,15 @@ async fn save_token_config(
         .token
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty());
+    if let Err(error) = state.database.save_huggingface_token(token.as_deref()) {
+        tracing::error!("não foi possível guardar o token do Hugging Face: {error:#}");
+        return provider_error(HfError::Io {
+            message: "não foi possível guardar o token do Hugging Face".into(),
+        });
+    }
     {
         let mut config = state.auth.write().await;
-        let previous = config.huggingface_token.clone();
         config.huggingface_token = token.clone();
-        if let Err(error) = config.save() {
-            config.huggingface_token = previous;
-            return provider_error(HfError::Io {
-                message: format!("não foi possível salvar a configuração do Hugging Face: {error}"),
-            });
-        }
     }
 
     // The provider reads this shared store for every request, so the next
@@ -573,10 +572,12 @@ async fn start_download(
         .await
         .insert(id.clone(), cancel.clone());
     let service = state.model_service.clone();
+    let database = state.database.clone();
     let job_id = id.clone();
     tokio::spawn(async move {
         run_download(
             service,
+            database,
             job_id.clone(),
             request,
             destination,
@@ -655,6 +656,7 @@ async fn retry_download(
 
 async fn run_download(
     service: Arc<ModelService>,
+    database: Arc<crate::db::PomDb>,
     job_id: String,
     request: DownloadRequest,
     destination: PathBuf,
@@ -762,7 +764,7 @@ async fn run_download(
 
     while progress_rx.try_recv().is_ok() {}
     match result {
-        Ok(result) => complete_download(&job_id, &request, &destination, result).await,
+        Ok(result) => complete_download(&database, &job_id, &request, &destination, result).await,
         Err(HfError::Cancelled) => {
             webui::set_model_download_progress(
                 &job_id,
@@ -804,6 +806,7 @@ async fn run_download(
 }
 
 async fn complete_download(
+    database: &crate::db::PomDb,
     job_id: &str,
     request: &DownloadRequest,
     destination: &Path,
@@ -841,7 +844,7 @@ async fn complete_download(
         None,
     )
     .await;
-    webui::invalidate_catalog().await;
+    webui::invalidate_catalog(Arc::new(database.clone())).await;
     tracing::info!(
         provider = "model_provider",
         repo_id = %request.repo_id,
@@ -1424,6 +1427,35 @@ mod tests {
         assert_eq!(body["source"], "pom.json");
         assert!(body["masked"].as_str().unwrap().contains("••••"));
         assert!(body.get("token").is_none());
+    }
+
+    #[tokio::test]
+    async fn token_config_route_persists_only_in_database_and_never_returns_secret() {
+        let (provider, _) = test_provider();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let store = crate::huggingface::HfTokenStore::new_from_database(None);
+        state.model_service = Arc::new(ModelService::with_token_store(provider, store));
+        let database = state.database.clone();
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::post("/api/ui/model-provider/config")
+                    .header("authorization", "Bearer chave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"token":"hf_route_secret"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert!(!body.to_string().contains("hf_route_secret"));
+        assert!(body.get("token").is_none());
+        assert_eq!(
+            database.huggingface_token().unwrap().as_deref(),
+            Some("hf_route_secret")
+        );
     }
 
     #[tokio::test]

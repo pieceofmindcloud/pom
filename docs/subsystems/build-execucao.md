@@ -287,6 +287,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 |---|---|
 | `POM_HOME` | Resolução de `project_root()` em primeiro lugar: config, `models/`, `venv/`, UI. Sem ela: cwd que parece o projeto, depois subir do diretório do executável. Dois nós na mesma máquina precisam de casas distintas (identidade `node_id` também mora no project root). |
 | `POM_CONFIG` | Caminho do `pom.json` (padrão `<project_root>/pom.json`). |
+| `POM_DB_DIR` | Diretório de `pom.db` e seus arquivos WAL/SHM. Se ausente ou vazio, usa `<project_root>`; o diretório é criado no arranque. |
 | `POM_UI_DIST` | Onde `webapp.rs` lê o bundle da UI (padrão `<project_root>/apps/frontend/dist`). A imagem Docker a seta explicitamente. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` faz o nó **receptor** aceitar toda oferta de transferência sem clique. Só desenvolvimento; lida uma vez no arranque. O remetente não pode pedi-la. |
 | `POM_DEV_UPDATE` | `=1` liga o portão de "Atualizar e reiniciar" no card do peer (`devupdate.rs`). Por processo, nunca na config. |

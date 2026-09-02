@@ -19,11 +19,10 @@
 //! no deploy, carregado no anúncio e no `NodeConfig`, sobrevivente a reinício.
 //! Aqui a mesma ideia vale para toda implantação.
 //!
-//! **Onde mora:** um arquivo por implantação, em `<POM_HOME>/deployments/`, em
-//! **cada nó participante**. Não há dono único: quem quer a visão do cluster
-//! pergunta aos peers, do mesmo jeito que a tela de implantação já faz com
-//! `deploy::survey`. Um nó que reinicia lê o próprio arquivo e volta para a
-//! mesma implantação.
+//! **Fonte legada:** um arquivo por implantação, em
+//! `<POM_HOME>/deployments/`, em cada nó participante. O runtime atual grava e
+//! lê o registro em `backend::db::PomDb`; estas funções de arquivo continuam
+//! apenas como rede de segurança para a ferramenta descartável de preservação.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -267,11 +266,13 @@ pub fn split_selector(model: &str) -> (&str, Option<&str>) {
 
 // ── Em disco ─────────────────────────────────────────────────────────────────
 
-/// A pasta dos registros: `<POM_HOME>/deployments/`.
+/// A pasta legada dos registros: `<POM_HOME>/deployments/`.
+#[allow(dead_code)]
 pub fn dir() -> PathBuf {
     crate::config::project_root().join("deployments")
 }
 
+#[allow(dead_code)]
 pub fn path_in(dir: &Path, deploy_id: &str) -> Result<PathBuf> {
     if !is_deploy_id(deploy_id) {
         bail!("deploy_id inválido: {deploy_id:?}");
@@ -283,6 +284,7 @@ pub fn path_in(dir: &Path, deploy_id: &str) -> Result<PathBuf> {
 ///
 /// Mesmo padrão de `pom::write_atomic`: temporário ao lado e `rename`, que é
 /// atômico no mesmo sistema de arquivos.
+#[allow(dead_code)]
 pub fn save_in(dir: &Path, d: &Deployment) -> Result<PathBuf> {
     d.validate()?;
     std::fs::create_dir_all(dir).with_context(|| format!("criar {}", dir.display()))?;
@@ -303,10 +305,12 @@ pub fn save_in(dir: &Path, d: &Deployment) -> Result<PathBuf> {
     Ok(destino)
 }
 
+#[allow(dead_code)]
 pub fn save(d: &Deployment) -> Result<PathBuf> {
     save_in(&dir(), d)
 }
 
+#[allow(dead_code)]
 pub fn load(path: &Path) -> Result<Deployment> {
     let raw = std::fs::read(path).with_context(|| format!("ler {}", path.display()))?;
     let d: Deployment =
@@ -318,6 +322,7 @@ pub fn load(path: &Path) -> Result<Deployment> {
 
 /// Todos os registros de uma pasta, ordenados por id para a listagem ser
 /// estável entre chamadas.
+#[allow(dead_code)]
 pub fn load_dir(dir: &Path) -> Vec<Deployment> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -339,11 +344,13 @@ pub fn load_dir(dir: &Path) -> Vec<Deployment> {
     out
 }
 
+#[allow(dead_code)]
 pub fn all() -> Vec<Deployment> {
     load_dir(&dir())
 }
 
 /// Esquece uma implantação neste nó. Idempotente.
+#[allow(dead_code)]
 pub fn remove_in(dir: &Path, deploy_id: &str) -> Result<()> {
     let p = path_in(dir, deploy_id)?;
     match std::fs::remove_file(&p) {

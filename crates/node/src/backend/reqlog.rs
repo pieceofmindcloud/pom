@@ -246,7 +246,9 @@ impl AuditLog {
             let connection = Connection::open(&path)
                 .with_context(|| format!("abrir banco de auditoria em {}", path.display()))?;
             let mut db = AuditDb::open_for_query(connection)?;
-            db.list(&query)
+            let result = db.list(&query);
+            crate::db::secure_database_permissions(&path)?;
+            result
         })
         .await
         .context("aguardar consulta do banco de auditoria")?
@@ -258,7 +260,9 @@ impl AuditLog {
             let connection = Connection::open(&path)
                 .with_context(|| format!("abrir banco de auditoria em {}", path.display()))?;
             let mut db = AuditDb::open_for_query(connection)?;
-            db.stats(&query)
+            let result = db.stats(&query);
+            crate::db::secure_database_permissions(&path)?;
+            result
         })
         .await
         .context("aguardar agregação do banco de auditoria")?
@@ -286,6 +290,10 @@ fn run_writer(path: PathBuf, receiver: mpsc::Receiver<Command>) {
             return;
         }
     };
+    if let Err(error) = crate::db::secure_database_permissions(&path) {
+        error!(path = %path.display(), error = %error, "não foi possível restringir as permissões da auditoria");
+        return;
+    }
     while let Ok(command) = receiver.recv() {
         let result = match command {
             Command::Begin(request) => db.begin(&request),
@@ -293,6 +301,10 @@ fn run_writer(path: PathBuf, receiver: mpsc::Receiver<Command>) {
         };
         if let Err(e) = result {
             error!(error = %e, "falha ao gravar o registro de auditoria");
+        }
+        if let Err(error) = crate::db::secure_database_permissions(&path) {
+            error!(path = %path.display(), error = %error, "não foi possível restringir as permissões da auditoria");
+            return;
         }
     }
 }

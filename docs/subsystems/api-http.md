@@ -202,7 +202,7 @@ Para Claude Code, `ANTHROPIC_BASE_URL` deve apontar para a origem do gateway,
 por exemplo `http://ksia:8080`; o SDK acrescenta `/v1/messages`. A variável
 `ANTHROPIC_API_KEY` é enviada como `x-api-key`; `ANTHROPIC_AUTH_TOKEN` é
 enviado como `Authorization: Bearer`. O valor precisa ser exatamente a
-`connection_key` ou uma API key ativa do `pom.json`, e nunca uma chave
+`connection_key` ou uma API key ativa do `pom.db`, e nunca uma chave
 Anthropic externa. Se o cliente enviar os dois headers, o gateway considera os
 dois independentemente, sem registrar nenhum segredo.
 
@@ -321,6 +321,11 @@ ficar vazio), `POST /admin/nodes/{id}/block`, `POST /admin/nodes/{id}/unblock`,
 (stub, ver Defeitos). `list_nodes` adiciona entradas para bloqueados fora da
 rede.
 
+`DELETE /admin/api-keys/{key}` desativa a chave no `pom.db` sem apagar a linha e
+acrescenta uma revogação com o `node_id` do operador autenticado e o horário.
+Uma segunda tentativa é idempotente e não cria outro evento; a chave nunca
+volta a autenticar.
+
 ### `/api/ui/*`
 
 O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
@@ -332,7 +337,8 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
 recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
-peers solicitados), `dev/update` +
+peers solicitados), `chat/history` (GET/POST/DELETE autenticados para o histórico
+durável de conversas), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
@@ -360,8 +366,10 @@ requisição. Os filtros são `node_id`, `api_key` (id, rótulo ou nó associado
 `prompt` (busca FTS5), `from`, `to`, `limit` e `offset`; a ordenação é por
 `received_at` mais recente. A UI usa `limit` e `offset` para scroll infinito,
 sem carregar o histórico inteiro no primeiro pedido. O banco fica em
-`<project_root>/audit.sqlite3`, é criado de forma idempotente no arranque e
-mantém índice do prompt e dos filtros de identidade, nó, estado e horário. O
+`pom.db`, em `POM_DB_DIR` quando definido ou em `config::project_root()` por
+padrão, é criado de forma idempotente no arranque e mantém índice do prompt e
+dos filtros de identidade, nó, estado e horário. WAL e timeout de 5 segundos
+permitem leitores e o escritor concorrerem no mesmo arquivo. O
 registro nasce como `in_progress` antes da inferência e a mesma linha recebe
 resultado, telemetria, tempos, tokens, peers e erro ao terminar. Reinício ou
 mais de 15 minutos sem conclusão marca a linha como `incomplete` com o motivo
@@ -395,10 +403,10 @@ recusado para não apresentar uma preferência que não será respeitada.
 **`GET` e `POST /api/ui/model-provider/config`** exigem `ConnectionAuth` e
 controlam o token opcional do Hugging Face. O GET devolve somente
 `{ configured, masked, source }`, nunca o segredo. O POST recebe `{ token }` -
-`null` ou texto vazio remove o valor - grava `huggingface_token` no `pom.json`
-com permissão `0600` no Unix e atualiza o provider em memória, sem reinício.
+`null` ou texto vazio remove o valor - grava `huggingface_token` no `pom.db` com
+permissão `0600` no Unix e atualiza o provider em memória, sem reinício.
 A precedência efetiva é `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, token do
-`pom.json` e, por último, o cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
+`pom.db` e, por último, o cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
 `~/.cache/huggingface/token`). Assim, variáveis existentes continuam vencendo,
 e a configuração explícita da UI vence o cache.
 
@@ -417,7 +425,7 @@ implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 **`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
 política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o
 limite e a margem são finitos, positivos e formam uma histerese válida, grava a
-política no `pom.json` e devolve o valor efetivo. O runtime aplica a alteração
+política no `pom.db` e devolve o valor efetivo. O runtime aplica a alteração
 sem reinício. `GET /api/ui/node` inclui a mesma política em `thermal`, junto
 com `system.gpus[].temperature_c`, que é `null` quando o driver não fornece a
 leitura.
@@ -445,6 +453,16 @@ Cada item responde `{ from_node_id, to_node_id, rtt_ms, transport }`. A medida
 é da origem da aresta até o destino e não é o RTT do card que um gateway mediu
 até um peer. Ausência de uma medida fica ausente na resposta; não há zero de
 fallback.
+
+**`GET/POST/DELETE /api/ui/chat/history`** - exige `ConnectionAuth` e guarda
+sessões do Chat no `pom.db`, não no sistema de arquivos nem em um SQLite
+separado. O POST recebe uma sessão completa em camelCase (`id`, `title`,
+`model`, `modelAtStart`, `messages`, `updatedAt`) e a substitui atomicamente;
+mensagens preservam conteúdo visível, conteúdo enviado, eventos, erros,
+telemetria e trace. O GET devolve as sessões por atualização mais recente. O
+DELETE sem id limpa todas as sessões e `DELETE /api/ui/chat/history/:id` remove
+uma sessão. O conteúdo só é devolvido a um operador autenticado e nunca é
+incluído em logs de erro.
 
 ## 3. Autenticação (`auth.rs`)
 

@@ -6,9 +6,11 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 
 ## Arquivos
 
-- `config.rs` - o `Config` persistido em `pom.json`, incluindo identidades
-  opacas das API keys, e a resolução do project root / diretório da UI. O
-  `audit.sqlite3` do gateway usa o mesmo `project_root`.
+- `config.rs` - o `Config` persistido em `pom.json` e a resolução do project
+  root, do diretório do `pom.db` e da UI. `POM_DB_DIR` aponta o banco para um
+  volume; sem ele, fica na raiz do projeto. O estado operacional usa
+  `backend::db::PomDb`; os campos legados continuam serializáveis em `pom.json`
+  para não destruir a cópia de segurança antiga.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque.
@@ -37,7 +39,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `<project_root>/pom.json`.
   `Config::save` grava com permissão exclusiva do proprietário (`0600` no
   Unix), inclusive quando o arquivo já existia; o campo opcional
-  `huggingface_token` é segredo e o `Debug` de `Config` o mascara.
+  `huggingface_token` é segredo e o `Debug` de `Config` o mascara. O runtime
+  lê chaves, política térmica e token do `pom.db`, sem usar esses campos como
+  fallback.
 - `normalize_peer_addr` - completa a porta que falta em endereço digitado
   (IPv6 puro sem porta vira `invalid port value` no resolver, repetido para
   sempre no log); mantém o que está gravado igual ao que se imprime.

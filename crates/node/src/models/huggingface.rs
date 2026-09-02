@@ -33,6 +33,7 @@ pub(crate) enum HfTokenSourceKind {
     HfToken,
     HubToken,
     Config,
+    Database,
     Cache,
     None,
 }
@@ -43,6 +44,7 @@ impl HfTokenSourceKind {
             Self::HfToken => "HF_TOKEN",
             Self::HubToken => "HUGGING_FACE_HUB_TOKEN",
             Self::Config => "pom.json",
+            Self::Database => "pom.db",
             Self::Cache => "~/.cache/huggingface/token",
             Self::None => "none",
         }
@@ -55,20 +57,37 @@ struct HfTokenResolution {
     source: HfTokenSourceKind,
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct HfTokenStore(Arc<RwLock<Option<String>>>);
+#[derive(Clone)]
+pub(crate) struct HfTokenStore {
+    token: Arc<RwLock<Option<String>>>,
+    configured_source: HfTokenSourceKind,
+}
 
 impl HfTokenStore {
     pub(crate) fn new(token: Option<String>) -> Self {
-        Self(Arc::new(RwLock::new(clean_token(token))))
+        Self::with_source(token, HfTokenSourceKind::Config)
+    }
+
+    pub(crate) fn new_from_database(token: Option<String>) -> Self {
+        Self::with_source(token, HfTokenSourceKind::Database)
+    }
+
+    fn with_source(token: Option<String>, configured_source: HfTokenSourceKind) -> Self {
+        Self {
+            token: Arc::new(RwLock::new(clean_token(token))),
+            configured_source,
+        }
     }
 
     pub(crate) fn set(&self, token: Option<String>) {
-        *self.0.write().expect("token store lock poisoned") = clean_token(token);
+        *self.token.write().expect("token store lock poisoned") = clean_token(token);
     }
 
     fn current(&self) -> Option<String> {
-        self.0.read().expect("token store lock poisoned").clone()
+        self.token
+            .read()
+            .expect("token store lock poisoned")
+            .clone()
     }
 
     pub(crate) fn status(&self) -> Result<HfTokenStatus, HfError> {
@@ -82,11 +101,25 @@ impl HfTokenStore {
             config_token.as_deref(),
             cache_token.as_deref(),
         );
+        let source = if resolution.source == HfTokenSourceKind::Config
+            && config_token.is_some()
+            && self.configured_source == HfTokenSourceKind::Database
+        {
+            HfTokenSourceKind::Database
+        } else {
+            resolution.source
+        };
         Ok(HfTokenStatus {
             configured: config_token.is_some(),
             masked: resolution.token.as_deref().map(mask_token),
-            source: resolution.source,
+            source,
         })
+    }
+}
+
+impl Default for HfTokenStore {
+    fn default() -> Self {
+        Self::new(None)
     }
 }
 

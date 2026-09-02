@@ -57,6 +57,14 @@ inventário, mas preserva metadata por identidade `path + size + mtime`; somente
 modelo novo ou arquivo alterado volta a ler o cabeçalho. Hash integral continua
 restrito à fronteira de fatiamento ou transferência.
 
+Depois do enriquecimento, `webui.rs` registra o catálogo em `pom.db`. O registro
+guarda a identidade do modelo inteiro ou do conjunto de fatias, caminho, tamanho,
+hash quando disponível, total de camadas, quantização, faixa, rank TP, extremos
+da faixa e os horários de primeira e última observação. Um refresh marca
+`present=0` para o que deixou de aparecer, mas não apaga `model_history` nem
+`model_slices`; assim a identificação permanece depois que o GGUF ou uma fatia
+some do disco.
+
 ## 2. Leitura do GGUF: cabeçalho e tensor table
 
 `gguf.rs` lê o GGUF sem carregar pesos:

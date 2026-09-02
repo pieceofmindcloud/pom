@@ -23,6 +23,11 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   tambem em configs existentes, preservando os outros campos.
 - `test_gen_node_configs.py` - testes unitarios do override de
   `advertise_addr`, incluindo a preservacao dos demais campos da config.
+- `migrate_pom_db.py` - ferramenta descartável e explícita para copiar, uma
+  única vez, implantações, auditoria, API keys, preferência térmica e token
+  das fontes antigas para um `pom.db` já criado pelo binário. O arranque nunca
+  chama o script; ele valida conflitos, não imprime credenciais e não apaga ou
+  altera as fontes.
 - `run-docker.sh` - `docker compose down` + `docker compose up -d`. Nao recria
   a imagem; use `build-docker.sh` para isso.
 

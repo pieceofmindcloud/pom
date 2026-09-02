@@ -328,6 +328,26 @@ pub fn project_root() -> PathBuf {
     cwd
 }
 
+/// Directory that contains the runtime SQLite database.
+///
+/// `POM_DB_DIR` is intended for a Docker volume. Without it the database is
+/// kept beside `pom.json`, as before this setting existed.
+pub fn database_dir() -> PathBuf {
+    let configured = crate::brand::env("DB_DIR").ok();
+    database_dir_for(project_root(), configured.as_deref())
+}
+
+fn database_dir_for(root: PathBuf, configured: Option<&str>) -> PathBuf {
+    configured
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(root)
+}
+
+pub fn database_path() -> PathBuf {
+    database_dir().join(crate::db::DATABASE_FILENAME)
+}
+
 impl Config {
     pub fn config_path() -> PathBuf {
         crate::brand::env("CONFIG")
@@ -353,7 +373,22 @@ impl Config {
     }
 
     fn write_to(&self, path: &Path) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)?;
+        let mut value = serde_json::to_value(self)?;
+        if path.exists() {
+            let old = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read existing config at {:?}", path))?;
+            let old: serde_json::Value = serde_json::from_str(&old)
+                .with_context(|| format!("Failed to parse existing config at {:?}", path))?;
+            // These fields are now owned by pom.db. Preserve their old values
+            // when another setting updates pom.json, so the legacy source stays
+            // a usable safety copy until the operator explicitly migrates it.
+            for field in ["api_keys", "thermal", "huggingface_token"] {
+                if let Some(old_value) = old.get(field) {
+                    value[field] = old_value.clone();
+                }
+            }
+        }
+        let content = serde_json::to_string_pretty(&value)?;
         let mut options = std::fs::OpenOptions::new();
         options.create(true).write(true).truncate(true);
         #[cfg(unix)]
@@ -497,6 +532,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn database_directory_uses_volume_override_and_project_fallback() {
+        let root = PathBuf::from("/project");
+        assert_eq!(
+            database_dir_for(root.clone(), Some("/volume/pom")),
+            PathBuf::from("/volume/pom")
+        );
+        assert_eq!(database_dir_for(root.clone(), Some("  ")), root.clone());
+        assert_eq!(database_dir_for(root.clone(), None), root);
+    }
+
+    #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
             gpus: None,
@@ -602,6 +648,7 @@ mod tests {
             cooldown_secs: 45,
         };
         let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["thermal"]["limit_c"], 82.0);
         let parsed: Config = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.thermal.limit_c, 82.0);
         assert_eq!(parsed.thermal.hysteresis_c, 7.0);
@@ -671,16 +718,20 @@ mod tests {
             huggingface_token: Some("hf_super_secret".into()),
         };
 
-        std::fs::write(&path, b"old config").unwrap();
+        std::fs::write(
+            &path,
+            r#"{"api_keys":[],"thermal":{"limit_c":85.0,"hysteresis_c":8.0,"cooldown_secs":30},"huggingface_token":"hf_legacy"}"#,
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         cfg.write_to(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert!(format!("{cfg:?}").contains("[redacted]"));
         assert!(!format!("{cfg:?}").contains("hf_super_secret"));
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("hf_super_secret"));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["huggingface_token"], "hf_legacy");
         let _ = std::fs::remove_file(path);
     }
 

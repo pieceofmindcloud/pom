@@ -20,7 +20,7 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
         .route("/admin/nodes/{id}", delete(remove_node))
         .route("/admin/regenerate-key", post(regenerate_key))
         .route("/admin/api-keys", get(list_api_keys).post(generate_api_key))
-        .route("/admin/api-keys/{key}", delete(revoke_api_key))
+        .route("/admin/api-keys/:key", delete(revoke_api_key))
         .route("/admin/transfer-offers", get(transfer_offers))
 }
 
@@ -135,11 +135,20 @@ async fn regenerate_key(
 
 async fn list_api_keys(
     _auth: ConnectionAuth,
-    State(config): State<AuthState>,
-) -> impl IntoResponse {
-    let cfg = config.read().await;
-    let keys = cfg
-        .api_keys
+    State(state): State<crate::gateway::GatewayState>,
+) -> axum::response::Response {
+    let keys = match state.database.api_keys() {
+        Ok(keys) => keys,
+        Err(error) => {
+            tracing::error!("não foi possível ler as API keys: {error:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível ler as API keys" })),
+            )
+                .into_response();
+        }
+    };
+    let keys = keys
         .iter()
         .cloned()
         .map(|mut key| {
@@ -149,7 +158,7 @@ async fn list_api_keys(
             key
         })
         .collect::<Vec<_>>();
-    Json(keys)
+    Json(keys).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,10 +179,9 @@ struct GenerateKeyRequest {
 /// revoked the first.
 async fn generate_api_key(
     _auth: ConnectionAuth,
-    State(config): State<AuthState>,
+    State(state): State<crate::gateway::GatewayState>,
     Json(req): Json<GenerateKeyRequest>,
 ) -> impl IntoResponse {
-    let mut cfg = config.write().await;
     let raw = format!("sk-{}", Uuid::new_v4());
     let key = ApiKey {
         id: Uuid::new_v4().simple().to_string(),
@@ -183,27 +191,55 @@ async fn generate_api_key(
         active: true,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    cfg.api_keys.push(key.clone());
-    let _ = cfg.save();
-    (StatusCode::CREATED, Json(key))
+    if let Err(error) = state.database.insert_api_key(&key) {
+        tracing::error!("não foi possível guardar a API key: {error}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "não foi possível guardar a API key" })),
+        )
+            .into_response();
+    }
+    state.auth.write().await.api_keys.push(key.clone());
+    (StatusCode::CREATED, Json(key)).into_response()
 }
 
 async fn revoke_api_key(
     _auth: ConnectionAuth,
-    State(config): State<AuthState>,
+    State(state): State<crate::gateway::GatewayState>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
-    let mut cfg = config.write().await;
-    let existed = cfg.api_keys.iter().any(|k| k.key == key);
-    cfg.api_keys.retain(|k| k.key != key);
-    let _ = cfg.save();
-    Json(json!({ "revoked": existed }))
+    // A connection key identifies an operator role, not a human account. The
+    // node id is the honest actor identity available at this boundary.
+    let revoked_by = state.network.node_id.clone();
+    let existed = match state.database.revoke_api_key(&key, &revoked_by) {
+        Ok(existed) => existed,
+        Err(error) => {
+            tracing::error!("não foi possível revogar a API key: {error}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível revogar a API key" })),
+            )
+                .into_response();
+        }
+    };
+    if existed {
+        let mut cfg = state.auth.write().await;
+        for api_key in &mut cfg.api_keys {
+            if api_key.key == key || api_key.id == key {
+                api_key.active = false;
+            }
+        }
+    }
+    Json(json!({ "revoked": existed })).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transfer::TransferOffer;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
 
     /// A rota `/admin` devolve as mesmas ofertas de `GET /api/transfer/offers`,
     /// não uma lista vazia fixa: um consumidor da rota de administração tem que
@@ -236,5 +272,50 @@ mod tests {
         assert_eq!(offers.len(), 1, "a rota /admin não pode devolver vazio");
         assert_eq!(offers[0]["name"], "fatia_0_15.gguf");
         assert_eq!(offers[0]["from_host"], "ksia");
+    }
+
+    #[tokio::test]
+    async fn generated_key_is_stored_and_revocation_is_persistent() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let app = admin_routes().with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::post("/admin/api-keys")
+                    .header("authorization", "Bearer chave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"label":"teste"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = crate::gateway::testkit::body_of(response).await;
+        let key_id = created["id"].as_str().unwrap().to_string();
+        let secret = created["key"].as_str().unwrap().to_string();
+        assert!(state.database.api_key_for_token(&secret).unwrap().is_some());
+
+        let response = admin_routes()
+            .with_state(state.clone())
+            .oneshot(
+                Request::delete(format!("/admin/api-keys/{key_id}"))
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if response.status() != StatusCode::OK {
+            let body = crate::gateway::testkit::body_of(response).await;
+            panic!("resposta inesperada: {body}");
+        }
+        assert!(state.database.api_key_for_token(&secret).unwrap().is_none());
+        assert_eq!(state.database.api_key_revocations().unwrap()[0].1, "eu");
+        assert!(state
+            .auth
+            .read()
+            .await
+            .api_keys
+            .iter()
+            .any(|key| key.id == key_id && !key.active));
     }
 }

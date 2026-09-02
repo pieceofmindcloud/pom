@@ -492,17 +492,16 @@ async fn no_with_peer_capacities(
     config.max_new_tokens = deployment_max_new_tokens;
     config.n_ctx = n_ctx;
     state.runtime.seed_config_for_test(config).await;
-    {
-        let mut auth = state.auth.write().await;
-        auth.api_keys.push(crate::config::ApiKey {
-            id: "claude-code-contract".into(),
-            key: API_CHAVE.into(),
-            label: "claude-code".into(),
-            node_id: "eu".into(),
-            active: true,
-            created_at: String::new(),
-        });
-    }
+    let api_key = crate::config::ApiKey {
+        id: "claude-code-contract".into(),
+        key: API_CHAVE.into(),
+        label: "claude-code".into(),
+        node_id: "eu".into(),
+        active: true,
+        created_at: String::new(),
+    };
+    state.database.insert_api_key(&api_key).unwrap();
+    state.auth.write().await.api_keys.push(api_key);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

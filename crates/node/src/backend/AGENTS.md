@@ -23,13 +23,19 @@ behind an auth extractor.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
   `Caller`. `is_valid_inference_token` aplica a mesma regra na porta 8181: a
-  `connection_key` compartilhada ou uma API key ativa.
+  `connection_key` compartilhada ou uma API key ativa lida de `pom.db`, para
+  que criação e revogação entre processos tenham efeito sem reinício.
 - `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), the bounded remote-token
   callback route (`POST /v1/remote-stream-result`), and the `testkit` test
   scaffold (peer/state_with/body_of).
+- `db.rs` - único armazenamento SQLite local: schema criado no arranque,
+  WAL/timeout, implantações, API keys e revogações, preferências térmicas,
+  segredo do Hugging Face, histórico durável do catálogo e histórico de
+  conversas. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
+  para um volume e, sem ele, o banco fica na raiz do projeto.
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
 - `model_provider.rs` - API agnóstica de status do CLI, autenticação, busca,
@@ -42,14 +48,16 @@ behind an auth extractor.
   `GET /api/ui/model-provider/status` permite à UI distinguir CLI ausente,
   login necessário e sessão autenticada.
   `GET` e `POST /api/ui/model-provider/config` expõem somente a máscara e a
-  fonte efetiva do token, e o POST salva o segredo no `pom.json` com modo
-  restrito e atualiza o `HfTokenStore` sem reinício.
+  fonte efetiva do token, e o POST salva o segredo em `pom.db` com modo
+  restrito e atualiza o `HfTokenStore` sem reinício. O segredo nunca aparece
+  em log, erro ou resposta.
   O handler clona o `ModelFile` antes de criar a task `'static`, não mantém
   empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
   arquivos locais emprestam o nome a cada iteração.
 - `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths, thermal policy (`GET/POST /api/ui/thermal`) and slice retention.
+  storage paths, thermal policy (`GET/POST /api/ui/thermal`), slice retention
+  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
@@ -194,6 +202,9 @@ behind an auth extractor.
   prompt index, opens requests in `in_progress`, completes the same row, marks
   stale rows as `incomplete`, and serves authenticated paginated queries plus
   server-side statistics.
+  Recebe o mesmo caminho de `pom.db` de `backend::db`, então pedidos e
+  conversas ficam num único arquivo local; depois de abrir ou escrever, também
+  restringe o banco e os sidecars WAL/SHM ao dono.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
@@ -361,7 +372,8 @@ behind an auth extractor.
   `network/rtt` (GET autenticado, relatório direcional deste nó),
   `chat/telemetry` (POST autenticado, coleta os relatórios direcionais dos
   peers selecionados para o trace e não altera o planner), `requests` (GET ->
-  `crate::reqlog::list_requests`; `requests/stats` (GET ->
+  `crate::reqlog::list_requests`; `chat/history` (GET/POST/DELETE autenticado,
+  transcriptos normalizados em `pom.db`); `requests/stats` (GET ->
   `crate::reqlog::stats_requests`). `leave_network` now takes an optional
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's

@@ -11,17 +11,19 @@ mod auth;
 mod brand;
 #[path = "backend/capabilities.rs"]
 mod capabilities;
-#[cfg(test)]
-#[path = "backend/continuation_lab.rs"]
-mod continuation_lab;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "inference/collective.rs"]
 mod collective;
 #[path = "utils/config.rs"]
 mod config;
+#[cfg(test)]
+#[path = "backend/continuation_lab.rs"]
+mod continuation_lab;
 #[path = "inference/cycle.rs"]
 mod cycle;
+#[path = "backend/db.rs"]
+mod db;
 #[path = "backend/deploy.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
@@ -365,6 +367,9 @@ async fn main() -> Result<()> {
         config::Config::config_path().display()
     );
 
+    let database = Arc::new(db::PomDb::open(config::database_path())?);
+    info!("Local database: {}", database.path().display());
+
     // ── Setup flow: if no config exists, serve only the setup page ──────────
     if !config::Config::exists() {
         info!("No config found — starting in setup mode");
@@ -373,7 +378,12 @@ async fn main() -> Result<()> {
     }
 
     // ── Load existing config ─────────────────────────────────────────────────
-    let app_config = config::Config::load()?;
+    let mut app_config = config::Config::load()?;
+    app_config.api_keys = database.api_keys()?;
+    app_config.thermal = database
+        .thermal_policy()?
+        .unwrap_or_else(crate::thermal::ThermalPolicy::default);
+    app_config.huggingface_token = database.huggingface_token()?;
     info!("Role: {}", app_config.role);
 
     // Antes de qualquer coisa que possa carregar modelo: os backends do ggml
@@ -441,6 +451,7 @@ async fn main() -> Result<()> {
         info!("No --model provided — starting gateway without model binding");
         return start_gateway_only(
             gateway_port,
+            database.clone(),
             app_config.clone(),
             args.ollama_url,
             args.no_discovery,
@@ -723,7 +734,8 @@ async fn main() -> Result<()> {
     // ── Runtime: owns the model configuration and the inference server ──────
     let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
         Arc::new(tokio::sync::RwLock::new(app_config.clone()));
-    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
+    let hf_token_store =
+        huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
     // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
@@ -743,11 +755,12 @@ async fn main() -> Result<()> {
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth_and_database(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
         Some(auth_config.clone()),
+        database.clone(),
     );
     node_runtime
         .start_thermal_monitor(auth_config.clone())
@@ -790,7 +803,8 @@ async fn main() -> Result<()> {
                 enabled: !args.no_cycle_detection,
                 ..crate::cycle::CycleConfig::default()
             },
-            audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
+            audit: reqlog::AuditLog::new(database.path().to_path_buf()),
+            database: database.clone(),
             gateway_port,
             auth: auth_config,
             transfers: Default::default(),
@@ -1351,6 +1365,7 @@ fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
 
 async fn start_gateway_only(
     gateway_port: u16,
+    database: Arc<db::PomDb>,
     app_config: config::Config,
     ollama_url: String,
     no_discovery: bool,
@@ -1420,12 +1435,14 @@ async fn start_gateway_only(
         };
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
-    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
+    let hf_token_store =
+        huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth_and_database(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
         Some(auth_state.clone()),
+        database.clone(),
     );
     node_runtime.start_thermal_monitor(auth_state.clone()).await;
 
@@ -1455,7 +1472,8 @@ async fn start_gateway_only(
             enabled: cycle_detection_enabled,
             ..crate::cycle::CycleConfig::default()
         },
-        audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
+        audit: reqlog::AuditLog::new(database.path().to_path_buf()),
+        database,
         gateway_port,
         auth: auth_state,
         transfers: Default::default(),

@@ -48,6 +48,9 @@ As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
 ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
 key ativa quando a chave compartilhada não existe. O loopback do túnel mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
+Quando o processo tem o banco local, a API key é revalidada no `pom.db` a cada
+requisição. Isso faz uma revogação feita por outro processo valer imediatamente,
+mesmo que a cópia de `Config` em memória ainda esteja antiga.
 Quando o destino anunciado de um passo é o próprio `node_id` deste processo, o
 relay despacha o quadro diretamente para o handler de inferência em processo.
 Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência

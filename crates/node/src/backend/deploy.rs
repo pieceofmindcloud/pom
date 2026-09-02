@@ -101,9 +101,12 @@ pub fn routes() -> Router<GatewayState> {
 ///
 /// É o que um peer responde quando o coordenador vem juntar a visão do cluster
 /// (`?local=1`), e é o que impede a varredura de se chamar em círculo.
-fn local_deployments(self_id: &str) -> serde_json::Value {
-    let todas = crate::deployment::all();
-    json!({ "node_id": self_id, "deployments": todas })
+fn local_deployments(
+    self_id: &str,
+    database: &crate::db::PomDb,
+) -> anyhow::Result<serde_json::Value> {
+    let todas = database.deployments()?;
+    Ok(json!({ "node_id": self_id, "deployments": todas }))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -135,7 +138,13 @@ async fn list_deployments(
 ) -> Response {
     let self_id = state.network.node_id.clone();
     if q.local {
-        return Json(local_deployments(&self_id)).into_response();
+        return match local_deployments(&self_id, &state.database) {
+            Ok(body) => Json(body).into_response(),
+            Err(error) => {
+                tracing::error!("não foi possível ler implantações locais: {error:#}");
+                bad(json!({ "error": "não foi possível ler implantações locais" }))
+            }
+        };
     }
 
     let peers = state.all_peers().await;
@@ -163,12 +172,14 @@ async fn list_deployments(
         }
     };
 
-    absorve(
-        &self_id,
-        crate::deployment::all(),
-        &mut por_id,
-        &mut guardado_por,
-    );
+    let local = match state.database.deployments() {
+        Ok(local) => local,
+        Err(error) => {
+            tracing::error!("não foi possível ler implantações locais: {error:#}");
+            return bad(json!({ "error": "não foi possível ler implantações locais" }));
+        }
+    };
+    absorve(&self_id, local, &mut por_id, &mut guardado_por);
 
     let buscas = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
         let http = state.peer_http.for_peer(&peer.node_id);
@@ -265,7 +276,7 @@ async fn receive_deployment(
             registro.deploy_id, registro.model.total_layers, registro.model.label
         );
     }
-    match crate::deployment::save(&registro) {
+    match state.database.save_deployment(&registro) {
         Ok(_) => Json(json!({ "stored": true, "deploy_id": registro.deploy_id })).into_response(),
         Err(e) => bad(json!({ "error": format!("{e:#}") })),
     }
@@ -5112,7 +5123,7 @@ fn build_record(
 /// fazia parte. Uma cópia que não chega não derruba a implantação - ela já está
 /// no ar; o que se perde é aquele nó saber se explicar depois de um reinício.
 async fn publish_record(state: &GatewayState, registro: &crate::deployment::Deployment) {
-    if let Err(e) = crate::deployment::save(registro) {
+    if let Err(e) = state.database.save_deployment(registro) {
         warn!(
             "não deu para anotar a implantação {}: {e:#}",
             registro.deploy_id
@@ -5161,10 +5172,8 @@ async fn find_record(
     state: &GatewayState,
     deploy_id: &str,
 ) -> Option<crate::deployment::Deployment> {
-    if let Ok(caminho) = crate::deployment::path_in(&crate::deployment::dir(), deploy_id) {
-        if let Ok(d) = crate::deployment::load(&caminho) {
-            return Some(d);
-        }
+    if let Ok(Some(deployment)) = state.database.deployment(deploy_id) {
+        return Some(deployment);
     }
 
     let key = state.auth.read().await.connection_key.clone();
@@ -6111,7 +6120,7 @@ async fn undeploy_endpoint(
     // descarregados, e um que não respondeu guarda o dele - que é o certo, já
     // que ele ainda está no ar.
     if let UndeployTarget::Deployment { deploy_id, .. } = &alvo {
-        if let Err(e) = crate::deployment::remove_in(&crate::deployment::dir(), deploy_id) {
+        if let Err(e) = state.database.remove_deployment(deploy_id) {
             warn!("não deu para esquecer a implantação {deploy_id}: {e:#}");
         }
     }

@@ -27,7 +27,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -148,6 +148,13 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/chat/telemetry", post(chat_telemetry))
+        .route(
+            "/api/ui/chat/history",
+            get(chat_history)
+                .post(save_chat_history)
+                .delete(clear_chat_history),
+        )
+        .route("/api/ui/chat/history/:id", delete(delete_chat_history))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route("/api/ui/thermal", get(get_thermal).post(save_thermal))
         .route(
@@ -452,7 +459,7 @@ async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
 }
 
 /// Publish header metadata, reconciling it with whichever inventory is current.
-fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
+fn spawn_enrichment(database: Arc<crate::db::PomDb>, roots: CatalogRoots, partial: Arc<Catalog>) {
     tokio::spawn(async move {
         let started = Instant::now();
         info!(
@@ -501,10 +508,26 @@ fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
                 failed,
                 pending_count
             );
-            next
+            let snapshot = current.catalog.clone();
+            (next, snapshot)
         };
+        let (next, snapshot) = next;
+        if snapshot.metadata_complete || !snapshot.models.is_empty() {
+            let database_for_record = database.clone();
+            match tokio::task::spawn_blocking(move || database_for_record.record_catalog(&snapshot))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    warn!("não foi possível guardar o histórico do catálogo: {error:#}");
+                }
+                Err(error) => {
+                    warn!("tarefa do histórico do catálogo falhou: {error}");
+                }
+            }
+        }
         if let Some((next_roots, next_partial)) = next {
-            spawn_enrichment(next_roots, next_partial);
+            spawn_enrichment(database, next_roots, next_partial);
         }
     });
 }
@@ -512,10 +535,10 @@ fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
 /// Rescan in the background and publish the result. Metadata already read for
 /// unchanged files is copied into the new inventory before a new task is
 /// considered.
-fn spawn_refresh(roots: CatalogRoots) {
+fn spawn_refresh(database: Arc<crate::db::PomDb>, roots: CatalogRoots) {
     tokio::spawn(async move {
         let scanned = scan_catalog(&roots).await;
-        let (next_refresh, next_enrichment) = {
+        let (next_refresh, next_enrichment, snapshot) = {
             let mut guard = catalog_cache().lock().await;
             let Some(current) = guard.as_mut() else {
                 warn!("varredura do catálogo concluída, mas descartada: cache ausente");
@@ -549,13 +572,27 @@ fn spawn_refresh(roots: CatalogRoots) {
             } else {
                 None
             };
-            (next_refresh, next_enrichment)
+            (next_refresh, next_enrichment, current.catalog.clone())
         };
+        if snapshot.metadata_complete || !snapshot.models.is_empty() {
+            let database_for_record = database.clone();
+            match tokio::task::spawn_blocking(move || database_for_record.record_catalog(&snapshot))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    warn!("não foi possível guardar o histórico do catálogo: {error:#}");
+                }
+                Err(error) => {
+                    warn!("tarefa do histórico do catálogo falhou: {error}");
+                }
+            }
+        }
         if let Some(next_roots) = next_refresh {
-            spawn_refresh(next_roots);
+            spawn_refresh(database.clone(), next_roots);
         }
         if let Some((next_roots, next_partial)) = next_enrichment {
-            spawn_enrichment(next_roots, next_partial);
+            spawn_enrichment(database, next_roots, next_partial);
         }
     });
 }
@@ -563,7 +600,7 @@ fn spawn_refresh(roots: CatalogRoots) {
 /// Ask for a fresh walk without throwing away what we can already answer with —
 /// after slicing, after the directories change. A slice that exists must not
 /// need a restart to show up.
-pub(crate) async fn invalidate_catalog() {
+pub(crate) async fn invalidate_catalog(database: Arc<crate::db::PomDb>) {
     let roots = {
         let mut guard = catalog_cache().lock().await;
         let Some(cached) = guard.as_mut() else {
@@ -573,7 +610,7 @@ pub(crate) async fn invalidate_catalog() {
         claim_refresh(cached, roots.clone()).then_some(roots)
     };
     if let Some(roots) = roots {
-        spawn_refresh(roots);
+        spawn_refresh(database, roots);
     }
 }
 
@@ -619,7 +656,7 @@ async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
         }
     };
     if start_refresh {
-        spawn_refresh(roots);
+        spawn_refresh(state.database.clone(), roots);
     }
     catalog
 }
@@ -718,12 +755,13 @@ async fn save_thermal(
     if let Err(error) = policy.validate() {
         return bad_request(error.to_string());
     }
+    if let Err(error) = state.database.save_thermal_policy(policy) {
+        tracing::error!("não foi possível guardar a política térmica: {error:#}");
+        return bad_request("não foi possível guardar a política térmica");
+    }
     {
         let mut cfg = state.auth.write().await;
         cfg.thermal = policy;
-        if let Err(error) = cfg.save() {
-            return bad_request(format!("não deu para gravar pom.json: {error}"));
-        }
     }
     info!(
         limit_c = policy.limit_c,
@@ -874,7 +912,7 @@ async fn save_paths(
         }
     }
 
-    invalidate_catalog().await;
+    invalidate_catalog(state.database.clone()).await;
     info!("pastas de modelos atualizadas pela interface");
     get_paths(State(state)).await.into_response()
 }
@@ -1112,6 +1150,72 @@ async fn chat_telemetry(
             .then_with(|| a.to_node_id.cmp(&b.to_node_id))
     });
     Json(ChatTelemetryResponse { measurements })
+}
+
+async fn chat_history(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    match state.database.chat_sessions() {
+        Ok(sessions) => Json(sessions).into_response(),
+        Err(error) => {
+            tracing::error!("não foi possível ler o histórico do chat: {error:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível ler o histórico do chat" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn save_chat_history(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(session): Json<crate::db::ChatSessionRecord>,
+) -> Response {
+    if let Err(error) = session.validate() {
+        return bad_request(error.to_string());
+    }
+    if let Err(error) = state.database.save_chat_session(&session) {
+        tracing::error!("não foi possível guardar o histórico do chat: {error:#}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "não foi possível guardar o histórico do chat" })),
+        )
+            .into_response();
+    }
+    Json(session).into_response()
+}
+
+async fn delete_chat_history(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.database.delete_chat_session(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!("não foi possível apagar a conversa: {error:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível apagar a conversa" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn clear_chat_history(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    match state.database.clear_chat_sessions() {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            tracing::error!("não foi possível limpar o histórico do chat: {error:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível limpar o histórico do chat" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
@@ -3247,12 +3351,14 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
                 }),
                 &state.network.node_id,
             )?;
-            invalidate_catalog().await;
+            invalidate_catalog(state.database.clone()).await;
             caminho
         }
     } else if let Some(parts) = req.merge.clone() {
         let shard_dir = state.shard_dir().await;
-        merge_parts(shard_dir, &req, &parts, job_id).await?
+        let merged = merge_parts(shard_dir, &req, &parts, job_id).await?;
+        invalidate_catalog(state.database.clone()).await;
+        merged
     } else if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
         // Nothing to carve out: this peer serves the file as it is.
         req.source_model_path.clone()
@@ -3306,7 +3412,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
                 None,
                 &state.network.node_id,
             )?;
-            invalidate_catalog().await;
+            invalidate_catalog(state.database.clone()).await;
 
             info!(
                 "shard pronto: {} ({:.1} GB)",
@@ -3417,7 +3523,6 @@ async fn merge_parts(
             "modelo junto já existe, reaproveitando: {}",
             caminho.display()
         );
-        invalidate_catalog().await;
         return Ok(caminho.to_string_lossy().into_owned());
     }
     // O nome da pasta vem do manifesto do modelo original associado às partes.
@@ -3531,8 +3636,6 @@ async fn merge_parts(
     manifesto.parts.push(parte);
     let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
     let final_path = crate::pom::part_path(&pasta, &sha)?;
-
-    invalidate_catalog().await;
 
     info!(
         "modelo junto pronto: {} ({:.1} GB)",
@@ -4194,7 +4297,7 @@ async fn slice_locally(
 /// group in the source model's unified manifest.
 #[allow(clippy::too_many_arguments)]
 async fn run_tp_slice(
-    _state: GatewayState,
+    state: GatewayState,
     source: std::path::PathBuf,
     shard_dir: std::path::PathBuf,
     scratch: std::path::PathBuf,
@@ -4246,7 +4349,7 @@ async fn run_tp_slice(
                 size: tp_size,
             }),
         });
-        invalidate_catalog().await;
+        invalidate_catalog(state.database.clone()).await;
         if let Some(job) = jobs().write().await.get_mut(job_id) {
             job.outputs.push(outcome.output_path);
         }
@@ -4266,7 +4369,7 @@ async fn run_tp_slice(
     );
     let destination = crate::pom::finalize_run(&shard_dir, &scratch, &manifest)?;
     info!("fatiamento TP guardado em {}", destination.display());
-    invalidate_catalog().await;
+    invalidate_catalog(state.database.clone()).await;
     Ok(manifest)
 }
 
@@ -4307,7 +4410,7 @@ fn existing_layer_slice(
 /// ilegível - o manifesto é o que substitui a faixa que antes vivia no nome.
 #[allow(clippy::too_many_arguments)]
 async fn run_slice(
-    _state: GatewayState,
+    state: GatewayState,
     source: std::path::PathBuf,
     shard_dir: std::path::PathBuf,
     scratch: std::path::PathBuf,
@@ -4410,7 +4513,7 @@ async fn run_slice(
         });
 
         // Show up in the catalog as each one lands, not only at the end.
-        invalidate_catalog().await;
+        invalidate_catalog(state.database.clone()).await;
         let mut map = jobs().write().await;
         if let Some(job) = map.get_mut(job_id) {
             job.outputs.push(outcome.output_path);
@@ -4448,7 +4551,7 @@ async fn run_slice(
     // um fatiamento inteiro que existe em disco.
     let destino = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
     info!("fatiamento guardado em {}", destino.display());
-    invalidate_catalog().await;
+    invalidate_catalog(state.database.clone()).await;
 
     Ok(manifesto)
 }
@@ -7143,6 +7246,73 @@ mod chat_telemetry_tests {
                 transport: "libp2p".into(),
             }]
         );
+    }
+}
+
+#[cfg(test)]
+mod chat_history_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn chat_history_route_persists_and_deletes_authenticated_sessions() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let app = routes().with_state(state.clone());
+        let payload = serde_json::json!({
+            "id": "conversation-1",
+            "title": "Teste",
+            "titled": true,
+            "model": "model.gguf",
+            "modelAtStart": "model.gguf",
+            "updatedAt": "2026-09-02T12:00:00Z",
+            "messages": [{
+                "id": "message-1",
+                "role": "user",
+                "content": "Olá",
+                "at": "2026-09-02T11:59:00Z"
+            }]
+        });
+        let saved = app
+            .clone()
+            .oneshot(
+                Request::post("/api/ui/chat/history")
+                    .header("authorization", "Bearer chave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.status(), StatusCode::OK);
+        assert_eq!(state.database.chat_sessions().unwrap().len(), 1);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::get("/api/ui/chat/history")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(listed).await;
+        assert_eq!(body[0]["messages"][0]["content"], "Olá");
+
+        let deleted = app
+            .oneshot(
+                Request::delete("/api/ui/chat/history/conversation-1")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        assert!(state.database.chat_sessions().unwrap().is_empty());
     }
 }
 

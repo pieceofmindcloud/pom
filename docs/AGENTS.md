@@ -59,6 +59,11 @@ as causas conhecidas de perda do estado de sessão, o estado de disponibilidade
 do MTP no `/health` e a tarefa de observabilidade recomendada para distingui-las
 em campo.
 
+O armazenamento local unificado está especificado em
+`superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no
+backend; o contrato HTTP do histórico de conversas fica em
+`subsystems/api-http.md`.
+
 ## superpowers/specs/
 
 Designs, o "por que" e o "o quê" antes de qualquer codigo. Estrutura tipica:

@@ -16,6 +16,10 @@ o modelo acima do limite com estado `thermal`, preserva a configuração para
 retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
 abaixo do limite de religar durante o cooldown. `stop` limpa essa recuperação
 para respeitar uma desimplantação manual.
+As rotas de inferência revalidam API keys no `pom.db` compartilhado a cada
+requisição; assim uma revogação feita por outro processo não fica válida até o
+próximo reinício. A `connection_key` continua sendo a credencial interna
+compartilhada.
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
@@ -448,6 +452,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   pesos entre gerações compatíveis e mantém a anotação da fatia servida
   (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
   ou de parâmetros de carregamento também o invalida.
+  O runtime entrega ao servidor uma referência ao `pom.db` para que API keys
+  revogadas sejam recusadas mesmo quando outro processo ainda conserva uma
+  cópia antiga de `Config` em memória.
   `NodeConfig.inference_mode` preserva a preferência `auto`/`dense`/`moe` que
   veio do deploy; `infer_server::run` a entrega ao seletor antes de carregar o
   modelo. O campo escolhido ainda não substitui a observação: a telemetria

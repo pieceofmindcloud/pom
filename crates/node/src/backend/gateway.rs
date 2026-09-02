@@ -127,6 +127,8 @@ pub struct GatewayState {
     pub cycle_config: crate::cycle::CycleConfig,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
+    /// Single durable store for local operational state.
+    pub database: Arc<crate::db::PomDb>,
     /// HTTP port this node serves the API and UI on.
     pub gateway_port: u16,
     /// Setup-level configuration (role, connection key, bootstrap nodes).
@@ -205,6 +207,12 @@ mod cluster_cache_tests {
 impl axum::extract::FromRef<GatewayState> for AuthState {
     fn from_ref(state: &GatewayState) -> Self {
         state.auth.clone()
+    }
+}
+
+impl axum::extract::FromRef<GatewayState> for Arc<crate::db::PomDb> {
+    fn from_ref(state: &GatewayState) -> Self {
+        state.database.clone()
     }
 }
 
@@ -4161,6 +4169,12 @@ pub(crate) mod testkit {
             }
         }
         let assignment = Arc::new(RwLock::new(None));
+        let database_path = std::env::temp_dir().join(format!(
+            "pom-gateway-test-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = Arc::new(crate::db::PomDb::open(&database_path).expect("banco de teste"));
         GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),
@@ -4174,6 +4188,7 @@ pub(crate) mod testkit {
             runtime: NodeRuntime::new(net, assignment),
             cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(std::path::PathBuf::from(":memory:")),
+            database,
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
                 gpus: None,

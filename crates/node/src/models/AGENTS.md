@@ -97,10 +97,11 @@ transferência.
   validação de entradas, retomada por faixa, cache próprio e manifesto local.
 
 O token do Hugging Face é resolvido em cada requisição nesta ordem: `HF_TOKEN`,
-`HUGGING_FACE_HUB_TOKEN`, o campo `huggingface_token` do `pom.json` e, por fim,
-o arquivo de cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
+`HUGGING_FACE_HUB_TOKEN`, o segredo do `pom.db` e, por fim, o arquivo de cache
+(`HF_TOKEN_PATH`, `HF_HOME/token` ou
 `~/.cache/huggingface/token`). A configuração da UI fica em memória no
-`HfTokenStore`, então salvar na tela atualiza autenticação sem reiniciar o nó.
+`HfTokenStore` e no `pom.db`, então salvar na tela atualiza autenticação sem
+reiniciar o nó.
 Nenhum endpoint devolve o token bruto; erros continuam passando por
 `redact_sensitive`.
 
@@ -130,7 +131,9 @@ manifesto existente e só reaproveita uma parte quando o arquivo confere por
 SHA-256 e tamanho.
 
 `deployment::DeploymentIdentity` persiste a prova do artefato que entrou em
-serviço: `pom_id` para uma rodada de fatias ou SHA-256 do GGUF inteiro. Registros
+serviço: `pom_id` para uma rodada de fatias ou SHA-256 do GGUF inteiro. O
+registro completo da implantação vive em `backend::db::PomDb`; os JSON em
+`deployments/` são fonte legada preservada para a ferramenta descartável. Registros
 antigos sem essa prova só podem ser associados por caminho canônico no mesmo
 peer, nunca por nome.
 

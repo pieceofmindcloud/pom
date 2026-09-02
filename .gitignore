@@ -27,6 +27,10 @@ __pycache__*
 # carregam a connection_key, que vale como credencial de operador e como chave
 # de API. Um `git add -A` de script de deploy publicaria o segredo.
 pom*.json
+# banco SQLite local e os sidecars do WAL; estado operacional e credenciais.
+/pom.db
+/pom.db-wal
+/pom.db-shm
 .pom-node*.key
 
 # lixo do Finder do macOS; entrava no repo por si so

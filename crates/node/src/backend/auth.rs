@@ -133,7 +133,6 @@ where
         let State(config): State<AuthState> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
-
         let header = parts
             .headers
             .get("authorization")
@@ -168,11 +167,15 @@ impl<S> FromRequestParts<S> for ApiKeyAuth
 where
     S: Send + Sync,
     AuthState: axum::extract::FromRef<S>,
+    Arc<crate::db::PomDb>: axum::extract::FromRef<S>,
 {
     type Rejection = AuthRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let State(config): State<AuthState> = State::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AuthRejection::MissingHeader)?;
+        let State(database): State<Arc<crate::db::PomDb>> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
 
@@ -194,11 +197,14 @@ where
             if !cfg.connection_key.is_empty() && token == cfg.connection_key {
                 return Ok(ApiKeyAuth(crate::reqlog::Caller::operator()));
             }
-            if let Some(key) = cfg.api_keys.iter().find(|k| k.active && k.key == token) {
+            // SQLite is authoritative here rather than the startup snapshot:
+            // a key minted by another process becomes usable immediately, and
+            // a revocation made there takes effect without a restart.
+            if let Some(key) = database.api_key_for_token(token).ok().flatten() {
                 return Ok(ApiKeyAuth(crate::reqlog::Caller {
-                    key_id: api_key_identity(key),
-                    key_label: key.label.clone(),
-                    key_node_id: (!key.node_id.is_empty()).then(|| key.node_id.clone()),
+                    key_id: api_key_identity(&key),
+                    key_label: key.label,
+                    key_node_id: (!key.node_id.is_empty()).then_some(key.node_id),
                 }));
             }
         }
@@ -332,19 +338,16 @@ mod tests {
     #[tokio::test]
     async fn valid_secondary_header_preserves_api_key_caller_identity() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
-        state
-            .auth
-            .write()
-            .await
-            .api_keys
-            .push(crate::config::ApiKey {
-                id: "claude-code-id".into(),
-                key: "api-secret".into(),
-                label: "claude-code".into(),
-                node_id: "eu".into(),
-                active: true,
-                created_at: String::new(),
-            });
+        let key = crate::config::ApiKey {
+            id: "claude-code-id".into(),
+            key: "api-secret".into(),
+            label: "claude-code".into(),
+            node_id: "eu".into(),
+            active: true,
+            created_at: String::new(),
+        };
+        state.database.insert_api_key(&key).unwrap();
+        state.auth.write().await.api_keys.push(key);
 
         let request = Request::builder()
             .header("authorization", "Bearer invalid")
@@ -363,5 +366,19 @@ mod tests {
         assert_eq!(caller.key_id, "claude-code-id");
         assert_eq!(caller.key_label, "claude-code");
         assert_eq!(caller.key_node_id.as_deref(), Some("eu"));
+
+        state.database.revoke_api_key("api-secret", "eu").unwrap();
+        let request = Request::builder()
+            .header("authorization", "Bearer api-secret")
+            .body(())
+            .expect("requisição");
+        let (mut parts, _) = request.into_parts();
+        assert!(matches!(
+            <ApiKeyAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
+                &mut parts, &state,
+            )
+            .await,
+            Err(AuthRejection::InvalidKey)
+        ));
     }
 }

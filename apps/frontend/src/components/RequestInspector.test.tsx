@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import type { RequestTrace, PhaseTrace } from "../lib/chatStream";
 import type { RequestLogEntry } from "../lib/types";
@@ -129,6 +129,83 @@ describe("redactSensitive", () => {
 });
 
 describe("RequestInspector", () => {
+  afterEach(() => {
+    cleanup();
+    window.localStorage.clear();
+  });
+
+  it("shows the new prompt and previous context as separate markdown editors", () => {
+    const conversationalEntry = {
+      ...entry,
+      request_details: {
+        model: "qwen",
+        messages: [
+          { role: "system", content: "Você é um assistente." },
+          { role: "user", content: "A pergunta anterior" },
+          { role: "assistant", content: "A resposta anterior" },
+          { role: "user", content: "A pergunta nova" },
+        ],
+      },
+    };
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RequestInspector entry={conversationalEntry} onClose={() => undefined} />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "ENVIADO" }));
+
+    const prompt = screen.getByRole("textbox", { name: "Prompt novo" }) as HTMLTextAreaElement;
+    const context = screen.getByRole("textbox", { name: "Contexto anterior" }) as HTMLTextAreaElement;
+    expect(prompt.value).toContain("A pergunta nova");
+    expect(context.value).toContain("### system");
+    expect(context.value).toContain("A resposta anterior");
+    expect(context.value).not.toContain("A pergunta nova");
+    expect(prompt.value).not.toContain('"messages"');
+  });
+
+  it("keeps the response in the same markdown editor", () => {
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RequestInspector entry={entry} onClose={() => undefined} />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+
+    const response = screen.getByRole("textbox", { name: "Resposta" }) as HTMLTextAreaElement;
+    expect(response.value).toBe("resposta");
+    expect(response.value).not.toContain('"result"');
+  });
+
+  it("persists and respects the raw versus formatted preference", () => {
+    window.localStorage.setItem("pom.logs.inspector.format", "raw");
+    const view = render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RequestInspector entry={entry} onClose={() => undefined} />
+      </LocaleProvider>,
+    );
+
+    const preference = screen.getByLabelText("Formato do inspetor") as HTMLSelectElement;
+    expect(preference.value).toBe("raw");
+    fireEvent.click(screen.getByRole("tab", { name: "REQUEST" }));
+    expect(screen.getByRole("textbox", { name: "REQUEST" }).textContent).toContain('"request_details"');
+
+    fireEvent.change(preference, { target: { value: "formatted" } });
+    expect(window.localStorage.getItem("pom.logs.inspector.format")).toBe("formatted");
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+    expect((screen.getByRole("textbox", { name: "Resposta" }) as HTMLTextAreaElement).value).toBe("resposta");
+
+    view.unmount();
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RequestInspector entry={entry} onClose={() => undefined} />
+      </LocaleProvider>,
+    );
+    expect((screen.getByLabelText("Formato do inspetor") as HTMLSelectElement).value).toBe("formatted");
+  });
+
   it("shows the request path separately from the shared telemetry card", () => {
     mountInspector();
 

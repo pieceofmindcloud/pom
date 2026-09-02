@@ -146,13 +146,18 @@ prompt, nó e período, lista primeiro as entradas mais recentes em páginas e
 carrega a próxima quando o sentinela entra na viewport. A aba de estatísticas
 consulta `GET /api/ui/requests/stats`, que agrega no servidor por token, nó,
 dia, modelo e peer, além de tokens de entrada/saída, inferência, TTFT, cache de
-  prefixo e estados terminais. O inspetor mostra REQUEST, RESPONSE e TELEMETRIA
-  num visualizador JSON colorido, selecionável e de altura total. REQUEST
-  conserva o prompt e os campos completos do registro; TELEMETRIA separa o
-  caminho da requisição do cartão visual `ExecutionTelemetry`, compartilhado
-  com o Chat, e do JSON completo. A cópia é rotulada e redige credenciais,
-  inclusive `key` de registros em `api_keys` quando o valor tem formato de
-  segredo conhecido, sem ocultar campos `key` inocentes.
+prefixo e estados terminais. Clicar em qualquer área não interativa da linha
+abre o inspetor, preserva a lupa e destaca a linha selecionada. O cabeçalho do
+inspetor repete os detalhes da linha. ENVIADO separa prompt novo e contexto
+anterior em dois editores markdown de altura dividida; Resposta usa o mesmo
+editor. A preferência global entre conteúdo pré-formatado e JSON cru fica em
+`localStorage` e é restaurada em visitas futuras. REQUEST e TELEMETRIA mantêm
+o JSON completo, com TELEMETRIA separando o caminho da requisição do cartão
+visual `ExecutionTelemetry`, compartilhado com o Chat. O indicador de
+carregamento ocupa um slot à esquerda do badge de erros, mantendo o badge fixo
+à direita. A cópia é rotulada e redige credenciais, inclusive `key` de
+registros em `api_keys` quando o valor tem formato de segredo conhecido, sem
+ocultar campos `key` inocentes.
 `in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais
 distintos. A identidade exibida é o id e o rótulo configurados para a chave;
 nenhum segredo é pedido ao endpoint ou renderizado no navegador.

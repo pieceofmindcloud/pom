@@ -119,6 +119,10 @@ function rateText(value: number | null | undefined, unavailable: string, unit: s
   return value == null ? unavailable : `${num(value, 1)} ${unit}`;
 }
 
+function isInteractiveRowTarget(target: EventTarget | null) {
+  return target instanceof Element && target.closest("button, a, input, select, textarea, [role='button']") !== null;
+}
+
 function StatCard({ label, value, detail, icon }: { label: string; value: string; detail?: string; icon: ReactNode }) {
   return (
     <div className="min-w-0 border border-line bg-surface/65 px-3 py-3">
@@ -384,9 +388,11 @@ function RequestsView({ filters, name, selected, setSelected }: {
       <div ref={scrollContainerRef} className="min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-2 text-[0.68rem] text-muted sm:px-4">
           <span>{t("tokenLogs.count", { count: num(total) })}</span>
-          <div className="flex items-center gap-2">
-            {query.data?.errors ? <Badge tone="rose">{t("tokenLogs.errors", { count: num(query.data.errors) })}</Badge> : null}
-            {query.isFetching && entries.length > 0 ? <span className="text-faint">{t("tokenLogs.loadingMore")}</span> : null}
+          <div className="flex min-w-[15rem] shrink-0 items-center justify-end gap-2">
+            <span className="flex min-w-[9rem] items-center justify-end gap-1 text-faint" aria-live="polite">
+              {query.isFetching && entries.length > 0 ? <><Loader2 className="h-3 w-3 animate-spin" />{t("tokenLogs.loadingMore")}</> : null}
+            </span>
+            {query.data?.errors ? <span data-testid="logs-errors-badge"><Badge tone="rose">{t("tokenLogs.errors", { count: num(query.data.errors) })}</Badge></span> : null}
           </div>
         </div>
         {entries.length === 0 ? (
@@ -405,7 +411,22 @@ function RequestsView({ filters, name, selected, setSelected }: {
               </thead>
               <tbody>
                 {entries.map((entry) => (
-                  <tr key={entry.id} className={`border-b border-line transition-colors hover:bg-raised ${selected?.id === entry.id ? "bg-iris/8" : ""}`}>
+                  <tr
+                    key={entry.id}
+                    data-testid={`logs-row-${entry.id}`}
+                    aria-selected={selected?.id === entry.id}
+                    tabIndex={0}
+                    onClick={(event) => {
+                      if (!isInteractiveRowTarget(event.target)) setSelected(entry);
+                    }}
+                    onKeyDown={(event) => {
+                      if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) {
+                        event.preventDefault();
+                        setSelected(entry);
+                      }
+                    }}
+                    className={`cursor-pointer border-b border-line transition-colors hover:bg-raised ${selected?.id === entry.id ? "bg-iris/8" : ""}`}
+                  >
                     <td className="whitespace-nowrap px-3 py-1.5">
                       <Mono className="text-fg">{clock(entry.received_at)}</Mono>
                       <span className="ml-1.5 text-[0.62rem] text-faint">{since(entry.received_at)}</span>
@@ -445,10 +466,10 @@ function RequestsView({ filters, name, selected, setSelected }: {
           </ScrollX>
         )}
         <div ref={sentinelRef} data-testid="logs-load-more" data-page={page} className="flex min-h-12 items-center justify-center px-3 py-3 text-[0.68rem] text-faint">
-          {query.isFetching && entries.length > 0 ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" />{t("tokenLogs.loadingMore")}</> : hasMore ? t("tokenLogs.scrollForMore") : entries.length > 0 ? t("tokenLogs.allLoaded") : null}
+          {query.isFetching && entries.length > 0 ? null : hasMore ? t("tokenLogs.scrollForMore") : entries.length > 0 ? t("tokenLogs.allLoaded") : null}
         </div>
       </div>
-      {selected && <RequestInspector entry={selected} onClose={() => setSelected(null)} />}
+      {selected && <RequestInspector entry={selected} name={name} onClose={() => setSelected(null)} />}
     </div>
   );
 }

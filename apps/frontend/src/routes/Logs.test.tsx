@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
@@ -66,6 +66,7 @@ const result = {
 describe("Logs", () => {
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     mocks.useRequestLog.mockReset();
     mocks.useRequestStats.mockReset();
   });
@@ -95,6 +96,7 @@ describe("Logs", () => {
   });
 
   it("reveals the exact prompt and request details when inspected", () => {
+    window.localStorage.setItem("pom.logs.inspector.format", "raw");
     mocks.useRequestLog.mockReturnValue({
       data: result,
       isError: false,
@@ -111,16 +113,18 @@ describe("Logs", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Inspecionar requisição" }));
 
+    fireEvent.click(screen.getByRole("tab", { name: "REQUEST" }));
     const requestJson = screen.getByRole("textbox", { name: "REQUEST" });
     expect(requestJson.textContent).toContain("relatorio trimestral confidencial");
     expect(requestJson.textContent).toContain('"stream": false');
     expect(requestJson.querySelector("code.hljs.language-json")).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: "RESPONSE" }));
-    const responseJson = screen.getByRole("textbox", { name: "RESPONSE" });
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+    const responseJson = screen.getByRole("textbox", { name: "Resposta" });
     expect(responseJson.textContent).toContain("servidor reiniciou antes do fim");
   });
 
   it("keeps every field returned by the audit record in its inspector section", () => {
+    window.localStorage.setItem("pom.logs.inspector.format", "raw");
     mocks.useRequestLog.mockReturnValue({
       data: {
         ...result,
@@ -162,6 +166,7 @@ describe("Logs", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Inspecionar requisição" }));
+    fireEvent.click(screen.getByRole("tab", { name: "REQUEST" }));
     const requestJson = screen.getByRole("textbox", { name: "REQUEST" });
     expect(requestJson.textContent).toContain('"id": "req-1"');
     expect(requestJson.textContent).toContain('"received_at": "2026-08-26T12:00:00Z"');
@@ -173,8 +178,8 @@ describe("Logs", () => {
     expect(requestJson.textContent).toContain('"prompt": "relatorio trimestral confidencial"');
     expect(requestJson.textContent).toContain('"request_details"');
 
-    fireEvent.click(screen.getByRole("tab", { name: "RESPONSE" }));
-    const responseJson = screen.getByRole("textbox", { name: "RESPONSE" });
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+    const responseJson = screen.getByRole("textbox", { name: "Resposta" });
     expect(responseJson.textContent).toContain('"completed_at": "2026-08-26T12:00:01Z"');
     expect(responseJson.textContent).toContain('"status": "ok"');
     expect(responseJson.textContent).toContain('"result": "resposta gravada"');
@@ -219,7 +224,7 @@ describe("Logs", () => {
     );
   });
 
-  it("opens a three-tab object inspector for a request", () => {
+  it("opens a four-tab object inspector for a request", () => {
     mocks.useRequestLog.mockReturnValue({
       data: result,
       isError: false,
@@ -237,10 +242,74 @@ describe("Logs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Inspecionar requisição" }));
 
     expect(screen.getByRole("tab", { name: "REQUEST" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "RESPONSE" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Resposta" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "TELEMETRIA" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: "RESPONSE" }));
-    expect(screen.getByRole("textbox", { name: "RESPONSE" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Resposta" }));
+    expect(screen.getByRole("textbox", { name: "Resposta" })).toBeTruthy();
+  });
+
+  it("opens the inspector from any non-interactive part of a row and highlights it", () => {
+    mocks.useRequestLog.mockReturnValue({
+      data: result,
+      isError: false,
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <Logs />
+      </LocaleProvider>,
+    );
+
+    const row = screen.getByTestId("logs-row-req-1");
+    fireEvent.click(within(row).getByText("qwen"));
+
+    expect(screen.getByRole("heading", { name: "Inspetor de requisição" })).toBeTruthy();
+    expect(row.getAttribute("aria-selected")).toBe("true");
+    expect(row.className).toContain("bg-iris/8");
+  });
+
+  it("does not move the error badge when loading more appears and disappears", () => {
+    let fetching = false;
+    mocks.useRequestLog.mockImplementation(() => ({
+      data: result,
+      isError: false,
+      isLoading: false,
+      isFetching: fetching,
+      error: null,
+      refetch: vi.fn(),
+    }));
+
+    const { rerender } = render(
+      <LocaleProvider initialLocale="pt-BR">
+        <Logs />
+      </LocaleProvider>,
+    );
+
+    const badge = screen.getByTestId("logs-errors-badge");
+    const status = badge.parentElement!;
+    const badgePosition = [...status.children].indexOf(badge);
+    expect(status.className).toContain("min-w-");
+
+    fetching = true;
+    rerender(
+      <LocaleProvider initialLocale="pt-BR">
+        <Logs />
+      </LocaleProvider>,
+    );
+    expect([...badge.parentElement!.children].indexOf(badge)).toBe(badgePosition);
+    expect(screen.getByText("Carregando mais")).toBeTruthy();
+
+    fetching = false;
+    rerender(
+      <LocaleProvider initialLocale="pt-BR">
+        <Logs />
+      </LocaleProvider>,
+    );
+    expect([...badge.parentElement!.children].indexOf(badge)).toBe(badgePosition);
+    expect(screen.queryByText("Carregando mais")).toBeNull();
   });
 
   it("copies a labelled request bundle without credentials", async () => {

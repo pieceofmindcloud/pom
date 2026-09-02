@@ -42,12 +42,13 @@ Per-file list:
   **fora** do `<label>` (um `<button>` dentro de `<label>` quebra o nome
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
-- `RequestInspector.tsx` - inspetor de objetos usado pela tela Logs. Mantém
-  REQUEST, RESPONSE e TELEMETRIA como JSON formatado, colorido e selecionável,
-  ocupa a coluna inteira e redige campos com formato de credencial antes da
-  cópia para chat. O prompt e todos os campos do registro de auditoria ficam
-  na seção correspondente; TELEMETRIA também mostra o caminho da requisição e
-  reutiliza o cartão `ExecutionTelemetry`.
+- `RequestInspector.tsx` - inspetor da tela Logs. A aba ENVIADO vem antes de
+  REQUEST e separa prompt novo e contexto anterior em duas áreas de markdown;
+  Resposta usa o mesmo editor. O seletor global entre pré-formatado e JSON cru
+  persiste em `storageKey("logs.inspector.format")`. O cabeçalho repete os
+  detalhes exibidos na linha, e a telemetria continua usando JSON, caminho da
+  requisição e o cartão compartilhado `ExecutionTelemetry`. A cópia sempre
+  redige credenciais.
 - `CodeViewer.tsx` - superfície de leitura flexível com realce JSON por
   `highlight.js`. É somente leitura, mas permanece selecionável e copiável pelo
   navegador, e é usada nas três seções do inspetor.

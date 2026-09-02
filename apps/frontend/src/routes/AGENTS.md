@@ -229,16 +229,16 @@ Per-file list:
   backend ainda não impõe o escopo nem a unicidade; isso ficou para
   `rdma-perfis-escopo-backend`. `ConnectionKeys`: the cluster operator key -
   `POST /admin/regenerate-key`.
-- `Logs.tsx` - Full-bleed authenticated audit screen. Its compact toolbar
-  applies API-key, prompt, node and time filters to `GET /api/ui/requests`;
-  the requests tab uses `limit`/`offset` pages and an IntersectionObserver
-  sentinel for infinite scroll. The statistics tab reads the server-aggregated
-  `GET /api/ui/requests/stats` payload for token, node, day, model, peer,
-  prefix-cache, terminal-state and TTFT views. Selecting a row opens the shared
-  object-style inspector in `../components/RequestInspector.tsx`. REQUEST
-  retains the prompt and the complete audit record, RESPONSE and TELEMETRIA
-  use the full-height highlighted viewer, and TELEMETRIA separates the request
-  path from the shared execution card and its JSON. Copy remains redacted.
+- `Logs.tsx` - tela autenticada de auditoria em largura total. A barra aplica
+  filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a aba de
+  requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
+  A aba de estatísticas lê `GET /api/ui/requests/stats`. Clicar em qualquer
+  ponto não interativo da linha abre o inspetor e mantém a linha selecionada
+  destacada; a lupa continua disponível. O cabeçalho do inspetor repete as
+  métricas da linha. ENVIADO separa prompt novo e contexto anterior em markdown,
+  Resposta usa o mesmo editor e a preferência entre markdown e JSON cru fica
+  no localStorage. O slot reservado do carregamento deixa o badge de erros
+  fixo à direita.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and

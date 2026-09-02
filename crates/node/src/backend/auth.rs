@@ -476,6 +476,7 @@ mod tests {
         let state = crate::gateway::testkit::state_with("cluster-secret", vec![]).await;
         {
             let mut cfg = state.auth.write().await;
+            cfg.connection_key = "cluster-secret".into();
             cfg.admin_exposure = crate::config::AdminExposure::Network;
             cfg.admin_access_token = Some("person-secret".into());
         }

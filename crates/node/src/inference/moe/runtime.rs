@@ -308,6 +308,78 @@ fn nonfinite_summary(values: &[f32]) -> Option<(usize, usize, f32)> {
     first.map(|index| (index, count, values[index]))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LayerInputSummary {
+    elements: usize,
+    non_finite_count: usize,
+    first_non_finite: Option<usize>,
+    finite_min: Option<f32>,
+    finite_max: Option<f32>,
+}
+
+fn summarize_layer_input(values: &[f32]) -> LayerInputSummary {
+    let mut summary = LayerInputSummary {
+        elements: values.len(),
+        non_finite_count: 0,
+        first_non_finite: None,
+        finite_min: None,
+        finite_max: None,
+    };
+    for (index, &value) in values.iter().enumerate() {
+        if !value.is_finite() {
+            summary.non_finite_count += 1;
+            summary.first_non_finite.get_or_insert(index);
+            continue;
+        }
+        summary.finite_min = Some(
+            summary
+                .finite_min
+                .map_or(value, |current| current.min(value)),
+        );
+        summary.finite_max = Some(
+            summary
+                .finite_max
+                .map_or(value, |current| current.max(value)),
+        );
+    }
+    summary
+}
+
+fn log_moe_layer_input_diagnostic(
+    source: &MoeSource,
+    layer: u32,
+    hidden: &[f32],
+    selected_experts: &[i32],
+    weights: &[f32],
+    tokens: usize,
+    expert_count_used: usize,
+    weight_before_ffn: bool,
+) {
+    if layer != 0 {
+        return;
+    }
+    let summary = summarize_layer_input(hidden);
+    tracing::warn!(
+        target: "moe.layer_input_diagnostic",
+        layer,
+        source = source.kind(),
+        dtypes = ?source.dtypes(),
+        tokens,
+        expert_count_used,
+        hidden_width = source.hidden(),
+        hidden_elements = summary.elements,
+        hidden_non_finite_count = summary.non_finite_count,
+        hidden_first_non_finite = ?summary.first_non_finite,
+        hidden_finite_min = ?summary.finite_min,
+        hidden_finite_max = ?summary.finite_max,
+        hidden_first_values = ?hidden.iter().take(4).copied().collect::<Vec<_>>(),
+        selected_experts_first = ?selected_experts.iter().take(8).copied().collect::<Vec<_>>(),
+        weights_first = ?weights.iter().take(8).copied().collect::<Vec<_>>(),
+        weight_before_ffn,
+        "POM_MOE_LAYER_INPUT layer 0 antes dos executores"
+    );
+}
+
 #[cfg(any(feature = "cuda", test))]
 fn require_cuda_compute_bytes(compute_bytes: Option<u64>) -> Result<u64, MoeRuntimeError> {
     compute_bytes.filter(|bytes| *bytes > 0).ok_or_else(|| {
@@ -1776,6 +1848,17 @@ impl MoeRuntime {
             }
         }
 
+        log_moe_layer_input_diagnostic(
+            &self.source,
+            layer,
+            hidden,
+            selected_experts,
+            weights,
+            tokens,
+            expert_count_used,
+            weight_before_ffn,
+        );
+
         let resolved_ids = selected_experts
             .iter()
             .map(|&expert| {
@@ -2158,6 +2241,17 @@ mod tests {
         assert_eq!(summary.1, 2);
         assert!(summary.2.is_nan());
         assert!(nonfinite_summary(&[1.0, 2.0]).is_none());
+    }
+
+    #[test]
+    fn diagnostico_da_entrada_da_camada_registra_nan_e_faixa_finita() {
+        let summary = summarize_layer_input(&[2.0, f32::NAN, -3.5, f32::INFINITY]);
+
+        assert_eq!(summary.elements, 4);
+        assert_eq!(summary.non_finite_count, 2);
+        assert_eq!(summary.first_non_finite, Some(1));
+        assert_eq!(summary.finite_min, Some(-3.5));
+        assert_eq!(summary.finite_max, Some(2.0));
     }
 
     #[test]

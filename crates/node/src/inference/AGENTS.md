@@ -366,6 +366,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `llm::moe_route_tests::callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink`
   executa o callback real com o mesmo `EnvFilter` do processo e deve ser rodado
   com `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`.
+  O runtime registra sempre a entrada da camada 0 em
+  `moe.layer_input_diagnostic`, com contagem/primeiro índice não finito, faixa
+  finita, amostras de hidden e rota, antes de escolher CPU ou CUDA. Isso separa
+  contaminação a montante de falha em um executor.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
   acumulação inteira por subbloco NVFP4 e decodificação direta dos superblocos
   Q4_K/Q6_K com SiLU no caminho K. O

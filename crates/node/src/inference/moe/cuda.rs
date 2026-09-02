@@ -294,6 +294,8 @@ impl std::error::Error for CudaMoeError {}
 pub(crate) struct CudaHeterogeneousTensor {
     pub data: *const u8,
     pub bytes: usize,
+    pub rows: usize,
+    pub columns: usize,
     pub dtype: u32,
     pub scale: f32,
     pub input_scale: f32,
@@ -304,12 +306,14 @@ pub(crate) struct CudaHeterogeneousTensor {
 const _: () = {
     assert!(std::mem::offset_of!(CudaHeterogeneousTensor, data) == 0);
     assert!(std::mem::offset_of!(CudaHeterogeneousTensor, bytes) == 8);
-    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, dtype) == 16);
-    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, scale) == 20);
-    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, input_scale) == 24);
-    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_scale) == 28);
-    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_input_scale) == 32);
-    assert!(std::mem::size_of::<CudaHeterogeneousTensor>() == 40);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, rows) == 16);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, columns) == 24);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, dtype) == 32);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, scale) == 36);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, input_scale) == 40);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_scale) == 44);
+    assert!(std::mem::offset_of!(CudaHeterogeneousTensor, secondary_input_scale) == 48);
+    assert!(std::mem::size_of::<CudaHeterogeneousTensor>() == 56);
 };
 
 impl Default for CudaHeterogeneousTensor {
@@ -317,6 +321,8 @@ impl Default for CudaHeterogeneousTensor {
         Self {
             data: std::ptr::null(),
             bytes: 0,
+            rows: 0,
+            columns: 0,
             dtype: 0,
             scale: 1.0,
             input_scale: 1.0,
@@ -932,11 +938,9 @@ impl IqQuantCudaExecutor {
 
 /// Executor CUDA para uma rota cujos tensores podem usar Q4_K, Q6_K, IQ3_XXS,
 /// IQ3_S, IQ2_S, IQ4_XS ou MXFP4 independentemente por papel. Os descritores
-/// carregam ponteiro, tamanho e dtype de cada tensor; o cache residente mantém
-/// os bytes no device entre tokens.
+/// carregam ponteiro, tamanho, geometria de uma fatia e dtype de cada tensor;
+/// o cache residente mantém os bytes no device entre tokens.
 pub struct HeterogeneousCudaExecutor {
-    hidden: usize,
-    intermediate: usize,
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
@@ -944,13 +948,11 @@ pub struct HeterogeneousCudaExecutor {
 
 impl HeterogeneousCudaExecutor {
     pub fn new_with_cache(
-        hidden: usize,
-        intermediate: usize,
+        _hidden: usize,
+        _intermediate: usize,
         resident_cache: Arc<DeviceExpertCache>,
     ) -> Self {
         Self {
-            hidden,
-            intermediate,
             profile: std::env::var("POM_MOE_CUDA_PROFILE")
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
             resident_cache,
@@ -1010,9 +1012,10 @@ impl HeterogeneousCudaExecutor {
                 "ativação heterogênea {activation} não suportada pelo kernel CUDA"
             )));
         }
-        if hidden.len() != tokens.saturating_mul(self.hidden) {
+        let (hidden_width, intermediate_width) = heterogeneous_route_geometry(experts)?;
+        if hidden.len() != tokens.saturating_mul(hidden_width) {
             return Err(CudaMoeError::HiddenWidth {
-                expected: tokens.saturating_mul(self.hidden),
+                expected: tokens.saturating_mul(hidden_width),
                 actual: hidden.len(),
             });
         }
@@ -1032,8 +1035,8 @@ impl HeterogeneousCudaExecutor {
         for (index, expert) in experts.iter().enumerate() {
             validate_heterogeneous_tensor(
                 expert.down,
-                self.hidden,
-                self.intermediate,
+                hidden_width,
+                intermediate_width,
                 &format!("rota {index} down"),
             )?;
             if !expert.gate_up.data.is_null() {
@@ -1044,21 +1047,21 @@ impl HeterogeneousCudaExecutor {
                 }
                 validate_heterogeneous_tensor(
                     expert.gate_up,
-                    2 * self.intermediate,
-                    self.hidden,
+                    2 * intermediate_width,
+                    hidden_width,
                     &format!("rota {index} gate_up"),
                 )?;
             } else {
                 validate_heterogeneous_tensor(
                     expert.gate,
-                    self.intermediate,
-                    self.hidden,
+                    intermediate_width,
+                    hidden_width,
                     &format!("rota {index} gate"),
                 )?;
                 validate_heterogeneous_tensor(
                     expert.up,
-                    self.intermediate,
-                    self.hidden,
+                    intermediate_width,
+                    hidden_width,
                     &format!("rota {index} up"),
                 )?;
             }
@@ -1086,8 +1089,8 @@ impl HeterogeneousCudaExecutor {
                 hidden.len(),
                 output.as_mut_ptr(),
                 output.len(),
-                self.hidden,
-                self.intermediate,
+                hidden_width,
+                intermediate_width,
                 activation,
                 &mut nonfinite_stage,
                 &mut nonfinite_index,
@@ -1141,6 +1144,21 @@ impl HeterogeneousCudaExecutor {
     }
 }
 
+fn heterogeneous_route_geometry(
+    experts: &[CudaHeterogeneousExpert],
+) -> Result<(usize, usize), CudaMoeError> {
+    let down = experts
+        .first()
+        .map(|expert| expert.down)
+        .ok_or_else(|| CudaMoeError::Geometry("rota heterogênea sem experts".into()))?;
+    if down.data.is_null() || down.rows == 0 || down.columns == 0 {
+        return Err(CudaMoeError::Geometry(
+            "down heterogêneo não declara a geometria de um expert".into(),
+        ));
+    }
+    Ok((down.rows, down.columns))
+}
+
 fn validate_heterogeneous_tensor(
     tensor: CudaHeterogeneousTensor,
     rows: usize,
@@ -1156,10 +1174,16 @@ fn validate_heterogeneous_tensor(
             "{label} contém escala não finita"
         )));
     }
+    if tensor.rows != rows || tensor.columns != columns {
+        return Err(CudaMoeError::Geometry(format!(
+            "{label} declara matriz {}x{}, esperada {}x{} para um expert",
+            tensor.rows, tensor.columns, rows, columns
+        )));
+    }
     let expected = match super::format_heterogeneous::cuda_tensor_expected_bytes(
         tensor.dtype,
-        rows,
-        columns,
+        tensor.rows,
+        tensor.columns,
     ) {
         Some(expected) => expected,
         None if !super::format_heterogeneous::cuda_tensor_dtype_supported(tensor.dtype) => {
@@ -2091,18 +2115,24 @@ mod tests {
             gate: CudaHeterogeneousTensor {
                 data: gate_lease.handle() as *const u8,
                 bytes: gate.len(),
+                rows: intermediate,
+                columns: hidden,
                 dtype: 12,
                 ..CudaHeterogeneousTensor::default()
             },
             up: CudaHeterogeneousTensor {
                 data: up_lease.handle() as *const u8,
                 bytes: up.len(),
+                rows: intermediate,
+                columns: hidden,
                 dtype: 14,
                 ..CudaHeterogeneousTensor::default()
             },
             down: CudaHeterogeneousTensor {
                 data: down_lease.handle() as *const u8,
                 bytes: down.len(),
+                rows: hidden,
+                columns: intermediate,
                 dtype: 12,
                 ..CudaHeterogeneousTensor::default()
             },
@@ -2411,18 +2441,24 @@ mod tests {
             gate: CudaHeterogeneousTensor {
                 data: gate_lease.handle() as *const u8,
                 bytes: gate.len(),
+                rows: intermediate,
+                columns: hidden,
                 dtype: 21,
                 ..CudaHeterogeneousTensor::default()
             },
             up: CudaHeterogeneousTensor {
                 data: up_lease.handle() as *const u8,
                 bytes: up.len(),
+                rows: intermediate,
+                columns: hidden,
                 dtype: 22,
                 ..CudaHeterogeneousTensor::default()
             },
             down: CudaHeterogeneousTensor {
                 data: down_lease.handle() as *const u8,
                 bytes: down.len(),
+                rows: hidden,
+                columns: intermediate,
                 dtype: 23,
                 ..CudaHeterogeneousTensor::default()
             },
@@ -2504,18 +2540,24 @@ mod tests {
             gate: CudaHeterogeneousTensor {
                 data: gate_lease.handle() as *const u8,
                 bytes: gate.len(),
+                rows: intermediate,
+                columns: hidden,
                 dtype: 18,
                 ..CudaHeterogeneousTensor::default()
             },
             up: CudaHeterogeneousTensor {
                 data: up_lease.handle() as *const u8,
                 bytes: up.len(),
+                rows: intermediate,
+                columns: hidden,
                 dtype: 18,
                 ..CudaHeterogeneousTensor::default()
             },
             down: CudaHeterogeneousTensor {
                 data: down_lease.handle() as *const u8,
                 bytes: down.len(),
+                rows: hidden,
+                columns: intermediate,
                 dtype: 39,
                 ..CudaHeterogeneousTensor::default()
             },

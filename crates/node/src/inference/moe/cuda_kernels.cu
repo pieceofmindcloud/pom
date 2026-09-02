@@ -51,6 +51,8 @@ struct CudaMoeCallTiming {
 struct CudaHeterogeneousTensor {
     const uint8_t * data;
     std::size_t bytes;
+    std::size_t rows;
+    std::size_t columns;
     uint32_t dtype;
     float scale;
     float input_scale;
@@ -69,17 +71,21 @@ static_assert(offsetof(CudaHeterogeneousTensor, data) == 0,
     "CudaHeterogeneousTensor.data ABI offset differs from Rust");
 static_assert(offsetof(CudaHeterogeneousTensor, bytes) == 8,
     "CudaHeterogeneousTensor.bytes ABI offset differs from Rust");
-static_assert(offsetof(CudaHeterogeneousTensor, dtype) == 16,
+static_assert(offsetof(CudaHeterogeneousTensor, rows) == 16,
+    "CudaHeterogeneousTensor.rows ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, columns) == 24,
+    "CudaHeterogeneousTensor.columns ABI offset differs from Rust");
+static_assert(offsetof(CudaHeterogeneousTensor, dtype) == 32,
     "CudaHeterogeneousTensor.dtype ABI offset differs from Rust");
-static_assert(offsetof(CudaHeterogeneousTensor, scale) == 20,
+static_assert(offsetof(CudaHeterogeneousTensor, scale) == 36,
     "CudaHeterogeneousTensor.scale ABI offset differs from Rust");
-static_assert(offsetof(CudaHeterogeneousTensor, input_scale) == 24,
+static_assert(offsetof(CudaHeterogeneousTensor, input_scale) == 40,
     "CudaHeterogeneousTensor.input_scale ABI offset differs from Rust");
-static_assert(offsetof(CudaHeterogeneousTensor, secondary_scale) == 28,
+static_assert(offsetof(CudaHeterogeneousTensor, secondary_scale) == 44,
     "CudaHeterogeneousTensor.secondary_scale ABI offset differs from Rust");
-static_assert(offsetof(CudaHeterogeneousTensor, secondary_input_scale) == 32,
+static_assert(offsetof(CudaHeterogeneousTensor, secondary_input_scale) == 48,
     "CudaHeterogeneousTensor.secondary_input_scale ABI offset differs from Rust");
-static_assert(sizeof(CudaHeterogeneousTensor) == 40,
+static_assert(sizeof(CudaHeterogeneousTensor) == 56,
     "CudaHeterogeneousTensor ABI must match its Rust descriptor");
 
 using Clock = std::chrono::steady_clock;
@@ -2244,6 +2250,7 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
                                   std::size_t rows,
                                   std::size_t columns) {
         if (tensor.data == nullptr || !valid_dtype(tensor.dtype) ||
+            tensor.rows != rows || tensor.columns != columns ||
             columns == 0 || columns % 256 != 0 ||
             !std::isfinite(tensor.scale) || !std::isfinite(tensor.input_scale) ||
             !std::isfinite(tensor.secondary_scale) ||

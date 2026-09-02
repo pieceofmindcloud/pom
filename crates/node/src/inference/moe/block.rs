@@ -1217,6 +1217,8 @@ impl HeterogeneousMoeBlock {
                 let HeterogeneousTensorPayload {
                     role,
                     dtype,
+                    rows,
+                    columns,
                     bytes,
                     scales,
                 } = payload;
@@ -1235,6 +1237,8 @@ impl HeterogeneousMoeBlock {
                 let tensor = CudaHeterogeneousTensor {
                     data: lease.handle() as *const u8,
                     bytes: lease.bytes(),
+                    rows,
+                    columns,
                     dtype,
                     scale: scales.primary,
                     input_scale: scales.input_primary,

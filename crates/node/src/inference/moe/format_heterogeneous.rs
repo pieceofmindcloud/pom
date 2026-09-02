@@ -183,6 +183,16 @@ pub(crate) fn cuda_tensor_expected_bytes(dtype: u32, rows: usize, columns: usize
     rows.checked_mul(cuda_tensor_row_bytes(dtype, columns)?)
 }
 
+#[cfg(test)]
+pub(crate) fn cuda_tensor_bank_expected_bytes(
+    dtype: u32,
+    rows: usize,
+    columns: usize,
+    experts: usize,
+) -> Option<usize> {
+    cuda_tensor_expected_bytes(dtype, rows, columns)?.checked_mul(experts)
+}
+
 #[cfg(feature = "cuda")]
 pub(crate) fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
     matches!(dtype, 12 | 14 | 18 | 21 | 22 | 23 | 39)
@@ -232,6 +242,9 @@ struct LayerInventory {
 pub(crate) struct HeterogeneousTensorPayload {
     pub role: TensorRole,
     pub dtype: u32,
+    /// Geometria de uma única fatia de expert, sem a dimensão do banco.
+    pub rows: usize,
+    pub columns: usize,
     pub bytes: Vec<u8>,
     pub scales: TensorScales,
 }
@@ -537,6 +550,8 @@ impl HeterogeneousMoeSource {
                 Ok(HeterogeneousTensorPayload {
                     role,
                     dtype: entry.decoder.dtype(),
+                    rows,
+                    columns,
                     bytes: self.tensor_slice(entry, expert, rows, columns)?,
                     scales,
                 })
@@ -1293,7 +1308,7 @@ mod tests {
     #[test]
     fn geometria_cuda_heterogenea_separa_um_expert_do_banco_completo() {
         let one_expert = cuda_tensor_expected_bytes(18, 32_768, 256).unwrap();
-        let expert_bank = cuda_tensor_expected_bytes(18, 32_768, 2_048).unwrap();
+        let expert_bank = cuda_tensor_bank_expected_bytes(18, 32_768, 256, 8).unwrap();
 
         assert_eq!(expert_bank, one_expert * 8);
     }

@@ -283,6 +283,15 @@ modificado: os nomes de registro já expostos pelo backend são suficientes para
 impedir uma ordenação explícita insegura sem alterar a distribuição de memória
 depois da sondagem.
 
+O executor externo de MoE é um callback de host, mas usa CUDA internamente.
+Todas as entradas da ponte fixam alocações, streams e eventos no CUDA 0, o
+dispositivo cujo orçamento o cache mede, e restauram o dispositivo corrente do
+thread ao sair. Sem essa guarda, o callback pode deixar o thread no CUDA 0 e a
+próxima espera do scheduler no backend CUDA 1 receber um stream ou evento no
+contexto corrente errado. As 59 divisões observadas com o hook são esperadas:
+cada camada externalizada atravessa a operação customizada de host; reduzir
+esse número não corrige a afinidade nem substitui a sincronização correta.
+
 A guarda também é a fronteira de degradação para o defeito observado em
 01/09/2026: a combinação Vulkan/CUDA mantém a ordem padrão do llama.cpp e não
 recebe a lista que fez a fatia mudar de `CUDA,Vulkan` para `Vulkan,CUDA`. Isso

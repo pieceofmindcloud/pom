@@ -27,6 +27,45 @@ constexpr int kBlockBytes = 36;
 constexpr int kPayloadHeaderBytes = 32;
 constexpr int kKQuantPayloadHeaderBytes = 32;
 constexpr int kScalarPayloadHeaderBytes = 8;
+constexpr int kMoeCudaDevice = 0;
+
+// The llama.cpp scheduler changes the current CUDA device while it moves a
+// graph between backends. The external MoE hook is a host callback, so every
+// CUDA object it owns must be created and used on one explicit device, and the
+// callback must leave the caller's current device untouched. Otherwise the
+// scheduler may wait on a CUDA event for device 1 while the host thread still
+// has device 0 current.
+class ScopedMoeCudaDevice {
+public:
+    ScopedMoeCudaDevice() {
+        if (cudaGetDevice(&previous_device_) != cudaSuccess) {
+            return;
+        }
+        if (previous_device_ != kMoeCudaDevice) {
+            if (cudaSetDevice(kMoeCudaDevice) != cudaSuccess) {
+                previous_device_ = -1;
+                return;
+            }
+            restore_previous_ = true;
+        }
+        ready_ = true;
+    }
+
+    ~ScopedMoeCudaDevice() {
+        if (restore_previous_) {
+            (void) cudaSetDevice(previous_device_);
+        }
+    }
+
+    bool ready() const {
+        return ready_;
+    }
+
+private:
+    int previous_device_ = -1;
+    bool restore_previous_ = false;
+    bool ready_ = false;
+};
 
 struct CudaMoeCallTiming {
     uint64_t expert_calls;
@@ -1534,6 +1573,8 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
     std::size_t *nonfinite_count,
     CudaMoeCallTiming *timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (nonfinite_stage != nullptr) {
         *nonfinite_stage = 0;
     }
@@ -1806,6 +1847,8 @@ extern "C" int pom_moe_plain_forward_route_batch_resident(
     std::size_t intermediate_width,
     CudaMoeCallTiming *timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(payload_count);
@@ -2013,6 +2056,8 @@ extern "C" int pom_moe_iquant_forward_route_batch_resident(
     std::size_t intermediate_width,
     CudaMoeCallTiming *timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(payload_count);
@@ -2208,6 +2253,8 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     std::size_t *nonfinite_count,
     CudaMoeCallTiming * timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (nonfinite_stage != nullptr) {
         *nonfinite_stage = 0;
     }
@@ -2497,6 +2544,8 @@ extern "C" int pom_moe_nvfp4_forward_batch(
     std::size_t intermediate_width,
     CudaMoeCallTiming * timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     const uint64_t expert_calls = timing != nullptr ? static_cast<uint64_t>(payload_count) : 0;
     if (timing != nullptr) {
         *timing = {};
@@ -2705,6 +2754,8 @@ extern "C" int pom_moe_nvfp4_forward_batch_resident(
     std::size_t intermediate_width,
     CudaMoeCallTiming * timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(payload_count);
@@ -2900,6 +2951,8 @@ extern "C" int pom_moe_nvfp4_forward_route_batch_resident(
     std::size_t intermediate_width,
     CudaMoeCallTiming * timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(payload_count);
@@ -3146,6 +3199,8 @@ extern "C" int pom_moe_nvfp4_route_pipeline_create(
     std::size_t intermediate_width,
     void ** out
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (out == nullptr || hidden_width == 0 || intermediate_width == 0 ||
         hidden_width % kBlockElements != 0 || intermediate_width % kBlockElements != 0) {
         return 1;
@@ -3177,6 +3232,8 @@ extern "C" int pom_moe_nvfp4_route_pipeline_run(
     std::size_t output_len,
     CudaMoeCallTiming * timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     auto * pipeline = static_cast<Nvfp4RoutePipeline *>(handle);
     if (pipeline == nullptr || payloads == nullptr || token_ids == nullptr ||
         weights == nullptr || token_offsets == nullptr || hidden == nullptr ||
@@ -3280,6 +3337,8 @@ extern "C" int pom_moe_nvfp4_route_pipeline_run(
 }
 
 extern "C" void pom_moe_nvfp4_route_pipeline_destroy(void * handle) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return;
     auto * pipeline = static_cast<Nvfp4RoutePipeline *>(handle);
     if (pipeline == nullptr) return;
     release_route_slot(&pipeline->slots[0]);
@@ -3304,6 +3363,8 @@ extern "C" int pom_moe_iquant_trace_single_resident(
     std::size_t hidden_width,
     std::size_t intermediate_width
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if ((dtype != 21 && dtype != 22 && dtype != 23) || payload == nullptr ||
         hidden == nullptr || gate_up == nullptr || activated == nullptr ||
         output == nullptr || hidden_width == 0 || intermediate_width == 0 ||
@@ -3391,6 +3452,8 @@ extern "C" int pom_moe_iquant_trace_single_resident(
 }
 
 extern "C" int pom_moe_device_free_bytes(std::uint64_t * free_bytes) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (free_bytes == nullptr) {
         return 1;
     }
@@ -3409,6 +3472,8 @@ extern "C" int pom_moe_device_upload(
     std::size_t payload_len,
     void ** out
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     if (payload == nullptr || payload_len == 0 || out == nullptr) {
         return 1;
     }
@@ -3426,6 +3491,8 @@ extern "C" int pom_moe_device_upload(
 }
 
 extern "C" void pom_moe_device_free(void * handle) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return;
     if (handle != nullptr) {
         cudaFree(handle);
     }
@@ -3442,6 +3509,8 @@ extern "C" int pom_moe_nvfp4_forward(
     std::size_t intermediate_width,
     CudaMoeCallTiming * timing
 ) {
+    const ScopedMoeCudaDevice device;
+    if (!device.ready()) return 1;
     return pom_moe_nvfp4_forward_batch(
         payload,
         payload_len,

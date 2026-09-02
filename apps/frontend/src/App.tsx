@@ -1,13 +1,93 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { canAccessRoute } from "./lib/access";
+import {
+  api,
+  clearAdminAccessToken,
+  setAdminAccessToken,
+} from "./lib/api";
 import { useProfile } from "./lib/profile";
-import { useIsSetupMode } from "./lib/queries";
+import { useAdminAccess, useIsSetupMode } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { useI18n } from "./i18n/provider";
+import { Button, Input, Panel, PanelHeader } from "./components/ui";
+
+function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function authenticate(event: React.FormEvent) {
+    event.preventDefault();
+    const token = draft.trim();
+    if (!token) {
+      setFailed(true);
+      return;
+    }
+    setBusy(true);
+    setFailed(false);
+    setAdminAccessToken(token);
+    try {
+      await api.get("/api/ui/node", { auth: false });
+      onAuthenticated();
+    } catch {
+      clearAdminAccessToken();
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
+      <Panel className="w-full max-w-md">
+        <PanelHeader
+          eyebrow={t("accessGate.eyebrow")}
+          title={t("accessGate.title")}
+          subtitle={t("accessGate.subtitle")}
+        />
+        <form className="space-y-4 px-5 py-5" onSubmit={(event) => void authenticate(event)}>
+          <label className="block">
+            <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
+              {t("accessGate.label")}
+            </span>
+            <Input
+              autoFocus
+              type="password"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label={t("accessGate.label")}
+              autoComplete="current-password"
+            />
+          </label>
+          {failed && <p className="text-xs text-rose">{t("accessGate.invalid")}</p>}
+          <Button variant="primary" loading={busy} type="submit" className="w-full">
+            {t("accessGate.submit")}
+          </Button>
+        </form>
+      </Panel>
+    </div>
+  );
+}
+
+function AdminAccessUnavailable() {
+  const { t } = useI18n();
+  return (
+    <div className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
+      <Panel className="w-full max-w-md">
+        <PanelHeader
+          eyebrow={t("accessGate.eyebrow")}
+          title={t("accessGate.unavailableTitle")}
+          subtitle={t("accessGate.unavailable")}
+        />
+      </Panel>
+    </div>
+  );
+}
 
 /**
  * Route modules are loaded on demand so the dashboard does not pay for every
@@ -123,6 +203,8 @@ export default function App() {
    * credential on every page load.
    */
   const isSetup = useIsSetupMode();
+  const adminAccess = useAdminAccess();
+  const [adminReady, setAdminReady] = useState(false);
 
   // Undefined means the probe has not answered yet. Rendering either branch on
   // a guess flashes the wrong screen, so hold the paint for one request.
@@ -135,6 +217,12 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     );
+  }
+
+  if (adminAccess.isLoading) return <div className="h-full bg-ink" />;
+  if (adminAccess.isError || !adminAccess.data) return <AdminAccessUnavailable />;
+  if (adminAccess.data?.requires_token && !adminReady) {
+    return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
   }
 
   return (

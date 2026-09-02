@@ -285,7 +285,7 @@ Comportamento atual do código:
 
 ## 5. TLS entre peers
 
-Ligado por um interruptor em Configurações / Rede que **só o nó principal**
+Ligado por um interruptor em Configurações / Preferências que **só o nó principal**
 opera, e vale para o cluster inteiro. Desligado por padrão, e um `pom.json`
 anterior a isto continua válido (`Config.tls_required`, `#[serde(default)]`).
 

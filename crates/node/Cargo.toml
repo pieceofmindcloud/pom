@@ -57,6 +57,7 @@ libp2p = { version = "0.56", features = [
 ] }
 pkarr = "6"
 async-trait = "0.1"
+subtle = "2"
 mime_guess = "2"
 tower-http = { version = "0.5", features = ["compression-full"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

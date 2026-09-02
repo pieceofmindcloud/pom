@@ -20,6 +20,9 @@ As rotas de inferência revalidam API keys no `pom.db` compartilhado a cada
 requisição; assim uma revogação feita por outro processo não fica válida até o
 próximo reinício. A `connection_key` continua sendo a credencial interna
 compartilhada.
+O listener HTTP de inferência é dual-stack, ou cai para IPv4 quando a máquina
+não oferece IPv6, independentemente da exposição da interface administrativa:
+ele é a reserva quando o túnel libp2p falha.
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção

@@ -74,6 +74,7 @@ const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
  */
 vi.mock("../lib/queries", () => ({
   useIsSetupMode: () => false,
+  useAdminAccess: () => ({ data: { requires_token: false }, isLoading: false, isError: false }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
   useCluster: () => ({ data: null }),
   useInvalidate: () => vi.fn(),

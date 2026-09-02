@@ -2,8 +2,9 @@
 
 Interface web administrativa do POM, um SPA React 18 + TypeScript + Vite
 em `apps/frontend/`. É a interface do produto: todo nó serve a UI junto com a
-API na porta do gateway (`--gateway-port`, 8080 por padrão), então abrir
-`http://<peer>:<porta>/` em qualquer máquina mostra o painel daquele nó.
+API na porta do gateway (`--gateway-port`, 8080 por padrão). O painel pode
+nascer somente em `localhost` ou ser exposto à rede com token, enquanto as
+rotas de inferência continuam dual-stack para o HTTP de reserva da pipeline.
 
 O nome e a logo que a tela mostra vêm do `brand.json` da raiz, copiado para o
 bundle por `scripts/build-brand.mjs` - o mesmo arquivo que o binário embute.
@@ -196,7 +197,7 @@ apaga o botão; quando o perfil chegar do nó, o componente e a constante saem.
 A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
 cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em `aqua` quando a política
 está ligada e `ShieldOff` em `amber` quando não. Ele é só ícone, mas o link para
-`/config/rede` conserva o significado em `aria-label` e `title`. O dado sai do
+`/config/preferencias` conserva o significado em `aria-label` e `title`. O dado sai do
 `useNode()`, que já é polled: nenhuma chamada nova. **Um selo que sumisse quando
 o TLS caísse seria pior que nenhum**: a ausência se lê como "a tela não mostra
 isso", não como "está em texto claro" - por isso os dois estados têm formas e
@@ -262,12 +263,20 @@ no Dashboard (`hidden`, para uma superfície futura).
 
 ## Autenticação
 
-`GET /api/ui/node` é a única rota `/api/ui/*` sem `ConnectionAuth`: ela devolve
-a `connection_key` do cluster, que o `useNode()` guarda em `localStorage`
-(`codai.connectionKey`) e a partir daí todo request assina com
-`Authorization: Bearer <key>` - o mesmo `ApiKeyAuth`/`ConnectionAuth` do
-`auth.rs`, que também aceita `x-api-key`. A chave de conexão vale como chave de
-API nas rotas `/v1` e como credencial de operador em `/admin/*`. `POST
+Antes de chegar aos handlers, o gateway aplica a catraca administrativa a
+`/api/ui/**` e `/admin/**`. Em modo local ela confere o endereço real da
+conexão e aceita somente loopback; em modo de rede exige
+`X-POM-Access-Token`. O token de pessoa é diferente da `connection_key`: o
+primeiro abre a interface administrativa, enquanto a segunda autentica nós e
+clientes da pipeline. Chamadas de controle entre nós usam a segunda com um
+marcador interno próprio, que o navegador nunca envia.
+
+`GET /api/ui/node` devolve a `connection_key` do cluster depois da catraca, e o
+`useNode()` guarda a chave em `localStorage` (`codai.connectionKey`), para então
+assinar cada request com `Authorization: Bearer <key>` - o mesmo
+`ApiKeyAuth`/`ConnectionAuth` do `auth.rs`, que também aceita `x-api-key`. A
+chave de conexão continua sendo a credencial das rotas `/v1` e dos handlers de
+operador; ela não substitui o token administrativo no navegador. `POST
 /api/setup/key` e `/api/setup/save` **não** estão no router normal de
 propósito: só o modo setup (sem `pom.json`) as serve, porque `GET
 /api/setup/key` rotacionaria a credencial num nó já configurado.
@@ -341,16 +350,21 @@ operador não precisa inferir a degradação pela ausência de logs.
 
 ## Configurações / Preferências: proteção local
 
-`/config/preferencias` monta o `ThermalPanel` e o
-`HuggingFaceSettingsPanel`. O primeiro lê e grava a política térmica em
-`GET/POST /api/ui/thermal`; o segundo lê e grava a credencial opcional em
-`/api/ui/model-provider/config`. A mudança de tela não altera a persistência,
-as máscaras nem a invalidação do cache. `/config/rede` fica concentrada em
-membership, TLS, endereços e nós conhecidos.
+`/config/preferencias` monta a fronteira de exposição administrativa, o painel
+de TLS entre nós, o `ThermalPanel` e o `HuggingFaceSettingsPanel`. A exposição
+é persistida no `pom.json`: localhost é o padrão instalado, e a rede gera um
+token separado da `connection_key`, mostrado somente depois da autenticação.
+Trocar para localhost limpa o token; regenerá-lo invalida o anterior. A porta
+é validada antes de salvar e uma colisão é informada sem iniciar em outra
+porta. O primeiro painel lê e grava a política térmica em `GET/POST
+/api/ui/thermal`; o último lê e grava a credencial opcional em
+`/api/ui/model-provider/config`. `/config/rede` fica concentrada em membership,
+endereços e nós conhecidos.
 
-## Configurações / Rede: quem decide o TLS
 
-O painel "Criptografia entre nós" (`TlsPanel`, em `routes/NetworkSettings.tsx`)
+## Configurações / Preferências: quando usar TLS entre nós
+
+O painel "Criptografia entre nós" (`TlsPanel`, em `routes/Preferences.tsx`)
 mostra o estado do cluster e, **só no nó principal**, o interruptor que o vira.
 Nos demais ele aparece desabilitado, com um rodapé dizendo que a decisão é do
 principal e vale para a rede inteira. O estado continua visível em todo nó de

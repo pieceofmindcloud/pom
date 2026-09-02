@@ -860,9 +860,11 @@ async fn survey(
 
             let (models, node, rtt) = futures::future::join3(
                 http.get(format!("{base}/api/ui/models"))
+                    .bearer_auth(&connection_key)
                     .timeout(PEER_TIMEOUT * 4)
                     .send(),
                 http.get(format!("{base}/api/ui/node"))
+                    .bearer_auth(&connection_key)
                     .timeout(PEER_TIMEOUT)
                     .send(),
                 http.get(format!("{base}/api/ui/network/rtt"))
@@ -4495,8 +4497,10 @@ async fn peer_node_snapshot(
         .peer_http
         .for_peer(&peer.node_id)
         .map_err(|e| format!("sem cliente para {}: {e}", peer.hostname))?;
+    let key = state.auth.read().await.connection_key.clone();
     let response = client
         .get(format!("{base}/api/ui/node"))
+        .bearer_auth(key)
         .timeout(PEER_TIMEOUT)
         .send()
         .await
@@ -5440,6 +5444,7 @@ async fn validate_redeploy_wire_dtype(
     }
 
     let mut blocked = Vec::new();
+    let key = state.auth.read().await.connection_key.clone();
     for node in nodes {
         if node.node_id == self_id {
             continue;
@@ -5458,6 +5463,7 @@ async fn validate_redeploy_wire_dtype(
         };
         let response = match client
             .get(format!("{base}/api/ui/node"))
+            .bearer_auth(&key)
             .timeout(PEER_TIMEOUT)
             .send()
             .await

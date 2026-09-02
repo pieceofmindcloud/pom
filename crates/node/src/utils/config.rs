@@ -27,6 +27,28 @@ impl std::fmt::Display for Role {
     }
 }
 
+/// Superfície administrativa do gateway. As rotas da pipeline não usam esta
+/// política: continuam ouvindo em IPv4 e IPv6 para que o túnel libp2p tenha um
+/// caminho HTTP de reserva.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminExposure {
+    Localhost,
+    Network,
+}
+
+impl Default for AdminExposure {
+    fn default() -> Self {
+        Self::Localhost
+    }
+}
+
+impl AdminExposure {
+    pub fn requires_token(self) -> bool {
+        matches!(self, Self::Network)
+    }
+}
+
 /// Tipos de dados aceitos pelo cache KV do llama.cpp desta instalação.
 ///
 /// A lista acompanha `common/arg.cpp::kv_cache_types` do llama.cpp vendorizado
@@ -100,6 +122,14 @@ pub struct Config {
     pub connection_key: String,
     #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
+    /// Onde as rotas administrativas podem ser usadas. Ausente significa
+    /// localhost, inclusive em configurações gravadas antes deste campo.
+    #[serde(default)]
+    pub admin_exposure: AdminExposure,
+    /// Credencial exclusiva da pessoa que abre a superfície administrativa.
+    /// Não é a `connection_key`, que continua autenticando nós e pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_access_token: Option<String>,
     #[serde(default = "default_p2p_port")]
     pub p2p_port: u16,
     #[serde(default)]
@@ -195,6 +225,11 @@ impl fmt::Debug for Config {
                 },
             )
             .field("gateway_port", &self.gateway_port)
+            .field("admin_exposure", &self.admin_exposure)
+            .field(
+                "admin_access_token",
+                &self.admin_access_token.as_ref().map(|_| "[redacted]"),
+            )
             .field("p2p_port", &self.p2p_port)
             .field("inference_port", &self.inference_port)
             .field("bootstrap_nodes", &self.bootstrap_nodes)
@@ -220,6 +255,11 @@ impl fmt::Debug for Config {
 
 fn default_gateway_port() -> u16 {
     8080
+}
+
+pub fn validate_gateway_port(port: u16) -> anyhow::Result<()> {
+    anyhow::ensure!(port != 0, "a porta da interface deve estar entre 1 e 65535");
+    Ok(())
 }
 fn default_p2p_port() -> u16 {
     42777
@@ -553,6 +593,8 @@ mod tests {
             tls_required: false,
             connection_key: "test-key".into(),
             gateway_port: 8080,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
@@ -598,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_node_config() {
-        let cfg = Config {
+        let mut cfg = Config {
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -607,6 +649,8 @@ mod tests {
             tls_required: false,
             connection_key: "node-key".into(),
             gateway_port: 8090,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
@@ -637,6 +681,8 @@ mod tests {
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
         assert_eq!(cfg.shard_max_gb(), 100.0);
         assert_eq!(cfg.thermal, crate::thermal::ThermalPolicy::default());
+        assert_eq!(cfg.admin_exposure, AdminExposure::Localhost);
+        assert!(cfg.admin_access_token.is_none());
     }
 
     #[test]
@@ -696,10 +742,12 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let cfg = Config {
+        let mut cfg = Config {
             role: Role::Node,
             connection_key: String::new(),
             gateway_port: 8080,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
@@ -717,6 +765,8 @@ mod tests {
             node_name: None,
             huggingface_token: Some("hf_super_secret".into()),
         };
+        cfg.admin_exposure = AdminExposure::Network;
+        cfg.admin_access_token = Some("admin_super_secret".into());
 
         std::fs::write(
             &path,
@@ -732,6 +782,8 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["huggingface_token"], "hf_legacy");
+        assert!(!format!("{cfg:?}").contains("admin_super_secret"));
+        assert_eq!(saved["admin_access_token"], "admin_super_secret");
         let _ = std::fs::remove_file(path);
     }
 
@@ -757,6 +809,13 @@ mod tests {
     fn config_antiga_parseia_sem_tls_required() {
         let cfg: Config = serde_json::from_str(r#"{"role":"node","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
+    }
+
+    #[test]
+    fn gateway_port_zero_is_rejected_instead_of_using_an_ephemeral_port() {
+        assert!(validate_gateway_port(0).is_err());
+        assert!(validate_gateway_port(1).is_ok());
+        assert!(validate_gateway_port(u16::MAX).is_ok());
     }
 
     #[test]
@@ -786,6 +845,8 @@ mod tests {
             tls_required: false,
             connection_key: "k".into(),
             gateway_port: 8080,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],

@@ -384,6 +384,7 @@ async fn main() -> Result<()> {
         .thermal_policy()?
         .unwrap_or_else(crate::thermal::ThermalPolicy::default);
     app_config.huggingface_token = database.huggingface_token()?;
+    config::validate_gateway_port(app_config.gateway_port)?;
     info!("Role: {}", app_config.role);
 
     // Antes de qualquer coisa que possa carregar modelo: os backends do ggml
@@ -443,6 +444,8 @@ async fn main() -> Result<()> {
         println!();
         return Ok(());
     }
+
+    crate::gateway::ensure_gateway_port_available(app_config.gateway_port, None).await?;
 
     // ── Branch: with model = full stack; without = gateway only (UI + admin) ──
     let model_name = args.model.as_ref().map(|m| m.clone());
@@ -1084,6 +1087,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     use axum::{routing::get, Router};
     use std::net::SocketAddr;
 
+    config::validate_gateway_port(gateway_port)?;
     let config = Arc::new(RwLock::new(Config {
         role: Role::Principal,
         tls_required: false,
@@ -1095,6 +1099,8 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         cache_type_v: config::KvCacheType::F16,
         connection_key: String::new(),
         gateway_port,
+        admin_exposure: config::AdminExposure::Localhost,
+        admin_access_token: None,
         p2p_port: 42777,
         inference_port: None,
         bootstrap_nodes: vec![],
@@ -1120,7 +1126,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         .with_state(config)
         .layer(tower_http::compression::CompressionLayer::new());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], gateway_port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
     info!("Setup page available at http://localhost:{}", gateway_port);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

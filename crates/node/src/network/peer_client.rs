@@ -80,6 +80,7 @@ pub struct PeerClients {
     timeout: Duration,
     tls: Arc<AtomicBool>,
     plain: reqwest::Client,
+    internal_plain: reqwest::Client,
     per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
     auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
 }
@@ -93,6 +94,11 @@ impl PeerClients {
                 .timeout(timeout)
                 .build()
                 .expect("cliente HTTP sem TLS não pode falhar na construção"),
+            internal_plain: reqwest::Client::builder()
+                .timeout(timeout)
+                .default_headers(internal_node_headers())
+                .build()
+                .expect("cliente HTTP interno sem TLS não pode falhar na construção"),
             per_peer: Arc::new(RwLock::new(HashMap::new())),
             auth: Arc::new(RwLock::new(None)),
         }
@@ -167,7 +173,7 @@ impl PeerClients {
     /// inferência.
     pub fn probe(&self) -> Result<reqwest::Client> {
         if !self.tls_enabled() {
-            return Ok(self.plain.clone());
+            return Ok(self.internal_plain.clone());
         }
         reqwest::Client::builder()
             .timeout(self.timeout)
@@ -179,11 +185,11 @@ impl PeerClients {
 
     /// Cliente para falar com `node_id`, construído sob demanda.
     ///
-    /// Sem TLS devolve o cliente compartilhado, que é exatamente o
-    /// comportamento anterior a esta feature.
+    /// Sem TLS devolve o cliente interno compartilhado, que marca as chamadas
+    /// de peer para a fronteira administrativa sem alterar a credencial delas.
     pub fn for_peer(&self, node_id: &str) -> Result<reqwest::Client> {
         if !self.tls_enabled() {
-            return Ok(self.plain.clone());
+            return Ok(self.internal_plain.clone());
         }
         if let Ok(m) = self.per_peer.read() {
             if let Some(c) = m.get(node_id) {
@@ -193,6 +199,7 @@ impl PeerClients {
         let cfg = crate::tls::client_config(node_id)?;
         let client = reqwest::Client::builder()
             .timeout(self.timeout)
+            .default_headers(internal_node_headers())
             .use_preconfigured_tls(cfg)
             .build()
             .context("não deu para construir o cliente TLS do peer")?;
@@ -222,6 +229,15 @@ impl PeerClients {
         v.sort();
         v
     }
+}
+
+fn internal_node_headers() -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        crate::auth::INTERNAL_NODE_REQUEST_HEADER,
+        reqwest::header::HeaderValue::from_static("1"),
+    );
+    headers
 }
 
 #[cfg(test)]
@@ -268,6 +284,50 @@ mod tests {
             c.cached_peers().is_empty(),
             "sem TLS todo mundo usa o cliente compartilhado"
         );
+    }
+
+    #[tokio::test]
+    async fn cliente_de_peer_marca_controle_e_plain_nao() {
+        async fn capture_headers(client: reqwest::Client) -> String {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let read = stream.read(&mut chunk).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+                String::from_utf8_lossy(&request).into_owned()
+            });
+
+            client
+                .get(format!("http://{address}/health"))
+                .send()
+                .await
+                .unwrap();
+            server.await.unwrap()
+        }
+
+        let c = PeerClients::new(Duration::from_secs(600));
+        let interno = capture_headers(c.for_peer("peer-a").unwrap()).await;
+        assert!(interno.contains("x-pom-internal-node: 1"));
+
+        let externo = capture_headers(c.plain()).await;
+        assert!(!externo.contains("x-pom-internal-node:"));
     }
 
     /// Com TLS, cada peer precisa do seu, porque o verifier é fixado na

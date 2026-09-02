@@ -11,7 +11,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { NetworkSettings, TlsPanel } from "./NetworkSettings";
+import { TlsPanel } from "./Preferences";
+import { NetworkSettings } from "./NetworkSettings";
 
 const queryMocks = vi.hoisted(() => ({
   node: {
@@ -97,6 +98,6 @@ describe("NetworkSettings", () => {
 
     expect(screen.queryByText("Proteção térmica da GPU")).toBeNull();
     expect(screen.queryByText("Hugging Face")).toBeNull();
-    expect(screen.getByText("Criptografia entre nós")).toBeTruthy();
+    expect(screen.queryByText("Criptografia entre nós")).toBeNull();
   });
 });

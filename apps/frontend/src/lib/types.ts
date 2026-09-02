@@ -139,6 +139,23 @@ export interface NodeConfig {
   mtp_min_probability: number;
 }
 
+/** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
+export type AdminExposure = "localhost" | "network";
+
+/** Metadados públicos usados para decidir se a catraca deve aparecer. */
+export interface AdminAccessStatus {
+  admin_exposure: AdminExposure;
+  requires_token: boolean;
+  gateway_port: number;
+}
+
+/** Estado administrativo consultado depois que a página já foi autenticada. */
+export interface AdminAccessInfo {
+  admin_exposure: AdminExposure;
+  gateway_port: number;
+  access_token: string | null;
+}
+
 export interface NodeInfo {
   node_id: string;
   short_id: string;
@@ -147,6 +164,9 @@ export interface NodeInfo {
   connection_key: string;
   p2p_port: number;
   gateway_port: number;
+  admin_exposure: AdminExposure;
+  admin_access_token_configured: boolean;
+  admin_access_token_masked: string | null;
   inference_port: number | null;
   config: NodeConfig | null;
   status: RuntimeStatus;

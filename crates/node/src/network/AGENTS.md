@@ -39,7 +39,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
-  quem colcheta IPv6.
+  quem colcheta IPv6. O cliente destinado a outro nó marca requests de
+  controle com `x-pom-internal-node`; o cliente `plain()` para Ollama e
+  loopback não envia essa marca.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o

@@ -8,9 +8,19 @@ use axum::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 
 pub type AuthState = Arc<RwLock<Config>>;
+
+/// Cabeçalho da credencial da pessoa que abre a superfície administrativa.
+/// Deliberadamente diferente de `Authorization`, que continua sendo usado
+/// pela connection key e pelas APIs compatíveis com OpenAI/Anthropic.
+pub const ADMIN_ACCESS_TOKEN_HEADER: &str = "x-pom-access-token";
+/// Marca requests de controle emitidos pelo próprio nó para outro nó. Ela não
+/// é uma credencial: só vale junto com uma `connection_key` válida e nunca é
+/// enviada pelo cliente da interface.
+pub const INTERNAL_NODE_REQUEST_HEADER: &str = "x-pom-internal-node";
 
 /// Escolhe a credencial que um nó usa nas chamadas internas de inferência.
 ///
@@ -121,6 +131,135 @@ impl IntoResponse for AuthRejection {
     }
 }
 
+pub struct AdminAuth;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdminAuthRejection {
+    MissingPeerAddress,
+    MissingToken,
+    InvalidToken,
+    LocalhostOnly,
+}
+
+impl IntoResponse for AdminAuthRejection {
+    fn into_response(self) -> axum::response::Response {
+        let (status, msg) = match self {
+            AdminAuthRejection::MissingPeerAddress => (
+                StatusCode::FORBIDDEN,
+                "administrative request has no peer address",
+            ),
+            AdminAuthRejection::MissingToken => (
+                StatusCode::UNAUTHORIZED,
+                "missing administrative access token",
+            ),
+            AdminAuthRejection::InvalidToken => {
+                (StatusCode::FORBIDDEN, "invalid administrative access token")
+            }
+            AdminAuthRejection::LocalhostOnly => (
+                StatusCode::FORBIDDEN,
+                "administrative interface is local-only",
+            ),
+        };
+        (status, Json(json!({ "error": msg }))).into_response()
+    }
+}
+
+/// Compare fixed-size digests so neither token length nor the first differing
+/// byte controls the comparison time. Empty values are rejected separately,
+/// including the empty configured token.
+pub(crate) fn constant_time_token_eq(expected: &str, supplied: &str) -> bool {
+    if expected.is_empty() || supplied.is_empty() {
+        return false;
+    }
+    let expected_digest = Sha256::digest(expected.as_bytes());
+    let supplied_digest = Sha256::digest(supplied.as_bytes());
+    expected_digest.ct_eq(&supplied_digest).into()
+}
+
+fn is_loopback(peer: std::net::SocketAddr) -> bool {
+    match peer.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_loopback(),
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip
+                    .to_ipv4_mapped()
+                    .map(|mapped| mapped.is_loopback())
+                    .unwrap_or(false)
+        }
+    }
+}
+
+fn is_authenticated_internal_node_request(headers: &HeaderMap, connection_key: &str) -> bool {
+    if connection_key.is_empty()
+        || headers
+            .get(INTERNAL_NODE_REQUEST_HEADER)
+            .and_then(|value| value.to_str().ok())
+            != Some("1")
+    {
+        return false;
+    }
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(authorization_token)
+        .is_some_and(|supplied| constant_time_token_eq(connection_key, supplied))
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AdminAuth
+where
+    S: Send + Sync,
+    AuthState: axum::extract::FromRef<S>,
+{
+    type Rejection = AdminAuthRejection;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let peer = parts
+            .extensions
+            .get::<crate::serve::PeerAddr>()
+            .copied()
+            .ok_or(AdminAuthRejection::MissingPeerAddress)?;
+        let State(config): State<AuthState> = State::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AdminAuthRejection::InvalidToken)?;
+        let cfg = config.read().await;
+
+        if !cfg.admin_exposure.requires_token() {
+            return if is_loopback(peer.0) {
+                Ok(AdminAuth)
+            } else {
+                Err(AdminAuthRejection::LocalhostOnly)
+            };
+        }
+
+        // Node-to-node control calls still use the shared connection key. The
+        // marker keeps that protocol distinct from a browser request: a
+        // browser without the human access token never reaches an admin route,
+        // while cluster surveys and deployment fan-out keep working.
+        if parts.headers.get(ADMIN_ACCESS_TOKEN_HEADER).is_none()
+            && parts.uri.path() != "/api/ui/access"
+            && is_authenticated_internal_node_request(&parts.headers, &cfg.connection_key)
+        {
+            return Ok(AdminAuth);
+        }
+
+        let supplied = parts
+            .headers
+            .get(ADMIN_ACCESS_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .ok_or(AdminAuthRejection::MissingToken)?;
+        if constant_time_token_eq(
+            cfg.admin_access_token.as_deref().unwrap_or_default(),
+            supplied,
+        ) {
+            Ok(AdminAuth)
+        } else {
+            Err(AdminAuthRejection::InvalidToken)
+        }
+    }
+}
+
 #[async_trait]
 impl<S> FromRequestParts<S> for ConnectionAuth
 where
@@ -217,6 +356,38 @@ mod tests {
     use super::*;
     use axum::http::Request;
 
+    async fn admin_auth_with(
+        exposure: crate::config::AdminExposure,
+        configured_token: Option<&str>,
+        peer: std::net::SocketAddr,
+        supplied_token: Option<&str>,
+    ) -> Result<AdminAuth, AdminAuthRejection> {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = exposure;
+            cfg.admin_access_token = configured_token.map(str::to_string);
+        }
+        let mut request = Request::builder().body(()).expect("requisição");
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr(peer));
+        if let Some(token) = supplied_token {
+            request = Request::builder()
+                .header("x-pom-access-token", token)
+                .body(())
+                .expect("requisição com token");
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr(peer));
+        }
+        let (mut parts, _) = request.into_parts();
+        <AdminAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
+            &mut parts, &state,
+        )
+        .await
+    }
+
     #[test]
     fn test_auth_rejection_status() {
         let resp = AuthRejection::MissingHeader.into_response();
@@ -224,6 +395,158 @@ mod tests {
 
         let resp = AuthRejection::InvalidKey.into_response();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn admin_token_comparison_rejects_empty_values_and_compares_digest() {
+        assert!(!constant_time_token_eq("", ""));
+        assert!(!constant_time_token_eq("secret", ""));
+        assert!(!constant_time_token_eq("", "secret"));
+        assert!(constant_time_token_eq("secret", "secret"));
+        assert!(!constant_time_token_eq("secret", "secret-typo"));
+    }
+
+    #[tokio::test]
+    async fn local_admin_accepts_loopback_without_a_token_but_not_remote_peers() {
+        assert!(admin_auth_with(
+            crate::config::AdminExposure::Localhost,
+            None,
+            "127.0.0.1:4321".parse().unwrap(),
+            None,
+        )
+        .await
+        .is_ok());
+        assert!(admin_auth_with(
+            crate::config::AdminExposure::Localhost,
+            None,
+            "192.0.2.7:4321".parse().unwrap(),
+            None,
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn exposed_admin_requires_a_non_empty_matching_token_even_on_loopback() {
+        let peer = "127.0.0.1:4321".parse().unwrap();
+        assert!(admin_auth_with(
+            crate::config::AdminExposure::Network,
+            Some("admin-secret"),
+            peer,
+            None,
+        )
+        .await
+        .is_err());
+        assert!(admin_auth_with(
+            crate::config::AdminExposure::Network,
+            Some("admin-secret"),
+            peer,
+            Some("wrong"),
+        )
+        .await
+        .is_err());
+        assert!(admin_auth_with(
+            crate::config::AdminExposure::Network,
+            Some("admin-secret"),
+            peer,
+            Some("admin-secret"),
+        )
+        .await
+        .is_ok());
+        assert!(admin_auth_with(
+            crate::config::AdminExposure::Network,
+            Some(""),
+            peer,
+            Some(""),
+        )
+        .await
+        .is_err());
+        assert!(admin_auth_with(
+            crate::config::AdminExposure::Network,
+            Some(""),
+            peer,
+            Some("anything"),
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn internal_node_control_uses_connection_key_but_not_the_browser_token() {
+        let state = crate::gateway::testkit::state_with("cluster-secret", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = crate::config::AdminExposure::Network;
+            cfg.admin_access_token = Some("person-secret".into());
+        }
+        let mut request = Request::builder()
+            .header(INTERNAL_NODE_REQUEST_HEADER, "1")
+            .header("authorization", "Bearer cluster-secret")
+            .body(())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:4321".parse().unwrap()));
+        let (mut parts, _) = request.into_parts();
+        assert!(
+            <AdminAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
+                &mut parts, &state,
+            )
+            .await
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_mode_or_regenerating_invalidates_the_previous_token() {
+        let state = crate::gateway::testkit::state_with("cluster-secret", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = crate::config::AdminExposure::Network;
+            cfg.admin_access_token = Some("old-token".into());
+        }
+
+        async fn check(
+            state: &crate::gateway::GatewayState,
+            supplied: Option<&str>,
+        ) -> Result<AdminAuth, AdminAuthRejection> {
+            let mut request = Request::builder().body(()).unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
+            if let Some(token) = supplied {
+                request = Request::builder()
+                    .header(ADMIN_ACCESS_TOKEN_HEADER, token)
+                    .body(())
+                    .unwrap();
+                request
+                    .extensions_mut()
+                    .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
+            }
+            let (mut parts, _) = request.into_parts();
+            <AdminAuth as FromRequestParts<crate::gateway::GatewayState>>::from_request_parts(
+                &mut parts, state,
+            )
+            .await
+        }
+
+        assert!(check(&state, Some("old-token")).await.is_ok());
+        state.auth.write().await.admin_access_token = Some("new-token".into());
+        assert!(check(&state, Some("old-token")).await.is_err());
+        assert!(check(&state, Some("new-token")).await.is_ok());
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = crate::config::AdminExposure::Localhost;
+            cfg.admin_access_token = None;
+        }
+        assert!(check(&state, None).await.is_ok());
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = crate::config::AdminExposure::Network;
+            cfg.admin_access_token = Some("third-token".into());
+        }
+        assert!(check(&state, Some("new-token")).await.is_err());
+        assert!(check(&state, Some("third-token")).await.is_ok());
     }
 
     #[test]
@@ -261,6 +584,8 @@ mod tests {
             role: crate::config::Role::Principal,
             connection_key: "cluster-secret".into(),
             gateway_port: 8080,
+            admin_exposure: Default::default(),
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
@@ -308,6 +633,8 @@ mod tests {
             role: crate::config::Role::Principal,
             connection_key: "cluster-secret".into(),
             gateway_port: 8080,
+            admin_exposure: Default::default(),
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],

@@ -12,7 +12,7 @@
 
 use crate::auth::{AuthState, ConnectionAuth};
 use crate::catalog::{self, Catalog};
-use crate::config::{KvCacheType, Role};
+use crate::config::{AdminExposure, KvCacheType, Role};
 use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;
@@ -141,6 +141,10 @@ pub(crate) fn conditional_json_with_version<T: Serialize>(
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/node", get(node_info))
+        .route(
+            "/api/ui/access",
+            get(admin_access_info).post(save_admin_access),
+        )
         .route("/api/ui/models", get(models))
         .route("/api/ui/models/delete", post(delete_model))
         .route("/api/ui/cluster", get(cluster))
@@ -226,6 +230,9 @@ pub struct NodeInfo {
     pub libp2p_peer_id: Option<String>,
     pub inference_frame_capabilities: Vec<String>,
     pub gateway_port: u16,
+    pub admin_exposure: AdminExposure,
+    pub admin_access_token_configured: bool,
+    pub admin_access_token_masked: Option<String>,
     pub inference_port: Option<u16>,
     pub config: Option<NodeConfig>,
     pub status: RuntimeStatus,
@@ -261,7 +268,17 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         .as_ref()
         .map(|cfg| cfg.deployment_name.clone())
         .unwrap_or_default();
-    let (role, conn_key, advertise_addr, tls_required, tls_authority, thermal) = {
+    let (
+        role,
+        conn_key,
+        advertise_addr,
+        tls_required,
+        tls_authority,
+        thermal,
+        admin_exposure,
+        admin_access_token_configured,
+        admin_access_token_masked,
+    ) = {
         let cfg = state.auth.read().await;
         (
             cfg.role.to_string(),
@@ -270,6 +287,11 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
             cfg.tls_required,
             cfg.role == crate::config::Role::Principal,
             cfg.thermal,
+            cfg.admin_exposure,
+            cfg.admin_access_token
+                .as_deref()
+                .is_some_and(|token| !token.is_empty()),
+            cfg.admin_access_token.as_deref().map(mask_access_token),
         )
     };
     Json(NodeInfo {
@@ -308,6 +330,9 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
             capabilities
         },
         gateway_port: state.gateway_port,
+        admin_exposure,
+        admin_access_token_configured,
+        admin_access_token_masked,
         inference_port: state.network.inference_port,
         config,
         status: state.runtime.status().await,
@@ -323,6 +348,125 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         thermal,
         system,
     })
+}
+
+fn mask_access_token(token: &str) -> String {
+    let suffix = token.get(token.len().saturating_sub(4)..).unwrap_or("");
+    format!("••••••••{suffix}")
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminAccessInfo {
+    pub admin_exposure: AdminExposure,
+    pub gateway_port: u16,
+    /// Só a superfície já autenticada recebe o token persistido. O endpoint
+    /// público `/api/access` informa apenas se a catraca está ligada.
+    pub access_token: Option<String>,
+}
+
+async fn admin_access_info(State(state): State<GatewayState>) -> Json<AdminAccessInfo> {
+    let cfg = state.auth.read().await;
+    Json(AdminAccessInfo {
+        admin_exposure: cfg.admin_exposure,
+        gateway_port: cfg.gateway_port,
+        access_token: cfg
+            .admin_access_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+            .map(str::to_string),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveAdminAccessRequest {
+    pub admin_exposure: AdminExposure,
+    pub gateway_port: u32,
+    #[serde(default)]
+    pub regenerate_token: bool,
+}
+
+/// Persiste a fronteira da interface administrativa. As rotas da pipeline não
+/// são alteradas: o listener do gateway continua dual-stack e o servidor de
+/// inferência segue ouvindo em IPv4/IPv6 para o fallback do túnel.
+async fn save_admin_access(
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveAdminAccessRequest>,
+) -> Response {
+    let port = match u16::try_from(req.gateway_port) {
+        Ok(port) => port,
+        Err(_) => return bad_request("a porta da interface deve estar entre 1 e 65535"),
+    };
+    if let Err(error) = crate::config::validate_gateway_port(port) {
+        return bad_request(error.to_string());
+    }
+    if let Err(error) =
+        crate::gateway::ensure_gateway_port_available(port, Some(state.gateway_port)).await
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response();
+    }
+
+    let (restart, access_token) = {
+        let mut cfg = state.auth.write().await;
+        let mut next = cfg.clone();
+        next.admin_exposure = req.admin_exposure;
+        next.gateway_port = port;
+
+        if req.admin_exposure.requires_token() {
+            let should_regenerate = req.regenerate_token
+                || next.admin_access_token.as_deref().is_none_or(str::is_empty);
+            if should_regenerate {
+                next.admin_access_token = Some(new_admin_access_token());
+            }
+        } else {
+            // Leaving the network invalidates the old credential immediately.
+            next.admin_access_token = None;
+        }
+
+        if let Err(error) = next.save() {
+            return bad_request(format!(
+                "não deu para gravar {}: {error}",
+                crate::brand::config_filename()
+            ));
+        }
+        let restart = port != state.gateway_port;
+        let access_token = next.admin_access_token.clone();
+        *cfg = next;
+        (restart, access_token)
+    };
+
+    info!(
+        exposure = ?req.admin_exposure,
+        gateway_port = port,
+        restart,
+        regenerated = req.regenerate_token,
+        "preferência de acesso administrativo atualizada pela interface"
+    );
+
+    if restart {
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let error = crate::respawn::respawn_self();
+            tracing::error!("respawn falhou, o nó segue no ar: {error}");
+        });
+    }
+
+    Json(json!({
+        "saved": true,
+        "restart": restart,
+        "admin_exposure": req.admin_exposure,
+        "gateway_port": port,
+        "access_token": access_token,
+    }))
+    .into_response()
+}
+
+fn new_admin_access_token() -> String {
+    let raw = uuid::Uuid::new_v4().simple().to_string();
+    hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
 // ── Model catalog ────────────────────────────────────────────────────────────
@@ -1476,6 +1620,7 @@ async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Respo
         );
     }
     let self_id = state.network.node_id.clone();
+    let connection_key = state.auth.read().await.connection_key.clone();
 
     // Fan out to every peer at once; a slow peer must not serialise the others.
     let futures: Vec<_> = peers
@@ -1488,6 +1633,7 @@ async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Respo
             // chamada de controle falharia - foi assim que a tela de implantar
             // parou de enxergar as fatias dos outros nós.
             let http = state.peer_http.for_peer(&p.node_id);
+            let connection_key = connection_key.clone();
             async move {
                 if is_self || url.is_none() {
                     return (None, None);
@@ -1497,7 +1643,12 @@ async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Respo
                     Err(e) => return (None, Some(format!("sem cliente: {e}"))),
                 };
                 let url = format!("{}/api/ui/node", url.unwrap());
-                match tokio::time::timeout(PEER_TIMEOUT, http.get(&url).send()).await {
+                match tokio::time::timeout(
+                    PEER_TIMEOUT,
+                    http.get(&url).bearer_auth(connection_key).send(),
+                )
+                .await
+                {
                     Ok(Ok(r)) if r.status().is_success() => match r.json().await {
                         Ok(v) => (Some(v), None),
                         Err(e) => (None, Some(format!("resposta inválida: {e}"))),
@@ -1733,6 +1884,7 @@ async fn peer_runtime(State(state): State<GatewayState>, Path(node_id): Path<Str
 async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse {
     let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
+    let connection_key = state.auth.read().await.connection_key.clone();
     let local = local_catalog(&state).await;
     // O nome que este nó anuncia, não o hostname cru do SO. Ver `models`.
     let local_host = state.network.hostname.clone();
@@ -1744,6 +1896,7 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
             let url = p.gateway_url();
             let http = state.peer_http.for_peer(&p.node_id);
             let node_id = p.node_id.clone();
+            let connection_key = connection_key.clone();
             async move {
                 let Some(base) = url else {
                     return (
@@ -1757,7 +1910,12 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                     Err(e) => return (node_id, None, Some(format!("sem cliente: {e}"))),
                 };
                 let url = format!("{base}/api/ui/models");
-                match tokio::time::timeout(PEER_TIMEOUT * 3, http.get(&url).send()).await {
+                match tokio::time::timeout(
+                    PEER_TIMEOUT * 3,
+                    http.get(&url).bearer_auth(connection_key).send(),
+                )
+                .await
+                {
                     Ok(Ok(r)) if r.status().is_success() => {
                         match r.json::<serde_json::Value>().await {
                             Ok(v) => (node_id, Some(v), None),
@@ -1873,6 +2031,7 @@ async fn plan_split_endpoint(
             forwarded.layout_node_id = None;
             return match cliente
                 .post(format!("{base}/api/ui/plan"))
+                .bearer_auth(state.auth.read().await.connection_key.clone())
                 .json(&forwarded)
                 .send()
                 .await
@@ -4945,6 +5104,7 @@ async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Optio
 
         let Ok(r) = cliente
             .get(format!("{base}/api/ui/models"))
+            .bearer_auth(&key)
             .timeout(PEER_TIMEOUT * 3)
             .send()
             .await

@@ -7,7 +7,9 @@ O gateway HTTP é a superfície de rede do nó pom, montada por
 ponto de entrada - não existe "o nó do gateway". O router liga com
 `axum::serve(...).tcp_nodelay(true)` (Nagle atrasava as escritas pequenas do
 SSE) e tem `CompressionLayer` (que já pula `text/event-stream`, então o token
-stream não é comprimido).
+stream não é comprimido). O listener do gateway continua dual-stack porque
+também leva a reserva HTTP da pipeline; a proteção da administração é uma
+fronteira de rota aplicada no servidor.
 
 Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
 gateway HTTP `--gateway-port` (8080), e o servidor de inferência
@@ -41,6 +43,23 @@ a condição de a cabeça rascunhar na decodificação especulativa.
   (`config::ui_dist_dir()`); o fallback de SPA é estreito: miss sob prefixo de
   API vira 404 JSON, miss com extensão de arquivo vira "asset não encontrado",
   o resto cai em `index.html`.
+
+### Fronteira de exposição
+
+O modo de exposição em Configurações / Preferências vale somente para a
+superfície administrativa: `/api/ui/**` e `/admin/**`. Em `localhost`, o
+servidor recusa essas rotas quando a conexão veio de fora de loopback. Em
+`network`, elas exigem `X-POM-Access-Token`; o valor é comparado no servidor e
+nunca é substituído pela `connection_key`. Chamadas de controle entre nós usam
+um marcador interno junto da `connection_key`, sem abrir esse caminho para o
+navegador.
+
+As rotas da pipeline não entram nessa fronteira: `/api/generate`, `/generate`,
+`/v1/**`, `/health`, `/peers` e `/handshake`, além das rotas do servidor de
+inferência em `--inference-port`, continuam acessíveis por IPv4 e IPv6 para
+que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
+é a única exceção pública da administração, pois informa apenas o modo, a
+necessidade de token e a porta para a tela decidir se deve mostrar a catraca.
 
 Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: só
 `/api/setup/key`, `/api/setup/save` e a UI. As duas rotas de setup não estão no

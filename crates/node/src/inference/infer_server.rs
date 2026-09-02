@@ -1165,6 +1165,23 @@ mod tests {
         assert!(aceito.join().unwrap(), "a conexão IPv4 não foi aceita");
     }
 
+    #[test]
+    fn listener_em_ipv6_tambem_atende_ipv6() {
+        let l = match listener_dual_stack(0) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        if l.local_addr().unwrap().is_ipv4() {
+            return;
+        }
+        let port = l.local_addr().unwrap().port();
+        let aceito = std::thread::spawn(move || l.accept().is_ok());
+        let conectou = std::net::TcpStream::connect(("::1", port)).is_ok();
+
+        assert!(conectou, "um cliente IPv6 não conseguiu conectar em [::]");
+        assert!(aceito.join().unwrap(), "a conexão IPv6 não foi aceita");
+    }
+
     /// O socket tem que pedir `SO_REUSEADDR`, como o `TcpListener::bind` da std
     /// pede sozinho.
     ///
@@ -2758,7 +2775,7 @@ pub async fn run(
 /// `SO_REUSEADDR` continua fora de propósito: no Windows ele deixa outro
 /// processo tomar uma porta já ligada, e é justamente o "address already in
 /// use" que denuncia um servidor velho ainda de pé.
-fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
+pub(crate) fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -2793,7 +2810,7 @@ fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
     }
 }
 
-async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
+pub(crate) async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
     let std_sock = listener_dual_stack(port)?;
     std_sock.set_nonblocking(true)?;
     Ok(TcpListener::from_std(std_sock)?)

@@ -87,8 +87,12 @@ que está sendo usado. Há teste disso em `src/network.rs`
 Um nó destacado mostra "Fora da rede" em Configurações › Rede, com um botão
 "Voltar para a rede" que chama `/api/ui/rejoin`.
 
-As preferências locais ficam em Configurações › Preferências: proteção térmica
-da GPU e credencial opcional do Hugging Face.
+As preferências locais ficam em Configurações › Preferências: exposição da
+interface administrativa, porta do gateway, TLS entre nós, proteção térmica da
+GPU e credencial opcional do Hugging Face. A exposição começa em localhost;
+quando passa para a rede, a tela mostra o token humano gerado e a API exige
+`X-POM-Access-Token`. A `connection_key` continua separada, para autenticar os
+nós e clientes da pipeline.
 
 ### A tela abriu sem estilo? Reinicie o dev server
 
@@ -164,6 +168,7 @@ a versão anterior tinha um `mock-server.mjs` e ele foi removido.
 | Rede (bloquear nó) | `GET /admin/nodes`, `POST /admin/nodes/:id/block`/`unblock` |
 | API keys | `GET`/`POST /admin/api-keys`, `DELETE /admin/api-keys/:key` |
 | Chaves de conexão | `GET /api/ui/node`, `POST /admin/regenerate-key` |
+| Exposição da administração | `GET /api/access`, `GET`/`POST /api/ui/access` |
 | Pastas de modelos | `GET`/`POST /api/ui/paths` |
 | Configuração inicial | `GET /api/setup/key`, `POST /api/setup/save` |
 | Implantar modelo fatiado | `POST /api/ui/deploy/plan`, `POST /api/ui/deploy`, `GET /api/ui/jobs` |

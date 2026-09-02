@@ -8,9 +8,10 @@ use crate::{admin, session};
 use anyhow::Result;
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{FromRequestParts, Request, State},
     http::StatusCode,
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -155,6 +156,48 @@ pub struct GatewayState {
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
+}
+
+#[derive(Serialize)]
+struct AdminAccessStatus {
+    admin_exposure: crate::config::AdminExposure,
+    requires_token: bool,
+    gateway_port: u16,
+}
+
+async fn admin_access_status(State(state): State<GatewayState>) -> impl IntoResponse {
+    let cfg = state.auth.read().await;
+    Json(AdminAccessStatus {
+        admin_exposure: cfg.admin_exposure,
+        requires_token: cfg.admin_exposure.requires_token(),
+        gateway_port: cfg.gateway_port,
+    })
+}
+
+/// Administrative paths are classified by namespace at the server boundary.
+/// The default for a new `/api/ui/*` or `/admin/*` route is therefore protected;
+/// adding a handler cannot silently create an unauthenticated control endpoint.
+pub(crate) fn is_admin_surface_path(path: &str) -> bool {
+    path == "/api/ui"
+        || path.starts_with("/api/ui/")
+        || path == "/admin"
+        || path.starts_with("/admin/")
+}
+
+async fn require_admin_for_surface(
+    State(state): State<GatewayState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !is_admin_surface_path(request.uri().path()) {
+        return next.run(request).await;
+    }
+
+    let (mut parts, body) = request.into_parts();
+    if let Err(rejection) = crate::auth::AdminAuth::from_request_parts(&mut parts, &state).await {
+        return rejection.into_response();
+    }
+    next.run(Request::from_parts(parts, body)).await
 }
 
 #[cfg(test)]
@@ -2808,12 +2851,14 @@ pub async fn generate_blocking_with_stops(
 // ── Server startup ────────────────────────────────────────────────────────────
 
 pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
+    crate::config::validate_gateway_port(port)?;
     let warm = state.clone();
     let tls_server = state.tls_server.clone();
     let admin = admin::admin_routes().with_state(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
         .route("/generate", post(handle_generate)) // alias
+        .route("/api/access", get(admin_access_status))
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
@@ -2844,7 +2889,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         // unknown paths to the client router, so anything registered after it
         // would never be reached.
         .merge(crate::webapp::routes())
-        .with_state(state)
+        .with_state(state.clone())
         // JSON responses and the static UI bundle compress well; the default
         // predicate already skips `text/event-stream`, so the SSE token
         // stream in openai::routes() is untouched — compressing it would
@@ -2852,13 +2897,17 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         // cares most about the former. Peer-to-peer tensor frames never pass
         // through this router (see inference/infer_server.rs), so there is
         // no risk of compressing binary inference frames here.
+        .layer(middleware::from_fn_with_state(
+            state,
+            require_admin_for_surface,
+        ))
         .layer(tower_http::compression::CompressionLayer::new());
 
     // Both startup paths (with a model and gateway-only) come through here, so
     // this is the one place that warms every node's catalog exactly once.
     crate::webui::warm_catalog(warm);
 
-    let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;
+    let listener = crate::infer_server::bind_dual_stack(port).await?;
     info!(
         "🌐 Interface e API em http://localhost:{port}  \
          — UI /  ·  OpenAI /v1/chat/completions  ·  Anthropic /v1/messages  ·  \
@@ -2873,6 +2922,23 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     // aceita, junto com a decisão entre TLS e texto claro.
     crate::serve::serve(listener, app, tls_server).await?;
     Ok(())
+}
+
+/// Probe the same IPv6 dual-stack bind used by the gateway before any model
+/// loading starts. This makes invalid or occupied configured ports fail at
+/// process startup instead of leaving a half-running node without its control
+/// plane. `current` is used by the live preference endpoint, where the current
+/// listener is expected to occupy the unchanged port.
+pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16>) -> Result<()> {
+    crate::config::validate_gateway_port(port)?;
+    if current == Some(port) {
+        return Ok(());
+    }
+    crate::infer_server::listener_dual_stack(port)
+        .map(|_| ())
+        .map_err(|error| {
+            anyhow::anyhow!("a porta da interface {port} não está disponível: {error}")
+        })
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────
@@ -3111,6 +3177,93 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn local_admin_boundary_does_not_restrict_pipeline_routes() {
+        let state = testkit::state_with("eu", vec![]).await;
+        let app = Router::new()
+            .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
+            .route("/v1/pipeline-fallback", get(|| async { "pipeline" }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut admin_request = Request::builder()
+            .uri("/api/ui/new-admin-endpoint")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        admin_request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        let admin_response = app.clone().oneshot(admin_request).await.unwrap();
+        assert_eq!(admin_response.status(), StatusCode::FORBIDDEN);
+
+        let pipeline_request = Request::builder()
+            .uri("/v1/pipeline-fallback")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let pipeline_response = app.oneshot(pipeline_request).await.unwrap();
+        assert_eq!(pipeline_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn exposed_admin_boundary_requires_and_accepts_the_human_token() {
+        let state = testkit::state_with("cluster-secret", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = crate::config::AdminExposure::Network;
+            cfg.admin_access_token = Some("person-secret".into());
+        }
+        let app = Router::new()
+            .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut without_token = Request::builder()
+            .uri("/api/ui/new-admin-endpoint")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        without_token
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        let rejected = app.clone().oneshot(without_token).await.unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+        let mut with_token = Request::builder()
+            .uri("/api/ui/new-admin-endpoint")
+            .header(crate::auth::ADMIN_ACCESS_TOKEN_HEADER, "person-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        with_token
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        let accepted = app.oneshot(with_token).await.unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn administrative_namespace_is_default_restricted() {
+        assert!(is_admin_surface_path("/api/ui/new-route"));
+        assert!(is_admin_surface_path("/admin/new-route"));
+        assert!(!is_admin_surface_path("/api/access"));
+        assert!(!is_admin_surface_path("/v1/prefill"));
+    }
+
+    #[tokio::test]
+    async fn occupied_gateway_port_is_reported_before_starting_the_router() {
+        let listener = tokio::net::TcpListener::bind("[::]:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let error = ensure_gateway_port_available(port, None)
+            .await
+            .expect_err("a porta ocupada precisa falhar");
+        assert!(error.to_string().contains(&port.to_string()));
+    }
 
     #[test]
     fn stop_matcher_holds_a_suffix_that_is_a_stop_prefix() {
@@ -4201,6 +4354,8 @@ pub(crate) mod testkit {
                 huggingface_token: None,
                 connection_key: "chave".into(),
                 gateway_port: 8080,
+                admin_exposure: Default::default(),
+                admin_access_token: None,
                 p2p_port: 42777,
                 inference_port: None,
                 bootstrap_nodes: vec![],

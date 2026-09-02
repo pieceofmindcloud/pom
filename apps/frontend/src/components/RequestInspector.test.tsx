@@ -102,6 +102,16 @@ describe("redactSensitive", () => {
     });
   });
 
+  it("redacts the administrative access token header and response field", () => {
+    expect(redactSensitive({
+      headers: [{ name: "X-POM-Access-Token", value: "admin-secret" }],
+      admin_access_token: "admin-secret",
+    })).toEqual({
+      headers: [{ name: "X-POM-Access-Token", value: "[REDACTED]" }],
+      admin_access_token: "[REDACTED]",
+    });
+  });
+
   it("redacts sensitive values through nested objects", () => {
     expect(redactSensitive({ request: { client_secret: "segredo", body: { password: "senha" } } })).toEqual({
       request: { client_secret: "[REDACTED]", body: { password: "[REDACTED]" } },

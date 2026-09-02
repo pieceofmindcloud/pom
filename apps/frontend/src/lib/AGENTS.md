@@ -12,7 +12,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ## Per-file
 
 - `api.ts` - fetch wrapper over relative paths with connection-key auth,
-  conditional JSON GETs with ETag caching, the SSE reader and the deployment
+  administrative-token auth only for `/api/ui/**` and `/admin/**`, conditional
+  JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment`,
   `activateDeployment`), além do status autenticado do provider remoto.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
@@ -161,7 +162,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### queries.ts
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
-- `useNode()` - polls `/api/ui/node` every 4s, stores `connection_key`.
+- `useAdminAccess()` - public one-shot metadata for the administrative token
+  gate; it never receives the token.
+- `useAdminAccessInfo()` - authenticated administrative settings, including the
+  token only for the Preferences screen.
+- `useNode()` - polls `/api/ui/node` every 4s after the admin gate, stores
+  `connection_key`.
 - `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
   máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar

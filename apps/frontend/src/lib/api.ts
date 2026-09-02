@@ -4,10 +4,10 @@
  * Paths are relative: in production the node serves this app on its own gateway
  * port, and in development Vite proxies the same paths (see `vite.config.ts`).
  *
- * Authentication is the cluster's **connection key** — the same credential the
- * operator pastes into a second machine's setup screen. `GET /api/ui/node`
- * returns it without authentication, so the panel can pick it up on load and
- * then sign the routes that do demand it (`/admin/*`, `/api/ui/apply`, `/v1`).
+ * The connection key authenticates nodes and pipeline clients. The separate
+ * `X-POM-Access-Token` only authenticates a person to the administrative
+ * surface; it is kept in memory for this browser tab and never replaces the
+ * connection key.
  */
 
 import { getActiveLocale } from "../i18n/locales";
@@ -26,6 +26,17 @@ import type {
 const KEY_STORAGE = storageKey("connectionKey");
 
 let connectionKey: string = localStorage.getItem(KEY_STORAGE) ?? "";
+let adminAccessToken = "";
+
+export const ADMIN_ACCESS_TOKEN_HEADER = "X-POM-Access-Token";
+
+export function isAdminSurfacePath(path: string): boolean {
+  const pathname = path.split("?", 1)[0];
+  return pathname === "/api/ui"
+    || pathname.startsWith("/api/ui/")
+    || pathname === "/admin"
+    || pathname.startsWith("/admin/");
+}
 
 export function getConnectionKey(): string {
   return connectionKey;
@@ -37,6 +48,20 @@ export function setConnectionKey(key: string) {
   connectionKey = nextKey;
   if (connectionKey) localStorage.setItem(KEY_STORAGE, connectionKey);
   else localStorage.removeItem(KEY_STORAGE);
+}
+
+export function getAdminAccessToken(): string {
+  return adminAccessToken;
+}
+
+export function setAdminAccessToken(token: string) {
+  const nextToken = token ?? "";
+  if (nextToken !== adminAccessToken) clearConditionalCache();
+  adminAccessToken = nextToken;
+}
+
+export function clearAdminAccessToken() {
+  setAdminAccessToken("");
 }
 
 /** Thrown for any non-2xx answer, carrying whatever the node explained. */
@@ -88,6 +113,9 @@ export async function request<T>(
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+  if (adminAccessToken && isAdminSurfacePath(path)) {
+    headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+  }
 
   const res = await fetch(path, {
     method,
@@ -136,6 +164,9 @@ export async function requestConditional<T>(
   const cached = conditionalCache.get(path);
   const headers: Record<string, string> = {};
   if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+  if (adminAccessToken && isAdminSurfacePath(path)) {
+    headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+  }
   if (cached) headers["If-None-Match"] = cached.etag;
 
   let res = await fetch(path, { method: "GET", headers, signal });
@@ -145,7 +176,12 @@ export async function requestConditional<T>(
   if (res.status === 304 && !cached) {
     res = await fetch(path, {
       method: "GET",
-      headers: auth && connectionKey ? { Authorization: `Bearer ${connectionKey}` } : {},
+      headers: {
+        ...(auth && connectionKey ? { Authorization: `Bearer ${connectionKey}` } : {}),
+        ...(adminAccessToken && isAdminSurfacePath(path)
+          ? { [ADMIN_ACCESS_TOKEN_HEADER]: adminAccessToken }
+          : {}),
+      },
       signal,
     });
   }
@@ -396,6 +432,9 @@ export async function* streamSse(
     Accept: "text/event-stream",
   };
   if (connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+  if (adminAccessToken && isAdminSurfacePath(path)) {
+    headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+  }
 
   const res = await fetch(path, {
     method: "POST",

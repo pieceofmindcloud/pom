@@ -15,9 +15,18 @@ inference, no model loading lives here - those are `network/`, `inference/`,
 where a handler only needs the config); handlers are axum functions, most
 behind an auth extractor.
 
+The gateway keeps the pipeline transport separate from the administrative
+surface. `/api/ui/**` and `/admin/**` are classified as administrative by
+default and pass through `AdminAuth`: localhost mode checks the real peer
+address, network mode checks `X-POM-Access-Token`, and the `connection_key`
+remains a separate node-to-node credential. `/api/generate`, `/v1/**`,
+`/health`, `/peers`, `/handshake` and the inference listener remain dual-stack.
+
 ## Files
 
-- `auth.rs` (132) - auth extractors. `ConnectionAuth` (connection-key bearer
+- `auth.rs` - auth extractors. `AdminAuth` protects the administrative surface
+  with the real peer address, a non-empty constant-time compared token, or the
+  explicit internal-node channel. `ConnectionAuth` (connection-key bearer
   only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, from
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
@@ -210,8 +219,8 @@ behind an auth extractor.
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
   `peer_http.plain()`.
-- `serve.rs` - o laço de accept: espia o primeiro byte e serve TLS ou texto
-  claro na mesma porta. `TlsServer` (certificado, modo estrito, duração do
+- `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
+  request e serve TLS ou texto claro na mesma porta. `TlsServer` (certificado, modo estrito, duração do
   último handshake). Ver `docs/subsystems/rede-p2p.md`, seção 5.
 - `session.rs` (111) - `POST /handshake` (connection key + blocked-nodes check).
 

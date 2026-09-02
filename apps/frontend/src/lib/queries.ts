@@ -23,6 +23,8 @@ import { modelDownloadJobs } from "./modelProvider";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
   AdminNode,
+  AdminAccessInfo,
+  AdminAccessStatus,
   ApiKey,
   CacheTypesResponse,
   CatalogResponse,
@@ -57,6 +59,8 @@ async function optional<T>(promise: Promise<T>, fallback: T): Promise<T> {
 
 export const keys = {
   node: ["node"] as const,
+  adminAccess: ["admin-access"] as const,
+  adminAccessInfo: ["admin-access-info"] as const,
   cluster: ["cluster"] as const,
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
@@ -113,6 +117,27 @@ export function useIsSetupMode() {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   }).data;
+}
+
+/** Public metadata needed before the app knows whether to show the token gate. */
+export function useAdminAccess() {
+  return useQuery({
+    queryKey: keys.adminAccess,
+    queryFn: () => api.get<AdminAccessStatus>("/api/access", { auth: false }),
+    retry: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** Authenticated administrative state, including the token for the settings page. */
+export function useAdminAccessInfo() {
+  return useQuery({
+    queryKey: keys.adminAccessInfo,
+    queryFn: () => api.get<AdminAccessInfo>("/api/ui/access", { auth: false }),
+    retry: false,
+    staleTime: 10_000,
+  });
 }
 
 export function useNode() {

@@ -8,7 +8,9 @@
  *
  * **Escopo:** isto é apresentação, não autorização - ver o cabeçalho de
  * `profile.tsx`. Bloquear aqui evita que a interface ofereça um trabalho que
- * não é daquele perfil; quem protege a API é a chave de conexão, no nó.
+ * não é daquele perfil. A autorização da superfície administrativa é feita no
+ * servidor com o token de acesso; a connection key é uma credencial separada
+ * para os nós e a pipeline.
  *
  * Rota que não aparece em `RESTRICTED` é livre para todo perfil, exceto o
  * `inference`, que tem uma vista reduzida explícita abaixo. O padrão é

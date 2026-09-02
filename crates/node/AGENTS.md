@@ -79,7 +79,9 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 1. `respawn::remember_argv` + tracing.
 2. Sem `pom.json` → `start_setup_mode`: só `/api/setup/key`, `/api/setup/save`
    + a UI (`webapp::routes`); gravar a config respawna o processo.
-3. Com config: porta P2P/HTTP vêm da config; `inference_port` = flag ou default 8181.
+3. Com config: valida a porta da interface e faz o preflight de disponibilidade
+   antes de carregar modelos; porta P2P/HTTP vêm da config; `inference_port` =
+   flag ou default 8181.
 4. `--list-models` imprime perfis + modelos do Ollama e sai.
 5. **Sem `--model`** → `start_gateway_only`: P2P + todas as rotas no ar, sem
    modelo; restaura a fatia anotada (`lastslice::take()`) **se** a anotação
@@ -149,7 +151,8 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
-- `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`,
+- `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`, a fronteira de
+  `AdminAuth` para `/api/ui/**` e `/admin/**`, e o preflight da porta),
   `generate_stream_with_stops` e o resumo agregado de TTFT, prefill, geração e
   total), `webapp.rs` (serve a UI do disco), `webui.rs`
   (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,

@@ -250,14 +250,16 @@ Per-file list:
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
   keeps `/config/pastas` as an alias.
-- `NetworkSettings.tsx` — Admin view: this node's membership
+- `NetworkSettings.tsx` - Admin view: this node's membership
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
-- `Preferences.tsx` - Local settings screen under Configurações: mounts the
-  `ThermalPanel`, which reads and writes the node's thermal policy through
-  `POST /api/ui/thermal`, and the `HuggingFaceSettingsPanel`, which saves the
-  local token without receiving the secret back. Both panels retain their
-  existing persistence behavior after moving out of Network.
+- `Preferences.tsx` - Local settings screen under Configurações: owns the
+  administrative exposure mode and gateway port, displays the generated access
+  token only in network mode, and saves them to `pom.json` through
+  `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
+  choice out of Network and explains when it is useful, plus `ThermalPanel` and
+  `HuggingFaceSettingsPanel`. The access token is a human credential and is not
+  the cluster `connection_key`.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e

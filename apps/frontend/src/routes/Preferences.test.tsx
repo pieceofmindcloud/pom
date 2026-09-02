@@ -10,14 +10,22 @@ const mocks = vi.hoisted(() => ({
   invalidate: vi.fn(),
   success: vi.fn(),
   fromError: vi.fn(),
+  setAdminAccessToken: vi.fn(),
+  clearAdminAccessToken: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
   api: { post: mocks.post },
+  setAdminAccessToken: mocks.setAdminAccessToken,
+  clearAdminAccessToken: mocks.clearAdminAccessToken,
   saveHuggingFaceToken: (...args: unknown[]) => mocks.saveHuggingFaceToken(...args),
 }));
 
 vi.mock("../lib/queries", () => ({
+  useAdminAccessInfo: () => ({
+    data: { admin_exposure: "localhost", gateway_port: 8080, access_token: null },
+    refetch: mocks.invalidate,
+  }),
   useHuggingFaceTokenConfig: () => ({
     data: { configured: true, masked: "••••••••cret", source: "pom.json" },
     isLoading: false,
@@ -42,6 +50,8 @@ afterEach(() => {
   mocks.invalidate.mockReset();
   mocks.success.mockReset();
   mocks.fromError.mockReset();
+  mocks.setAdminAccessToken.mockReset();
+  mocks.clearAdminAccessToken.mockReset();
 });
 
 function mount(child: React.ReactNode) {
@@ -78,6 +88,31 @@ describe("Preferences", () => {
         hysteresis_c: 7,
         cooldown_secs: 45,
       });
+    });
+  });
+
+  it("gera e guarda o token quando a interface passa para a rede", async () => {
+    mocks.post.mockResolvedValue({
+      saved: true,
+      restart: false,
+      admin_exposure: "network",
+      gateway_port: 8080,
+      access_token: "new-admin-token",
+    });
+    mount(<Preferences />);
+
+    fireEvent.change(screen.getByLabelText(/quem pode abrir a interface/i), {
+      target: { value: "network" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /salvar exposição/i }));
+
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith("/api/ui/access", {
+        admin_exposure: "network",
+        gateway_port: 8080,
+        regenerate_token: false,
+      });
+      expect(mocks.setAdminAccessToken).toHaveBeenCalledWith("new-admin-token");
     });
   });
 

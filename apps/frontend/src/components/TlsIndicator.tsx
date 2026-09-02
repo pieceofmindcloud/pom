@@ -19,7 +19,7 @@ export function TlsChip() {
   const label = t(on ? "topbar.tlsOnHint" : "topbar.tlsOffHint");
   return (
     <Link
-      to="/config/rede"
+      to="/config/preferencias"
       data-testid="tls-indicator"
       data-tls-state={on ? "on" : "off"}
       aria-label={label}

@@ -58,10 +58,10 @@ describe("TlsChip", () => {
     expect(screen.queryByText(/sem TLS/i)).toBeNull();
   });
 
-  it("leva a Configurações / Rede, que é onde se muda isso", () => {
+  it("leva a Configurações / Preferências, que é onde se muda isso", () => {
     nodeData = fakeNode({ tls_required: true });
     const { container } = mount();
-    expect(container.querySelector('a[href="/config/rede"]')).toBeTruthy();
+    expect(container.querySelector('a[href="/config/preferencias"]')).toBeTruthy();
   });
 
   it("não renderiza nada enquanto o nó não respondeu", () => {

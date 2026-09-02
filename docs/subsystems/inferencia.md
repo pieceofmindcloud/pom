@@ -10,6 +10,15 @@ descreve os modos de execução, o formato binário do estado oculto, o
 prefill em pedaços, a resposta direta, a decodificação especulativa e os
 limites.
 
+## Porta de inferência e exposição administrativa
+
+O servidor de inferência (`--inference-port`) mantém a escuta em IPv4 e IPv6,
+com fallback para IPv4 puro quando a máquina não oferece IPv6. Essa porta não é
+fechada pela preferência da interface administrativa: o HTTP direto é a
+reserva necessária quando o túnel libp2p falha. No gateway, `/api/generate` e
+`/v1/**` seguem a mesma regra de disponibilidade; somente `/api/ui/**` e
+`/admin/**` entram na fronteira localhost/token descrita em `api-http.md`.
+
 ### Montagem UTF-8 no streaming
 
 O llama.cpp devolve a peça de cada token como bytes crus: um token BYTE pode

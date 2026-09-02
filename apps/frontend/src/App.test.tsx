@@ -15,6 +15,7 @@ import { ProfileProvider, type Profile } from "./lib/profile";
  */
 vi.mock("./lib/queries", () => ({
   useIsSetupMode: () => false,
+  useAdminAccess: () => ({ data: { requires_token: false }, isLoading: false, isError: false }),
   // Nó completo o bastante para a barra superior e o rodapé do menu
   // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o
   // teste passa a medir o `ErrorBoundary` em vez do guarda.

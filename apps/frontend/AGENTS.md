@@ -37,7 +37,10 @@ global gap or overlap blocks the plan.
 - `index.html` - dark default (`data-theme="dark"`), two pre-paint scripts: theme from `localStorage` `codai.theme` (system preference deliberately does not decide) and `lang` from `codai.locale` / browser locales, so the first paint already matches the app state.
 - `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`.
 - `index.css` - design tokens and global styles (see below).
-- `App.tsx` - shell and route table (see below).
+- `App.tsx` - shell and route table (see below); after setup detection it reads
+  the public administrative exposure status and gates the whole shell with the
+  human access token when the node is network-exposed. This gate is only a UI
+  flow: the server remains the authorization boundary.
 
 ### App.tsx route table
 
@@ -64,7 +67,8 @@ aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
   inspetor com Markdown renderizado, expansão para leitura e redação de
   credenciais
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
-- `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
+- `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences,
+  including administrative exposure and gateway port plus the moved TLS choice;
   `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys;
   `/config/pastas` -> ModelPaths
 - `*` -> NotFound

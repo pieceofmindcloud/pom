@@ -119,6 +119,8 @@ mod tests {
             huggingface_token: None,
             connection_key: key.into(),
             gateway_port: 8080,
+            admin_exposure: Default::default(),
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],

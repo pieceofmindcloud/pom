@@ -525,9 +525,10 @@ struct DeviceState {
 /// LRU global de handles residentes no device.
 ///
 /// A fonte fria continua sendo lida pelo executor somente em um miss. O
-/// payload não fica preso neste struct: depois do upload, a entrada mantém só
-/// o handle concreto do backend. Isso impede que um hit de CUDA seja confundido
-/// com um hit da LRU de RAM.
+/// O payload não fica preso neste struct: depois do upload, a entrada mantém o
+/// handle concreto e o tamanho alocado pelo backend. Isso impede que um hit de
+/// CUDA seja confundido com um hit da LRU de RAM e permite validar a geometria
+/// antes de passar o handle para um kernel.
 #[cfg(any(feature = "cuda", test))]
 pub struct DeviceExpertCache {
     account: MemoryAccount,
@@ -594,17 +595,18 @@ impl DeviceExpertCache {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.clock = state.clock.saturating_add(1);
         let now = state.clock;
-        let handle = {
+        let (handle, bytes) = {
             let entry = state.entries.get_mut(key)?;
             entry.active = entry.active.saturating_add(1);
             entry.last_used = now;
-            entry.allocation.handle()
+            (entry.allocation.handle(), entry.allocation.bytes())
         };
         state.stats.hits = state.stats.hits.saturating_add(1);
         Some(DeviceExpertLease {
             cache: Arc::clone(self),
             key: key.clone(),
             handle,
+            bytes,
         })
     }
 
@@ -757,11 +759,13 @@ impl DeviceExpertCache {
             entry.active = entry.active.saturating_add(1);
             entry.last_used = now;
             let handle = entry.allocation.handle();
+            let resident_bytes = entry.allocation.bytes();
             state.stats.hits = state.stats.hits.saturating_add(1);
             return Ok(DeviceExpertLease {
                 cache: Arc::clone(self),
                 key,
                 handle,
+                bytes: resident_bytes,
             });
         }
 
@@ -861,6 +865,7 @@ impl DeviceExpertCache {
             cache: Arc::clone(self),
             key,
             handle,
+            bytes,
         })
     }
 
@@ -877,12 +882,17 @@ pub struct DeviceExpertLease {
     cache: Arc<DeviceExpertCache>,
     key: ExpertKey,
     handle: usize,
+    bytes: usize,
 }
 
 #[cfg(any(feature = "cuda", test))]
 impl DeviceExpertLease {
     pub fn handle(&self) -> usize {
         self.handle
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
     }
 }
 
@@ -1084,10 +1094,12 @@ mod tests {
         let cache = device_cache(&allocator, 100);
         let first = cache.admit(key(1), &[1, 2, 3]).unwrap();
         let handle = first.handle();
+        assert_eq!(first.bytes(), 3);
         drop(first);
 
         let second = cache.lookup(&key(1)).unwrap();
         assert_eq!(second.handle(), handle);
+        assert_eq!(second.bytes(), 3);
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 1);
         assert_eq!(cache.stats().upload_bytes, 3);
     }

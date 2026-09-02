@@ -5,7 +5,7 @@
 use super::admission::MemoryAccount;
 use super::bandwidth::BandwidthProfile;
 use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
-use super::format_k_quants::KQuantFormat;
+use super::format_k_quants::{KQuantExpert, KQuantFormat};
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use super::format_plain::{PlainExpert, PlainFormat};
 use serde::{Deserialize, Serialize};
@@ -633,6 +633,8 @@ impl KQuantCudaExecutor {
         key: super::cache::ExpertKey,
         payload: &[u8],
     ) -> Result<super::cache::DeviceExpertLease, CudaMoeError> {
+        KQuantExpert::from_payload(self.format, self.hidden, self.intermediate, payload)
+            .map_err(|error| CudaMoeError::Payload(error.to_string()))?;
         self.resident_cache
             .admit(key, payload)
             .map_err(|error| CudaMoeError::Cache(error.to_string()))
@@ -677,9 +679,28 @@ impl KQuantCudaExecutor {
             ));
         }
 
+        for payload in payloads {
+            KQuantExpert::validate_packed_payload_length(
+                self.format,
+                self.hidden,
+                self.intermediate,
+                payload.bytes(),
+            )
+            .map_err(|error| match error {
+                super::format_k_quants::KQuantError::PayloadLength { expected, actual } => {
+                    CudaMoeError::PayloadLength { expected, actual }
+                }
+                error => CudaMoeError::Geometry(error.to_string()),
+            })?;
+        }
+
         let handles = payloads
             .iter()
             .map(|payload| payload.handle() as *const u8)
+            .collect::<Vec<_>>();
+        let payload_lengths = payloads
+            .iter()
+            .map(super::cache::DeviceExpertLease::bytes)
             .collect::<Vec<_>>();
         let mut output = vec![0.0f32; hidden.len()];
         let mut timing = CudaMoeCallTiming {
@@ -695,6 +716,7 @@ impl KQuantCudaExecutor {
                 self.format.dtype(),
                 handles.as_ptr(),
                 payloads.len(),
+                payload_lengths.as_ptr(),
                 token_ids.as_ptr(),
                 weights.as_ptr(),
                 token_offsets.as_ptr(),
@@ -1134,9 +1156,12 @@ fn validate_heterogeneous_tensor(
             "{label} contém escala não finita"
         )));
     }
-    let row_bytes = match super::format_heterogeneous::cuda_tensor_row_bytes(tensor.dtype, columns)
-    {
-        Some(row_bytes) => row_bytes,
+    let expected = match super::format_heterogeneous::cuda_tensor_expected_bytes(
+        tensor.dtype,
+        rows,
+        columns,
+    ) {
+        Some(expected) => expected,
         None if !super::format_heterogeneous::cuda_tensor_dtype_supported(tensor.dtype) => {
             return Err(CudaMoeError::BackendUnavailable(format!(
                 "dtype GGML {} em {label} não tem ponte CUDA heterogênea",
@@ -1155,10 +1180,6 @@ fn validate_heterogeneous_tensor(
             "{label} tem ponte nula ou colunas que não fecham blocos de 256"
         )));
     }
-    let expected = rows
-        .checked_mul(columns / 256)
-        .and_then(|blocks| blocks.checked_mul(row_bytes))
-        .ok_or_else(|| CudaMoeError::Geometry(format!("overflow na geometria de {label}")))?;
     if tensor.bytes != expected {
         return Err(CudaMoeError::PayloadLength {
             expected,
@@ -1505,6 +1526,7 @@ unsafe extern "C" {
         dtype: u32,
         payloads: *const *const u8,
         payload_count: usize,
+        payload_lengths: *const usize,
         token_ids: *const u32,
         weights: *const f32,
         token_offsets: *const usize,
@@ -1604,6 +1626,8 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
+    use super::super::admission::MemoryAccount;
+    use super::super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache, ExpertKey};
     use super::super::format_iq_quants::{
         dequantize_row as dequantize_iq_row, row_bytes, IqQuantExpert, IqQuantFormat,
     };
@@ -1616,6 +1640,38 @@ mod tests {
     use super::super::format_q4_0::parse_tensor_table;
     use super::*;
     use memmap2::Mmap;
+
+    struct TestDeviceAllocation {
+        bytes: usize,
+    }
+
+    impl DeviceAllocation for TestDeviceAllocation {
+        fn bytes(&self) -> usize {
+            self.bytes
+        }
+
+        fn handle(&self) -> usize {
+            1
+        }
+    }
+
+    struct TestDeviceAllocator;
+
+    impl DeviceAllocator for TestDeviceAllocator {
+        fn device_name(&self) -> &str {
+            "test-device"
+        }
+
+        fn free_bytes(&self) -> std::io::Result<u64> {
+            Ok(1 << 30)
+        }
+
+        fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String> {
+            Ok(Box::new(TestDeviceAllocation {
+                bytes: payload.len(),
+            }))
+        }
+    }
 
     fn packed_rows(rows: usize, columns: usize, nibble: u8) -> Vec<u8> {
         let row_size = columns / 64 * 36;
@@ -1679,6 +1735,39 @@ mod tests {
         payload.extend_from_slice(&gate_up);
         payload.extend_from_slice(&down);
         payload
+    }
+
+    #[test]
+    fn executor_cuda_k_quant_rejeita_lease_menor_que_a_geometria_antes_do_kernel() {
+        let format = KQuantFormat::Q6K;
+        let hidden = 256;
+        let intermediate = 256;
+        let expected = KQuantExpert::packed_bytes(format, hidden, intermediate).unwrap();
+        let actual = expected / 8;
+        let cache = DeviceExpertCache::new(
+            MemoryAccount {
+                baseline_free_bytes: 1 << 30,
+                compute_bytes: 0,
+                weights_bytes: 0,
+                fixed_bytes: 0,
+                reserve_bytes: 0,
+            },
+            std::sync::Arc::new(TestDeviceAllocator),
+        );
+        let lease = cache
+            .admit(
+                ExpertKey::new("cuda-k-guard", 0, 0, format.name()),
+                &vec![0; actual],
+            )
+            .unwrap();
+        let executor =
+            KQuantCudaExecutor::new_with_cache(format, hidden, intermediate, cache).unwrap();
+
+        let error = executor
+            .run_route_batch_resident(&[lease], &[0], &[1.0], &[0, 1], &vec![0.0; hidden], 1)
+            .unwrap_err();
+
+        assert_eq!(error, CudaMoeError::PayloadLength { expected, actual });
     }
 
     fn plain_payload(format: PlainFormat, hidden: usize, intermediate: usize) -> Vec<u8> {

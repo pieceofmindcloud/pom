@@ -178,6 +178,11 @@ pub(crate) fn cuda_tensor_row_bytes(dtype: u32, columns: usize) -> Option<usize>
         .then(|| columns / block_elements * block_bytes)
 }
 
+#[cfg(any(feature = "cuda", test))]
+pub(crate) fn cuda_tensor_expected_bytes(dtype: u32, rows: usize, columns: usize) -> Option<usize> {
+    rows.checked_mul(cuda_tensor_row_bytes(dtype, columns)?)
+}
+
 #[cfg(feature = "cuda")]
 pub(crate) fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
     matches!(dtype, 12 | 14 | 18 | 21 | 22 | 23 | 39)
@@ -1283,6 +1288,14 @@ mod tests {
         assert_eq!(silu(f32::NEG_INFINITY), 0.0);
         assert_eq!(gelu(f32::NEG_INFINITY), 0.0);
         assert!(silu(-1_000.0).is_finite());
+    }
+
+    #[test]
+    fn geometria_cuda_heterogenea_separa_um_expert_do_banco_completo() {
+        let one_expert = cuda_tensor_expected_bytes(18, 32_768, 256).unwrap();
+        let expert_bank = cuda_tensor_expected_bytes(18, 32_768, 2_048).unwrap();
+
+        assert_eq!(expert_bank, one_expert * 8);
     }
 
     fn test_source_with_scalar_data(

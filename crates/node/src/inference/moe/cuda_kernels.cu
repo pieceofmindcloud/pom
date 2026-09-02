@@ -554,6 +554,43 @@ __device__ float k_dot(
         : k_dot_q6_k(matrix, row, columns, input);
 }
 
+bool kquant_payload_geometry(
+    uint32_t dtype,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    std::size_t *gate_up_bytes,
+    std::size_t *total_bytes
+) {
+    if ((dtype != 12 && dtype != 14) || hidden_width == 0 || intermediate_width == 0 ||
+        hidden_width % 256 != 0 || intermediate_width % 256 != 0 ||
+        gate_up_bytes == nullptr || total_bytes == nullptr) {
+        return false;
+    }
+    const std::size_t block_bytes = dtype == 12 ? 144 : 210;
+    const std::size_t hidden_blocks = hidden_width / 256;
+    const std::size_t intermediate_blocks = intermediate_width / 256;
+    if (hidden_blocks > std::numeric_limits<std::size_t>::max() / block_bytes ||
+        intermediate_blocks > std::numeric_limits<std::size_t>::max() / block_bytes) {
+        return false;
+    }
+    const std::size_t gate_up_row_bytes = hidden_blocks * block_bytes;
+    const std::size_t down_row_bytes = intermediate_blocks * block_bytes;
+    if (intermediate_width > std::numeric_limits<std::size_t>::max() / 2 ||
+        2 * intermediate_width > std::numeric_limits<std::size_t>::max() / gate_up_row_bytes ||
+        hidden_width > std::numeric_limits<std::size_t>::max() / down_row_bytes) {
+        return false;
+    }
+    *gate_up_bytes = 2 * intermediate_width * gate_up_row_bytes;
+    const std::size_t down_bytes = hidden_width * down_row_bytes;
+    if (*gate_up_bytes > std::numeric_limits<std::size_t>::max() - kKQuantPayloadHeaderBytes ||
+        kKQuantPayloadHeaderBytes + *gate_up_bytes >
+            std::numeric_limits<std::size_t>::max() - down_bytes) {
+        return false;
+    }
+    *total_bytes = kKQuantPayloadHeaderBytes + *gate_up_bytes + down_bytes;
+    return true;
+}
+
 // IQ usa codebooks GGML por superbloco. Estas funções acessam um peso pela
 // posição lógica, preservando a mesma ordem que dequantize_row_* usa no CPU.
 __device__ __forceinline__ float iq2s_value(const uint8_t *matrix, int index) {
@@ -741,16 +778,11 @@ __global__ void kquant_gate_up_route_kernel(
         return;
     }
     const uint8_t *payload = payloads[pair];
-    const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
-        (static_cast<uint32_t>(payload[1]) << 8) |
-        (static_cast<uint32_t>(payload[2]) << 16) |
-        (static_cast<uint32_t>(payload[3]) << 24);
     const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
     gate_up_values[pair * rows_per_pair + row] = k_dot(
         dtype, payload + kKQuantPayloadHeaderBytes, row, hidden, input) *
         payload_scale(payload, row < intermediate ? 0 : 1) *
         payload_scale(payload, row < intermediate ? 3 : 4);
-    (void)gate_up_len;
 }
 
 __global__ void kquant_silu_kernel(
@@ -782,6 +814,7 @@ __global__ void kquant_down_route_kernel(
     int pair_count,
     int hidden,
     int intermediate,
+    std::size_t gate_up_len,
     const float *activated,
     float *pair_output
 ) {
@@ -792,10 +825,6 @@ __global__ void kquant_down_route_kernel(
         return;
     }
     const uint8_t *payload = payloads[pair];
-    const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
-        (static_cast<uint32_t>(payload[1]) << 8) |
-        (static_cast<uint32_t>(payload[2]) << 16) |
-        (static_cast<uint32_t>(payload[3]) << 24);
     pair_output[pair * hidden + row] = k_dot(
         dtype,
         payload + kKQuantPayloadHeaderBytes + gate_up_len,
@@ -1482,6 +1511,7 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
     uint32_t dtype,
     const uint8_t * const *payloads,
     std::size_t payload_count,
+    const std::size_t *payload_lengths,
     const uint32_t *token_ids,
     const float *weights,
     const std::size_t *token_offsets,
@@ -1513,19 +1543,37 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
         timing->kernel_launches = 4;
         timing->sync_count = 1;
     }
-    if ((dtype != 12 && dtype != 14) || payloads == nullptr || token_ids == nullptr ||
-        weights == nullptr || token_offsets == nullptr || hidden == nullptr ||
-        output == nullptr || payload_count == 0 || token_count == 0 || hidden_width == 0 ||
-        intermediate_width == 0 || hidden_width % 256 != 0 || intermediate_width % 256 != 0 ||
+    if ((dtype != 12 && dtype != 14) || payloads == nullptr || payload_lengths == nullptr ||
+        token_ids == nullptr || weights == nullptr || token_offsets == nullptr ||
+        hidden == nullptr || output == nullptr || payload_count == 0 || token_count == 0 ||
+        hidden_width == 0 || intermediate_width == 0 || hidden_width % 256 != 0 ||
+        intermediate_width % 256 != 0 ||
+        payload_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        token_count > std::numeric_limits<std::size_t>::max() / hidden_width ||
+        hidden_width > std::numeric_limits<std::size_t>::max() / sizeof(float) ||
+        intermediate_width > std::numeric_limits<std::size_t>::max() / sizeof(float) ||
         token_offsets_len != token_count + 1 || hidden_len != token_count * hidden_width ||
         output_len != hidden_len || token_offsets[0] != 0 ||
         token_offsets[token_count] != payload_count) {
+        return 1;
+    }
+    std::size_t expected_gate_up_bytes = 0;
+    std::size_t expected_payload_bytes = 0;
+    if (!kquant_payload_geometry(
+            dtype,
+            hidden_width,
+            intermediate_width,
+            &expected_gate_up_bytes,
+            &expected_payload_bytes)) {
         return 1;
     }
     for (std::size_t pair = 0; pair < payload_count; ++pair) {
         if (payloads[pair] == nullptr || token_ids[pair] >= token_count ||
             !std::isfinite(weights[pair])) {
             return 1;
+        }
+        if (payload_lengths[pair] != expected_payload_bytes) {
+            return 2;
         }
     }
     for (std::size_t token = 0; token < token_count; ++token) {
@@ -1630,7 +1678,7 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
         kquant_down_route_kernel<<<
             (hidden_i * pair_count + block_size - 1) / block_size,
             block_size>>>(dtype, d_payloads, pair_count, hidden_i, intermediate_i,
-                d_activated, d_pair_output);
+                expected_gate_up_bytes, d_activated, d_pair_output);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         aggregate_route_batch_kernel<<<

@@ -69,7 +69,7 @@ impl fmt::Display for KQuantError {
             Self::Payload(reason) => write!(formatter, "payload K-quant inválido: {reason}"),
             Self::PayloadLength { expected, actual } => write!(
                 formatter,
-                "payload K-quant tem {actual} bytes, mas a geometria exige múltiplo de {expected}"
+                "payload K-quant tem {actual} bytes, mas a geometria exige {expected}"
             ),
             #[cfg(feature = "cuda")]
             Self::BackendUnavailable(reason) => {
@@ -230,19 +230,26 @@ impl<'a> KQuantExpert<'a> {
             .ok_or(KQuantError::Geometry("overflow no payload"))
     }
 
+    pub(crate) fn validate_packed_payload_length(
+        format: KQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+        actual: usize,
+    ) -> Result<(), KQuantError> {
+        let expected = Self::packed_bytes(format, hidden, intermediate)?;
+        if actual != expected {
+            return Err(KQuantError::PayloadLength { expected, actual });
+        }
+        Ok(())
+    }
+
     pub fn from_payload(
         format: KQuantFormat,
         hidden: usize,
         intermediate: usize,
         payload: &'a [u8],
     ) -> Result<Self, KQuantError> {
-        let expected = Self::packed_bytes(format, hidden, intermediate)?;
-        if payload.len() != expected {
-            return Err(KQuantError::PayloadLength {
-                expected,
-                actual: payload.len(),
-            });
-        }
+        Self::validate_packed_payload_length(format, hidden, intermediate, payload.len())?;
         let gate_up_len = u32::from_le_bytes(
             payload[..4]
                 .try_into()
@@ -1468,6 +1475,29 @@ pub(crate) mod tests {
     fn k_quant_rejeita_linha_truncada() {
         let error = dequantize_row(KQuantFormat::Q4K, &[0; 143]).unwrap_err();
         assert!(matches!(error, KQuantError::PayloadLength { .. }));
+    }
+
+    #[test]
+    fn payload_cuda_k_quant_de_um_expert_rejeita_tamanho_encolhido() {
+        let format = KQuantFormat::Q6K;
+        let hidden = 256;
+        let intermediate = 256;
+        let expected = KQuantExpert::packed_bytes(format, hidden, intermediate).unwrap();
+        let actual = expected / 8;
+
+        let error =
+            KQuantExpert::validate_packed_payload_length(format, hidden, intermediate, actual)
+                .unwrap_err();
+
+        assert_eq!(error, KQuantError::PayloadLength { expected, actual });
+    }
+
+    #[test]
+    fn payload_cuda_k_quant_de_um_expert_aceita_tamanho_exato() {
+        let format = KQuantFormat::Q6K;
+        let expected = KQuantExpert::packed_bytes(format, 256, 256).unwrap();
+
+        KQuantExpert::validate_packed_payload_length(format, 256, 256, expected).unwrap();
     }
 
     #[test]

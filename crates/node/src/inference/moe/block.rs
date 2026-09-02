@@ -1234,7 +1234,7 @@ impl HeterogeneousMoeBlock {
                 };
                 let tensor = CudaHeterogeneousTensor {
                     data: lease.handle() as *const u8,
-                    bytes: bytes.len(),
+                    bytes: lease.bytes(),
                     dtype,
                     scale: scales.primary,
                     input_scale: scales.input_primary,

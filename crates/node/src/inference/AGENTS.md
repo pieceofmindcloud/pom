@@ -364,8 +364,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Q4_K/Q6_K com SiLU no caminho K. O
   caminho CUDA agrupa os experts ativos de uma rota em índices `(expert, linha)`;
   depois do cache residente, o payload de peso é enviado uma vez por miss e o
-  lote recebe ponteiros de device nos hits. O lote de rotas para múltiplos
-  tokens envia ids, pesos e offsets uma vez por camada e agrega a saída no
+  lote recebe ponteiros de device nos hits; cada lease também conserva o
+  tamanho da alocação para validar a geometria antes do kernel K/Q6_K. O lote
+  de rotas para múltiplos tokens envia ids, pesos e offsets uma vez por camada
+  e agrega a saída no
   device; o caminho unitário continua disponível para o executor residente.
   O lote de rota usa seis lançamentos de kernel e duas sincronizações. O perfil publica `cuda_call_wall_ms`
   como parede externa não sobreposta da chamada FFI, separada de H2D, kernel,

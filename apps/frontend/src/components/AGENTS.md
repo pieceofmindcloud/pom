@@ -16,6 +16,11 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`
 partial `node` (e.g. one without `status`) slips past one component's `?.` and
 crashes the next.
 
+- `setup-wizard/` - Componentes visuais reutilizáveis do wizard de primeiro
+  acesso: layout com progresso e ações, cards de intenção, hardware, nó,
+  modelo e rede, além das telas de cada etapa. A navegação e o estado ficam em
+  `../routes/SetupWizard.tsx`; os componentes só recebem estado e callbacks.
+
 Per-file list:
 
 - `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine

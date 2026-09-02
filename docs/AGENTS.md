@@ -92,6 +92,11 @@ mudar frame entre peers ou planner.
 auditoria persistente de prompts em SQLite, a identidade não secreta da chave,
 o FTS5 e o ciclo em duas etapas do registro.
 
+O wizard de primeiro acesso está descrito em
+`superpowers/specs/2026-09-02-rdma-wizard-primeiro-acesso-design.md`, com o
+fluxo navegável e os limites do protótipo. A execução correspondente está em
+`superpowers/plans/2026-09-02-rdma-wizard-primeiro-acesso.md`.
+
 ## Proteção térmica da implantação
 
 `superpowers/specs/2026-08-26-protecao-termica-gpu-design.md` registra a

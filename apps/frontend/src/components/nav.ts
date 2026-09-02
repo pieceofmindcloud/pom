@@ -14,6 +14,7 @@ import {
   Send,
   Settings,
   SlidersHorizontal,
+  Sparkles,
   Upload,
   type LucideIcon,
 } from "lucide-react";
@@ -88,6 +89,7 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
       { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },
       { labelKey: "nav.modelFolders", to: "/config/armazenamento", icon: FolderTree },
+      { labelKey: "nav.setupWizard", to: "/setup", icon: Sparkles },
     ],
   },
 ];

@@ -10,6 +10,13 @@ writes as translation keys.
 
 Per-file list:
 
+- `SetupWizard.tsx` - Protótipo navegável do primeiro acesso, mantido na rota
+  `/setup` mesmo depois da configuração inicial. Usa `setupWizardTypes.ts` para
+  o estado central e `setupWizardMocks.ts` para hardware, nós, modelos,
+  capabilities, redes públicas e saúde simulados; os seis caminhos terminam
+  no mesmo resumo e não fazem chamadas ao backend. O `Setup.tsx` continua
+  sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
+
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage),
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`

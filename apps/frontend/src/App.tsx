@@ -132,6 +132,7 @@ function AdminAccessUnavailable() {
  */
 export const routeLoaders = {
   setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
+  setupWizard: () => import("./routes/SetupWizard").then(({ SetupWizard }) => SetupWizard),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
@@ -158,6 +159,7 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
 }
 
 const Setup = lazyRoute(routeLoaders.setup);
+const SetupWizard = lazyRoute(routeLoaders.setupWizard);
 const Chat = lazyRoute(routeLoaders.chat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
@@ -230,7 +232,7 @@ export default function App() {
   // o layout de tela cheia não rola por dentro.
   const isFullBleed =
     allowed &&
-    (isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar" || location.pathname === "/logs");
+    (isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar" || location.pathname === "/logs" || location.pathname === "/setup");
   /*
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -308,6 +310,7 @@ export default function App() {
                       <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
                       <Route path="/fatias" element={<Page><Shards /></Page>} />
                       <Route path="/implantar" element={<Page><DeployModel /></Page>} />
+                      <Route path="/setup" element={<Page><SetupWizard /></Page>} />
                       <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
                       {/* Keep the former deploy URL working for old bookmarks. */}
                       <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />

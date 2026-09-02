@@ -101,11 +101,32 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   requisições paginadas por scroll infinito, estatísticas agregadas e inspetor
   JSON
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
+- `/setup` -> `SetupWizard`, protótipo navegável do primeiro acesso. Em um nó já
+  configurado, a rota continua disponível para rever os seis caminhos; em modo
+  setup, a decisão de `/api/ui/node` retorna antes e mantém `Setup`, o bootstrap
+  real que escolhe Principal/Nó e gera a chave de conexão.
 - `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
   `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias)
 - `*` -> NotFound
+
+### Wizard de primeiro acesso
+
+`routes/SetupWizard.tsx` mantém uma máquina de estados local, com histórico para
+voltar em qualquer etapa. O cabeçalho usa o mesmo lockup, tokens, tipografia,
+painéis e ações do restante da interface. Os caminhos Quick Start, máquinas
+próprias, rede de empresa, contribuição, rede de IA e configuração avançada
+compartilham o resumo final, mas exibem apenas as decisões relevantes de cada
+perfil. Hardware, nós encontrados, modelos, redes públicas, capabilities e
+checagens de saúde vêm de `routes/setupWizardMocks.ts`, separados dos tipos em
+`routes/setupWizardTypes.ts` para uma futura troca por respostas do backend.
+
+O wizard não grava configuração, baixa modelos, convida usuários, cria chaves,
+mede a máquina nem conecta uma rede. Essas telas são estados visuais do
+protótipo e exibem a preparação para as superfícies reais. O link de
+Configurações usa a mesma entrada `/setup`, então a experiência permanece
+revisável depois do primeiro acesso sem interferir no bootstrap de um nó novo.
 
 ### Modelos remotos
 

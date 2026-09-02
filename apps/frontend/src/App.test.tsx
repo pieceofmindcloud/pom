@@ -53,6 +53,7 @@ vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</d
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
 vi.mock("./routes/Preferences", () => ({ Preferences: () => <div>tela-preferencias</div> }));
+vi.mock("./routes/SetupWizard", () => ({ SetupWizard: () => <div>tela-wizard</div> }));
 
 import App from "./App";
 
@@ -107,6 +108,11 @@ describe("guarda de perfil por rota", () => {
   it("abre Preferências para o perfil do nó", async () => {
     open("/config/preferencias", "node");
     expect(await screen.findByText("tela-preferencias")).toBeTruthy();
+  });
+
+  it("mantém o wizard acessível depois do primeiro acesso", async () => {
+    open("/setup", "admin");
+    expect(await screen.findByText("tela-wizard")).toBeTruthy();
   });
 
   /**

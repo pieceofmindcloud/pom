@@ -2,9 +2,10 @@
 
 Interface web administrativa do POM, um SPA React 18 + TypeScript + Vite
 em `apps/frontend/`. É a interface do produto: todo nó serve a UI junto com a
-API na porta do gateway (`--gateway-port`, 8080 por padrão). O painel pode
-nascer somente em `localhost` ou ser exposto à rede com token, enquanto as
-rotas de inferência continuam dual-stack para o HTTP de reserva da pipeline.
+API na porta do gateway (`--gateway-port`, 8080 por padrão), no mount
+`/admin-ui/`; a raiz apenas redireciona para ele. O painel pode nascer somente
+em `localhost` ou ser exposto à rede com token e sessão de servidor, enquanto
+as rotas de inferência continuam dual-stack para o HTTP de reserva da pipeline.
 
 O nome e a logo que a tela mostra vêm do `brand.json` da raiz, copiado para o
 bundle por `scripts/build-brand.mjs` - o mesmo arquivo que o binário embute.
@@ -46,15 +47,16 @@ como "aguardando resfriar", distinto de peer indisponível ou falha.
 
 ### Roteamento no axum (`webapp.rs`)
 
-O bundle é montado por último no roteador e o fallback é estreito de propósito:
-arquivo real ganha (com `mime_guess`); prefixos de API (`/api`, `/v1`,
-`/admin`, `/peers`, `/health`, `/generate`) **nunca caem no app** (rota de API
-desconhecida responde 404 em JSON, não uma página com 200); um miss com
-extensão é 404 (`asset não encontrado`); o que sobra recebe `index.html`, para
-recarregar o navegador em `/config/keys/api` funcionar. `resolve()` rejeita
-`..`, caminho absoluto e `Prefix` (há teste). Cache: `index.html` com
-`no-cache` (é o único arquivo que muda sob nome fixo), assets com hash de
-conteúdo `immutable` por 1 ano.
+O bundle é montado por último no roteador sob `/admin-ui/`; `/` redireciona
+para esse mount e nenhum caminho antigo precisa expor o shell. Um arquivo real
+ganha (com `mime_guess`), um miss com extensão é 404 (`asset não encontrado`) e
+uma rota SPA recebe `index.html`, para recarregar o navegador em
+`/admin-ui/config/keys/api` funcionar. `resolve()` rejeita `..`, caminho
+absoluto e `Prefix` (há teste). Cache: `index.html` com `no-cache` (é o único
+arquivo que muda sob nome fixo), assets com hash de conteúdo `immutable` por 1
+ano. Em modo localhost, a fronteira do gateway recusa raiz, mount e assets
+vindos de fora com uma página HTML 403 autocontida; `/v1/**`, `/api/generate`,
+`/health`, `/peers` e demais rotas da pipeline continuam fora da fronteira.
 
 ## Build e desenvolvimento
 

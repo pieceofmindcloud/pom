@@ -50,7 +50,7 @@ function publish(relPath) {
   const ext = extname(relPath);
   const name = `${basename(relPath, ext)}.${hash}${ext}`;
   writeFileSync(join(publicDir, name), bytes);
-  return `/brand/${name}`;
+  return `/admin-ui/brand/${name}`;
 }
 
 const manifest = {

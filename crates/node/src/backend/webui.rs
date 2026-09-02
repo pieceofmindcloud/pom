@@ -409,7 +409,7 @@ async fn save_admin_access(
             .into_response();
     }
 
-    let (restart, access_token) = {
+    let (restart, access_token, invalidate_sessions) = {
         let mut cfg = state.auth.write().await;
         let mut next = cfg.clone();
         next.admin_exposure = req.admin_exposure;
@@ -434,9 +434,15 @@ async fn save_admin_access(
         }
         let restart = port != state.gateway_port;
         let access_token = next.admin_access_token.clone();
+        let invalidate_sessions = cfg.admin_exposure != next.admin_exposure
+            || cfg.admin_access_token != next.admin_access_token;
         *cfg = next;
-        (restart, access_token)
+        (restart, access_token, invalidate_sessions)
     };
+
+    if invalidate_sessions {
+        state.admin_sessions.lock().await.invalidate_all();
+    }
 
     info!(
         exposure = ?req.admin_exposure,

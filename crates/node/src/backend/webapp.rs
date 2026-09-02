@@ -1,20 +1,18 @@
 //! Serving the CODAI-SERVER interface off disk.
 //!
-//! The bundle lives wherever `config::ui_dist_dir()` points — by default
+//! The bundle lives wherever `config::ui_dist_dir()` points - by default
 //! `<project_root>/apps/frontend/dist`, built independently with
 //! `npm run build` in `apps/frontend`. Nothing here is compiled into the
 //! binary, so editing the interface no longer touches the Rust build: run
 //! `npm run build` (or point `POM_UI_DIST` at a Vite watch build) and
 //! reload the browser.
 //!
-//! The routing rule is the part worth reading. A single-page app owns paths
-//! that do not exist as files: reloading the browser on `/config/keys/api` has
-//! to answer with `index.html` so the client router can take it from there.
-//! Answering *everything* with `index.html` would be wrong in the other
-//! direction — a mistyped `/api/ui/nodes` would return a web page with status
-//! 200, and the screen would report "Unexpected token '<'" instead of a 404.
-//! So the fallback is deliberately narrow: real files win, the API prefixes are
-//! never touched, and anything left over that looks like a page gets the app.
+//! The routing rule is the part worth reading. The single-page app is mounted
+//! at `/admin-ui/`, while the root redirects there without exposing a bundle
+//! from the old root. Reloading a browser route such as
+//! `/admin-ui/config/keys/api` answers with `index.html` so the client router
+//! can take it from there. API routes are kept outside this mount, so a mistyped
+//! `/api/ui/nodes` still gets a JSON 404 instead of a web page with status 200.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -22,7 +20,7 @@ use axum::{
     body::Body,
     extract::Path as AxumPath,
     http::{header, HeaderValue, StatusCode, Uri},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::get,
     Router,
 };
@@ -42,8 +40,15 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
-        .route("/", get(index))
+        .route("/", get(root))
+        .route("/admin-ui", get(index))
+        .route("/admin-ui/", get(index))
+        .route("/admin-ui/*path", get(asset))
         .route("/*path", get(asset))
+}
+
+async fn root() -> Redirect {
+    Redirect::temporary("/admin-ui/")
 }
 
 async fn index() -> Response {
@@ -55,7 +60,10 @@ async fn index() -> Response {
 
 async fn asset(AxumPath(path): AxumPath<String>, uri: Uri) -> Response {
     let base = crate::config::ui_dist_dir();
-    let trimmed = path.trim_start_matches('/');
+    let trimmed = path
+        .strip_prefix("admin-ui/")
+        .unwrap_or(path.as_str())
+        .trim_start_matches('/');
 
     if let Some(hit) = serve(&base, trimmed).await {
         return hit;
@@ -208,5 +216,15 @@ mod tests {
                 "{p} e uma rota de tela e devia cair no index.html"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn root_redirects_to_the_admin_ui_mount() {
+        let response = root().await.into_response();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/admin-ui/"
+        );
     }
 }

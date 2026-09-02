@@ -2887,6 +2887,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "cc",
  "chrono",
  "clap",

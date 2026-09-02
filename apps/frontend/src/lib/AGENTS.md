@@ -11,9 +11,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ## Per-file
 
-- `api.ts` - fetch wrapper over relative paths with connection-key auth,
-  administrative-token auth only for `/api/ui/**` and `/admin/**`, conditional
-  JSON GETs with ETag caching, the SSE reader and the deployment
+- `api.ts` - fetch wrapper over relative paths with same-origin credentials,
+  connection-key auth, administrative-token auth only for `/api/ui/**` and
+  `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment`,
   `activateDeployment`), além do status autenticado do provider remoto.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
@@ -44,6 +44,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the peers in that trace without polling the whole cluster.
   `useNetworkRtt` asks the same authenticated telemetry route for the current
   deployment edges shown on the Dashboard and refreshes them every 15 s.
+  `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
+  available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
   values remain unchanged. It prevents effects that capture `useQueries` data
   from writing state on every render; the Chat regression test covers this
@@ -98,8 +100,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### api.ts
 - `request<T>(path, opts)` - the single ordinary fetch path: JSON body,
-  optional `Authorization: Bearer <connectionKey>`, throws `ApiError` on
-  non-2xx. Everything in the app goes through it.
+  same-origin credentials for the server session, optional
+  `Authorization: Bearer <connectionKey>`, throws `ApiError` on non-2xx.
+  Everything in the app goes through it; the human token remains in memory only.
 - `requestConditional<T>(path, opts)` / `api.getConditional` - GET with an
   in-memory ETag cache. It sends `If-None-Match`, returns the cached object
   without parsing a 304 body, and falls back to an unconditional GET if a new
@@ -161,6 +164,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
 
 ### queries.ts
+- `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
+  404 means setup, a valid server session means available, a localhost policy
+  refusal means the local-only state, and other refusals keep the token gate.
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useAdminAccess()` - public one-shot metadata for the administrative token
   gate; it never receives the token.

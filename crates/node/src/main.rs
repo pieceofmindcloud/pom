@@ -810,6 +810,7 @@ async fn main() -> Result<()> {
             database: database.clone(),
             gateway_port,
             auth: auth_config,
+            admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: Some(tunnel_tx.clone()),
@@ -1482,6 +1483,7 @@ async fn start_gateway_only(
         database,
         gateway_port,
         auth: auth_state,
+        admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
         transfers: Default::default(),
         reply_inbox: crate::direct::ReplyInbox::new(),
         // `start_p2p_stack` always hands back a working sender, even when

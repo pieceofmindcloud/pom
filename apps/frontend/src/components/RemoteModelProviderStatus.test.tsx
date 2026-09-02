@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 import { RemoteModelProviderStatus } from "./RemoteModelProviderStatus";
 
@@ -24,17 +25,19 @@ describe("RemoteModelProviderStatus", () => {
   it("distinguishes an installed CLI that still needs authentication", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
-        <RemoteModelProviderStatus
-          status={{
-            cli: { installed: true, version: "1.2.3", authenticated: false, username: null },
-          }}
-        />
+        <MemoryRouter basename="/admin-ui" initialEntries={["/admin-ui/"]}>
+          <RemoteModelProviderStatus
+            status={{
+              cli: { installed: true, version: "1.2.3", authenticated: false, username: null },
+            }}
+          />
+        </MemoryRouter>
       </LocaleProvider>,
     );
 
     expect(screen.getByText("Autenticação do Hugging Face necessária.")).toBeTruthy();
     expect(screen.getByRole("link", { name: /configurações/i }).getAttribute("href")).toBe(
-      "/config/preferencias#hugging-face",
+      "/admin-ui/config/preferencias#hugging-face",
     );
   });
 });

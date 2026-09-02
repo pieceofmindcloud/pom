@@ -16,17 +16,21 @@ where a handler only needs the config); handlers are axum functions, most
 behind an auth extractor.
 
 The gateway keeps the pipeline transport separate from the administrative
-surface. `/api/ui/**` and `/admin/**` are classified as administrative by
-default and pass through `AdminAuth`: localhost mode checks the real peer
-address, network mode checks `X-POM-Access-Token`, and the `connection_key`
-remains a separate node-to-node credential. `/api/generate`, `/v1/**`,
-`/health`, `/peers`, `/handshake` and the inference listener remain dual-stack.
+surface. `/api/ui/**` and `/admin/**` plus the static UI surface pass through
+the same boundary: localhost mode checks the real peer address, network mode
+checks a server-side `HttpOnly` session minted from `X-POM-Access-Token`, and
+the `connection_key` remains a separate node-to-node credential. `/api/generate`,
+`/v1/**`, `/health`, `/peers`, `/handshake` and the inference listener remain
+dual-stack.
 
 ## Files
 
 - `auth.rs` - auth extractors. `AdminAuth` protects the administrative surface
-  with the real peer address, a non-empty constant-time compared token, or the
-  explicit internal-node channel. `ConnectionAuth` (connection-key bearer
+  with the real peer address, a non-empty constant-time compared token, a
+  server-side in-memory session cookie, or the explicit internal-node channel.
+  Sessions use a cryptographically random identifier, bind to the current
+  token digest, expire after the single `ADMIN_SESSION_TTL` value and never
+  persist in the browser or on disk. `ConnectionAuth` (connection-key bearer
   only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, from
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
@@ -48,8 +52,9 @@ remains a separate node-to-node credential. `/api/generate`, `/v1/**`,
   conexão também faz leituras curtas em ordem, eliminando abertura e DDL por
   operação. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
   para um volume e, sem ele, o banco fica na raiz do projeto.
-- `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
-  fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
+- `webapp.rs` - serves the frontend bundle from disk at `/admin-ui/`; `/`
+  redirects there and the static surface is covered by the same local-only
+  boundary, while nothing is compiled into the binary.
 - `model_provider.rs` - API agnóstica de status do CLI, autenticação, busca,
   licença, detalhes, espaço e downloads remotos. Injeta `DynModelProvider`, usa
   `webui::Job` como estado persistente, `CancellationToken` por download e

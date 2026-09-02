@@ -33,5 +33,29 @@ describe("administrative access token", () => {
       "X-POM-Access-Token": "admin-secret",
     });
     expect(fetchMock.mock.calls[1][1].headers).not.toHaveProperty("X-POM-Access-Token");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "same-origin" });
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ credentials: "same-origin" });
+  });
+
+  it("never stores the administrative token or puts it in a URL", async () => {
+    const storage = {
+      getItem: () => null,
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    };
+    vi.stubGlobal("localStorage", storage);
+    vi.stubGlobal("sessionStorage", storage);
+    apiModule.setAdminAccessToken("admin-secret");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockResolvedValue("{}"),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiModule.api.get("/api/ui/node", { auth: false });
+
+    expect(storage.setItem).not.toHaveBeenCalledWith(expect.anything(), "admin-secret");
+    expect(fetchMock.mock.calls[0][0]).not.toContain("admin-secret");
   });
 });

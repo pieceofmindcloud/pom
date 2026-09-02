@@ -120,6 +120,7 @@ export async function request<T>(
   const res = await fetch(path, {
     method,
     headers,
+    credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
@@ -169,7 +170,12 @@ export async function requestConditional<T>(
   }
   if (cached) headers["If-None-Match"] = cached.etag;
 
-  let res = await fetch(path, { method: "GET", headers, signal });
+  let res = await fetch(path, {
+    method: "GET",
+    headers,
+    credentials: "same-origin",
+    signal,
+  });
 
   // A 304 without a local value is not useful to a new tab. Recover with one
   // unconditional read instead of exposing an impossible empty state.
@@ -182,6 +188,7 @@ export async function requestConditional<T>(
           ? { [ADMIN_ACCESS_TOKEN_HEADER]: adminAccessToken }
           : {}),
       },
+      credentials: "same-origin",
       signal,
     });
   }
@@ -439,6 +446,7 @@ export async function* streamSse(
   const res = await fetch(path, {
     method: "POST",
     headers,
+    credentials: "same-origin",
     body: JSON.stringify(body),
     signal,
   });

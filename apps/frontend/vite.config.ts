@@ -60,9 +60,10 @@ const target = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
 const docsDirectory = fileURLToPath(new URL("./src/docs", import.meta.url)).replace(/\\/g, "/");
 
 /** Every path the node owns. Anything else is served by Vite itself. */
-const proxied = ["/api", "/v1", "/admin", "/peers", "/health", "/generate"];
+const proxied = ["/api", "/v1", "/admin", "/admin-ui", "/peers", "/health", "/generate"];
 
 export default defineConfig({
+  base: "/admin-ui/",
   plugins: [react(), brandHtml()],
   /**
    * Pinned, and not left to the default, because the default has a silent

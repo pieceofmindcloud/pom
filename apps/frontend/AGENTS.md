@@ -16,7 +16,7 @@ global gap or overlap blocks the plan.
 ## Build tooling
 
 - Vite 6 + `@vitejs/plugin-react`; React 18, TypeScript 5.7 (project references), Tailwind 3.4 via PostCSS (`postcss.config.js`: `tailwindcss` + `autoprefixer`).
-- `vite.config.ts` - dev server on port 5199, `strictPort`, and a proxy of every node-owned path (`/api`, `/v1`, `/admin`, `/peers`, `/health`, `/generate`) to `VITE_API_TARGET` (default `http://127.0.0.1:8080`; point it at a real node, e.g. `VITE_API_TARGET=http://192.168.100.138:8090`). There is no sample backend - every screen reads a live node. `cacheDir` is pinned to `node_modules/.vite` because the default fallback silently loses config (no PostCSS, no proxy) when a branch switch restarts the dev server mid-rewrite. `build.outDir = "dist"`, no sourcemaps. Production chunks split the route screens, common vendors and each generated reference document; `npm run build` verifies the resulting sizes.
+- `vite.config.ts` - dev server on port 5199, `strictPort`, base `/admin-ui/`, and a proxy of every node-owned path (`/api`, `/v1`, `/admin`, `/admin-ui`, `/peers`, `/health`, `/generate`) to `VITE_API_TARGET` (default `http://127.0.0.1:8080`; point it at a real node, e.g. `VITE_API_TARGET=http://192.168.100.138:8090`). There is no sample backend - every screen reads a live node. `cacheDir` is pinned to `node_modules/.vite` because the default fallback silently loses config (no PostCSS, no proxy) when a branch switch restarts the dev server mid-rewrite. `build.outDir = "dist"`, no sourcemaps. Production chunks split the route screens, common vendors and each generated reference document; `npm run build` verifies the resulting sizes.
 - Tailwind colors are named after CSS variables declared in `src/index.css` (`tailwind.config.js` maps `ink/surface/raised/line/fg/muted/faint/iris/aqua/amber/rose/sky/lime`); fonts Space Grotesk (display), IBM Plex Sans (sans), JetBrains Mono (mono).
 - Vitest 3 - `npm test` = `vitest run`. There is no vitest config file; test files that need a DOM opt in per file with the `// @vitest-environment jsdom` pragma (e.g. `routes/Chat.telemetry.test.tsx`, `i18n/provider.test.tsx`).
 - tsconfig: `tsconfig.app.json` (strict, `noUnusedLocals/Parameters`, `@/* -> ./src/*` alias, excludes `*.test.*`) and `tsconfig.node.json` for the build config itself.
@@ -35,16 +35,18 @@ global gap or overlap blocks the plan.
 ## src root
 
 - `index.html` - dark default (`data-theme="dark"`), two pre-paint scripts: theme from `localStorage` `codai.theme` (system preference deliberately does not decide) and `lang` from `codai.locale` / browser locales, so the first paint already matches the app state.
-- `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`.
+- `main.tsx` - provider stack: `QueryClientProvider` (defaults: `retry: 1`, `refetchOnWindowFocus: true`, `staleTime: 1000`) > `LocaleProvider` > `ProfileProvider` > `ThemeProvider` > `ToastProvider` > `BrowserRouter` (basename `/admin-ui`, opts into `v7_startTransition` + `v7_relativeSplatPath`) > `App`.
 - `index.css` - design tokens and global styles (see below).
-- `App.tsx` - shell and route table (see below); after setup detection it reads
-  the public administrative exposure status and gates the whole shell with the
-  human access token when the node is network-exposed. This gate is only a UI
-  flow: the server remains the authorization boundary.
+- `App.tsx` - shell and route table (see below); after setup detection it probes
+  the public administrative exposure and gates the whole shell with the human
+  access token only when needed. The real login is a browser-recognized form;
+  the token stays in module memory and the server-side `HttpOnly` session is
+  what survives a reload. This gate is only a UI flow: the server remains the
+  authorization boundary.
 
 ### App.tsx route table
 
-`App` first decides setup vs dashboard: `useIsSetupMode()` probes `/api/ui/node` with `auth: false`; a 404 means the node runs only the `/api/setup/*` router and `Setup` renders instead (the probe never hits `/api/setup/key` because that route mints a connection key). Both Sidebar and Topbar sit in their own `ErrorBoundary` so a chrome crash cannot blank the menu.
+`App` first decides setup vs dashboard: `useAdminSurface()` probes `/api/ui/node` with `auth: false`; a 404 means the node runs only the `/api/setup/*` router and `Setup` renders instead, while a local-only refusal renders the server-equivalent bilingual no-navigation state (the probe never hits `/api/setup/key` because that route mints a connection key). Both Sidebar and Topbar sit in their own `ErrorBoundary` so a chrome crash cannot blank the menu.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
@@ -94,7 +96,10 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 ## Links
 
 - Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, requests/stats, chat/telemetry, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key.
-- Auth: `api.ts` signs requests with the cluster connection key (picked up unauthenticated from `/api/ui/node`), matching `ApiKeyAuth` in the Rust `auth.rs`.
+- Auth: `api.ts` sends same-origin credentials so the gateway can use its
+  `HttpOnly` admin session. It signs requests with the cluster connection key
+  (picked up unauthenticated from `/api/ui/node`), matching `ApiKeyAuth` in the
+  Rust `auth.rs`; the human access token is never persisted by the browser.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 
 ## Defeitos anotados

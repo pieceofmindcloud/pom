@@ -8,7 +8,7 @@ import {
   setAdminAccessToken,
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
-import { useAdminAccess, useIsSetupMode } from "./lib/queries";
+import { useAdminSurface } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -50,7 +50,23 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
           title={t("accessGate.title")}
           subtitle={t("accessGate.subtitle")}
         />
-        <form className="space-y-4 px-5 py-5" onSubmit={(event) => void authenticate(event)}>
+        <form
+          className="space-y-4 px-5 py-5"
+          autoComplete="on"
+          onSubmit={(event) => void authenticate(event)}
+        >
+          <label className="block">
+            <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
+              {t("accessGate.username")}
+            </span>
+            <Input
+              name="username"
+              type="text"
+              defaultValue="administrator"
+              autoComplete="username"
+              aria-label={t("accessGate.username")}
+            />
+          </label>
           <label className="block">
             <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
               {t("accessGate.label")}
@@ -58,6 +74,8 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
             <Input
               autoFocus
               type="password"
+              name="password"
+              id="admin-access-password"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               aria-label={t("accessGate.label")}
@@ -71,6 +89,25 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
         </form>
       </Panel>
     </div>
+  );
+}
+
+function AdminLocalOnly() {
+  return (
+    <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10 text-center">
+      <section className="max-w-2xl">
+        <p className="mb-8 text-2xl font-semibold text-fg">POM</p>
+        <p className="text-base leading-relaxed text-muted">
+          This administrative interface is available only through the local address{" "}
+          <strong>127.0.0.1</strong> on this machine, not through its network IP address or the
+          internet.
+        </p>
+        <p className="mt-4 text-base leading-relaxed text-muted" lang="pt-BR">
+          Esta interface administrativa está disponível apenas pelo endereço local{" "}
+          <strong>127.0.0.1</strong> desta máquina, não pelo IP de rede nem pela internet.
+        </p>
+      </section>
+    </main>
   );
 }
 
@@ -202,14 +239,14 @@ export default function App() {
    * connection key, so asking it "are we in setup?" would rotate the cluster
    * credential on every page load.
    */
-  const isSetup = useIsSetupMode();
-  const adminAccess = useAdminAccess();
+  const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
 
   // Undefined means the probe has not answered yet. Rendering either branch on
   // a guess flashes the wrong screen, so hold the paint for one request.
-  if (isSetup === undefined) return <div className="h-full bg-ink" />;
-  if (isSetup) {
+  if (adminSurface.isLoading) return <div className="h-full bg-ink" />;
+  if (adminSurface.isError || !adminSurface.data) return <AdminAccessUnavailable />;
+  if (adminSurface.data === "setup") {
     return (
       <ErrorBoundary>
         <Suspense fallback={<RouteFallback fullScreen />}>
@@ -219,9 +256,8 @@ export default function App() {
     );
   }
 
-  if (adminAccess.isLoading) return <div className="h-full bg-ink" />;
-  if (adminAccess.isError || !adminAccess.data) return <AdminAccessUnavailable />;
-  if (adminAccess.data?.requires_token && !adminReady) {
+  if (adminSurface.data === "local-only") return <AdminLocalOnly />;
+  if (adminSurface.data === "requires-token" && !adminReady) {
     return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
   }
 

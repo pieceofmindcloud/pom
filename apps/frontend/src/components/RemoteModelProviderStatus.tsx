@@ -1,4 +1,5 @@
 import { CheckCircle2, KeyRound, TerminalSquare } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { RemoteModelProviderStatus as RemoteModelProviderStatusData } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 import { Badge, Panel } from "./ui";
@@ -37,12 +38,12 @@ export function RemoteModelProviderStatus({
           </div>
           <p className="mt-1 text-sm text-muted">{detail}</p>
           {unauthenticated && (
-            <a
+            <Link
               className="mt-2 inline-flex text-xs font-medium text-iris hover:text-iris/80"
-              href="/config/preferencias#hugging-face"
+              to="/config/preferencias#hugging-face"
             >
               {t("remoteModels.configureAuth")}
-            </a>
+            </Link>
           )}
         </div>
       </div>

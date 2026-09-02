@@ -23,6 +23,8 @@ Two files carry all of it: a static message table and a small provider. Tests:
   the Chat telemetry label for bytes/dtype are also present in both locale blocks.
   Slicing phase, byte-progress, disk-space, required intermediate-head cost and
   single-range controls also have keys in both locale blocks.
+  The administrative access form also keeps a paired stable username label for
+  browser password-manager recognition.
   Dashboard machine details also has paired labels for requested MTP status,
   its measured VRAM/RAM location and its runtime unavailability reason. The
   deployment form labels the opt-out for the RAM fallback in both locales.

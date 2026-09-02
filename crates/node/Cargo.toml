@@ -26,6 +26,7 @@ clap = { version = "4", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
 sha2 = "0.10"

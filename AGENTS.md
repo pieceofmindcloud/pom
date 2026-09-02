@@ -153,8 +153,11 @@ quebra o produto inteiro.
   `.pom.key`, do pkarr. → `rede-p2p.md`
 - **A chave de conexão é a mesma no cluster inteiro** e é a credencial de
   operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e as rotas
-  `/v1`. Sem `pom.json` o nó sobe em **modo setup**, que serve só a tela de
-  escolha Principal/Nó e gera essa chave. → `api-http.md`, `web-ui.md`
+  `/v1`. A superfície administrativa da UI usa sessão em memória com cookie
+  `HttpOnly`; o token humano não vai para storage nem URL. Em modo local, a
+  mesma fronteira cobre os ficheiros estáticos, mas nunca as rotas da pipeline.
+  Sem `pom.json` o nó sobe em **modo setup**, que serve só a tela de escolha
+  Principal/Nó e gera essa chave. → `api-http.md`, `web-ui.md`
 - **Política de primeira versão.** O produto ainda não foi lançado. Portanto,
   não manter no runtime código de compatibilidade, adapters ou fallbacks para
   versões antigas de protocolos - especialmente formatos de inferência v1/v2.

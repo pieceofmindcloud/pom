@@ -5,6 +5,10 @@ import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "./i18n/provider";
 import { ProfileProvider, type Profile } from "./lib/profile";
 
+const adminSurface = vi.hoisted(() => ({
+  value: "available" as "setup" | "available" | "requires-token" | "local-only",
+}));
+
 /**
  * Esconder o item do menu não é bloquear: o endereço continua digitável, e um
  * favorito antigo entra direto. Este teste é o que prova que a rota fechada
@@ -14,8 +18,7 @@ import { ProfileProvider, type Profile } from "./lib/profile";
  * o que está sob prova é o guarda, não o conteúdo de cada tela.
  */
 vi.mock("./lib/queries", () => ({
-  useIsSetupMode: () => false,
-  useAdminAccess: () => ({ data: { requires_token: false }, isLoading: false, isError: false }),
+  useAdminSurface: () => ({ data: adminSurface.value, isLoading: false, isError: false }),
   // Nó completo o bastante para a barra superior e o rodapé do menu
   // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o
   // teste passa a medir o `ErrorBoundary` em vez do guarda.
@@ -71,7 +74,10 @@ function open(path: string, profile: Profile) {
 }
 
 describe("guarda de perfil por rota", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    adminSurface.value = "available";
+  });
 
   const fechadas = [
     ["/implantar", "tela-implantar"],
@@ -111,5 +117,29 @@ describe("guarda de perfil por rota", () => {
   it("passa o chat pelo mesmo guarda", async () => {
     open("/chat", "node");
     expect(await screen.findByText("tela-chat")).toBeTruthy();
+  });
+
+  it("renderiza um formulário reconhecível pelo gestor de senhas", () => {
+    adminSurface.value = "requires-token";
+    open("/", "admin");
+
+    const form = screen.getByRole("button", { name: "Abrir interface" }).closest("form");
+    expect(form).not.toBeNull();
+    expect(form?.getAttribute("autocomplete")).toBe("on");
+    expect(form?.querySelector('input[name="username"]')).not.toBeNull();
+    const password = screen.getByLabelText("Token de acesso administrativo");
+    expect(password.getAttribute("type")).toBe("password");
+    expect(password.getAttribute("autocomplete")).toBe("current-password");
+    expect(screen.queryByRole("navigation")).toBeNull();
+  });
+
+  it("mantém a tela local autônoma e nas duas línguas", () => {
+    adminSurface.value = "local-only";
+    open("/", "admin");
+
+    expect(screen.getByText(/This administrative interface is available only/)).toBeTruthy();
+    expect(screen.getByText(/Esta interface administrativa está disponível apenas/)).toBeTruthy();
+    expect(screen.queryByRole("navigation")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

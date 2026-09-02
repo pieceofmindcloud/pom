@@ -5,13 +5,105 @@ use axum::{
     http::{request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
 };
+use base64::Engine;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 pub type AuthState = Arc<RwLock<Config>>;
+
+/// A browser session is deliberately short-lived and kept only in memory.
+/// Eight hours covers a normal operator shift while ensuring a copied browser
+/// cookie is not a durable credential. This is the single source of truth for
+/// the expiry advertised in the Set-Cookie header below.
+pub(crate) const ADMIN_SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
+pub(crate) const ADMIN_SESSION_COOKIE_NAME: &str = "pom_admin_session";
+pub(crate) const ADMIN_SESSION_COOKIE_PATHS: [&str; 3] = ["/api/ui", "/admin", "/admin-ui"];
+pub(crate) type AdminSessionState = Arc<Mutex<AdminSessionStore>>;
+
+#[derive(Default)]
+pub(crate) struct AdminSessionStore {
+    sessions: Vec<AdminSession>,
+}
+
+struct AdminSession {
+    id_digest: [u8; 32],
+    token_digest: [u8; 32],
+    expires_at: Instant,
+}
+
+fn digest(value: &str) -> [u8; 32] {
+    Sha256::digest(value.as_bytes()).into()
+}
+
+impl AdminSessionStore {
+    pub(crate) fn issue(&mut self, token: &str) -> String {
+        self.issue_at(token, Instant::now(), ADMIN_SESSION_TTL)
+    }
+
+    pub(crate) fn issue_at(&mut self, token: &str, now: Instant, ttl: Duration) -> String {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        self.sessions.retain(|session| session.expires_at > now);
+        self.sessions.push(AdminSession {
+            id_digest: digest(&id),
+            token_digest: digest(token),
+            expires_at: now + ttl,
+        });
+        id
+    }
+
+    pub(crate) fn validate(&mut self, session_id: &str, token: &str) -> bool {
+        self.validate_at(session_id, token, Instant::now())
+    }
+
+    pub(crate) fn validate_at(&mut self, session_id: &str, token: &str, now: Instant) -> bool {
+        self.sessions.retain(|session| session.expires_at > now);
+        let session_digest = digest(session_id);
+        let token_digest = digest(token);
+        self.sessions.iter().fold(false, |valid, session| {
+            let id_matches = session.id_digest.ct_eq(&session_digest);
+            let token_matches = session.token_digest.ct_eq(&token_digest);
+            valid | bool::from(id_matches & token_matches)
+        })
+    }
+
+    pub(crate) fn invalidate_all(&mut self) {
+        self.sessions.clear();
+    }
+}
+
+/// Build one cookie per administrative path. A cookie cannot express a
+/// disjoint path set, so the three copies cover the API, legacy admin routes,
+/// and the static UI mount without ever putting the session identifier on the
+/// inference paths.
+pub(crate) fn session_cookie_header(session_id: &str, secure: bool, path: &str) -> String {
+    let mut cookie = format!(
+        "{}={}; Max-Age={}; Path={}; HttpOnly; SameSite=Strict",
+        ADMIN_SESSION_COOKIE_NAME,
+        session_id,
+        ADMIN_SESSION_TTL.as_secs(),
+        path,
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                let (name, value) = cookie.trim().split_once('=')?;
+                (name == ADMIN_SESSION_COOKIE_NAME && !value.is_empty()).then_some(value)
+            })
+        })
+}
 
 /// Cabeçalho da credencial da pessoa que abre a superfície administrativa.
 /// Deliberadamente diferente de `Authorization`, que continua sendo usado
@@ -131,7 +223,9 @@ impl IntoResponse for AuthRejection {
     }
 }
 
-pub struct AdminAuth;
+pub struct AdminAuth {
+    pub(crate) session_id_to_set: Option<String>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AdminAuthRejection {
@@ -155,13 +249,45 @@ impl IntoResponse for AdminAuthRejection {
             AdminAuthRejection::InvalidToken => {
                 (StatusCode::FORBIDDEN, "invalid administrative access token")
             }
-            AdminAuthRejection::LocalhostOnly => (
-                StatusCode::FORBIDDEN,
-                "administrative interface is local-only",
-            ),
+            AdminAuthRejection::LocalhostOnly => return local_only_page(),
         };
         (status, Json(json!({ "error": msg }))).into_response()
     }
+}
+
+fn local_only_page() -> axum::response::Response {
+    let logo = base64::engine::general_purpose::STANDARD.encode(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/brand/pom-logo-light.png"
+    )));
+    let body = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Administrative access</title></head>
+<body style="margin:0;background:#0b1017;color:#f4f7fb;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+<main style="box-sizing:border-box;min-height:100vh;display:grid;place-items:center;padding:32px;text-align:center">
+<section style="max-width:620px">
+<img src="data:image/png;base64,{logo}" alt="POM" width="260" style="display:block;width:min(260px,70vw);height:auto;margin:0 auto 32px">
+<p style="margin:0 auto 18px;font-size:1.05rem;line-height:1.6">This administrative interface is available only through the local address <strong>127.0.0.1</strong> on this machine, not through its network IP address or the internet.</p>
+<p lang="pt-BR" style="margin:0 auto;font-size:1.05rem;line-height:1.6">Esta interface administrativa está disponível apenas pelo endereço local <strong>127.0.0.1</strong> desta máquina, não pelo IP de rede nem pela internet.</p>
+</section>
+</main>
+</body>
+</html>"#
+    );
+    (
+        StatusCode::FORBIDDEN,
+        [
+            (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            (
+                axum::http::header::HeaderName::from_static("x-pom-admin-error"),
+                "local-only",
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// Compare fixed-size digests so neither token length nor the first differing
@@ -210,6 +336,7 @@ impl<S> FromRequestParts<S> for AdminAuth
 where
     S: Send + Sync,
     AuthState: axum::extract::FromRef<S>,
+    AdminSessionState: axum::extract::FromRef<S>,
 {
     type Rejection = AdminAuthRejection;
 
@@ -222,11 +349,20 @@ where
         let State(config): State<AuthState> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AdminAuthRejection::InvalidToken)?;
-        let cfg = config.read().await;
+        let (exposure, connection_key, configured_token) = {
+            let cfg = config.read().await;
+            (
+                cfg.admin_exposure,
+                cfg.connection_key.clone(),
+                cfg.admin_access_token.clone().unwrap_or_default(),
+            )
+        };
 
-        if !cfg.admin_exposure.requires_token() {
+        if !exposure.requires_token() {
             return if is_loopback(peer.0) {
-                Ok(AdminAuth)
+                Ok(AdminAuth {
+                    session_id_to_set: None,
+                })
             } else {
                 Err(AdminAuthRejection::LocalhostOnly)
             };
@@ -238,9 +374,26 @@ where
         // while cluster surveys and deployment fan-out keep working.
         if parts.headers.get(ADMIN_ACCESS_TOKEN_HEADER).is_none()
             && parts.uri.path() != "/api/ui/access"
-            && is_authenticated_internal_node_request(&parts.headers, &cfg.connection_key)
+            && is_authenticated_internal_node_request(&parts.headers, &connection_key)
         {
-            return Ok(AdminAuth);
+            return Ok(AdminAuth {
+                session_id_to_set: None,
+            });
+        }
+
+        if let Some(session_id) = session_id_from_cookie(&parts.headers).map(str::to_owned) {
+            let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
+                .await
+                .map_err(|_| AdminAuthRejection::InvalidToken)?;
+            if sessions
+                .lock()
+                .await
+                .validate(&session_id, &configured_token)
+            {
+                return Ok(AdminAuth {
+                    session_id_to_set: None,
+                });
+            }
         }
 
         let supplied = parts
@@ -249,11 +402,14 @@ where
             .and_then(|value| value.to_str().ok())
             .map(str::trim)
             .ok_or(AdminAuthRejection::MissingToken)?;
-        if constant_time_token_eq(
-            cfg.admin_access_token.as_deref().unwrap_or_default(),
-            supplied,
-        ) {
-            Ok(AdminAuth)
+        if constant_time_token_eq(&configured_token, supplied) {
+            let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
+                .await
+                .map_err(|_| AdminAuthRejection::InvalidToken)?;
+            let session_id = sessions.lock().await.issue(&configured_token);
+            Ok(AdminAuth {
+                session_id_to_set: Some(session_id),
+            })
         } else {
             Err(AdminAuthRejection::InvalidToken)
         }
@@ -404,6 +560,64 @@ mod tests {
         assert!(!constant_time_token_eq("", "secret"));
         assert!(constant_time_token_eq("secret", "secret"));
         assert!(!constant_time_token_eq("secret", "secret-typo"));
+    }
+
+    #[test]
+    fn admin_session_cookie_is_scoped_and_never_contains_the_token() {
+        let header = session_cookie_header("session-id", false, "/api/ui");
+
+        assert!(header.starts_with("pom_admin_session=session-id;"));
+        assert!(header.contains("Max-Age=28800"));
+        assert!(header.contains("Path=/api/ui"));
+        assert!(header.contains("HttpOnly"));
+        assert!(header.contains("SameSite=Strict"));
+        assert!(!header.contains("admin-secret"));
+        assert!(!header.contains("Secure"));
+
+        let secure = session_cookie_header("session-id", true, "/admin");
+        assert!(secure.contains("Path=/admin"));
+        assert!(secure.contains("Secure"));
+    }
+
+    #[test]
+    fn admin_session_expires_and_is_bound_to_the_current_token() {
+        let now = std::time::Instant::now();
+        let mut sessions = AdminSessionStore::default();
+        let session = sessions.issue_at("admin-secret", now, std::time::Duration::from_secs(1));
+
+        assert!(sessions.validate_at(&session, "admin-secret", now));
+        assert!(!sessions.validate_at(&session, "new-admin-secret", now));
+        assert!(!sessions.validate_at(
+            &session,
+            "admin-secret",
+            now + std::time::Duration::from_secs(2),
+        ));
+    }
+
+    #[test]
+    fn local_only_page_has_both_languages_and_no_administrative_details() {
+        let response = AdminAuthRejection::LocalhostOnly.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            response.headers().get("x-pom-admin-error").unwrap(),
+            "local-only"
+        );
+        let body = response.into_body();
+        let body = futures::executor::block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("127.0.0.1"));
+        assert!(body.contains("This administrative interface is available only"));
+        assert!(body.contains("Esta interface administrativa está disponível apenas"));
+        assert!(body.contains("data:image/png;base64,"));
+        assert!(!body.contains("<script"));
+        assert!(!body.contains("<nav"));
+        assert!(!body.contains("admin-secret"));
+        assert!(!body.contains("node_id"));
+        assert!(!body.contains("version"));
     }
 
     #[tokio::test]

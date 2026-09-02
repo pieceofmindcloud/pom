@@ -60,6 +60,7 @@ async function optional<T>(promise: Promise<T>, fallback: T): Promise<T> {
 export const keys = {
   node: ["node"] as const,
   adminAccess: ["admin-access"] as const,
+  adminSurface: ["admin-surface"] as const,
   adminAccessInfo: ["admin-access-info"] as const,
   cluster: ["cluster"] as const,
   models: ["models"] as const,
@@ -117,6 +118,39 @@ export function useIsSetupMode() {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   }).data;
+}
+
+export type AdminSurfaceState = "setup" | "available" | "requires-token" | "local-only";
+
+/**
+ * One probe decides which shell is safe to render. A valid server session
+ * makes `/api/ui/node` succeed after a reload, so the token gate does not
+ * return merely because React state was recreated by F5.
+ */
+export function useAdminSurface() {
+  return useQuery<AdminSurfaceState>({
+    queryKey: keys.adminSurface,
+    queryFn: async () => {
+      try {
+        await api.get<unknown>("/api/ui/node", { auth: false });
+        return "available";
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return "setup";
+        if (error instanceof ApiError && error.status === 403) {
+          try {
+            const access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
+            if (access.admin_exposure === "localhost") return "local-only";
+          } catch {
+            // A transient policy read must not expose a guessed UI state.
+          }
+        }
+        return "requires-token";
+      }
+    },
+    retry: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
 }
 
 /** Public metadata needed before the app knows whether to show the token gate. */

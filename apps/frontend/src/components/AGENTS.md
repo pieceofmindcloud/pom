@@ -370,7 +370,8 @@ Key logic carriers:
   sob demanda para modelos do provider, com prioridade para GGUF, quantização,
   tamanho, licença, revisão e estados instalado/em download.
 - `RemoteModelProviderStatus.tsx` - estado estruturado do CLI do Hugging Face:
-  indisponível, login necessário ou autenticado, com mensagem localizada.
+  indisponível, login necessário ou autenticado, com mensagem localizada; its
+  internal route link uses React Router so the `/admin-ui` basename is kept.
 - `HuggingFaceSettingsPanel.tsx` - campo de senha para o token opcional. O
   valor salvo nunca é pré-preenchido nem renderizado: a API fornece só máscara
   e fonte efetiva, e o painel invalida status/configuração depois de salvar.

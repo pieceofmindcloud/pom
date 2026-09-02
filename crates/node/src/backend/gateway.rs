@@ -9,7 +9,7 @@ use anyhow::Result;
 use axum::{
     body::Bytes,
     extract::{FromRequestParts, Request, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -134,6 +134,9 @@ pub struct GatewayState {
     pub gateway_port: u16,
     /// Setup-level configuration (role, connection key, bootstrap nodes).
     pub auth: AuthState,
+    /// In-memory browser sessions. It is intentionally not persisted beside
+    /// the configuration and is bound to the current admin access token.
+    pub(crate) admin_sessions: crate::auth::AdminSessionState,
     /// In-flight slice transfers and the offers waiting for an answer.
     pub transfers: crate::transfer::Transfers,
     /// Frames this node dispatched into a pipeline and is still waiting on.
@@ -174,14 +177,43 @@ async fn admin_access_status(State(state): State<GatewayState>) -> impl IntoResp
     })
 }
 
-/// Administrative paths are classified by namespace at the server boundary.
-/// The default for a new `/api/ui/*` or `/admin/*` route is therefore protected;
-/// adding a handler cannot silently create an unauthenticated control endpoint.
+/// Routes used by inference or by the public compatibility API. This list is
+/// the existing pipeline boundary from `20dfe12`; the UI gate must never be
+/// applied to it, even when the node is in localhost-only mode.
+fn is_pipeline_or_public_path(path: &str) -> bool {
+    path == "/api/access"
+        || path == "/api/generate"
+        || path == "/generate"
+        || path == "/peers"
+        || path == "/health"
+        || path == "/handshake"
+        || path == crate::tls_policy::TLS_POLICY_PATH
+        || path.starts_with("/api/transfer/")
+        || path.starts_with("/v1/")
+}
+
+/// Administrative paths are protected at the server boundary. Unknown paths
+/// stay restricted by default, so adding a control route cannot silently make
+/// it public. This also covers the static bundle and the SPA entry point.
 pub(crate) fn is_admin_surface_path(path: &str) -> bool {
-    path == "/api/ui"
-        || path.starts_with("/api/ui/")
-        || path == "/admin"
-        || path.starts_with("/admin/")
+    !is_pipeline_or_public_path(path)
+}
+
+/// The network-exposed UI bundle is a login screen, not an administrative
+/// data endpoint. It must be reachable before a browser has a session, while
+/// localhost-only mode still runs it through `AdminAuth` so a remote peer gets
+/// the autonomous refusal page instead of any application code.
+fn is_public_ui_static_path(path: &str) -> bool {
+    path == "/"
+        || path == "/admin-ui"
+        || path.starts_with("/admin-ui/")
+        || (!path.starts_with("/api/")
+            && !path.starts_with("/v1/")
+            && path != "/admin"
+            && !path.starts_with("/admin/")
+            && path != "/peers"
+            && path != "/health"
+            && path != "/handshake")
 }
 
 async fn require_admin_for_surface(
@@ -189,15 +221,36 @@ async fn require_admin_for_surface(
     request: Request,
     next: Next,
 ) -> Response {
-    if !is_admin_surface_path(request.uri().path()) {
+    let path = request.uri().path().to_owned();
+    if !is_admin_surface_path(&path) {
         return next.run(request).await;
     }
 
     let (mut parts, body) = request.into_parts();
-    if let Err(rejection) = crate::auth::AdminAuth::from_request_parts(&mut parts, &state).await {
-        return rejection.into_response();
+    if is_public_ui_static_path(&path) {
+        let network_exposure = state.auth.read().await.admin_exposure.requires_token();
+        if network_exposure {
+            return next.run(Request::from_parts(parts, body)).await;
+        }
     }
-    next.run(Request::from_parts(parts, body)).await
+    let auth = match crate::auth::AdminAuth::from_request_parts(&mut parts, &state).await {
+        Ok(auth) => auth,
+        Err(rejection) => return rejection.into_response(),
+    };
+    let secure = parts
+        .extensions
+        .get::<crate::serve::TransportSecurity>()
+        .is_some_and(|transport| transport.0);
+    let mut response = next.run(Request::from_parts(parts, body)).await;
+    if let Some(session_id) = auth.session_id_to_set {
+        for path in crate::auth::ADMIN_SESSION_COOKIE_PATHS {
+            let value = crate::auth::session_cookie_header(&session_id, secure, path);
+            if let Ok(value) = HeaderValue::from_str(&value) {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+        }
+    }
+    response
 }
 
 #[cfg(test)]
@@ -250,6 +303,12 @@ mod cluster_cache_tests {
 impl axum::extract::FromRef<GatewayState> for AuthState {
     fn from_ref(state: &GatewayState) -> Self {
         state.auth.clone()
+    }
+}
+
+impl axum::extract::FromRef<GatewayState> for crate::auth::AdminSessionState {
+    fn from_ref(state: &GatewayState) -> Self {
+        state.admin_sessions.clone()
     }
 }
 
@@ -3182,8 +3241,9 @@ mod tests {
     #[tokio::test]
     async fn local_admin_boundary_does_not_restrict_pipeline_routes() {
         let state = testkit::state_with("eu", vec![]).await;
-        let app = Router::new()
+        let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
+            .route("/assets/app.js", get(|| async { "javascript" }))
             .route("/v1/pipeline-fallback", get(|| async { "pipeline" }))
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
@@ -3200,9 +3260,40 @@ mod tests {
             .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
         let admin_response = app.clone().oneshot(admin_request).await.unwrap();
         assert_eq!(admin_response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            admin_response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+        let admin_body = axum::body::to_bytes(admin_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let admin_body = String::from_utf8(admin_body.to_vec()).unwrap();
+        assert!(admin_body.contains("127.0.0.1"));
+        assert!(admin_body.contains("This administrative interface is available only"));
+        assert!(admin_body.contains("Esta interface administrativa está disponível apenas"));
+        assert!(!admin_body.contains("node_id"));
+        assert!(!admin_body.contains("version"));
+
+        let mut asset_request = Request::builder()
+            .uri("/assets/app.js")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        asset_request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        let asset_response = app.clone().oneshot(asset_request).await.unwrap();
+        assert_eq!(asset_response.status(), StatusCode::FORBIDDEN);
+        let asset_body = axum::body::to_bytes(asset_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!asset_body.starts_with(b"javascript"));
 
         let pipeline_request = Request::builder()
             .uri("/v1/pipeline-fallback")
+            .header("authorization", "Bearer eu")
             .body(axum::body::Body::empty())
             .unwrap();
         let pipeline_response = app.oneshot(pipeline_request).await.unwrap();
@@ -3217,7 +3308,7 @@ mod tests {
             cfg.admin_exposure = crate::config::AdminExposure::Network;
             cfg.admin_access_token = Some("person-secret".into());
         }
-        let app = Router::new()
+        let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
@@ -3247,10 +3338,129 @@ mod tests {
         assert_eq!(accepted.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn a_valid_admin_token_mints_a_server_session_used_on_the_next_request() {
+        let state = testkit::state_with("cluster-secret", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = crate::config::AdminExposure::Network;
+            cfg.admin_access_token = Some("person-secret".into());
+        }
+        let app: Router = Router::new()
+            .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut login = Request::builder()
+            .uri("/api/ui/new-admin-endpoint")
+            .header(crate::auth::ADMIN_ACCESS_TOKEN_HEADER, "person-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        login
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        login
+            .extensions_mut()
+            .insert(crate::serve::TransportSecurity(true));
+        let login_response = app.clone().oneshot(login).await.unwrap();
+        assert_eq!(login_response.status(), StatusCode::OK);
+        let cookies: Vec<String> = login_response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(cookies.len(), 3);
+        assert!(cookies.iter().any(|cookie| cookie.contains("Path=/api/ui")));
+        assert!(cookies.iter().any(|cookie| cookie.contains("Path=/admin")));
+        assert!(cookies
+            .iter()
+            .any(|cookie| cookie.contains("Path=/admin-ui")));
+        assert!(cookies.iter().all(|cookie| cookie.contains("; Secure")));
+        let cookie = cookies[0].split(';').next().unwrap().to_string();
+
+        let mut next_request = Request::builder()
+            .uri("/api/ui/new-admin-endpoint")
+            .header(axum::http::header::COOKIE, cookie)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        next_request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        let next_response = app.oneshot(next_request).await.unwrap();
+        assert_eq!(next_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn regenerating_the_token_or_returning_to_local_mode_rejects_the_old_session() {
+        let state = testkit::state_with("cluster-secret", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.admin_exposure = crate::config::AdminExposure::Network;
+            cfg.admin_access_token = Some("person-secret".into());
+        }
+        let app: Router = Router::new()
+            .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+
+        async fn token_login(app: &Router) -> String {
+            let mut request = Request::builder()
+                .uri("/api/ui/new-admin-endpoint")
+                .header(crate::auth::ADMIN_ACCESS_TOKEN_HEADER, "person-secret")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            let response = app.clone().oneshot(request).await.unwrap();
+            response
+                .headers()
+                .get(axum::http::header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_string()
+        }
+
+        async fn with_cookie(app: &Router, cookie: &str) -> StatusCode {
+            let mut request = Request::builder()
+                .uri("/api/ui/new-admin-endpoint")
+                .header(axum::http::header::COOKIE, cookie)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            app.clone().oneshot(request).await.unwrap().status()
+        }
+
+        let cookie = token_login(&app).await;
+        assert_eq!(with_cookie(&app, &cookie).await, StatusCode::OK);
+        state.auth.write().await.admin_access_token = Some("new-secret".into());
+        assert_eq!(with_cookie(&app, &cookie).await, StatusCode::UNAUTHORIZED);
+
+        state.auth.write().await.admin_access_token = Some("person-secret".into());
+        let cookie = token_login(&app).await;
+        state.auth.write().await.admin_exposure = crate::config::AdminExposure::Localhost;
+        assert_eq!(with_cookie(&app, &cookie).await, StatusCode::FORBIDDEN);
+    }
+
     #[test]
     fn administrative_namespace_is_default_restricted() {
         assert!(is_admin_surface_path("/api/ui/new-route"));
         assert!(is_admin_surface_path("/admin/new-route"));
+        assert!(is_admin_surface_path("/"));
+        assert!(is_admin_surface_path("/assets/app.js"));
         assert!(!is_admin_surface_path("/api/access"));
         assert!(!is_admin_surface_path("/v1/prefill"));
     }
@@ -4366,6 +4576,7 @@ pub(crate) mod testkit {
                 shard_dir: None,
                 shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
             })),
+            admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: None,

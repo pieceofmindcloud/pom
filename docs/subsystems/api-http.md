@@ -388,12 +388,16 @@ sem carregar o histórico inteiro no primeiro pedido. O banco fica em
 `pom.db`, em `POM_DB_DIR` quando definido ou em `config::project_root()` por
 padrão, é criado de forma idempotente no arranque e mantém índice do prompt e
 dos filtros de identidade, nó, estado e horário. WAL e timeout de 5 segundos
-permitem leitores e o escritor concorrerem no mesmo arquivo. O
+ficam como rede de segurança. Dentro do processo, `PomDb` reutiliza uma
+conexão configurada no arranque e serializa mutações com um mutex explícito;
+isso faz leituras curtas aguardarem a escrita em andamento, sem reabrir o
+arquivo nem executar DDL por pedido. O
 registro nasce como `in_progress` antes da inferência e a mesma linha recebe
 resultado, telemetria, tempos, tokens, peers e erro ao terminar. Reinício ou
 mais de 15 minutos sem conclusão marca a linha como `incomplete` com o motivo
 visível. A escrita usa uma fila limitada e um escritor separado; falha de disco
-é registrada no log do servidor e não é propagada à requisição de inferência.
+ou de enfileiramento é registrada no log do servidor com a operação e o
+request id perdido, e não é propagada à requisição de inferência.
 
 `GET /api/ui/requests/stats` exige a mesma `ConnectionAuth` e aceita os filtros
 `node_id`, `api_key`, `prompt`, `from` e `to`, mas não pagina. O servidor faz uma

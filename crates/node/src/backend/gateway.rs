@@ -4340,7 +4340,7 @@ pub(crate) mod testkit {
             )),
             runtime: NodeRuntime::new(net, assignment),
             cycle_config: crate::cycle::CycleConfig::default(),
-            audit: crate::reqlog::AuditLog::new(std::path::PathBuf::from(":memory:")),
+            audit: crate::reqlog::AuditLog::new(database.clone()),
             database,
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {

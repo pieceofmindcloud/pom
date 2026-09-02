@@ -64,8 +64,9 @@ em campo.
 
 O armazenamento local unificado está especificado em
 `superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no
-backend; o contrato HTTP do histórico de conversas fica em
-`subsystems/api-http.md`.
+backend. O runtime mantém uma conexão SQLite compartilhada por processo,
+serializa mutações explicitamente e mantém o timeout apenas como segurança;
+o contrato HTTP do histórico de conversas fica em `subsystems/api-http.md`.
 
 ## superpowers/specs/
 

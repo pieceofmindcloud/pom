@@ -16,7 +16,6 @@ use rusqlite::{params, params_from_iter, types::Value, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use tracing::{error, warn};
@@ -202,118 +201,167 @@ enum Command {
         id: String,
         completion: AuditCompletion,
     },
+    #[cfg(test)]
+    Flush(mpsc::Sender<()>),
 }
 
 /// Handle shared by gateway tasks and the authenticated query route.
 #[derive(Clone)]
 pub struct AuditLog {
-    path: PathBuf,
+    database: Arc<crate::db::PomDb>,
     sender: mpsc::SyncSender<Command>,
 }
 
 impl AuditLog {
     /// Start the dedicated writer. Startup failures are logged and deliberately
     /// do not prevent the gateway from serving inference.
-    pub fn new(path: PathBuf) -> Arc<Self> {
+    pub fn new(database: Arc<crate::db::PomDb>) -> Arc<Self> {
         let (sender, receiver) = mpsc::sync_channel(WRITER_QUEUE_CAPACITY);
-        let writer_path = path.clone();
+        let writer_database = database.clone();
         if let Err(e) = thread::Builder::new()
             .name("pom-audit-writer".into())
-            .spawn(move || run_writer(writer_path, receiver))
+            .spawn(move || run_writer(writer_database, receiver))
         {
             error!(error = %e, "não foi possível iniciar o escritor da auditoria");
         }
-        Arc::new(Self { path, sender })
+        Arc::new(Self { database, sender })
     }
 
     /// Queue the initial row without waiting for SQLite or the filesystem.
     pub fn begin(&self, request: AuditRequest) {
+        let request_id = request.id.clone();
         if let Err(e) = self.sender.try_send(Command::Begin(request)) {
-            error!(error = %e, "não foi possível enfileirar o início da auditoria");
+            error!(
+                operation = "iniciar auditoria",
+                request_id = %request_id,
+                error = %e,
+                "operação de auditoria perdida antes da gravação"
+            );
         }
     }
 
     /// Queue completion data for the same request id.
     pub fn complete(&self, id: String, completion: AuditCompletion) {
+        let request_id = id.clone();
         if let Err(e) = self.sender.try_send(Command::Complete { id, completion }) {
-            error!(error = %e, "não foi possível enfileirar a conclusão da auditoria");
+            error!(
+                operation = "concluir auditoria",
+                request_id = %request_id,
+                error = %e,
+                "operação de auditoria perdida antes da gravação"
+            );
         }
     }
 
     pub async fn list(&self, query: AuditQuery) -> Result<AuditList> {
-        let path = self.path.clone();
+        let database = self.database.clone();
         tokio::task::spawn_blocking(move || {
-            let connection = Connection::open(&path)
-                .with_context(|| format!("abrir banco de auditoria em {}", path.display()))?;
-            let mut db = AuditDb::open_for_query(connection)?;
-            let result = db.list(&query);
-            crate::db::secure_database_permissions(&path)?;
-            result
+            database.with_write("consultar auditoria", |connection| {
+                AuditDb::from_shared(connection).list(&query)
+            })
         })
         .await
         .context("aguardar consulta do banco de auditoria")?
     }
 
     pub async fn stats(&self, query: AuditQuery) -> Result<AuditStats> {
-        let path = self.path.clone();
+        let database = self.database.clone();
         tokio::task::spawn_blocking(move || {
-            let connection = Connection::open(&path)
-                .with_context(|| format!("abrir banco de auditoria em {}", path.display()))?;
-            let mut db = AuditDb::open_for_query(connection)?;
-            let result = db.stats(&query);
-            crate::db::secure_database_permissions(&path)?;
-            result
+            database.with_write("agregar auditoria", |connection| {
+                AuditDb::from_shared(connection).stats(&query)
+            })
         })
         .await
         .context("aguardar agregação do banco de auditoria")?
     }
+
+    #[cfg(test)]
+    fn flush(&self) {
+        let (sender, receiver) = mpsc::channel();
+        self.sender
+            .send(Command::Flush(sender))
+            .expect("enfileirar barreira da auditoria");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("aguardar escritor da auditoria");
+    }
 }
 
-fn run_writer(path: PathBuf, receiver: mpsc::Receiver<Command>) {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            error!(path = %parent.display(), error = %e, "não foi possível criar a pasta da auditoria");
-            return;
-        }
-    }
-    let connection = match Connection::open(&path) {
-        Ok(connection) => connection,
-        Err(e) => {
-            error!(path = %path.display(), error = %e, "não foi possível abrir o banco de auditoria");
-            return;
-        }
-    };
-    let mut db = match AuditDb::open(connection) {
-        Ok(db) => db,
-        Err(e) => {
-            error!(path = %path.display(), error = %e, "não foi possível inicializar o banco de auditoria");
-            return;
-        }
-    };
-    if let Err(error) = crate::db::secure_database_permissions(&path) {
-        error!(path = %path.display(), error = %error, "não foi possível restringir as permissões da auditoria");
+fn run_writer(database: Arc<crate::db::PomDb>, receiver: mpsc::Receiver<Command>) {
+    if let Err(error) = database.with_write("recuperar auditorias incompletas", |connection| {
+        AuditDb::from_shared(connection)
+            .mark_in_progress_incomplete("servidor reiniciou antes do fim")
+    }) {
+        error!(
+            operation = "recuperar auditorias incompletas",
+            error = %error,
+            "não foi possível inicializar o escritor da auditoria"
+        );
         return;
     }
     while let Ok(command) = receiver.recv() {
-        let result = match command {
-            Command::Begin(request) => db.begin(&request),
-            Command::Complete { id, completion } => db.complete(&id, &completion),
+        let (operation, request_id, result) = match command {
+            Command::Begin(request) => {
+                let request_id = request.id.clone();
+                let result = database.with_write("iniciar auditoria", |connection| {
+                    AuditDb::from_shared(connection).begin(&request)
+                });
+                ("iniciar auditoria", request_id, result)
+            }
+            Command::Complete { id, completion } => {
+                let result = database.with_write("concluir auditoria", |connection| {
+                    AuditDb::from_shared(connection).complete(&id, &completion)
+                });
+                ("concluir auditoria", id, result)
+            }
+            #[cfg(test)]
+            Command::Flush(done) => {
+                let _ = done.send(());
+                continue;
+            }
         };
         if let Err(e) = result {
-            error!(error = %e, "falha ao gravar o registro de auditoria");
-        }
-        if let Err(error) = crate::db::secure_database_permissions(&path) {
-            error!(path = %path.display(), error = %error, "não foi possível restringir as permissões da auditoria");
-            return;
+            error!(
+                operation,
+                request_id = %request_id,
+                error = %e,
+                "falha ao gravar o registro de auditoria; operação perdida"
+            );
         }
     }
 }
 
-pub struct AuditDb {
-    connection: Connection,
+pub(crate) trait ConnectionAccess {
+    fn connection(&self) -> &Connection;
+    fn connection_mut(&mut self) -> &mut Connection;
 }
 
-impl AuditDb {
+impl ConnectionAccess for Connection {
+    fn connection(&self) -> &Connection {
+        self
+    }
+
+    fn connection_mut(&mut self) -> &mut Connection {
+        self
+    }
+}
+
+impl<'a> ConnectionAccess for &'a mut Connection {
+    fn connection(&self) -> &Connection {
+        self
+    }
+
+    fn connection_mut(&mut self) -> &mut Connection {
+        self
+    }
+}
+
+pub struct AuditDb<C = Connection> {
+    connection: C,
+}
+
+#[cfg(test)]
+impl AuditDb<Connection> {
     pub fn open(connection: Connection) -> Result<Self> {
         configure_connection(&connection)?;
         ensure_schema(&connection)?;
@@ -321,15 +369,25 @@ impl AuditDb {
         db.mark_in_progress_incomplete("servidor reiniciou antes do fim")?;
         Ok(db)
     }
+}
 
-    fn open_for_query(connection: Connection) -> Result<Self> {
-        configure_connection(&connection)?;
-        ensure_schema(&connection)?;
-        Ok(Self { connection })
+impl<'a> AuditDb<&'a mut Connection> {
+    fn from_shared(connection: &'a mut Connection) -> Self {
+        Self { connection }
+    }
+}
+
+impl<C: ConnectionAccess> AuditDb<C> {
+    fn connection(&self) -> &Connection {
+        self.connection.connection()
+    }
+
+    fn connection_mut(&mut self) -> &mut Connection {
+        self.connection.connection_mut()
     }
 
     pub fn begin(&mut self, request: &AuditRequest) -> Result<()> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection_mut().transaction()?;
         transaction.execute(
             "INSERT INTO audit_requests (
                 id, received_at, route, model, api_key_id, api_key_label,
@@ -357,7 +415,7 @@ impl AuditDb {
     }
 
     pub fn complete(&mut self, id: &str, completion: &AuditCompletion) -> Result<()> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection_mut().transaction()?;
         let updated = transaction.execute(
             "UPDATE audit_requests SET
                 completed_at = ?, result = ?, telemetry = ?, timings = ?, source = ?, hops = ?,
@@ -405,7 +463,7 @@ impl AuditDb {
     }
 
     pub fn mark_in_progress_incomplete(&mut self, reason: &str) -> Result<()> {
-        self.connection.execute(
+        self.connection_mut().execute(
             "UPDATE audit_requests
              SET status = 'incomplete', completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                  error = COALESCE(error, ?)
@@ -416,7 +474,7 @@ impl AuditDb {
     }
 
     fn mark_stale_in_progress(&mut self) -> Result<()> {
-        self.connection.execute(
+        self.connection_mut().execute(
             "UPDATE audit_requests
              SET status = 'incomplete', completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                  error = COALESCE(error, 'não concluiu em 15 minutos')
@@ -431,7 +489,7 @@ impl AuditDb {
         self.mark_stale_in_progress()?;
         let (where_sql, values) = where_clause(query);
 
-        let (total, errors, incomplete) = self.connection.query_row(
+        let (total, errors, incomplete) = self.connection().query_row(
             &format!(
                 "SELECT COUNT(*),
                     COALESCE(SUM(CASE WHEN status IN ('error', 'abandoned') THEN 1 ELSE 0 END), 0),
@@ -449,7 +507,7 @@ impl AuditDb {
         )?;
 
         let mut by_token = HashMap::new();
-        let mut token_stmt = self.connection.prepare(&format!(
+        let mut token_stmt = self.connection().prepare(&format!(
             "SELECT api_key_label, COUNT(*) FROM audit_requests WHERE {where_sql}
              GROUP BY api_key_label ORDER BY COUNT(*) DESC, api_key_label"
         ))?;
@@ -461,7 +519,7 @@ impl AuditDb {
         }
 
         let mut by_node = HashMap::new();
-        let mut node_stmt = self.connection.prepare(&format!(
+        let mut node_stmt = self.connection().prepare(&format!(
             "SELECT entry_node_id, hops FROM audit_requests WHERE {where_sql}"
         ))?;
         for row in node_stmt.query_map(params_from_iter(values.clone()), |row| {
@@ -486,7 +544,7 @@ impl AuditDb {
         let mut entry_values = values;
         entry_values.push(Value::Integer(limit as i64));
         entry_values.push(Value::Integer(offset as i64));
-        let mut stmt = self.connection.prepare(&format!(
+        let mut stmt = self.connection().prepare(&format!(
             "SELECT id, received_at, completed_at, route, model, api_key_id,
                     api_key_label, api_key_node_id, entry_node_id, prompt,
                     request_details, result, telemetry, timings, hops, source,
@@ -513,7 +571,7 @@ impl AuditDb {
     pub fn stats(&mut self, query: &AuditQuery) -> Result<AuditStats> {
         self.mark_stale_in_progress()?;
         let (where_sql, values) = where_clause(query);
-        let mut stmt = self.connection.prepare(&format!(
+        let mut stmt = self.connection().prepare(&format!(
             "SELECT received_at, model, api_key_label, entry_node_id, prompt_tokens,
                     completion_tokens, duration_ms, status, timings, telemetry, hops
              FROM audit_requests WHERE {where_sql}"
@@ -702,12 +760,14 @@ fn json_f64(value: Option<&JsonValue>) -> Option<f64> {
     })
 }
 
+#[cfg(test)]
 fn configure_connection(connection: &Connection) -> Result<()> {
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     Ok(())
 }
 
+#[cfg(test)]
 fn ensure_schema(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS audit_requests (
@@ -1150,5 +1210,45 @@ mod tests {
         assert_eq!(stats.cache.hit_requests, 1);
         assert_eq!(stats.cache.cached_tokens, 4);
         assert_eq!(stats.average_ttft_ms, Some(250.0));
+    }
+
+    #[test]
+    fn shared_audit_writer_keeps_all_parallel_records() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-audit-concurrent-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = std::sync::Arc::new(crate::db::PomDb::open(&path).unwrap());
+        let audit = AuditLog::new(database.clone());
+        let mut workers = Vec::new();
+        for worker_id in 0..8 {
+            let audit = audit.clone();
+            workers.push(std::thread::spawn(move || {
+                for sequence in 0..25 {
+                    audit.begin(request(
+                        &format!("audit-{worker_id}-{sequence}"),
+                        "key-concurrent",
+                        "prompt concorrente",
+                    ));
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("thread de auditoria");
+        }
+        audit.flush();
+
+        let entries = database
+            .with_write("verificar auditoria concorrente", |connection| {
+                AuditDb::from_shared(connection).list(&AuditQuery::default())
+            })
+            .unwrap();
+        assert_eq!(entries.total, 200);
+        assert_eq!(entries.entries.len(), 200);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }

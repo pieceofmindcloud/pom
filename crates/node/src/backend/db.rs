@@ -16,6 +16,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub const DATABASE_FILENAME: &str = "pom.db";
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -89,6 +90,15 @@ impl ChatSessionRecord {
 #[derive(Clone, Debug)]
 pub struct PomDb {
     path: PathBuf,
+    inner: Arc<PomDbInner>,
+}
+
+#[derive(Debug)]
+struct PomDbInner {
+    connection: Mutex<Connection>,
+    write_lock: Mutex<()>,
+    #[cfg(test)]
+    setup_count: std::sync::atomic::AtomicUsize,
 }
 
 impl PomDb {
@@ -102,247 +112,290 @@ impl PomDb {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("criar diretório do banco {}", parent.display()))?;
         }
-        let db = Self { path };
-        let connection = db.connection()?;
-        drop(connection);
-        Ok(db)
+        let connection = Connection::open(&path)
+            .with_context(|| format!("abrir banco local {}", path.display()))?;
+        secure_database_permissions(&path)?;
+        configure_connection(&connection)?;
+        ensure_schema(&connection)?;
+        secure_database_permissions(&path)?;
+        Ok(Self {
+            path,
+            inner: Arc::new(PomDbInner {
+                connection: Mutex::new(connection),
+                write_lock: Mutex::new(()),
+                #[cfg(test)]
+                setup_count: std::sync::atomic::AtomicUsize::new(1),
+            }),
+        })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    fn connection(&self) -> Result<Connection> {
-        let connection = Connection::open(&self.path)
-            .with_context(|| format!("abrir banco local {}", self.path.display()))?;
-        secure_database_permissions(&self.path)?;
-        configure_connection(&connection)?;
-        ensure_schema(&connection)?;
-        secure_database_permissions(&self.path)?;
-        Ok(connection)
+    fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.inner
+            .connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex da conexão do banco local envenenado"))
+    }
+
+    fn with_read<T>(
+        &self,
+        operation: &str,
+        action: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        let connection = self.lock_connection()?;
+        action(&connection).with_context(|| format!("operação de banco não concluída: {operation}"))
+    }
+
+    pub(crate) fn with_write<T>(
+        &self,
+        operation: &str,
+        action: impl FnOnce(&mut Connection) -> Result<T>,
+    ) -> Result<T> {
+        let _write_lock = self
+            .inner
+            .write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex de escrita do banco local envenenado"))?;
+        let mut connection = self.lock_connection()?;
+        action(&mut connection)
+            .with_context(|| format!("operação de banco não concluída: {operation}"))
     }
 
     pub fn save_deployment(&self, deployment: &Deployment) -> Result<()> {
         deployment.validate()?;
-        let connection = self.connection()?;
-        let tx = connection.unchecked_transaction()?;
-        let payload = serde_json::to_string(deployment).context("serializar implantação")?;
-        tx.execute(
-            "INSERT INTO deployments (
-                deploy_id, payload_json, kind, model_label, created_at, activated_at,
-                active, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-             ON CONFLICT(deploy_id) DO UPDATE SET
-                payload_json = excluded.payload_json,
-                kind = excluded.kind,
-                model_label = excluded.model_label,
-                created_at = excluded.created_at,
-                activated_at = excluded.activated_at,
-                active = 1,
-                updated_at = excluded.updated_at",
-            params![
-                &deployment.deploy_id,
-                payload,
-                serde_json::to_string(&deployment.kind)?,
-                &deployment.model.label,
-                &deployment.created_at,
-                &deployment.activated_at,
-            ],
-        )?;
-        tx.execute(
-            "DELETE FROM deployment_tombstones WHERE deploy_id = ?",
-            params![&deployment.deploy_id],
-        )?;
-        tx.commit()?;
-        Ok(())
+        self.with_write("salvar implantação", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            let payload = serde_json::to_string(deployment).context("serializar implantação")?;
+            tx.execute(
+                "INSERT INTO deployments (
+                    deploy_id, payload_json, kind, model_label, created_at, activated_at,
+                    active, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                 ON CONFLICT(deploy_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    kind = excluded.kind,
+                    model_label = excluded.model_label,
+                    created_at = excluded.created_at,
+                    activated_at = excluded.activated_at,
+                    active = 1,
+                    updated_at = excluded.updated_at",
+                params![
+                    &deployment.deploy_id,
+                    payload,
+                    serde_json::to_string(&deployment.kind)?,
+                    &deployment.model.label,
+                    &deployment.created_at,
+                    &deployment.activated_at,
+                ],
+            )?;
+            tx.execute(
+                "DELETE FROM deployment_tombstones WHERE deploy_id = ?",
+                params![&deployment.deploy_id],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn deployment(&self, deploy_id: &str) -> Result<Option<Deployment>> {
-        let connection = self.connection()?;
-        let payload = connection
-            .query_row(
-                "SELECT payload_json FROM deployments WHERE deploy_id = ? AND active = 1",
-                params![deploy_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        payload
-            .map(|payload| {
+        self.with_read("ler implantação", |connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT payload_json FROM deployments WHERE deploy_id = ? AND active = 1",
+                    params![deploy_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            payload
+                .map(|payload| {
+                    let deployment: Deployment = serde_json::from_str(&payload)
+                        .with_context(|| format!("interpretar implantação {deploy_id}"))?;
+                    deployment
+                        .validate()
+                        .with_context(|| format!("validar implantação {deploy_id}"))?;
+                    Ok(deployment)
+                })
+                .transpose()
+        })
+    }
+
+    pub fn deployments(&self) -> Result<Vec<Deployment>> {
+        self.with_read("ler implantações", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT deploy_id, payload_json FROM deployments
+                 WHERE active = 1 ORDER BY deploy_id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut deployments = Vec::new();
+            for row in rows {
+                let (deploy_id, payload) = row?;
                 let deployment: Deployment = serde_json::from_str(&payload)
                     .with_context(|| format!("interpretar implantação {deploy_id}"))?;
                 deployment
                     .validate()
                     .with_context(|| format!("validar implantação {deploy_id}"))?;
-                Ok(deployment)
-            })
-            .transpose()
-    }
-
-    pub fn deployments(&self) -> Result<Vec<Deployment>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT deploy_id, payload_json FROM deployments
-             WHERE active = 1 ORDER BY deploy_id",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let mut deployments = Vec::new();
-        for row in rows {
-            let (deploy_id, payload) = row?;
-            let deployment: Deployment = serde_json::from_str(&payload)
-                .with_context(|| format!("interpretar implantação {deploy_id}"))?;
-            deployment
-                .validate()
-                .with_context(|| format!("validar implantação {deploy_id}"))?;
-            deployments.push(deployment);
-        }
-        Ok(deployments)
+                deployments.push(deployment);
+            }
+            Ok(deployments)
+        })
     }
 
     /// Mark a deployment removed without deleting its record or its tombstone.
     pub fn remove_deployment(&self, deploy_id: &str) -> Result<bool> {
-        let connection = self.connection()?;
-        let tx = connection.unchecked_transaction()?;
-        let changed = tx.execute(
-            "UPDATE deployments SET active = 0,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE deploy_id = ? AND active = 1",
-            params![deploy_id],
-        )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO deployment_tombstones (deploy_id, removed_at)
-             VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![deploy_id],
-        )?;
-        tx.commit()?;
-        Ok(changed > 0)
+        self.with_write("remover implantação", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            let changed = tx.execute(
+                "UPDATE deployments SET active = 0,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE deploy_id = ? AND active = 1",
+                params![deploy_id],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO deployment_tombstones (deploy_id, removed_at)
+                 VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                params![deploy_id],
+            )?;
+            tx.commit()?;
+            Ok(changed > 0)
+        })
     }
 
     pub fn insert_api_key(&self, key: &ApiKey) -> Result<()> {
         if key.id.trim().is_empty() || key.key.trim().is_empty() {
             anyhow::bail!("API key sem identidade ou segredo");
         }
-        let connection = self.connection()?;
-        connection.execute(
-            "INSERT INTO api_keys (id, key, label, node_id, active, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-                label = excluded.label,
-                node_id = excluded.node_id,
-                active = CASE
-                    WHEN EXISTS (
-                        SELECT 1 FROM api_key_revocations
-                        WHERE key_id = api_keys.id
-                    ) THEN 0
-                    ELSE excluded.active
-                END",
-            params![
-                &key.id,
-                &key.key,
-                &key.label,
-                &key.node_id,
-                key.active as i64,
-                &key.created_at,
-            ],
-        )?;
-        Ok(())
+        self.with_write("salvar chave de API", |connection| {
+            connection.execute(
+                "INSERT INTO api_keys (id, key, label, node_id, active, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                    label = excluded.label,
+                    node_id = excluded.node_id,
+                    active = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM api_key_revocations
+                            WHERE key_id = api_keys.id
+                        ) THEN 0
+                        ELSE excluded.active
+                    END",
+                params![
+                    &key.id,
+                    &key.key,
+                    &key.label,
+                    &key.node_id,
+                    key.active as i64,
+                    &key.created_at,
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn api_keys(&self) -> Result<Vec<ApiKey>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id, key, label, node_id, active, created_at
-             FROM api_keys ORDER BY created_at, id",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok(ApiKey {
-                id: row.get(0)?,
-                key: row.get(1)?,
-                label: row.get(2)?,
-                node_id: row.get(3)?,
-                active: row.get::<_, i64>(4)? != 0,
-                created_at: row.get(5)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("ler API keys do banco local")
+        self.with_read("ler chaves de API", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, key, label, node_id, active, created_at
+                 FROM api_keys ORDER BY created_at, id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(ApiKey {
+                    id: row.get(0)?,
+                    key: row.get(1)?,
+                    label: row.get(2)?,
+                    node_id: row.get(3)?,
+                    active: row.get::<_, i64>(4)? != 0,
+                    created_at: row.get(5)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("ler API keys do banco local")
+        })
     }
 
     pub fn api_key_for_token(&self, token: &str) -> Result<Option<ApiKey>> {
-        let connection = self.connection()?;
-        connection
-            .query_row(
-                "SELECT id, key, label, node_id, active, created_at
-                 FROM api_keys WHERE key = ? AND active = 1",
-                params![token],
-                |row| {
-                    Ok(ApiKey {
-                        id: row.get(0)?,
-                        key: row.get(1)?,
-                        label: row.get(2)?,
-                        node_id: row.get(3)?,
-                        active: row.get::<_, i64>(4)? != 0,
-                        created_at: row.get(5)?,
-                    })
-                },
-            )
-            .optional()
-            .context("consultar API key no banco local")
+        self.with_read("consultar chave de API", |connection| {
+            connection
+                .query_row(
+                    "SELECT id, key, label, node_id, active, created_at
+                     FROM api_keys WHERE key = ? AND active = 1",
+                    params![token],
+                    |row| {
+                        Ok(ApiKey {
+                            id: row.get(0)?,
+                            key: row.get(1)?,
+                            label: row.get(2)?,
+                            node_id: row.get(3)?,
+                            active: row.get::<_, i64>(4)? != 0,
+                            created_at: row.get(5)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("consultar API key no banco local")
+        })
     }
 
     /// Revoke once, retaining both the inactive key and the first audit event.
     pub fn revoke_api_key(&self, key_or_id: &str, revoked_by: &str) -> Result<bool> {
-        let connection = self.connection()?;
-        let tx = connection.unchecked_transaction()?;
-        let key = tx
-            .query_row(
-                "SELECT id, key FROM api_keys WHERE (key = ? OR id = ?) AND active = 1",
-                params![key_or_id, key_or_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?;
-        let Some((key_id, secret)) = key else {
+        self.with_write("revogar chave de API", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            let key = tx
+                .query_row(
+                    "SELECT id, key FROM api_keys WHERE (key = ? OR id = ?) AND active = 1",
+                    params![key_or_id, key_or_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let Some((key_id, secret)) = key else {
+                tx.commit()?;
+                return Ok(false);
+            };
+            tx.execute(
+                "UPDATE api_keys SET active = 0 WHERE id = ?",
+                params![&key_id],
+            )?;
+            tx.execute(
+                "INSERT INTO api_key_revocations
+                    (key_id, key_sha256, revoked_by, revoked_at)
+                 VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                params![&key_id, secret_digest(&secret), revoked_by],
+            )?;
             tx.commit()?;
-            return Ok(false);
-        };
-        tx.execute(
-            "UPDATE api_keys SET active = 0 WHERE id = ?",
-            params![&key_id],
-        )?;
-        tx.execute(
-            "INSERT INTO api_key_revocations
-                (key_id, key_sha256, revoked_by, revoked_at)
-             VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![&key_id, secret_digest(&secret), revoked_by],
-        )?;
-        tx.commit()?;
-        Ok(true)
+            Ok(true)
+        })
     }
 
     pub fn api_key_revocations(&self) -> Result<Vec<(String, String, String)>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT key_id, revoked_by, revoked_at FROM api_key_revocations
-             ORDER BY revoked_at, id",
-        )?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("ler histórico de revogações")
+        self.with_read("ler histórico de revogações", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT key_id, revoked_by, revoked_at FROM api_key_revocations
+                 ORDER BY revoked_at, id",
+            )?;
+            let rows =
+                statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("ler histórico de revogações")
+        })
     }
 
     pub fn thermal_policy(&self) -> Result<Option<ThermalPolicy>> {
-        let connection = self.connection()?;
-        let value = connection
-            .query_row(
-                "SELECT value_json FROM local_settings WHERE setting_key = 'thermal_policy'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        value
-            .map(|value| serde_json::from_str(&value).context("interpretar política térmica"))
-            .transpose()
+        self.with_read("ler política térmica", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'thermal_policy'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| serde_json::from_str(&value).context("interpretar política térmica"))
+                .transpose()
+        })
     }
 
     pub fn save_thermal_policy(&self, policy: ThermalPolicy) -> Result<()> {
@@ -353,47 +406,49 @@ impl PomDb {
     /// Read the stored credential without logging, formatting or returning it
     /// from an HTTP handler. The database file is restricted to its owner.
     pub fn huggingface_token(&self) -> Result<Option<String>> {
-        let connection = self.connection()?;
-        connection
-            .query_row(
-                "SELECT value_text FROM local_secrets WHERE secret_key = 'huggingface_token'",
-                [],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map(|value| value.flatten())
-            .context("ler credencial do Hugging Face")
+        self.with_read("ler credencial do Hugging Face", |connection| {
+            connection
+                .query_row(
+                    "SELECT value_text FROM local_secrets WHERE secret_key = 'huggingface_token'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map(|value| value.flatten())
+                .context("ler credencial do Hugging Face")
+        })
     }
 
     pub fn save_huggingface_token(&self, token: Option<&str>) -> Result<()> {
-        let connection = self.connection()?;
-        match token.map(str::trim).filter(|token| !token.is_empty()) {
-            Some(token) => {
-                connection.execute(
-                    "INSERT INTO local_secrets (secret_key, value_text)
-                     VALUES ('huggingface_token', ?)
-                     ON CONFLICT(secret_key) DO UPDATE SET value_text = excluded.value_text",
-                    params![token],
-                )?;
+        self.with_write("salvar credencial do Hugging Face", |connection| {
+            match token.map(str::trim).filter(|token| !token.is_empty()) {
+                Some(token) => {
+                    connection.execute(
+                        "INSERT INTO local_secrets (secret_key, value_text)
+                         VALUES ('huggingface_token', ?)
+                         ON CONFLICT(secret_key) DO UPDATE SET value_text = excluded.value_text",
+                        params![token],
+                    )?;
+                }
+                None => {
+                    connection.execute(
+                        "DELETE FROM local_secrets WHERE secret_key = 'huggingface_token'",
+                        [],
+                    )?;
+                }
             }
-            None => {
-                connection.execute(
-                    "DELETE FROM local_secrets WHERE secret_key = 'huggingface_token'",
-                    [],
-                )?;
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Replace one transcript atomically. Messages are normalized so a
     /// conversation can be read without keeping a large opaque JSON document.
     pub fn save_chat_session(&self, session: &ChatSessionRecord) -> Result<()> {
         session.validate()?;
-        let connection = self.connection()?;
-        let tx = connection.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO chat_conversations (
+        self.with_write("salvar conversa", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            tx.execute(
+                "INSERT INTO chat_conversations (
                 id, title, titled, model, model_at_start, created_at, updated_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
@@ -402,115 +457,120 @@ impl PomDb {
                 model = excluded.model,
                 model_at_start = excluded.model_at_start,
                 updated_at = excluded.updated_at",
-            params![
-                &session.id,
-                &session.title,
-                session.titled as i64,
-                &session.model,
-                &session.model_at_start,
-                &session.updated_at,
-                &session.updated_at,
-            ],
-        )?;
-        tx.execute(
-            "DELETE FROM chat_messages WHERE conversation_id = ?",
-            params![&session.id],
-        )?;
-        for (position, message) in session.messages.iter().enumerate() {
+                params![
+                    &session.id,
+                    &session.title,
+                    session.titled as i64,
+                    &session.model,
+                    &session.model_at_start,
+                    &session.updated_at,
+                    &session.updated_at,
+                ],
+            )?;
             tx.execute(
-                "INSERT INTO chat_messages (
+                "DELETE FROM chat_messages WHERE conversation_id = ?",
+                params![&session.id],
+            )?;
+            for (position, message) in session.messages.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO chat_messages (
                     conversation_id, position, message_id, role, content,
                     request_content, error, source, reasoning, tokens_per_second,
                     tokens_generated, duration_ms, timings_json, trace_json, at
                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![
-                    &session.id,
-                    position as i64,
-                    &message.id,
-                    &message.role,
-                    &message.content,
-                    &message.request_content,
-                    &message.error,
-                    &message.source,
-                    &message.reasoning,
-                    message.tokens_per_second,
-                    message.tokens_generated.map(|value| value as i64),
-                    message.duration_ms.map(|value| value as i64),
-                    optional_json_string(message.timings.as_ref())?,
-                    optional_json_string(message.trace.as_ref())?,
-                    &message.at,
-                ],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+                    params![
+                        &session.id,
+                        position as i64,
+                        &message.id,
+                        &message.role,
+                        &message.content,
+                        &message.request_content,
+                        &message.error,
+                        &message.source,
+                        &message.reasoning,
+                        message.tokens_per_second,
+                        message.tokens_generated.map(|value| value as i64),
+                        message.duration_ms.map(|value| value as i64),
+                        optional_json_string(message.timings.as_ref())?,
+                        optional_json_string(message.trace.as_ref())?,
+                        &message.at,
+                    ],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn chat_sessions(&self) -> Result<Vec<ChatSessionRecord>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id, title, titled, model, model_at_start, updated_at
+        self.with_read("ler conversas", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, title, titled, model, model_at_start, updated_at
              FROM chat_conversations ORDER BY updated_at DESC, id DESC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)? != 0,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })?;
-        let mut sessions = Vec::new();
-        for row in rows {
-            let (id, title, titled, model, model_at_start, updated_at) = row?;
-            sessions.push(ChatSessionRecord {
-                messages: chat_messages(&connection, &id)?,
-                id,
-                title,
-                titled,
-                model,
-                model_at_start,
-                updated_at,
-            });
-        }
-        Ok(sessions)
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            let mut sessions = Vec::new();
+            for row in rows {
+                let (id, title, titled, model, model_at_start, updated_at) = row?;
+                sessions.push(ChatSessionRecord {
+                    messages: chat_messages(connection, &id)?,
+                    id,
+                    title,
+                    titled,
+                    model,
+                    model_at_start,
+                    updated_at,
+                });
+            }
+            Ok(sessions)
+        })
     }
 
     pub fn delete_chat_session(&self, id: &str) -> Result<bool> {
-        let connection = self.connection()?;
-        Ok(connection.execute("DELETE FROM chat_conversations WHERE id = ?", params![id])? > 0)
+        self.with_write("excluir conversa", |connection| {
+            Ok(connection.execute("DELETE FROM chat_conversations WHERE id = ?", params![id])? > 0)
+        })
     }
 
     pub fn clear_chat_sessions(&self) -> Result<()> {
-        let connection = self.connection()?;
-        connection.execute("DELETE FROM chat_conversations", [])?;
-        Ok(())
+        self.with_write("limpar conversas", |connection| {
+            connection.execute("DELETE FROM chat_conversations", [])?;
+            Ok(())
+        })
     }
 
     fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
-        let connection = self.connection()?;
-        connection.execute(
-            "INSERT INTO local_settings (setting_key, value_json) VALUES (?, ?)
-             ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json",
-            params![key, serde_json::to_string(value)?],
-        )?;
-        Ok(())
+        self.with_write("salvar configuração local", |connection| {
+            connection.execute(
+                "INSERT INTO local_settings (setting_key, value_json) VALUES (?, ?)
+                 ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json",
+                params![key, serde_json::to_string(value)?],
+            )?;
+            Ok(())
+        })
     }
 
     /// Record the current catalog while retaining rows for files that vanished.
     pub fn record_catalog(&self, catalog: &Catalog) -> Result<()> {
-        let connection = self.connection()?;
-        let tx = connection.unchecked_transaction()?;
-        let now = chrono::Utc::now().to_rfc3339();
-        let mut seen_models = HashSet::new();
+        self.with_write("registrar catálogo", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut seen_models = HashSet::new();
 
-        for model in &catalog.models {
-            let (model_id, identity_kind, identity, model_kind) = model_identity(model)?;
-            seen_models.insert(model_id.clone());
-            tx.execute(
-                "INSERT INTO model_history (
+            for model in &catalog.models {
+                let (model_id, identity_kind, identity, model_kind) = model_identity(model)?;
+                seen_models.insert(model_id.clone());
+                tx.execute(
+                    "INSERT INTO model_history (
                     model_id, identity_kind, identity, label, model_kind, source,
                     source_path, size_bytes, total_layers, quant, first_seen_at,
                     last_seen_at, present
@@ -525,31 +585,31 @@ impl PomDb {
                     quant = excluded.quant,
                     last_seen_at = excluded.last_seen_at,
                     present = 1",
-                params![
-                    &model_id,
-                    identity_kind,
-                    identity,
-                    &model.name,
-                    model_kind,
-                    model.source.label(),
-                    &model.path,
-                    model.size_bytes as i64,
-                    model.total_layers.map(i64::from),
-                    &model.quant,
-                    &now,
-                    &now,
-                ],
-            )?;
-
-            if model.is_shard() {
-                tx.execute(
-                    "UPDATE model_slices SET present = 0 WHERE model_id = ?",
-                    params![&model_id],
+                    params![
+                        &model_id,
+                        identity_kind,
+                        identity,
+                        &model.name,
+                        model_kind,
+                        model.source.label(),
+                        &model.path,
+                        model.size_bytes as i64,
+                        model.total_layers.map(i64::from),
+                        &model.quant,
+                        &now,
+                        &now,
+                    ],
                 )?;
-                let slice_id = slice_identity(model);
-                let range = model.shard_range;
-                tx.execute(
-                    "INSERT INTO model_slices (
+
+                if model.is_shard() {
+                    tx.execute(
+                        "UPDATE model_slices SET present = 0 WHERE model_id = ?",
+                        params![&model_id],
+                    )?;
+                    let slice_id = slice_identity(model);
+                    let range = model.shard_range;
+                    tx.execute(
+                        "INSERT INTO model_slices (
                         model_id, slice_id, file_path, sha256, start_layer, end_layer,
                         bytes, tp_rank, tp_size, is_first, is_last, first_seen_at,
                         last_seen_at, present
@@ -566,99 +626,111 @@ impl PomDb {
                         is_last = excluded.is_last,
                         last_seen_at = excluded.last_seen_at,
                         present = 1",
-                    params![
-                        &model_id,
-                        slice_id,
-                        &model.path,
-                        &model.sha256,
-                        range.map(|r| r.0 as i64),
-                        range.map(|r| r.1 as i64),
-                        model.size_bytes as i64,
-                        model.tp_rank.map(i64::from),
-                        model.tp_size.map(i64::from),
-                        is_first(model),
-                        is_last(model),
-                        &now,
-                        &now,
-                    ],
-                )?;
+                        params![
+                            &model_id,
+                            slice_id,
+                            &model.path,
+                            &model.sha256,
+                            range.map(|r| r.0 as i64),
+                            range.map(|r| r.1 as i64),
+                            model.size_bytes as i64,
+                            model.tp_rank.map(i64::from),
+                            model.tp_size.map(i64::from),
+                            is_first(model),
+                            is_last(model),
+                            &now,
+                            &now,
+                        ],
+                    )?;
+                }
             }
-        }
 
-        let existing = {
-            let mut statement = tx.prepare("SELECT model_id FROM model_history")?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
-        };
-        for model_id in existing {
-            if !seen_models.contains(&model_id) {
-                tx.execute(
-                    "UPDATE model_history SET present = 0 WHERE model_id = ?",
-                    params![&model_id],
-                )?;
-                tx.execute(
-                    "UPDATE model_slices SET present = 0 WHERE model_id = ?",
-                    params![&model_id],
-                )?;
+            let existing = {
+                let mut statement = tx.prepare("SELECT model_id FROM model_history")?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            for model_id in existing {
+                if !seen_models.contains(&model_id) {
+                    tx.execute(
+                        "UPDATE model_history SET present = 0 WHERE model_id = ?",
+                        params![&model_id],
+                    )?;
+                    tx.execute(
+                        "UPDATE model_slices SET present = 0 WHERE model_id = ?",
+                        params![&model_id],
+                    )?;
+                }
             }
-        }
-        tx.commit()?;
-        Ok(())
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn model_history(&self) -> Result<Vec<(String, bool)>> {
-        let connection = self.connection()?;
-        let mut statement =
-            connection.prepare("SELECT model_id, present FROM model_history ORDER BY model_id")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("ler histórico de modelos")
+        self.with_read("ler histórico de modelos", |connection| {
+            let mut statement = connection
+                .prepare("SELECT model_id, present FROM model_history ORDER BY model_id")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("ler histórico de modelos")
+        })
     }
 
     pub fn model_slice_history(
         &self,
         model_id: &str,
     ) -> Result<Vec<(String, bool, Option<u32>, Option<u32>, u64)>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT slice_id, present, start_layer, end_layer, bytes
-             FROM model_slices WHERE model_id = ? ORDER BY start_layer, end_layer, slice_id",
-        )?;
-        let rows = statement.query_map(params![model_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)? != 0,
-                row.get::<_, Option<i64>>(2)?.map(|value| value as u32),
-                row.get::<_, Option<i64>>(3)?.map(|value| value as u32),
-                row.get::<_, i64>(4)? as u64,
-            ))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("ler histórico de fatias")
+        self.with_read("ler histórico de fatias", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT slice_id, present, start_layer, end_layer, bytes
+                 FROM model_slices WHERE model_id = ? ORDER BY start_layer, end_layer, slice_id",
+            )?;
+            let rows = statement.query_map(params![model_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? != 0,
+                    row.get::<_, Option<i64>>(2)?.map(|value| value as u32),
+                    row.get::<_, Option<i64>>(3)?.map(|value| value as u32),
+                    row.get::<_, i64>(4)? as u64,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("ler histórico de fatias")
+        })
     }
 
     #[cfg(test)]
     fn table_names(&self) -> Result<Vec<String>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')
-             UNION ALL SELECT name FROM sqlite_temp_master WHERE type = 'table'",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("ler tabelas do banco")
+        self.with_read("ler tabelas do banco", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')
+                 UNION ALL SELECT name FROM sqlite_temp_master WHERE type = 'table'",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("ler tabelas do banco")
+        })
     }
 
     #[cfg(test)]
     fn journal_mode(&self) -> Result<String> {
-        let connection = self.connection()?;
-        connection
-            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
-            .context("ler modo de journal")
+        self.with_read("ler modo de journal", |connection| {
+            connection
+                .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+                .context("ler modo de journal")
+        })
+    }
+
+    #[cfg(test)]
+    fn setup_count(&self) -> usize {
+        self.inner
+            .setup_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -677,6 +749,26 @@ impl PomDb {
             created_at: marker.into(),
         };
         self.insert_api_key(&key)
+    }
+
+    #[cfg(test)]
+    fn hold_test_write(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        duration: std::time::Duration,
+    ) -> Result<()> {
+        self.with_write("teste de escrita presa", |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            transaction.execute(
+                "INSERT INTO api_keys (id, key, label, node_id, active, created_at)
+                 VALUES ('held-write', 'held-secret', 'held', '', 1, 'held')",
+                [],
+            )?;
+            started.send(()).expect("sinalizar escrita presa");
+            std::thread::sleep(duration);
+            transaction.commit()?;
+            Ok(())
+        })
     }
 }
 
@@ -950,8 +1042,8 @@ fn restrict_sidecar_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Keep the database and SQLite WAL sidecars private even when another
-/// connection creates a sidecar after `PomDb::connection` has returned.
+/// Keep the database and SQLite WAL sidecars private after `PomDb::open` has
+/// created and configured the shared connection.
 pub(crate) fn secure_database_permissions(path: &Path) -> Result<()> {
     if path == Path::new(":memory:") {
         return Ok(());
@@ -1090,6 +1182,78 @@ mod tests {
             worker.join().expect("thread de escrita");
         }
         assert_eq!(db.test_marker_count().expect("contar marcadores"), 8);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn sustained_parallel_writes_do_not_hit_sqlite_busy() {
+        let path = temporary_path("concurrent-stress");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        let mut workers = Vec::new();
+        for worker_id in 0..32 {
+            let db = db.clone();
+            workers.push(std::thread::spawn(move || {
+                let mut errors = Vec::new();
+                for sequence in 0..500 {
+                    if let Err(error) =
+                        db.insert_test_marker(&format!("stress-{worker_id}-{sequence}"))
+                    {
+                        errors.push(error.to_string());
+                    }
+                }
+                errors
+            }));
+        }
+
+        let errors = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("thread de escrita"))
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "falhas de escrita: {errors:?}");
+        assert_eq!(db.test_marker_count().expect("contar marcadores"), 16_000);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn a_write_waits_for_another_write_instead_of_being_lost_to_busy() {
+        let path = temporary_path("serialized-write");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let holder_db = db.clone();
+        let holder = std::thread::spawn(move || {
+            holder_db.hold_test_write(started_sender, std::time::Duration::from_secs(6))
+        });
+        started_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("a escrita presa iniciou");
+
+        let reader_db = db.clone();
+        let reader = std::thread::spawn(move || reader_db.deployments());
+        let writer_db = db.clone();
+        let writer = std::thread::spawn(move || writer_db.insert_test_marker("after-held"));
+        let reader_result = reader.join().expect("thread da leitura");
+        let writer_result = writer.join().expect("thread da segunda escrita");
+        holder
+            .join()
+            .expect("thread da escrita presa")
+            .expect("commit da escrita presa");
+        reader_result.expect("a leitura não pode falhar");
+        writer_result.expect("a segunda escrita não pode ser perdida");
+        assert_eq!(db.test_marker_count().expect("contar marcadores"), 2);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn configures_connection_and_schema_only_once() {
+        let path = temporary_path("setup-once");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+
+        for index in 0..20 {
+            db.insert_test_marker(&format!("setup-{index}"))
+                .expect("gravar marcador");
+        }
+
+        assert_eq!(db.setup_count(), 1);
         remove_database(&path);
     }
 

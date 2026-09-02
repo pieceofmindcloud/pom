@@ -43,7 +43,10 @@ remains a separate node-to-node credential. `/api/generate`, `/v1/**`,
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
+  conversas. `PomDb` mantém uma conexão configurada no arranque, reutilizada
+  por todas as operações; um mutex explícito serializa escritas e a mesma
+  conexão também faz leituras curtas em ordem, eliminando abertura e DDL por
+  operação. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
   para um volume e, sem ele, o banco fica na raiz do projeto.
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
@@ -207,13 +210,14 @@ remains a separate node-to-node credential. `/api/generate`, `/v1/**`,
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` (185) - operator control plane: nodes, block/unblock, keys.
 - `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
-  writes on a dedicated bounded thread; `AuditDb` creates the schema and FTS5
-  prompt index, opens requests in `in_progress`, completes the same row, marks
-  stale rows as `incomplete`, and serves authenticated paginated queries plus
-  server-side statistics.
-  Recebe o mesmo caminho de `pom.db` de `backend::db`, então pedidos e
-  conversas ficam num único arquivo local; depois de abrir ou escrever, também
-  restringe o banco e os sidecars WAL/SHM ao dono.
+  writes on a dedicated bounded thread, executadas pelo `PomDb` compartilhado;
+  `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,
+  abre requests em `in_progress`, completa a mesma linha, marca registros
+  antigos como `incomplete` e serve consultas autenticadas paginadas mais
+  estatísticas no servidor. Falha de enfileiramento ou gravação registra
+  sempre a operação e o request id. Pedidos, conversas e auditoria ficam no
+  mesmo `pom.db`; permissões do banco e dos sidecars WAL/SHM são aplicadas no
+  arranque.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,

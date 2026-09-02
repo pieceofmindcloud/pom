@@ -806,7 +806,7 @@ async fn main() -> Result<()> {
                 enabled: !args.no_cycle_detection,
                 ..crate::cycle::CycleConfig::default()
             },
-            audit: reqlog::AuditLog::new(database.path().to_path_buf()),
+            audit: reqlog::AuditLog::new(database.clone()),
             database: database.clone(),
             gateway_port,
             auth: auth_config,
@@ -1478,7 +1478,7 @@ async fn start_gateway_only(
             enabled: cycle_detection_enabled,
             ..crate::cycle::CycleConfig::default()
         },
-        audit: reqlog::AuditLog::new(database.path().to_path_buf()),
+        audit: reqlog::AuditLog::new(database.clone()),
         database,
         gateway_port,
         auth: auth_state,

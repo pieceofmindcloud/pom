@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "crates/brand",
+    "crates/llama-engine",
     "crates/node",
     "crates/routing-base",
     "crates/routing-contract",

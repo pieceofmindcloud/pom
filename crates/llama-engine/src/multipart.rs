@@ -319,7 +319,7 @@ pub struct GgufSource {
 /// mantém mappings nem valida offsets dos pesos: cada parte só é lida até o
 /// próprio cabeçalho e o restante vem de `stat`.
 #[derive(Debug, Clone)]
-pub(crate) struct CatalogPart {
+pub struct CatalogPart {
     pub index: u32,
     pub path: PathBuf,
     pub bytes: u64,
@@ -327,7 +327,7 @@ pub(crate) struct CatalogPart {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct CatalogMetadata {
+pub struct CatalogMetadata {
     pub multipart: bool,
     pub parts: Vec<CatalogPart>,
     pub source_bytes: u64,
@@ -338,7 +338,7 @@ pub(crate) struct CatalogMetadata {
 /// The full [`GgufSource::open`] path remains reserved for slicing and layout
 /// consumers. In particular, catalog enrichment must not map or validate every
 /// tensor payload merely to show the model architecture and part sizes.
-pub(crate) fn catalog_metadata(
+pub fn catalog_metadata(
     path: &Path,
     first_info: &crate::gguf::GgufInfo,
 ) -> Result<CatalogMetadata> {

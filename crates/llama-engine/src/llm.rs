@@ -33,7 +33,7 @@
 //! with two contexts decoding in parallel that became a race in which one
 //! request would carry the other's residual - no error, just a wrong answer.
 
-use crate::config::KvCacheType;
+use crate::KvCacheType;
 use crate::wire::TensorShape;
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -81,7 +81,7 @@ struct ResidualCaptureLayout {
     token_axis: usize,
 }
 
-pub(crate) fn validate_hidden_tensor(
+pub fn validate_hidden_tensor(
     values_len: usize,
     shape: &TensorShape,
     n_tokens: usize,
@@ -150,9 +150,9 @@ pub(crate) fn validate_hidden_tensor(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CapturedResidual {
-    pub(crate) values: Vec<f32>,
-    pub(crate) shape: TensorShape,
+pub struct CapturedResidual {
+    pub values: Vec<f32>,
+    pub shape: TensorShape,
 }
 
 #[derive(Default)]
@@ -1481,13 +1481,13 @@ fn model_metadata_string(model: *const sys::llama_model, key: &str) -> Option<St
 /// grafo estão na VRAM em um recuo para RAM; quando a maioria fica no host, o
 /// operador precisa ver RAM no painel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MtpAllocation {
+pub enum MtpAllocation {
     Vram,
     Ram,
 }
 
 impl MtpAllocation {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Vram => "vram",
             Self::Ram => "ram",
@@ -1495,7 +1495,7 @@ impl MtpAllocation {
     }
 }
 
-pub(crate) fn mtp_allocation_from_context_memory(
+pub fn mtp_allocation_from_context_memory(
     value: &serde_json::Value,
 ) -> Option<MtpAllocation> {
     let mut vram_bytes = 0u64;
@@ -1536,14 +1536,14 @@ pub(crate) fn mtp_allocation_from_context_memory(
     }
 }
 
-pub(crate) fn context_allocation(ctx: *const sys::llama_context) -> Option<MtpAllocation> {
+pub fn context_allocation(ctx: *const sys::llama_context) -> Option<MtpAllocation> {
     let value = unsafe { json_from_wrapper(|out| sys::llama_rs_context_memory_json(ctx, out)) }?;
     mtp_allocation_from_context_memory(&value)
 }
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
-pub(crate) const MTP_NO_NEXTN_REASON: &str = "o modelo carregado não traz o bloco nextn";
+pub const MTP_NO_NEXTN_REASON: &str = "o modelo carregado não traz o bloco nextn";
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -1591,7 +1591,7 @@ pub struct EngineConfig {
     pub moe_external_executor_layers: Vec<u8>,
 }
 
-pub(crate) fn apply_cache_types(
+pub fn apply_cache_types(
     cparams: &mut sys::llama_context_params,
     cache_type_k: KvCacheType,
     cache_type_v: KvCacheType,
@@ -1995,8 +1995,8 @@ mod fit_memory_margin_tests {
             n_ctx: 4096,
             max_sessions: 1,
             offload_kqv: true,
-            cache_type_k: crate::config::KvCacheType::F16,
-            cache_type_v: crate::config::KvCacheType::F16,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
             fit_memory: true,
             fit_memory_margin_mb: 256,
             n_batch: 128,
@@ -2168,7 +2168,7 @@ fn backend_registry_name(device: sys::ggml_backend_dev_t) -> Option<String> {
     unsafe { CStr::from_ptr(name).to_str().ok().map(str::to_owned) }
 }
 
-pub(crate) fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
+pub fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
         n_batch.min(FIT_MAX_UBATCH)
@@ -2179,7 +2179,7 @@ pub(crate) fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
 
 /// Aplica a política única de lote público e microlote de computação a cada
 /// contexto que o motor cria, inclusive o contexto MTP.
-pub(crate) fn apply_context_batch_params(
+pub fn apply_context_batch_params(
     cparams: &mut sys::llama_context_params,
     cfg: &EngineConfig,
 ) {
@@ -2519,15 +2519,15 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
 }
 
 impl LoadedModel {
-    pub(crate) fn model_ptr(&self) -> *mut sys::llama_model {
+    pub fn model_ptr(&self) -> *mut sys::llama_model {
         self.model
     }
 
-    pub(crate) fn has_nextn_weights(&self) -> bool {
+    pub fn has_nextn_weights(&self) -> bool {
         self.mtp_weights_loaded
     }
 
-    pub(crate) fn model_architecture(&self) -> Option<String> {
+    pub fn model_architecture(&self) -> Option<String> {
         model_metadata_string(self.model, "general.architecture")
     }
 
@@ -2609,7 +2609,7 @@ pub struct LlmEngine {
 /// Pesos mantidos entre gerações do servidor para que uma reconfiguração de
 /// contexto não faça outra leitura do GGUF nem outra carga de VRAM.
 #[derive(Default)]
-pub(crate) struct ModelCache {
+pub struct ModelCache {
     entry: Mutex<Option<CachedModel>>,
 }
 
@@ -2632,7 +2632,7 @@ struct CachedModel {
 }
 
 impl ModelCache {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -2681,7 +2681,7 @@ impl ModelCache {
         });
     }
 
-    pub(crate) fn clear(&self) {
+    pub fn clear(&self) {
         let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
         *entry = None;
     }
@@ -2950,7 +2950,7 @@ impl LlmEngine {
 
     /// Cria um contexto e, quando permitido pelo runtime, reaproveita os
     /// pesos carregados por uma geração anterior.
-    pub(crate) fn load_with_cache(
+    pub fn load_with_cache(
         model_path: &str,
         cfg: &EngineConfig,
         cache: &ModelCache,
@@ -4040,16 +4040,16 @@ impl LlmEngine {
         need_residual: bool,
         enqueue_started: Instant,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
-        crate::tp::set_expected_reduces(
+        crate::tp_probe::set_expected_reduces(
             2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
         );
-        if crate::tp::is_active() {
-            let reduces = crate::tp::reduces_in_current_decode();
+        if crate::tp_probe::is_active() {
+            let reduces = crate::tp_probe::reduces_in_current_decode();
             let expected = 2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64;
             if reduces != expected {
                 bail!("coletiva TP reduziu {reduces} vezes neste batch, esperado {expected}");
             }
-            if let Some(motivo) = crate::tp::take_failure() {
+            if let Some(motivo) = crate::tp_probe::take_failure() {
                 bail!("coletiva de tensor parallelism falhou: {motivo}");
             }
         }
@@ -4119,14 +4119,14 @@ impl LlmEngine {
         }
 
         self.begin_moe_callback();
-        let tp_antes = crate::tp::reduce_count();
+        let tp_antes = crate::tp_probe::reduce_count();
         self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
         }
-        crate::tp::set_expected_reduces(
+        crate::tp_probe::set_expected_reduces(
             2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
         );
         // Coletiva ligada e nenhum reduce no decode inteiro: o op do fork não
@@ -4147,8 +4147,8 @@ impl LlmEngine {
         // Aviso, não erro: arquitetura híbrida pode legitimamente ter camada sem
         // atenção ou sem FFN, e recusar a resposta nesse caso seria pior que o
         // aviso. Zero reduces continua sendo erro (logo abaixo).
-        if crate::tp::is_active() {
-            let reduces = crate::tp::reduces_in_current_decode();
+        if crate::tp_probe::is_active() {
+            let reduces = crate::tp_probe::reduces_in_current_decode();
             let esperado = 2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64;
             if reduces != esperado {
                 tracing::warn!(
@@ -4160,7 +4160,7 @@ impl LlmEngine {
                 tracing::debug!("decode fechou com {reduces} reduces (2 por camada)");
             }
         }
-        if crate::tp::is_active() && crate::tp::reduce_count() == tp_antes {
+        if crate::tp_probe::is_active() && crate::tp_probe::reduce_count() == tp_antes {
             bail!(
                 "coletiva de tensor parallelism ligada mas nenhum reduce rodou \
                  neste decode: o op do llama.cpp não entrou no grafo"
@@ -4174,7 +4174,7 @@ impl LlmEngine {
         // torna falsa. O rank fica com a própria parcial - metade das cabeças e
         // metade do FFN - e a geração sai plausível e sem sentido, sem nenhum
         // sinal de erro (18/08). Responder errado é pior que não responder.
-        if let Some(motivo) = crate::tp::take_failure() {
+        if let Some(motivo) = crate::tp_probe::take_failure() {
             bail!("coletiva de tensor parallelism falhou: {motivo}");
         }
 
@@ -4273,12 +4273,12 @@ impl LlmEngine {
         if rc != 0 {
             bail!("llama_decode (hidden) failed rc={rc}");
         }
-        crate::tp::set_expected_reduces(
+        crate::tp_probe::set_expected_reduces(
             2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
         );
         // Ver a nota gêmea em `decode_tokens`: a coletiva falha por callback e
         // só pode virar erro aqui fora.
-        if let Some(motivo) = crate::tp::take_failure() {
+        if let Some(motivo) = crate::tp_probe::take_failure() {
             bail!("coletiva de tensor parallelism falhou: {motivo}");
         }
 
@@ -4457,12 +4457,12 @@ impl LlmEngine {
 /// fragmento e rasgava a palavra no delta do chat. O acumulador guarda o
 /// rabicho incompleto e só emite caractere completo; `flush` drena o resto
 /// no fim do stream.
-pub(crate) struct Utf8Assembler {
+pub struct Utf8Assembler {
     pending: Vec<u8>,
 }
 
 impl Utf8Assembler {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             pending: Vec::new(),
         }
@@ -4473,7 +4473,7 @@ impl Utf8Assembler {
     /// Sequência incompleta no fim fica pendente para a peça seguinte;
     /// sequência inválida de verdade vira um único U+FFFD na hora, a mesma
     /// semântica de um `from_utf8_lossy` sobre o stream inteiro.
-    pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
+    pub fn feed(&mut self, bytes: &[u8]) -> String {
         self.pending.extend_from_slice(bytes);
         let mut out = String::new();
         loop {
@@ -4510,7 +4510,7 @@ impl Utf8Assembler {
     }
 
     /// Fim do stream: drena o rabicho que não virou caractere completo.
-    pub(crate) fn flush(&mut self) -> String {
+    pub fn flush(&mut self) -> String {
         let out = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
         out
@@ -4763,7 +4763,7 @@ mod pool_tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: true,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 99,
             n_threads: 0,
@@ -5975,7 +5975,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 4,
             n_gpu_layers: 0,
             n_threads: 2,
@@ -6046,7 +6046,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: true,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: DEFAULT_GPU_LAYERS,
             n_threads: 0,
@@ -6113,7 +6113,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -6224,7 +6224,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 4,
             n_gpu_layers: gpu_layers,
             n_threads: 2,
@@ -6372,7 +6372,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -6432,7 +6432,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 0,
@@ -6505,7 +6505,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 0,
             n_threads: 2,
@@ -6547,7 +6547,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             fit_memory: false,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 0,
             n_threads: 2,

@@ -10,16 +10,20 @@ path = "src/main.rs"
 
 [features]
 default = []
-cuda = ["llama-cpp-sys-2/cuda"]
-metal = ["llama-cpp-sys-2/metal"]
+# As features do backend nativo vivem em `llama-engine`, que é quem declara
+# `llama-cpp-sys-2`. Aqui só encaminham.
+cuda = ["llama-engine/cuda"]
+metal = ["llama-engine/metal"]
 # Backend portatil: e o caminho das placas AMD, e tambem roda em NVIDIA e
 # Intel. Pode ser combinado com `cuda` - o ggml carrega os dois backends e a
 # escolha de qual usar e feita em tempo de execucao.
-vulkan = ["llama-cpp-sys-2/vulkan"]
+vulkan = ["llama-engine/vulkan"]
 
 [dependencies]
-llama-cpp-sys-2 = { version = "0.1.154", default-features = false, features = ["common"] }
-half = "2"
+# Todo o código llama.cpp (FFI, MTP, MoE, GGUF, sysmon) mora aqui, para que
+# editar backend/rede/roteamento de `node` não o reconstrua.
+llama-engine = { path = "../llama-engine" }
+brand = { path = "../brand" }
 socket2 = "0.5"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
@@ -66,11 +70,6 @@ routing-contract = { path = "../routing-contract" }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
-
-[build-dependencies]
-# Compila `src/inference/llama_mtp_shim.cpp`, a ponte para as entradas NextN
-# (MTP) que o bindgen do llama-cpp-sys-2 não emite. Ver o build.rs.
-cc = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

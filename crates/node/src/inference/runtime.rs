@@ -96,7 +96,9 @@ fn runtime_capacity_from_health(
 
 /// Folga conservadora para a projeção de alocação CUDA: 256 MiB mantém o
 /// ganho de capacidade observado no modelo híbrido sem voltar a consumir 1 GiB.
-pub const DEFAULT_FIT_MEMORY_MARGIN_MB: u32 = 256;
+/// Definida em `llama-engine` (o `llm` a usa); re-exportada para que
+/// `crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB` continue valendo.
+pub use llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB;
 
 /// What this node is currently serving. Serialisable so the UI can round-trip it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

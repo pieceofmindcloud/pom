@@ -134,7 +134,7 @@ const MTP_GRAPH_ARCHITECTURES: &[&str] = GENERATED_MTP_GRAPH_ARCHITECTURES;
 /// o fork conhece o grafo da arquitetura. Falhar fechado é importante: um
 /// `GGML_ASSERT` no construtor do grafo aborta o processo e não pode ser
 /// convertido em um `Result` depois do fato.
-pub(crate) fn mtp_graph_unavailable_reason(architecture: Option<&str>) -> Option<String> {
+pub fn mtp_graph_unavailable_reason(architecture: Option<&str>) -> Option<String> {
     let architecture = architecture
         .map(str::trim)
         .filter(|value| !value.is_empty());
@@ -159,7 +159,7 @@ fn context_params(cfg: &crate::llm::EngineConfig) -> sys::llama_context_params {
     context_params_with_offload(cfg, cfg.offload_kqv)
 }
 
-pub(crate) fn context_params_with_offload(
+pub fn context_params_with_offload(
     cfg: &crate::llm::EngineConfig,
     offload_kqv: bool,
 ) -> sys::llama_context_params {
@@ -274,7 +274,7 @@ impl MtpDrafter {
         }))
     }
 
-    pub(crate) fn allocation(&self) -> crate::llm::MtpAllocation {
+    pub fn allocation(&self) -> crate::llm::MtpAllocation {
         self.allocation
     }
 
@@ -527,10 +527,10 @@ mod tests {
         crate::llm::EngineConfig {
             n_ctx: 4096,
             offload_kqv: true,
-            cache_type_k: crate::config::KvCacheType::F16,
-            cache_type_v: crate::config::KvCacheType::F16,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
             fit_memory: true,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 4096,
             n_gpu_layers: 99,
             n_threads: 0,
@@ -670,10 +670,10 @@ mod tests {
         let cfg = crate::llm::EngineConfig {
             n_ctx: 4096,
             offload_kqv: true,
-            cache_type_k: crate::config::KvCacheType::F16,
-            cache_type_v: crate::config::KvCacheType::F16,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
             fit_memory: true,
-            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             n_gpu_layers: 99,
             n_threads: 0,

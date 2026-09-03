@@ -353,11 +353,11 @@ impl fmt::Display for Q4LoadError {
 impl std::error::Error for Q4LoadError {}
 
 #[derive(Debug, Clone)]
-pub(crate) struct TensorSpec {
-    pub(crate) name: String,
-    pub(crate) dims: Vec<u64>,
-    pub(crate) dtype: u32,
-    pub(crate) offset: u64,
+pub struct TensorSpec {
+    pub name: String,
+    pub dims: Vec<u64>,
+    pub dtype: u32,
+    pub offset: u64,
 }
 
 enum GateUpTensors {
@@ -887,7 +887,7 @@ fn decode_scalar(encoded: &[u8], dtype: u32) -> f32 {
     }
 }
 
-pub(crate) fn read_scalar_vector(
+pub fn read_scalar_vector(
     mmap: &[u8],
     data_start: usize,
     tensor: &TensorSpec,
@@ -955,7 +955,7 @@ fn validate_tensor(
     Ok(())
 }
 
-pub(crate) fn parse_tensor_table(raw: &[u8]) -> Result<(usize, Vec<TensorSpec>), Q4LoadError> {
+pub fn parse_tensor_table(raw: &[u8]) -> Result<(usize, Vec<TensorSpec>), Q4LoadError> {
     let mut cursor = 0usize;
     let magic = read_u32(raw, &mut cursor)?;
     if magic != 0x4655_4747 {
@@ -1237,7 +1237,7 @@ fn f16_to_f32(bits: u16) -> f32 {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::super::admission::MemoryAccount;
     use super::super::cache::{ExpertCache, FreeMemoryProbe};
     use super::*;
@@ -1293,7 +1293,7 @@ pub(crate) mod tests {
         output.extend_from_slice(&offset.to_le_bytes());
     }
 
-    pub(crate) fn write_q4_source(path: &Path) -> (usize, usize) {
+    pub fn write_q4_source(path: &Path) -> (usize, usize) {
         let hidden = 32;
         let intermediate = 32;
         let experts = 2;

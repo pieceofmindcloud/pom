@@ -163,7 +163,7 @@ impl TensorDecoder {
 /// aceita usam blocos de 256. Manter essa tabela junto do inventário impede
 /// que o validador Rust confunda o tamanho do MXFP4 com o dos outros dtypes.
 #[cfg(any(feature = "cuda", test))]
-pub(crate) fn cuda_tensor_row_bytes(dtype: u32, columns: usize) -> Option<usize> {
+pub fn cuda_tensor_row_bytes(dtype: u32, columns: usize) -> Option<usize> {
     let (block_elements, block_bytes) = match dtype {
         12 => (256, 144),
         14 => (256, 210),
@@ -179,12 +179,12 @@ pub(crate) fn cuda_tensor_row_bytes(dtype: u32, columns: usize) -> Option<usize>
 }
 
 #[cfg(any(feature = "cuda", test))]
-pub(crate) fn cuda_tensor_expected_bytes(dtype: u32, rows: usize, columns: usize) -> Option<usize> {
+pub fn cuda_tensor_expected_bytes(dtype: u32, rows: usize, columns: usize) -> Option<usize> {
     rows.checked_mul(cuda_tensor_row_bytes(dtype, columns)?)
 }
 
 #[cfg(test)]
-pub(crate) fn cuda_tensor_bank_expected_bytes(
+pub fn cuda_tensor_bank_expected_bytes(
     dtype: u32,
     rows: usize,
     columns: usize,
@@ -194,7 +194,7 @@ pub(crate) fn cuda_tensor_bank_expected_bytes(
 }
 
 #[cfg(feature = "cuda")]
-pub(crate) fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
+pub fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
     matches!(dtype, 12 | 14 | 18 | 21 | 22 | 23 | 39)
 }
 
@@ -206,11 +206,11 @@ struct ExpertTensor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct TensorScales {
-    pub(crate) primary: f32,
-    pub(crate) secondary: f32,
-    pub(crate) input_primary: f32,
-    pub(crate) input_secondary: f32,
+pub struct TensorScales {
+    pub primary: f32,
+    pub secondary: f32,
+    pub input_primary: f32,
+    pub input_secondary: f32,
 }
 
 impl Default for TensorScales {
@@ -239,7 +239,7 @@ struct LayerInventory {
 /// o formato entre gate, up e down. O cache de device usa uma entrada por
 /// papel e expert, nunca uma premissa de dtype único para o modelo.
 #[cfg(feature = "cuda")]
-pub(crate) struct HeterogeneousTensorPayload {
+pub struct HeterogeneousTensorPayload {
     pub role: TensorRole,
     pub dtype: u32,
     /// Geometria de uma única fatia de expert, sem a dimensão do banco.
@@ -476,7 +476,7 @@ impl HeterogeneousMoeSource {
     }
 
     #[cfg(feature = "cuda")]
-    pub(crate) fn load_expert_tensors(
+    pub fn load_expert_tensors(
         &self,
         layer: u32,
         expert: u32,

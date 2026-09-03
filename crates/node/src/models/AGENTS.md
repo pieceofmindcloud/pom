@@ -1,5 +1,10 @@
 # `crates/node/src/models/`
 
+> **Mudança de crate:** `gguf.rs`, `multipart.rs` e `kv_budget.rs` saíram para
+> `crates/llama-engine` (o lado FFI precisa deles). `node` os re-exporta em
+> `main.rs`; `crate::gguf::…` etc. seguem valendo. `splitter.rs` ficou aqui e
+> usa `crate::gguf` normalmente (nos testes, `llama_engine::llama_cpp_sys_2`).
+
 Modelos, leitura de GGUF, planejamento e arquivos de fatias. O módulo é usado
 por `main.rs` e pelos handlers de catálogo, fatiamento, implantação e
 transferência.

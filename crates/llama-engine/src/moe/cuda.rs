@@ -291,7 +291,7 @@ impl std::error::Error for CudaMoeError {}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) struct CudaHeterogeneousTensor {
+pub struct CudaHeterogeneousTensor {
     pub data: *const u8,
     pub bytes: usize,
     pub rows: usize,
@@ -334,7 +334,7 @@ impl Default for CudaHeterogeneousTensor {
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub(crate) struct CudaHeterogeneousExpert {
+pub struct CudaHeterogeneousExpert {
     pub gate_up: CudaHeterogeneousTensor,
     pub gate: CudaHeterogeneousTensor,
     pub up: CudaHeterogeneousTensor,

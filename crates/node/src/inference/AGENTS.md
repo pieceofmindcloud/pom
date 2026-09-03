@@ -1,5 +1,14 @@
 # inference/ - servidor de inferência, wire format e supervisão
 
+> **Mudança de crate:** `llm.rs`, `mtp.rs` (+ `llama_mtp_shim.cpp`),
+> `moe/`, `collective.rs`, `device_placement.rs` e `wire.rs` saíram para
+> `crates/llama-engine` (ver o `AGENTS.md` de lá). `node` os re-exporta em
+> `main.rs`, então `crate::llm::…`, `crate::wire::…` etc. seguem valendo.
+> `tp.rs` **ficou** aqui (a coletiva fala com o primary por HTTP/túnel); o
+> `llm` alcança o estado dela por `llama_engine::tp_probe`, instalado no
+> arranque por `tp::install_probe`. As descrições abaixo dos módulos movidos
+> continuam válidas como referência do que cada um faz.
+
 A porta de inferência (8181) e tudo que roda nela: o axum server
 (`infer_server.rs`), o wrapper FFI do llama.cpp (`llm.rs`), a execução do
 prefill/step nos modos - hub, anel borbulhado (`relay/v1-chain`) e

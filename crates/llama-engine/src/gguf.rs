@@ -88,12 +88,12 @@ pub struct GgufInfo {
     pub tp_stamp: Option<TpStamp>,
     /// Contagem de tensores declarada no cabeçalho. O catálogo usa isto para
     /// descrever uma parte sem abrir a fonte completa.
-    pub(crate) tensor_count: u64,
+    pub tensor_count: u64,
     /// Campos `split.*` do cabeçalho, quando presentes. Eles são suficientes
     /// para identificar a coleção multipart sem ler a tabela de tensores.
-    pub(crate) split_count: Option<u64>,
-    pub(crate) split_no: Option<u64>,
-    pub(crate) split_tensors_count: Option<u64>,
+    pub split_count: Option<u64>,
+    pub split_no: Option<u64>,
+    pub split_tensors_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +173,7 @@ impl GgufInfo {
     /// GGUF pode declarar uma geometria escalar ou um array por camada. O
     /// planejador nunca reduz um array ao primeiro valor: quando a forma
     /// varia, cada camada recebe a sua própria conta.
-    pub(crate) fn kv_geometry_for_range(
+    pub fn kv_geometry_for_range(
         &self,
         start_layer: u32,
         end_layer: u32,
@@ -268,7 +268,7 @@ struct LayoutKv {
 /// How llama.cpp interprets a metadata count when it chooses tensors or
 /// graph branches by the local zero-based layer index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LayerCountSemantics {
+pub enum LayerCountSemantics {
     FromStart,
     FromEnd,
 }
@@ -520,21 +520,21 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             // Chaves nossas: o prefixo vem da marca (`brand.json`), não de um
             // literal, para renomear o produto não deixar metade do leitor
             // procurando o nome velho.
-            k if k == crate::brand::gguf_key("original_block_count") => {
+            k if k == brand::gguf_key("original_block_count") => {
                 info.original_block_count = r.value_as_u32(vtype)?
             }
-            k if k == crate::brand::gguf_key("tp_format") => tp_format = r.value_as_u32(vtype)?,
-            k if k == crate::brand::gguf_key("tp_size") => tp_size = r.value_as_u32(vtype)?,
-            k if k == crate::brand::gguf_key("tp_rank") => tp_rank = r.value_as_u32(vtype)?,
+            k if k == brand::gguf_key("tp_format") => tp_format = r.value_as_u32(vtype)?,
+            k if k == brand::gguf_key("tp_size") => tp_size = r.value_as_u32(vtype)?,
+            k if k == brand::gguf_key("tp_rank") => tp_rank = r.value_as_u32(vtype)?,
             "split.count" => info.split_count = r.value_as_u32(vtype)?.map(u64::from),
             "split.no" => info.split_no = r.value_as_u32(vtype)?.map(u64::from),
             "split.tensors.count" => {
                 info.split_tensors_count = r.value_as_u32(vtype)?.map(u64::from)
             }
-            k if k == crate::brand::gguf_key("start_layer") => {
+            k if k == brand::gguf_key("start_layer") => {
                 start_layer = r.value_as_u32(vtype)?
             }
-            k if k == crate::brand::gguf_key("end_layer") => end_layer = r.value_as_u32(vtype)?,
+            k if k == brand::gguf_key("end_layer") => end_layer = r.value_as_u32(vtype)?,
             // `<arch>.block_count` / `<arch>.embedding_length` — the arch prefix
             // varies per model, so match on the suffix.
             k if k.ends_with(".block_count") => info.block_count = r.value_as_u32(vtype)?,
@@ -585,7 +585,7 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
 /// This deliberately skips dimensions, dtypes, offsets, and tensor data. The
 /// deployment catalog must not run the full layout accounting pass for every
 /// model just to answer whether a `nextn` tensor exists.
-pub(crate) fn has_nextn_tensors(path: &Path) -> Result<bool> {
+pub fn has_nextn_tensors(path: &Path) -> Result<bool> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut r = Reader {
         inner: BufReader::with_capacity(1 << 16, file),
@@ -721,11 +721,11 @@ pub struct GgufLayout {
     /// Metadata and tensor table needed to price the exact serialized slice.
     /// It is populated by `read_layout`; hand-built layouts in unit tests use
     /// the legacy payload-only fallback.
-    pub(crate) serialized: Option<SerializedLayout>,
+    pub serialized: Option<SerializedLayout>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SerializedLayout {
+pub struct SerializedLayout {
     architecture: String,
     hidden_dim: u32,
     original_block_count: u32,
@@ -896,7 +896,7 @@ impl GgufLayout {
 /// Os nomes vêm de `models/deepseek4.cpp`, onde todos são criados com flags
 /// obrigatórias. Em particular, os tensores HC são uma transformação
 /// arquitetural antes de `output_norm`, não uma projeção de saída opcional.
-pub(crate) fn required_output_tensors(architecture: &str) -> &'static [&'static str] {
+pub fn required_output_tensors(architecture: &str) -> &'static [&'static str] {
     match architecture {
         "deepseek4" => &[
             "token_embd.weight",
@@ -910,7 +910,7 @@ pub(crate) fn required_output_tensors(architecture: &str) -> &'static [&'static 
     }
 }
 
-pub(crate) fn is_output_tensor(architecture: &str, name: &str) -> bool {
+pub fn is_output_tensor(architecture: &str, name: &str) -> bool {
     matches!(
         name,
         "output_norm.weight" | "output_norm.bias" | "output.weight"
@@ -922,7 +922,7 @@ pub(crate) fn is_output_tensor(architecture: &str, name: &str) -> bool {
 /// Real required tensors copied into every non-final slice. `token_embd` is
 /// selected by the common embedding rule, while `output_norm` keeps the
 /// established synthetic identity used by trunk slices.
-pub(crate) fn is_required_non_final_tensor(architecture: &str, name: &str) -> bool {
+pub fn is_required_non_final_tensor(architecture: &str, name: &str) -> bool {
     name != "token_embd.weight"
         && name != "output_norm.weight"
         && required_output_tensors(architecture)
@@ -931,7 +931,7 @@ pub(crate) fn is_required_non_final_tensor(architecture: &str, name: &str) -> bo
 }
 
 /// Verifica o contrato exato do loader para uma fatia candidata.
-pub(crate) fn validate_slice_tensors(
+pub fn validate_slice_tensors(
     architecture: &str,
     tensor_names: &HashSet<&str>,
     is_last: bool,
@@ -1036,12 +1036,12 @@ impl SerializedLayout {
 
     fn kv_bytes(&self, start: u32, end: u32, is_last: bool) -> u64 {
         let slice_layers = end.saturating_sub(start).saturating_add(1);
-        let pom_prefix = format!("{}.", crate::brand::slug());
+        let pom_prefix = format!("{}.", brand::slug());
         let mut bytes = 0u64;
         let mut had_recurrent_key = false;
 
         for entry in &self.kv {
-            if entry.key == crate::brand::gguf_key("original_block_count")
+            if entry.key == brand::gguf_key("original_block_count")
                 || entry.key.starts_with(&pom_prefix)
             {
                 continue;
@@ -1093,9 +1093,9 @@ impl SerializedLayout {
                 slice_layers,
             );
         }
-        bytes += Self::encoded_u32_size(&crate::brand::gguf_key("original_block_count"));
-        bytes += Self::encoded_u32_size(&crate::brand::gguf_key("start_layer"));
-        bytes += Self::encoded_u32_size(&crate::brand::gguf_key("end_layer"));
+        bytes += Self::encoded_u32_size(&brand::gguf_key("original_block_count"));
+        bytes += Self::encoded_u32_size(&brand::gguf_key("start_layer"));
+        bytes += Self::encoded_u32_size(&brand::gguf_key("end_layer"));
         bytes
     }
 
@@ -1344,7 +1344,7 @@ fn is_nextn_predict_layers_key(key: &str) -> bool {
     )
 }
 
-pub(crate) fn layer_count_semantics(key: &str) -> Option<LayerCountSemantics> {
+pub fn layer_count_semantics(key: &str) -> Option<LayerCountSemantics> {
     if is_metadata_key(key, "nextn_predict_layers") {
         Some(LayerCountSemantics::FromEnd)
     } else if is_metadata_key(key, "leading_dense_block_count")

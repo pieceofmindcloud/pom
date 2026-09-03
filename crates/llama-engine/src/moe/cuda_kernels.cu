@@ -17,7 +17,10 @@
 // o executor e os kernels abaixo continuam sendo específicos deste motor.
 #define GGML_COMMON_DECL_CUDA
 #define GGML_COMMON_IMPL_CUDA
-#include "../../../../../vendor/llama-cpp-sys-2/llama.cpp/ggml/src/ggml-common.h"
+// Caminho relativo a este arquivo: crates/llama-engine/src/moe/ -> raiz do
+// repo (4 níveis) -> o symlink vendado do fork do llama.cpp. Eram 5 níveis
+// quando o arquivo vivia em crates/node/src/inference/moe/.
+#include "../../../../vendor/llama-cpp-sys-2/llama.cpp/ggml/src/ggml-common.h"
 
 namespace {
 

@@ -1,0 +1,53 @@
+# AGENTS.md - crates/llama-engine
+
+## O que é
+
+Todo o código Rust que fala com `llama-cpp-sys-2`, tirado de `crates/node` para
+um crate próprio: editar backend/rede/roteamento de `node` não recompila nem
+re-typecheck estes módulos (`llm.rs` sozinho tem 250 KB). `node` depende deste
+crate e **re-exporta** os módulos em `main.rs`, então `crate::llm::…`,
+`crate::wire::…`, `crate::gguf::…` etc. continuam resolvendo em `node` sem tocar
+os ~40 arquivos que os usam.
+
+O build nativo (o fork do `/llama.cpp`, `cmake`, as features
+`cuda`/`metal`/`vulkan`) é o mesmo de antes, agora declarado aqui. Ver
+`docs/subsystems/build-execucao.md`.
+
+## Módulos (`src/`)
+
+- `llm.rs` - wrapper FFI do llama.cpp: modelo, contexto, batch, sampler, cache
+  KV, captura do residual, callback de eval. É a única superfície `unsafe` do
+  produto. Alcança o estado da coletiva TP por `tp_probe` (ver abaixo).
+- `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
+  a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
+- `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
+  `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`.
+- `collective.rs` - `reduce_sum` + `ReduceBarrier` do tensor parallelism
+  (caminho C). O transporte HTTP e a coordenação com o primary ficam em
+  `crates/node/src/inference/tp.rs`, que **não** migrou.
+- `tp_probe.rs` - ponte fina: `llm.rs` consulta o contador de reduces e o
+  motivo de falha da coletiva de dentro do decode; `node` instala as funções
+  reais (`tp::install_probe`) no arranque. Sem instalação, `is_active()` é
+  `false` (caminho não-TP).
+- `wire.rs` - formato binário do estado oculto entre peers (f16/f8, zstd).
+- `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo modelos
+  multipart. `kv_budget.rs` - orçamento de bytes do cache KV por geometria.
+- `kv_cache.rs` - `KvCacheType` (era `node/src/utils/config.rs`; `Config` de
+  `node` só o referencia como campo).
+- `sysmon.rs` - monitor de CPU/RAM/disco/GPU. A raiz do projeto que ele mede é
+  injetada por `node` (`sysmon::set_disk_root`).
+- `lib.rs` - re-exporta `KvCacheType`, `DEFAULT_FIT_MEMORY_MARGIN_MB` e
+  `llama_cpp_sys_2` (para `node` alcançar a FFI crua sem redeclarar a dep).
+
+## O que ficou em `crates/node`
+
+`inference/tp.rs` (a coletiva é rede), `inference/relay.rs` (`ByteTransport`
+vive nele), `inference/executor.rs`, `models/splitter.rs` (usa `gguf` e, nos
+testes, `llama_engine::llama_cpp_sys_2`), e todo o resto do pipeline
+(`infer_server.rs`, `prefill.rs`, `direct.rs`, `runtime.rs`, ...).
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.

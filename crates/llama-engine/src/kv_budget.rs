@@ -1,14 +1,14 @@
-use crate::config::KvCacheType;
+use crate::KvCacheType;
 use anyhow::{bail, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct KvLayerGeometry {
+pub struct KvLayerGeometry {
     pub kv_heads: u64,
     pub key_head_dim: u64,
     pub value_head_dim: u64,
 }
 
-pub(crate) fn kv_bytes_for_layers(
+pub fn kv_bytes_for_layers(
     context_tokens: u64,
     max_sessions: u64,
     layers: &[KvLayerGeometry],
@@ -76,7 +76,7 @@ fn row_bytes(kind: KvCacheType, elements: u64) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::KvCacheType;
+    use crate::KvCacheType;
 
     #[test]
     fn calcula_kv_com_tipos_assimetricos_e_sessoes() {

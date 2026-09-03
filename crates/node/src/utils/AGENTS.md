@@ -1,5 +1,14 @@
 # utils/ - apoio sem estado de rede
 
+> **Mudança de crate:** `brand.rs` virou o crate `crates/brand`; `sysmon.rs`
+> foi para `crates/llama-engine` (usa a FFI do ggml para listar GPUs). `node`
+> re-exporta ambos em `main.rs` (`use ::brand as brand;`,
+> `pub use llama_engine::sysmon`), então `crate::brand::…` e `crate::sysmon::…`
+> seguem valendo. `sysmon` recebe a raiz do projeto por `sysmon::set_disk_root`
+> no arranque, em vez de chamar `config::project_root()`.
+> `KvCacheType` saiu de `config.rs` para `llama_engine::kv_cache` e é
+> re-exportado por `crate::config`.
+
 Caminhos de configuração, a TUI de linha de comando, o respawn do processo e o
 monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 (no caso de `config` e `sysmon`) por praticamente todo o resto do crate.

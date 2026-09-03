@@ -853,7 +853,7 @@ fn silu(value: f32) -> f32 {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::super::admission::MemoryAccount;
     use super::super::cache::{ExpertCache, FreeMemoryProbe};
     use super::*;
@@ -913,7 +913,7 @@ pub(crate) mod tests {
         output.extend_from_slice(&offset.to_le_bytes());
     }
 
-    pub(crate) fn write_low_bit_source(path: &Path, format: LowBitFormat, split: bool) {
+    pub fn write_low_bit_source(path: &Path, format: LowBitFormat, split: bool) {
         let hidden = 256usize;
         let intermediate = 256usize;
         let experts = 2usize;

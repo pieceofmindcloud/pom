@@ -209,7 +209,8 @@ pub(crate) fn validate_mtp_architectures(architectures: &[String]) -> Result<(),
 }
 
 fn render_generated_file(architectures: &[String]) -> String {
-    let mut output = String::from("// Gerado por crates/node/build/mtp_arch.rs; não edite.\n");
+    let mut output =
+        String::from("// Gerado por crates/llama-engine/build/mtp_arch.rs; não edite.\n");
     output.push_str("pub(crate) const GENERATED_MTP_GRAPH_ARCHITECTURES: &[&str] = &[\n");
     for architecture in architectures {
         writeln!(output, "    {architecture:?},").expect("String não falha ao escrever");

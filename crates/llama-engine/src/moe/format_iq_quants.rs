@@ -1086,7 +1086,7 @@ fn f16_to_f32(bits: u16) -> f32 {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
 
     #[test]
@@ -1172,7 +1172,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn write_iq_source(
+    pub fn write_iq_source(
         path: &std::path::Path,
         dtype: u32,
         format: IqQuantFormat,

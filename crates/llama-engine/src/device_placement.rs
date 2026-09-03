@@ -5,7 +5,7 @@ const MIN_CONFIDENT_SPEED_RATIO: f64 = 1.25;
 ///
 /// A missing/non-finite/non-positive score, or a difference small enough to be
 /// benchmark noise, returns `None` so callers keep llama.cpp's current order.
-pub(crate) fn confident_slow_to_fast_order(scores: &[Option<f64>]) -> Option<Vec<usize>> {
+pub fn confident_slow_to_fast_order(scores: &[Option<f64>]) -> Option<Vec<usize>> {
     if scores.len() <= 1 {
         return None;
     }
@@ -42,7 +42,7 @@ pub(crate) fn confident_slow_to_fast_order(scores: &[Option<f64>]) -> Option<Vec
 /// backend, but a mixed backend graph has backend-specific split and copy
 /// paths. Keep llama.cpp's default order when backend identity is incomplete or
 /// heterogeneous, so a benchmark cannot change that graph topology.
-pub(crate) fn confident_slow_to_fast_order_for_backends(
+pub fn confident_slow_to_fast_order_for_backends(
     scores: &[Option<f64>],
     backend_names: &[Option<&str>],
 ) -> Option<Vec<usize>> {

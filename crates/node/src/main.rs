@@ -7,14 +7,17 @@ pub mod addrs;
 mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
-#[path = "utils/brand.rs"]
-mod brand;
+// `brand` e o cluster llama.cpp saíram para crates próprios (`crates/brand` e
+// `crates/llama-engine`) para que editar backend/rede/roteamento não os
+// reconstrua. Re-exportados abaixo para que `crate::brand::…`, `crate::llm::…`
+// etc. continuem resolvendo em todo o `node` sem tocar os ~40 arquivos que os
+// usam. Ver `docs/subsystems/build-execucao.md`.
+use ::brand as brand;
+pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "backend/capabilities.rs"]
 mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
-#[path = "inference/collective.rs"]
-mod collective;
 #[path = "utils/config.rs"]
 mod config;
 #[cfg(test)]
@@ -28,8 +31,6 @@ mod db;
 mod deploy;
 #[path = "models/deployment.rs"]
 mod deployment;
-#[path = "inference/device_placement.rs"]
-mod device_placement;
 #[path = "backend/devupdate.rs"]
 mod devupdate;
 #[path = "inference/direct.rs"]
@@ -44,8 +45,6 @@ mod display;
 mod executor;
 #[path = "backend/gateway.rs"]
 mod gateway;
-#[path = "models/gguf.rs"]
-mod gguf;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
@@ -54,12 +53,8 @@ mod identity;
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;
-#[path = "models/kv_budget.rs"]
-mod kv_budget;
 #[path = "models/lastslice.rs"]
 mod lastslice;
-#[path = "inference/llm.rs"]
-mod llm;
 #[path = "models/memory.rs"]
 mod memory;
 #[path = "backend/messages.rs"]
@@ -70,12 +65,6 @@ mod model;
 mod model_provider;
 #[path = "backend/model_provider.rs"]
 mod model_provider_backend;
-#[path = "inference/moe/mod.rs"]
-pub(crate) mod moe;
-#[path = "inference/mtp.rs"]
-mod mtp;
-#[path = "models/multipart.rs"]
-pub(crate) mod multipart;
 #[path = "network/network.rs"]
 mod network;
 #[path = "models/ollama.rs"]
@@ -124,8 +113,6 @@ mod spec_lab;
 mod splitter;
 #[path = "models/storage.rs"]
 mod storage;
-#[path = "utils/sysmon.rs"]
-mod sysmon;
 #[path = "utils/thermal.rs"]
 mod thermal;
 #[path = "network/tls.rs"]
@@ -142,8 +129,6 @@ mod transfer;
 mod webapp;
 #[path = "backend/webui.rs"]
 mod webui;
-#[path = "inference/wire.rs"]
-mod wire;
 
 use anyhow::Result;
 use clap::Parser;
@@ -358,6 +343,12 @@ async fn main() -> Result<()> {
         )
         .with_target(false)
         .init();
+
+    // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
+    // que o `sysmon` mede e as funções de estado da coletiva TP que o `llm`
+    // consulta de dentro do decode (`tp.rs` fica em `node`, ver `tp_probe`).
+    sysmon::set_disk_root(config::project_root());
+    tp::install_probe();
 
     let args = Args::parse();
 

@@ -321,6 +321,20 @@ pub fn is_active() -> bool {
     tp_state().is_some()
 }
 
+/// Liga a ponte que o `llama-engine` usa para consultar este módulo de dentro
+/// do decode (`llm.rs` -> `llama_engine::tp_probe`). Chamado uma vez no arranque
+/// do `node`; `tp.rs` fica em `node` porque a coletiva fala com o primary por
+/// HTTP/túnel libp2p.
+pub fn install_probe() {
+    llama_engine::tp_probe::install(llama_engine::tp_probe::TpProbe {
+        is_active,
+        reduce_count,
+        reduces_in_current_decode,
+        take_failure,
+        set_expected_reduces,
+    });
+}
+
 /// Quantos reduces este processo já executou.
 ///
 /// O decode compara antes e depois: com a coletiva ligada, um decode que não
@@ -439,14 +453,14 @@ pub fn register_tp_reduce_with_urls(
         *slot = Some(state);
     }
     unsafe {
-        llama_cpp_sys_2::llama_set_tp_reduce_callback(Some(tp_reduce_cb), std::ptr::null_mut());
+        llama_engine::llama_cpp_sys_2::llama_set_tp_reduce_callback(Some(tp_reduce_cb), std::ptr::null_mut());
     }
 }
 
 /// Desliga a coletiva: o callback vira None e o fork deixa de inserir o op.
 pub fn unregister_tp_reduce() {
     unsafe {
-        llama_cpp_sys_2::llama_set_tp_reduce_callback(None, std::ptr::null_mut());
+        llama_engine::llama_cpp_sys_2::llama_set_tp_reduce_callback(None, std::ptr::null_mut());
     }
     // Limpar o estado é metade do desligamento: sem isto `is_active()` continua
     // verdadeiro e o nó se comporta como membro de um grupo que não existe mais.

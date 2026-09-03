@@ -19,7 +19,7 @@
 
 use serde::Serialize;
 use std::ffi::CStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -224,10 +224,23 @@ impl Default for DiskStat {
 
 // ── Disk ─────────────────────────────────────────────────────────────────────
 
+/// Raiz do projeto onde as fatias moram, injetada por `crates/node` no arranque
+/// (`sysmon::set_disk_root(config::project_root())`). `sysmon` não conhece o
+/// layout do projeto; sem valor, mede o diretório de trabalho.
+static DISK_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Fixa a raiz que `sample_disk()` mede. Uma segunda chamada é ignorada.
+pub fn set_disk_root(root: PathBuf) {
+    let _ = DISK_ROOT.set(root);
+}
+
 pub fn sample_disk() -> DiskStat {
     // The slices live under the project root, which is not necessarily the
-    // working directory — see `config::project_root`.
-    sample_disk_at(&crate::config::project_root())
+    // working directory.
+    match DISK_ROOT.get() {
+        Some(root) => sample_disk_at(root),
+        None => sample_disk_at(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    }
 }
 
 /// Measure the volume that contains `path`, including when it is a configured
@@ -829,7 +842,7 @@ fn backend_gpu_devices() -> Vec<BackendGpu> {
 
 static BACKEND_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn mark_backend_initialized() {
+pub fn mark_backend_initialized() {
     BACKEND_INITIALIZED.store(true, Ordering::Release);
 }
 

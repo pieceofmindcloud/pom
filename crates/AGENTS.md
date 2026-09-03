@@ -4,8 +4,17 @@
 
 Workspace root of the Rust crates. Defined in `/Cargo.toml` (workspace members,
 shared `[workspace.package]` metadata, shared `[workspace.dependencies]` for
-`anyhow`, `serde`, `serde_json`). Four members, one binary:
+`anyhow`, `serde`, `serde_json`). Six members, one binary:
 
+- `brand` - the product identity from `/brand.json`, embedded with `include_str!`
+  (was `node/src/utils/brand.rs`). Consumed by `node` and `llama-engine`.
+- `llama-engine` - **all** the code that talks to `llama-cpp-sys-2`: the FFI
+  wrapper (`llm`), MTP (`mtp`), the in-house MoE executor (`moe`), the TP reduce
+  barrier (`collective`), GGUF header parsing (`gguf`/`multipart`), KV budget
+  (`kv_budget`), and system/GPU monitoring (`sysmon`). Extracted from `node` so
+  editing backend/network/routing code does not rebuild it. Owns the C/CUDA
+  shims and the `mtp_arch` build step. Features `cuda`/`metal`/`vulkan` forward
+  to `llama-cpp-sys-2`.
 - `types` - infrastructure-free shared domain types (currently empty scaffolding)
 - `routing-contract` - versioned data contract for routing providers
 - `routing-base` - deterministic open-source routing provider
@@ -16,11 +25,21 @@ builds and tests the node crate. `resolver = "2"`.
 
 ## Dependency graph (verified by reading Cargo.tomls + grepping `use`)
 
-- `node` -> `routing-contract` (path dep, `crates/node/Cargo.toml:49`). Uses
-  `routing_contract` types in `src/network/network.rs:4` and
-  `src/routing/pipeline.rs:8`.
+- `node` -> `routing-contract`, `llama-engine`, `brand` (all path deps in
+  `crates/node/Cargo.toml`).
+- `llama-engine` -> `brand`, `llama-cpp-sys-2` (patched to `vendor/`).
 - `routing-base` -> `routing-contract` (`crates/routing-base/Cargo.toml:7`).
 - `types` -> no dependencies, consumed by nothing.
+
+`node/src/main.rs` re-exports the `llama-engine` modules (`pub use
+llama_engine::{llm, mtp, moe, gguf, wire, sysmon, ...}`) and aliases `brand`, so
+`crate::llm::…` / `crate::brand::…` keep resolving across `node` unchanged. Three
+small items moved with the engine and are re-exported by their old home:
+`KvCacheType` (from `config.rs`), `DEFAULT_FIT_MEMORY_MARGIN_MB` (from
+`runtime.rs`). `inference/tp.rs` stays in `node` (the collective is networked);
+`llm` reaches its decode-time state through `llama_engine::tp_probe`, which
+`node` fills in at startup (`tp::install_probe`). `sysmon` gets its disk root
+the same way (`sysmon::set_disk_root`).
 
 Note: **node does NOT depend on types or routing-base.** The `crate::config`
 references inside node (`main.rs`, `backend/*`, `network/identity.rs`, etc.) are its

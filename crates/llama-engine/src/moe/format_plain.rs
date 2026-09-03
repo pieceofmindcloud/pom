@@ -1,8 +1,9 @@
-//! Executor CPU dos blocos clássicos Q4_1, Q5_0, Q5_1 e Q8_0.
+//! Executor CPU para experts escalares F32, F16 e BF16.
 //!
-//! Os layouts são os definidos em `ggml-common.h` e as fórmulas de
-//! dequantização seguem `dequantize_row_q*_ref` do ggml. O parser de experts
-//! permanece separado do decoder para que um dtype nunca seja lido como outro.
+//! Esses formatos não têm blocos de quantização: cada expert é um banco de
+//! escalares little-endian. A geometria GGUF ainda é validada na fronteira e
+//! o payload cacheado usa o mesmo cabeçalho de comprimentos dos decoders
+//! quantizados, para que um expert de outra forma não seja reinterpretado.
 
 use super::cache::{CacheError, ExpertCache, ExpertKey};
 use super::format_q4_0::{parse_tensor_table, Q4LoadError, TensorSpec};
@@ -12,91 +13,100 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-const BLOCK_ELEMENTS: usize = 32;
 const PAYLOAD_HEADER_BYTES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegacyQuantFormat {
-    Q4_1,
-    Q5_0,
-    Q5_1,
-    Q8_0,
+pub enum PlainFormat {
+    F32,
+    F16,
+    Bf16,
 }
 
-impl LegacyQuantFormat {
+impl PlainFormat {
     pub fn from_dtype(dtype: u32) -> Result<Self, Q4LoadError> {
         match dtype {
-            3 => Ok(Self::Q4_1),
-            6 => Ok(Self::Q5_0),
-            7 => Ok(Self::Q5_1),
-            8 => Ok(Self::Q8_0),
+            0 => Ok(Self::F32),
+            1 => Ok(Self::F16),
+            30 => Ok(Self::Bf16),
             other => Err(Q4LoadError::UnsupportedTensorType(other)),
         }
     }
 
     pub fn dtype(self) -> u32 {
         match self {
-            Self::Q4_1 => 3,
-            Self::Q5_0 => 6,
-            Self::Q5_1 => 7,
-            Self::Q8_0 => 8,
+            Self::F32 => 0,
+            Self::F16 => 1,
+            Self::Bf16 => 30,
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Q4_1 => "q4_1",
-            Self::Q5_0 => "q5_0",
-            Self::Q5_1 => "q5_1",
-            Self::Q8_0 => "q8_0",
+            Self::F32 => "f32",
+            Self::F16 => "f16",
+            Self::Bf16 => "bf16",
         }
     }
 
-    fn block_bytes(self) -> usize {
+    fn element_bytes(self) -> usize {
         match self {
-            Self::Q4_1 => 20,
-            Self::Q5_0 => 22,
-            Self::Q5_1 => 24,
-            Self::Q8_0 => 34,
+            Self::F32 => 4,
+            Self::F16 | Self::Bf16 => 2,
         }
     }
 
-    pub fn row_bytes(self, columns: usize) -> Result<usize, LegacyQuantError> {
-        row_bytes(self, columns)
+    pub fn row_bytes(self, columns: usize) -> Result<usize, PlainError> {
+        columns
+            .checked_mul(self.element_bytes())
+            .ok_or(PlainError::Geometry("overflow no tamanho da linha"))
+    }
+
+    pub fn decode_row(self, row: &[u8], columns: usize) -> Result<Vec<f32>, PlainError> {
+        let expected = self.row_bytes(columns)?;
+        if row.len() != expected {
+            return Err(PlainError::PayloadLength {
+                expected,
+                actual: row.len(),
+            });
+        }
+        Ok(row
+            .chunks_exact(self.element_bytes())
+            .map(|encoded| decode_scalar(encoded, self))
+            .collect())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LegacyQuantError {
+pub enum PlainError {
     Geometry(&'static str),
     Payload(&'static str),
     PayloadLength { expected: usize, actual: usize },
 }
 
-impl fmt::Display for LegacyQuantError {
+impl fmt::Display for PlainError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Geometry(reason) => write!(formatter, "geometria legacy inválida: {reason}"),
-            Self::Payload(reason) => write!(formatter, "payload legacy inválido: {reason}"),
+            Self::Geometry(reason) => write!(formatter, "geometria escalar inválida: {reason}"),
+            Self::Payload(reason) => write!(formatter, "payload escalar inválido: {reason}"),
             Self::PayloadLength { expected, actual } => write!(
                 formatter,
-                "payload legacy tem {actual} bytes, mas a geometria exige {expected}"
+                "payload escalar tem {actual} bytes, mas a geometria exige {expected}"
             ),
         }
     }
 }
 
-impl std::error::Error for LegacyQuantError {}
+impl std::error::Error for PlainError {}
 
 #[derive(Debug)]
-pub enum LegacyQuantExecuteError {
+pub enum PlainExecuteError {
     Cache(CacheError),
-    Format(LegacyQuantError),
+    Format(PlainError),
     Source(Q4LoadError),
     HiddenWidth { expected: usize, actual: usize },
 }
 
-impl fmt::Display for LegacyQuantExecuteError {
+impl fmt::Display for PlainExecuteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cache(error) => error.fmt(formatter),
@@ -104,27 +114,27 @@ impl fmt::Display for LegacyQuantExecuteError {
             Self::Source(error) => error.fmt(formatter),
             Self::HiddenWidth { expected, actual } => write!(
                 formatter,
-                "hidden legacy tem {actual} elementos, esperado {expected}"
+                "hidden escalar tem {actual} elementos, esperado {expected}"
             ),
         }
     }
 }
 
-impl std::error::Error for LegacyQuantExecuteError {}
+impl std::error::Error for PlainExecuteError {}
 
-impl From<CacheError> for LegacyQuantExecuteError {
+impl From<CacheError> for PlainExecuteError {
     fn from(error: CacheError) -> Self {
         Self::Cache(error)
     }
 }
 
-impl From<LegacyQuantError> for LegacyQuantExecuteError {
-    fn from(error: LegacyQuantError) -> Self {
+impl From<PlainError> for PlainExecuteError {
+    fn from(error: PlainError) -> Self {
         Self::Format(error)
     }
 }
 
-impl From<Q4LoadError> for LegacyQuantExecuteError {
+impl From<Q4LoadError> for PlainExecuteError {
     fn from(error: Q4LoadError) -> Self {
         Self::Source(error)
     }
@@ -138,19 +148,19 @@ enum GateUpTensors {
     },
 }
 
-pub struct LegacyQuantSource {
+pub struct PlainSource {
     mmap: Mmap,
     data_start: usize,
     experts: u32,
     hidden: usize,
     intermediate: usize,
-    format: LegacyQuantFormat,
+    format: PlainFormat,
     gate_up: GateUpTensors,
     down: Vec<TensorSpec>,
     router: Vec<TensorSpec>,
 }
 
-impl LegacyQuantSource {
+impl PlainSource {
     pub fn open_infer(path: impl AsRef<Path>, experts: u32) -> Result<Self, Q4LoadError> {
         if experts == 0 {
             return Err(Q4LoadError::InvalidTensor("contagem de experts zero"));
@@ -160,7 +170,7 @@ impl LegacyQuantSource {
         let mmap =
             unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
         let (data_start, tensors) = parse_tensor_table(&mmap)?;
-        let format = detect_format(&tensors)?;
+        let format = detect_plain_format(&tensors)?;
         let down = tensors_with_suffix(&tensors, "ffn_down_exps.weight");
         if down.is_empty() {
             return Err(Q4LoadError::MissingTensor("ffn_down_exps.weight".into()));
@@ -178,14 +188,14 @@ impl LegacyQuantSource {
             validate_dtype(first, format)?;
             if first.dims.len() != 3 || first.dims[2] != u64::from(experts) {
                 return Err(Q4LoadError::InvalidTensor(
-                    "gate_up legacy precisa ser rank 3 com o número de experts",
+                    "gate_up escalar precisa ser rank 3 com o número de experts",
                 ));
             }
             let hidden = dimension(first, 0)?;
             let two_intermediate = dimension(first, 1)?;
             if hidden == 0 || two_intermediate == 0 || !two_intermediate.is_multiple_of(2) {
                 return Err(Q4LoadError::InvalidTensor(
-                    "geometria gate_up legacy inválida",
+                    "geometria gate_up escalar inválida",
                 ));
             }
             let intermediate = two_intermediate / 2;
@@ -203,13 +213,13 @@ impl LegacyQuantSource {
             validate_all_same_dtype(&up, format)?;
             if first.dims.len() != 3 || first.dims[2] != u64::from(experts) {
                 return Err(Q4LoadError::InvalidTensor(
-                    "gate legacy precisa ser rank 3 com o número de experts",
+                    "gate escalar precisa ser rank 3 com o número de experts",
                 ));
             }
             let intermediate = dimension(first, 0)?;
             let hidden = dimension(first, 1)?;
             if intermediate == 0 || hidden == 0 {
-                return Err(Q4LoadError::InvalidTensor("geometria gate legacy vazia"));
+                return Err(Q4LoadError::InvalidTensor("geometria gate escalar vazia"));
             }
             for tensor in gate.iter().chain(up.iter()) {
                 if tensor.dims != first.dims {
@@ -224,16 +234,14 @@ impl LegacyQuantSource {
         for tensor in &down {
             validate_matrix_tensor(tensor, experts, intermediate, hidden, format)?;
         }
-        match &gate_up {
-            GateUpTensors::Fused(items) => {
-                for tensor in items {
-                    validate_matrix_tensor(tensor, experts, 2 * intermediate, hidden, format)?;
-                }
-            }
-            GateUpTensors::Split { gate, up } => {
-                for tensor in gate.iter().chain(up) {
-                    validate_matrix_tensor(tensor, experts, intermediate, hidden, format)?;
-                }
+        for tensor in match &gate_up {
+            GateUpTensors::Fused(items) => items,
+            GateUpTensors::Split { gate, .. } => gate,
+        } {
+            if matches!(&gate_up, GateUpTensors::Fused(_)) {
+                validate_matrix_tensor(tensor, experts, 2 * intermediate, hidden, format)?;
+            } else {
+                validate_matrix_tensor(tensor, experts, intermediate, hidden, format)?;
             }
         }
         let layers = layer_count(match &gate_up {
@@ -241,7 +249,7 @@ impl LegacyQuantSource {
             GateUpTensors::Split { gate, .. } => gate,
         });
         if layers == 0 {
-            return Err(Q4LoadError::InvalidTensor("GGUF legacy sem camadas"));
+            return Err(Q4LoadError::InvalidTensor("GGUF escalar sem camadas"));
         }
         Ok(Self {
             mmap,
@@ -256,7 +264,7 @@ impl LegacyQuantSource {
         })
     }
 
-    pub fn format(&self) -> LegacyQuantFormat {
+    pub fn format(&self) -> PlainFormat {
         self.format
     }
 
@@ -286,7 +294,7 @@ impl LegacyQuantSource {
     pub fn router_logits(&self, layer: u32, hidden: &[f32]) -> Result<Vec<f32>, Q4LoadError> {
         if hidden.len() != self.hidden {
             return Err(Q4LoadError::InvalidTensor(
-                "hidden não corresponde à largura do router legacy",
+                "hidden não corresponde à largura do router escalar",
             ));
         }
         let tensor = tensor_for_layer(&self.router, layer, "ffn_gate_inp.weight")?;
@@ -295,24 +303,25 @@ impl LegacyQuantSource {
             || tensor.dims[1] != u64::from(self.experts)
         {
             return Err(Q4LoadError::InvalidTensor(
-                "dimensões do router legacy não correspondem ao modelo",
+                "dimensões do router escalar não correspondem ao modelo",
             ));
         }
-        let router_format = scalar_router_format(tensor.dtype)?;
-        let bytes = router_format.1;
+        let router_format = PlainFormat::from_dtype(tensor.dtype)?;
         let total = self
             .hidden
             .checked_mul(self.experts as usize)
-            .and_then(|count| count.checked_mul(bytes))
+            .and_then(|count| count.checked_mul(router_format.element_bytes()))
             .ok_or(Q4LoadError::InvalidTensor("tamanho do router excede usize"))?;
         let raw = self.tensor_bytes(tensor, total)?;
+        let element_bytes = router_format.element_bytes();
         let mut logits = Vec::with_capacity(self.experts as usize);
         for expert in 0..self.experts as usize {
-            let row = &raw[expert * self.hidden * bytes..(expert + 1) * self.hidden * bytes];
+            let row = &raw
+                [expert * self.hidden * element_bytes..(expert + 1) * self.hidden * element_bytes];
             logits.push(
-                row.chunks_exact(bytes)
+                row.chunks_exact(element_bytes)
                     .zip(hidden)
-                    .map(|(encoded, &input)| decode_router(encoded, router_format.0) * input)
+                    .map(|(encoded, &input)| decode_scalar(encoded, router_format) * input)
                     .sum(),
             );
         }
@@ -326,26 +335,22 @@ impl LegacyQuantSource {
                 count: self.experts,
             });
         }
+        let bytes = self.format.element_bytes();
         let down = tensor_for_layer(&self.down, layer, "ffn_down_exps.weight")?;
         let down_per_expert = self
             .hidden
-            .checked_mul(
-                row_bytes(self.format, self.intermediate)
-                    .map_err(|_| Q4LoadError::InvalidTensor("geometria down legacy"))?,
-            )
-            .ok_or(Q4LoadError::InvalidTensor("overflow no down legacy"))?;
+            .checked_mul(self.intermediate)
+            .and_then(|elements| elements.checked_mul(bytes))
+            .ok_or(Q4LoadError::InvalidTensor("overflow no down escalar"))?;
         let down = self.expert_slice(down, expert, down_per_expert)?.to_vec();
         let gate_up = match &self.gate_up {
             GateUpTensors::Fused(items) => {
                 let tensor = tensor_for_layer(items, layer, "ffn_gate_up_exps.weight")?;
                 let per_expert = 2usize
                     .checked_mul(self.intermediate)
-                    .and_then(|rows| {
-                        row_bytes(self.format, self.hidden)
-                            .ok()
-                            .and_then(|b| rows.checked_mul(b))
-                    })
-                    .ok_or(Q4LoadError::InvalidTensor("overflow no gate_up legacy"))?;
+                    .and_then(|elements| elements.checked_mul(self.hidden))
+                    .and_then(|elements| elements.checked_mul(bytes))
+                    .ok_or(Q4LoadError::InvalidTensor("overflow no gate_up escalar"))?;
                 self.expert_slice(tensor, expert, per_expert)?.to_vec()
             }
             GateUpTensors::Split { gate, up } => {
@@ -353,11 +358,9 @@ impl LegacyQuantSource {
                 let up = tensor_for_layer(up, layer, "ffn_up_exps.weight")?;
                 let per_expert = self
                     .intermediate
-                    .checked_mul(
-                        row_bytes(self.format, self.hidden)
-                            .map_err(|_| Q4LoadError::InvalidTensor("geometria gate legacy"))?,
-                    )
-                    .ok_or(Q4LoadError::InvalidTensor("overflow no gate/up legacy"))?;
+                    .checked_mul(self.hidden)
+                    .and_then(|elements| elements.checked_mul(bytes))
+                    .ok_or(Q4LoadError::InvalidTensor("overflow no gate/up escalar"))?;
                 let gate = self.expert_slice(gate, expert, per_expert)?;
                 let up = self.expert_slice(up, expert, per_expert)?;
                 let mut fused = Vec::with_capacity(gate.len() + up.len());
@@ -378,7 +381,7 @@ impl LegacyQuantSource {
         validate_dtype(tensor, self.format)?;
         let total = bytes_per_expert
             .checked_mul(self.experts as usize)
-            .ok_or(Q4LoadError::InvalidTensor("overflow no tensor legacy"))?;
+            .ok_or(Q4LoadError::InvalidTensor("overflow no tensor escalar"))?;
         let start = usize::try_from(tensor.offset)
             .ok()
             .and_then(|offset| self.data_start.checked_add(offset))
@@ -421,46 +424,48 @@ impl LegacyQuantSource {
     }
 }
 
-pub struct LegacyQuantExpert<'a> {
-    format: LegacyQuantFormat,
+pub struct PlainExpert<'a> {
+    format: PlainFormat,
     hidden: usize,
     intermediate: usize,
     gate_up: &'a [u8],
     down: &'a [u8],
 }
 
-impl<'a> LegacyQuantExpert<'a> {
+impl<'a> PlainExpert<'a> {
     pub fn packed_bytes(
-        format: LegacyQuantFormat,
+        format: PlainFormat,
         hidden: usize,
         intermediate: usize,
-    ) -> Result<usize, LegacyQuantError> {
+    ) -> Result<usize, PlainError> {
+        if hidden == 0 || intermediate == 0 {
+            return Err(PlainError::Geometry("dimensão zero"));
+        }
+        let element_bytes = format.element_bytes();
         let gate_up = 2usize
             .checked_mul(intermediate)
-            .and_then(|rows| {
-                row_bytes(format, hidden)
-                    .ok()
-                    .and_then(|b| rows.checked_mul(b))
-            })
-            .ok_or(LegacyQuantError::Geometry("overflow em gate_up"))?;
+            .and_then(|elements| elements.checked_mul(hidden))
+            .and_then(|elements| elements.checked_mul(element_bytes))
+            .ok_or(PlainError::Geometry("overflow em gate_up"))?;
         let down = hidden
-            .checked_mul(row_bytes(format, intermediate)?)
-            .ok_or(LegacyQuantError::Geometry("overflow em down"))?;
+            .checked_mul(intermediate)
+            .and_then(|elements| elements.checked_mul(element_bytes))
+            .ok_or(PlainError::Geometry("overflow em down"))?;
         PAYLOAD_HEADER_BYTES
             .checked_add(gate_up)
             .and_then(|bytes| bytes.checked_add(down))
-            .ok_or(LegacyQuantError::Geometry("overflow no payload"))
+            .ok_or(PlainError::Geometry("overflow no payload"))
     }
 
     pub fn from_payload(
-        format: LegacyQuantFormat,
+        format: PlainFormat,
         hidden: usize,
         intermediate: usize,
         payload: &'a [u8],
-    ) -> Result<Self, LegacyQuantError> {
+    ) -> Result<Self, PlainError> {
         let expected = Self::packed_bytes(format, hidden, intermediate)?;
         if payload.len() != expected {
-            return Err(LegacyQuantError::PayloadLength {
+            return Err(PlainError::PayloadLength {
                 expected,
                 actual: payload.len(),
             });
@@ -468,23 +473,23 @@ impl<'a> LegacyQuantExpert<'a> {
         let gate_up_len = u32::from_le_bytes(
             payload[..4]
                 .try_into()
-                .map_err(|_| LegacyQuantError::Payload("cabeçalho gate_up ausente"))?,
+                .map_err(|_| PlainError::Payload("cabeçalho gate_up ausente"))?,
         ) as usize;
         let down_len = u32::from_le_bytes(
             payload[4..8]
                 .try_into()
-                .map_err(|_| LegacyQuantError::Payload("cabeçalho down ausente"))?,
+                .map_err(|_| PlainError::Payload("cabeçalho down ausente"))?,
         ) as usize;
-        let expected_gate_up = 2 * intermediate * row_bytes(format, hidden)?;
-        let expected_down = hidden * row_bytes(format, intermediate)?;
+        let expected_gate_up = 2 * intermediate * hidden * format.element_bytes();
+        let expected_down = hidden * intermediate * format.element_bytes();
         if gate_up_len != expected_gate_up || down_len != expected_down {
-            return Err(LegacyQuantError::Payload(
+            return Err(PlainError::Payload(
                 "tamanhos gate_up/down não correspondem à geometria",
             ));
         }
         let down_start = PAYLOAD_HEADER_BYTES + gate_up_len;
         if down_start + down_len != payload.len() {
-            return Err(LegacyQuantError::Payload("seções não cobrem o payload"));
+            return Err(PlainError::Payload("seções não cobrem o payload"));
         }
         Ok(Self {
             format,
@@ -495,9 +500,9 @@ impl<'a> LegacyQuantExpert<'a> {
         })
     }
 
-    pub fn run(&self, hidden: &[f32]) -> Result<Vec<f32>, LegacyQuantExecuteError> {
+    pub fn run(&self, hidden: &[f32]) -> Result<Vec<f32>, PlainExecuteError> {
         if hidden.len() != self.hidden {
-            return Err(LegacyQuantExecuteError::HiddenWidth {
+            return Err(PlainExecuteError::HiddenWidth {
                 expected: self.hidden,
                 actual: hidden.len(),
             });
@@ -524,21 +529,21 @@ impl<'a> LegacyQuantExpert<'a> {
     }
 }
 
-pub struct LegacyQuantExecutor {
+pub struct PlainExecutor {
     cache: Arc<ExpertCache>,
-    format: LegacyQuantFormat,
+    format: PlainFormat,
     hidden: usize,
     intermediate: usize,
 }
 
-impl LegacyQuantExecutor {
+impl PlainExecutor {
     pub fn new(
         cache: Arc<ExpertCache>,
-        format: LegacyQuantFormat,
+        format: PlainFormat,
         hidden: usize,
         intermediate: usize,
-    ) -> Result<Self, LegacyQuantError> {
-        LegacyQuantExpert::packed_bytes(format, hidden, intermediate)?;
+    ) -> Result<Self, PlainError> {
+        PlainExpert::packed_bytes(format, hidden, intermediate)?;
         Ok(Self {
             cache,
             format,
@@ -549,22 +554,42 @@ impl LegacyQuantExecutor {
 
     pub fn run_from_source(
         &self,
-        source: &LegacyQuantSource,
+        source: &PlainSource,
         key: ExpertKey,
         layer: u32,
         hidden: &[f32],
-    ) -> Result<Vec<f32>, LegacyQuantExecuteError> {
+    ) -> Result<Vec<f32>, PlainExecuteError> {
         let expert = key.expert;
+        self.run_with_loader(
+            key,
+            || {
+                source
+                    .load_expert(layer, expert)
+                    .map_err(PlainExecuteError::Source)
+            },
+            hidden,
+        )
+    }
+
+    fn run_with_loader<F>(
+        &self,
+        key: ExpertKey,
+        load: F,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, PlainExecuteError>
+    where
+        F: FnOnce() -> Result<Vec<u8>, PlainExecuteError>,
+    {
         let lease = match self.cache.lookup(&key) {
             Some(lease) => lease,
-            None => self.cache.admit(key, source.load_expert(layer, expert)?)?,
+            None => self.cache.admit(key, load()?)?,
         };
-        LegacyQuantExpert::from_payload(self.format, self.hidden, self.intermediate, lease.bytes())?
+        PlainExpert::from_payload(self.format, self.hidden, self.intermediate, lease.bytes())?
             .run(hidden)
     }
 }
 
-fn detect_format(tensors: &[TensorSpec]) -> Result<LegacyQuantFormat, Q4LoadError> {
+fn detect_plain_format(tensors: &[TensorSpec]) -> Result<PlainFormat, Q4LoadError> {
     let tensor = tensors
         .iter()
         .find(|tensor| {
@@ -573,7 +598,7 @@ fn detect_format(tensors: &[TensorSpec]) -> Result<LegacyQuantFormat, Q4LoadErro
                     || tensor.name.ends_with("ffn_gate_exps.weight"))
         })
         .ok_or_else(|| Q4LoadError::MissingTensor("ffn_gate[_up]_exps.weight".into()))?;
-    LegacyQuantFormat::from_dtype(tensor.dtype)
+    PlainFormat::from_dtype(tensor.dtype)
 }
 
 fn tensors_with_suffix(tensors: &[TensorSpec], suffix: &str) -> Vec<TensorSpec> {
@@ -584,17 +609,14 @@ fn tensors_with_suffix(tensors: &[TensorSpec], suffix: &str) -> Vec<TensorSpec> 
         .collect()
 }
 
-fn validate_dtype(tensor: &TensorSpec, format: LegacyQuantFormat) -> Result<(), Q4LoadError> {
+fn validate_dtype(tensor: &TensorSpec, format: PlainFormat) -> Result<(), Q4LoadError> {
     if tensor.dtype != format.dtype() {
         return Err(Q4LoadError::UnsupportedTensorType(tensor.dtype));
     }
     Ok(())
 }
 
-fn validate_all_same_dtype(
-    tensors: &[TensorSpec],
-    format: LegacyQuantFormat,
-) -> Result<(), Q4LoadError> {
+fn validate_all_same_dtype(tensors: &[TensorSpec], format: PlainFormat) -> Result<(), Q4LoadError> {
     for tensor in tensors {
         validate_dtype(tensor, format)?;
     }
@@ -606,7 +628,7 @@ fn validate_matrix_tensor(
     experts: u32,
     rows: usize,
     columns: usize,
-    format: LegacyQuantFormat,
+    format: PlainFormat,
 ) -> Result<(), Q4LoadError> {
     validate_dtype(tensor, format)?;
     if tensor.dims.len() != 3
@@ -615,7 +637,7 @@ fn validate_matrix_tensor(
         || tensor.dims[2] != u64::from(experts)
     {
         return Err(Q4LoadError::InvalidTensor(
-            "dimensões não correspondem ao expert legacy",
+            "dimensões não correspondem ao expert escalar",
         ));
     }
     Ok(())
@@ -660,7 +682,7 @@ fn tensor_for_layer<'a>(
 
 fn pack_payload(gate_up: &[u8], down: &[u8]) -> Result<Vec<u8>, Q4LoadError> {
     if gate_up.len() > u32::MAX as usize || down.len() > u32::MAX as usize {
-        return Err(Q4LoadError::InvalidTensor("payload legacy excede u32"));
+        return Err(Q4LoadError::InvalidTensor("payload escalar excede u32"));
     }
     let mut payload = Vec::with_capacity(PAYLOAD_HEADER_BYTES + gate_up.len() + down.len());
     payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
@@ -670,124 +692,38 @@ fn pack_payload(gate_up: &[u8], down: &[u8]) -> Result<Vec<u8>, Q4LoadError> {
     Ok(payload)
 }
 
-fn row_bytes(format: LegacyQuantFormat, columns: usize) -> Result<usize, LegacyQuantError> {
-    if columns == 0 || !columns.is_multiple_of(BLOCK_ELEMENTS) {
-        return Err(LegacyQuantError::Geometry("linha não fecha bloco de 32"));
+fn decode_scalar(encoded: &[u8], format: PlainFormat) -> f32 {
+    match format {
+        PlainFormat::F32 => f32::from_le_bytes(encoded.try_into().unwrap()),
+        PlainFormat::F16 => f16_to_f32(u16::from_le_bytes(encoded.try_into().unwrap())),
+        PlainFormat::Bf16 => {
+            f32::from_bits(u32::from(u16::from_le_bytes(encoded.try_into().unwrap())) << 16)
+        }
     }
-    columns
-        .checked_div(BLOCK_ELEMENTS)
-        .and_then(|blocks| blocks.checked_mul(format.block_bytes()))
-        .ok_or(LegacyQuantError::Geometry("overflow no tamanho da linha"))
 }
 
 fn mat_vec(
-    format: LegacyQuantFormat,
+    format: PlainFormat,
     matrix: &[u8],
     rows: usize,
     columns: usize,
     input: &[f32],
 ) -> Vec<f32> {
-    let row_size = row_bytes(format, columns).expect("geometria validada antes do mat-vec");
+    let element_bytes = format.element_bytes();
     (0..rows)
         .map(|row| {
-            let bytes = &matrix[row * row_size..(row + 1) * row_size];
-            dequantize_row(format, bytes, columns)
-                .into_iter()
+            let start = row * columns * element_bytes;
+            matrix[start..start + columns * element_bytes]
+                .chunks_exact(element_bytes)
                 .zip(input)
-                .map(|(weight, value)| weight * value)
+                .map(|(encoded, &value)| decode_scalar(encoded, format) * value)
                 .sum()
         })
         .collect()
 }
 
-pub fn decode_row(
-    format: LegacyQuantFormat,
-    row: &[u8],
-    columns: usize,
-) -> Result<Vec<f32>, LegacyQuantError> {
-    let expected = row_bytes(format, columns)?;
-    if row.len() != expected {
-        return Err(LegacyQuantError::PayloadLength {
-            expected,
-            actual: row.len(),
-        });
-    }
-    Ok(dequantize_row(format, row, columns))
-}
-
-fn dequantize_row(format: LegacyQuantFormat, row: &[u8], columns: usize) -> Vec<f32> {
-    let block_bytes = format.block_bytes();
-    row.chunks_exact(block_bytes)
-        .flat_map(|block| dequantize_block(format, block))
-        .take(columns)
-        .collect()
-}
-
-fn dequantize_block(format: LegacyQuantFormat, block: &[u8]) -> [f32; BLOCK_ELEMENTS] {
-    let d = f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
-    let mut output = [0.0f32; BLOCK_ELEMENTS];
-    match format {
-        LegacyQuantFormat::Q4_1 => {
-            let m = f16_to_f32(u16::from_le_bytes([block[2], block[3]]));
-            for j in 0..16 {
-                output[j] = (block[4 + j] & 0x0f) as f32 * d + m;
-                output[j + 16] = (block[4 + j] >> 4) as f32 * d + m;
-            }
-        }
-        LegacyQuantFormat::Q5_0 | LegacyQuantFormat::Q5_1 => {
-            let (qh_start, qs_start, m) = match format {
-                LegacyQuantFormat::Q5_0 => (2, 6, 0.0),
-                LegacyQuantFormat::Q5_1 => {
-                    (4, 8, f16_to_f32(u16::from_le_bytes([block[2], block[3]])))
-                }
-                _ => unreachable!(),
-            };
-            let qh = u32::from_le_bytes(block[qh_start..qh_start + 4].try_into().unwrap());
-            for j in 0..16 {
-                let high0 = ((qh >> j) << 4) & 0x10;
-                let high1 = (qh >> (j + 12)) & 0x10;
-                let q0 = (u32::from(block[qs_start + j] & 0x0f) | high0) as f32;
-                let q1 = (u32::from(block[qs_start + j] >> 4) | high1) as f32;
-                output[j] =
-                    (q0 - if matches!(format, LegacyQuantFormat::Q5_0) {
-                        16.0
-                    } else {
-                        0.0
-                    }) * d
-                        + m;
-                output[j + 16] =
-                    (q1 - if matches!(format, LegacyQuantFormat::Q5_0) {
-                        16.0
-                    } else {
-                        0.0
-                    }) * d
-                        + m;
-            }
-        }
-        LegacyQuantFormat::Q8_0 => {
-            for j in 0..BLOCK_ELEMENTS {
-                output[j] = i8::from_ne_bytes([block[2 + j]]) as f32 * d;
-            }
-        }
-    }
-    output
-}
-
-fn scalar_router_format(dtype: u32) -> Result<(u32, usize), Q4LoadError> {
-    match dtype {
-        0 => Ok((0, 4)),
-        1 | 30 => Ok((dtype, 2)),
-        other => Err(Q4LoadError::UnsupportedTensorType(other)),
-    }
-}
-
-fn decode_router(encoded: &[u8], dtype: u32) -> f32 {
-    match dtype {
-        0 => f32::from_le_bytes(encoded.try_into().unwrap()),
-        1 => f16_to_f32(u16::from_le_bytes(encoded.try_into().unwrap())),
-        30 => f32::from_bits(u32::from(u16::from_le_bytes(encoded.try_into().unwrap())) << 16),
-        _ => unreachable!("scalar_router_format validou o dtype"),
-    }
+fn silu(value: f32) -> f32 {
+    value / (1.0 + (-value).exp())
 }
 
 fn f16_to_f32(bits: u16) -> f32 {
@@ -803,12 +739,8 @@ fn f16_to_f32(bits: u16) -> f32 {
     }
 }
 
-fn silu(value: f32) -> f32 {
-    value / (1.0 + (-value).exp())
-}
-
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::super::admission::MemoryAccount;
     use super::super::cache::{ExpertCache, FreeMemoryProbe};
     use super::*;
@@ -825,28 +757,12 @@ pub(crate) mod tests {
         }
     }
 
-    fn test_block(format: LegacyQuantFormat) -> Vec<u8> {
-        let mut block = Vec::new();
-        block.extend_from_slice(&0x3c00u16.to_le_bytes());
+    fn scalar_one(format: PlainFormat) -> Vec<u8> {
         match format {
-            LegacyQuantFormat::Q4_1 => {
-                block.extend_from_slice(&0u16.to_le_bytes());
-                block.extend(std::iter::repeat_n(0x11, 16));
-            }
-            LegacyQuantFormat::Q5_0 => {
-                block.extend([0u8; 4]);
-                block.extend(std::iter::repeat_n(0x88, 16));
-            }
-            LegacyQuantFormat::Q5_1 => {
-                block.extend_from_slice(&0u16.to_le_bytes());
-                block.extend([0xffu8; 4]);
-                block.extend(std::iter::repeat_n(0x00, 16));
-            }
-            LegacyQuantFormat::Q8_0 => {
-                block.extend(std::iter::repeat_n(1u8, 32));
-            }
+            PlainFormat::F32 => 1.0f32.to_le_bytes().to_vec(),
+            PlainFormat::F16 => 0x3c00u16.to_le_bytes().to_vec(),
+            PlainFormat::Bf16 => (1.0f32.to_bits() >> 16).to_le_bytes().to_vec(),
         }
-        block
     }
 
     fn gguf_string(output: &mut Vec<u8>, value: &str) {
@@ -864,17 +780,20 @@ pub(crate) mod tests {
         output.extend_from_slice(&offset.to_le_bytes());
     }
 
-    pub(crate) fn write_legacy_source(path: &Path, format: LegacyQuantFormat, split: bool) {
-        let hidden = 32usize;
-        let intermediate = 32usize;
+    pub fn write_plain_source(path: &Path, format: PlainFormat, split: bool) {
+        let hidden = 2usize;
+        let intermediate = 2usize;
         let experts = 2usize;
-        let row = test_block(format);
-        let gate = row.repeat(experts * intermediate);
+        let scalar = scalar_one(format);
+        let gate = vec![scalar.clone(); experts * intermediate * hidden]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let up = gate.clone();
-        let down = row.repeat(experts * hidden);
+        let down = gate.clone();
         let mut router = Vec::new();
         for _ in 0..experts * hidden {
-            router.extend_from_slice(&1.0f32.to_le_bytes());
+            router.extend_from_slice(&scalar);
         }
         let tensor_count = if split { 4u64 } else { 3u64 };
         let mut file = Vec::new();
@@ -928,7 +847,7 @@ pub(crate) mod tests {
             "blk.0.ffn_gate_inp.weight",
             &[hidden as u64, experts as u64],
             offset,
-            0,
+            format.dtype(),
         );
         let data_start = (file.len() + 31) / 32 * 32;
         file.resize(data_start, 0);
@@ -945,61 +864,48 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn legacy_q4_1_q5_0_q5_1_q8_0_decodifica_vetor_conhecido() {
-        let expected = [
-            (LegacyQuantFormat::Q4_1, 1.0f32),
-            (LegacyQuantFormat::Q5_0, -8.0),
-            (LegacyQuantFormat::Q5_1, 16.0),
-            (LegacyQuantFormat::Q8_0, 1.0),
-        ];
-        for (format, value) in expected {
-            let decoded = dequantize_row(format, &test_block(format), 32);
-            assert!(decoded.iter().all(|actual| (*actual - value).abs() < 1e-6));
-        }
-    }
-
-    #[test]
-    fn legacy_source_e_executor_cobrem_fused_e_split() {
-        for format in [
-            LegacyQuantFormat::Q4_1,
-            LegacyQuantFormat::Q5_0,
-            LegacyQuantFormat::Q5_1,
-            LegacyQuantFormat::Q8_0,
-        ] {
+    fn plain_f32_f16_bf16_source_executes_real_payload_contract() {
+        for format in [PlainFormat::F32, PlainFormat::F16, PlainFormat::Bf16] {
             for split in [false, true] {
                 let path = std::env::temp_dir().join(format!(
-                    "pom-ftk-legacy-{}-{}-{}.gguf",
+                    "pom-ftk-plain-{}-{}-{}.gguf",
                     format.name(),
                     split,
                     std::process::id()
                 ));
-                write_legacy_source(&path, format, split);
-                let source = LegacyQuantSource::open_infer(&path, 2).unwrap();
+                write_plain_source(&path, format, split);
+                let source = PlainSource::open_infer(&path, 2).unwrap();
                 let cache = ExpertCache::new(
                     MemoryAccount {
-                        baseline_free_bytes: 10_000_000,
+                        baseline_free_bytes: 1_000_000,
                         compute_bytes: 0,
                         weights_bytes: 0,
                         fixed_bytes: 0,
                         reserve_bytes: 0,
                     },
-                    Arc::new(FixedProbe(AtomicU64::new(10_000_000))),
+                    Arc::new(FixedProbe(AtomicU64::new(1_000_000))),
                 );
                 let executor =
-                    LegacyQuantExecutor::new(cache, format, source.hidden(), source.intermediate())
+                    PlainExecutor::new(cache, format, source.hidden(), source.intermediate())
                         .unwrap();
                 let output = executor
                     .run_from_source(
                         &source,
                         ExpertKey::new("fixture", 0, 0, format.name()),
                         0,
-                        &[1.0; 32],
+                        &[1.0, 1.0],
                     )
                     .unwrap();
-                assert_eq!(output.len(), 32);
-                assert!(output.iter().all(|value| value.is_finite()));
+                assert_eq!(output.len(), 2);
+                assert!(output.iter().all(|value| value.is_finite() && *value > 0.0));
                 std::fs::remove_file(path).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn plain_dispatch_recusa_dtype_quantizado_com_nome() {
+        let error = PlainFormat::from_dtype(3).unwrap_err();
+        assert!(error.to_string().contains("3 (Q4_1)"));
     }
 }

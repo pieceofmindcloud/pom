@@ -230,7 +230,7 @@ impl<'a> KQuantExpert<'a> {
             .ok_or(KQuantError::Geometry("overflow no payload"))
     }
 
-    pub(crate) fn validate_packed_payload_length(
+    pub fn validate_packed_payload_length(
         format: KQuantFormat,
         hidden: usize,
         intermediate: usize,
@@ -1407,7 +1407,7 @@ fn silu(value: f32) -> f32 {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
 
     #[test]
@@ -1765,7 +1765,7 @@ pub(crate) mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    pub(crate) fn write_k_source(path: &std::path::Path, dtype: u32, format: KQuantFormat) {
+    pub fn write_k_source(path: &std::path::Path, dtype: u32, format: KQuantFormat) {
         write_k_source_with_layout(path, dtype, format, GateUpLayout::Fused, false);
     }
 

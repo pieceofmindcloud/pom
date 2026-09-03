@@ -12,7 +12,7 @@ pub mod cache;
 #[cfg(any(feature = "cuda", test))]
 pub mod coexecution;
 #[cfg(feature = "cuda")]
-pub(crate) mod cuda;
+pub mod cuda;
 pub mod format_heterogeneous;
 pub mod format_iq_quants;
 pub mod format_k_quants;

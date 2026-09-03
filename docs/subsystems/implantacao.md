@@ -46,10 +46,12 @@ materializa as faixas no peer que possui o arquivo.
 Na tela de implantação, trocar de fatias para `whole` limpa o mapa e não
 escolhe uma máquina automaticamente. O operador adiciona a máquina desejada
 pela faixa inferior; a interface mantém a regra de uma máquina para esse modo.
-Mudanças de `RuntimeParams` no inspetor e do nome operacional não alteram a
-topologia: a tela não reinicia o `plan` nem pede uma nova prévia de capacidade a
-cada controle. A projeção antiga fica oculta até o `POST /api/ui/deploy`, que
-faz o preflight completo com os parâmetros atuais antes de iniciar a subida.
+Mudanças de `RuntimeParams`, dos overrides de GPU/KV por máquina no inspetor e
+do nome operacional não alteram a topologia: a tela não reinicia o `plan` nem
+pede uma nova prévia de capacidade a cada controle. A chave do plano considera
+somente faixas e máquinas; os overrides continuam nas linhas locais e entram
+no deploy. A projeção antiga fica oculta até o `POST /api/ui/deploy`, que faz o
+preflight completo com os valores atuais antes de iniciar a subida.
 
 ## 1.3 Capacidade de saída derivada do runtime
 

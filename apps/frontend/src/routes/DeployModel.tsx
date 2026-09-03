@@ -184,6 +184,41 @@ const byLayer = (a: DeploySelection, b: DeploySelection) =>
   a.start_layer - b.start_layer ||
   a.end_layer - b.end_layer;
 
+/** The planner's expensive survey only depends on topology. Per-machine
+ * launch overrides are carried by the selection for deploy, but changing one
+ * must not make the node rediscover the same machines and ranges. */
+const topologyKey = (rows: DeploySelection[] | null) =>
+  rows === null
+    ? "auto"
+    : JSON.stringify(
+        rows
+          .map((row) => [row.start_layer, row.end_layer, row.target_node_id])
+          .sort((a, b) =>
+            Number(a[0]) - Number(b[0]) ||
+            Number(a[1]) - Number(b[1]) ||
+            String(a[2]).localeCompare(String(b[2])),
+          ),
+      );
+
+const launchOverridesKey = (rows: DeploySelection[] | null) =>
+  rows === null
+    ? "auto"
+    : JSON.stringify(
+        rows
+          .map((row) => [
+            row.start_layer,
+            row.end_layer,
+            row.target_node_id,
+            row.n_gpu_layers ?? null,
+            row.offload_kqv ?? null,
+          ])
+          .sort((a, b) =>
+            Number(a[0]) - Number(b[0]) ||
+            Number(a[1]) - Number(b[1]) ||
+            String(a[2]).localeCompare(String(b[2])),
+          ),
+      );
+
 /** Which question the node answered. An older peer does not say, and an older
  *  peer only ever answers about shards. */
 const kindOf = (plan: DeployPlan | undefined): DeployKind => plan?.kind ?? "shards";
@@ -496,6 +531,13 @@ export function DeployModel() {
   // digit by digit. Runtime parameters are launch configuration, not topology,
   // so changing them must not restart the full survey and capacity preview.
   const [settled, setSettled] = useState<DeploySelection[] | null>(null);
+  /** The topology returned by an automatic plan. An explicit selection that
+   * only adds launch overrides must remain on this same query key. */
+  const autoTopologyKey = useRef<string | null>(null);
+  const queryTopologyKey = (rows: DeploySelection[] | null) => {
+    const key = topologyKey(rows);
+    return key !== "auto" && key === autoTopologyKey.current ? "auto" : key;
+  };
   useEffect(() => {
     const t = setTimeout(() => {
       setSettled(selection);
@@ -508,7 +550,7 @@ export function DeployModel() {
       "deploy-plan",
       kind,
       chosen,
-      settled ? JSON.stringify(settled) : "auto",
+      queryTopologyKey(settled),
       merge == null ? "merge-padrão" : `merge-${merge}`,
       strategy,
       JSON.stringify(preferredNodeIds),
@@ -535,6 +577,11 @@ export function DeployModel() {
   });
 
   const p = plan.data;
+  useEffect(() => {
+    if (p?.auto && p.group === chosen && kindOf(p) === kind) {
+      autoTopologyKey.current = topologyKey(rowsOf(p));
+    }
+  }, [chosen, kind, p]);
   useEffect(() => {
     if (p?.params && nodeParams.current == null) nodeParams.current = p.params;
   }, [p]);
@@ -571,11 +618,16 @@ export function DeployModel() {
   // deploy endpoint confirms the fresh state instead of showing stale advice.
   const capacityFresh =
     !params || !p?.params || JSON.stringify(params) === JSON.stringify(p.params);
+  const currentRows = selection ?? rowsOf(p);
+  const launchOverridesFresh =
+    launchOverridesKey(currentRows) === launchOverridesKey(rowsOf(p));
   const displayPlan = p
     ? {
         ...p,
         machines: liveMachines.map((machine) =>
-          capacityFresh ? machine : { ...machine, capacity: undefined },
+          capacityFresh && launchOverridesFresh
+            ? machine
+            : { ...machine, capacity: undefined },
         ),
       }
     : undefined;
@@ -732,7 +784,10 @@ export function DeployModel() {
    * is not. Runtime parameter edits do not enter this state because they do not
    * alter topology.
    */
-  const syncing = plan.isFetching || plan.isPlaceholderData || settled !== selection;
+  const syncing =
+    plan.isFetching ||
+    plan.isPlaceholderData ||
+    queryTopologyKey(settled) !== queryTopologyKey(selection);
 
   /** True while the node's answer still describes exactly these rows.
    *

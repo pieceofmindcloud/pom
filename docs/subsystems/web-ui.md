@@ -679,10 +679,11 @@ impressão digital é só modelo + conjunto de faixas.
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
   plano, podada contra o que ainda existe.
   Alterações de topologia são validadas por `POST /api/ui/deploy/plan` após o
-  debounce de 260 ms. Parâmetros de runtime e o nome operacional não mudam as
-  máquinas ou faixas, então permanecem locais durante a edição e não reiniciam
-  o survey distribuído. Se algum deles mudar, a projeção de capacidade antiga é
-  ocultada; `POST /api/ui/deploy` faz o preflight completo com os valores atuais
+  debounce de 260 ms. Parâmetros de runtime, overrides de GPU/KV por máquina e
+  o nome operacional não mudam as máquinas ou faixas, então permanecem locais
+  durante a edição e não reiniciam o survey distribuído. A chave da consulta
+  contém somente faixas e máquinas; o deploy leva os overrides atuais. Se algum
+  deles mudar, a projeção de capacidade antiga é ocultada; `POST /api/ui/deploy` faz o preflight completo com os valores atuais
   antes de iniciar a implantação.
   A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
   dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A

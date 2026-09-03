@@ -185,9 +185,11 @@ Per-file list:
   nomeando as máquinas e a razão, com título/texto conforme o caso;
   `canDeploy` não muda - é aviso, não bloqueio.
   Topology edits are debounced 260 ms and validated by
-  `POST /api/ui/deploy/plan`. Runtime parameters and the operational name stay
-  local while editing: they do not restart that cluster-wide survey or reuse
-  its capacity projection. `POST /api/ui/deploy` re-surveys the cluster and
+  `POST /api/ui/deploy/plan`. Runtime parameters, per-machine GPU/KV overrides
+  and the operational name stay local while editing: their changes do not
+  restart that cluster-wide survey or reuse its capacity projection. The plan
+  query key contains only layer ranges and target machines, while the deploy
+  request carries the current overrides. `POST /api/ui/deploy` re-surveys the cluster and
   validates the current parameters before acting, returning a job shown through
   `useJobs`. A failed preflight keeps the backend's reason visible in the rose
   job banner, including the peer that stayed occupied.

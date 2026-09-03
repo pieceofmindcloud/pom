@@ -429,6 +429,21 @@ describe("DeployModel · modelo inteiro", () => {
     expect(planCalls()).toHaveLength(before + 1);
   });
 
+  it("não reconsulta o plano ao ajustar camadas GPU da máquina", async () => {
+    answerPlans();
+    mount();
+    await waitFor(() => expect(planCalls()).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: /ksia na implantação/ })).toBeTruthy());
+
+    const before = planCalls().length;
+    const gpuLayers = screen.getByRole("spinbutton", { name: "Camadas GPU" });
+    fireEvent.change(gpuLayers, { target: { value: "8" } });
+
+    await waitFor(() => expect((gpuLayers as HTMLInputElement).value).toBe("8"));
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(planCalls()).toHaveLength(before);
+  });
+
   it("mantém o indicador até a consulta do modelo terminar", async () => {
     let resolveWhole: ((plan: DeployPlan) => void) | undefined;
     post.mockImplementation((url: string, body: { kind?: string }) => {

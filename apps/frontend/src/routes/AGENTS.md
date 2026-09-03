@@ -231,7 +231,9 @@ Per-file list:
 - `Deployments.tsx` - lista as implantações registradas no cluster via
   `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
   criação mais recente e mostra a coluna "Criada". Permite reimplantar só
-  parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.
+  parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`. O
+  painel do job de reimplantação mostra `job.outputs` (o resultado por
+  máquina, `"<host>: <motivo>"`) abaixo da mensagem, não só a contagem.
 - `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   No perfil `inference`, mostra só a chave ativa deste nó, esconde o seletor de

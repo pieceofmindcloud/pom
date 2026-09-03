@@ -136,6 +136,24 @@ dual-stack.
   para bloquear uma implantação f8 incompatível. O redeploy consulta
   `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
   evitando uma implantação parcialmente misturada.
+- `POST /api/ui/deployments/:id/redeploy` (`redeploy_endpoint` →
+  `run_redeploy`, `deploy.rs`): mesmo `deploy_id`, mesmas máquinas e faixas,
+  parâmetros novos. Fotografa o `NodeConfig` vivo de cada nó, **descarrega**
+  todo peer que anuncia o `deploy_id` (`release_one` em paralelo), e **sobe
+  uma máquina de cada vez** esperando cada uma reportar `ready`
+  (`wait_for_peer_serving_with_timeout`). Funciona mesmo se um nó não estava
+  servindo: `/api/ui/reconfigure` aceita um `ReconfigureSlice` opcional
+  (`webui.rs`) e `reconfigure_local` reconstrói o `NodeConfig` dele - em vez de
+  exigir um `NodeConfig` vivo. O arquivo é resolvido em três degraus: o
+  `model_path` fotografado antes do unload; o `part_sha256` do registro
+  (`transfer::find_part`); e, quando o registro não tem hash de parte (modelo
+  inteiro, ou fatia de rodada antiga), o catálogo local casando rótulo do
+  modelo + faixa de camadas (`resolve_deployment_slice_file`). Só quando os
+  três falham é erro com o nome da faixa. `DeploymentNode.source_model_path`
+  (`models/deployment.rs`, `#[serde(default)]`) grava o arquivo que cada nó
+  carregou, para o redeploy achá-lo mesmo com o nó fora do ar. `job.outputs`
+  leva o resultado por máquina. Tensor Parallelism ainda usa o caminho antigo
+  (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no

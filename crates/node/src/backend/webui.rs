@@ -811,6 +811,39 @@ async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
     catalog
 }
 
+/// Acha, no catálogo desta máquina, o arquivo que uma faixa de uma implantação
+/// deveria carregar - quando não há caminho vivo nem `part_sha256` para
+/// resolver (registro antigo, ou nó que já estava fora do ar num `redeploy`).
+///
+/// Modelo inteiro: casa pelo nome de catálogo, como `deploy::parse_whole`.
+/// Fatia: casa o grupo/rótulo da rodada e a faixa exata de camadas, como
+/// `find_release_candidate`.
+async fn resolve_deployment_slice_file(
+    state: &GatewayState,
+    model_label: &str,
+    start_layer: u32,
+    end_layer: u32,
+    total_layers: u32,
+    peer_count: u32,
+) -> Option<String> {
+    let catalog = local_catalog(state).await;
+    let whole = peer_count <= 1 && start_layer == 0 && end_layer + 1 >= total_layers.max(1);
+    if whole {
+        return catalog
+            .models
+            .iter()
+            .find(|m| !m.is_shard() && m.name == model_label)
+            .map(|m| m.path.clone());
+    }
+    catalog
+        .shard_sets
+        .iter()
+        .filter(|s| s.group == model_label || s.model_label == model_label)
+        .flat_map(|s| &s.shards)
+        .find(|shard| shard.shard_range == Some((start_layer, end_layer)))
+        .map(|shard| shard.path.clone())
+}
+
 /// Schedule the inventory once at boot, so the first screen does not pay for
 /// the walk or wait for GGUF header enrichment.
 ///
@@ -4915,6 +4948,51 @@ async fn unload_model(_auth: ConnectionAuth, State(state): State<GatewayState>) 
 #[derive(Debug, Deserialize)]
 pub struct ReconfigureRequest {
     pub params: RuntimeParams,
+    /// A identidade da fatia, quando quem chama já a conhece (um `redeploy`
+    /// que descarregou tudo antes de subir de novo). Ausente = o nó relê o
+    /// próprio `NodeConfig` vivo, que é o caminho de sempre e só serve para
+    /// uma máquina que já está servindo.
+    #[serde(default)]
+    pub slice: Option<ReconfigureSlice>,
+}
+
+/// O que identifica a fatia que um nó deve servir, para o caso em que ele
+/// **não** está servindo nada e não há `NodeConfig` vivo de onde partir.
+///
+/// Preenchido pelo coordenador de um `redeploy` a partir do registro da
+/// implantação mais a fotografia do que cada nó estava rodando antes do
+/// unload. `model_path` é o caminho vivo fotografado; sem ele, `part_sha256`
+/// resolve o arquivo local por conteúdo (`transfer::find_part`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconfigureSlice {
+    #[serde(default)]
+    pub model_path: Option<String>,
+    #[serde(default)]
+    pub part_sha256: Option<String>,
+    pub model_label: String,
+    #[serde(default)]
+    pub deployment_name: String,
+    #[serde(default)]
+    pub deploy_id: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub total_layers: u32,
+    #[serde(default = "one_u32")]
+    pub peer_count: u32,
+    #[serde(default)]
+    pub peer_index: u32,
+    #[serde(default)]
+    pub primary: bool,
+    #[serde(default)]
+    pub single_peer: bool,
+    #[serde(default)]
+    pub no_embeddings: Option<bool>,
+    #[serde(default)]
+    pub tp: Option<crate::network::TpIdentity>,
+}
+
+fn one_u32() -> u32 {
+    1
 }
 
 /// Recarrega o modelo desta máquina com outros parâmetros.
@@ -4932,7 +5010,7 @@ async fn reconfigure(
     State(state): State<GatewayState>,
     Json(req): Json<ReconfigureRequest>,
 ) -> Response {
-    match reconfigure_local(state, req.params).await {
+    match reconfigure_local(state, req.params, req.slice).await {
         Ok(cfg) => Json(json!({
             "reconfigured": true,
             "model": cfg.model_label,
@@ -4956,12 +5034,79 @@ async fn reconfigure(
 pub(crate) async fn reconfigure_local(
     state: GatewayState,
     params: RuntimeParams,
+    slice: Option<ReconfigureSlice>,
 ) -> Result<NodeConfig, String> {
-    let Some(atual) = state.runtime.config().await else {
-        return Err("este nó não está servindo nada para reconfigurar".into());
+    let cfg = match slice {
+        // Identidade dada: monta o `NodeConfig` a partir dela, sirva o nó algo
+        // ou não. É o caminho do `redeploy` que descarrega tudo antes de subir.
+        Some(slice) => {
+            // Como achar o arquivo, em ordem: o caminho vivo fotografado; a
+            // parte por conteúdo (`part_sha256`); o catálogo local casando
+            // rótulo + faixa de camadas. Só quando as três falham é erro.
+            let shard_dir = state.shard_dir().await;
+            let model_path = if let Some(path) =
+                slice.model_path.clone().filter(|p| !p.is_empty())
+            {
+                path
+            } else if let Some(path) = slice
+                .part_sha256
+                .as_deref()
+                .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
+            {
+                path.to_string_lossy().into_owned()
+            } else if let Some(path) = resolve_deployment_slice_file(
+                &state,
+                &slice.model_label,
+                slice.start_layer,
+                slice.end_layer,
+                slice.total_layers,
+                slice.peer_count,
+            )
+            .await
+            {
+                path
+            } else {
+                return Err(format!(
+                    "esta máquina não tem mais o arquivo da faixa L{}-{} de \"{}\" ({}); \
+                     use a tela de Implantar para copiá-lo de novo",
+                    slice.start_layer,
+                    slice.end_layer,
+                    slice.model_label,
+                    slice
+                        .part_sha256
+                        .as_deref()
+                        .map(|s| format!("hash {}", &s[..12.min(s.len())]))
+                        .unwrap_or_else(|| "sem hash de parte no registro".to_string()),
+                ));
+            };
+            let tp_none = slice.tp.is_none();
+            NodeConfig {
+                deploy_id: slice.deploy_id,
+                deployment_name: slice.deployment_name,
+                model_path,
+                model_label: slice.model_label,
+                start_layer: slice.start_layer,
+                end_layer: slice.end_layer,
+                total_layers: slice.total_layers,
+                peer_count: slice.peer_count.max(1),
+                peer_index: slice.peer_index,
+                primary: slice.primary,
+                tp: slice.tp,
+                single_peer: slice.single_peer,
+                no_embeddings: slice.no_embeddings.unwrap_or(params.no_embeddings),
+                ..NodeConfig::from_params(&params, tp_none)
+            }
+        }
+        // Sem identidade: só troca os parâmetros do que já está carregado.
+        None => {
+            let Some(atual) = state.runtime.config().await else {
+                warn!("reconfigure recusado: este nó não está servindo nada");
+                return Err("este nó não está servindo nada para reconfigurar".into());
+            };
+            atual.with_params(&params)
+        }
     };
 
-    let cfg = atual.with_params(&params);
     info!(
         "reconfigurando {} (camadas {}-{}) com parâmetros novos",
         cfg.model_label, cfg.start_layer, cfg.end_layer

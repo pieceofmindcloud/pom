@@ -73,7 +73,7 @@ use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
     jobs, launch, new_job, set_job, set_job_progress, CapacityPreview, CapacityPreviewRequest,
     InferenceMode, LaunchRequest, LaunchTarget, LayerCut, MergeSource, ModelLayerOptions,
-    RuntimeParams, SliceRange, SliceRangesRequest, PEER_TIMEOUT,
+    ReconfigureSlice, RuntimeParams, SliceRange, SliceRangesRequest, PEER_TIMEOUT,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -1590,6 +1590,10 @@ fn node_state_detail(snapshot: &serde_json::Value) -> String {
 
 const DEPLOY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEPLOY_IDLE_POLL: Duration = Duration::from_millis(250);
+/// Recarregar um modelo é minutos; um `redeploy` espera cada máquina voltar a
+/// servir antes de mexer na próxima. O mesmo teto da chamada HTTP de
+/// reconfiguração.
+const REDEPLOY_READY_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Every distinct range anyone holds, in layer order.
 fn candidates(machines: &[Machine]) -> Vec<Candidate> {
@@ -4564,6 +4568,49 @@ async fn wait_for_peer_idle_with_timeout(
     }
 }
 
+/// True quando o nó tem um `NodeConfig` carregado e o servidor de inferência
+/// está `ready` - o inverso de `node_is_idle`, para o `redeploy` esperar cada
+/// máquina *voltar a servir* antes de mexer na próxima.
+fn node_is_serving_ready(snapshot: &serde_json::Value) -> bool {
+    !snapshot
+        .get("config")
+        .map(|config| config.is_null())
+        .unwrap_or(true)
+        && snapshot
+            .pointer("/status/state")
+            .and_then(|state| state.as_str())
+            == Some("ready")
+}
+
+async fn wait_for_peer_serving_with_timeout(
+    state: &GatewayState,
+    peer: &PeerInfo,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let last = match peer_node_snapshot(state, peer).await {
+            Ok(snapshot) if node_is_serving_ready(&snapshot) => return Ok(()),
+            Ok(snapshot) => node_state_detail(&snapshot),
+            Err(error) => error,
+        };
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "{} não voltou a servir dentro do limite de {}s; {}",
+                if peer.hostname.is_empty() {
+                    &peer.node_id
+                } else {
+                    &peer.hostname
+                },
+                timeout.as_secs(),
+                last
+            ));
+        }
+        tokio::time::sleep(DEPLOY_IDLE_POLL.min(deadline - now)).await;
+    }
+}
+
 async fn prepare_existing_model(
     state: &GatewayState,
     group: &str,
@@ -5094,6 +5141,8 @@ fn build_record(
                 .iter()
                 .any(|s| s.primary && s.target_node_id == t.node_id),
             part_sha256: t.part_sha256.clone(),
+            source_model_path: (!t.source_model_path.is_empty())
+                .then(|| t.source_model_path.clone()),
             tp_rank: t.tp.as_ref().map(|tp| tp.rank),
             // A mesma função que o `launch` usa para decidir o que cada máquina
             // recebe, para o registro não poder divergir do que subiu.
@@ -5271,14 +5320,17 @@ pub struct RedeployOutcome {
 /// Reimplanta mexendo só nos parâmetros.
 ///
 /// A mesma implantação, o mesmo `deploy_id`, as mesmas máquinas e as mesmas
-/// faixas - só os parâmetros mudam. Por isso **não** passa pelo `deploy`: não
-/// há o que planejar nem o que copiar, e re-planejar cunharia uma implantação
-/// nova, quebrando todo cliente preso a `modelo@deploy_id`.
+/// faixas - só os parâmetros mudam. Por isso **não** re-planeja: re-planejar
+/// cunharia uma implantação nova, quebrando todo cliente preso a
+/// `modelo@deploy_id`.
 ///
-/// Cada nó recebe um `/api/ui/reconfigure`, que relê o próprio `NodeConfig` e
-/// troca só os parâmetros (ver `NodeConfig::with_params`). O registro é
-/// reescrito **depois** de os nós aceitarem: um registro que descreve uma
-/// configuração que ninguém está rodando é pior que um registro velho.
+/// Descarrega toda máquina que ainda anuncia este `deploy_id` e sobe cada uma
+/// de novo, uma de cada vez, esperando cada uma voltar a servir antes da
+/// próxima. Funciona mesmo se uma máquina não estava servindo nada (o bug
+/// antigo): a identidade da fatia vem do registro mais a fotografia do que
+/// cada nó rodava, não de um `NodeConfig` vivo. Tensor Parallelism ainda usa
+/// o caminho antigo (`reconfigure` no lugar). O registro é reescrito
+/// **depois** de os nós aceitarem.
 async fn redeploy_endpoint(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -5291,6 +5343,12 @@ async fn redeploy_endpoint(
     let Some(registro) = find_record(&state, &id).await else {
         return bad(json!({ "error": format!("implantação {id} desconhecida") }));
     };
+    info!(
+        "redeploy pedido para {} ({}), {} nó(s)",
+        id,
+        registro.model.label,
+        registro.nodes.len()
+    );
 
     let job_id = uuid::Uuid::new_v4().to_string();
     let titulo = format!(
@@ -5344,6 +5402,14 @@ async fn run_redeploy(
     let peers = state.all_peers().await;
     let total = registro.nodes.len().max(1);
 
+    info!(
+        "redeploy {} ({}): {} nó(s), kind={:?}",
+        registro.deploy_id,
+        registro.model.label,
+        registro.nodes.len(),
+        registro.kind
+    );
+
     // Re-deploy does not build a new plan, but changing the wire precision is
     // still a cluster-wide protocol change. Probe every participant before
     // touching the first process, otherwise a later incompatible peer could
@@ -5357,24 +5423,120 @@ async fn run_redeploy(
     )
     .await?;
 
+    // Tensor parallelism: a coletiva não sobrevive a um unload e o registro
+    // não guarda o `TpLaunch` inteiro, só o `tp_rank` de cada nó. Mantém o
+    // caminho antigo (reconfigure no lugar), que exige o rank já servindo.
+    if registro.kind == crate::deployment::DeploymentKind::TensorParallel {
+        return run_redeploy_in_place(
+            &state, &peers, &mut registro, &req, &self_id, &key, job_id,
+        )
+        .await;
+    }
+
+    // ── 1. Fotografa a identidade viva de cada nó antes de derrubar nada ──────
+    //
+    // O registro tem faixa, posição e `part_sha256`, mas não o caminho do
+    // arquivo nem o nome operacional da implantação. Esses vêm do `NodeConfig`
+    // vivo, lido agora, enquanto ainda dá.
+    let mut identidade: HashMap<String, NodeIdentitySnapshot> = HashMap::new();
+    for no in &registro.nodes {
+        let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) else {
+            continue;
+        };
+        if let Ok(snapshot) = peer_node_snapshot(&state, peer).await {
+            let config = snapshot.get("config");
+            identidade.insert(
+                no.node_id.clone(),
+                NodeIdentitySnapshot {
+                    model_path: config
+                        .and_then(|c| c.get("model_path"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                    model_label: config
+                        .and_then(|c| c.get("model_label"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                    deployment_name: config
+                        .and_then(|c| c.get("deployment_name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    single_peer: config
+                        .and_then(|c| c.get("single_peer"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(no.peer_count <= 1),
+                    no_embeddings: config
+                        .and_then(|c| c.get("no_embeddings"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                },
+            );
+        }
+    }
+
+    // ── 2. Descarrega toda máquina que anuncia este deploy_id ────────────────
+    let alvo = UndeployTarget::Deployment {
+        deploy_id: registro.deploy_id.clone(),
+        label: registro.model.label.clone(),
+    };
+    let servindo: Vec<PeerInfo> = peers
+        .iter()
+        .filter(|p| p.total_layers > 0 && alvo.matches(p))
+        .cloned()
+        .collect();
+    if servindo.is_empty() {
+        info!(
+            "redeploy {}: nada servindo, indo direto para a subida",
+            registro.deploy_id
+        );
+    } else {
+        set_job(
+            job_id,
+            "running",
+            "descarregando",
+            &format!("{} máquina(s)", servindo.len()),
+        )
+        .await;
+        let unloads = futures::future::join_all(servindo.iter().map(|peer| {
+            let state = state.clone();
+            let key = key.clone();
+            let self_id = self_id.clone();
+            async move {
+                (
+                    peer.hostname.clone(),
+                    release_one(&state, peer, &key, &self_id).await,
+                )
+            }
+        }))
+        .await;
+        for (host, resultado) in unloads {
+            match resultado {
+                Ok(()) => info!("redeploy: {host} descarregada"),
+                Err(e) => warn!("redeploy: {host} não descarregou: {e}"),
+            }
+        }
+    }
+
+    // ── 3. Sobe uma máquina de cada vez, esperando cada uma voltar ───────────
+    //
+    // Sequencial de propósito: recarregar o modelo é o pico de memória do nó,
+    // e mandar o cluster inteiro fazer isso junto é o caminho mais curto para
+    // várias quedas por falta de VRAM ao mesmo tempo.
     let mut resultados: Vec<RedeployOutcome> = Vec::new();
     let mut aceitos: HashMap<String, RuntimeParams> = HashMap::new();
-
-    // Uma máquina de cada vez, de propósito: recarregar o modelo é o pico de
-    // memória do nó, e mandar o cluster inteiro fazer isso junto é o caminho
-    // mais curto para várias quedas por falta de VRAM ao mesmo tempo.
     for (i, no) in registro.nodes.iter().enumerate() {
         set_job(
             job_id,
             "running",
-            "recarregando",
+            "subindo",
             &format!("{} ({}/{})", no.hostname, i + 1, total),
         )
         .await;
         set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
 
-        // Os ajustes por máquina entram por cima dos parâmetros comuns; sem
-        // ajuste, a máquina fica com os dela, que é o que a tela mostrou.
+        // Os ajustes por máquina entram por cima dos parâmetros comuns.
         let mut params = req.params.clone();
         if let Some(ajuste) = req.per_node.get(&no.node_id) {
             if let Some(g) = ajuste.n_gpu_layers {
@@ -5385,9 +5547,34 @@ async fn run_redeploy(
             }
         }
 
-        let erro = reconfigure_one(&state, &peers, &no.node_id, &self_id, &key, &params).await;
-        match erro {
+        let snap = identidade.get(&no.node_id);
+        let slice = ReconfigureSlice {
+            model_path: snap
+                .and_then(|s| s.model_path.clone())
+                .or_else(|| no.source_model_path.clone()),
+            part_sha256: no.part_sha256.clone(),
+            model_label: snap
+                .and_then(|s| s.model_label.clone())
+                .unwrap_or_else(|| registro.model.label.clone()),
+            deployment_name: snap
+                .map(|s| s.deployment_name.clone())
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| registro.model.label.clone()),
+            deploy_id: registro.deploy_id.clone(),
+            start_layer: no.start_layer,
+            end_layer: no.end_layer,
+            total_layers: registro.model.total_layers,
+            peer_count: no.peer_count,
+            peer_index: no.peer_index,
+            primary: no.primary,
+            single_peer: snap.map(|s| s.single_peer).unwrap_or(no.peer_count <= 1),
+            no_embeddings: Some(snap.map(|s| s.no_embeddings).unwrap_or(false)),
+            tp: None,
+        };
+
+        match relaunch_one(&state, &peers, no, &self_id, &key, &params, slice).await {
             None => {
+                info!("redeploy: {} subiu", no.hostname);
                 aceitos.insert(no.node_id.clone(), params);
                 resultados.push(RedeployOutcome {
                     node_id: no.node_id.clone(),
@@ -5396,24 +5583,47 @@ async fn run_redeploy(
                     error: None,
                 });
             }
-            Some(e) => resultados.push(RedeployOutcome {
-                node_id: no.node_id.clone(),
-                hostname: no.hostname.clone(),
-                reconfigured: false,
-                error: Some(e),
-            }),
+            Some(e) => {
+                warn!("redeploy: {} não subiu: {e}", no.hostname);
+                resultados.push(RedeployOutcome {
+                    node_id: no.node_id.clone(),
+                    hostname: no.hostname.clone(),
+                    reconfigured: false,
+                    error: Some(e),
+                });
+            }
         }
     }
 
+    finish_redeploy(&state, &mut registro, aceitos, resultados, job_id).await
+}
+
+/// A fotografia do que um nó estava rodando, tirada antes do unload.
+struct NodeIdentitySnapshot {
+    model_path: Option<String>,
+    model_label: Option<String>,
+    deployment_name: String,
+    single_peer: bool,
+    no_embeddings: bool,
+}
+
+/// Grava os parâmetros aceitos no registro, publica e monta o resultado do job.
+async fn finish_redeploy(
+    state: &GatewayState,
+    registro: &mut crate::deployment::Deployment,
+    mut aceitos: HashMap<String, RuntimeParams>,
+    resultados: Vec<RedeployOutcome>,
+    job_id: &str,
+) -> Result<usize, String> {
     // Só o que a máquina de fato aceitou entra no registro. Uma que recusou
-    // continua descrita com a configuração antiga, que é a que ela está
-    // rodando - o registro tem que dizer o que **é**, não o que se pediu.
+    // continua descrita com a configuração antiga - o registro tem que dizer o
+    // que **é**, não o que se pediu.
     for no in registro.nodes.iter_mut() {
         if let Some(p) = aceitos.remove(&no.node_id) {
             no.config = p;
         }
     }
-    publish_record(&state, &registro).await;
+    publish_record(state, registro).await;
 
     let falhas = resultados.iter().filter(|r| !r.reconfigured).count();
     set_job_progress(job_id, 100.0).await;
@@ -5430,6 +5640,122 @@ async fn run_redeploy(
         }
     }
     Ok(falhas)
+}
+
+/// Sobe **uma** máquina para a faixa que ela já tem, com os parâmetros novos,
+/// e espera ela voltar a servir antes de devolver.
+async fn relaunch_one(
+    state: &GatewayState,
+    peers: &[PeerInfo],
+    no: &crate::deployment::DeploymentNode,
+    self_id: &str,
+    key: &str,
+    params: &RuntimeParams,
+    slice: ReconfigureSlice,
+) -> Option<String> {
+    if no.node_id == self_id {
+        if let Err(e) = crate::webui::reconfigure_local(state.clone(), params.clone(), Some(slice)).await
+        {
+            return Some(e);
+        }
+    } else {
+        let Some(base) = peers
+            .iter()
+            .find(|p| p.node_id == no.node_id)
+            .and_then(|p| p.gateway_url())
+        else {
+            return Some("peer não encontrado ou sem porta de gateway anunciada".to_string());
+        };
+        let Ok(cliente) = state.peer_http.for_peer(&no.node_id) else {
+            return Some("sem cliente para o peer".to_string());
+        };
+        match cliente
+            .post(format!("{base}/api/ui/reconfigure"))
+            .bearer_auth(key)
+            // Recarregar pesos é minutos, não segundos.
+            .timeout(REDEPLOY_READY_TIMEOUT)
+            .json(&json!({ "params": params, "slice": slice }))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                let status = r.status();
+                let detalhe = r.text().await.unwrap_or_default();
+                return Some(format!("a máquina recusou: HTTP {status} {detalhe}"));
+            }
+            Err(e) => return Some(format!("máquina inacessível: {e}")),
+        }
+    }
+
+    // A chamada só dispara a carga; espera a máquina reportar `ready`.
+    if let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) {
+        if let Err(e) = wait_for_peer_serving_with_timeout(state, peer, REDEPLOY_READY_TIMEOUT).await {
+            return Some(e);
+        }
+    }
+    None
+}
+
+/// O `redeploy` antigo: reconfigura cada nó no lugar, sem unload. Só o Tensor
+/// Parallelism ainda usa este caminho - ver `run_redeploy`.
+async fn run_redeploy_in_place(
+    state: &GatewayState,
+    peers: &[PeerInfo],
+    registro: &mut crate::deployment::Deployment,
+    req: &RedeployRequest,
+    self_id: &str,
+    key: &str,
+    job_id: &str,
+) -> Result<usize, String> {
+    let total = registro.nodes.len().max(1);
+    let mut resultados: Vec<RedeployOutcome> = Vec::new();
+    let mut aceitos: HashMap<String, RuntimeParams> = HashMap::new();
+
+    for (i, no) in registro.nodes.iter().enumerate() {
+        set_job(
+            job_id,
+            "running",
+            "recarregando",
+            &format!("{} ({}/{})", no.hostname, i + 1, total),
+        )
+        .await;
+        set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
+
+        let mut params = req.params.clone();
+        if let Some(ajuste) = req.per_node.get(&no.node_id) {
+            if let Some(g) = ajuste.n_gpu_layers {
+                params.n_gpu_layers = g;
+            }
+            if let Some(k) = ajuste.offload_kqv {
+                params.offload_kqv = k;
+            }
+        }
+
+        match reconfigure_one(state, peers, &no.node_id, self_id, key, &params).await {
+            None => {
+                info!("redeploy (tp): {} recarregada", no.hostname);
+                aceitos.insert(no.node_id.clone(), params);
+                resultados.push(RedeployOutcome {
+                    node_id: no.node_id.clone(),
+                    hostname: no.hostname.clone(),
+                    reconfigured: true,
+                    error: None,
+                });
+            }
+            Some(e) => {
+                warn!("redeploy (tp): {} não recarregou: {e}", no.hostname);
+                resultados.push(RedeployOutcome {
+                    node_id: no.node_id.clone(),
+                    hostname: no.hostname.clone(),
+                    reconfigured: false,
+                    error: Some(e),
+                });
+            }
+        }
+    }
+
+    finish_redeploy(state, registro, aceitos, resultados, job_id).await
 }
 
 async fn validate_redeploy_wire_dtype(
@@ -5534,7 +5860,8 @@ async fn reconfigure_one(
     let corpo = json!({ "params": params });
 
     if node_id == self_id {
-        let resposta = crate::webui::reconfigure_local(state.clone(), params.clone()).await;
+        let resposta =
+            crate::webui::reconfigure_local(state.clone(), params.clone(), None).await;
         return resposta.err();
     }
 
@@ -5582,6 +5909,7 @@ mod deployments_tests {
             peer_count: 1,
             primary: true,
             part_sha256: None,
+            source_model_path: None,
             tp_rank: None,
             config: RuntimeParams::default(),
         }
@@ -6958,6 +7286,7 @@ mod redeploy_preflight_tests {
                 peer_count: 1,
                 primary: true,
                 part_sha256: None,
+                source_model_path: None,
                 tp_rank: None,
                 config: RuntimeParams::default(),
             }],
@@ -7147,6 +7476,133 @@ mod redeploy_preflight_tests {
         assert!(
             error.contains("ksia") && error.contains("ocupado"),
             "{error}"
+        );
+    }
+
+    /// Um nó (`peer-a`) que não está servindo nada: `/api/ui/node` diz
+    /// `config: null` até `/api/ui/reconfigure` ser chamado, e aí passa a
+    /// dizer `ready`. É o caso que quebrava o `redeploy` antigo.
+    async fn peer_not_serving() -> (u16, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
+        let seq = Arc::new(AtomicU32::new(0));
+        let reconfigured_at = Arc::new(AtomicU32::new(0));
+        let unloaded_at = Arc::new(AtomicU32::new(0));
+        let serving = Arc::new(AtomicBool::new(false));
+
+        let seq_u = seq.clone();
+        let unloaded_at_r = unloaded_at.clone();
+        let seq_r = seq.clone();
+        let reconfigured_at_r = reconfigured_at.clone();
+        let serving_r = serving.clone();
+        let serving_n = serving.clone();
+
+        let app = Router::new()
+            .route(
+                "/api/ui/unload",
+                axum_post(move || {
+                    let seq = seq_u.clone();
+                    let at = unloaded_at_r.clone();
+                    async move {
+                        at.store(seq.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                        Json(json!({ "unloaded": true }))
+                    }
+                }),
+            )
+            .route(
+                "/api/ui/reconfigure",
+                axum_post(move || {
+                    let seq = seq_r.clone();
+                    let at = reconfigured_at_r.clone();
+                    let serving = serving_r.clone();
+                    async move {
+                        at.store(seq.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                        serving.store(true, Ordering::SeqCst);
+                        Json(json!({ "reconfigured": true }))
+                    }
+                }),
+            )
+            .route(
+                "/api/ui/node",
+                axum_get(move || {
+                    let serving = serving_n.clone();
+                    async move {
+                        if serving.load(Ordering::SeqCst) {
+                            Json(json!({
+                                "config": {"model_path": "/models/active.gguf", "model_label": "qwen"},
+                                "status": {"state": "ready"},
+                                "active_model": "qwen",
+                                "active_deployment": "d-aaaaaaaa"
+                            }))
+                        } else {
+                            Json(json!({
+                                "config": null,
+                                "status": {"state": "disabled"},
+                                "active_model": "",
+                                "active_deployment": ""
+                            }))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (port, seq, reconfigured_at, unloaded_at)
+    }
+
+    fn whole_record() -> Deployment {
+        Deployment::new(
+            "d-aaaaaaaa".into(),
+            DeploymentKind::Whole,
+            crate::deployment::DeploymentModel {
+                label: "qwen".into(),
+                total_layers: 32,
+                pom_id: None,
+                identity: None,
+            },
+            "coordinator",
+            vec![DeploymentNode {
+                node_id: "peer-a".into(),
+                hostname: "ksia".into(),
+                start_layer: 0,
+                end_layer: 31,
+                peer_index: 0,
+                peer_count: 1,
+                primary: true,
+                part_sha256: None,
+                source_model_path: None,
+                tp_rank: None,
+                config: RuntimeParams::default(),
+            }],
+        )
+    }
+
+    #[tokio::test]
+    async fn a_node_that_is_not_serving_is_relaunched_not_failed() {
+        let (port, _seq, reconfigured_at, unloaded_at) = peer_not_serving().await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "redeploy-down").await;
+
+        let falhas = run_redeploy(
+            state,
+            whole_record(),
+            RedeployRequest {
+                params: RuntimeParams::default(),
+                per_node: HashMap::new(),
+            },
+            "redeploy-down",
+        )
+        .await
+        .expect("o redeploy não deve falhar de vez");
+
+        assert_eq!(falhas, 0, "a máquina que não servia deve ser subida, não contada como falha");
+        assert!(reconfigured_at.load(Ordering::SeqCst) > 0, "/api/ui/reconfigure deve ser chamado");
+        assert!(
+            unloaded_at.load(Ordering::SeqCst) < reconfigured_at.load(Ordering::SeqCst),
+            "o unload vem antes da subida (unload={}, reconfigure={})",
+            unloaded_at.load(Ordering::SeqCst),
+            reconfigured_at.load(Ordering::SeqCst),
         );
     }
 }

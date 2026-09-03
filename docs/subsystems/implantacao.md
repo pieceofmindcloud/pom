@@ -507,6 +507,39 @@ ativo. A espera tem limite de 30 segundos por rodada; se um peer continuar
 ocupado, o job falha nomeando a máquina e seu último estado. Falha de unload
 também bloqueia a nova implantação e preserva no job o motivo retornado.
 
+### "Recarregar com estes valores" (`POST /api/ui/deployments/:id/redeploy`)
+
+Mesma implantação, mesmo `deploy_id`, mesmas máquinas e faixas - só os
+parâmetros mudam, então **não re-planeja** (re-planejar cunharia um
+`deploy_id` novo e quebraria clientes presos a `modelo@deploy_id`).
+`run_redeploy` (`deploy.rs`):
+
+1. **Fotografa** o `NodeConfig` vivo de cada nó (`model_path`, `model_label`,
+   `deployment_name`, `no_embeddings`) - o registro guarda faixa, posição,
+   `part_sha256` e `source_model_path` (o arquivo que aquele nó carregou), mas
+   um registro antigo pode não ter nenhum caminho.
+2. **Descarrega** toda máquina que ainda anuncia este `deploy_id`
+   (`release_one` em paralelo, o mesmo `/api/ui/unload` do undeploy). Uma
+   máquina órfã que saiu do plano também é liberada aqui.
+3. **Sobe uma de cada vez**, esperando cada uma reportar `ready` antes da
+   próxima (`wait_for_peer_serving_with_timeout`, teto de 30 min): sequencial
+   de propósito, para não empilhar picos de VRAM. Cada nó recebe
+   `/api/ui/reconfigure` com um `ReconfigureSlice` montado da fotografia + do
+   registro; `reconfigure_local` reconstrói o `NodeConfig` a partir dele
+   **sirva o nó algo ou não**. O arquivo é resolvido em três degraus: o
+   `model_path` fotografado (ou `source_model_path` do registro); o
+   `part_sha256` (`transfer::find_part`); e, sem hash de parte - modelo
+   inteiro ou fatia de rodada antiga -, o catálogo local casando rótulo do
+   modelo + faixa de camadas (`resolve_deployment_slice_file`). Um nó que não
+   tem mais o arquivo por nenhum dos três devolve um erro nomeando a faixa,
+   não um 500 mudo.
+4. Grava no registro só os parâmetros que cada máquina aceitou e publica.
+
+O job carrega o resultado por máquina em `outputs` (`"<host>: <motivo>"`), que
+a tela de Implantações mostra abaixo da contagem. Tensor Parallelism mantém o
+caminho antigo (`reconfigure` no lugar, sem unload): a coletiva não sobrevive
+a um unload e o registro não guarda o `TpLaunch` inteiro.
+
 ## 8. Aplicar e servir uma fatia (`webui.rs`)
 
 `POST /api/ui/apply` (aplicado pelo `deploy` a cada alvo) leva um `ApplyRequest`:

@@ -122,6 +122,12 @@ pub struct DeploymentNode {
     /// A parte que este nó carrega, endereçada por conteúdo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_sha256: Option<String>,
+    /// O arquivo que este nó carregou, no disco dele. Num modelo inteiro é o
+    /// próprio GGUF; numa fatia sem `part_sha256` (rodada antiga) é o único
+    /// ponteiro para o arquivo. Registros antigos não têm este campo e o
+    /// `redeploy` resolve o arquivo pelo catálogo local nesse caso.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_model_path: Option<String>,
     /// Rank e tamanho do grupo, num deploy de tensor parallelism.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tp_rank: Option<u32>,
@@ -374,6 +380,7 @@ mod tests {
             peer_count: total,
             primary: indice == 0,
             part_sha256: None,
+            source_model_path: None,
             tp_rank: None,
             config: crate::webui::RuntimeParams::default(),
         }

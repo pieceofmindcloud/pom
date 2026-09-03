@@ -148,6 +148,15 @@ function RedeployDialog({
             <div className="space-y-2 px-4 py-3">
               <div className="text-sm text-fg">{job.message || job.step}</div>
               <Progress value={job.progress ?? 0} />
+              {job.outputs.length > 0 && (
+                <ul className="mt-2 space-y-1 border-t border-line pt-2 text-[0.72rem] text-muted">
+                  {job.outputs.map((output) => (
+                    <li key={output} className="break-path font-mono">
+                      {output}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </Panel>
         )}

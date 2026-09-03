@@ -95,7 +95,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   virtuais de container não entram nos candidatos automáticos. Quando o
   servidor de inferência está carregado, o anúncio também inclui
   `inference/remote-token-stream-v1`, que permite ao gateway remoto pedir o
-  laço de decode com callbacks em lotes limitados. A capability
+  laço de decode com callbacks em lotes limitados. O mesmo anúncio leva
+  `transport/link-v1`, a ligação persistente entre andares (`/v1/link`), que é
+  servida pelo mesmo router das demais rotas `/v1`. A capability
   `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
   um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
   queda não anunciam capacidade de inferência. `runtime_capacity` só entra
@@ -242,3 +244,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   chama `announce` num nó não destacado. Rodar `cargo test` ao lado de um
   cluster vivo injeta mensagens de teste nele - foi assim que o id `"eu"` chegou
   ao nó do captain.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

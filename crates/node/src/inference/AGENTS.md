@@ -57,8 +57,27 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
   somente capabilities que o endpoint falso implementa.
+- `link.rs` (860) - a ligação persistente entre andares
+  (`transport/link-v1`, `POST /v1/link`): um corpo de ida em fluxo e um corpo
+  de volta em fluxo carregando quadros `frame/v1-batch` sucessivos, em vez de
+  uma requisição por ativação. Os quadros vão num envelope
+  `[tamanho][status][batch_id][corpo]`; o `batch_id` - o mesmo do
+  `BatchCoordinator` - correlaciona ida e volta e é o que permite várias
+  sessões no mesmo canal. Um canal por aresta (`node_id` + URL), aberto sob
+  trava para duas travessias concorrentes compartilharem a ligação. Falha de
+  transporte degrada para a escada de sempre; o destino que não abriu fica 30 s
+  em quarentena. Recusa HTTP do peer é final e não é repetida por outra via.
+  O receptor reconfere a credencial **a cada quadro**
+  (`inference_credential_is_valid`), porque uma conexão longa autenticada só na
+  abertura manteria válida por horas uma chave revogada por outro processo.
+  Ver `docs/subsystems/inferencia.md` §2.1.
+- `link_lab.rs` (520, `#![cfg(test)]`) - a bancada do custo de rede por ficha
+  no salto interno: hops falsos servidos por cima de um `TcpStream` com
+  contador, para o número sair dos bytes que passaram no soquete e não de
+  estimativa. Compara a mesma cadeia com e sem `transport/link-v1` e guarda a
+  comparação (não o tempo absoluto, que depende da máquina).
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
-  `/v1/step-stream`,
+  `/v1/step-stream`, `/v1/link`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
@@ -866,10 +885,18 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
-  também identifica `transport` (`local`, `libp2p-tunnel`, `https` ou
-  `remote-stream`) e se o
-  HTTPS foi fallback depois de falha do túnel.
-- O transporte normal tenta o túnel libp2p/Noise antes do cliente HTTP pinado;
+  também identifica `transport` (`local`, `libp2p-tunnel`, `https`,
+  `https-link` ou `remote-stream`) e se o transporte usado foi fallback depois
+  de falha de outro.
+- `send_batch_body` é o único ponto por onde todo lote remoto passa, e é ali
+  que a escada de transporte vive, nesta ordem: canal persistente
+  (`link::send_batch`, quando o hop anuncia `transport/link-v1`), túnel libp2p,
+  HTTPS por requisição. Cada degrau só é usado depois de o anterior falhar por
+  **transporte**; uma recusa HTTP do peer é final em qualquer degrau, porque
+  trocar de via não muda uma resposta considerada. O degrau usado vira
+  `transport`, e ter descido a escada vira `transport_fallback`.
+- O transporte por requisição tenta o túnel libp2p/Noise antes do cliente HTTP
+  pinado;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de
   topologia. O `round_trip_ms` de `SentFrame` inclui processamento remoto e
   não alimenta a tabela direcional de rotas.
@@ -1007,6 +1034,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   pedido de uma sessão usa o mesmo protocolo por meio de
   `encode_batch_single`/`decode_batch_single`. Não existe fallback para frames
   v1/v2 anteriores, pois o produto ainda não foi lançado.
+- **O caminho quente não copia o tensor à toa.** `encode_batch_items` escreve o
+  tensor uma vez, direto no buffer que vai para o fio (as posições saem de
+  `tensor_payload_len`, que as calcula sem alocar; `frame_prefix` já dimensiona
+  o buffer). `split_frame` separa header e payload **emprestando** o payload, e
+  `decode_batch_items`/`decode_batch_single` saem daí. `peek_batch_header` e
+  `validate_batch_bytes` leem só o header, para quem precisa da rota, do
+  `batch_id`, da contagem de itens ou de uma validação não copiar o estado
+  oculto inteiro. `validate_items` expressa a validação sobre o **tamanho** do
+  payload, que é o que torna as duas coisas possíveis. A conversão passa por um
+  bloco de pilha: crescer o vetor valor a valor custa mais que a conversão em
+  si. Números em `docs/subsystems/inferencia.md` §2.2.
 - `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
   o fio oficial é sempre `inference/frame-v1-batch`. O helper
   `encode_with_encoding` é exclusivo da prova de equivalência em testes;

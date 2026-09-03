@@ -162,6 +162,13 @@ pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 /// when it is unavailable or fails at the transport layer.
 pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
 
+/// Advertised when the node serves `/v1/link`: one long-lived HTTP body pair
+/// carrying successive `frame/v1-batch` frames instead of a fresh request per
+/// activation. Checked **per-hop**, like the tunnel: the caller opens the
+/// channel when the next hop advertises it, and any transport failure degrades
+/// to the request-per-frame ladder without ending the generation.
+pub const CAP_LINK_STREAM: &str = "transport/link-v1";
+
 /// Advertised only while the local inference server has the validated
 /// multi-item scheduler active. It is the first and only inference frame
 /// contract; peers are never downgraded to an older wire format.

@@ -463,6 +463,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "brand"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2577,6 +2585,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "llama-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brand",
+ "cc",
+ "chrono",
+ "half",
+ "hex",
+ "llama-cpp-sys-2",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2888,17 +2917,16 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
- "cc",
+ "brand",
  "chrono",
  "clap",
  "ed25519-dalek 2.2.0",
  "futures",
- "half",
  "hex",
  "hyper",
  "hyper-util",
  "libp2p",
- "llama-cpp-sys-2",
+ "llama-engine",
  "md-5",
  "memmap2",
  "mime_guess",

@@ -29,7 +29,12 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   motivo de falha da coletiva de dentro do decode; `node` instala as funções
   reais (`tp::install_probe`) no arranque. Sem instalação, `is_active()` é
   `false` (caminho não-TP).
-- `wire.rs` - formato binário do estado oculto entre peers (f16/f8, zstd).
+- `wire.rs` - formato binário do estado oculto entre peers (f16/f8, zstd). O
+  caminho quente não copia o tensor à toa: `encode_batch_items` escreve direto
+  no buffer que vai para o fio, `split_frame` empresta o payload em vez de o
+  copiar, e `peek_batch_header`/`validate_batch_bytes` leem só o cabeçalho para
+  quem precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
+  `docs/subsystems/inferencia.md` §2.2.
 - `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo modelos
   multipart. `kv_budget.rs` - orçamento de bytes do cache KV por geometria.
 - `kv_cache.rs` - `KvCacheType` (era `node/src/utils/config.rs`; `Config` de

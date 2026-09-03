@@ -2145,21 +2145,47 @@ async fn require_inference_auth(
         return (StatusCode::UNAUTHORIZED, "missing inference credential").into_response();
     };
 
-    let valid = {
-        let cfg = config.read().await;
-        if !cfg.connection_key.is_empty() && token == cfg.connection_key {
-            true
-        } else if let Some(database) = database {
-            database.api_key_for_token(token).ok().flatten().is_some()
-        } else {
-            crate::auth::is_valid_inference_token(&cfg, token)
-        }
-    };
-    if !valid {
+    if !inference_credential_is_valid(&config, database.as_ref(), token).await {
         return (StatusCode::FORBIDDEN, "invalid inference credential").into_response();
     }
 
     next.run(request).await
+}
+
+/// A regra de credencial da porta de inferência, isolada do middleware porque
+/// o canal persistente (`/v1/link`) precisa **da mesma regra por quadro**.
+///
+/// Uma conexão longa que autenticasse só na abertura manteria válida por horas
+/// uma API key revogada por outro processo - exatamente o que a revalidação por
+/// requisição existe para impedir. O custo é o mesmo de hoje: tráfego entre
+/// peers casa na `connection_key` e nem chega ao banco.
+pub(crate) async fn inference_credential_is_valid(
+    config: &crate::auth::AuthState,
+    database: Option<&Arc<crate::db::PomDb>>,
+    token: &str,
+) -> bool {
+    let cfg = config.read().await;
+    if !cfg.connection_key.is_empty() && token == cfg.connection_key {
+        return true;
+    }
+    match database {
+        Some(database) => database.api_key_for_token(token).ok().flatten().is_some(),
+        None => crate::auth::is_valid_inference_token(&cfg, token),
+    }
+}
+
+/// A credencial que veio nos cabeçalhos, na mesma ordem que o middleware usa.
+fn inference_credential_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.strip_prefix("Bearer ").unwrap_or(value))
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        })
+        .map(ToOwned::to_owned)
 }
 
 impl InferState {
@@ -2674,6 +2700,29 @@ pub async fn run(
     };
     let inference_routes = inference_routes.with_state(app_state.clone());
 
+    // O canal persistente tem router próprio porque o estado dele carrega a
+    // credencial: o middleware confere a abertura, e o handler reconfere cada
+    // quadro. O limite de corpo é desligado aqui porque o corpo é a geração
+    // inteira, não um quadro - cada quadro dentro do fluxo continua limitado
+    // pelo enquadramento do canal.
+    let link_state = LinkState {
+        app: app_state.clone(),
+        auth: auth.clone().map(|auth| (auth, database.clone())),
+    };
+    let link_routes = Router::new().route(
+        crate::link::LINK_PATH,
+        post(handle_link).layer(DefaultBodyLimit::disable()),
+    );
+    let link_routes = if let Some(auth) = auth.clone() {
+        link_routes.layer(middleware::from_fn_with_state(
+            (auth, database.clone()),
+            require_inference_auth,
+        ))
+    } else {
+        link_routes
+    };
+    let link_routes = link_routes.with_state(link_state);
+
     let tp_routes = Router::new().route(
         "/v1/tp/reduce",
         post(handle_tp_reduce).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
@@ -2689,6 +2738,7 @@ pub async fn run(
     let tp_routes = tp_routes.with_state((tp_barrier, tp_size));
 
     let router = inference_routes
+        .merge(link_routes)
         .merge(
             Router::new()
                 .route("/health", get(handle_health))
@@ -3032,6 +3082,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         crate::pipeline::CAP_FRAME_BATCH,
         crate::pipeline::CAP_FRAME_DTYPE_F8,
         crate::pipeline::CAP_REMOTE_TOKEN_STREAM,
+        crate::pipeline::CAP_LINK_STREAM,
         "relay/v1-chain",
         "relay/v2-direct",
         "speculate/v1-lookup",
@@ -3521,9 +3572,12 @@ async fn handle_prefill(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Ok(batch) = wire::decode_batch(&body) {
-        if batch.items.len() > 1 {
-            return handle_prefill_batch(app, headers, batch).await;
+    // Ver a nota gêmea em `handle_step`: o cabeçalho basta para saber se o
+    // quadro é um lote.
+    if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
+        match wire::decode_batch(&body) {
+            Ok(batch) => return handle_prefill_batch(app, headers, batch).await,
+            Err(error) => return err400(format!("quadro inválido: {error}")),
         }
     }
     // A one-item frame is still a batch frame: the gateway's
@@ -5312,9 +5366,13 @@ async fn handle_step(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Ok(batch) = wire::decode_batch(&body) {
-        if batch.items.len() > 1 {
-            return handle_step_batch(app, headers, batch).await;
+    // Só o cabeçalho é lido aqui: um quadro de um item - o caso normal de
+    // todo salto interno - não pode pagar uma cópia do estado oculto inteiro
+    // só para descobrir que não é um lote.
+    if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
+        match wire::decode_batch(&body) {
+            Ok(batch) => return handle_step_batch(app, headers, batch).await,
+            Err(error) => return err400(format!("quadro inválido: {error}")),
         }
     }
     // See the matching guard in `handle_prefill`: a one-item batch must not
@@ -5625,6 +5683,44 @@ async fn handle_step(
             .into_response(),
         Err(e) => err500(e),
     }
+}
+
+/// Estado do canal persistente: o do servidor de inferência, mais a credencial
+/// que precisa ser reconferida a cada quadro. Ver
+/// [`inference_credential_is_valid`].
+#[derive(Clone)]
+struct LinkState {
+    app: InferenceAppState,
+    auth: Option<(crate::auth::AuthState, Option<Arc<crate::db::PomDb>>)>,
+}
+
+/// Serve a ligação persistente da aresta da pipeline. Cada quadro que chega
+/// pelo fluxo é despachado pela mesma tabela de rotas em processo que o
+/// caminho por requisição usa (`InProcessInference::dispatch`), então canal e
+/// requisição executam exatamente o mesmo código de inferência - e passam pela
+/// mesma conferência de credencial.
+async fn handle_link(
+    State(state): State<LinkState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Response {
+    let token = inference_credential_from_headers(&headers);
+    crate::link::serve(body, move |path, bytes| {
+        let state = state.clone();
+        let token = token.clone();
+        async move {
+            if let Some((config, database)) = &state.auth {
+                let Some(token) = token else {
+                    return Err(anyhow::anyhow!("quadro de canal sem credencial"));
+                };
+                if !inference_credential_is_valid(config, database.as_ref(), &token).await {
+                    return Err(anyhow::anyhow!("credencial de inferência inválida"));
+                }
+            }
+            use crate::relay::InProcessInference;
+            state.app.dispatch(&path, bytes).await
+        }
+    })
 }
 
 /// Starts a decode session owned by the remote peer. The response only

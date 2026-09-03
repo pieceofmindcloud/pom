@@ -179,12 +179,18 @@ pub fn encode_batch(batch: &BatchFrame) -> Result<Vec<u8>> {
             MAX_BATCH_HEADER_BYTES
         ));
     }
-    frame_bytes(header, batch.payload.clone())
+    frame_bytes(header, &batch.payload)
 }
 
 /// Build a batch from independently owned inference items. Each item's
 /// metadata is copied into the header, while all tensors share one contiguous
 /// payload. The caller is responsible for grouping only compatible routes.
+/// O tensor é escrito **uma vez**, direto no buffer que vai para o fio: as
+/// posições de cada item saem de [`tensor_payload_len`], que as calcula sem
+/// alocar, e o cabeçalho JSON fica pronto antes de qualquer conversão. Antes
+/// os mesmos bytes eram tocados quatro vezes (converter, concatenar, clonar a
+/// `BatchFrame`, copiar para a saída) - num salto de 5120 dimensões em f16 é
+/// 8 KiB copiados três vezes por travessia, por sessão.
 pub fn encode_batch_items(
     kind: impl Into<String>,
     batch_id: impl Into<String>,
@@ -192,8 +198,8 @@ pub fn encode_batch_items(
 ) -> Result<Vec<u8>> {
     let kind = kind.into();
     let batch_id = batch_id.into();
-    let mut payload = Vec::new();
     let mut headers = Vec::with_capacity(items.len());
+    let mut payload_len = 0usize;
     for item in items {
         if item.item_id.trim().is_empty() {
             return Err(anyhow!("batch item sem item_id"));
@@ -201,9 +207,13 @@ pub fn encode_batch_items(
         if item.session_id.trim().is_empty() {
             return Err(anyhow!("batch item {} sem session_id", item.item_id));
         }
-        let (shape, bytes) = encode_tensor_payload(item.tensor.as_ref(), item.dtype)?;
-        let offset = payload.len();
-        payload.extend_from_slice(&bytes);
+        let (shape, len) = match item.tensor.as_ref() {
+            Some((values, shape)) => (
+                shape.clone(),
+                tensor_payload_len(Some((values.as_slice(), shape.clone())), item.dtype)?,
+            ),
+            None => (vec![0, 0], 0),
+        };
         let mut meta = item.meta.clone();
         if !meta.is_object() {
             return Err(anyhow!(
@@ -219,23 +229,52 @@ pub fn encode_batch_items(
             session_id: item.session_id.clone(),
             shape,
             dtype: item.dtype.as_str().into(),
-            offset,
-            len: bytes.len(),
+            offset: payload_len,
+            len,
             meta,
         });
+        payload_len = payload_len
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("payload do batch excede o limite numérico"))?;
     }
-    encode_batch(&BatchFrame {
+    validate_items(BATCH_FRAME_VERSION, &kind, &batch_id, &headers, payload_len)?;
+    let header = serde_json::to_vec(&BatchHeader {
         version: BATCH_FRAME_VERSION,
         kind,
         batch_id,
         items: headers,
-        payload,
-    })
+    })?;
+    if header.len() > MAX_BATCH_HEADER_BYTES {
+        return Err(anyhow!(
+            "cabeçalho do batch excede o limite de {} bytes",
+            MAX_BATCH_HEADER_BYTES
+        ));
+    }
+    let mut out = frame_prefix(&header, payload_len)?;
+    for item in items {
+        if let Some((values, shape)) = item.tensor.as_ref() {
+            encode_values_into(values, shape, item.dtype, &mut out)?;
+        }
+    }
+    Ok(out)
 }
 
-/// Decode and fully validate a multi-item frame before exposing any tensor
-/// region to inference code.
-pub fn decode_batch(buf: &[u8]) -> Result<BatchFrame> {
+/// Identificação de um quadro lida **sem** copiar o payload: é o suficiente
+/// para rotear o quadro (o `kind` é a rota) e para decidir se ele carrega um
+/// ou vários itens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchHeaderInfo {
+    pub version: u32,
+    pub kind: String,
+    pub batch_id: String,
+    pub item_count: usize,
+}
+
+/// Separa `[4B tamanho][cabeçalho JSON]` do payload, **emprestando** o payload
+/// do buffer recebido. É o caminho de decodificação quente: copiar o payload
+/// aqui custa uma cópia do estado oculto inteiro em cada travessia, de cada
+/// lado.
+fn split_frame(buf: &[u8]) -> Result<(BatchHeader, &[u8])> {
     if buf.len() < 4 {
         return Err(anyhow!("quadro batch curto demais: {} bytes", buf.len()));
     }
@@ -253,12 +292,45 @@ pub fn decode_batch(buf: &[u8]) -> Result<BatchFrame> {
         return Err(anyhow!("cabeçalho do batch truncado"));
     }
     let header: BatchHeader = serde_json::from_slice(&buf[4..head_end])?;
+    Ok((header, &buf[head_end..]))
+}
+
+/// Lê a identidade do quadro sem tocar no tensor. Quem só precisa saber a
+/// rota, o `batch_id` ou quantos itens vêm no quadro usa isto.
+pub fn peek_batch_header(buf: &[u8]) -> Result<BatchHeaderInfo> {
+    let (header, payload) = split_frame(buf)?;
+    validate_items(
+        header.version,
+        &header.kind,
+        &header.batch_id,
+        &header.items,
+        payload.len(),
+    )?;
+    Ok(BatchHeaderInfo {
+        version: header.version,
+        kind: header.kind,
+        batch_id: header.batch_id,
+        item_count: header.items.len(),
+    })
+}
+
+/// Confere que os bytes formam um quadro batch válido, sem copiar nem
+/// converter nada. É o que um transporte quer antes de repassar o corpo
+/// adiante.
+pub fn validate_batch_bytes(buf: &[u8]) -> Result<()> {
+    peek_batch_header(buf).map(|_| ())
+}
+
+/// Decode and fully validate a multi-item frame before exposing any tensor
+/// region to inference code.
+pub fn decode_batch(buf: &[u8]) -> Result<BatchFrame> {
+    let (header, payload) = split_frame(buf)?;
     let batch = BatchFrame {
         version: header.version,
         kind: header.kind,
         batch_id: header.batch_id,
         items: header.items,
-        payload: buf[head_end..].to_vec(),
+        payload: payload.to_vec(),
     };
     validate_batch(&batch)?;
     Ok(batch)
@@ -266,12 +338,20 @@ pub fn decode_batch(buf: &[u8]) -> Result<BatchFrame> {
 
 /// Decode every item in a validated frame. Validation happens before any
 /// tensor conversion, so a malformed item cannot partially touch inference
-/// state.
-pub fn decode_batch_items(buf: &[u8]) -> Result<(BatchFrame, Vec<DecodedBatchItem>)> {
-    let batch = decode_batch(buf)?;
-    let mut decoded = Vec::with_capacity(batch.items.len());
-    for item in &batch.items {
-        let (meta, tensor) = decode_batch_item(&batch, item)?;
+/// state. O payload é lido **emprestado** do buffer recebido: a única cópia do
+/// tensor é a expansão para f32 que a inferência consome.
+pub fn decode_batch_items(buf: &[u8]) -> Result<(BatchHeaderInfo, Vec<DecodedBatchItem>)> {
+    let (header, payload) = split_frame(buf)?;
+    validate_items(
+        header.version,
+        &header.kind,
+        &header.batch_id,
+        &header.items,
+        payload.len(),
+    )?;
+    let mut decoded = Vec::with_capacity(header.items.len());
+    for item in &header.items {
+        let (meta, tensor) = decode_item_from(payload, &header.batch_id, item)?;
         decoded.push(DecodedBatchItem {
             item_id: item.item_id.clone(),
             meta,
@@ -279,7 +359,15 @@ pub fn decode_batch_items(buf: &[u8]) -> Result<(BatchFrame, Vec<DecodedBatchIte
             dtype: WireDtype::parse(&item.dtype)?,
         });
     }
-    Ok((batch, decoded))
+    Ok((
+        BatchHeaderInfo {
+            version: header.version,
+            kind: header.kind,
+            batch_id: header.batch_id,
+            item_count: header.items.len(),
+        },
+        decoded,
+    ))
 }
 
 /// Re-encode one item from a batch as a one-item batch. This is used by the
@@ -363,14 +451,20 @@ pub fn encode_batch_single(
 /// Decode a one-item frame for call sites that need the convenient historical
 /// `(meta, tensor)` shape. Multi-item receivers use `decode_batch_items`.
 pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
-    let batch = decode_batch(buf)?;
-    if batch.items.len() != 1 {
+    let (header, payload) = split_frame(buf)?;
+    validate_items(
+        header.version,
+        &header.kind,
+        &header.batch_id,
+        &header.items,
+        payload.len(),
+    )?;
+    if header.items.len() != 1 {
         return Err(anyhow!(
             "o endpoint de inferência ainda aceita um item por quadro batch"
         ));
     }
-    let item = &batch.items[0];
-    decode_batch_item(&batch, item)
+    decode_item_from(payload, &header.batch_id, &header.items[0])
 }
 
 /// Decode the canonical inference request. All inference traffic is a batch
@@ -380,32 +474,51 @@ pub fn decode_inference_request(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, 
 }
 
 fn validate_batch(batch: &BatchFrame) -> Result<()> {
-    if batch.version != BATCH_FRAME_VERSION {
+    validate_items(
+        batch.version,
+        &batch.kind,
+        &batch.batch_id,
+        &batch.items,
+        batch.payload.len(),
+    )
+}
+
+/// A validação inteira do quadro expressa sobre o **tamanho** do payload, não
+/// sobre o payload. É o que permite validar sem copiar - e é a mesma regra
+/// para quem codifica (que ainda nem escreveu os bytes) e para quem decodifica.
+fn validate_items(
+    version: u32,
+    kind: &str,
+    batch_id: &str,
+    items: &[BatchItem],
+    payload_len: usize,
+) -> Result<()> {
+    if version != BATCH_FRAME_VERSION {
         return Err(anyhow!(
             "versão de batch inválida: {}, esperada {}",
-            batch.version,
+            version,
             BATCH_FRAME_VERSION
         ));
     }
-    if batch.kind.trim().is_empty() {
+    if kind.trim().is_empty() {
         return Err(anyhow!("batch sem kind"));
     }
-    if batch.batch_id.trim().is_empty() {
+    if batch_id.trim().is_empty() {
         return Err(anyhow!("batch sem batch_id"));
     }
-    if batch.items.is_empty() {
+    if items.is_empty() {
         return Err(anyhow!("batch sem itens"));
     }
-    if batch.payload.len() > MAX_FRAME_PAYLOAD_BYTES {
+    if payload_len > MAX_FRAME_PAYLOAD_BYTES {
         return Err(anyhow!(
             "payload do batch excede limite de {} bytes",
             MAX_FRAME_PAYLOAD_BYTES
         ));
     }
 
-    let mut item_ids = HashSet::with_capacity(batch.items.len());
-    let mut ranges = Vec::with_capacity(batch.items.len());
-    for item in &batch.items {
+    let mut item_ids = HashSet::with_capacity(items.len());
+    let mut ranges = Vec::with_capacity(items.len());
+    for item in items {
         if item.item_id.trim().is_empty() {
             return Err(anyhow!("item sem item_id"));
         }
@@ -431,7 +544,7 @@ fn validate_batch(batch: &BatchFrame) -> Result<()> {
             .offset
             .checked_add(item.len)
             .ok_or_else(|| anyhow!("offset do item {} excede o limite", item.item_id))?;
-        if end > batch.payload.len() {
+        if end > payload_len {
             return Err(anyhow!("item {} aponta para fora do payload", item.item_id));
         }
         ranges.push((item.offset, end, item.item_id.as_str()));
@@ -446,34 +559,18 @@ fn validate_batch(batch: &BatchFrame) -> Result<()> {
     Ok(())
 }
 
-fn encode_tensor_payload(
-    tensor: Option<&(Vec<f32>, TensorShape)>,
-    dtype: WireDtype,
-) -> Result<(TensorShape, Vec<u8>)> {
-    let Some((values, shape)) = tensor else {
-        return Ok((vec![0, 0], Vec::new()));
-    };
-    let expected_values = checked_tensor_values(shape)?;
-    if values.len() != expected_values {
-        return Err(anyhow!(
-            "tensor com {} valores não bate com shape {:?}",
-            values.len(),
-            shape
-        ));
-    }
-    let payload = encode_values(values, shape, dtype)?;
-    checked_tensor_bytes(shape, dtype)?;
-    Ok((shape.clone(), payload))
-}
-
-fn decode_batch_item(
-    batch: &BatchFrame,
+fn decode_item_from(
+    payload: &[u8],
+    batch_id: &str,
     item: &BatchItem,
 ) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     let end = item
         .offset
         .checked_add(item.len)
         .ok_or_else(|| anyhow!("item excede o limite"))?;
+    if end > payload.len() {
+        return Err(anyhow!("item {} aponta para fora do payload", item.item_id));
+    }
     let mut meta = item.meta.clone();
     if !meta.is_object() {
         return Err(anyhow!("meta do item batch não é um objeto JSON"));
@@ -481,9 +578,9 @@ fn decode_batch_item(
     meta["dtype"] = Value::from(item.dtype.clone());
     meta["shape"] = Value::from(item.shape.clone());
     meta["frame_version"] = Value::from(BATCH_FRAME_VERSION);
-    meta["batch_id"] = Value::from(batch.batch_id.clone());
+    meta["batch_id"] = Value::from(batch_id.to_string());
     meta["item_id"] = Value::from(item.item_id.clone());
-    decode_tensor_payload(&meta, &batch.payload[item.offset..end])
+    decode_tensor_payload(&meta, &payload[item.offset..end])
 }
 
 /// Canonical one-item encoder used by control responses and by the few
@@ -515,13 +612,23 @@ pub fn encode_with_encoding(
     encode_batch_single(meta, tensor, dtype)
 }
 
-fn frame_bytes(head: Vec<u8>, payload: Vec<u8>) -> Result<Vec<u8>> {
+fn frame_bytes(head: Vec<u8>, payload: &[u8]) -> Result<Vec<u8>> {
+    let mut out = frame_prefix(&head, payload.len())?;
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+/// `[4-byte header length][JSON header]` já dimensionado para receber
+/// `payload_len` bytes de tensor logo em seguida. Existe para que o encoder de
+/// lote escreva o tensor **uma vez**, direto no buffer que vai para o fio, em
+/// vez de montar o payload à parte e copiá-lo no fim.
+fn frame_prefix(head: &[u8], payload_len: usize) -> Result<Vec<u8>> {
     if head.len() > u32::MAX as usize {
         return Err(anyhow!("cabeçalho excede o limite do protocolo"));
     }
     let frame_len = 4usize
         .checked_add(head.len())
-        .and_then(|len| len.checked_add(payload.len()))
+        .and_then(|len| len.checked_add(payload_len))
         .ok_or_else(|| anyhow!("corpo do frame excede o limite numérico"))?;
     if frame_len > MAX_FRAME_PAYLOAD_BYTES {
         return Err(anyhow!(
@@ -529,10 +636,9 @@ fn frame_bytes(head: Vec<u8>, payload: Vec<u8>) -> Result<Vec<u8>> {
             MAX_FRAME_PAYLOAD_BYTES
         ));
     }
-    let mut out = Vec::with_capacity(4 + head.len() + payload.len());
+    let mut out = Vec::with_capacity(frame_len);
     out.extend_from_slice(&(head.len() as u32).to_be_bytes());
-    out.extend_from_slice(&head);
-    out.extend_from_slice(&payload);
+    out.extend_from_slice(head);
     Ok(out)
 }
 
@@ -656,6 +762,20 @@ pub fn tensor_payload_len(
 }
 
 fn encode_values(values: &[f32], shape: &[usize], dtype: WireDtype) -> Result<Vec<u8>> {
+    let mut payload = Vec::with_capacity(checked_tensor_bytes(shape, dtype)?);
+    encode_values_into(values, shape, dtype, &mut payload)?;
+    Ok(payload)
+}
+
+/// Converte o tensor **direto** para o buffer de saída. Separado de
+/// [`encode_values`] porque o encoder de lote não quer o `Vec` intermediário:
+/// ele já sabe a posição final de cada item.
+fn encode_values_into(
+    values: &[f32],
+    shape: &[usize],
+    dtype: WireDtype,
+    out: &mut Vec<u8>,
+) -> Result<()> {
     let expected_values = checked_tensor_values(shape)?;
     if values.len() != expected_values {
         return Err(anyhow!(
@@ -664,19 +784,42 @@ fn encode_values(values: &[f32], shape: &[usize], dtype: WireDtype) -> Result<Ve
             shape
         ));
     }
-    let payload = match dtype {
-        WireDtype::F32 => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
-        WireDtype::F16 => values
-            .iter()
-            .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
-            .collect(),
-        WireDtype::F8 => values
-            .iter()
-            .map(|value| f32_to_f8_bits(*value))
-            .collect::<Result<Vec<_>>>()?,
-    };
-    checked_tensor_bytes(shape, dtype)?;
-    Ok(payload)
+    let bytes = checked_tensor_bytes(shape, dtype)?;
+    out.reserve(bytes);
+    // A conversão passa por um bloco na pilha em vez de crescer o vetor valor
+    // a valor: uma chamada de `extend_from_slice` por valor custa mais que a
+    // conversão em si, e foi medida em quase o dobro do enquadramento inteiro.
+    const BLOCO: usize = 1024;
+    match dtype {
+        WireDtype::F32 => {
+            let mut staging = [0u8; BLOCO * 4];
+            for block in values.chunks(BLOCO) {
+                for (slot, value) in staging.chunks_exact_mut(4).zip(block) {
+                    slot.copy_from_slice(&value.to_le_bytes());
+                }
+                out.extend_from_slice(&staging[..block.len() * 4]);
+            }
+        }
+        WireDtype::F16 => {
+            let mut staging = [0u8; BLOCO * 2];
+            for block in values.chunks(BLOCO) {
+                for (slot, value) in staging.chunks_exact_mut(2).zip(block) {
+                    slot.copy_from_slice(&f32_to_f16_bits(*value).to_le_bytes());
+                }
+                out.extend_from_slice(&staging[..block.len() * 2]);
+            }
+        }
+        WireDtype::F8 => {
+            let mut staging = [0u8; BLOCO];
+            for block in values.chunks(BLOCO) {
+                for (slot, value) in staging.iter_mut().zip(block) {
+                    *slot = f32_to_f8_bits(*value)?;
+                }
+                out.extend_from_slice(&staging[..block.len()]);
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── f16 conversion ───────────────────────────────────────────────────────────
@@ -822,6 +965,47 @@ fn f8_bits_to_f32(bits: u8) -> Result<f32> {
 
 #[cfg(test)]
 mod tests {
+    /// Custo do enquadramento por travessia, isolado do transporte: uma
+    /// codificação e uma decodificação de um item de `[1, 5120]` em f16 - a
+    /// forma exata do estado oculto de um salto interno do cluster do captain.
+    ///
+    /// Não afirma nada sobre tempo absoluto (a máquina de CI não é a do
+    /// captain); serve para registrar o número no commit e para tornar visível
+    /// uma regressão de ordem de grandeza. O teto é folgado de propósito.
+    #[test]
+    fn custo_do_enquadramento_por_travessia() {
+        use super::*;
+        const DIMS: usize = 5120;
+        const RODADAS: usize = 2000;
+        let tensor = vec![0.25f32; DIMS];
+        let items = [BatchPayloadItem {
+            item_id: "item-0".into(),
+            session_id: "s".into(),
+            meta: serde_json::json!({"session_id": "s", "is_last": true}),
+            tensor: Some((tensor.clone(), vec![1, DIMS])),
+            dtype: WireDtype::F16,
+        }];
+
+        let comecou = std::time::Instant::now();
+        let mut bytes = 0usize;
+        for _ in 0..RODADAS {
+            let encoded = encode_batch_items("/v1/step", "batch", &items).expect("codifica");
+            bytes += encoded.len();
+            let decoded = decode_batch_items(&encoded).expect("decodifica");
+            assert_eq!(decoded.1.len(), 1);
+        }
+        let por_travessia = comecou.elapsed().as_secs_f64() * 1e6 / RODADAS as f64;
+        println!(
+            "enquadramento: {por_travessia:.1} us/travessia, {} bytes/quadro",
+            bytes / RODADAS
+        );
+        assert!(
+            por_travessia < 2000.0,
+            "enquadramento de uma travessia levou {por_travessia:.1} us - \
+             ordem de grandeza acima do esperado"
+        );
+    }
+
     use super::*;
 
     #[test]

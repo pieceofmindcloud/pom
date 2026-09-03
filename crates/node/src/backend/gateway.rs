@@ -463,6 +463,7 @@ impl GatewayState {
                         crate::pipeline::CAP_FRAME_BATCH.into(),
                         crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
                         crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into(),
+                        crate::pipeline::CAP_LINK_STREAM.into(),
                         "relay/v1-chain".into(),
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),

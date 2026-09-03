@@ -33,6 +33,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `CAP_FRAME_BATCH` - capability `inference/frame-v1-batch`; o relay só envia
   depois que o peer anuncia o servidor carregado. Não há rolling upgrade para
   formatos anteriores nesta primeira versão do produto.
+- `CAP_LINK_STREAM` - capability `transport/link-v1`, verificada **por hop**
+  como a do túnel, não all-or-nothing: o chamador abre o canal persistente
+  quando o hop seguinte a anuncia, e qualquer falha de transporte desce para a
+  escada de sempre sem encerrar a geração. Ver `inference/link.rs`.
 - `CAP_FRAME_DTYPE_F8` e `PipelinePlan::validate_wire_dtype` - capability
   `inference/frame-v1-dtype-f8` e validação all-or-nothing da precisão f8 no
   plano inteiro; uma ausência identificada bloqueia o deploy ou a requisição
@@ -90,3 +94,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 ## Defeitos anotados
 
 Nenhum.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

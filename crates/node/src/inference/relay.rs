@@ -83,6 +83,10 @@ pub enum InferenceTransport {
     /// The remote decode stream's callback transport. It carries batches
     /// rather than one request/response per generated token.
     RemoteStream,
+    /// A ligação persistente entre andares (`transport/link-v1`): o mesmo
+    /// HTTPS pinado, mas um corpo em fluxo que carrega quadros sucessivos em
+    /// vez de uma requisição por ativação.
+    HttpsLink,
     Unknown,
 }
 
@@ -93,6 +97,7 @@ impl InferenceTransport {
             Self::Libp2pTunnel => "libp2p-tunnel",
             Self::Https => "https",
             Self::RemoteStream => "remote-stream",
+            Self::HttpsLink => "https-link",
             Self::Unknown => "unknown",
         }
     }
@@ -103,6 +108,7 @@ impl InferenceTransport {
             "libp2p-tunnel" => Self::Libp2pTunnel,
             "https" => Self::Https,
             "remote-stream" => Self::RemoteStream,
+            "https-link" => Self::HttpsLink,
             _ => Self::Unknown,
         }
     }
@@ -341,7 +347,7 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
         })
         .collect();
     let result = async {
-        let body = wire::encode_batch_items(&path, batch_id, &items)?;
+        let body = wire::encode_batch_items(&path, batch_id.clone(), &items)?;
         let first = calls.first().expect("non-empty calls");
         let response = send_batch_body(
             &first.clients,
@@ -349,7 +355,8 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
             first.tunnel.as_ref(),
             first.local.clone(),
             &first.path,
-            body,
+            &batch_id,
+            Bytes::from(body),
             first.attempts,
             &first.peer_label,
         )
@@ -876,13 +883,15 @@ struct BatchTransportResponse {
 /// Send one already encoded batch. The batch coordinator uses this function
 /// instead of recursively calling `send_frame_or_tunnel`, otherwise a flushed
 /// batch would immediately be queued as another batch forever.
+#[allow(clippy::too_many_arguments)]
 async fn send_batch_body(
     clients: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
     tunnel: Option<&TunnelOutboundSender>,
     local: Option<LocalInference>,
     path: &str,
-    body: Vec<u8>,
+    batch_id: &str,
+    body: Bytes,
     attempts: u32,
     peer_label: &str,
 ) -> Result<BatchTransportResponse> {
@@ -890,7 +899,7 @@ async fn send_batch_body(
         debug!(peer = peer_label, path, "inferência em processo em batch");
         let started = Instant::now();
         let bytes_sent = body.len() as u64;
-        let response = local.dispatch(path, Bytes::from(body)).await?;
+        let response = local.dispatch(path, body).await?;
         let status = response.status();
         let bytes =
             axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES).await?;
@@ -926,6 +935,46 @@ async fn send_batch_body(
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
     let mut transport_fallback = false;
+
+    // A ligação persistente vem antes porque é a única que não reconstrói a
+    // abstração de chamada por ativação. Quando ela não serve - peer sem a
+    // capability, endereço direto inalcançável, canal caído - a chamada segue
+    // pela escada de sempre e o `transport_fallback` diz que isso aconteceu.
+    if step.supports(crate::pipeline::CAP_LINK_STREAM)
+        && !crate::infer_tunnel::is_local_node(&step.node_id)
+    {
+        match crate::link::send_batch(
+            clients,
+            &step.node_id,
+            &step.inference_url,
+            batch_id,
+            body.clone(),
+            peer_label,
+        )
+        .await
+        {
+            Ok(response) => {
+                return Ok(BatchTransportResponse {
+                    body: response.body,
+                    round_trip_ms: response.round_trip_ms,
+                    bytes_sent: response.bytes_sent,
+                    client_encode_ms: 0,
+                    response_headers_ms: 0,
+                    response_body_ms: 0,
+                    client_decode_ms: 0,
+                    tls: step.inference_url.starts_with("https://"),
+                    transport: InferenceTransport::HttpsLink,
+                    transport_fallback: false,
+                })
+            }
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) => {
+                transport_fallback = true;
+                warn!("{peer_label}: canal persistente falhou ({error}), usando o caminho por requisição")
+            }
+        }
+    }
+
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
         match send_batch_via_tunnel(
@@ -933,7 +982,7 @@ async fn send_batch_body(
             peer_id,
             &step.libp2p_addr_candidates,
             path,
-            body.clone(),
+            body.to_vec(),
             peer_label,
             auth,
         )
@@ -972,7 +1021,7 @@ async fn send_batch_body(
                 let bytes = response.bytes().await?.to_vec();
                 let response_body_ms = body_started.elapsed().as_millis() as u64;
                 let decode_started = Instant::now();
-                wire::decode_batch(&bytes)?;
+                wire::validate_batch_bytes(&bytes)?;
                 let client_decode_ms = decode_started.elapsed().as_millis() as u64;
                 return Ok(BatchTransportResponse {
                     body: bytes,
@@ -1051,7 +1100,7 @@ async fn send_batch_via_tunnel(
             peer_label: peer_label.to_string(),
         }));
     }
-    wire::decode_batch(&response.body)?;
+    wire::validate_batch_bytes(&response.body)?;
     Ok(BatchTransportResponse {
         body: response.body,
         round_trip_ms: started.elapsed().as_millis() as u64,

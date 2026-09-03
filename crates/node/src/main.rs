@@ -55,6 +55,11 @@ mod infer_server;
 mod infer_tunnel;
 #[path = "models/lastslice.rs"]
 mod lastslice;
+#[path = "inference/link.rs"]
+mod link;
+#[cfg(test)]
+#[path = "inference/link_lab.rs"]
+mod link_lab;
 #[path = "models/memory.rs"]
 mod memory;
 #[path = "backend/messages.rs"]

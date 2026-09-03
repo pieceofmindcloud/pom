@@ -14,8 +14,8 @@ fronteira de rota aplicada no servidor.
 Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
 gateway HTTP `--gateway-port` (8080), e o servidor de inferência
 `--inference-port` (8181, `inference/infer_server.rs`, um router separado que
-serve `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/health` - não passa por
-este gateway). O
+serve `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/health` - não
+passa por este gateway). O
 `/health` do servidor de inferência responde `model_loaded` (o que promove a
 anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
 a condição de a cabeça rascunhar na decodificação especulativa.
@@ -527,13 +527,26 @@ exigem `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
 
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router e também exige credencial em `/v1/prefill`, `/v1/step`, `/v1/step-stream`,
-`/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce`: aceita a
+`/v1/link`, `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce`:
+aceita a
 `connection_key` compartilhada ou uma API key ativa. Nas chamadas internas
 entre peers, o nó envia a `connection_key` e, quando ela não existe, a primeira
-API key ativa. `/health` continua público para sondas de readiness. O transporte
-preferencial entre nós é o túnel
-libp2p/Noise; o cliente direto pinado é fallback quando o túnel não está
-disponível ou falha no transporte.
+API key ativa. `/health` continua público para sondas de readiness.
+
+`/v1/link` é a ligação persistente entre andares da pipeline: **um** POST cujo
+corpo de ida é um fluxo de quadros `frame/v1-batch` e cujo corpo de volta é
+outro fluxo, correlacionados pelo `batch_id`. A credencial é conferida na
+abertura pelo mesmo middleware das demais rotas `/v1` **e reconferida a cada
+quadro**, para que uma revogação feita por outro processo valha na hora e não
+só quando o canal cair. O limite de corpo é desligado nessa rota porque o corpo
+é a geração inteira, não um quadro - cada quadro dentro do fluxo continua
+limitado pelo enquadramento do canal. Ver `inferencia.md` §2.1.
+
+Entre peers, um lote de inferência desce esta escada de transporte, e só desce
+um degrau depois de o anterior falhar por **transporte**: canal persistente
+(`/v1/link`, quando o hop o anuncia), túnel libp2p/Noise, cliente direto
+pinado. Uma recusa HTTP do peer é final em qualquer degrau e não é repetida por
+outra via.
 
 ### `relay-result` e `remote-stream-result` sem auth são por desenho
 

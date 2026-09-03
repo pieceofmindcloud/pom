@@ -293,7 +293,8 @@ dual-stack.
   `inference_url()/health` (10s timeout) before planning; `all_peers` appends
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
-  `inference/frame-v1-batch`, `relay/v1-chain` and `speculate/v1-lookup`;
+  `inference/frame-v1-batch`, `transport/link-v1`, `relay/v1-chain` and
+  `speculate/v1-lookup`;
   `speculate/v1-mtp-sliced` goes out unconditionally and
   `speculate/v1-mtp` only when `mtp_ready` (the node has the `nextn` block);
   `inference/frame-v1-batch` only when `network.batching_ready()` confirms

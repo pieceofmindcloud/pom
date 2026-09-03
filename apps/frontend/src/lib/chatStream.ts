@@ -37,7 +37,15 @@ export interface RequestTrace {
 }
 
 export interface TransportSummaryEntry {
-  transport: "local" | "libp2p-tunnel" | "https" | "remote-stream" | "unknown";
+  transport:
+    | "local"
+    | "libp2p-tunnel"
+    | "https"
+    // A ligação persistente entre andares: o mesmo HTTPS pinado, mas com o
+    // quadro entrando num corpo já aberto em vez de numa requisição nova.
+    | "https-link"
+    | "remote-stream"
+    | "unknown";
   calls: number;
   bytes_sent: number;
   bytes_received: number;

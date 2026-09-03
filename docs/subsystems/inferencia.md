@@ -504,6 +504,137 @@ hop por pedaço. Com f8, o payload do mesmo tensor cai para um byte por valor,
 mas a redução efetiva deve ser lida em `hidden_state_bytes_*`, por travessia,
 porque header, transporte e padrão de tráfego também entram na medição.
 
+### 2.1 Ligação persistente entre andares (`transport/link-v1`)
+
+O quadro acima descreve **o que** atravessa. Esta seção descreve **por onde**,
+dentro da pipeline: entre um hop e o hop seguinte.
+
+O transporte remoto por lotes (seção 1, item 1) tirou a travessia por ficha do
+trecho gateway → cabeça. Dentro do laço da cabeça, porém, cada ativação ainda
+montava uma requisição nova para o hop seguinte: `POST /v1/step`, cabeçalhos,
+roteamento e enquadramento reconstruídos por ficha, por salto. A conexão TCP/TLS
+por baixo já vinha do pool (é por isso que `tls_handshake_ms` só aparece no
+salto que abre conexão); o que se refazia por ativação era a abstração de
+requisição por cima dela.
+
+`transport/link-v1` mantém **um canal por aresta** (`node_id` + URL de
+inferência): um único `POST /v1/link` cujo corpo de ida é um fluxo de quadros
+binários e cujo corpo de volta é outro fluxo de quadros binários. Cada quadro,
+nas duas direções:
+
+```
+[4B BE tamanho do resto][2B BE status][2B BE tamanho do id][id][frame/v1-batch]
+```
+
+- `status` é `0` numa ida e o código HTTP numa volta. Uma recusa do peer chega
+  com o mesmo significado que teria no caminho por requisição e vira
+  `HttpRefusal` no chamador - trocar de transporte não muda uma recusa
+  considerada, então ela **não** é repetida por outra via.
+- `id` é o `batch_id` do quadro, a identidade que o `BatchCoordinator` já usa.
+  É ele que correlaciona ida e volta e é ele que permite **várias sessões no
+  mesmo canal**: os quadros não voltam em ordem, voltam identificados. Cada
+  quadro é despachado numa tarefa própria no receptor, então uma sessão lenta
+  não bloqueia por cabeça de fila a sessão que chegou depois.
+- A rota vai no `kind` do próprio `frame/v1-batch`, então o envelope não duplica
+  caminho. O receptor despacha pela mesma tabela de rotas em processo que o
+  caminho por requisição usa, e canal e requisição executam exatamente o mesmo
+  código de inferência.
+- A fila de ida tem 64 quadros: um hop lento segura quem o alimenta em vez de
+  deixar a memória crescer. O limite de corpo é desligado nessa rota, porque o
+  corpo é a geração inteira, não um quadro.
+- **A credencial é reconferida a cada quadro**, não só na abertura. As rotas de
+  inferência revalidam a chave a cada requisição justamente para que uma
+  revogação feita por outro processo valha na hora; uma conexão de 12 h que
+  autenticasse uma vez manteria válida por 12 h uma chave revogada. O
+  predicado é o mesmo do middleware (`inference_credential_is_valid`), e o
+  custo é o mesmo de hoje: tráfego entre peers casa na `connection_key` e nem
+  chega ao banco. Um quadro recusado é recusa **daquele quadro** - o canal
+  continua servindo os seguintes.
+
+**Degradação.** Falha de transporte no canal não mata a geração: a chamada volta
+pela escada de sempre (túnel libp2p, depois HTTPS por requisição) com
+`transport_fallback=true`, e o canal morto sai do pool. Um destino cuja abertura
+falhou fica 30 s em quarentena, para a tentativa de abrir não se pagar por ficha
+num cluster onde o endereço direto não serve (peer atrás de NAT alcançável só
+pelo túnel). O canal tem teto de vida de 12 h, porque o timeout do cliente HTTP
+vale para a requisição inteira e o corpo em fluxo conta para ele; vencido o
+teto, a chamada em voo degrada e a seguinte abre canal novo.
+
+**Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
+`Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,
+cancelamento do chamador. Quando o canal morre, o leitor drena o registro
+inteiro com erro antes de sumir - nenhum chamador fica pendurado, e uma resposta
+atrasada não encontra ticket para entregar.
+
+**Medição** (`inference/link_lab.rs`, 2026-09-03). A bancada serve cada hop
+falso por cima de um `TcpStream` embrulhado num contador, então o número são os
+bytes que realmente passaram no soquete, não uma estimativa. Motor falso de
+propósito: um hop que decodificasse mediria a GPU, não o transporte. Residual de
+`[1, 5120]` em f16 (10.240 bytes), 40 fichas por configuração, macOS/arm64,
+build de teste. A única diferença entre "antes" e "depois" é o hop anunciar ou
+não `transport/link-v1`.
+
+| Cadeia | Bytes/ficha/travessia (1º hop) | Bytes/ficha na cadeia | ms/ficha (média de 5) |
+|---|---:|---:|---:|
+| 1 hop, requisição por ficha | 11.465 | 11.465 | 0,935 |
+| 1 hop, canal persistente | **11.302** | **11.302** | **0,815** |
+| 2 hops, requisição por ficha | 11.768 | 23.233 | 2,421 |
+| 2 hops, canal persistente | **11.625** | **22.927** | **1,804** |
+| 3 hops, requisição por ficha | 12.043 | 35.276 | 2,928 |
+| 3 hops, canal persistente | **11.920** | **34.847** | **2,816** |
+
+As colunas de bytes são **determinísticas** - repetem valor a valor entre
+execuções, porque são bytes contados no soquete. A coluna de tempo é ruidosa
+(build de teste, máquina compartilhada): entre cinco execuções ela varia mais
+do que a diferença que mede em algumas linhas, então a leitura honesta dela é
+"o canal não ficou mais lento e tende a ficar entre 4% e 25% mais rápido",
+não um número exato. Quem quiser o tempo em produção tem que medi-lo lá, onde
+a travessia inclui RTT e GPU.
+
+**O ganho em bytes é pequeno e é preciso dizer o tamanho dele: 163 bytes por
+ficha por travessia, -1,4%.** O que o canal remove é exatamente o envelope
+HTTP por ativação, e é só isso que ele tem para remover. O motivo está na própria tabela: dos 11.302 bytes por ficha,
+**10.240 são o estado oculto** - 90,6%. O custo de rede por ficha no salto
+interno é o tensor, e o tensor não muda de tamanho por causa do transporte;
+quem o reduz é o `dtype` do fio (seção 2). Dos ~1.060 bytes restantes, a maior
+parcela é o header JSON, e dentro dele o `next_hops` repetido a cada ficha
+(cerca de 275 bytes por hop restante, visível na coluna do 1º hop: 11.302 com
+um hop contra 11.920 com três). Essa é a próxima alavanca, e ela exige o peer
+guardar a rota por sessão - não é transporte puro, e não foi feita aqui.
+
+O canal também é o que garante que **uma** ligação atende muitas fichas e
+muitas sessões: a bancada afirma zero conexões novas depois do aquecimento, e
+seis sessões concorrentes com dez fichas cada cabendo numa ligação só.
+
+### 2.2 Cópias no caminho quente do `wire.rs`
+
+O enquadramento de uma travessia (codificar + decodificar um item de
+`[1, 5120]` f16) custava 21,97 µs em release; hoje custa 20,94 µs - **-4,7%**
+(`custo_do_enquadramento_por_travessia`, mesma máquina, 2.000 rodadas). O que
+mudou:
+
+- `encode_batch_items` escreve o tensor **uma vez**, direto no buffer que vai
+  para o fio. As posições saem de `tensor_payload_len`, que as calcula sem
+  alocar, e o header JSON fica pronto antes de qualquer conversão. Antes os
+  mesmos bytes eram tocados quatro vezes: converter, concatenar no payload,
+  clonar a `BatchFrame`, copiar para a saída.
+- A conversão passa por um bloco de pilha de 1 KiB. Crescer o vetor valor a
+  valor custa mais que a conversão em si - medido em quase o dobro do
+  enquadramento inteiro, e foi por isso que a primeira versão desta mudança
+  ficou **mais lenta** que o código que substituía.
+- A decodificação **empresta** o payload do buffer recebido em vez de copiá-lo:
+  `split_frame` separa header e payload sem `to_vec`, e `decode_batch_items`,
+  `decode_batch_single` e `decode_inference_request` saem daí. A única cópia do
+  tensor que resta é a expansão para f32 que a inferência consome.
+- `peek_batch_header` e `validate_batch_bytes` leem só o header. Quem só
+  precisa saber a rota, o `batch_id`, quantos itens vêm no quadro, ou se os
+  bytes são um quadro válido, deixou de copiar o estado oculto inteiro para
+  descobrir. Eram quatro pontos no caminho quente: as duas validações do
+  transporte no `relay.rs` e o teste de "isto é um lote?" na entrada de
+  `handle_step` e `handle_prefill`.
+
+O formato do fio não mudou.
+
 ## 3. Prefill e step
 
 Antes, o prompt cruzava num bloco só: memória escalava com o prompt, tudo tinha
@@ -1463,8 +1594,8 @@ cada travessia, e eles aparecem numa linha própria da tabela de telemetria do
 Chat.
 
 - **`transport_summary`** - resumo limitado das travessias deste hop, agrupado
-  por transporte (`local`, `libp2p-tunnel`, `https`, `remote-stream` ou
-  `unknown`). Cada entrada
+  por transporte (`local`, `libp2p-tunnel`, `https`, `https-link`,
+  `remote-stream` ou `unknown`). Cada entrada
   informa chamadas, bytes enviados e recebidos, RTT mínimo, mediana, p95 e
   máximo, além de quantas chamadas chegaram por fallback naquele transporte.
   O resumo também informa `fallback_calls` total e `transport_switches` agrupadas
@@ -1496,6 +1627,15 @@ cifra do record layer, diluída dentro de `response_body_ms` e não separável s
 instrumentar o socket; a tela nomeia essa limitação em vez de inventar uma
 coluna.
 
+**`https-link` é o canal persistente da seção 2.1.** Ele é o mesmo HTTPS
+pinado - `tls` segue a política do cluster, como em `https` -, mas uma
+travessia por ali não abriu requisição: o quadro entrou num corpo já aberto.
+Uma travessia que aparece como `https` ou `libp2p-tunnel` com
+`transport_fallback=true` num hop que anuncia `transport/link-v1` é o canal
+tendo falhado e a geração tendo continuado - que é o comportamento pedido, não
+um defeito. `tls_handshake_ms` fica zero nas travessias do canal pelo mesmo
+motivo de sempre: o handshake aconteceu uma vez, na abertura.
+
 **Um salto pelo túnel libp2p reporta `tls: false`.** Ele é cifrado - por Noise,
 ponta a ponta -, mas não por TLS, e dizer `true` ali alegaria uma garantia que
 aquele salto não deu.
@@ -1520,6 +1660,28 @@ medição do transporte usado para iniciar o stream.
 - **Sem cobertura E2E**: os quatro modos de falha do modo direto legado ainda
   não têm uma bancada ponta a ponta; o transporte remoto novo tem testes de
   unidade para lote, ordem, erro, terminação e contrapressão.
+- **Oito testes já vermelhos em `origin/feat/implantar3`** (verificados na
+  árvore limpa em 2026-09-03, portanto anteriores ao canal persistente).
+  Dentro deste subsistema: `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado`
+  (espera teto 2048, recebe 96), `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`,
+  `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso`
+  (espera 2 entregas, conta 14), e `llama-engine`
+  `llm::pool_tests::fit_mode_caps_compute_microbatch_without_changing_prompt_batch`
+  (espera 128, recebe 512 - a expectativa não acompanhou `FIT_MAX_UBATCH=512`).
+  Fora dele: `pipeline::ipv6_tests::f8_is_refused_when_any_pipeline_step_lacks_the_capability`
+  (o fixture dá a capability aos dois passos e ainda espera erro), três de
+  `deploy::whole_route_tests` e `webui::tests::merge_parts_joins_two_slices_into_a_whole`.
+  Anotados, não consertados de passagem: cada um é a expectativa de outro
+  subsistema, e mudá-la sem o dono é apagar a evidência do que quebrou.
+- **Os testes de `webui` que repassam para uma máquina falsa são instáveis sob
+  carga** (2026-09-03): cada rodada da suíte cheia derruba **um** deles, e nem
+  sempre o mesmo - vistos `webui::leave_tests::leaving_for_a_peer_is_forwarded_to_that_peer`
+  e `webui::peer_runtime_tests::the_peers_health_is_forwarded_whole`, ambos
+  passando isolados. Sobem um servidor falso numa porta efêmera de loopback
+  (`gateway::testkit`, cliente com 600 s de timeout, então não é prazo) e
+  conferem que o repasse chegou. A causa não foi investigada aqui; o que está
+  medido é que a instabilidade não depende do canal persistente - ela aparece
+  igual na árvore sem ele.
 - **MTP sem medição de tok/s** (2026-08-16, cortado por cota): a implementação
   está completa e verde nos testes de unidade, mas o ganho ponta a ponta não
   foi medido neste projeto - nem no caso fatiado, onde o que falta medir é a

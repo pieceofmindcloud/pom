@@ -189,6 +189,12 @@ dual-stack.
   quatro chamadas simultâneas; TP e passos ainda por copiar/fundir ficam sem
   projeção. É aviso, nunca bloqueio: a tela mostra a máquina estourada em
   rósea e pede um `Confirm` antes de implantar.
+
+  Quando um modelo inteiro selecionado ainda não tem `total_layers` no
+  `/api/ui/models`, o survey chama `model-metadata` somente para esse caminho;
+  `metadata_complete` dos vizinhos continua podendo ser falso sem bloquear a
+  implantação. O layout completo só é pedido quando há um corte de prefixo
+  explícito.
   Antes de transferir ou lançar, prova a identidade por `pom_id` ou hash do
   GGUF, libera somente a implantação comprovadamente igual e aguarda cada peer
   ficar ocioso dentro de um prazo; recusações de identidade, falhas de unload e
@@ -421,6 +427,8 @@ dual-stack.
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
   `model-identity` (POST, prova um arquivo já catalogado por caminho canônico
   e opcionalmente calcula seu SHA-256),
+  `model-metadata` (POST, lê e publica somente o cabeçalho do modelo selecionado
+  enquanto o restante do catálogo ainda está em background),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
   `models/delete` (POST), `cluster` (GET), `cluster/models`
   (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),

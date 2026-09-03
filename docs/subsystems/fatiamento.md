@@ -54,8 +54,13 @@ modelo, sem impedir os demais, e a passagem publica `metadata_complete: true`.
 O backend mantém uma única varredura e um único enriquecimento em voo, inclusive
 quando a tela é recarregada ou a seleção muda. Um refresh pode trocar o
 inventário, mas preserva metadata por identidade `path + size + mtime`; somente
-modelo novo ou arquivo alterado volta a ler o cabeçalho. Hash integral continua
-restrito à fronteira de fatiamento ou transferência.
+modelo novo ou arquivo alterado volta a ler o cabeçalho. O enriquecimento do
+catálogo não percorre a tabela de tensores, não cria `mmap` e não toca o
+payload. Quando o operador escolhe um modelo inteiro ainda pendente, o planner
+chama `POST /api/ui/model-metadata` com o caminho já listado e publica apenas
+esse cabeçalho; os vizinhos continuam em background sem bloquear a seleção.
+Hash integral continua restrito à fronteira de identidade, fatiamento ou
+transferência.
 
 Depois do enriquecimento, `webui.rs` registra o catálogo em `pom.db`. O registro
 guarda a identidade do modelo inteiro ou do conjunto de fatias, caminho, tamanho,
@@ -83,6 +88,10 @@ some do disco.
   enquanto `split.no` e `split.count` são UINT16. Valores signed negativos e
   valores que excedem o destino são recusados; a regra vale para as demais
   chaves numéricas e não é específica a um modelo.
+- O catálogo usa somente `read_info` e `multipart::catalog_metadata`, que lêem
+  os cabeçalhos das partes e fazem `stat` dos arquivos. `has_nextn_tensors` e
+  `read_layout` ficam fora da varredura geral: o primeiro é prova estrutural
+  opcional e o segundo é necessário para cortes e custos reais.
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml
@@ -530,6 +539,7 @@ RAM física.
 | Rota | Papel |
 |---|---|
 | `GET /api/ui/models` | catálogo local (modelos + shard_sets + diretórios varridos) |
+| `POST /api/ui/model-metadata` | lê somente o cabeçalho do modelo inteiro selecionado e o publica no catálogo |
 | `POST /api/ui/slice/plan` | prévia de fatiamento (`plan_by_size`/`plan_equal`) |
 | `POST /api/ui/slice` | executa o fatiamento local (`slice_locally` -> `extract_shard`) |
 | `POST /api/ui/model-layer-options` | cortes de prefixo aceitos pelo GGUF inteiro selecionado |

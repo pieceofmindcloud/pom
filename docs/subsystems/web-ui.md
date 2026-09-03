@@ -687,13 +687,17 @@ impressão digital é só modelo + conjunto de faixas.
   antes de iniciar a implantação.
   A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
   dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A
-  tela mostra o inventário imediatamente. O botão e o endpoint de execução
-  verificam somente os metadados necessários para a seleção atual: outro
-  modelo ainda em enriquecimento, peer silencioso ou peer antigo sem
-  `metadata_complete` não bloqueia. Quando a própria seleção ainda não pode
-  ser resolvida, o plano devolve um único `blocked` que nomeia a faixa ou o
-  modelo pendente. O enriquecimento registra início e conclusão; um erro
-  terminal fica em `metadata_error` no modelo e não impede os demais, enquanto
+  tela mostra o inventário imediatamente. O catálogo lê somente o KV header e
+  `stat` das partes: não percorre a tabela de tensores, não calcula hash e não
+  mapeia os pesos. O botão e o endpoint de execução verificam somente os
+  metadados necessários para a seleção atual: para um modelo inteiro pendente,
+  o planner envia seu caminho já listado a `POST /api/ui/model-metadata`, que
+  enriquece esse item sem esperar os vizinhos. Outro modelo ainda em
+  enriquecimento, peer silencioso ou peer antigo sem `metadata_complete` não
+  bloqueia. Quando a própria seleção ainda não pode ser resolvida, o plano
+  devolve um único `blocked` que nomeia a faixa ou o modelo pendente. O
+  enriquecimento registra início e conclusão; um erro terminal fica em
+  `metadata_error` no modelo e não impede os demais, enquanto
   `metadata_complete` vira `true` ao terminar a passagem. A resposta publicada
   é reaproveitada pelas requisições. A primeira chamada instala um placeholder
   e compartilha a única varredura em voo, por isso F5 e trocas repetidas na combo

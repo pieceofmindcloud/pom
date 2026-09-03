@@ -747,6 +747,73 @@ fn catalog_contains_group(body: &serde_json::Value, group: &str, kind: DeployKin
     }
 }
 
+/// Return the selected whole GGUF's path when its header has not reached the
+/// catalog response yet. The path comes from the peer's fast inventory, so the
+/// targeted read remains restricted to a file already visible to that peer.
+fn selected_model_metadata_path(
+    body: &serde_json::Value,
+    group: &str,
+    kind: DeployKind,
+) -> Option<String> {
+    if !matches!(kind, DeployKind::Whole | DeployKind::TensorParallel) {
+        return None;
+    }
+    body.get("models")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .find(|model| {
+            model.get("name").and_then(|value| value.as_str()) == Some(group)
+                && model
+                    .get("shard_range")
+                    .is_none_or(serde_json::Value::is_null)
+                && model
+                    .get("total_layers")
+                    .and_then(|value| value.as_u64())
+                    .is_none_or(|total| total == 0)
+        })
+        .and_then(|model| model.get("path"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+/// Ask only for the selected model's GGUF header while the peer's catalog is
+/// still enriching unrelated files. A failed or unavailable targeted route is
+/// intentionally left as a pending selection, never guessed from a filename.
+async fn enrich_selected_model_on_peer(
+    client: &reqwest::Client,
+    base: &str,
+    key: &str,
+    body: &mut serde_json::Value,
+    path: String,
+) {
+    let response = client
+        .post(format!("{base}/api/ui/model-metadata"))
+        .bearer_auth(key)
+        .timeout(PEER_TIMEOUT)
+        .json(&crate::webui::ModelMetadataRequest { path: path.clone() })
+        .send()
+        .await;
+    let Ok(response) = response else { return };
+    if !response.status().is_success() {
+        return;
+    }
+    let Ok(model) = response.json::<serde_json::Value>().await else {
+        return;
+    };
+    let Some(models) = body
+        .get_mut("models")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+    if let Some(target) = models.iter_mut().find(|candidate| {
+        candidate.get("path").and_then(|value| value.as_str()) == Some(path.as_str())
+    }) {
+        *target = model;
+    }
+}
+
 fn selected_metadata_pending_reason(
     kind: DeployKind,
     group: &str,
@@ -899,7 +966,10 @@ async fn survey(
             )
             .await;
 
-            let body: serde_json::Value = models.ok()?.json().await.ok()?;
+            let mut body: serde_json::Value = models.ok()?.json().await.ok()?;
+            if let Some(path) = selected_model_metadata_path(&body, &group, kind) {
+                enrich_selected_model_on_peer(&http, &base, &connection_key, &mut body, path).await;
+            }
             let metadata_pending_candidate = body
                 .get("metadata_complete")
                 .and_then(|value| value.as_bool())
@@ -3244,7 +3314,7 @@ async fn plan_endpoint(
     .await;
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
-    let layer_options = if req.kind == DeployKind::Whole {
+    let layer_options = if req.kind == DeployKind::Whole && req.whole_slice.is_some() {
         whole_layer_options_for_plan(&state, &machines, &req.group).await
     } else {
         None
@@ -3462,7 +3532,7 @@ async fn deploy_endpoint(
     }
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
-    let layer_options = if req.kind == DeployKind::Whole {
+    let layer_options = if req.kind == DeployKind::Whole && req.whole_slice.is_some() {
         whole_layer_options_for_plan(&state, &machines, &req.group).await
     } else {
         None
@@ -5109,9 +5179,27 @@ async fn run(
 
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
-    let machines = survey(&state, &plan.group, plan.kind, None, None)
-        .await
-        .machines;
+    let launch_selection = (plan.kind == DeployKind::Whole).then(|| {
+        plan.steps
+            .iter()
+            .map(|step| SelectedSlice {
+                start_layer: step.start_layer,
+                end_layer: step.end_layer,
+                target_node_id: step.target_node_id.clone(),
+                n_gpu_layers: None,
+                offload_kqv: None,
+            })
+            .collect::<Vec<_>>()
+    });
+    let machines = survey(
+        &state,
+        &plan.group,
+        plan.kind,
+        launch_selection.as_deref(),
+        plan.tp.as_ref(),
+    )
+    .await
+    .machines;
     let mut targets = launch_targets(
         &plan.steps,
         &machines,
@@ -7017,10 +7105,11 @@ async fn wait_for_transfers(
 mod whole_route_tests {
     use super::*;
     use crate::gateway::testkit::{body_of, state_with};
-    use axum::routing::get as axum_get;
+    use axum::routing::{get as axum_get, post as axum_post};
 
     /// Uma máquina servindo o catálogo dado, com memória e disco de sobra.
     async fn catalog_machine(catalog: serde_json::Value) -> u16 {
+        let metadata_catalog = catalog.clone();
         let app = Router::new()
             .route(
                 "/api/ui/models",
@@ -7038,6 +7127,32 @@ mod whole_route_tests {
                             "disk": { "free_mb": 900_000.0 },
                         }
                     }))
+                }),
+            )
+            .route(
+                "/api/ui/model-metadata",
+                axum_post(move |Json(request): Json<serde_json::Value>| {
+                    let catalog = metadata_catalog.clone();
+                    async move {
+                        let path = request.get("path").and_then(|value| value.as_str());
+                        let mut model = catalog
+                            .get("models")
+                            .and_then(|value| value.as_array())
+                            .into_iter()
+                            .flatten()
+                            .find(|model| {
+                                model.get("path").and_then(|value| value.as_str()) == path
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+                        if model
+                            .get("total_layers")
+                            .is_some_and(serde_json::Value::is_null)
+                        {
+                            model["total_layers"] = json!(32);
+                        }
+                        Json(model)
+                    }
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -7186,24 +7301,27 @@ mod whole_route_tests {
     }
 
     #[tokio::test]
-    async fn the_plan_names_metadata_missing_from_the_selected_model() {
+    async fn the_plan_reads_selected_metadata_without_waiting_for_neighbors() {
         let mut pending = catalog();
         pending["metadata_complete"] = json!(false);
         pending["models"][0]["total_layers"] = serde_json::Value::Null;
+        assert_eq!(
+            selected_model_metadata_path(&pending, "qwen3.5-9b", DeployKind::Whole).as_deref(),
+            Some("/lm/qwen3.5-9b.gguf")
+        );
         let port = catalog_machine(pending).await;
         let body = plan_body(
             state_seeing_only(port).await,
             json!({
                 "group": "qwen3.5-9b",
                 "kind": "whole",
-                "selection": [{ "start_layer": 0, "end_layer": 31 }]
+                "selection": [{ "start_layer": 0, "end_layer": 31, "target_node_id": "ksia" }]
             }),
         )
         .await;
 
-        let blocked = body["blocked"].as_str().unwrap_or_default();
-        assert!(blocked.contains("seleção de qwen3.5-9b"), "{blocked}");
-        assert!(blocked.contains("metadados do GGUF"), "{blocked}");
+        assert!(body["blocked"].is_null(), "{}", body["blocked"]);
+        assert_eq!(body["total_layers"], 32);
     }
 
     #[tokio::test]

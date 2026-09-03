@@ -10,9 +10,11 @@ transferência.
   `Catalog.metadata_complete`. Falha de leitura marca `metadata_error` no item,
   sem impedir os modelos válidos; depois de uma passagem terminal,
   `metadata_complete` vira `true`. Nova tentativa só ocorre em um novo refresh
-  ou invalidação. As capacidades vêm do header e de uma varredura leve dos nomes
-  de tensores `nextn`; o helper `gguf::read_capability_evidence` fica restrito
-  às provas de teste, e o cálculo completo de layout continua separado.
+  ou invalidação. As capacidades publicadas pelo catálogo vêm somente do
+  cabeçalho; ele não percorre a tabela de tensores nem os pesos. A evidência
+  estrutural de MTP continua em `gguf::read_capability_evidence`, hoje restrita
+  às provas que exigem essa confirmação; o cálculo completo de layout continua
+  separado.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade.

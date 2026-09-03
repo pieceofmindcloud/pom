@@ -175,6 +175,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
         .route("/api/ui/model-identity", post(model_identity))
+        .route("/api/ui/model-metadata", post(model_metadata))
         .route("/api/ui/model-layer-options", post(model_layer_options))
         .route("/api/ui/slice-ranges", post(slice_ranges))
         .route("/api/ui/stop-inference", post(stop_inference))
@@ -3269,6 +3270,11 @@ pub(crate) struct ModelIdentityRequest {
     pub hash: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ModelMetadataRequest {
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ModelIdentityResponse {
     pub canonical_path: String,
@@ -3337,6 +3343,71 @@ async fn model_identity(
         Ok(identity) => Json(identity).into_response(),
         Err(error) => bad_request(error),
     }
+}
+
+/// Read the header for one model selected by the operator and publish only
+/// that result into the local catalog. This is the deployment escape hatch
+/// while unrelated files are still being enriched in the background.
+async fn model_metadata(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ModelMetadataRequest>,
+) -> Response {
+    match model_metadata_local(&state, &req.path).await {
+        Ok(model) => Json(model).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+pub(crate) async fn model_metadata_local(
+    state: &GatewayState,
+    requested: &str,
+) -> Result<crate::catalog::DiscoveredModel, String> {
+    let requested_path = std::path::Path::new(requested);
+    let canonical = requested_path
+        .canonicalize()
+        .map_err(|e| format!("não foi possível resolver o arquivo do modelo: {e}"))?;
+    let catalog = local_catalog(state).await;
+    let mut model = catalog
+        .models
+        .iter()
+        .find(|model| {
+            std::path::Path::new(&model.path)
+                .canonicalize()
+                .ok()
+                .is_some_and(|path| path == canonical)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "o arquivo {} não pertence ao catálogo deste peer",
+                requested_path.display()
+            )
+        })?;
+
+    if !catalog::metadata_is_current(&model) {
+        model = tokio::task::spawn_blocking(move || {
+            catalog::enrich_selected(&mut model).map(|()| model)
+        })
+        .await
+        .map_err(|e| format!("a leitura dos metadados do GGUF falhou: {e}"))??;
+    }
+
+    let mut guard = catalog_cache().lock().await;
+    if let Some(current) = guard.as_mut() {
+        let catalog = Arc::make_mut(&mut current.catalog);
+        if let Some(target) = catalog.models.iter_mut().find(|target| {
+            std::path::Path::new(&target.path)
+                .canonicalize()
+                .ok()
+                .is_some_and(|path| path == canonical)
+        }) {
+            *target = model.clone();
+            catalog::rebuild_shard_sets(catalog);
+            catalog.metadata_complete = catalog.models.iter().all(catalog::metadata_is_current);
+        }
+    }
+    Ok(model)
 }
 
 pub(crate) async fn model_identity_local(

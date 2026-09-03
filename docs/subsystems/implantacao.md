@@ -154,6 +154,13 @@ quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
 Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
 arquivo pela tela de Transferências antes.
 
+O planejamento de um modelo inteiro não espera o catálogo completo. Se o
+inventário rápido já mostrou o arquivo, mas a resposta ainda não tem
+`total_layers`, o survey pede `POST /api/ui/model-metadata` nesse peer e lê
+somente o cabeçalho do caminho selecionado. O restante da pasta pode continuar
+com `metadata_complete: false`; isso não transforma vizinhos sem relação em
+pré-requisito para a implantação.
+
 ### 1.1.1 Escolha de camadas a partir do modelo inteiro
 
 `POST /api/ui/deploy/plan` pode receber `whole_slice` com

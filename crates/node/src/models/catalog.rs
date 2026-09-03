@@ -133,8 +133,9 @@ pub struct DiscoveredModel {
     pub tp_rank: Option<u32>,
     #[serde(default)]
     pub tp_size: Option<u32>,
-    /// Evidência de capacidades derivada do header e da tabela de tensores do
-    /// GGUF. Ausente quando a leitura não pôde ser confirmada.
+    /// Evidência de capacidades derivada do cabeçalho do GGUF. A confirmação
+    /// estrutural pela tabela de tensores fica nos leitores que precisam dela,
+    /// fora da varredura geral do catálogo.
     #[serde(default)]
     pub capabilities: Option<ModelCapabilityEvidence>,
 }
@@ -678,22 +679,14 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
         model.multipart_error = None;
     }
     model.metadata_error = None;
-    // The catalog's second phase must finish after one lightweight header and
-    // tensor-name pass. Reading the whole tensor layout here made a slow volume hold
-    // `metadata_complete` false for the entire catalog, even though the
-    // selected shard ranges already came from their manifests. MTP evidence
-    // uses only the lightweight tensor-name scan; the full layout pass remains
-    // The full layout helper is retained for structural tests; production
-    // catalog enrichment intentionally stays on this lightweight path.
-    let tensor_mtp = gguf::has_nextn_tensors(&path).ok();
+    // The catalog is a header index, not a model validator. Layer count,
+    // architecture and the MTP hint are all available in the KV header. The
+    // tensor table and payload stay behind the slicing/inference boundaries;
+    // scanning tensor names for every model made a slow volume hold
+    // `metadata_complete` open for no catalog field that needed it.
     model.capabilities = Some(ModelCapabilityEvidence {
         thinking: info.thinking_capability(),
-        mtp: match (info.nextn_predict_layers, tensor_mtp) {
-            (_, Some(true)) => Some(true),
-            (Some(layers), _) => Some(layers > 0),
-            (None, Some(false)) => Some(false),
-            (None, None) => None,
-        },
+        mtp: info.nextn_predict_layers.map(|layers| layers > 0),
     });
     if model.shard_range.is_none() {
         model.shard_range = info.shard_range;
@@ -703,6 +696,22 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
         };
     }
     EnrichResult::Ready
+}
+
+/// Enrich one already-listed model without walking the rest of the catalog.
+///
+/// Deployment uses this when the operator has selected a whole model while
+/// unrelated files are still waiting for their headers. It deliberately shares
+/// the same header-only path as the background catalog task.
+pub(crate) fn enrich_selected(model: &mut DiscoveredModel) -> Result<(), String> {
+    match enrich_model(model) {
+        EnrichResult::Ready => Ok(()),
+        EnrichResult::Failed => Err(model
+            .metadata_error
+            .clone()
+            .unwrap_or_else(|| "não foi possível ler os metadados do GGUF".to_string())),
+        EnrichResult::Drop => Err("o arquivo não é um modelo GGUF implantável".to_string()),
+    }
 }
 
 fn fill_multipart_metadata(

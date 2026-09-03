@@ -38,8 +38,9 @@ gated e a licença antes do download.
 ## subsystems/
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `fatiamento.md`
-documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas
-e o rebase de metadata de camadas para a numeração local. `paralelismo.md`
+documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas,
+o rebase de metadata de camadas para a numeração local e a leitura somente de
+cabeçalho do catálogo, inclusive para o modelo selecionado. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `build-execucao.md` documenta também a
 geração em tempo de compilação da lista MTP a partir do fork local do

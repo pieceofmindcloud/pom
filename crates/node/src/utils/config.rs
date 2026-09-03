@@ -165,6 +165,28 @@ pub struct Config {
     /// devolve pela API: a interface recebe apenas estado e máscara.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
+    /// Diretório onde os snapshots de KV cache são gravados e lidos, como o
+    /// `--slot-save-path` do llama-server. Propriedade da máquina, não da
+    /// implantação: cada peer grava a fatia dele aqui. A variável de ambiente
+    /// `POM_SLOT_SAVE_PATH` e a flag `--slot-save-path` têm precedência sobre
+    /// este campo - use `slot_save_path_effective()`, nunca o campo cru.
+    /// Ausente/vazio em todas as fontes desliga o recurso e as rotas de
+    /// snapshot respondem "não configurado".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_save_path: Option<String>,
+    /// Liga a persistência automática do cache de prefixo: ao fim de cada turno
+    /// o gateway grava o KV retido em `slot_save_path` e, num miss após
+    /// reinício, restaura em vez de refazer o prefill a frio. Exige
+    /// `slot_save_path` em todos os hops. Desligado por padrão até ter prova de
+    /// campo; a env var `POM_SLOT_PERSIST_PREFIX_CACHE=1` também liga. Use
+    /// `slot_persist_prefix_cache_enabled()`.
+    #[serde(default)]
+    pub slot_persist_prefix_cache: bool,
+    /// Orçamento de disco para os snapshots automáticos de prefixo, somado
+    /// entre as fatias. `None` usa `DEFAULT_SLOT_AUTO_MAX_BYTES` (8 GiB). Use
+    /// `slot_auto_max_bytes()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_auto_max_bytes: Option<u64>,
 }
 
 impl fmt::Debug for Config {
@@ -204,6 +226,9 @@ impl fmt::Debug for Config {
                 "huggingface_token",
                 &self.huggingface_token.as_ref().map(|_| "[redacted]"),
             )
+            .field("slot_save_path", &self.slot_save_path)
+            .field("slot_persist_prefix_cache", &self.slot_persist_prefix_cache)
+            .field("slot_auto_max_bytes", &self.slot_auto_max_bytes)
             .finish()
     }
 }
@@ -450,6 +475,51 @@ impl Config {
     pub fn shard_max_bytes(&self) -> u64 {
         (self.shard_max_gb() * 1_073_741_824.0).round() as u64
     }
+
+    /// Diretório efetivo de snapshots de KV cache, ou `None` quando o recurso
+    /// está desligado. Precedência: a variável de ambiente `POM_SLOT_SAVE_PATH`
+    /// (derivada da marca, `brand::env("SLOT_SAVE_PATH")`) vence o campo do
+    /// `pom.json`. Vazio em qualquer uma conta como desligado, igual à regra de
+    /// `shard_dir`. Como a env var é por processo, ela **não** é persistida:
+    /// `save()` continua gravando só o campo do arquivo.
+    pub fn slot_save_path_effective(&self) -> Option<String> {
+        crate::brand::env("SLOT_SAVE_PATH")
+            .ok()
+            .or_else(|| self.slot_save_path.clone())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn slot_save_dir(&self) -> Option<PathBuf> {
+        self.slot_save_path_effective().map(PathBuf::from)
+    }
+
+    /// Persistência automática do cache de prefixo ligada? A env var
+    /// `POM_SLOT_PERSIST_PREFIX_CACHE` (`1`/`true`/`yes`/`on`) vence o campo do
+    /// `pom.json`.
+    pub fn slot_persist_prefix_cache_enabled(&self) -> bool {
+        match crate::brand::env("SLOT_PERSIST_PREFIX_CACHE").ok().as_deref() {
+            Some(v) => matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            None => self.slot_persist_prefix_cache,
+        }
+    }
+
+    /// Caminho do índice de snapshots automáticos de prefixo (fica ao lado dos
+    /// `.bin`, no `slot_save_path` deste nó). `None` se `slot_save_path` não
+    /// está configurado.
+    pub fn prefix_auto_index_path(&self) -> Option<PathBuf> {
+        self.slot_save_dir()
+            .map(|dir| dir.join("prefix-auto-index.json"))
+    }
+
+    pub fn slot_auto_max_bytes(&self) -> u64 {
+        self.slot_auto_max_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(crate::prefix_cache::DEFAULT_SLOT_AUTO_MAX_BYTES)
+    }
 }
 
 /// `<project_root>/models` — where every slice has always landed.
@@ -561,6 +631,9 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -622,6 +695,9 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -724,6 +800,9 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             node_name: None,
             huggingface_token: Some("hf_super_secret".into()),
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
         };
         cfg.admin_exposure = AdminExposure::Network;
         cfg.admin_access_token = Some("admin_super_secret".into());
@@ -835,6 +914,9 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

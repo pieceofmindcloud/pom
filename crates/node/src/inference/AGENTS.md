@@ -79,6 +79,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/step-stream`, `/v1/link`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
+  `/v1/session/slot` (save/restore/erase de um snapshot de KV em disco, como o
+  `--slot-save-path` do llama-server - ver `inferencia.md` §3.1.1),
   `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
   decode local ou transforma o residual que vai para o próximo hop somente
@@ -243,7 +245,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   mensagens (`openai::conversation_cache_key`), não do prompt renderizado; no
   caminho Anthropic, `conversation_cache_key_with_budget` também inclui a
   identidade de `task_budget` para impedir que o KV de outro marcador seja
-  reutilizado.
+  reutilizado. `PrefixCache::adopt` registra uma sessão restaurada do disco
+  como hit ocupado. `PrefixDiskIndex` (Phase 3) é a camada de disco opcional:
+  índice `(rota, prompt, tokens, bytes, updated_at)` por `key_hash`, com TTL de
+  7 dias e orçamento LRU (`slot_auto_max_bytes`), persistido em
+  `prefix-auto-index.json` no `slot_save_path` do gateway. Ligado por
+  `slot_persist_prefix_cache`; ver `inferencia.md` §3.1.1.
 - `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
   **escolha**. A referência acompanha lookup, insert, busy, release e eviction;
   o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a
@@ -683,6 +690,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `handle_rollback` - `RollbackRequest{accept_count, batch_width}`: descarta o
   KV não confirmado da especulação; sessão desconhecida é no-op (não erro);
   o gateway fan-out para todos os hops.
+- `handle_slot` + `InferState::{save_slot,restore_slot,check_slot_compatible}` /
+  `erase_slot`/`list_slots` - snapshot de KV em disco (`--slot-save-path`).
+  `save_slot` grava **`prompt_seq` truncado em `prompt_len`**, nunca `gen_seq`,
+  mais o sidecar `<name>.json` (identidade do modelo e da fatia).
+  `restore_slot` confere o sidecar antes de tocar no motor, `alloc_seq` uma
+  sessão nova `retained` na fronteira salva. `slot_dir` vem de
+  `NodeConfig.slot_save_path`; sem ele a rota responde 400. `replicate_slot_call`
+  repassa a ação aos workers de TP. Capability `inference/slot-persist-v1`.
+  Ver `inferencia.md` §3.1.1.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
   reinício do processo também remove o estado em memória. Se um desses eventos
   ocorrer no meio de um prefill, o peer devolve sessão desconhecida e o gateway
@@ -691,10 +707,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
-- `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift`,
+- `/health` anuncia `relay/v2-direct` e, quando `slot_dir` está configurado,
+  `inference/slot-persist-v1` (mantenha em sincronia com `network.rs`
+  `self_announce` e a entrada local do gateway); expõe `kv_can_shift`,
   `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`), o caminho
-  `selected_path` e também o snapshot do scheduler (`queue_depth`, limites,
-  tamanho e tokens do último lote). O motor observado sai por
+  `selected_path`, `slot_persist_enabled`/`slot_count` e também o snapshot do
+  scheduler (`queue_depth`, limites, tamanho e tokens do último lote). O motor observado sai por
   `node_timings.executed_engine` e `executed_engines` em cada hop do
   prefill/decode e é agregado no `RequestTrace` sem inferência da tela.
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se

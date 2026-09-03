@@ -830,6 +830,9 @@ mod tests {
             shard_max_gb: 1.0,
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
         };
 
         assert!(is_valid_inference_token(&cfg, "cluster-secret"));
@@ -869,6 +872,9 @@ mod tests {
             shard_max_gb: 1.0,
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
         };
 
         assert_eq!(inference_token(&cfg).as_deref(), Some("cluster-secret"));

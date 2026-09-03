@@ -31,6 +31,19 @@ medidas em campo.
   cada instalação e valem para todos os contextos daquela instalação. O padrão
   é `f16`; os tipos aceitos e a confirmação em `/health` estão em
   `inferencia.md`. Eles não são escolhas por máquina no deploy.
+- **Snapshots de KV cache:** o diretório onde cada peer grava e relê snapshots
+  de KV, como o `--slot-save-path` do llama-server. Propriedade da máquina, não
+  do deploy. Três fontes, nesta precedência: a flag `--slot-save-path`, a
+  variável `POM_SLOT_SAVE_PATH` e o campo `slot_save_path` do `pom.json`. A env
+  var é por processo e não é persistida no `pom.json`. Ausente em todas desliga
+  o recurso e `POST /v1/session/slot` / `POST /admin/slots/{name}` respondem
+  "não configurado". Ver `inferencia.md` §3.1.1 e `api-http.md`.
+- **Cache de prefixo persistente:** `slot_persist_prefix_cache` no `pom.json`
+  (ou `POM_SLOT_PERSIST_PREFIX_CACHE=1`) faz o gateway gravar o KV retido ao
+  fim de cada turno e restaurá-lo num miss depois de um reinício, sem chamada
+  manual. Desligado por padrão; exige `slot_save_path` em todos os hops.
+  `slot_auto_max_bytes` limita o disco (padrão 8 GiB). Ver `inferencia.md`
+  §3.1.1.
 
 ## Subida (cluster de duas máquinas)
 

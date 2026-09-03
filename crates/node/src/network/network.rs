@@ -598,6 +598,11 @@ pub struct Network {
     /// anunciar a capability antes disso faria um peer enviar v3 para uma
     /// porta que só sabe responder o protocolo antigo.
     batching_ready: Arc<AtomicBool>,
+    /// Este nó tem `--slot-save-path` configurado e serve `POST
+    /// /v1/session/slot`. Vira verdadeiro no `apply` de uma implantação e volta
+    /// a falso ao parar; o gateway exige a cap de todos os hops antes de
+    /// orquestrar um snapshot de implantação.
+    slot_persist_ready: Arc<AtomicBool>,
     /// Se este nó fala TLS com os peers, na forma que o anúncio lê.
     ///
     /// A fonte de verdade é `Config.tls_required`; isto é a cópia que o gossip
@@ -818,6 +823,7 @@ impl Network {
             libp2p_tunnel_ready: AtomicBool::new(false),
             mtp_ready: Arc::new(AtomicBool::new(false)),
             batching_ready: Arc::new(AtomicBool::new(false)),
+            slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
             observed_addr: std::sync::RwLock::new(None),
@@ -1079,6 +1085,9 @@ impl Network {
                 if self.batching_ready() {
                     caps.push(crate::pipeline::CAP_FRAME_BATCH.into());
                 }
+                if self.slot_persist_ready() {
+                    caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
+                }
                 if self.libp2p_tunnel_ready() {
                     caps.push("transport/libp2p-tunnel-v1".into());
                 }
@@ -1158,6 +1167,14 @@ impl Network {
 
     pub fn set_batching_ready(&self, ready: bool) {
         self.batching_ready.store(ready, Ordering::Relaxed);
+    }
+
+    pub fn slot_persist_ready(&self) -> bool {
+        self.slot_persist_ready.load(Ordering::Relaxed)
+    }
+
+    pub fn set_slot_persist_ready(&self, ready: bool) {
+        self.slot_persist_ready.store(ready, Ordering::Relaxed);
     }
 
     /// Muda a geração dona da capacidade e a retira enquanto o novo runtime

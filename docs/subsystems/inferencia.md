@@ -871,6 +871,84 @@ recorrente que recusa remoção parcial; o atraso determinístico da bancada tor
 o custo executado observável, sem confundir a escolha do cache com a economia
 real.
 
+### 3.1.1 Snapshots de KV cache em disco (`--slot-save-path`)
+
+O cache de prefixo acima vive **só em memória**: reinício do processo, coleta de
+ociosidade (`reap_idle`) ou pressão de capacidade (`evict_retained`) apagam o KV
+retido e o próximo turno paga um prefill frio (ver "Por que a sessão
+desaparece"). O diretório de snapshots liga um mecanismo para gravar e reler
+esse KV, equivalente ao `--slot-save-path` do llama-server. Ele vem, nesta
+precedência, da flag `--slot-save-path`, da variável `POM_SLOT_SAVE_PATH` ou do
+campo `slot_save_path` do `pom.json` (`Config::slot_save_path_effective`); a env
+var é por processo e não é persistida. Numa implantação pela UI o valor é
+injetado no `NodeConfig` em `apply_locked` a partir da instalação, como
+`cache_type_*`, mas a flag da linha de comando, quando presente, vence.
+
+- **Motor** (`llama-engine`): `LlmEngine::state_seq_save_file` /
+  `state_seq_load_file` embrulham `llama_state_seq_save_file` /
+  `llama_state_seq_load_file`. O `.bin` do llama.cpp serializa as células de uma
+  sequência com suas posições e um cabeçalho de tokens **consultivo** (nunca
+  conferido contra as células), e valida ao restaurar a geometria de KV
+  (contagem de camadas, tipo e tamanho de linha por camada) - uma divergência é
+  `0` bytes, virando erro, nunca abort.
+- **Peer** (`infer_server`): `POST /v1/session/slot`
+  `{action: save|restore|erase, session_id, slot_name, dest_session_id?}`.
+  `save` grava **`prompt_seq` truncado em `prompt_len`** - nunca `gen_seq`, a
+  cauda volátil não entra num snapshot - mais um sidecar `<name>.json` com a
+  identidade do modelo (`model_label`, faixa de camadas, `n_embd`) que
+  `restore` confere **antes** de tocar no motor. `restore` cria uma sessão nova
+  `retained`, com `n_past`/`prompt_len` na fronteira salva; a cabeça grava os
+  tokens reais no sidecar, os hops seguintes um vetor do tamanho certo. A rota
+  também é replicada aos workers de TP (`replicate_slot_call`), que servem a
+  mesma faixa e gravam a própria cópia. `/health` publica
+  `slot_persist_enabled` e `slot_count`; a capability é
+  `inference/slot-persist-v1`, anunciada só quando há diretório configurado.
+- **Gateway** (`gateway::snapshot_deployment` / `restore_deployment` /
+  `erase_snapshot`): um snapshot de implantação é tudo-ou-nada. O gateway
+  resolve o pipeline (`resolve_plan_for_model`, mesmo planejador da geração),
+  exige `inference/slot-persist-v1` em todos os hops e chama `/v1/session/slot`
+  em cada um com o nome `"{snapshot}__{node_id}"` (um diretório guarda a fatia
+  de cada peer sem colisão). Uma falha em qualquer hop apaga os que já
+  gravaram; no `restore`, hops que voltem com fronteiras de tokens diferentes
+  liberam a sessão nova em todos e devolvem erro. Operador: `GET /admin/slots`,
+  `POST /admin/slots/{name}?action=save|restore|erase` (ver `api-http.md`).
+
+Restaurar reproduz o mesmo estado físico de uma sessão viva retida (células
+além de `prompt_len` podem sobrar em `prompt_seq`, exatamente como no caminho
+normal), então o turno seguinte segue a regra só-acrescentar de
+`plan_prefix_reuse` sem mudança. Motores recorrentes/híbridos: o `.bin`
+restaura a sequência inteira de uma vez, sem remoção parcial, então o mecanismo
+vale para todo modelo servido.
+
+#### Cache de prefixo persistente (automático)
+
+Com `slot_persist_prefix_cache` ligado (campo do `pom.json` ou
+`POM_SLOT_PERSIST_PREFIX_CACHE=1`; desligado por padrão) e `slot_save_path`
+configurado em **todos** os hops, o gateway torna o cache de prefixo durável ao
+reinício, sem chamada manual:
+
+- **Spill.** No fim de cada turno, depois de `rewind_sessions` reter o prompt,
+  o gateway grava um snapshot automático numa task destacada (fora do caminho
+  da resposta): `snapshot_deployment` com o nome `auto__<key_hash>`, onde
+  `key_hash = hash(PrefixRouteKey + cache_key)`. Um índice pequeno
+  (`prefix-auto-index.json`, ao lado dos `.bin` no `slot_save_path` deste
+  gateway) guarda `(rota, prompt, tokens, bytes, updated_at)` por `key_hash`.
+- **Reload no miss.** Quando o `PrefixCache` em memória não tem a conversa
+  (típico logo após um reinício), o gateway procura no índice o maior prefixo
+  **estrito** do prompt pedido; achando, `restore_deployment` recria o KV em
+  todos os hops numa sessão nova, o `PrefixCache` adota essa sessão como hit
+  (`PrefixCache::adopt`) e o turno segue como um acerto normal - a cabeça
+  reaproveita pela mesma regra só-acrescentar. O trace publica
+  `prefix_reuse_status = "disk"`.
+- **Limites.** `slot_auto_max_bytes` (padrão 8 GiB, somado entre fatias) com
+  despejo LRU por `updated_at`, e TTL de 7 dias. Um `.bin` despejado é apagado
+  com `erase_snapshot`.
+- **Fronteiras.** O índice é **local do gateway**: se o papel de gateway mudar
+  de máquina, o novo gateway não enxerga as entradas e cai no prefill frio (os
+  `.bin` órfãos saem por TTL/LRU). Um `restore` que falha (arquivo sumiu num
+  hop, geometria incompatível) esquece a entrada e segue a frio - reusar é
+  otimização, nunca motivo para a requisição falhar.
+
 ### 3.2 Seleção do executor
 
 Antes de carregar os pesos, `executor::select` lê o cabeçalho GGUF. Só um

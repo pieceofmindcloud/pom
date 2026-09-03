@@ -351,6 +351,24 @@ acrescenta uma revogação com o `node_id` do operador autenticado e o horário.
 Uma segunda tentativa é idempotente e não cria outro evento; a chave nunca
 volta a autenticar.
 
+#### Snapshots de KV cache (`--slot-save-path`)
+
+`GET /admin/slots` devolve `{slot_persist_enabled, slot_count}` lidos do
+`/health` da porta de inferência **local** (vista rápida deste nó), mais
+`prefix_auto_cache: {enabled, index_entries, index_bytes}` quando o cache de
+prefixo persistente (`slot_persist_prefix_cache`) está ligado neste gateway.
+
+`POST /admin/slots/{name}?action=save|restore|erase` orquestra um snapshot pela
+implantação inteira. Corpo: `{model, session_id?, dest_session_id?}` (`model` é o
+rótulo ou o `deploy_id`). O gateway resolve o pipeline com o mesmo planejador da
+geração e chama `POST /v1/session/slot` em cada hop; cada peer grava/lê a fatia
+dele em `slot_save_path` com o nome `"{name}__{node_id}"`. Tudo-ou-nada: um hop
+sem a capability `inference/slot-persist-v1`, ou uma falha em qualquer hop,
+recusa a operação inteira (os hops já gravados são apagados). `save` exige
+`session_id` de uma sessão viva (vem do `x_pom` de uma resposta); `restore` cria
+`dest_session_id` (ou um id novo) e confere que todos os hops restauraram a
+mesma fronteira de tokens. Ver `docs/subsystems/inferencia.md`.
+
 ### `/api/ui/*`
 
 O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
@@ -527,9 +545,9 @@ exigem `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
 
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router e também exige credencial em `/v1/prefill`, `/v1/step`, `/v1/step-stream`,
-`/v1/link`, `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce`:
-aceita a
-`connection_key` compartilhada ou uma API key ativa. Nas chamadas internas
+`/v1/link`, `/v1/session/release`, `/v1/session/rollback`, `/v1/session/slot` e
+`/v1/tp/reduce`: aceita a `connection_key` compartilhada ou uma API key ativa.
+Nas chamadas internas
 entre peers, o nó envia a `connection_key` e, quando ela não existe, a primeira
 API key ativa. `/health` continua público para sondas de readiness.
 

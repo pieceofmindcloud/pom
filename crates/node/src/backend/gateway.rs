@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Tokens `/api/generate` will produce before stopping on its own.
@@ -110,6 +110,10 @@ pub struct GatewayState {
     /// Prefixos de conversas que continuam vivos entre turnos. A entrada só
     /// guarda uma sessão KV já existente, nunca pesos ou estado oculto.
     pub prefix_cache: Arc<crate::prefix_cache::PrefixCache>,
+    /// Índice em disco dos snapshots automáticos de prefixo (`--slot-save-path`
+    /// + `slot_persist_prefix_cache`). `None` quando o recurso está desligado.
+    /// Ver `crate::prefix_cache::PrefixDiskIndex` e `build_prefix_disk_index`.
+    pub prefix_disk: Option<Arc<crate::prefix_cache::PrefixDiskIndex>>,
     /// Clientes HTTP de saída, **um por peer**, com o certificado do destino
     /// fixado pelo node_id (`peer_client::PeerClients`).
     ///
@@ -474,6 +478,9 @@ impl GatewayState {
                     }
                     if self.network.batching_ready() {
                         caps.push(crate::pipeline::CAP_FRAME_BATCH.into());
+                    }
+                    if self.network.slot_persist_ready() {
+                        caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
                     }
                     if self.network.libp2p_tunnel_ready() {
                         caps.push("transport/libp2p-tunnel-v1".into());
@@ -1599,11 +1606,61 @@ async fn generate_stream_inner(
     // prompt. A miss gets a fresh id and is published only after this turn has
     // completed its prefill, so an incomplete session cannot enter the cache.
     let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
-    let prefix_lease =
-        state
-            .prefix_cache
-            .acquire(prefix_key, &cache_prompt, Uuid::new_v4().to_string());
-    let session_id = prefix_lease.session_id().to_string();
+    let mut prefix_lease = state.prefix_cache.acquire(
+        prefix_key.clone(),
+        &cache_prompt,
+        Uuid::new_v4().to_string(),
+    );
+    let mut session_id = prefix_lease.session_id().to_string();
+    let mut reuse_prefix = prefix_lease.is_hit();
+
+    // Camada de disco (Phase 3): um miss em memória que casa um snapshot
+    // automático em disco - típico depois de um reinício - restaura o KV em
+    // todos os hops em vez de refazer o prefill a frio. Ver
+    // `crate::prefix_cache::PrefixDiskIndex`.
+    let mut disk_restore_hash: Option<String> = None;
+    if !reuse_prefix {
+        if let Some(disk) = state.prefix_disk.clone() {
+            if let Some(entry) =
+                disk.longest_prefix_match(&prefix_key.model, &prefix_key.hops, &cache_prompt)
+            {
+                let restored_sid = format!("disk-{}", Uuid::new_v4());
+                match restore_deployment(
+                    &plan,
+                    &auto_slot_name(&entry.key_hash),
+                    &restored_sid,
+                    &state.peer_http,
+                )
+                .await
+                {
+                    Ok(restored_tokens) => {
+                        prefix_lease.discard();
+                        prefix_lease = state.prefix_cache.adopt(
+                            prefix_key.clone(),
+                            &entry.prompt,
+                            restored_sid.clone(),
+                            restored_tokens,
+                        );
+                        session_id = restored_sid;
+                        reuse_prefix = true;
+                        disk.touch(&entry.key_hash);
+                        info!(
+                            "♻️  prefixo restaurado do disco: {restored_tokens} tokens em {} hop(s)",
+                            plan.steps.len()
+                        );
+                        disk_restore_hash = Some(entry.key_hash);
+                    }
+                    Err(error) => {
+                        warn!(
+                            "restauração de prefixo do disco falhou ({error}); seguindo a frio"
+                        );
+                        disk.forget(&entry.key_hash);
+                    }
+                }
+            }
+        }
+    }
+
     // A sessão não pode trocar de réplica depois que o primeiro prefill criou
     // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
     // usada para revisar qualquer transformação futura da rota.
@@ -1613,7 +1670,6 @@ async fn generate_stream_inner(
         &plan,
     );
     debug_assert!(route_affinity.matches_plan(&plan));
-    let reuse_prefix = prefix_lease.is_hit();
 
     // Para onde a cauda entrega a resposta. `None` quando esta máquina não
     // sabe nenhum endereço de si mesma — aí a cadeia volta a borbulhar, que é
@@ -1827,6 +1883,12 @@ async fn generate_stream_inner(
             Ok(mut o) => {
                 if unknown_session_recovery_attempted {
                     o.trace.prefix_reuse_status = Some("session-lost-cold".to_owned());
+                } else if disk_restore_hash.is_some()
+                    && o.trace.prefix_reuse_status.as_deref() == Some("full")
+                {
+                    // O reuso veio de um snapshot em disco, não de uma sessão
+                    // que ficou viva em memória.
+                    o.trace.prefix_reuse_status = Some("disk".to_owned());
                 }
                 info!(
                     "📥 prompt de {} tokens em {} pedaço(s), {} do cache · {:.1}s até a primeira palavra",
@@ -2485,7 +2547,35 @@ async fn generate_stream_inner(
     if let Some(retained_tokens) = retained_prefix_tokens {
         if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http).await {
             if let Some(lease) = lease.take() {
-                lease.commit(cache_prompt, retained_tokens);
+                lease.commit(cache_prompt.clone(), retained_tokens);
+            }
+            // Phase 3: grava o prefixo retido em disco, best-effort e fora do
+            // caminho da resposta. A sessão fica parada (retida) em todos os
+            // hops até o próximo turno, então há tempo para o `save`.
+            if let Some(disk) = state.prefix_disk.clone() {
+                let plan = plan.clone();
+                let clients = state.peer_http.clone();
+                let key = prefix_key.clone();
+                let prompt = cache_prompt.clone();
+                let sid = session_id.clone();
+                tokio::spawn(async move {
+                    let hash = prefix_key_hash(&key, &prompt);
+                    match snapshot_deployment(&plan, &auto_slot_name(&hash), &sid, &clients).await {
+                        Ok(bytes) => {
+                            for stale in disk.record(
+                                &key.model,
+                                &key.hops,
+                                &hash,
+                                &prompt,
+                                retained_tokens,
+                                bytes,
+                            ) {
+                                erase_snapshot(&plan, &auto_slot_name(&stale), &clients).await;
+                            }
+                        }
+                        Err(error) => debug!("spill de prefixo em disco: {error}"),
+                    }
+                });
             }
         } else {
             warn!(
@@ -2678,6 +2768,240 @@ async fn rollback_sessions(
         }
     }
     all_ok
+}
+
+// ── Snapshots de KV cache da implantação (`--slot-save-path`) ────────────────
+
+/// Nome do arquivo de snapshot que cada hop grava: o nome operacional mais o
+/// `node_id` daquele hop, para um único diretório guardar a fatia de cada peer
+/// sem colisão. `sanitize_slot_name` no lado do peer aceita `[A-Za-z0-9._-]`, e
+/// o `node_id` é hex de hash.
+fn slot_name_for_step(snapshot_name: &str, node_id: &str) -> String {
+    format!("{snapshot_name}__{node_id}")
+}
+
+/// Todos os hops precisam anunciar `inference/slot-persist-v1`. Um snapshot de
+/// implantação é tudo-ou-nada: sem a cap em algum hop, aquele peer não sabe
+/// gravar a fatia dele e o snapshot ficaria com um buraco.
+fn plan_supports_slot_persist(plan: &PipelinePlan) -> Result<(), String> {
+    if let Some(step) = plan
+        .steps
+        .iter()
+        .find(|step| !step.supports(crate::pipeline::CAP_SLOT_PERSIST))
+    {
+        return Err(format!(
+            "o hop {} (camadas {}-{}) não tem slot_save_path configurado; \
+             o snapshot exige a capability em todos os peers",
+            step.node_id, step.start_layer, step.end_layer
+        ));
+    }
+    Ok(())
+}
+
+async fn slot_call_step(
+    step: &crate::pipeline::PipelineStep,
+    body: serde_json::Value,
+    clients: &crate::peer_client::PeerClients,
+) -> Result<serde_json::Value, String> {
+    let url = format!("{}/v1/session/slot", step.inference_url);
+    let http = clients
+        .for_peer(&step.node_id)
+        .map_err(|e| format!("sem cliente para {}: {e}", step.node_id))?;
+    let request = http.post(&url).json(&body).timeout(Duration::from_secs(60));
+    let response = clients
+        .authorize_inference_request(request)
+        .await
+        .send()
+        .await
+        .map_err(|e| format!("{} não respondeu: {e}", step.node_id))?;
+    let status = response.status();
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("{} devolveu corpo ilegível: {e}", step.node_id))?;
+    if !status.is_success() {
+        return Err(format!(
+            "{} recusou o snapshot ({status}): {}",
+            step.node_id,
+            payload
+                .as_str()
+                .or_else(|| payload.get("error").and_then(|v| v.as_str()))
+                .unwrap_or("sem detalhe")
+        ));
+    }
+    Ok(payload)
+}
+
+/// Constrói o índice de disco do cache de prefixo, ou `None` quando
+/// `slot_persist_prefix_cache` está desligado ou não há `slot_save_path`.
+pub(crate) fn build_prefix_disk_index(
+    config: &crate::config::Config,
+) -> Option<Arc<crate::prefix_cache::PrefixDiskIndex>> {
+    if !config.slot_persist_prefix_cache_enabled() {
+        return None;
+    }
+    let path = config.prefix_auto_index_path()?;
+    Some(crate::prefix_cache::PrefixDiskIndex::load(
+        path,
+        config.slot_auto_max_bytes(),
+    ))
+}
+
+/// Nome de snapshot de um prefixo automático: `auto__<key_hash>`. Por hop, o
+/// arquivo vira `auto__<key_hash>__<node_id>.bin` (`slot_name_for_step`).
+fn auto_slot_name(key_hash: &str) -> String {
+    format!("auto__{key_hash}")
+}
+
+/// Hash estável do prefixo de uma conversa: identifica o conjunto de `.bin`.
+fn prefix_key_hash(key: &crate::prefix_cache::PrefixRouteKey, prompt: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(key.model.as_bytes());
+    hasher.update([0u8]);
+    for hop in &key.hops {
+        hasher.update(hop.as_bytes());
+        hasher.update([0u8]);
+    }
+    hasher.update([0u8]);
+    hasher.update(prompt.as_bytes());
+    hex::encode(&hasher.finalize()[..16])
+}
+
+/// Resolve o pipeline que atende um modelo hoje, para as rotas de snapshot do
+/// operador. Reusa o mesmo planejador da geração; é observação, não altera
+/// roteamento nem balanceamento.
+pub(crate) async fn resolve_plan_for_model(
+    state: &GatewayState,
+    model: &str,
+) -> Result<PipelinePlan, String> {
+    let peers = state.all_peers().await;
+    let total_layers = peers
+        .iter()
+        .find(|p| p.model == model || p.deploy_id == model)
+        .map(|p| p.total_layers)
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("nenhum peer serve o modelo '{model}'"))?;
+    let deploy_id = peers
+        .iter()
+        .find(|p| p.deploy_id == model)
+        .map(|_| model);
+    crate::pipeline::plan_pipeline(&peers, model, deploy_id, total_layers, &state.loads)
+        .await
+        .ok_or_else(|| {
+            format!("nenhum pipeline cobre 0..{total_layers} do modelo '{model}'")
+        })
+}
+
+/// Grava um snapshot de KV de uma implantação: cada hop persiste a fatia dele
+/// no `slot_save_path` local. Tudo-ou-nada - se um hop falha, os que já
+/// gravaram são apagados e o erro descreve qual hop parou.
+pub(crate) async fn snapshot_deployment(
+    plan: &PipelinePlan,
+    snapshot_name: &str,
+    session_id: &str,
+    clients: &crate::peer_client::PeerClients,
+) -> Result<u64, String> {
+    plan_supports_slot_persist(plan)?;
+    let mut total_bytes = 0u64;
+    let mut done: Vec<&crate::pipeline::PipelineStep> = Vec::new();
+    for step in &plan.steps {
+        let body = serde_json::json!({
+            "action": "save",
+            "session_id": session_id,
+            "slot_name": slot_name_for_step(snapshot_name, &step.node_id),
+        });
+        match slot_call_step(step, body, clients).await {
+            Ok(payload) => {
+                total_bytes += payload
+                    .get("bin_bytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                done.push(step);
+            }
+            Err(error) => {
+                warn!("snapshot '{snapshot_name}' falhou em {}: {error}", step.node_id);
+                for prev in &done {
+                    let body = serde_json::json!({
+                        "action": "erase",
+                        "slot_name": slot_name_for_step(snapshot_name, &prev.node_id),
+                    });
+                    let _ = slot_call_step(prev, body, clients).await;
+                }
+                return Err(error);
+            }
+        }
+    }
+    info!(
+        "snapshot '{snapshot_name}' gravado em {} hop(s), {total_bytes} bytes",
+        plan.steps.len()
+    );
+    Ok(total_bytes)
+}
+
+/// Restaura um snapshot de implantação numa **nova** sessão em todos os hops.
+/// Cada hop tem que voltar com a mesma fronteira de tokens; qualquer
+/// divergência libera a nova sessão em todos e devolve erro.
+pub(crate) async fn restore_deployment(
+    plan: &PipelinePlan,
+    snapshot_name: &str,
+    new_session_id: &str,
+    clients: &crate::peer_client::PeerClients,
+) -> Result<u32, String> {
+    plan_supports_slot_persist(plan)?;
+    let mut agreed: Option<u32> = None;
+    for step in &plan.steps {
+        let body = serde_json::json!({
+            "action": "restore",
+            "slot_name": slot_name_for_step(snapshot_name, &step.node_id),
+            "dest_session_id": new_session_id,
+        });
+        let result = slot_call_step(step, body, clients).await.and_then(|payload| {
+            payload
+                .get("restored_tokens")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32)
+                .ok_or_else(|| format!("{} não informou restored_tokens", step.node_id))
+        });
+        match result {
+            Ok(tokens) => match agreed {
+                Some(prev) if prev != tokens => {
+                    release_sessions(plan, new_session_id, clients).await;
+                    return Err(format!(
+                        "hops divergiram na restauração: {} restaurou {tokens}, outro restaurou {prev}",
+                        step.node_id
+                    ));
+                }
+                _ => agreed = Some(tokens),
+            },
+            Err(error) => {
+                warn!("restore '{snapshot_name}' falhou em {}: {error}", step.node_id);
+                release_sessions(plan, new_session_id, clients).await;
+                return Err(error);
+            }
+        }
+    }
+    let tokens = agreed.unwrap_or(0);
+    info!("snapshot '{snapshot_name}' restaurado como sessão {new_session_id} ({tokens} tokens)");
+    Ok(tokens)
+}
+
+/// Apaga um snapshot de implantação. Melhor esforço: um hop que já não tem o
+/// arquivo não é erro.
+pub(crate) async fn erase_snapshot(
+    plan: &PipelinePlan,
+    snapshot_name: &str,
+    clients: &crate::peer_client::PeerClients,
+) {
+    for step in &plan.steps {
+        let body = serde_json::json!({
+            "action": "erase",
+            "slot_name": slot_name_for_step(snapshot_name, &step.node_id),
+        });
+        if let Err(error) = slot_call_step(step, body, clients).await {
+            warn!("erase de '{snapshot_name}' em {}: {error}", step.node_id);
+        }
+    }
 }
 
 /// Pessimistic token count for a prompt, used only by the size guard.
@@ -4105,6 +4429,7 @@ mod budget_tests {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch,
@@ -4546,6 +4871,7 @@ pub(crate) mod testkit {
             local_assignment: assignment.clone(),
             loads: Arc::new(LoadTracker::new()),
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
+            prefix_disk: None,
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),
@@ -4563,6 +4889,9 @@ pub(crate) mod testkit {
                 tls_required: false,
                 node_name: None,
                 huggingface_token: None,
+                slot_save_path: None,
+                slot_persist_prefix_cache: false,
+                slot_auto_max_bytes: None,
                 connection_key: "chave".into(),
                 gateway_port: 8080,
                 admin_exposure: Default::default(),
@@ -4611,6 +4940,7 @@ pub(crate) mod testkit {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,

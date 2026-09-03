@@ -35,7 +35,14 @@ x-node: &node
   environment:
     POM_HOME: /data
     POM_UI_DIST: /app/apps/frontend/dist
-    POM_PROFILE_SYNC: 1 
+    POM_PROFILE_SYNC: 1
+    # NVIDIA is injected by the toolkit (deploy.resources below). Keep its
+    # capabilities at compute+utility on purpose: adding `graphics` would also
+    # mount an NVIDIA Vulkan ICD, and then the Vulkan backend would enumerate
+    # the NVIDIA card too - POM's sysmon counts AMD-only devices on the Vulkan
+    # side. NVIDIA stays on CUDA, AMD stays on Vulkan/RADV.
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    POM_SLOT_PERSIST_PREFIX_CACHE: 1 
 
 services:
   node-gpu:
@@ -45,6 +52,13 @@ services:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ./tests/fixtures/node-gpu:/data
+    # AMD Radeon for the Vulkan/RADV backend: the DRI render node is all the
+    # driver needs (`/dev/kfd` is ROCm-only and unused here). The container
+    # runs as root and the device nodes are root-owned, so no `group_add` is
+    # needed; a non-root container would add the numeric GIDs of `video` and
+    # the render node here.
+    devices:
+      - /dev/dri:/dev/dri
     deploy:
       resources:
         reservations:
@@ -53,20 +67,20 @@ services:
               capabilities: [gpu]
               device_ids: ['0']
 
-  node-gpu2:
-    <<: *node
-    container_name: pom-node-gpu2
-    volumes:
-      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
-      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
-      - ./tests/fixtures/node-gpu-2:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
-              device_ids: ['1']
+#  node-gpu2:
+#    <<: *node
+#    container_name: pom-node-gpu2
+#    volumes:
+#      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+#      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+#      - ./tests/fixtures/node-gpu-2:/data
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              capabilities: [gpu]
+#              device_ids: ['1']
 
 #  node-cpu-1:
 #    <<: *node

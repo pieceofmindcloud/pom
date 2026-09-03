@@ -9,6 +9,8 @@
 //!   POST /v1/session/release  — free a session's KV slot
 //!   POST /v1/session/rewind   - keep the prompt and discard generated suffix
 //!   POST /v1/session/rollback — discard an unconfirmed speculative batch
+//!   POST /v1/session/slot     - save/restore/erase a KV cache snapshot on disk
+//!                                (`--slot-save-path`, like llama-server)
 //!   GET  /health              — readiness probe
 //!
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
@@ -18,7 +20,7 @@ use crate::llm::{sample_token_profiled, LlmEngine, ModelCache, SamplingConfig};
 use crate::pipeline::PipelineStep;
 use crate::runtime::NodeConfig;
 use crate::wire::{self, TensorShape, WireDtype};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, State},
@@ -1248,6 +1250,7 @@ mod tests {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,
@@ -1924,6 +1927,153 @@ mod session_text_tests {
     }
 }
 
+// ── Snapshots de KV cache (`--slot-save-path`) ───────────────────────────────
+
+/// Versão do arquivo sidecar. Sobe quando o formato do `.json` muda de forma
+/// incompatível; o `.bin` é o formato do próprio llama.cpp (`LLAMA_STATE_SEQ_*`).
+const SLOT_SIDECAR_VERSION: u32 = 1;
+
+/// Metadados que acompanham cada `<name>.bin`, gravados ao lado como
+/// `<name>.json`. O `.bin` do llama.cpp valida a geometria de KV (contagem de
+/// camadas, tipo e tamanho de linha) ao restaurar, mas **não** valida o modelo
+/// nem a faixa de camadas; é o que este sidecar cobre antes de tocar no motor.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SlotSidecar {
+    format_version: u32,
+    /// Rótulo técnico do modelo. Igual em todos os peers da implantação.
+    model_label: String,
+    /// Caminho do GGUF neste peer (uma fatia, ou o modelo inteiro).
+    model_path: String,
+    start_layer: u32,
+    end_layer: u32,
+    total_layers: u32,
+    /// Largura do hidden state do motor carregado.
+    n_embd: u32,
+    /// Quantos tokens de prompt o snapshot cobre (a fronteira estável retida,
+    /// `Session::prompt_len`). É a posição em que a sessão restaurada fica.
+    retained_tokens: u32,
+    /// Tokens reais do prompt quando este peer os conhece (a cabeça); vazio nos
+    /// hops que só viram hidden state. O `.bin` carrega um cabeçalho de tokens
+    /// próprio (consultivo), então este campo serve só ao reuso de prefixo.
+    #[serde(default)]
+    prompt_tokens: Vec<i32>,
+    /// RFC3339 de quando o snapshot foi gravado.
+    saved_at: String,
+    /// Tamanho do `.bin` em bytes, como o llama.cpp reportou.
+    bin_bytes: u64,
+}
+
+/// Recusa um nome de snapshot que não seja um único componente de caminho
+/// seguro. Mesma disciplina de `transfer::safe_model_path`: sem separador, sem
+/// `..`, sem nome vazio ou oculto. O gateway compõe `"<nome>__<node_id>"`, e o
+/// `node_id` é hex de hash, então o conjunto `[A-Za-z0-9._-]` basta.
+fn sanitize_slot_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("nome de snapshot vazio");
+    }
+    if name.len() > 200 {
+        bail!("nome de snapshot longo demais (máx 200)");
+    }
+    if name.starts_with('.') {
+        bail!("nome de snapshot não pode começar com '.'");
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    {
+        bail!("nome de snapshot só aceita letras, dígitos, '.', '_' e '-'");
+    }
+    Ok(name)
+}
+
+fn slot_bin_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    dir.join(format!("{name}.bin"))
+}
+
+fn slot_json_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    dir.join(format!("{name}.json"))
+}
+
+/// Apaga o `.bin` e o `.json` de um snapshot. Devolve `true` quando algo foi
+/// removido; um snapshot ausente não é erro (mesma ética de
+/// `/v1/session/release`).
+fn erase_slot(dir: &std::path::Path, name: &str) -> Result<bool> {
+    let name = sanitize_slot_name(name)?;
+    let mut removed = false;
+    for path in [slot_bin_path(dir, name), slot_json_path(dir, name)] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(anyhow::anyhow!("apagar {}: {error}", path.display())),
+        }
+    }
+    Ok(removed)
+}
+
+/// Lê os sidecars de todos os snapshots num diretório. Um `.json` corrompido é
+/// registrado e pulado, não derruba a listagem.
+fn list_slots(dir: &std::path::Path) -> Vec<(String, SlotSidecar)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // O índice do cache de prefixo do gateway mora no mesmo diretório e
+        // não é um sidecar de snapshot.
+        if name == "prefix-auto-index" {
+            continue;
+        }
+        match std::fs::read(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|raw| serde_json::from_slice::<SlotSidecar>(&raw).map_err(anyhow::Error::from))
+        {
+            Ok(sidecar) => out.push((name.to_string(), sidecar)),
+            Err(error) => warn!("sidecar de snapshot {} ilegível: {error}", path.display()),
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Resultado de `InferState::restore_slot`, ecoado na resposta da rota para o
+/// gateway conferir que todos os hops restauraram a mesma fronteira.
+struct SlotRestoreOutcome {
+    restored_tokens: u32,
+}
+
+#[cfg(test)]
+mod slot_name_tests {
+    use super::sanitize_slot_name;
+
+    #[test]
+    fn accepts_a_plain_component_and_the_gateway_node_namespacing() {
+        assert_eq!(sanitize_slot_name("demo").unwrap(), "demo");
+        assert_eq!(
+            sanitize_slot_name("demo__a1b2c3d4e5f6").unwrap(),
+            "demo__a1b2c3d4e5f6"
+        );
+        assert_eq!(sanitize_slot_name("  trimmed  ").unwrap(), "trimmed");
+    }
+
+    #[test]
+    fn refuses_path_traversal_and_separators() {
+        for bad in ["", ".", "..", "a/b", "a\\b", "../escape", ".hidden", "a b", "sÿm"] {
+            assert!(
+                sanitize_slot_name(bad).is_err(),
+                "esperava recusar {bad:?}"
+            );
+        }
+    }
+}
+
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 struct InferState {
@@ -1939,6 +2089,17 @@ struct InferState {
     chat_template: bool,
     start_layer: u32,
     end_layer: u32,
+    /// Total de camadas da implantação (`NodeConfig::total_layers`). Guardado
+    /// para validar um snapshot de KV antes de restaurá-lo.
+    total_layers: u32,
+    /// Rótulo técnico do modelo servido, compartilhado por todos os peers da
+    /// mesma implantação. Identidade do snapshot de KV.
+    model_label: String,
+    /// Caminho do GGUF carregado neste peer. Identidade do snapshot de KV.
+    model_path: String,
+    /// Diretório de snapshots de KV cache (`Config::slot_save_path`), ou `None`
+    /// quando o recurso está desligado nesta máquina. Ver `save_slot`.
+    slot_dir: Option<std::path::PathBuf>,
     original_block_count: Option<u32>,
     inference_path: crate::executor::InferencePath,
     /// Corte de confiança do rascunho MTP — ver `NodeConfig::mtp_min_probability`.
@@ -2219,6 +2380,15 @@ impl InferState {
             chat_template: cfg.no_thinking,
             start_layer: cfg.start_layer,
             end_layer: cfg.end_layer,
+            total_layers: cfg.total_layers,
+            model_label: cfg.model_label.clone(),
+            model_path: cfg.model_path.clone(),
+            slot_dir: cfg
+                .slot_save_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(std::path::PathBuf::from),
             original_block_count: None, // filled in after engine load
             inference_path,
             mtp_min_probability: cfg.mtp_min_probability,
@@ -2438,6 +2608,162 @@ impl InferState {
             .engine
             .kv_remove(self.gen_seq_of(session.prompt_seq), 0, -1);
         let _ = self.engine.kv_remove(session.prompt_seq, 0, -1);
+    }
+
+    /// Grava o prefixo retido de uma sessão como um snapshot de KV em disco,
+    /// como o `--slot-save-path` do llama-server.
+    ///
+    /// **Sempre salva `prompt_seq`, nunca `gen_seq`.** A cauda volátil da
+    /// geração some no fim do turno e não faz parte de um snapshot; o que fica
+    /// é o prompt estável que o próximo turno reaproveita. O `.bin` do
+    /// llama.cpp serializa as células da sequência com suas posições, e o
+    /// sidecar `.json` grava a identidade do modelo e da fatia para a
+    /// restauração recusar um estado incompatível.
+    fn save_slot(&self, sid: &str, dir: &std::path::Path, name: &str) -> Result<SlotSidecar> {
+        let name = sanitize_slot_name(name)?;
+        let session = self
+            .sessions
+            .get(sid)
+            .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desconhecida"))?;
+        if session.prompt_len == 0 {
+            bail!("sessão '{sid}' não tem prompt retido para snapshot");
+        }
+        let seq = session.prompt_seq;
+        let retained = session.prompt_len;
+        // Os tokens reais do prompt retido, quando este peer os conhece (a
+        // cabeça). Vazio nos hops que só receberam hidden state.
+        let real_tokens: Vec<i32> = session
+            .prompt_tokens
+            .get(..retained as usize)
+            .map(<[i32]>::to_vec)
+            .unwrap_or_default();
+        // Cabeçalho de tokens do `.bin`: os reais quando existem, senão um vetor
+        // do tamanho certo - o llama.cpp nunca confere o cabeçalho contra as
+        // células, ele é consultivo.
+        let header_tokens: Vec<i32> = if real_tokens.is_empty() {
+            vec![0i32; retained as usize]
+        } else {
+            real_tokens.clone()
+        };
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("criar diretório de snapshots {}", dir.display()))?;
+        let bin = slot_bin_path(dir, name);
+        let bin_bytes = self.engine.state_seq_save_file(&bin, seq, &header_tokens)? as u64;
+        let sidecar = SlotSidecar {
+            format_version: SLOT_SIDECAR_VERSION,
+            model_label: self.model_label.clone(),
+            model_path: self.model_path.clone(),
+            start_layer: self.start_layer,
+            end_layer: self.end_layer,
+            total_layers: self.total_layers,
+            n_embd: self.engine.n_embd as u32,
+            retained_tokens: retained,
+            prompt_tokens: real_tokens,
+            saved_at: chrono::Utc::now().to_rfc3339(),
+            bin_bytes,
+        };
+        let json = serde_json::to_vec_pretty(&sidecar)?;
+        std::fs::write(slot_json_path(dir, name), json)
+            .with_context(|| format!("gravar sidecar de {name}"))?;
+        Ok(sidecar)
+    }
+
+    /// Lê um snapshot de KV do disco para uma **nova** sessão. Recusa um
+    /// snapshot de outro modelo, faixa de camadas ou largura de hidden state
+    /// antes de tocar no motor; o `.bin` recusa por si só uma geometria de KV
+    /// incompatível (tipo/tamanho de linha, contagem de camadas).
+    fn restore_slot(
+        &mut self,
+        dir: &std::path::Path,
+        name: &str,
+        new_sid: &str,
+    ) -> Result<SlotRestoreOutcome> {
+        let name = sanitize_slot_name(name)?;
+        if self.sessions.contains_key(new_sid) {
+            bail!("sessão '{new_sid}' já existe; escolha outro id");
+        }
+        let raw = std::fs::read(slot_json_path(dir, name))
+            .with_context(|| format!("ler sidecar de {name}"))?;
+        let sidecar: SlotSidecar = serde_json::from_slice(&raw)
+            .with_context(|| format!("sidecar de {name} ilegível"))?;
+        self.check_slot_compatible(&sidecar)?;
+
+        let seq = self.alloc_seq().ok_or_else(|| {
+            anyhow::anyhow!("seq pool esgotado; libere uma sessão antes de restaurar")
+        })?;
+        let cap = sidecar
+            .retained_tokens
+            .max(sidecar.prompt_tokens.len() as u32)
+            .saturating_add(8) as usize;
+        let bin = slot_bin_path(dir, name);
+        let (_bytes, header_tokens) = match self.engine.state_seq_load_file(&bin, seq, cap) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.free_seq(seq);
+                return Err(error);
+            }
+        };
+
+        let mut session = Session::new(seq);
+        session.prompt_len = sidecar.retained_tokens;
+        session.n_past = sidecar.retained_tokens;
+        session.stable_len = sidecar.retained_tokens;
+        session.prompt_tokens = if sidecar.prompt_tokens.is_empty() {
+            header_tokens
+        } else {
+            sidecar.prompt_tokens.clone()
+        };
+        session.retained = true;
+        session.last_used = Instant::now();
+        self.sessions.insert(new_sid.to_string(), session);
+        Ok(SlotRestoreOutcome {
+            restored_tokens: sidecar.retained_tokens,
+        })
+    }
+
+    /// Confere que um sidecar descreve o mesmo modelo e a mesma fatia que este
+    /// peer serve. Não entra `cache_type_*`: o `.bin` já recusa uma geometria
+    /// de KV divergente com o tipo e o tamanho de linha por camada.
+    fn check_slot_compatible(&self, sidecar: &SlotSidecar) -> Result<()> {
+        if sidecar.format_version != SLOT_SIDECAR_VERSION {
+            bail!(
+                "sidecar de versão {} incompatível (esperado {SLOT_SIDECAR_VERSION})",
+                sidecar.format_version
+            );
+        }
+        let mismatch = |campo: &str, esperado: String, achou: String| {
+            anyhow::anyhow!("snapshot de KV incompatível: {campo} {achou} != {esperado} deste peer")
+        };
+        if sidecar.model_label != self.model_label {
+            return Err(mismatch(
+                "model_label",
+                self.model_label.clone(),
+                sidecar.model_label.clone(),
+            ));
+        }
+        if (sidecar.start_layer, sidecar.end_layer, sidecar.total_layers)
+            != (self.start_layer, self.end_layer, self.total_layers)
+        {
+            return Err(mismatch(
+                "faixa de camadas",
+                format!(
+                    "{}-{}/{}",
+                    self.start_layer, self.end_layer, self.total_layers
+                ),
+                format!(
+                    "{}-{}/{}",
+                    sidecar.start_layer, sidecar.end_layer, sidecar.total_layers
+                ),
+            ));
+        }
+        if sidecar.n_embd != self.engine.n_embd as u32 {
+            return Err(mismatch(
+                "n_embd",
+                (self.engine.n_embd as u32).to_string(),
+                sidecar.n_embd.to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn reap_idle(&mut self) -> usize {
@@ -2689,7 +3015,8 @@ pub async fn run(
         )
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rewind", post(handle_rewind))
-        .route("/v1/session/rollback", post(handle_rollback));
+        .route("/v1/session/rollback", post(handle_rollback))
+        .route("/v1/session/slot", post(handle_slot));
     let inference_routes = if let Some(auth) = auth.clone() {
         inference_routes.layer(middleware::from_fn_with_state(
             (auth, database.clone()),
@@ -3094,6 +3421,9 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     if scheduler.config.enabled {
         caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
+    if s.slot_dir.is_some() {
+        caps.push(crate::pipeline::CAP_SLOT_PERSIST);
+    }
     let n_ctx_total = s.engine.n_ctx();
     let n_ctx_per_session = context_per_session(n_ctx_total, s.max_sessions);
     let moe_telemetry = s.moe.as_ref().map(|runtime| runtime.executor_telemetry());
@@ -3171,6 +3501,14 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         "mtp_ready": s.engine.mtp_ready(),
         "mtp_allocation": s.engine.mtp_allocation(),
         "mtp_unavailable_reason": s.engine.mtp_unavailable_reason(),
+        // Snapshots de KV cache (`--slot-save-path`): ligado quando há um
+        // diretório configurado. `slot_count` são os `.json` legíveis nele.
+        "slot_persist_enabled": s.slot_dir.is_some(),
+        "slot_count": s
+            .slot_dir
+            .as_deref()
+            .map(|dir| list_slots(dir).len())
+            .unwrap_or(0),
     }))
     .into_response()
 }
@@ -3314,6 +3652,113 @@ fn replicate_session_rewind(
     crate::tp::broadcast_to(
         &tp.members,
         "/v1/session/rewind",
+        "session",
+        body,
+        Some("application/json"),
+    );
+}
+
+// ── /v1/session/slot ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SlotRequest {
+    /// `"save"`, `"restore"` ou `"erase"`.
+    action: String,
+    /// Sessão viva a salvar (`save`). Ignorado em `restore`/`erase`.
+    #[serde(default)]
+    session_id: String,
+    /// Nome do snapshot em disco (um componente de caminho seguro).
+    slot_name: String,
+    /// Nova sessão a criar em `restore`. Obrigatório nessa ação.
+    #[serde(default)]
+    dest_session_id: Option<String>,
+}
+
+/// `POST /v1/session/slot` - grava, lê ou apaga um snapshot de KV cache no
+/// diretório local (`--slot-save-path`). O gateway compõe a ação de
+/// implantação chamando esta rota em cada hop; ver `gateway::snapshot_deployment`.
+async fn handle_slot(
+    State(app): State<InferenceAppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<SlotRequest>,
+) -> Response {
+    // TP: rank 0 repassa a mesma ação aos workers, que servem a mesma faixa e
+    // gravam a própria cópia no disco deles. Ver `replicate_session_call`.
+    replicate_slot_call(&app.state, &headers, &req);
+
+    let mut state = match lock_inference_state(&app.state) {
+        Ok(state) => state,
+        Err(error) => return err500(error),
+    };
+    let Some(dir) = state.slot_dir.clone() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "snapshots de KV desligados neste peer (defina slot_save_path)",
+        )
+            .into_response();
+    };
+
+    match req.action.as_str() {
+        "save" => match state.save_slot(&req.session_id, &dir, &req.slot_name) {
+            Ok(sidecar) => Json(json!({
+                "saved": true,
+                "slot_name": req.slot_name,
+                "retained_tokens": sidecar.retained_tokens,
+                "bin_bytes": sidecar.bin_bytes,
+            }))
+            .into_response(),
+            Err(error) => err400(error),
+        },
+        "restore" => {
+            let Some(dest) = req.dest_session_id.as_deref().filter(|d| !d.is_empty()) else {
+                return err400("restore exige dest_session_id");
+            };
+            match state.restore_slot(&dir, &req.slot_name, dest) {
+                Ok(outcome) => Json(json!({
+                    "restored": true,
+                    "session_id": dest,
+                    "restored_tokens": outcome.restored_tokens,
+                }))
+                .into_response(),
+                Err(error) => err400(error),
+            }
+        }
+        "erase" => {
+            drop(state);
+            match erase_slot(&dir, &req.slot_name) {
+                Ok(removed) => Json(json!({ "erased": removed })).into_response(),
+                Err(error) => err400(error),
+            }
+        }
+        other => err400(format!("ação de snapshot desconhecida: {other}")),
+    }
+}
+
+fn replicate_slot_call(state: &SharedState, headers: &axum::http::HeaderMap, req: &SlotRequest) {
+    if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
+        return; // já é a réplica
+    }
+    let tp = {
+        let Ok(s) = lock_inference_state(state) else {
+            warn!("não foi possível replicar snapshot: mutex do estado envenenado");
+            return;
+        };
+        s.tp.clone()
+    };
+    let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
+        return;
+    };
+    let body = json!({
+        "action": req.action,
+        "session_id": req.session_id,
+        "slot_name": req.slot_name,
+        "dest_session_id": req.dest_session_id,
+    })
+    .to_string()
+    .into_bytes();
+    crate::tp::broadcast_to(
+        &tp.members,
+        "/v1/session/slot",
         "session",
         body,
         Some("application/json"),

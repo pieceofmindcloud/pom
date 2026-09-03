@@ -42,8 +42,15 @@ dual-stack.
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), the bounded remote-token
-  callback route (`POST /v1/remote-stream-result`), and the `testkit` test
-  scaffold (peer/state_with/body_of).
+  callback route (`POST /v1/remote-stream-result`), the deployment-wide KV
+  snapshot fan-out (`resolve_plan_for_model`, `snapshot_deployment`,
+  `restore_deployment`, `erase_snapshot` — all-or-nothing across hops, mirroring
+  `rewind_sessions`/`release_sessions`; used by `/admin/slots`), the persistent
+  prefix cache (Phase 3, `slot_persist_prefix_cache`): `build_prefix_disk_index`
+  builds `GatewayState.prefix_disk`, `generate_stream_with_stops` spills each
+  retained turn to disk in a detached task and, on a memory miss, restores the
+  longest strict-prefix snapshot before prefill (`prefix_reuse_status = "disk"`),
+  and the `testkit` test scaffold (peer/state_with/body_of).
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
@@ -628,7 +635,11 @@ dual-stack.
   /admin/nodes/{id}/block`, `POST /admin/nodes/{id}/unblock`, `DELETE
   /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST /admin/api-keys`,
   `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers` (same offers as
-  `transfer.rs::list_offers`).
+  `transfer.rs::list_offers`), `GET /admin/slots` (local `/health` view of KV
+  snapshots plus `prefix_auto_cache` index stats when Phase 3 is on),
+  `POST /admin/slots/{name}?action=save|restore|erase` (orchestrates
+  a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
+  `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
 - `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=
   POM_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403

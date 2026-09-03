@@ -5,12 +5,28 @@
 //! encontrar o maior prefixo comum e o tamanho de tokens confirmado pela
 //! cabeça. A sessão fica ocupada durante uma geração; uma segunda requisição
 //! nunca compartilha a mesma sequência por acidente.
+//!
+//! `PrefixCache` é o cache em memória. `PrefixDiskIndex` (Phase 3) é a camada
+//! de disco opcional: com `slot_persist_prefix_cache` ligado, o gateway grava
+//! um snapshot de KV por prefixo em `slot_save_path` e, num miss após
+//! reinício, restaura-o em vez de refazer o prefill a frio. Ver
+//! `docs/subsystems/inferencia.md` §3.1.1 e `gateway::build_prefix_disk_index`.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 const DEFAULT_CAPACITY: usize = 32;
+
+/// Um snapshot automático em disco expira depois disto sem uso. Vale para a
+/// entrada do índice e, indiretamente, para o `.bin` que ela referencia.
+pub const SLOT_AUTO_TTL_SECS: i64 = 7 * 24 * 3600;
+
+/// Orçamento padrão de disco para os snapshots automáticos de prefixo, somado
+/// entre todas as fatias. Ajustável por `Config.slot_auto_max_bytes`.
+pub const DEFAULT_SLOT_AUTO_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PrefixRouteKey {
@@ -134,6 +150,41 @@ impl PrefixCache {
         }
     }
 
+    /// Registra uma sessão **restaurada do disco** como um acerto ocupado. O
+    /// turno segue como um hit de prefixo normal: a cabeça reaproveita o
+    /// prompt retido pela regra só-acrescentar, `commit` publica a entrada
+    /// atualizada no fim, e `discard`/`Drop` a soltam se o prefill falhar.
+    /// Usado só pela camada de disco (`PrefixDiskIndex`).
+    pub fn adopt(
+        self: &Arc<Self>,
+        key: PrefixRouteKey,
+        prompt: &str,
+        session_id: String,
+        cached_tokens: u32,
+    ) -> PrefixLease {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.entries.insert(
+            session_id.clone(),
+            Entry {
+                key: key.clone(),
+                prompt: prompt.to_string(),
+                session_id: session_id.clone(),
+                cached_tokens,
+                last_used: Instant::now(),
+                busy: true,
+            },
+        );
+        PrefixLease {
+            cache: Arc::clone(self),
+            entry_id: Some(session_id.clone()),
+            key,
+            session_id,
+            cached_prompt: prompt.to_string(),
+            cached_tokens,
+            active: true,
+        }
+    }
+
     fn commit(
         &self,
         entry_id: Option<String>,
@@ -248,6 +299,174 @@ impl Drop for PrefixLease {
     }
 }
 
+// ── Camada de disco: prefixos que sobrevivem ao reinício ─────────────────────
+
+/// Uma entrada do índice de snapshots automáticos de prefixo. Aponta para um
+/// conjunto de `.bin` (um por hop, `auto__<key_hash>__<node_id>.bin`) que o
+/// `gateway::snapshot_deployment` gravou no `slot_save_path` de cada peer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskPrefixEntry {
+    /// `PrefixRouteKey::model` (modelo + deployment + chat_template).
+    pub route_model: String,
+    /// `PrefixRouteKey::hops`.
+    pub route_hops: Vec<String>,
+    /// Identifica o arquivo: `hash(route + prompt)`, hex. Estável para o mesmo
+    /// prefixo de conversa, então um re-snapshot sobrescreve.
+    pub key_hash: String,
+    /// A forma textual do prefixo (o `cache_key` do gateway), para o mesmo
+    /// casamento de maior prefixo que o cache em memória faz.
+    pub prompt: String,
+    /// Tokens de prompt que o snapshot cobre (`retained_tokens`).
+    pub cached_tokens: u32,
+    /// Soma dos `.bin` de todos os hops, para o orçamento de disco.
+    pub bytes: u64,
+    /// Unix secs do último uso (gravação ou restauração).
+    pub updated_at: i64,
+}
+
+/// Índice local do gateway dos snapshots automáticos de prefixo. Persiste num
+/// JSON pequeno ao lado dos `.bin`; some quando o `slot_save_path` não está
+/// configurado ou `slot_persist_prefix_cache` está desligado (o `GatewayState`
+/// guarda um `Option`). O índice é do gateway: se o papel de gateway mudar de
+/// máquina, o novo gateway não enxerga estas entradas e cai no prefill frio.
+#[derive(Debug)]
+pub struct PrefixDiskIndex {
+    path: PathBuf,
+    max_bytes: u64,
+    state: Mutex<Vec<DiskPrefixEntry>>,
+}
+
+impl PrefixDiskIndex {
+    /// Lê o índice do disco, poda o que passou do TTL e devolve o handle.
+    pub fn load(path: impl Into<PathBuf>, max_bytes: u64) -> Arc<Self> {
+        let path = path.into();
+        let mut entries: Vec<DiskPrefixEntry> = std::fs::read(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice(&raw).ok())
+            .unwrap_or_default();
+        let cutoff = now_secs() - SLOT_AUTO_TTL_SECS;
+        entries.retain(|entry| entry.updated_at >= cutoff);
+        Arc::new(Self {
+            path,
+            max_bytes: max_bytes.max(1),
+            state: Mutex::new(entries),
+        })
+    }
+
+    /// O maior prefixo em disco que é prefixo **estrito** do prompt pedido -
+    /// igual à regra só-acrescentar de `plan_prefix_reuse`, para não restaurar
+    /// um snapshot que a cabeça não conseguiria reaproveitar.
+    pub fn longest_prefix_match(
+        &self,
+        model: &str,
+        hops: &[String],
+        prompt: &str,
+    ) -> Option<DiskPrefixEntry> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .iter()
+            .filter(|entry| {
+                entry.route_model == model
+                    && entry.route_hops == hops
+                    && prompt.len() > entry.prompt.len()
+                    && prompt.starts_with(&entry.prompt)
+            })
+            .max_by_key(|entry| entry.prompt.len())
+            .cloned()
+    }
+
+    /// Insere ou atualiza a entrada de um `key_hash` e aplica TTL e orçamento.
+    /// Devolve os `key_hash` que saíram, para o chamador apagar os `.bin`.
+    pub fn record(
+        &self,
+        model: &str,
+        hops: &[String],
+        key_hash: &str,
+        prompt: &str,
+        cached_tokens: u32,
+        bytes: u64,
+    ) -> Vec<String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_secs();
+        state.retain(|entry| entry.key_hash != key_hash);
+        state.push(DiskPrefixEntry {
+            route_model: model.to_string(),
+            route_hops: hops.to_vec(),
+            key_hash: key_hash.to_string(),
+            prompt: prompt.to_string(),
+            cached_tokens,
+            bytes,
+            updated_at: now,
+        });
+
+        let mut dropped = Vec::new();
+        let cutoff = now - SLOT_AUTO_TTL_SECS;
+        state.retain(|entry| {
+            let keep = entry.updated_at >= cutoff || entry.key_hash == key_hash;
+            if !keep {
+                dropped.push(entry.key_hash.clone());
+            }
+            keep
+        });
+        while state.iter().map(|entry| entry.bytes).sum::<u64>() > self.max_bytes && state.len() > 1 {
+            if let Some(idx) = state
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.key_hash != key_hash)
+                .min_by_key(|(_, entry)| entry.updated_at)
+                .map(|(idx, _)| idx)
+            {
+                dropped.push(state.remove(idx).key_hash);
+            } else {
+                break;
+            }
+        }
+        self.persist(&state);
+        dropped
+    }
+
+    /// Marca uma entrada como usada agora (uma restauração bem-sucedida).
+    pub fn touch(&self, key_hash: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = state.iter_mut().find(|entry| entry.key_hash == key_hash) {
+            entry.updated_at = now_secs();
+            self.persist(&state);
+        }
+    }
+
+    /// Esquece uma entrada cujo `.bin` sumiu ou não serviu.
+    pub fn forget(&self, key_hash: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let before = state.len();
+        state.retain(|entry| entry.key_hash != key_hash);
+        if state.len() != before {
+            self.persist(&state);
+        }
+    }
+
+    /// `(entradas, bytes)` para telemetria.
+    pub fn stats(&self) -> (usize, u64) {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.len(), state.iter().map(|entry| entry.bytes).sum())
+    }
+
+    fn persist(&self, entries: &[DiskPrefixEntry]) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_vec_pretty(entries) {
+            let _ = std::fs::write(&self.path, json);
+        }
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +526,70 @@ mod tests {
         assert!(!lease.is_hit());
         assert_eq!(lease.session_id(), "old-session");
         lease.discard();
+    }
+
+    #[test]
+    fn adopt_registers_a_restored_session_as_a_busy_hit() {
+        let cache = PrefixCache::new(4);
+        let lease = cache.adopt(key(), "system", "disk-session".into(), 3);
+        assert!(lease.is_hit());
+        assert_eq!(lease.session_id(), "disk-session");
+        // Ocupada: uma segunda requisição não a compartilha.
+        let other = cache.acquire(key(), "system\nmais", "outra".into());
+        assert!(!other.is_hit());
+        other.discard();
+        lease.commit("system\nmais".into(), 5);
+        let hit = cache.acquire(key(), "system\nmais\nfim", "s".into());
+        assert!(hit.is_hit());
+        assert_eq!(hit.session_id(), "disk-session");
+        hit.discard();
+    }
+
+    #[test]
+    fn disk_index_matches_the_longest_strict_prefix_only() {
+        let dir = std::env::temp_dir().join(format!("pom-prefix-idx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let idx = PrefixDiskIndex::load(dir.join("index.json"), DEFAULT_SLOT_AUTO_MAX_BYTES);
+        let hops = vec!["h1".to_string(), "h2".to_string()];
+        idx.record("m", &hops, "h_sys", "system", 2, 1_000);
+        idx.record("m", &hops, "h_turn1", "system\nuser1", 4, 1_000);
+
+        // Prefixo estrito: pega o mais longo.
+        let hit = idx
+            .longest_prefix_match("m", &hops, "system\nuser1\nuser2")
+            .expect("match");
+        assert_eq!(hit.key_hash, "h_turn1");
+        // Igualdade com a entrada mais longa não conta (a cabeça não
+        // conseguiria reaproveitar): cai na entrada anterior, ainda estrita.
+        assert_eq!(
+            idx.longest_prefix_match("m", &hops, "system\nuser1")
+                .expect("cai no prefixo do sistema")
+                .key_hash,
+            "h_sys"
+        );
+        // Igualdade com a única entrada compatível não casa.
+        assert!(idx.longest_prefix_match("m", &hops, "system").is_none());
+        // Rota diferente não casa.
+        assert!(idx
+            .longest_prefix_match("m", &["outro".to_string()], "system\nuser1\nx")
+            .is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_index_evicts_by_ttl_and_budget_and_reports_dropped_hashes() {
+        let dir = std::env::temp_dir().join(format!("pom-prefix-idx-b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let idx = PrefixDiskIndex::load(dir.join("index.json"), 2_500);
+        let hops = vec!["h".to_string()];
+        idx.record("m", &hops, "a", "p-a", 1, 1_000);
+        idx.record("m", &hops, "b", "p-b", 1, 1_000);
+        // Terceiro empurra o total a 3_000 > 2_500: o mais antigo ("a") sai.
+        let dropped = idx.record("m", &hops, "c", "p-c", 1, 1_000);
+        assert!(dropped.contains(&"a".to_string()), "dropped = {dropped:?}");
+        let (count, bytes) = idx.stats();
+        assert_eq!(count, 2);
+        assert_eq!(bytes, 2_000);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

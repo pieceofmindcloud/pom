@@ -158,6 +158,12 @@ pub struct NodeConfig {
     /// Tipo numérico do cache V, definido pela instalação inteira.
     #[serde(default)]
     pub cache_type_v: crate::config::KvCacheType,
+    /// Diretório de snapshots de KV cache (`Config::slot_save_path`), injetado
+    /// da instalação em `apply_locked` como `cache_type_*`. `None` desliga as
+    /// rotas de snapshot neste peer. Não entra em `weights_are_compatible`:
+    /// mudar o diretório não invalida os pesos carregados.
+    #[serde(default)]
+    pub slot_save_path: Option<String>,
     /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
@@ -289,6 +295,7 @@ impl NodeConfig {
             hidden_state_dtype: p.hidden_state_dtype,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: p.fit_memory && allow_fit_memory,
             fit_memory_margin_mb: p.fit_memory_margin_mb,
             n_batch: p.n_batch,
@@ -795,6 +802,7 @@ impl NodeRuntime {
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
         self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
 
         // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
@@ -818,6 +826,14 @@ impl NodeRuntime {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
             cfg.cache_type_v = installation.cache_type_v;
+            // Precedência: o que já veio no `cfg` (a flag `--slot-save-path` da
+            // linha de comando) vence; senão `POM_SLOT_SAVE_PATH` e depois o
+            // campo do `pom.json` (`slot_save_path_effective`). Uma implantação
+            // pela UI chega aqui com `None` e adota o valor da instalação.
+            cfg.slot_save_path = cfg
+                .slot_save_path
+                .take()
+                .or_else(|| installation.slot_save_path_effective());
         }
         cfg.validate()?;
 
@@ -1023,6 +1039,7 @@ impl NodeRuntime {
         );
         *self.status.write().await = RuntimeStatus::new(ServerState::Thermal, reason);
         self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
         if let Err(error) = crate::lastslice::save(cfg, crate::lastslice::SliceState::Serving) {
             warn!("não deu para preservar a fatia para recuperação térmica: {error}");
@@ -1080,6 +1097,14 @@ impl NodeRuntime {
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
         let batching_ready = self.net.batching_ready_handle();
+        // `slot_save_path` é config estática da máquina: já se sabe aqui se
+        // este peer serve `POST /v1/session/slot`. Ver `Network::slot_persist_ready`.
+        self.net.set_slot_persist_ready(
+            cfg.slot_save_path
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|dir| !dir.is_empty()),
+        );
         let capacity_net = self.net.clone();
         let auth = self.auth.clone();
         let database = self.database.clone();
@@ -1754,6 +1779,7 @@ mod tests {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: true,
             fit_memory_margin_mb: DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,

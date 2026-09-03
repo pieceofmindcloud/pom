@@ -1,7 +1,7 @@
 use crate::auth::{AuthState, ConnectionAuth};
 use crate::config::ApiKey;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post},
@@ -22,6 +22,131 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
         .route("/admin/api-keys", get(list_api_keys).post(generate_api_key))
         .route("/admin/api-keys/:key", delete(revoke_api_key))
         .route("/admin/transfer-offers", get(transfer_offers))
+        .route("/admin/slots", get(list_slots))
+        .route("/admin/slots/:name", post(slot_action))
+}
+
+// ── Snapshots de KV cache (`--slot-save-path`) ───────────────────────────────
+
+/// Lista os snapshots que o **nó local** conhece, lidos do `/health` da própria
+/// porta de inferência. É uma vista rápida; um snapshot de implantação tem uma
+/// fatia por hop e o nome do arquivo carrega o `node_id` de cada um.
+async fn list_slots(
+    _auth: ConnectionAuth,
+    State(state): State<crate::gateway::GatewayState>,
+) -> impl IntoResponse {
+    let health = state
+        .network
+        .inference_port
+        .map(|port| format!("http://127.0.0.1:{port}/health"));
+    let mut view = json!({ "slot_persist_enabled": false, "slot_count": 0 });
+    if let Some(url) = health {
+        if let Ok(resp) = state.peer_http.plain().get(&url).send().await {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                view = json!({
+                    "slot_persist_enabled": body.get("slot_persist_enabled").cloned().unwrap_or(json!(false)),
+                    "slot_count": body.get("slot_count").cloned().unwrap_or(json!(0)),
+                });
+            }
+        }
+    }
+    // Cache de prefixo persistente (Phase 3), quando ligado neste gateway.
+    if let Some(disk) = &state.prefix_disk {
+        let (files, bytes) = disk.stats();
+        view["prefix_auto_cache"] = json!({
+            "enabled": true,
+            "index_entries": files,
+            "index_bytes": bytes,
+        });
+    } else {
+        view["prefix_auto_cache"] = json!({ "enabled": false });
+    }
+    Json(view)
+}
+
+#[derive(Debug, Deserialize)]
+struct SlotActionQuery {
+    /// `save`, `restore` ou `erase`.
+    action: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SlotActionBody {
+    /// Modelo (ou `deploy_id`) cujo pipeline recebe a ação.
+    model: String,
+    /// Sessão viva a fotografar (`save`). Vem do `x_pom` de uma resposta.
+    #[serde(default)]
+    session_id: String,
+    /// Nova sessão a criar em `restore`.
+    #[serde(default)]
+    dest_session_id: String,
+}
+
+/// `POST /admin/slots/{name}?action=save|restore|erase` - orquestra um snapshot
+/// de KV pela implantação inteira. Ver `gateway::snapshot_deployment`.
+async fn slot_action(
+    _auth: ConnectionAuth,
+    State(state): State<crate::gateway::GatewayState>,
+    Path(name): Path<String>,
+    Query(query): Query<SlotActionQuery>,
+    Json(body): Json<SlotActionBody>,
+) -> axum::response::Response {
+    if body.model.trim().is_empty() {
+        return bad_request("informe 'model'");
+    }
+    let plan = match crate::gateway::resolve_plan_for_model(&state, body.model.trim()).await {
+        Ok(plan) => plan,
+        Err(error) => return bad_request(error),
+    };
+    match query.action.as_str() {
+        "save" => {
+            if body.session_id.trim().is_empty() {
+                return bad_request("save exige 'session_id' de uma sessão viva");
+            }
+            match crate::gateway::snapshot_deployment(
+                &plan,
+                &name,
+                body.session_id.trim(),
+                &state.peer_http,
+            )
+            .await
+            {
+                Ok(bytes) => Json(json!({ "saved": true, "slot_name": name, "bytes": bytes }))
+                    .into_response(),
+                Err(error) => bad_request(error),
+            }
+        }
+        "restore" => {
+            let dest = if body.dest_session_id.trim().is_empty() {
+                format!("slot-{}", Uuid::new_v4())
+            } else {
+                body.dest_session_id.trim().to_string()
+            };
+            match crate::gateway::restore_deployment(&plan, &name, &dest, &state.peer_http).await {
+                Ok(tokens) => Json(json!({
+                    "restored": true,
+                    "slot_name": name,
+                    "session_id": dest,
+                    "restored_tokens": tokens,
+                }))
+                .into_response(),
+                Err(error) => bad_request(error),
+            }
+        }
+        "erase" => {
+            crate::gateway::erase_snapshot(&plan, &name, &state.peer_http).await;
+            Json(json!({ "erased": true, "slot_name": name })).into_response()
+        }
+        other => bad_request(format!("ação desconhecida: {other}")),
+    }
+}
+
+fn bad_request(msg: impl std::fmt::Display) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.to_string() })),
+    )
+        .into_response()
 }
 
 async fn transfer_offers(

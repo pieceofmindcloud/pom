@@ -39,6 +39,7 @@ use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
 use std::ops::Range;
+use std::path::Path;
 use std::ptr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -4446,6 +4447,85 @@ impl LlmEngine {
             !mem.is_null() && sys::llama_memory_can_shift(mem)
         }
     }
+
+    /// Tamanho exato, em bytes, do estado de uma única sequência de KV. Só serve
+    /// para dimensionar um buffer de salvamento ou orçar disco; não é usado no
+    /// caminho de arquivo, que aloca sozinho.
+    pub fn state_seq_size(&self, seq_id: u32) -> usize {
+        if self.ctx.is_null() {
+            return 0;
+        }
+        unsafe { sys::llama_state_seq_get_size(self.ctx, seq_id as i32) }
+    }
+
+    /// Grava o KV de uma sequência em disco com um cabeçalho de tokens, como o
+    /// `--slot-save-path` do llama-server (`llama_state_seq_save_file`). Só
+    /// `prompt_seq` deve ser salvo: nunca a cauda volátil da geração. `tokens`
+    /// é o cabeçalho consultivo do prompt - a cabeça tem os tokens reais, os
+    /// hops seguintes passam um vetor do tamanho certo. Devolve os bytes
+    /// escritos; zero é falha do llama.cpp (caminho inválido, disco cheio).
+    pub fn state_seq_save_file(&self, path: &Path, seq_id: u32, tokens: &[i32]) -> Result<usize> {
+        if self.ctx.is_null() {
+            bail!("state_seq_save_file: contexto nulo");
+        }
+        let cpath = path_to_cstring(path)?;
+        let written = unsafe {
+            sys::llama_state_seq_save_file(
+                self.ctx,
+                cpath.as_ptr(),
+                seq_id as i32,
+                tokens.as_ptr(),
+                tokens.len(),
+            )
+        };
+        if written == 0 {
+            bail!("llama_state_seq_save_file devolveu 0 para {}", path.display());
+        }
+        Ok(written)
+    }
+
+    /// Lê um arquivo escrito por `state_seq_save_file` para dentro de
+    /// `dest_seq_id` (`llama_state_seq_load_file`). Devolve `(bytes_lidos,
+    /// tokens_do_cabeçalho)`. Zero bytes é falha: arquivo corrompido,
+    /// incompatível com o contexto atual, ou `token_cap` pequeno demais.
+    pub fn state_seq_load_file(
+        &self,
+        path: &Path,
+        dest_seq_id: u32,
+        token_cap: usize,
+    ) -> Result<(usize, Vec<i32>)> {
+        if self.ctx.is_null() {
+            bail!("state_seq_load_file: contexto nulo");
+        }
+        let cpath = path_to_cstring(path)?;
+        let mut tokens_out = vec![0i32; token_cap.max(1)];
+        let mut n_token_count: usize = 0;
+        let read = unsafe {
+            sys::llama_state_seq_load_file(
+                self.ctx,
+                cpath.as_ptr(),
+                dest_seq_id as i32,
+                tokens_out.as_mut_ptr(),
+                tokens_out.len(),
+                &mut n_token_count,
+            )
+        };
+        if read == 0 {
+            bail!(
+                "llama_state_seq_load_file devolveu 0 para {} (cap {token_cap}, contou {n_token_count})",
+                path.display()
+            );
+        }
+        tokens_out.truncate(n_token_count);
+        Ok((read, tokens_out))
+    }
+}
+
+/// `&Path` -> `CString` para a FFI, recusando um caminho com NUL embutido em vez
+/// de truncar silenciosamente.
+fn path_to_cstring(path: &Path) -> Result<CString> {
+    CString::new(path.as_os_str().as_encoded_bytes())
+        .with_context(|| format!("caminho inválido para FFI: {}", path.display()))
 }
 
 /// Monta peças de token em texto válido entre chamadas.
@@ -6401,6 +6481,71 @@ mod tests {
             residual.values.iter().any(|v| *v != 0.0 && v.is_finite()),
             "residual is all zeros or non-finite — the graph did not run"
         );
+    }
+
+    /// Round-trip de `--slot-save-path`: prefill numa sequência, grava em disco,
+    /// apaga a sequência, relê o arquivo para a mesma sequência e confere que o
+    /// cabeçalho de tokens volta intacto e que dá para continuar decodificando.
+    ///
+    /// ```text
+    /// POM_TEST_GGUF=<qualquer>.gguf cargo test -p llama-engine \
+    ///   state_seq_save_and_load_round_trip -- --nocapture
+    /// ```
+    #[test]
+    fn state_seq_save_and_load_round_trip() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(path) = std::env::var("POM_TEST_GGUF") else {
+            eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
+            return;
+        };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
+            fit_memory: false,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 512,
+            n_gpu_layers: test_gpu_layers(),
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: false,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+        };
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
+        let toks = engine.tokenize("A short note on saving KV cache to disk.", true, true);
+        assert!(!toks.is_empty());
+        engine
+            .decode_tokens(&toks, 0, 0, true)
+            .expect("prefill succeeds");
+
+        let file = std::env::temp_dir().join(format!("pom-slot-test-{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let written = engine
+            .state_seq_save_file(&file, 0, &toks)
+            .expect("state_seq_save_file");
+        assert!(written > 0, "save wrote no bytes");
+
+        assert!(engine.kv_remove(0, 0, -1), "kv_remove clears the sequence");
+
+        let (read, header) = engine
+            .state_seq_load_file(&file, 0, toks.len() + 8)
+            .expect("state_seq_load_file");
+        assert!(read > 0, "load read no bytes");
+        assert_eq!(header, toks, "token header must round-trip verbatim");
+
+        // A sequência restaurada continua decodificável a partir da posição
+        // salva: decodifica o próximo token sem "inconsistent sequence positions".
+        engine
+            .decode_tokens(&[toks[toks.len() - 1]], toks.len() as u32, 0, false)
+            .expect("decode continues from the restored position");
+
+        let _ = std::fs::remove_file(&file);
     }
 
     /// Mudança 6 do spec de 2026-08-12: `node_logits_access_ms` marcava ~4,9 ms

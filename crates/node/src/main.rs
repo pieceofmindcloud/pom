@@ -297,6 +297,13 @@ struct Args {
     #[arg(long)]
     no_thinking: bool,
 
+    /// Directory for KV-cache snapshots (like llama-server's `--slot-save-path`).
+    /// Precedence: this flag > `POM_SLOT_SAVE_PATH` env var > `slot_save_path`
+    /// in the config file. Unset everywhere disables `/v1/session/slot` and
+    /// `/admin/slots` on this node.
+    #[arg(long)]
+    slot_save_path: Option<String>,
+
     /// Single-peer mode: loads model without embedding extraction (correct causal attention).
     /// Enable when one node covers all layers.
     #[arg(long)]
@@ -796,6 +803,7 @@ async fn main() -> Result<()> {
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
+            prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
             peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
             cycle_config: crate::cycle::CycleConfig {
@@ -849,6 +857,12 @@ async fn main() -> Result<()> {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: config::KvCacheType::F16,
             cache_type_v: config::KvCacheType::F16,
+            // Precedência: flag > POM_SLOT_SAVE_PATH > pom.json
+            // (`slot_save_path_effective` resolve os dois últimos).
+            slot_save_path: args
+                .slot_save_path
+                .clone()
+                .or_else(|| app_config.slot_save_path_effective()),
             fit_memory: true,
             fit_memory_margin_mb: runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: args.n_batch,
@@ -1111,6 +1125,9 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         node_name: None,
         huggingface_token: None,
+        slot_save_path: None,
+        slot_persist_prefix_cache: false,
+        slot_auto_max_bytes: None,
     }));
 
     // The same interface the configured node serves, so setup is not a second
@@ -1469,6 +1486,7 @@ async fn start_gateway_only(
         local_assignment: assignment_shared.clone(),
         loads: Arc::new(LoadTracker::new()),
         prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
+        prefix_disk: None,
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
         cycle_config: crate::cycle::CycleConfig {

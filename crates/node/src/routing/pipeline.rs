@@ -183,6 +183,12 @@ pub const CAP_FRAME_DTYPE_F8: &str = "inference/frame-v1-dtype-f8";
 /// loop and return generated tokens through bounded opportunistic batches.
 pub const CAP_REMOTE_TOKEN_STREAM: &str = "inference/remote-token-stream-v1";
 
+/// Advertised when this peer has a `--slot-save-path` configured and can save
+/// or restore a session's KV cache to local disk via `POST /v1/session/slot`.
+/// A deployment snapshot is all-or-nothing: `gateway::snapshot_deployment`
+/// refuses unless every hop advertises this.
+pub const CAP_SLOT_PERSIST: &str = "inference/slot-persist-v1";
+
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
 /// The layer boundaries let observers attach the edge to the exact advertised

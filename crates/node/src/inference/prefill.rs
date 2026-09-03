@@ -986,7 +986,9 @@ pub struct RequestTrace {
     pub prefix_match_tokens: u32,
     /// Resultado observável da tentativa: `full`, `partial-cold`, `miss` ou
     /// `cold`. O gateway troca por `session-lost-cold` quando precisou
-    /// reconstruir a sessão após um peer perder seu estado.
+    /// reconstruir a sessão após um peer perder seu estado, e por `disk`
+    /// quando o reuso veio de um snapshot automático em disco
+    /// (`slot_persist_prefix_cache`, ver `inferencia.md` §3.1.1).
     pub prefix_reuse_status: Option<String>,
     /// Tokens que realmente precisaram atravessar a fronteira de inferência.
     /// Em um turno frio, ou após uma divergência parcial, é o prompt inteiro.

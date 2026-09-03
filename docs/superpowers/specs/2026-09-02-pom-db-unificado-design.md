@@ -54,9 +54,11 @@ revogada não volta a ser aceita após reinício. Os campos equivalentes de
 fallback pelo runtime.
 
 O catálogo grava o histórico após o enriquecimento em background. Para modelos
-inteiros sem hash fornecido pelo catálogo, calcula SHA-256 do arquivo; para
-fatias, usa `pom_id` e o hash já declarado no manifesto. O registro ocorre em
-transação e nunca depende da permanência do arquivo.
+inteiros, usa o caminho local como identidade do histórico, sem calcular
+SHA-256 dos pesos; para fatias, usa `pom_id` e o hash já declarado no manifesto.
+O hash completo continua sendo uma prova explícita nas fronteiras de
+implantação, fatiamento e transferência. O registro ocorre em transação e
+nunca depende da permanência do arquivo.
 
 ## Migração opcional fora do runtime
 

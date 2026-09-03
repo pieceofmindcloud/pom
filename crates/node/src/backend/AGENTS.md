@@ -47,7 +47,10 @@ dual-stack.
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas. `PomDb` mantém uma conexão configurada no arranque, reutilizada
+  conversas. O histórico identifica modelos inteiros pelo caminho local, sem
+  hashear os pesos durante o registro do catálogo; hashes de conteúdo ficam
+  nas fronteiras explícitas de implantação, fatiamento e transferência.
+  `PomDb` mantém uma conexão configurada no arranque, reutilizada
   por todas as operações; um mutex explícito serializa escritas e a mesma
   conexão também faz leituras curtas em ordem, eliminando abertura e DDL por
   operação. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta

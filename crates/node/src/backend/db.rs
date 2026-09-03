@@ -1087,16 +1087,16 @@ fn model_identity(model: &DiscoveredModel) -> Result<(String, &'static str, Stri
             "slice",
         ))
     } else {
-        let (identity, identity_kind) = match std::fs::metadata(&model.path) {
-            Ok(_) => match crate::pom::hash_file(Path::new(&model.path)) {
-                Ok((sha256, _)) => (sha256, "sha256"),
-                Err(_) => (model.path.clone(), "path"),
-            },
-            Err(_) => (model.path.clone(), "path"),
-        };
+        // The catalog is called while a model library may still be warming.
+        // A whole-model content hash is an explicit identity operation, not
+        // metadata: doing it here made every catalog snapshot read all weights
+        // before `metadata_complete` could be published. The local history is
+        // keyed by the configured path; deployment still proves content with
+        // its separate identity route before copying or launching.
+        let identity = model.path.clone();
         Ok((
-            format!("{identity_kind}:{identity}"),
-            identity_kind,
+            format!("path:{identity}"),
+            "path",
             identity,
             "whole",
         ))
@@ -1489,6 +1489,43 @@ mod tests {
             .all(|(_, present)| !present));
         assert!(!db.model_slice_history("pom_id:pom-1").unwrap()[0].1);
         remove_database(&path);
+    }
+
+    #[test]
+    fn recording_a_whole_model_uses_its_path_without_hashing_the_weights() {
+        let path = temporary_path("model-history-path-identity");
+        let whole_path = temporary_path("whole-identity-gguf");
+        std::fs::write(&whole_path, vec![7_u8; 4_096]).unwrap();
+        let db = PomDb::open(&path).unwrap();
+        let catalog = crate::catalog::Catalog {
+            models: vec![model(
+                "whole.gguf",
+                &whole_path,
+                crate::catalog::ModelSource::Folder,
+                None,
+                None,
+                4_096,
+            )],
+            shard_sets: Vec::new(),
+            scanned: Vec::new(),
+            metadata_complete: false,
+        };
+
+        db.record_catalog(&catalog).unwrap();
+        let identity = db
+            .with_read("ler identidade de teste", |connection| {
+                Ok(connection.query_row(
+                    "SELECT identity_kind, identity FROM model_history",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?)
+            })
+            .unwrap();
+
+        assert_eq!(identity.0, "path");
+        assert_eq!(identity.1, whole_path.display().to_string());
+        remove_database(&path);
+        std::fs::remove_file(&whole_path).unwrap();
     }
 
     fn model(

@@ -132,9 +132,10 @@ Per-file list:
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
   Em modelo inteiro, o inspetor não repete os fatos do GGUF nem oferece um
-  seletor de máquina: o mapa é a única escolha. O mapa aceita uma máquina; ao
-  tentar adicionar outra ou trocar para esse modo com várias já presentes, a
-  tela avisa e preserva a seleção existente.
+  seletor de máquina: o mapa é a única escolha. Ao trocar de fatias para esse
+  modo, a tela limpa o mapa e deixa o operador adicionar a máquina desejada;
+  depois disso, tentar incluir uma segunda máquina mostra o aviso e preserva
+  a escolha única.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
   A lista de modelos pode aparecer antes do fim da leitura dos cabeçalhos GGUF.
@@ -183,18 +184,22 @@ Per-file list:
   rósea abrem um `Confirm` (`capacityAsked`, separado do de cobertura parcial)
   nomeando as máquinas e a razão, com título/texto conforme o caso;
   `canDeploy` não muda - é aviso, não bloqueio.
-  Plan edits are debounced 260 ms and validated by `POST /api/ui/deploy/plan`;
-  the deploy itself re-surveys the cluster via `POST /api/ui/deploy`, returning
-  a job shown through `useJobs`. A failed preflight keeps the backend's reason
-  visible in the rose job banner, including the peer that stayed occupied.
+  Topology edits are debounced 260 ms and validated by
+  `POST /api/ui/deploy/plan`. Runtime parameters and the operational name stay
+  local while editing: they do not restart that cluster-wide survey or reuse
+  its capacity projection. `POST /api/ui/deploy` re-surveys the cluster and
+  validates the current parameters before acting, returning a job shown through
+  `useJobs`. A failed preflight keeps the backend's reason visible in the rose
+  job banner, including the peer that stayed occupied.
   Restores the last deploy from localStorage via
   `../lib/deployMemory` (`recallDeploy`/`rememberDeploy`/`usableSelection`),
   after the first plan, pruned against what still exists.
 - The TP inspector never offers pipeline layer buttons. It lists available and
   selected ranks, while `DeployPlan.tp_targets` is the backend source of truth
   for the exact pre-sliced file and rank destination.
-- `DeployModel` sends `deployment_name`, `strategy` and `preferred_node_ids` to
-  the planner. The map is explanatory: capacity/load come from the live
+- `DeployModel` sends `strategy` and `preferred_node_ids` to the planner;
+  `deployment_name` and `RuntimeParams` are sent with the deploy request. The
+  map is explanatory: capacity/load come from the live
   cluster and RTT comes from the directional survey in the plan;
   adding a peer without a range only adds its card and keeps existing positions;
   in whole-model mode, the map has one machine only and adding another peer is

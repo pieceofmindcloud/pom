@@ -147,7 +147,10 @@ dual-stack.
   versão de `params` iguais, senão anexa `max+1`). Sem prova de identidade,
   `RecordPlan::New` com id novo. A resposta carrega `deploy_id` e `reused`. Toda
   leitura de registro (`PomDb`, `find_record`, `list_deployments`) roda
-  `ensure_versions` para sintetizar a v1 de um registro v1 legado.
+  `ensure_versions` para sintetizar a v1 de um registro v1 legado. `find_record`
+  reúne a cópia local e as cópias dos peers participantes e escolhe, por
+  `activated_at` e depois `active_version`, a versão corrente antes de
+  `redeploy`/`activate` a usarem.
 - `POST /api/ui/deployments/:id/redeploy` (`redeploy_endpoint` →
   `run_redeploy`, `deploy.rs`): mesmo `deploy_id`, mesmas máquinas e faixas.
   `RedeployRequest` carrega `params` (opcional), `version` (opcional) e

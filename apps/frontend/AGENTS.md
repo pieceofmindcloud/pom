@@ -11,7 +11,10 @@ config keep the `pom` name; the brand is UI-only.
 `README.md` in this folder is the authoritative dev walkthrough (serving model,
 dev proxy setup, routing on the axum side). Its deployment section mirrors the
 current planner contract: one machine may own several valid ranges, while a
-global gap or overlap blocks the plan.
+global gap or overlap blocks the plan. The whole-model mode starts empty when
+chosen from slices, so the operator explicitly adds its single machine.
+Topology edits query the planner after the 260 ms debounce; runtime settings
+remain local until the deploy preflight.
 
 ## Build tooling
 

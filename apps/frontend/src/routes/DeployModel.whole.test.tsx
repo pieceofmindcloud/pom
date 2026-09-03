@@ -18,7 +18,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeployPlan, RuntimeParams } from "../lib/types";
+import type { DeployPlan, PeerCatalog, RuntimeParams } from "../lib/types";
 
 const post = vi.fn();
 vi.mock("../lib/api", () => ({
@@ -332,6 +332,23 @@ const chooseWhole = () =>
 
 const chooseTensor = () => fireEvent.click(screen.getByRole("radio", { name: "Tensor" }));
 
+async function ensureWholeMachine(node = "ksia") {
+  const removeName = new RegExp(`Remover ${node} da implantação`);
+  const addName = new RegExp(`${node} RTT`);
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("button", { name: removeName })
+        ?? screen.queryByRole("button", { name: addName }),
+    ).toBeTruthy();
+  });
+  if (!screen.queryByRole("button", { name: removeName })) {
+    fireEvent.click(screen.getByRole("button", { name: addName }));
+  }
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: removeName })).toBeTruthy(),
+  );
+}
+
 describe("DeployModel · modelo inteiro", () => {
   beforeEach(() => {
     post.mockReset();
@@ -352,6 +369,86 @@ describe("DeployModel · modelo inteiro", () => {
       const last = planCalls().at(-1)![1];
       expect(last).toMatchObject({ group: "qwen3.5-9b", kind: "whole" });
     });
+  });
+
+  it("nomeia os campos nativos do studio para acessibilidade e gestores de senha", async () => {
+    answerPlans();
+    mount();
+
+    await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
+    for (const field of document.querySelectorAll("input, select, textarea")) {
+      expect(field.getAttribute("name") || field.getAttribute("id")).toBeTruthy();
+    }
+  });
+
+  it("faz uma única consulta ao trocar o modelo", async () => {
+    post.mockImplementation((url: string, body: { group?: string; kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = body.kind === "whole" ? wholePlan() : shardPlan();
+      plan.group = body.group ?? plan.group;
+      return Promise.resolve(plan);
+    });
+    const { client } = mount();
+    await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
+
+    const catalog = client.getQueryData<{ peers: PeerCatalog[] }>(keys.clusterModels)!;
+    const first = catalog.peers[0].models[0];
+    client.setQueryData(keys.clusterModels, {
+      ...catalog,
+      peers: catalog.peers.map((peer, index) =>
+        index === 0
+          ? {
+              ...peer,
+              models: [
+                ...peer.models,
+                { ...first, id: "4", name: "zeta-2b", path: "/lm/zeta-2b.gguf" },
+              ],
+            }
+          : peer,
+      ),
+    });
+
+    chooseWhole();
+    await waitFor(() => {
+      expect(planCalls().at(-1)?.[1]).toMatchObject({
+        group: "qwen3.5-9b",
+        kind: "whole",
+      });
+    });
+    const before = planCalls().length;
+    const model = screen.getByRole("combobox", { name: "Modelo técnico" });
+    fireEvent.change(model, { target: { value: "zeta-2b" } });
+
+    await waitFor(() => {
+      const requests = planCalls().filter(([, body]) => body.group === "zeta-2b");
+      expect(requests).toHaveLength(1);
+      expect(requests[0][1]).not.toHaveProperty("deployment_name");
+      expect(requests[0][1]).not.toHaveProperty("params");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(planCalls()).toHaveLength(before + 1);
+  });
+
+  it("mantém o indicador até a consulta do modelo terminar", async () => {
+    let resolveWhole: ((plan: DeployPlan) => void) | undefined;
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      if (body.kind === "whole") {
+        return new Promise<DeployPlan>((resolve) => {
+          resolveWhole = resolve;
+        });
+      }
+      return Promise.resolve(shardPlan());
+    });
+    mount();
+    await waitFor(() => expect(planCalls()).toHaveLength(1));
+
+    chooseWhole();
+    await waitFor(() => expect(screen.getByText("conferindo com o nó…")).toBeTruthy());
+    expect(resolveWhole).toBeTypeOf("function");
+
+    resolveWhole!(wholePlan());
+    await waitFor(() => expect(screen.queryByText("conferindo com o nó…")).toBeNull());
   });
 
   it("não mostra a seção de fatos do modelo inteiro no inspetor", async () => {
@@ -387,8 +484,9 @@ describe("DeployModel · modelo inteiro", () => {
       expect(screen.queryByText(/Cobertura do modelo/)).toBeNull();
     });
     expect(screen.queryByRole("checkbox", { name: /Incluir/ })).toBeNull();
-    // No lugar delas, a faixa inteira como um fato, não como uma escolha.
-    expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
+    // A troca começa com o mapa vazio; a faixa só aparece depois da escolha
+    // explícita de uma máquina.
+    expect(screen.queryByText(/L0–31/)).toBeNull();
   });
 
   it("mostra o nome do modelo sem extensão, mantendo o valor técnico no request", async () => {
@@ -453,7 +551,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(within(model).queryByRole("option", { name: `${tensorName} · TP 2` })).toBeNull();
   });
 
-  it("impede trocar para modelo inteiro enquanto o mapa tem várias máquinas", async () => {
+  it("esvazia o mapa ao trocar de fatias para modelo inteiro", async () => {
     answerPlans();
     mount();
 
@@ -464,9 +562,12 @@ describe("DeployModel · modelo inteiro", () => {
     const whole = screen.getByRole("radio", { name: "Um modelo inteiro" });
     fireEvent.click(whole);
 
-    expect(whole.getAttribute("aria-checked")).toBe("false");
-    expect(screen.getByText(/Retire uma máquina do mapa antes de trocar para modelo inteiro/)).toBeTruthy();
-    expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(false);
+    expect(whole.getAttribute("aria-checked")).toBe("true");
+    await waitFor(() => {
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
+    });
+    expect(screen.queryByRole("button", { name: /Remover ksia da implantação/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Remover mac da implantação/ })).toBeNull();
   });
 
   it("mantém a faixa inteira na única máquina do mapa", async () => {
@@ -474,8 +575,13 @@ describe("DeployModel · modelo inteiro", () => {
     mount();
     chooseWhole();
 
-    const mac = await screen.findByRole("button", { name: /mac RTT/ });
+    await waitFor(() => {
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: /Remover ksia da implantação/ }));
+    const mac = await screen.findByRole("button", { name: /mac RTT/ });
     fireEvent.click(mac);
 
     await waitFor(() => {
@@ -497,6 +603,12 @@ describe("DeployModel · modelo inteiro", () => {
     mount();
     chooseWhole();
 
+    await waitFor(() => {
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
+    });
+    const ksia = await screen.findByRole("button", { name: /ksia RTT/ });
+    fireEvent.click(ksia);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
     const mac = await screen.findByRole("button", { name: /mac RTT/ });
     fireEvent.click(mac);
 
@@ -509,6 +621,7 @@ describe("DeployModel · modelo inteiro", () => {
     answerPlans();
     mount();
     chooseWhole();
+    await ensureWholeMachine();
 
     const button = await screen.findByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
@@ -589,11 +702,15 @@ describe("DeployModel · modelo inteiro", () => {
     });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
 
+    const before = planCalls().length;
     fireEvent.click(toggle);
     await waitFor(() => {
-      const last = planCalls().at(-1)![1] as { params: RuntimeParams };
-      expect(last.params.fit_memory).toBe(false);
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
     });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(planCalls()).toHaveLength(before);
+    expect(planCalls().every(([, body]) => !Object.prototype.hasOwnProperty.call(body, "params"))).toBe(true);
+    expect(screen.queryByText("conferindo com o nó…")).toBeNull();
   });
 
   it("mantém o seletor de motor oculto para um modelo denso", async () => {
@@ -612,12 +729,12 @@ describe("DeployModel · modelo inteiro", () => {
     });
     mount();
     chooseWhole();
+    await ensureWholeMachine();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
     const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
     fireEvent.change(selector, { target: { value: "moe" } });
-    await waitFor(() => {
-      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("moe");
-    });
+    expect((selector as HTMLSelectElement).value).toBe("moe");
 
     const button = screen.getByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
@@ -641,13 +758,13 @@ describe("DeployModel · modelo inteiro", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
     const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
     fireEvent.change(selector, { target: { value: "dense" } });
-    await waitFor(() => {
-      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("dense");
-    });
+    expect((selector as HTMLSelectElement).value).toBe("dense");
 
     chooseTensor();
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
-    expect(screen.getByText("Tensor Parallelism não suporta MoE nesta versão.")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByText("Tensor Parallelism não suporta MoE nesta versão.")).toBeTruthy(),
+    );
     expect(screen.getByRole("combobox", { name: "Motor de inferência" })).toBeTruthy();
   });
 });
@@ -708,6 +825,8 @@ describe("DeployModel · MTP", () => {
   it("liga o MTP, vê os controles numéricos e os manda na implantação", async () => {
     mountWhole();
     chooseWhole();
+    await ensureWholeMachine();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
     const switchEl = await screen.findByRole("checkbox", {
       name: /Predição multi-token/,
@@ -763,6 +882,8 @@ describe("DeployModel · MTP", () => {
   it("marcar o MTP preenche 0,75 e permite editar a probabilidade mínima", async () => {
     mountWhole();
     chooseWhole();
+    await ensureWholeMachine();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
     const switchEl = await screen.findByRole("checkbox", {
       name: /Predição multi-token/,

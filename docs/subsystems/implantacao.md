@@ -18,9 +18,9 @@ somente pelo script descartável `scripts/migrate_pom_db.py`.
 
 ## 1. Visão geral: o plano, a fusão e a ordem
 
-Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
-chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
-cluster). O pedido carrega `group` (o modelo original, pela chave técnica
+Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura da
+topologia, chamada após edição estrutural) e `POST /api/ui/deploy` (executa;
+re-varre o cluster). O pedido carrega `group` (o modelo original, pela chave técnica
 `ShardSet.group` derivada do `pom_id` do `.pom` - ou o **nome** do modelo no catálogo, com
 `kind: "whole"`), `kind`
 (`"shards"`, o padrão, `"whole"` - ver a seção 1.1 - ou
@@ -42,6 +42,14 @@ de fatias cria limites novos de GGUF: para isso continua existindo a tela de
 Fatiar. O modo de modelo inteiro é a exceção controlada: quando o operador pede
 um prefixo para outro peer, o backend consulta as fronteiras reais do GGUF e
 materializa as faixas no peer que possui o arquivo.
+
+Na tela de implantação, trocar de fatias para `whole` limpa o mapa e não
+escolhe uma máquina automaticamente. O operador adiciona a máquina desejada
+pela faixa inferior; a interface mantém a regra de uma máquina para esse modo.
+Mudanças de `RuntimeParams` no inspetor e do nome operacional não alteram a
+topologia: a tela não reinicia o `plan` nem pede uma nova prévia de capacidade a
+cada controle. A projeção antiga fica oculta até o `POST /api/ui/deploy`, que
+faz o preflight completo com os parâmetros atuais antes de iniciar a subida.
 
 ## 1.3 Capacidade de saída derivada do runtime
 

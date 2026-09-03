@@ -664,9 +664,10 @@ impressão digital é só modelo + conjunto de faixas.
   implantação". Peers que já estão no mapa
   deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
   disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
-  atribuída. Em modelo inteiro, o mapa aceita uma máquina. Tentar incluir uma
-  segunda ou trocar para esse modo enquanto há várias máquinas preserva o mapa
-  e mostra um aviso. No Tensor, somente peers que estão no mapa entram como
+  atribuída. Em modelo inteiro, o mapa aceita uma máquina. Ao trocar de fatias para esse
+  modo, o mapa fica vazio para que o operador escolha a máquina; depois de uma
+  escolha, tentar incluir uma segunda mostra um aviso e preserva a máquina
+  escolhida. No Tensor, somente peers que estão no mapa entram como
   primary/worker, mesmo que outros tenham o modelo.
   GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; os
   RTTs vêm do survey direcional do planner e não são substituídos pela medição
@@ -677,6 +678,12 @@ impressão digital é só modelo + conjunto de faixas.
   A última implantação de cada modelo
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
   plano, podada contra o que ainda existe.
+  Alterações de topologia são validadas por `POST /api/ui/deploy/plan` após o
+  debounce de 260 ms. Parâmetros de runtime e o nome operacional não mudam as
+  máquinas ou faixas, então permanecem locais durante a edição e não reiniciam
+  o survey distribuído. Se algum deles mudar, a projeção de capacidade antiga é
+  ocultada; `POST /api/ui/deploy` faz o preflight completo com os valores atuais
+  antes de iniciar a implantação.
   A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
   dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A
   tela mostra o inventário imediatamente. O botão e o endpoint de execução

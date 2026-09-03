@@ -97,6 +97,29 @@ pub fn routes() -> Router<GatewayState> {
 
 // ── O registro das implantações ──────────────────────────────────────────────
 
+/// A ativação é a versão corrente de um `deploy_id` no cluster. Quando dois
+/// nós ainda discordam, o carimbo mais novo vence; a versão desempata cópias
+/// produzidas no mesmo instante.
+fn deployment_is_newer(
+    candidate: &crate::deployment::Deployment,
+    current: &crate::deployment::Deployment,
+) -> bool {
+    candidate.activated_at > current.activated_at
+        || (candidate.activated_at == current.activated_at
+            && candidate.active_version > current.active_version)
+}
+
+fn newest_deployment(
+    records: impl IntoIterator<Item = crate::deployment::Deployment>,
+) -> Option<crate::deployment::Deployment> {
+    records.into_iter().fold(None, |current, candidate| {
+        Some(match current {
+            Some(current) if !deployment_is_newer(&candidate, &current) => current,
+            _ => candidate,
+        })
+    })
+}
+
 /// Só as implantações que este nó guarda em disco, sem perguntar a ninguém.
 ///
 /// É o que um peer responde quando o coordenador vem juntar a visão do cluster
@@ -164,11 +187,12 @@ async fn list_deployments(
                 .entry(d.deploy_id.clone())
                 .or_default()
                 .push(quem.to_string());
-            match por_id.get(&d.deploy_id) {
-                Some(atual) if atual.activated_at >= d.activated_at => {}
-                _ => {
-                    por_id.insert(d.deploy_id.clone(), d);
-                }
+            if por_id
+                .get(&d.deploy_id)
+                .map(|atual| deployment_is_newer(&d, atual))
+                .unwrap_or(true)
+            {
+                por_id.insert(d.deploy_id.clone(), d);
             }
         }
     };
@@ -5324,9 +5348,7 @@ async fn find_record(
     state: &GatewayState,
     deploy_id: &str,
 ) -> Option<crate::deployment::Deployment> {
-    if let Ok(Some(deployment)) = state.database.deployment(deploy_id) {
-        return Some(deployment);
-    }
+    let local = state.database.deployment(deploy_id).ok().flatten();
 
     let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
@@ -5358,11 +5380,11 @@ async fn find_record(
         })
     });
 
-    futures::future::join_all(buscas)
+    let remotas = futures::future::join_all(buscas)
         .await
         .into_iter()
-        .flatten()
-        .next()
+        .flatten();
+    newest_deployment(local.into_iter().chain(remotas))
 }
 
 /// Torna esta a implantação que atende quem pede só o nome do modelo.
@@ -6154,6 +6176,34 @@ mod deployments_tests {
         );
         assert_eq!(linhas[0]["serving"], true, "há peer vivo anunciando o id");
         assert_eq!(linhas[0]["is_default"], true, "é a única do seu modelo");
+    }
+
+    /// O coordenador pode ter uma cópia velha no próprio banco enquanto um
+    /// peer participante já recebeu a versão corrente. Operações dirigidas a
+    /// um `deploy_id` precisam consultar a história mais nova, não parar na
+    /// primeira cópia encontrada.
+    #[tokio::test]
+    async fn find_record_chooses_the_current_copy_over_local_history() {
+        let mut velha = registro("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
+        velha.versions[0].params = params_com_ctx(4096);
+
+        let mut corrente = registro("d-aaaaaaaa", "qwen3:8b", "2026-08-19T00:00:00Z");
+        corrente.versions[0].params = params_com_ctx(8192);
+        corrente.upsert_version(params_com_ctx(16384), corrente.nodes.clone(), "outro");
+        corrente.activated_at = "2026-08-19T00:00:00Z".into();
+
+        let porta = peer_with_records(vec![corrente.clone()]).await;
+        let peer = crate::gateway::testkit::peer("outro", "outro", porta);
+        let state = state_with("eu", vec![peer]).await;
+        state.database.save_deployment(&velha).unwrap();
+
+        let encontrada = find_record(&state, "d-aaaaaaaa")
+            .await
+            .expect("a cópia do peer deve ser encontrada");
+
+        assert_eq!(encontrada.activated_at, corrente.activated_at);
+        assert_eq!(encontrada.active_version, 2);
+        assert_eq!(encontrada.versions.len(), 2);
     }
 
     /// "No ar" e "padrão" são coisas diferentes, e a tela não pode confundir:

@@ -16,12 +16,13 @@
  * The rest of this comment is about the slice case, which is the one with
  * decisions in it.
  *
- * The screen opens on a decision the node made — who would serve which range,
- * and what has to be copied first — and every part of that decision is then
+ * The screen opens on a decision the node made - who would serve which range,
+ * and what has to be copied first - and every part of that decision is then
  * editable. Nothing here computes the plan in the browser: the suggestion comes
- * from `/api/ui/deploy/plan`, every edit is sent straight back to the same route
- * for validation, and pressing the button re-surveys the cluster server-side
- * before acting, because a machine can leave between looking and deciding.
+ * from `/api/ui/deploy/plan`, topology edits are sent back to that route for
+ * validation, and pressing the button re-surveys the cluster server-side before
+ * acting, because a machine can leave between looking and deciding. Runtime
+ * settings stay local until deploy, when the fresh preflight validates them.
  *
  * Three things the operator is choosing, and why they are the shape they are:
  *
@@ -490,18 +491,17 @@ export function DeployModel() {
       ? `tensor:${chosen}:${tpGroup?.tp_size ?? tp.worker_node_ids.length + 1}`
       : chosen;
 
-  // Edits go to the node for validation, but not on every keystroke: the survey
-  // behind this route talks to every peer, and the settings are typed digit by
-  // digit.
+  // Map edits go to the node for validation, but not on every keystroke: the
+  // survey behind this route talks to every peer, and the settings are typed
+  // digit by digit. Runtime parameters are launch configuration, not topology,
+  // so changing them must not restart the full survey and capacity preview.
   const [settled, setSettled] = useState<DeploySelection[] | null>(null);
-  const [settledParams, setSettledParams] = useState<RuntimeParams | null>(null);
   useEffect(() => {
     const t = setTimeout(() => {
       setSettled(selection);
-      setSettledParams(params);
     }, 260);
     return () => clearTimeout(t);
-  }, [selection, params]);
+  }, [selection]);
 
   const plan = useQuery({
     queryKey: [
@@ -509,9 +509,7 @@ export function DeployModel() {
       kind,
       chosen,
       settled ? JSON.stringify(settled) : "auto",
-      settledParams ? JSON.stringify(settledParams) : "padrão",
       merge == null ? "merge-padrão" : `merge-${merge}`,
-      deploymentName,
       strategy,
       JSON.stringify(preferredNodeIds),
       // TP: o plano revalida quando o primary/workers mudam — a checagem de
@@ -522,11 +520,9 @@ export function DeployModel() {
       api.post<DeployPlan>("/api/ui/deploy/plan", {
         group: chosen,
         kind,
-        deployment_name: deploymentName || chosen,
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
-        ...(settledParams ? { params: settledParams } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
@@ -569,7 +565,20 @@ export function DeployModel() {
       };
     });
   }, [liveCluster.data, p]);
-  const displayPlan = p ? { ...p, machines: liveMachines } : undefined;
+  // Capacity is the only part of the plan that depends on RuntimeParams. It
+  // cannot be reused after a launch setting changes, but that setting also
+  // does not justify a new topology survey. Hide the old projection until the
+  // deploy endpoint confirms the fresh state instead of showing stale advice.
+  const capacityFresh =
+    !params || !p?.params || JSON.stringify(params) === JSON.stringify(p.params);
+  const displayPlan = p
+    ? {
+        ...p,
+        machines: liveMachines.map((machine) =>
+          capacityFresh ? machine : { ...machine, capacity: undefined },
+        ),
+      }
+    : undefined;
 
   useEffect(() => {
     if (inspectedNodeId && p?.machines.some((machine) => machine.node_id === inspectedNodeId)) {
@@ -715,14 +724,15 @@ export function DeployModel() {
   /**
    * True while the plan in hand is still the answer to an older question.
    *
-   * `isPlaceholderData` is exactly that and nothing else: react-query sets it
-   * only while showing a previous key's data, so a background refetch of the
-   * same selection does not make the screen blink. The debounce above is the
-   * other half - between the keystroke and `settled` the query key has not
-   * moved yet, so the plan looks current when it is not.
+   * `isFetching` keeps the indicator tied to the request for the current key,
+   * including the tail after React Query has stopped showing placeholder data.
+   * `isPlaceholderData` still covers the interval where the previous answer is
+   * displayed. The debounce above is the other half - between a map edit and
+   * `settled` the query key has not moved yet, so the plan looks current when it
+   * is not. Runtime parameter edits do not enter this state because they do not
+   * alter topology.
    */
-  const syncing =
-    plan.isPlaceholderData || settled !== selection || settledParams !== params;
+  const syncing = plan.isFetching || plan.isPlaceholderData || settled !== selection;
 
   /** True while the node's answer still describes exactly these rows.
    *
@@ -765,6 +775,19 @@ export function DeployModel() {
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
+  /**
+   * Runtime mode is checked locally from the already-surveyed model shape.
+   * Changing this selector must not make the planner survey the cluster again;
+   * the deploy preflight repeats the same check with its fresh survey.
+   */
+  const inferenceModeReason = !p
+    ? null
+    : eff.inference_mode === "moe" && !isMoePlan
+      ? "MoE exige metadata real de experts no GGUF deste modelo."
+      : isTp && isMoePlan
+        ? "Tensor Parallelism não suporta MoE nesta versão."
+        : null;
+  const inferenceModeSupported = inferenceModeReason == null;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
   const hiddenStateCapability = p?.capabilities?.hidden_state_f8;
@@ -961,6 +984,7 @@ export function DeployModel() {
 
   function restoreNodePlan() {
     setSelection(null);
+    setSettled(null);
     const defaults = nodeParams.current ?? p?.params ?? null;
     setParams(defaults);
     setDrafts(defaults ? { n_ctx: String(defaults.n_ctx) } : {});
@@ -985,11 +1009,14 @@ export function DeployModel() {
       current.includes(nodeId) ? current : [...current, nodeId],
     );
     if (isWhole && mapMachineIds.length === 0) {
-      const candidate = p?.available[0] ?? (
-        wholeModel?.total_layers != null
-          ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
-          : undefined
-      );
+      // A resposta de fatias anterior pode continuar visível enquanto a
+      // consulta `whole` chega. Nunca use essa faixa velha para montar o
+      // modelo inteiro: o catálogo é a fonte do intervalo completo.
+      const candidate = wholeModel?.total_layers != null
+        ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
+        : p?.kind === "whole"
+          ? p.available[0]
+          : undefined;
       if (candidate) {
         setSelection([{
           start_layer: candidate.start_layer,
@@ -1024,13 +1051,13 @@ export function DeployModel() {
   const canDeploy =
     validated &&
     !p?.blocked &&
-    p?.inference_mode_supported !== false &&
+    inferenceModeSupported &&
     rows.length > 0;
   const bottomMachines = liveMachines.filter((machine) => !mapNodeIds.has(machine.node_id));
   /** Máquinas cuja projeção estoura a VRAM (rósea) ou que só cabem porque o
    *  "Ajustar à memória" apararia o pedido (amber) - as duas pedem um aviso
    *  antes de implantar. */
-  const capacityWarnMachines = (p?.machines ?? []).filter(
+  const capacityWarnMachines = (displayPlan?.machines ?? []).filter(
     (machine) =>
       machine.capacity && (!machine.capacity.fits || machine.capacity.degraded),
   );
@@ -1067,7 +1094,7 @@ export function DeployModel() {
         ? t("deploy.whyNotChecking")
           : p.blocked
             ? t("deploy.whyNotBlocked")
-          : p.inference_mode_supported === false
+          : !inferenceModeSupported
             ? t("deploy.whyNotBlocked")
           : !validated
             ? t("deploy.whyNotMismatch")
@@ -1079,15 +1106,14 @@ export function DeployModel() {
     : DEFAULT_CACHE_TYPES;
 
   function selectKind(value: DeployKind) {
-    if (value === "whole" && mapMachineIds.length > 1) {
-      toast.warning(
-        t("deploy.wholeSingleMachineTitle"),
-        t("deploy.wholeSingleMachineDetail"),
-      );
-      return;
-    }
+    if (value === kind) return;
     setPickedKind(value);
-    setSelection(null);
+    // Trocar de fatias para um GGUF inteiro muda a unidade da decisão. A
+    // seleção anterior não pode escolher uma máquina por acidente enquanto o
+    // novo plano chega: [] significa mapa vazio e deixa a próxima escolha ao
+    // operador. Os outros modos continuam usando a sugestão do nó.
+    setSelection(value === "whole" ? [] : null);
+    setSettled(value === "whole" ? [] : null);
     setPreferredNodeIds([]);
     setJobId(null);
   }
@@ -1129,6 +1155,7 @@ export function DeployModel() {
             <div className="flex min-w-[15rem] flex-1 gap-2">
               <Select
                 aria-label="Modelo técnico"
+                name="model"
                 value={isTp && hasSlicedTp ? (tpGroup?.key ?? "") : chosen}
                 onChange={(event) => {
                   if (isWhole) setWholeName(event.target.value);
@@ -1136,6 +1163,7 @@ export function DeployModel() {
                   else if (isTp) setWholeName(event.target.value);
                   else setGroup(event.target.value);
                   setSelection(null);
+                  setSettled(null);
                   setPreferredNodeIds([]);
                 }}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
@@ -1161,6 +1189,7 @@ export function DeployModel() {
               </Select>
               <Input
                 aria-label="Nome da implantação"
+                name="deployment_name"
                 value={deploymentName}
                 onChange={(event) => setDeploymentName(event.target.value)}
                 placeholder={chosen || "Nome da implantação"}
@@ -1176,6 +1205,7 @@ export function DeployModel() {
                   onClick={() => {
                     setStrategy(value);
                     setSelection(null);
+                    setSettled(null);
                     setPreferredNodeIds((current) =>
                       isWhole ? [] : isTp ? current : value === "complete" ? liveMachines.map((machine) => machine.node_id) : [],
                     );
@@ -1349,6 +1379,7 @@ export function DeployModel() {
                   <span className="truncate text-muted">Escolha para os três modos</span>
                   <Select
                     aria-label="Motor de inferência"
+                    name="inference_mode"
                     value={eff.inference_mode ?? "auto"}
                     onChange={(event) => setParams({ ...eff, inference_mode: event.target.value as InferenceMode })}
                     compact
@@ -1359,9 +1390,9 @@ export function DeployModel() {
                   </Select>
                 </label>
                 <p className="mt-1.5 text-[0.6rem] leading-relaxed text-faint">A decisão usa metadata real do GGUF e é enviada ao modelo inteiro, às fatias e ao Tensor Parallelism.</p>
-                {p?.inference_mode_supported === false && (
+                {!inferenceModeSupported && (
                   <p role="alert" className="mt-2 rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
-                    {p.inference_mode_reason ?? "Este caminho não pode honrar o motor escolhido."}
+                    {inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido."}
                   </p>
                 )}
               </section>
@@ -1374,6 +1405,7 @@ export function DeployModel() {
                   <span className="mb-1 block text-muted">Cache K</span>
                   <Select
                     aria-label="Cache K"
+                    name="cache_type_k"
                     value={cacheTypeK}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => void updateCacheTypes("k", event.target.value as KvCacheType)}
@@ -1388,6 +1420,7 @@ export function DeployModel() {
                   <span className="mb-1 block text-muted">Cache V</span>
                   <Select
                     aria-label="Cache V"
+                    name="cache_type_v"
                     value={cacheTypeV}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => void updateCacheTypes("v", event.target.value as KvCacheType)}
@@ -1466,11 +1499,11 @@ export function DeployModel() {
                   <div className="space-y-1.5">
                     <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                       <span className="truncate text-muted">Largura do rascunho</span>
-                      <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} compact className="text-right font-mono" />
+                      <Input name="speculative_k" type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} compact className="text-right font-mono" />
                     </label>
                     <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                       <span className="truncate text-muted">Janela de busca</span>
-                      <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} compact className="text-right font-mono" />
+                      <Input name="speculative_lookup_window" type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} compact className="text-right font-mono" />
                     </label>
                   </div>
                 )}
@@ -1496,11 +1529,11 @@ export function DeployModel() {
                     />
                     <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                       <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
-                      <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
+                      <Input aria-label="Tokens rascunhados pelo MTP" name="mtp_draft_tokens" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
                     </label>
                     <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                       <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                      <Input aria-label="Probabilidade mínima do MTP" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} compact className="text-right font-mono" />
+                      <Input aria-label="Probabilidade mínima do MTP" name="mtp_min_probability" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} compact className="text-right font-mono" />
                     </label>
                   </div>
                 )}
@@ -1514,6 +1547,7 @@ export function DeployModel() {
                   <span className="truncate text-muted">Principal</span>
                   <Select
                     aria-label="Máquina principal do Tensor Parallelism"
+                    name="tp_primary_node"
                     value={tp.primary_node_id}
                     onChange={(event) => {
                       preserveEmptyPrimary.current = false;
@@ -1535,6 +1569,7 @@ export function DeployModel() {
                   <span className="mb-1 block text-muted">Workers</span>
                   <Select
                     aria-label="Workers do Tensor Parallelism"
+                    name="tp_worker_node_ids"
                     multiple
                     value={tp.worker_node_ids}
                     onChange={(event) => setTp((current) => ({
@@ -1632,7 +1667,7 @@ export function DeployModel() {
                   )}
                   {first && (
                     <div className="mt-3 space-y-2 border-t border-line pt-2">
-                      <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="flex min-w-0 items-center gap-1 text-muted"><span className="truncate">Camadas GPU</span><InfoTip label="Camadas GPU" message={t("deploy.knob.n_gpu_layersHint")} /></span><Input aria-label="Camadas GPU" type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></div>
+                      <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="flex min-w-0 items-center gap-1 text-muted"><span className="truncate">Camadas GPU</span><InfoTip label="Camadas GPU" message={t("deploy.knob.n_gpu_layersHint")} /></span><Input aria-label="Camadas GPU" name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></div>
                       <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" hint={t("deploy.knob.offload_kqvHint")} />
                     </div>
                   )}

@@ -51,5 +51,5 @@ unitarios do binario `pom`.
   indices publicados nem confundir dispositivos.
 - [x] Rodar os testes novos, a suite do node, formatacao e build relevante.
 - [x] Revisar a documentacao afetada e marcar este plano como concluido.
-- [ ] Commitar em `fm/rdma-nome-real-das-placas`.
-- [ ] Rebasear em `origin/feat/implantar` antes da publicacao autorizada.
+- [x] Commitar em `fm/rdma-nome-real-das-placas`.
+- [x] Rebasear em `origin/feat/implantar` antes da publicacao autorizada.

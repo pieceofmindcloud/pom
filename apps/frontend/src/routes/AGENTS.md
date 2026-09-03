@@ -230,10 +230,16 @@ Per-file list:
   o controle de reabertura permanece na coluna compacta existente.
 - `Deployments.tsx` - lista as implantações registradas no cluster via
   `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
-  criação mais recente e mostra a coluna "Criada". Permite reimplantar só
-  parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`. O
-  painel do job de reimplantação mostra `job.outputs` (o resultado por
-  máquina, `"<host>: <motivo>"`) abaixo da mensagem, não só a contagem.
+  criação mais recente e mostra a coluna "Criada". Cada linha expande
+  (`VersionList`) e mostra `deployment.versions` da mais nova para a mais
+  antiga, com a badge "Ativa" em `active_version` e um botão "Reimplantar esta
+  versão" (`redeployDeployment(id, { version })`). O botão "Reimplantar com
+  novos parâmetros" abre o `RedeployDialog`, que semeia do
+  `versions[active].params` (não do `nodes[0].config`) e no submit manda só
+  `params` + `per_node` - o backend decide reusar ou anexar versão. Também
+  ativa uma implantação e a desimplanta pelo `deploy_id`. O painel do job de
+  reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
+  Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
 - `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   No perfil `inference`, mostra só a chave ativa deste nó, esconde o seletor de

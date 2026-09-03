@@ -158,7 +158,8 @@ async fn list_deployments(
                    registros: Vec<crate::deployment::Deployment>,
                    por_id: &mut HashMap<String, crate::deployment::Deployment>,
                    guardado_por: &mut HashMap<String, Vec<String>>| {
-        for d in registros {
+        for mut d in registros {
+            d.ensure_versions();
             guardado_por
                 .entry(d.deploy_id.clone())
                 .or_default()
@@ -3504,6 +3505,35 @@ async fn deploy_endpoint(
         Err(error) => return bad(json!({ "error": error })),
     };
 
+    // Reaproveitar o `deploy_id` de uma implantação de mesma **forma**: mesmo
+    // `kind`, mesma identidade de modelo provada e o mesmo conjunto de
+    // `(node_id, faixa, rank)`. Sem prova de identidade não deduplica - cunha um
+    // id novo, como antes. Trocar de máquina ou de faixa muda a forma e também
+    // cunha id novo (isso é assunto do Deploy Studio, não uma versão).
+    let ranges: Vec<(String, u32, u32, Option<u32>)> = if !plan.tp_targets.is_empty() {
+        plan.tp_targets
+            .iter()
+            .map(|t| (t.target_node_id.clone(), t.start_layer, t.end_layer, Some(t.rank)))
+            .collect()
+    } else {
+        plan.steps
+            .iter()
+            .map(|s| (s.target_node_id.clone(), s.start_layer, s.end_layer, None))
+            .collect()
+    };
+    let reuse_id = match identity.proof.as_ref() {
+        Some(proof) => state
+            .database
+            .deployments()
+            .ok()
+            .as_deref()
+            .and_then(|todas| {
+                crate::deployment::matching_shape(todas, record_kind(req.kind), proof, &ranges)
+                    .map(|d| d.deploy_id.clone())
+            }),
+        None => None,
+    };
+
     let job_id = uuid::Uuid::new_v4().to_string();
     // A whole model is one machine, and "em 1 nós" is the kind of seam that
     // makes an operator wonder what else was written for the other case.
@@ -3520,10 +3550,23 @@ async fn deploy_endpoint(
 
     // Cunhado antes de subir nada: é o nome desta implantação, e ele vai junto
     // com cada `apply` para que o nó saiba de que conjunto passou a fazer parte.
-    let deploy_id = crate::deployment::new_deploy_id();
+    let record_plan = match reuse_id {
+        Some(id) => match find_record(&state, &id).await {
+            Some(existente) => RecordPlan::ReuseVersion(Box::new(existente)),
+            // O registro sumiu entre o `matching_shape` e agora: trata como novo.
+            None => RecordPlan::New {
+                deploy_id: crate::deployment::new_deploy_id(),
+            },
+        },
+        None => RecordPlan::New {
+            deploy_id: crate::deployment::new_deploy_id(),
+        },
+    };
+    let deploy_id = record_plan.deploy_id().to_string();
+    let reused = matches!(record_plan, RecordPlan::ReuseVersion(_));
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, identity, &deploy_id, &id).await {
+        match run(state, plan, params, identity, record_plan, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -3532,7 +3575,8 @@ async fn deploy_endpoint(
         }
     });
 
-    Json(json!({ "started": true, "job_id": job_id })).into_response()
+    Json(json!({ "started": true, "job_id": job_id, "deploy_id": deploy_id, "reused": reused }))
+        .into_response()
 }
 
 /// The plan's steps as `launch` wants them, resolved against a fresh survey.
@@ -4761,15 +4805,35 @@ async fn prepare_existing_model(
     Ok(())
 }
 
+/// De onde sai o registro que `run` publica ao fim de um `launch` bem-sucedido.
+enum RecordPlan {
+    /// `deploy_id` novo: monta a v1 a partir do plano e dos alvos.
+    New { deploy_id: String },
+    /// `deploy_id` reaproveitado (mesma forma, mesma identidade provada):
+    /// anexa - ou reativa - uma versão neste registro.
+    ReuseVersion(Box<crate::deployment::Deployment>),
+}
+
+impl RecordPlan {
+    fn deploy_id(&self) -> &str {
+        match self {
+            RecordPlan::New { deploy_id } => deploy_id,
+            RecordPlan::ReuseVersion(d) => &d.deploy_id,
+        }
+    }
+}
+
 /// Copy what has to be copied, then bind every peer to its range.
 async fn run(
     state: GatewayState,
     plan: Plan,
     params: RuntimeParams,
     identity: RequestedModelIdentity,
-    deploy_id: &str,
+    record_plan: RecordPlan,
     job_id: &str,
 ) -> Result<(), String> {
+    let deploy_id = record_plan.deploy_id().to_string();
+    let deploy_id = deploy_id.as_str();
     prepare_existing_model(&state, &plan.group, &identity, job_id).await?;
     let key = state.auth.read().await.connection_key.clone();
 
@@ -5059,16 +5123,28 @@ async fn run(
     // que configuração. Depois do `launch` essa intenção se dissolvia em N
     // `NodeConfig` espalhados, e ninguém no cluster sabia mais dizer que
     // aqueles nós eram *a mesma* implantação.
-    let registro = build_record(
-        deploy_id,
-        &plan,
-        &targets,
-        &machines,
-        total_layers,
-        &params,
-        &identity,
-        &state.network.node_id,
-    );
+    //
+    // `New` monta a v1; `ReuseVersion` anexa (ou reativa) uma versão sob o
+    // `deploy_id` que já existe, para reimplantar a mesma forma não cunhar um id
+    // novo a cada vez.
+    let registro = match record_plan {
+        RecordPlan::New { .. } => build_record(
+            deploy_id,
+            &plan,
+            &targets,
+            &machines,
+            total_layers,
+            &params,
+            &identity,
+            &state.network.node_id,
+        ),
+        RecordPlan::ReuseVersion(mut existente) => {
+            existente.ensure_versions();
+            let nodes = build_version_nodes(&plan, &targets, &machines, &params);
+            existente.upsert_version(params.clone(), nodes, state.network.node_id.as_str());
+            *existente
+        }
+    };
 
     let response = launch(
         ConnectionAuth,
@@ -5105,24 +5181,17 @@ async fn run(
 /// máquina são exatamente os que foram para o `launch`. Guardar o **resultado**
 /// é o que faz "com que configuração aquela máquina subiu?" ser uma leitura em
 /// vez de uma reconstrução.
-fn build_record(
-    deploy_id: &str,
+/// Os nós de uma versão: quem recebeu qual faixa e com que configuração
+/// efetiva. Igual para a v1 de um deployment novo e para uma versão anexada a
+/// um `deploy_id` reaproveitado.
+fn build_version_nodes(
     plan: &Plan,
     targets: &[LaunchTarget],
     machines: &[Machine],
-    total_layers: u32,
     params: &RuntimeParams,
-    identity: &RequestedModelIdentity,
-    created_by: &str,
-) -> crate::deployment::Deployment {
-    let kind = match plan.kind {
-        DeployKind::Shards => crate::deployment::DeploymentKind::Shards,
-        DeployKind::Whole => crate::deployment::DeploymentKind::Whole,
-        DeployKind::TensorParallel => crate::deployment::DeploymentKind::TensorParallel,
-    };
-
+) -> Vec<crate::deployment::DeploymentNode> {
     let total_alvos = targets.len() as u32;
-    let nodes = targets
+    targets
         .iter()
         .enumerate()
         .map(|(i, t)| crate::deployment::DeploymentNode {
@@ -5148,11 +5217,40 @@ fn build_record(
             // recebe, para o registro não poder divergir do que subiu.
             config: crate::webui::params_for(params, t),
         })
-        .collect();
+        .collect()
+}
+
+/// O kind do registro a partir do kind do plano.
+fn record_kind(kind: DeployKind) -> crate::deployment::DeploymentKind {
+    match kind {
+        DeployKind::Shards => crate::deployment::DeploymentKind::Shards,
+        DeployKind::Whole => crate::deployment::DeploymentKind::Whole,
+        DeployKind::TensorParallel => crate::deployment::DeploymentKind::TensorParallel,
+    }
+}
+
+/// Monta o registro de um deployment **novo** (v1), a partir do que o plano e
+/// os alvos já dizem.
+///
+/// Nada aqui é recalculado: as faixas, a posição no pipeline e os ajustes por
+/// máquina são exatamente os que foram para o `launch`. Guardar o **resultado**
+/// é o que faz "com que configuração aquela máquina subiu?" ser uma leitura em
+/// vez de uma reconstrução.
+fn build_record(
+    deploy_id: &str,
+    plan: &Plan,
+    targets: &[LaunchTarget],
+    machines: &[Machine],
+    total_layers: u32,
+    params: &RuntimeParams,
+    identity: &RequestedModelIdentity,
+    created_by: &str,
+) -> crate::deployment::Deployment {
+    let nodes = build_version_nodes(plan, targets, machines, params);
 
     crate::deployment::Deployment::new(
         deploy_id.to_string(),
-        kind,
+        record_kind(plan.kind),
         crate::deployment::DeploymentModel {
             label: plan.group.clone(),
             total_layers,
@@ -5167,6 +5265,7 @@ fn build_record(
         created_by,
         nodes,
     )
+    .with_params(params.clone())
 }
 
 /// Grava o registro neste nó e manda uma cópia para cada participante.
@@ -5252,7 +5351,10 @@ async fn find_record(
                 .ok()?;
             let registros: Vec<crate::deployment::Deployment> =
                 serde_json::from_value(body.get("deployments")?.clone()).ok()?;
-            registros.into_iter().find(|d| d.deploy_id == alvo)
+            registros.into_iter().find(|d| d.deploy_id == alvo).map(|mut d| {
+                d.ensure_versions();
+                d
+            })
         })
     });
 
@@ -5302,10 +5404,51 @@ pub struct PerNodeParams {
 
 #[derive(Debug, Deserialize)]
 pub struct RedeployRequest {
-    pub params: RuntimeParams,
+    /// Parâmetros novos do deployment inteiro. Ausente exige `version`.
+    /// Presentes e iguais aos de uma versão existente -> aquela versão volta a
+    /// ser a ativa; diferentes -> versão nova anexada ao mesmo `deploy_id`.
+    #[serde(default)]
+    pub params: Option<RuntimeParams>,
+    /// Reimplanta uma versão já registrada, sem anexar outra. Mutuamente
+    /// exclusivo com `params` na prática; se os dois vierem, `version` vence.
+    #[serde(default)]
+    pub version: Option<u32>,
     /// Ajustes por máquina, por `node_id`. Ausente = todo mundo com os mesmos.
     #[serde(default)]
     pub per_node: HashMap<String, PerNodeParams>,
+}
+
+impl RedeployRequest {
+    /// Resolve o pedido contra o registro: escolhe/cria a versão, muta o
+    /// registro para refleti-la e devolve os parâmetros base de cada máquina.
+    fn resolve(&self, registro: &mut crate::deployment::Deployment, autor: &str) -> Result<RuntimeParams, String> {
+        registro.ensure_versions();
+        if let Some(v) = self.version {
+            registro.set_active_version(v).map_err(|e| e.to_string())?;
+            return Ok(registro
+                .active()
+                .map(|ver| ver.params.clone())
+                .unwrap_or_default());
+        }
+        let Some(params) = self.params.clone() else {
+            return Err("informe `version` ou `params`".to_string());
+        };
+        let mut nodes = registro.nodes.clone();
+        for n in &mut nodes {
+            let mut cfg = params.clone();
+            if let Some(adj) = self.per_node.get(&n.node_id) {
+                if let Some(g) = adj.n_gpu_layers {
+                    cfg.n_gpu_layers = g;
+                }
+                if let Some(k) = adj.offload_kqv {
+                    cfg.offload_kqv = k;
+                }
+            }
+            n.config = cfg;
+        }
+        registro.upsert_version(params.clone(), nodes, autor);
+        Ok(params)
+    }
 }
 
 /// O que aconteceu com **uma** máquina numa reconfiguração.
@@ -5317,12 +5460,12 @@ pub struct RedeployOutcome {
     pub error: Option<String>,
 }
 
-/// Reimplanta mexendo só nos parâmetros.
+/// Reimplanta um `deploy_id` que já existe: `version` reativa uma versão
+/// registrada, `params` reimplanta anexando - ou reativando - uma versão.
 ///
 /// A mesma implantação, o mesmo `deploy_id`, as mesmas máquinas e as mesmas
-/// faixas - só os parâmetros mudam. Por isso **não** re-planeja: re-planejar
-/// cunharia uma implantação nova, quebrando todo cliente preso a
-/// `modelo@deploy_id`.
+/// faixas. Por isso **não** re-planeja: re-planejar cunharia uma implantação
+/// nova, quebrando todo cliente preso a `modelo@deploy_id`.
 ///
 /// Descarrega toda máquina que ainda anuncia este `deploy_id` e sobe cada uma
 /// de novo, uma de cada vez, esperando cada uma voltar a servir antes da
@@ -5340,14 +5483,28 @@ async fn redeploy_endpoint(
     if !crate::deployment::is_deploy_id(&id) {
         return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
     }
-    let Some(registro) = find_record(&state, &id).await else {
+    let Some(mut registro) = find_record(&state, &id).await else {
         return bad(json!({ "error": format!("implantação {id} desconhecida") }));
     };
+    registro.ensure_versions();
+    if req.version.is_none() && req.params.is_none() {
+        return bad(json!({ "error": "informe `version` ou `params`" }));
+    }
+    if let Some(v) = req.version {
+        if !registro.versions.iter().any(|ver| ver.version == v) {
+            let disponiveis: Vec<u32> =
+                registro.versions.iter().map(|ver| ver.version).collect();
+            return bad(json!({
+                "error": format!("versão {v} não existe (há {disponiveis:?})")
+            }));
+        }
+    }
     info!(
-        "redeploy pedido para {} ({}), {} nó(s)",
+        "redeploy pedido para {} ({}), {} nó(s), versão={:?}",
         id,
         registro.model.label,
-        registro.nodes.len()
+        registro.nodes.len(),
+        req.version
     );
 
     let job_id = uuid::Uuid::new_v4().to_string();
@@ -5410,6 +5567,11 @@ async fn run_redeploy(
         registro.kind
     );
 
+    // Escolhe/cria a versão pedida e muta `registro` para refleti-la. `base` é
+    // o `RuntimeParams` do deployment inteiro dessa versão; os ajustes por
+    // máquina de `req.per_node` entram por cima na hora do reconfigure.
+    let base = req.resolve(&mut registro, &self_id)?;
+
     // Re-deploy does not build a new plan, but changing the wire precision is
     // still a cluster-wide protocol change. Probe every participant before
     // touching the first process, otherwise a later incompatible peer could
@@ -5419,7 +5581,7 @@ async fn run_redeploy(
         &peers,
         &registro.nodes,
         &self_id,
-        req.params.hidden_state_dtype,
+        base.hidden_state_dtype,
     )
     .await?;
 
@@ -5536,8 +5698,11 @@ async fn run_redeploy(
         .await;
         set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
 
-        // Os ajustes por máquina entram por cima dos parâmetros comuns.
-        let mut params = req.params.clone();
+        // `no.config` já é a configuração efetiva da versão ativa (os
+        // parâmetros do deployment com os ajustes por máquina embutidos), então
+        // uma reimplantação de versão devolve a cada máquina exatamente o que
+        // ela rodava. `req.per_node` re-aplica por cima o que a tela mexeu.
+        let mut params = no.config.clone();
         if let Some(ajuste) = req.per_node.get(&no.node_id) {
             if let Some(g) = ajuste.n_gpu_layers {
                 params.n_gpu_layers = g;
@@ -5623,6 +5788,9 @@ async fn finish_redeploy(
             no.config = p;
         }
     }
+    // O que cada máquina de fato aceitou entra também no snapshot da versão
+    // ativa, para o histórico não divergir da lista que o runtime lê.
+    registro.commit_active_nodes();
     publish_record(state, registro).await;
 
     let falhas = resultados.iter().filter(|r| !r.reconfigured).count();
@@ -5722,7 +5890,8 @@ async fn run_redeploy_in_place(
         .await;
         set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
 
-        let mut params = req.params.clone();
+        // Ver `run_redeploy`: `no.config` é a configuração efetiva da versão.
+        let mut params = no.config.clone();
         if let Some(ajuste) = req.per_node.get(&no.node_id) {
             if let Some(g) = ajuste.n_gpu_layers {
                 params.n_gpu_layers = g;
@@ -6074,7 +6243,80 @@ mod deployments_tests {
             State(state),
             Path("nao-e-id".to_string()),
             Json(RedeployRequest {
-                params: RuntimeParams::default(),
+                params: Some(RuntimeParams::default()),
+                version: None,
+                per_node: HashMap::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    fn params_com_ctx(n_ctx: u32) -> RuntimeParams {
+        RuntimeParams {
+            n_ctx,
+            ..Default::default()
+        }
+    }
+
+    /// `resolve` com `version` reativa uma versão registrada sem anexar outra;
+    /// com `params` novos, anexa. Sem nenhum dos dois, recusa.
+    #[test]
+    fn redeploy_request_resolve_escolhe_ou_cria_versao() {
+        let mut d = registro("d-aaaaaaaa", "qwen3:8b", "2026-08-19T00:00:00Z");
+        d.versions[0].params = params_com_ctx(8192);
+        d.upsert_version(params_com_ctx(16384), d.nodes.clone(), "n1");
+        assert_eq!(d.active_version, 2);
+
+        // version -> volta para a 1, sem anexar.
+        let base = RedeployRequest {
+            params: None,
+            version: Some(1),
+            per_node: HashMap::new(),
+        }
+        .resolve(&mut d, "eu")
+        .unwrap();
+        assert_eq!(d.active_version, 1);
+        assert_eq!(d.versions.len(), 2);
+        assert_eq!(base.n_ctx, 8192);
+
+        // params novos -> v3.
+        let base = RedeployRequest {
+            params: Some(params_com_ctx(4096)),
+            version: None,
+            per_node: HashMap::new(),
+        }
+        .resolve(&mut d, "eu")
+        .unwrap();
+        assert_eq!(base.n_ctx, 4096);
+        assert_eq!(d.versions.len(), 3);
+        assert_eq!(d.active_version, 3);
+
+        // nem version nem params -> erro.
+        assert!(RedeployRequest {
+            params: None,
+            version: None,
+            per_node: HashMap::new(),
+        }
+        .resolve(&mut d, "eu")
+        .is_err());
+    }
+
+    /// Pedir o redeploy de uma versão que não existe é recusado antes de
+    /// derrubar máquina nenhuma.
+    #[tokio::test]
+    async fn redeploy_de_versao_inexistente_e_recusado() {
+        let state = state_with("eu", vec![]).await;
+        let d = registro("d-aaaaaaaa", "qwen3:8b", "2026-08-19T00:00:00Z");
+        state.database.save_deployment(&d).unwrap();
+
+        let resp = redeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Path("d-aaaaaaaa".to_string()),
+            Json(RedeployRequest {
+                params: None,
+                version: Some(99),
                 per_node: HashMap::new(),
             }),
         )
@@ -7588,7 +7830,8 @@ mod redeploy_preflight_tests {
             state,
             whole_record(),
             RedeployRequest {
-                params: RuntimeParams::default(),
+                params: Some(RuntimeParams::default()),
+                version: None,
                 per_node: HashMap::new(),
             },
             "redeploy-down",

@@ -491,7 +491,15 @@ fatias é o que a tela de Modelos faz, com o seu próprio pedido de confirmaçã
 - A liberação vai pelo `/api/ui/unload` do próprio peer (a mesma rota do botão de
   uma máquina só), que continua valendo para qualquer nó.
 
-## 7.1 Reimplantar o mesmo modelo
+## 7.1 Reimplantar o mesmo modelo, e as versões de uma implantação
+
+Uma implantação é **versionada** (`Deployment`, `DEPLOYMENT_VERSION = 2`).
+`versions` guarda cada configuração que já rodou sob o mesmo `deploy_id` e
+`active_version` diz qual está no ar; `nodes` é a lista achatada da versão
+ativa. O que distingue uma versão é o `RuntimeParams` do deployment inteiro -
+ajustes por máquina (`n_gpu_layers`/`offload_kqv`) entram no snapshot da versão
+mas não forkam versão. Um registro v1 legado (sem `versions`) ganha a v1
+sintetizada por `ensure_versions` em toda leitura.
 
 `POST /api/ui/deploy` faz uma pré-verificação antes de copiar qualquer arquivo
 ou chamar `launch`. Para fatias, a prova é o `pom_id` do manifesto; para um GGUF
@@ -500,19 +508,41 @@ prova. Registros antigos sem identidade só podem usar o caminho canônico quand
 o caminho pertence ao mesmo peer; se não houver prova, a ação é recusada com o
 motivo visível e nenhuma máquina é descarregada.
 
-Quando a implantação ativa é comprovadamente a mesma, o fluxo chama
-`/api/ui/unload` em todos os peers correspondentes e consulta `/api/ui/node` até
-cada um anunciar `config: null`, estado `disabled` e nenhum modelo ou deployment
-ativo. A espera tem limite de 30 segundos por rodada; se um peer continuar
-ocupado, o job falha nomeando a máquina e seu último estado. Falha de unload
-também bloqueia a nova implantação e preserva no job o motivo retornado.
+**Reaproveitar o `deploy_id`.** Antes de cunhar um id novo, `deploy_endpoint`
+procura no `pom.db` **local** uma implantação de mesma **forma**
+(`deployment::matching_shape`): mesmo `kind`, mesma `DeploymentIdentity`
+provada e o mesmo conjunto de `(node_id, faixa, tp_rank)`. Achou:
 
-### "Recarregar com estes valores" (`POST /api/ui/deployments/:id/redeploy`)
+- `params` iguais aos de uma versão registrada -> aquela versão volta a ser a
+  ativa, sem anexar outra;
+- `params` diferentes -> **mesma `deploy_id`, versão nova** anexada
+  (`upsert_version`).
 
-Mesma implantação, mesmo `deploy_id`, mesmas máquinas e faixas - só os
-parâmetros mudam, então **não re-planeja** (re-planejar cunharia um
-`deploy_id` novo e quebraria clientes presos a `modelo@deploy_id`).
-`run_redeploy` (`deploy.rs`):
+Sem identidade provada, ou forma diferente (uma faixa ou máquina mudou), cunha
+um `deploy_id` novo - trocar de máquina ou de faixa é assunto do Deploy Studio,
+não uma versão. Quando a implantação ativa é comprovadamente a mesma, o fluxo
+chama `/api/ui/unload` em todos os peers correspondentes e consulta
+`/api/ui/node` até cada um anunciar `config: null`, estado `disabled` e nenhum
+modelo ou deployment ativo. A espera tem limite de 30 segundos por rodada; se um
+peer continuar ocupado, o job falha nomeando a máquina e seu último estado.
+Falha de unload também bloqueia a nova implantação e preserva no job o motivo
+retornado. A resposta do endpoint carrega `deploy_id` e `reused`.
+
+### `POST /api/ui/deployments/:id/redeploy` (a tela "Implantações")
+
+`RedeployRequest` carrega `params` (opcional), `version` (opcional) e
+`per_node`. `version` reimplanta uma versão já registrada, sem anexar outra;
+`params` novos reimplantam anexando - ou reativando - uma versão pela mesma
+comparação do `deploy_endpoint`. Informe um dos dois (`redeploy_endpoint`
+recusa com 400 quando faltam os dois ou a `version` não existe).
+`RedeployRequest::resolve` muta o registro para refletir a versão escolhida e
+devolve os parâmetros base; a subida usa `no.config` da versão ativa (os
+parâmetros com os ajustes por máquina embutidos), então reimplantar uma versão
+devolve a cada máquina exatamente o que ela rodava.
+
+Mesma implantação, mesmo `deploy_id`, mesmas máquinas e faixas - **não
+re-planeja** (re-planejar cunharia um `deploy_id` novo e quebraria clientes
+presos a `modelo@deploy_id`). `run_redeploy` (`deploy.rs`):
 
 1. **Fotografa** o `NodeConfig` vivo de cada nó (`model_path`, `model_label`,
    `deployment_name`, `no_embeddings`) - o registro guarda faixa, posição,
@@ -533,12 +563,19 @@ parâmetros mudam, então **não re-planeja** (re-planejar cunharia um
    modelo + faixa de camadas (`resolve_deployment_slice_file`). Um nó que não
    tem mais o arquivo por nenhum dos três devolve um erro nomeando a faixa,
    não um 500 mudo.
-4. Grava no registro só os parâmetros que cada máquina aceitou e publica.
+4. Grava no registro só os parâmetros que cada máquina aceitou, sincroniza o
+   snapshot da versão ativa (`commit_active_nodes`) e publica.
 
 O job carrega o resultado por máquina em `outputs` (`"<host>: <motivo>"`), que
 a tela de Implantações mostra abaixo da contagem. Tensor Parallelism mantém o
 caminho antigo (`reconfigure` no lugar, sem unload): a coletiva não sobrevive
-a um unload e o registro não guarda o `TpLaunch` inteiro.
+a um unload e o registro não guarda o `TpLaunch` inteiro. O `resolve` das
+versões roda antes do desvio para o caminho TP, então versão vale para os dois.
+
+Limite conhecido: a busca de forma do `deploy_endpoint` olha só o `pom.db`
+local. Um coordenador que não é participante da implantação existente não a
+encontra e cunha id novo; a tela "Implantações", que junta os registros do
+cluster, não tem esse limite.
 
 ## 8. Aplicar e servir uma fatia (`webui.rs`)
 
@@ -613,6 +650,15 @@ axum na loopback (no caso do undeploy, contando os hits em `/api/ui/unload`).
   `nvidia_memory_comes_from_vram_and_everything_else_from_ram`.
 - **Undeploy**: `any_node_may_undeploy_for_now` documenta a porta aberta de
   propósito (ver defeitos).
+- **Versões** (`models/deployment.rs`):
+  `ensure_versions_sintetiza_a_v1_de_um_registro_legado`,
+  `upsert_version_reusa_a_versao_de_params_iguais_e_anexa_quando_diferem`,
+  `set_active_version_troca_os_nos_e_recusa_versao_inexistente`,
+  `matching_shape_casa_por_identidade_e_faixas` +
+  `matching_shape_ignora_registro_sem_identidade`,
+  `versoes_sobrevivem_ao_serde`. Em `deploy.rs`:
+  `redeploy_request_resolve_escolhe_ou_cria_versao` e
+  `redeploy_de_versao_inexistente_e_recusado`.
 
 ## 11. Defeitos anotados
 

@@ -26,11 +26,17 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Versão do formato. Sobe quando o significado de um campo muda.
-pub const DEPLOYMENT_VERSION: u32 = 1;
+///
+/// v2 acrescentou `versions`/`active_version`: um deployment passou a guardar
+/// o histórico de configurações que já rodou sob o mesmo `deploy_id`. Um
+/// registro v1 (sem esses campos) é lido com `versions` vazio e
+/// [`Deployment::ensure_versions`] sintetiza a v1 a partir de `nodes`.
+pub const DEPLOYMENT_VERSION: u32 = 2;
 
 /// Prefixo do id, para que ele seja reconhecível solto num log ou numa URL.
 const ID_PREFIX: &str = "d-";
@@ -140,6 +146,26 @@ pub struct DeploymentNode {
     pub config: crate::webui::RuntimeParams,
 }
 
+/// Uma configuração que este deployment já rodou, sob o mesmo `deploy_id`.
+///
+/// O que distingue uma versão de outra são **os parâmetros do deployment
+/// inteiro** (`params`). Ajustes por máquina (`n_gpu_layers`/`offload_kqv`)
+/// entram no snapshot `nodes` mas não forkam uma versão. Reimplantar com
+/// parâmetros iguais aos de uma versão existente reativa aquela versão em vez
+/// de anexar outra.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentVersion {
+    /// Monotônico dentro do deployment, começa em 1.
+    pub version: u32,
+    pub created_at: String,
+    #[serde(default)]
+    pub created_by: String,
+    /// Os parâmetros do deployment inteiro com que esta versão subiu.
+    pub params: crate::webui::RuntimeParams,
+    /// Quem recebeu qual faixa e com que configuração efetiva, nesta versão.
+    pub nodes: Vec<DeploymentNode>,
+}
+
 /// O registro de uma implantação.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Deployment {
@@ -158,7 +184,21 @@ pub struct Deployment {
     /// a de `activated_at` mais recente, então dois nós que discordem convergem
     /// para a mesma resposta sem protocolo de consenso nenhum. Ver [`active`].
     pub activated_at: String,
+    /// A lista achatada da versão ativa - mantida em sincronia com
+    /// `versions[active_version]` por [`Deployment::sync_active_nodes`]. Todo o
+    /// runtime (redeploy, undeploy, roteamento, tela) lê daqui.
     pub nodes: Vec<DeploymentNode>,
+    /// O histórico de configurações deste `deploy_id`. Um registro v1 chega
+    /// aqui vazio e [`Deployment::ensure_versions`] sintetiza a v1.
+    #[serde(default)]
+    pub versions: Vec<DeploymentVersion>,
+    /// Qual versão está no ar. `1` quando `versions` ainda não foi sintetizado.
+    #[serde(default = "one")]
+    pub active_version: u32,
+}
+
+fn one() -> u32 {
+    1
 }
 
 impl Deployment {
@@ -170,20 +210,135 @@ impl Deployment {
         nodes: Vec<DeploymentNode>,
     ) -> Self {
         let agora = chrono::Utc::now().to_rfc3339();
+        let created_by = created_by.into();
         Self {
             deployment_version: DEPLOYMENT_VERSION,
             deploy_id,
             kind,
             model,
             created_at: agora.clone(),
-            created_by: created_by.into(),
-            activated_at: agora,
+            created_by: created_by.clone(),
+            activated_at: agora.clone(),
+            versions: vec![DeploymentVersion {
+                version: 1,
+                created_at: agora,
+                created_by,
+                params: crate::webui::RuntimeParams::default(),
+                nodes: nodes.clone(),
+            }],
+            active_version: 1,
             nodes,
         }
     }
 
+    /// Fixa os parâmetros da v1. Usado por `build_record`, que só conhece os
+    /// parâmetros depois de montar os nós.
+    pub fn with_params(mut self, params: crate::webui::RuntimeParams) -> Self {
+        if let Some(v1) = self.versions.first_mut() {
+            v1.params = params;
+        }
+        self
+    }
+
     pub fn node(&self, node_id: &str) -> Option<&DeploymentNode> {
         self.nodes.iter().find(|n| n.node_id == node_id)
+    }
+
+    /// A versão que está no ar.
+    pub fn active(&self) -> Option<&DeploymentVersion> {
+        self.versions.iter().find(|v| v.version == self.active_version)
+    }
+
+    /// Escreve `self.nodes` de volta no snapshot da versão ativa. Usado depois
+    /// que o redeploy grava, por nó, a configuração que a máquina de fato
+    /// aceitou.
+    pub fn commit_active_nodes(&mut self) {
+        let ativa = self.active_version;
+        if let Some(v) = self.versions.iter_mut().find(|v| v.version == ativa) {
+            v.nodes = self.nodes.clone();
+        }
+    }
+
+    /// Copia os nós da versão ativa para `self.nodes`, a lista que o runtime lê.
+    fn sync_active_nodes(&mut self) {
+        if let Some(nodes) = self
+            .versions
+            .iter()
+            .find(|v| v.version == self.active_version)
+            .map(|v| v.nodes.clone())
+        {
+            self.nodes = nodes;
+        }
+    }
+
+    /// Sintetiza a v1 de um registro v1 legado (ou vindo de um peer antigo),
+    /// que chega com `versions` vazio. Idempotente.
+    pub fn ensure_versions(&mut self) {
+        if !self.versions.is_empty() {
+            return;
+        }
+        self.versions.push(DeploymentVersion {
+            version: 1,
+            created_at: self.created_at.clone(),
+            created_by: self.created_by.clone(),
+            params: self
+                .nodes
+                .first()
+                .map(|n| n.config.clone())
+                .unwrap_or_default(),
+            nodes: self.nodes.clone(),
+        });
+        self.active_version = 1;
+    }
+
+    /// Torna a versão `v` a ativa, sincroniza `self.nodes` e recarimba
+    /// `activated_at`. Erro se `v` não existe.
+    pub fn set_active_version(&mut self, v: u32) -> Result<()> {
+        if !self.versions.iter().any(|ver| ver.version == v) {
+            let disponiveis: Vec<u32> = self.versions.iter().map(|ver| ver.version).collect();
+            bail!("versão {v} não existe (há {disponiveis:?})");
+        }
+        self.active_version = v;
+        self.activated_at = chrono::Utc::now().to_rfc3339();
+        self.sync_active_nodes();
+        Ok(())
+    }
+
+    /// Reimplanta com os `params` do deployment inteiro.
+    ///
+    /// Se já existe uma versão com esses `params`, reaproveita o número dela,
+    /// aplica os `nodes` novos (que carregam os ajustes por máquina) e a torna
+    /// ativa. Senão anexa `max(version) + 1`. Sempre recarimba `activated_at` e
+    /// sincroniza `self.nodes`. Devolve o número da versão ativa.
+    pub fn upsert_version(
+        &mut self,
+        params: crate::webui::RuntimeParams,
+        nodes: Vec<DeploymentNode>,
+        created_by: impl Into<String>,
+    ) -> u32 {
+        self.ensure_versions();
+        let agora = chrono::Utc::now().to_rfc3339();
+        let alvo = match self.versions.iter().position(|v| v.params == params) {
+            Some(i) => {
+                self.versions[i].nodes = nodes;
+                self.versions[i].version
+            }
+            None => {
+                let numero = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
+                self.versions.push(DeploymentVersion {
+                    version: numero,
+                    created_at: agora.clone(),
+                    created_by: created_by.into(),
+                    params,
+                    nodes,
+                });
+                numero
+            }
+        };
+        self.active_version = alvo;
+        self.activated_at = agora;
+        self.sync_active_nodes();
+        alvo
     }
 
     /// As faixas dos nós cobrem `0..total_layers` sem buraco?
@@ -236,8 +391,67 @@ impl Deployment {
                 );
             }
         }
+        if !self.versions.is_empty() {
+            let mut vistos = HashSet::new();
+            for v in &self.versions {
+                if v.version == 0 {
+                    bail!("versão 0 não é válida");
+                }
+                if !vistos.insert(v.version) {
+                    bail!("versão {} repetida", v.version);
+                }
+                for n in &v.nodes {
+                    if n.start_layer > n.end_layer {
+                        bail!(
+                            "versão {}: {} tem faixa invertida ({}-{})",
+                            v.version,
+                            n.node_id,
+                            n.start_layer,
+                            n.end_layer
+                        );
+                    }
+                }
+            }
+            if !vistos.contains(&self.active_version) {
+                bail!(
+                    "active_version {} não está entre as versões {:?}",
+                    self.active_version,
+                    vistos
+                );
+            }
+        }
         Ok(())
     }
+}
+
+/// A implantação de mesma **forma** que uma nova requisição: mesmo `kind`,
+/// mesma identidade de modelo provada e o mesmo conjunto exato de
+/// `(node_id, start_layer, end_layer, tp_rank)`. É o que decide se um novo
+/// `POST /api/ui/deploy` reaproveita um `deploy_id` (anexando uma versão) ou
+/// cunha um id novo.
+///
+/// Função pura como `active`: nada de rede, para ser testável e para os nós
+/// convergirem sem protocolo.
+pub fn matching_shape<'a>(
+    deployments: &'a [Deployment],
+    kind: DeploymentKind,
+    identity: &DeploymentIdentity,
+    ranges: &[(String, u32, u32, Option<u32>)],
+) -> Option<&'a Deployment> {
+    let mut alvo: Vec<(String, u32, u32, Option<u32>)> = ranges.to_vec();
+    alvo.sort();
+    deployments.iter().find(|d| {
+        if d.kind != kind || d.model.identity.as_ref() != Some(identity) {
+            return false;
+        }
+        let mut seu: Vec<(String, u32, u32, Option<u32>)> = d
+            .nodes
+            .iter()
+            .map(|n| (n.node_id.clone(), n.start_layer, n.end_layer, n.tp_rank))
+            .collect();
+        seu.sort();
+        seu == alvo
+    })
 }
 
 /// Qual implantação atende uma requisição que só diz o nome do modelo.
@@ -522,5 +736,141 @@ mod tests {
         let mut d = implantacao("d-4f2a91c3", "m", vec![no("n1", 0, 31, 0, 1)]);
         d.deploy_id = "nao-e-id".into();
         assert!(d.validate().is_err());
+    }
+
+    fn params_com_ctx(n_ctx: u32) -> crate::webui::RuntimeParams {
+        crate::webui::RuntimeParams {
+            n_ctx,
+            ..Default::default()
+        }
+    }
+
+    /// Um registro v1 legado chega sem `versions`; a v1 é sintetizada de `nodes`.
+    #[test]
+    fn ensure_versions_sintetiza_a_v1_de_um_registro_legado() {
+        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.versions.clear();
+        d.active_version = 7; // valor lixo de um registro antigo
+
+        d.ensure_versions();
+
+        assert_eq!(d.versions.len(), 1);
+        assert_eq!(d.versions[0].version, 1);
+        assert_eq!(d.active_version, 1);
+        assert_eq!(d.versions[0].nodes, d.nodes);
+        // Idempotente.
+        d.ensure_versions();
+        assert_eq!(d.versions.len(), 1);
+    }
+
+    #[test]
+    fn upsert_version_reusa_a_versao_de_params_iguais_e_anexa_quando_diferem() {
+        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.versions[0].params = params_com_ctx(8192);
+        d.sync_active_nodes();
+        let ativado_v1 = d.activated_at.clone();
+
+        // Mesmos params -> mesma versão, sem anexar.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let v = d.upsert_version(params_com_ctx(8192), d.nodes.clone(), "n1");
+        assert_eq!(v, 1);
+        assert_eq!(d.versions.len(), 1);
+        assert_ne!(d.activated_at, ativado_v1, "activated_at recarimbado");
+
+        // Params diferentes -> v2, ativa, nodes sincronizados.
+        let nodes_v2 = vec![no("n1", 0, 31, 0, 1)];
+        let v = d.upsert_version(params_com_ctx(16384), nodes_v2.clone(), "n1");
+        assert_eq!(v, 2);
+        assert_eq!(d.versions.len(), 2);
+        assert_eq!(d.active_version, 2);
+        assert_eq!(d.nodes, nodes_v2);
+        assert_eq!(d.active().unwrap().params.n_ctx, 16384);
+    }
+
+    #[test]
+    fn set_active_version_troca_os_nos_e_recusa_versao_inexistente() {
+        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.upsert_version(params_com_ctx(16384), vec![no("n1", 0, 15, 0, 1)], "n1");
+        assert_eq!(d.active_version, 2);
+
+        d.set_active_version(1).unwrap();
+        assert_eq!(d.active_version, 1);
+        assert_eq!(d.nodes[0].end_layer, 31);
+
+        assert!(d.set_active_version(9).is_err());
+    }
+
+    #[test]
+    fn validate_recusa_versao_repetida_e_active_orfao() {
+        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.upsert_version(params_com_ctx(16384), d.nodes.clone(), "n1");
+
+        let mut repetida = d.clone();
+        repetida.versions[1].version = 1;
+        assert!(repetida.validate().is_err());
+
+        let mut orfao = d.clone();
+        orfao.active_version = 99;
+        assert!(orfao.validate().is_err());
+    }
+
+    #[test]
+    fn matching_shape_casa_por_identidade_e_faixas() {
+        let mut d = implantacao(
+            "d-aaaaaaaa",
+            "m",
+            vec![no("n1", 0, 15, 0, 2), no("n2", 16, 31, 1, 2)],
+        );
+        d.model.identity = Some(DeploymentIdentity::PomId {
+            pom_id: "pom-1".into(),
+        });
+        let todas = vec![d];
+        let id = DeploymentIdentity::PomId {
+            pom_id: "pom-1".into(),
+        };
+
+        // Mesma forma, ordem dos alvos trocada -> casa.
+        let ranges = vec![
+            ("n2".to_string(), 16, 31, None),
+            ("n1".to_string(), 0, 15, None),
+        ];
+        assert!(matching_shape(&todas, DeploymentKind::Shards, &id, &ranges).is_some());
+
+        // Uma faixa diferente -> não casa.
+        let outras = vec![
+            ("n1".to_string(), 0, 19, None),
+            ("n2".to_string(), 20, 31, None),
+        ];
+        assert!(matching_shape(&todas, DeploymentKind::Shards, &id, &outras).is_none());
+
+        // Identidade diferente -> não casa.
+        let outra_id = DeploymentIdentity::PomId {
+            pom_id: "pom-2".into(),
+        };
+        assert!(matching_shape(&todas, DeploymentKind::Shards, &outra_id, &ranges).is_none());
+    }
+
+    /// Um registro sem `identity` (rodada anterior à prova) nunca deduplica.
+    #[test]
+    fn matching_shape_ignora_registro_sem_identidade() {
+        let d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        assert!(d.model.identity.is_none());
+        let todas = vec![d];
+        let id = DeploymentIdentity::PomId {
+            pom_id: "pom-1".into(),
+        };
+        let ranges = vec![("n1".to_string(), 0, 31, None)];
+        assert!(matching_shape(&todas, DeploymentKind::Shards, &id, &ranges).is_none());
+    }
+
+    #[test]
+    fn versoes_sobrevivem_ao_serde() {
+        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.upsert_version(params_com_ctx(16384), d.nodes.clone(), "n1");
+        let json = serde_json::to_string(&d).unwrap();
+        let lido: Deployment = serde_json::from_str(&json).unwrap();
+        assert_eq!(lido, d);
+        assert_eq!(lido.versions.len(), 2);
+        assert_eq!(lido.active_version, 2);
     }
 }

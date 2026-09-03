@@ -137,6 +137,19 @@ registro completo da implantação vive em `backend::db::PomDb`; os JSON em
 antigos sem essa prova só podem ser associados por caminho canônico no mesmo
 peer, nunca por nome.
 
+`Deployment` é versionado (`DEPLOYMENT_VERSION = 2`): `versions:
+Vec<DeploymentVersion>` guarda cada configuração que já rodou sob o mesmo
+`deploy_id` e `active_version` aponta a que está no ar; `nodes` é a lista
+achatada da versão ativa, mantida em sincronia. O que distingue uma versão é o
+`RuntimeParams` do deployment inteiro (`params`); ajustes por máquina entram no
+snapshot `nodes` mas não forkam versão. `upsert_version` reusa a versão de
+`params` iguais ou anexa `max+1`; `set_active_version` só troca a ativa;
+`ensure_versions` sintetiza a v1 de um registro v1 legado (sem `versions`), e é
+chamado em toda leitura (`PomDb`, `find_record`, listagem). `matching_shape` é a
+função pura que decide se um `POST /api/ui/deploy` reaproveita um `deploy_id`:
+mesmo `kind`, mesma `DeploymentIdentity` provada e o mesmo conjunto de
+`(node_id, faixa, tp_rank)`. Sem identidade provada, cunha id novo.
+
 A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
 de armazenamento vale somente para a pasta de fatias; pastas de modelos
 inteiros são somente leitura e nunca entram na retenção automática.

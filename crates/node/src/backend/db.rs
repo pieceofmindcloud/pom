@@ -211,8 +211,11 @@ impl PomDb {
                 .optional()?;
             payload
                 .map(|payload| {
-                    let deployment: Deployment = serde_json::from_str(&payload)
+                    let mut deployment: Deployment = serde_json::from_str(&payload)
                         .with_context(|| format!("interpretar implantação {deploy_id}"))?;
+                    // Um registro v1 chega sem `versions`; sintetiza a v1 antes
+                    // de qualquer leitor ver o registro.
+                    deployment.ensure_versions();
                     deployment
                         .validate()
                         .with_context(|| format!("validar implantação {deploy_id}"))?;
@@ -234,8 +237,9 @@ impl PomDb {
             let mut deployments = Vec::new();
             for row in rows {
                 let (deploy_id, payload) = row?;
-                let deployment: Deployment = serde_json::from_str(&payload)
+                let mut deployment: Deployment = serde_json::from_str(&payload)
                     .with_context(|| format!("interpretar implantação {deploy_id}"))?;
+                deployment.ensure_versions();
                 deployment
                     .validate()
                     .with_context(|| format!("validar implantação {deploy_id}"))?;
@@ -1368,6 +1372,61 @@ mod tests {
         assert_eq!(reopened.chat_sessions().unwrap(), vec![session]);
         assert!(reopened.delete_chat_session("conversation-1").unwrap());
         assert!(reopened.chat_sessions().unwrap().is_empty());
+        remove_database(&path);
+    }
+
+    #[test]
+    fn a_deployment_keeps_its_versions_across_save_and_reopen() {
+        use crate::deployment::{
+            Deployment, DeploymentKind, DeploymentModel, DeploymentNode,
+        };
+        let path = temporary_path("deployment-versions");
+
+        let no = DeploymentNode {
+            node_id: "n1".into(),
+            hostname: "ksia".into(),
+            start_layer: 0,
+            end_layer: 31,
+            peer_index: 0,
+            peer_count: 1,
+            primary: true,
+            part_sha256: None,
+            source_model_path: None,
+            tp_rank: None,
+            config: crate::webui::RuntimeParams::default(),
+        };
+        let mut deployment = Deployment::new(
+            "d-4f2a91c3".into(),
+            DeploymentKind::Shards,
+            DeploymentModel {
+                label: "qwen3:8b".into(),
+                total_layers: 32,
+                pom_id: None,
+                identity: None,
+            },
+            "coordenador",
+            vec![no.clone()],
+        );
+        let mut params = crate::webui::RuntimeParams::default();
+        params.n_ctx = 16_384;
+        deployment.upsert_version(params, vec![no], "coordenador");
+        assert_eq!(deployment.versions.len(), 2);
+        assert_eq!(deployment.active_version, 2);
+
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        db.save_deployment(&deployment).expect("salvar implantação");
+        drop(db);
+
+        let reopened = PomDb::open(&path).expect("reabrir banco");
+        let lido = reopened
+            .deployment("d-4f2a91c3")
+            .expect("ler implantação")
+            .expect("implantação existe");
+        assert_eq!(lido, deployment);
+        assert_eq!(lido.versions.len(), 2);
+        assert_eq!(lido.active_version, 2);
+        assert_eq!(lido.versions[1].params.n_ctx, 16_384);
+
         remove_database(&path);
     }
 

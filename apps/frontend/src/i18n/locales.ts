@@ -161,6 +161,19 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deployments.perMachine": () => "Per machine",
     "deployments.machine": () => "Machine",
     "deployments.layers": () => "Layers",
+    "deployments.redeployNewParams": () => "Re-deploy with new settings",
+    "deployments.versions": () => "Versions",
+    "deployments.versionsHint": () =>
+      "Every settings change under this deployment id, newest first.",
+    "deployments.version": ({ n }) => "v" + n,
+    "deployments.activeVersion": () => "Active",
+    "deployments.redeployVersion": () => "Re-deploy this version",
+    "deployments.versionRedeployStarted": ({ n }) =>
+      "Re-deploying v" + n,
+    "deployments.expandVersions": () => "Show versions",
+    "deployments.collapseVersions": () => "Hide versions",
+    "deployments.versionCount": ({ count }) =>
+      count === 1 ? "1 version" : count + " versions",
     "nav.transfers": () => "Transfers",
     "nav.sendFile": () => "Send a file",
     "nav.inProgress": () => "In progress",
@@ -1780,6 +1793,18 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deployments.perMachine": () => "Por máquina",
     "deployments.machine": () => "Máquina",
     "deployments.layers": () => "Camadas",
+    "deployments.redeployNewParams": () => "Reimplantar com novos parâmetros",
+    "deployments.versions": () => "Versões",
+    "deployments.versionsHint": () =>
+      "Cada mudança de parâmetros sob este id de implantação, da mais nova para a mais antiga.",
+    "deployments.version": ({ n }) => "v" + n,
+    "deployments.activeVersion": () => "Ativa",
+    "deployments.redeployVersion": () => "Reimplantar esta versão",
+    "deployments.versionRedeployStarted": ({ n }) => "Reimplantando a v" + n,
+    "deployments.expandVersions": () => "Ver versões",
+    "deployments.collapseVersions": () => "Ocultar versões",
+    "deployments.versionCount": ({ count }) =>
+      count === 1 ? "1 versão" : count + " versões",
     "nav.transfers": () => "Transferências",
     "nav.sendFile": () => "Enviar um arquivo",
     "nav.inProgress": () => "Em andamento",

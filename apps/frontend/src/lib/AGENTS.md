@@ -14,8 +14,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `api.ts` - fetch wrapper over relative paths with same-origin credentials,
   connection-key auth, administrative-token auth only for `/api/ui/**` and
   `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
-  registry actions (`listDeployments`, `redeployDeployment`,
-  `activateDeployment`), além do status autenticado do provider remoto.
+  registry actions (`listDeployments`, `redeployDeployment` - `{ params }` ou
+  `{ version }` para reimplantar uma versão registrada -, `activateDeployment`),
+  além do status autenticado do provider remoto.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.

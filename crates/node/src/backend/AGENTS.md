@@ -136,23 +136,44 @@ dual-stack.
   para bloquear uma implantação f8 incompatível. O redeploy consulta
   `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
   evitando uma implantação parcialmente misturada.
+- **Implantações são versionadas** (`Deployment`, `DEPLOYMENT_VERSION = 2`,
+  `models/deployment.rs`): `versions` guarda cada `RuntimeParams` que já rodou
+  sob o mesmo `deploy_id`, `active_version` aponta a que está no ar e `nodes` é
+  a lista achatada da versão ativa. `POST /api/ui/deploy` (`deploy_endpoint`),
+  antes de cunhar um id, procura no `pom.db` local uma implantação de mesma
+  forma (`deployment::matching_shape`: `kind` + `DeploymentIdentity` provada +
+  conjunto de `(node_id, faixa, tp_rank)`); achando, passa
+  `RecordPlan::ReuseVersion` para `run`, que chama `upsert_version` (reusa a
+  versão de `params` iguais, senão anexa `max+1`). Sem prova de identidade,
+  `RecordPlan::New` com id novo. A resposta carrega `deploy_id` e `reused`. Toda
+  leitura de registro (`PomDb`, `find_record`, `list_deployments`) roda
+  `ensure_versions` para sintetizar a v1 de um registro v1 legado.
 - `POST /api/ui/deployments/:id/redeploy` (`redeploy_endpoint` →
-  `run_redeploy`, `deploy.rs`): mesmo `deploy_id`, mesmas máquinas e faixas,
-  parâmetros novos. Fotografa o `NodeConfig` vivo de cada nó, **descarrega**
-  todo peer que anuncia o `deploy_id` (`release_one` em paralelo), e **sobe
-  uma máquina de cada vez** esperando cada uma reportar `ready`
-  (`wait_for_peer_serving_with_timeout`). Funciona mesmo se um nó não estava
-  servindo: `/api/ui/reconfigure` aceita um `ReconfigureSlice` opcional
-  (`webui.rs`) e `reconfigure_local` reconstrói o `NodeConfig` dele - em vez de
-  exigir um `NodeConfig` vivo. O arquivo é resolvido em três degraus: o
-  `model_path` fotografado antes do unload; o `part_sha256` do registro
+  `run_redeploy`, `deploy.rs`): mesmo `deploy_id`, mesmas máquinas e faixas.
+  `RedeployRequest` carrega `params` (opcional), `version` (opcional) e
+  `per_node`; informe um dos dois (400 quando faltam os dois ou `version` não
+  existe). `RedeployRequest::resolve` roda antes do desvio TP: `version`
+  reativa uma versão registrada sem anexar; `params` novos anexam - ou
+  reativam - pela mesma comparação do `deploy_endpoint`; muta o registro e
+  devolve os parâmetros base. A subida usa `no.config` da versão ativa (os
+  parâmetros com os ajustes por máquina embutidos), então reimplantar uma
+  versão devolve a cada máquina o que ela rodava. Fotografa o `NodeConfig`
+  vivo de cada nó, **descarrega** todo peer que anuncia o `deploy_id`
+  (`release_one` em paralelo), e **sobe uma máquina de cada vez** esperando
+  cada uma reportar `ready` (`wait_for_peer_serving_with_timeout`). Funciona
+  mesmo se um nó não estava servindo: `/api/ui/reconfigure` aceita um
+  `ReconfigureSlice` opcional (`webui.rs`) e `reconfigure_local` reconstrói o
+  `NodeConfig` dele. O arquivo é resolvido em três degraus: o `model_path`
+  fotografado antes do unload; o `part_sha256` do registro
   (`transfer::find_part`); e, quando o registro não tem hash de parte (modelo
   inteiro, ou fatia de rodada antiga), o catálogo local casando rótulo do
   modelo + faixa de camadas (`resolve_deployment_slice_file`). Só quando os
   três falham é erro com o nome da faixa. `DeploymentNode.source_model_path`
   (`models/deployment.rs`, `#[serde(default)]`) grava o arquivo que cada nó
-  carregou, para o redeploy achá-lo mesmo com o nó fora do ar. `job.outputs`
-  leva o resultado por máquina. Tensor Parallelism ainda usa o caminho antigo
+  carregou, para o redeploy achá-lo mesmo com o nó fora do ar. `finish_redeploy`
+  grava por máquina o que foi aceito, sincroniza o snapshot da versão ativa
+  (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
+  máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,

@@ -95,7 +95,8 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
   serviço)
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
-  reconfiguração de parâmetros e desimplantação por `deploy_id`)
+  versões por `deploy_id`, reimplantação por versão ou por parâmetros novos, e
+  desimplantação)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
   requisições paginadas por scroll infinito, estatísticas agregadas e inspetor
@@ -703,6 +704,16 @@ impressão digital é só modelo + conjunto de faixas.
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
   mostra apenas hops entre estágios consecutivos, com RTT direcional e rolagem
   interna em viewport estreito para não cortar cards nem criar overflow na página.
+- **Implantações** (`Deployments`): uma linha por `deploy_id`, "no ar" separado
+  de "padrão", ordenada pela criação. Cada linha expande e lista as versões
+  daquele `deploy_id` (o histórico de `RuntimeParams` já rodados sob o mesmo
+  id), com a versão ativa marcada. "Reimplantar esta versão" manda
+  `{ version }`; "Reimplantar com novos parâmetros" abre o formulário semeado
+  do `RuntimeParams` da versão ativa e manda `{ params }` - o backend reusa a
+  versão de parâmetros iguais ou anexa uma nova ao mesmo id. Reimplantar do
+  Deploy Studio a mesma forma (mesmo modelo provado, mesmas máquinas e faixas)
+  também cai no mesmo `deploy_id`; trocar de máquina ou de faixa cunha um id
+  novo. Ver `implantacao.md` §7.1.
 - **Transferir** (`Transfers`/`SendFile`/`Notifications`): downloads de modelos
   remotos com progresso e cancelamento, ofertas pendentes
   (aceitar/rejeitar direto no sino), transferências ativas (bytes, velocidade,

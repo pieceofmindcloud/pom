@@ -386,16 +386,21 @@ export function listDeployments() {
 }
 
 /**
- * Reimplanta mexendo só nos parâmetros.
+ * Reimplanta um `deploy_id` que já existe.
  *
  * Mesmo `deploy_id`, mesmas máquinas, mesmas faixas: as máquinas recarregam o
- * mesmo arquivo com outra configuração. Nada é planejado nem copiado, e quem
- * estiver usando `modelo@deploy_id` continua chegando no mesmo lugar.
+ * mesmo arquivo. Nada é planejado nem copiado, e quem estiver usando
+ * `modelo@deploy_id` continua chegando no mesmo lugar.
+ *
+ * `version` reimplanta uma versão já registrada (sem anexar outra). `params`
+ * reimplanta com parâmetros novos: iguais aos de uma versão existente reativam
+ * aquela versão, diferentes anexam uma versão nova. Informe um dos dois.
  */
 export function redeployDeployment(
   deployId: string,
   body: {
-    params: RuntimeParams;
+    params?: RuntimeParams;
+    version?: number;
     per_node?: Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>;
   },
 ) {

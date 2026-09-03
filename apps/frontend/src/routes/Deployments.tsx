@@ -20,7 +20,7 @@
  * planejar e o que copiar.
  */
 import { useState } from "react";
-import { Layers, RefreshCw, Star } from "lucide-react";
+import { ChevronDown, ChevronRight, Layers, RefreshCw, Star } from "lucide-react";
 import {
   activateDeployment,
   redeployDeployment,
@@ -87,7 +87,13 @@ function RedeployDialog({
   const { data: jobsData } = useJobs();
 
   const first = row.deployment.nodes[0];
-  const [params, setParams] = useState<RuntimeParams>({ ...first.config });
+  // Semeia com os parâmetros do deployment inteiro da versão ativa (não o
+  // `config` do nó 0, que já traz os ajustes por máquina embutidos).
+  const activeParams =
+    row.deployment.versions?.find(
+      (v) => v.version === row.deployment.active_version,
+    )?.params ?? first.config;
+  const [params, setParams] = useState<RuntimeParams>({ ...activeParams });
   const [perNode, setPerNode] = useState<
     Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>
   >(() =>
@@ -230,12 +236,87 @@ function RedeployDialog({
   );
 }
 
+/** Um resumo curto dos parâmetros que quase sempre mudam entre versões. */
+function versionSummary(p: RuntimeParams): string {
+  const bits = [
+    `ctx ${p.n_ctx}`,
+    `leg ${p.max_new_tokens}`,
+    `batch ${p.n_batch}`,
+    `sess ${p.max_sessions}`,
+  ];
+  if (p.hidden_state_dtype) bits.push(p.hidden_state_dtype);
+  return bits.join(" · ");
+}
+
+function VersionList({ row }: { row: DeploymentRow }) {
+  const { locale, t } = useI18n();
+  const toast = useToast();
+  const invalidate = useInvalidate();
+  const [busy, setBusy] = useState<number | null>(null);
+  const d = row.deployment;
+  const versions = [...(d.versions ?? [])].sort((a, b) => b.version - a.version);
+
+  async function redeployVersion(version: number) {
+    setBusy(version);
+    try {
+      await redeployDeployment(d.deploy_id, { version });
+      toast.success(
+        t("deployments.versionRedeployStarted", { n: version }),
+        d.model.label,
+      );
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("deployments.redeployFailed"), e);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-2 px-5 py-3">
+      <div className="text-[0.82rem] text-fg">{t("deployments.versions")}</div>
+      <p className="text-xs text-muted">{t("deployments.versionsHint")}</p>
+      <ul className="divide-y divide-line rounded-md border border-line">
+        {versions.map((v) => (
+          <li
+            key={v.version}
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm"
+          >
+            <Mono>{t("deployments.version", { n: v.version })}</Mono>
+            {v.version === d.active_version && (
+              <Badge tone="lime">{t("deployments.activeVersion")}</Badge>
+            )}
+            <span className="text-xs text-muted">
+              <time dateTime={v.created_at}>
+                {createdAtLabel(v.created_at, locale)}
+              </time>
+            </span>
+            <span className="text-xs text-faint">{versionSummary(v.params)}</span>
+            <div className="ml-auto">
+              <Button
+                variant="ghost"
+                disabled={busy !== null}
+                onClick={() => redeployVersion(v.version)}
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+              >
+                {t("deployments.redeployVersion")}
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Row({ row }: { row: DeploymentRow }) {
   const { locale, t } = useI18n();
   const toast = useToast();
   const invalidate = useInvalidate();
   const [redeploying, setRedeploying] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const d = row.deployment;
+  const versionCount = d.versions?.length ?? 1;
 
   async function activate() {
     try {
@@ -248,68 +329,107 @@ function Row({ row }: { row: DeploymentRow }) {
   }
 
   return (
-    <tr className="border-t border-line align-top">
-      <td className="whitespace-nowrap px-5 py-3">
-        <Mono>{d.deploy_id}</Mono>
-      </td>
-      <td className="px-5 py-3">{d.model.label}</td>
-      <td className="px-5 py-3">
-        <Badge tone={KIND_TONE[d.kind]}>{t("deployments.kind." + d.kind)}</Badge>
-      </td>
-      <td className="whitespace-nowrap px-5 py-3 text-muted">
-        {t("deployments.nodeCount", { count: d.nodes.length })}
-      </td>
-      <td className="whitespace-nowrap px-5 py-3 text-muted">
-        <time dateTime={d.created_at}>{createdAtLabel(d.created_at, locale)}</time>
-      </td>
-      <td className="px-5 py-3">
-        <div className="flex flex-wrap gap-1.5">
-          {row.serving ? (
-            <Badge tone="lime">{t("deployments.serving")}</Badge>
-          ) : (
-            <Badge tone="neutral">{t("deployments.idle")}</Badge>
-          )}
-          {row.is_default && <Badge tone="amber">{t("deployments.default")}</Badge>}
-        </div>
-      </td>
-      <td className="px-5 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="ghost"
-            onClick={() => setRedeploying(true)}
-            icon={<RefreshCw className="h-3.5 w-3.5" />}
+    <>
+      <tr className="border-t border-line align-top">
+        <td className="px-2 py-3 align-middle">
+          <button
+            type="button"
+            className="rounded p-1 text-muted hover:text-fg"
+            aria-label={
+              expanded
+                ? t("deployments.collapseVersions")
+                : t("deployments.expandVersions")
+            }
+            aria-expanded={expanded}
+            onClick={() => setExpanded((s) => !s)}
           >
-            {t("deployments.redeploy")}
-          </Button>
-          {!row.is_default && (
+            {expanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+          </button>
+        </td>
+        <td className="whitespace-nowrap px-5 py-3">
+          <Mono>{d.deploy_id}</Mono>
+          <div className="text-xs text-faint">
+            {t("deployments.versionCount", { count: versionCount })}
+          </div>
+        </td>
+        <td className="px-5 py-3">{d.model.label}</td>
+        <td className="px-5 py-3">
+          <Badge tone={KIND_TONE[d.kind]}>{t("deployments.kind." + d.kind)}</Badge>
+        </td>
+        <td className="whitespace-nowrap px-5 py-3 text-muted">
+          {t("deployments.nodeCount", { count: d.nodes.length })}
+        </td>
+        <td className="whitespace-nowrap px-5 py-3 text-muted">
+          <time dateTime={d.created_at}>
+            {createdAtLabel(d.created_at, locale)}
+          </time>
+        </td>
+        <td className="px-5 py-3">
+          <div className="flex flex-wrap gap-1.5">
+            {row.serving ? (
+              <Badge tone="lime">{t("deployments.serving")}</Badge>
+            ) : (
+              <Badge tone="neutral">{t("deployments.idle")}</Badge>
+            )}
+            {row.is_default && (
+              <Badge tone="amber">{t("deployments.default")}</Badge>
+            )}
+          </div>
+        </td>
+        <td className="px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="ghost"
-              onClick={activate}
-              icon={<Star className="h-3.5 w-3.5" />}
+              onClick={() => setRedeploying(true)}
+              icon={<RefreshCw className="h-3.5 w-3.5" />}
             >
-              {t("deployments.makeDefault")}
+              {t("deployments.redeployNewParams")}
             </Button>
-          )}
-          {row.serving && (
-            <UndeployPipeline
-              group={d.model.label}
-              deployId={d.deploy_id}
-              targets={d.nodes.map((n) => ({
-                node_id: n.node_id,
-                hostname: n.hostname,
-                start_layer: n.start_layer,
-                end_layer: n.end_layer,
-              }))}
-            />
-          )}
-          {/* O `Modal` se muda para o `body` por portal, então ficar aqui
-              dentro é só onde ele nasce — não afeta o layout da tabela. */}
-          {redeploying && (
-            <RedeployDialog row={row} open onClose={() => setRedeploying(false)} />
-          )}
-        </div>
-      </td>
-    </tr>
+            {!row.is_default && (
+              <Button
+                variant="ghost"
+                onClick={activate}
+                icon={<Star className="h-3.5 w-3.5" />}
+              >
+                {t("deployments.makeDefault")}
+              </Button>
+            )}
+            {row.serving && (
+              <UndeployPipeline
+                group={d.model.label}
+                deployId={d.deploy_id}
+                targets={d.nodes.map((n) => ({
+                  node_id: n.node_id,
+                  hostname: n.hostname,
+                  start_layer: n.start_layer,
+                  end_layer: n.end_layer,
+                }))}
+              />
+            )}
+            {/* O `Modal` se muda para o `body` por portal, então ficar aqui
+                dentro é só onde ele nasce — não afeta o layout da tabela. */}
+            {redeploying && (
+              <RedeployDialog
+                row={row}
+                open
+                onClose={() => setRedeploying(false)}
+              />
+            )}
+          </div>
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-t border-line bg-raised/40">
+          <td colSpan={8} className="p-0">
+            <VersionList row={row} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -352,6 +472,7 @@ export function Deployments() {
             <table className="w-full min-w-[72rem] text-sm">
               <thead>
                 <tr className="text-left text-xs text-faint">
+                  <th className="px-2 py-2" aria-hidden />
                   <th className="px-5 py-2">{t("deployments.id")}</th>
                   <th className="px-5 py-2">{t("deployments.model")}</th>
                   <th className="px-5 py-2">{t("deployments.kindLabel")}</th>

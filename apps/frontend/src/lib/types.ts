@@ -440,11 +440,30 @@ export interface DeploymentNode {
 }
 
 /**
+ * `src/models/deployment.rs` — uma configuração que este `deploy_id` já rodou.
+ *
+ * O que distingue uma versão da outra são os parâmetros do deployment inteiro
+ * (`params`). Ajustes por máquina entram no snapshot `nodes` mas não forkam
+ * uma versão.
+ */
+export interface DeploymentVersion {
+  version: number;
+  created_at: string;
+  created_by: string;
+  params: RuntimeParams;
+  nodes: DeploymentNode[];
+}
+
+/**
  * `src/models/deployment.rs` — a ligação entre um conjunto de nós e um modelo.
  *
  * O mesmo modelo pode estar no ar em mais de uma implantação, com máquinas ou
  * configuração diferentes; o `deploy_id` é o que as distingue. Uma requisição
  * escolhe uma pelo sufixo `<modelo>@<deploy_id>`.
+ *
+ * `versions` é o histórico de configurações do mesmo `deploy_id`;
+ * `active_version` aponta a que está no ar. `nodes` é a lista achatada da
+ * versão ativa.
  */
 export interface Deployment {
   deployment_version: number;
@@ -459,6 +478,8 @@ export interface Deployment {
   created_by: string;
   activated_at: string;
   nodes: DeploymentNode[];
+  versions: DeploymentVersion[];
+  active_version: number;
 }
 
 /** O que `GET /api/ui/deployments` responde. */

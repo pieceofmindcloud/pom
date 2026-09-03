@@ -87,6 +87,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   mas os tokens retornam ao gateway em lotes oportunistas limitados, sem
   temporizador e com contrapressão.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
+  inicializa o backend para que o sysmon possa consultar descricoes de
+  dispositivos, decode, hidden state com
   residual capture, sampling, parada por EOS ou fim de turno do template GGUF,
   renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`

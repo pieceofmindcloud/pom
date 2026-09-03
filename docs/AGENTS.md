@@ -116,6 +116,8 @@ Ex.: `2026-08-13-rota-dinamica-e-implantacao-incremental.md` implementa a spec
 acima em duas fases (A: rota dinamica em `crates/node/src/network/route.rs` e
 `addrs.rs`; B: endpoints incrementais em `backend/deploy.rs`), cada task com
 commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
+O plano `2026-09-02-nome-comercial-gpu.md` cobre a resolucao de nomes de GPU
+pela descricao do backend, pela base do sistema e pelo identificador PCI.
 
 ## Convencao de nomes - e a excecao
 

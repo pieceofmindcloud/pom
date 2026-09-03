@@ -18,7 +18,10 @@
 //!   zero e a tela mostra isso como "não se aplica".
 
 use serde::Serialize;
+use std::ffi::CStr;
 use std::path::Path;
+use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -471,13 +474,17 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
     // próprio `vendor`.
     // Só o ramo Linux abaixo estende a lista, então fora dele o `mut` sobra -
     // e tirá-lo por `cfg` partiria a linha em duas versões do mesmo código.
+    #[cfg(target_os = "linux")]
+    let pci_ids = read_pci_ids().await;
+
+    let backend_gpus = backend_gpu_devices();
     let (mut gpus, procs) = nvidia_smi().await.unwrap_or_default();
 
     #[cfg(target_os = "linux")]
     {
         // Índices continuam a contagem da NVIDIA para não haver dois `index: 0`
         // - a interface usa esse número para falar de uma placa específica.
-        gpus.extend(amd_sysfs(gpus.len() as u32).await);
+        gpus.extend(amd_sysfs(gpus.len() as u32, &backend_gpus, pci_ids.as_deref()).await);
     }
 
     // O nó só reporta as placas que pode usar. Os índices originais são
@@ -512,7 +519,7 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
     #[cfg(target_os = "macos")]
     {
         if std::env::consts::ARCH == "aarch64" {
-            let name = mac_gpu_name()
+            let name = mac_gpu_name(&backend_gpus)
                 .await
                 .unwrap_or_else(|| "Apple Silicon GPU".to_string());
             return (
@@ -608,8 +615,7 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
     let out = command_output(
         "nvidia-smi",
         vec![
-            "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu"
-                .into(),
+            "--query-gpu=index,name,pci.bus_id,memory.total,memory.used,utilization.gpu,temperature.gpu".into(),
             "--format=csv,noheader,nounits".into(),
         ],
     )
@@ -621,14 +627,15 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
     let mut gpus = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let f: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-        if f.len() < 6 {
+        if f.len() < 7 {
             continue;
         }
-        let total: f64 = f[2].parse().unwrap_or(0.0);
-        let used: f64 = f[3].parse().unwrap_or(0.0);
+        let total: f64 = f[3].parse().unwrap_or(0.0);
+        let used: f64 = f[4].parse().unwrap_or(0.0);
+        let fallback = format!("NVIDIA GPU ({})", f[2]);
         gpus.push(GpuStat {
             index: f[0].parse().unwrap_or(0),
-            name: f[1].to_string(),
+            name: resolve_gpu_name(Some(f[1]), None, fallback),
             vendor: GpuVendor::Nvidia,
             vram_total_mb: Some(total),
             vram_used_mb: Some(used),
@@ -637,8 +644,8 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
             } else {
                 None
             },
-            utilization_pct: f[4].parse().ok(),
-            temperature_c: f[5].parse().ok(),
+            utilization_pct: f[5].parse().ok(),
+            temperature_c: f[6].parse().ok(),
         });
     }
 
@@ -679,7 +686,11 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
 /// O driver proprietário da NVIDIA não usa este sysfs, então o filtro por
 /// `vendor == 0x1002` nunca confunde as duas placas de uma máquina mista.
 #[cfg(target_os = "linux")]
-async fn amd_sysfs(first_index: u32) -> Vec<GpuStat> {
+async fn amd_sysfs(
+    first_index: u32,
+    backend_gpus: &[BackendGpu],
+    pci_ids: Option<&str>,
+) -> Vec<GpuStat> {
     /// Vendor PCI da AMD/ATI.
     const AMD: &str = "0x1002";
 
@@ -723,16 +734,33 @@ async fn amd_sysfs(first_index: u32) -> Vec<GpuStat> {
         let total = mb(read(dev.join("mem_info_vram_total")).await);
         let used = mb(read(dev.join("mem_info_vram_used")).await);
 
+        let device_id = read(dev.join("device")).await;
+        let pci_bus_id = read(dev.join("uevent"))
+            .await
+            .and_then(|uevent| uevent_value(&uevent, "PCI_SLOT_NAME"));
+        let fallback = format!(
+            "AMD Radeon ({})",
+            device_id.as_deref().unwrap_or("unknown PCI device")
+        );
+        let pci_name = pci_ids.and_then(|ids| {
+            pci_device_name(
+                ids,
+                AMD.trim_start_matches("0x"),
+                device_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim_start_matches("0x"),
+            )
+        });
+
         out.push(GpuStat {
             index: first_index + out.len() as u32,
             vendor: GpuVendor::Amd,
-            // O sysfs não traz nome comercial: `product_name` só existe nas
-            // placas de datacenter. O id PCI é o que sempre está lá, e é o que
-            // identifica o modelo sem inventar tabela de nomes.
-            name: match read(dev.join("device")).await {
-                Some(id) => format!("AMD Radeon ({id})"),
-                None => "AMD Radeon".to_string(),
-            },
+            name: resolve_gpu_name(
+                backend_gpu_name(backend_gpus, "Vulkan", pci_bus_id.as_deref()),
+                pci_name.as_deref(),
+                fallback,
+            ),
             vram_total_mb: total,
             vram_used_mb: used,
             vram_used_pct: match (total, used) {
@@ -766,18 +794,133 @@ async fn amd_temperature(device: &std::path::Path) -> Option<f64> {
 }
 
 #[cfg(target_os = "macos")]
-async fn mac_gpu_name() -> Option<String> {
-    let out = command_output(
-        "sysctl",
-        vec!["-n".into(), "machdep.cpu.brand_string".into()],
-    )
-    .await?;
-    let cpu = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if cpu.is_empty() {
-        None
-    } else {
-        Some(format!("{cpu} (GPU integrada)"))
+async fn mac_gpu_name(backend_gpus: &[BackendGpu]) -> Option<String> {
+    if let Some(name) = backend_gpu_name(backend_gpus, "Metal", None) {
+        return Some(name.to_string());
     }
+
+    let out = command_output("system_profiler", vec!["SPDisplaysDataType".into()]).await?;
+    system_profiler_gpu_name(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct BackendGpu {
+    backend: String,
+    description: String,
+    device_id: Option<String>,
+}
+
+fn backend_gpu_devices() -> Vec<BackendGpu> {
+    if !BACKEND_INITIALIZED.load(Ordering::Acquire) {
+        return Vec::new();
+    }
+
+    unsafe {
+        let mut raw = ptr::null_mut();
+        let status = llama_cpp_sys_2::llama_rs_backend_devices_json(&mut raw);
+        if status != llama_cpp_sys_2::LLAMA_RS_STATUS_OK || raw.is_null() {
+            return Vec::new();
+        }
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        llama_cpp_sys_2::llama_rs_string_free(raw);
+        serde_json::from_str(&text).unwrap_or_default()
+    }
+}
+
+static BACKEND_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn mark_backend_initialized() {
+    BACKEND_INITIALIZED.store(true, Ordering::Release);
+}
+
+fn backend_gpu_name<'a>(
+    entries: &'a [BackendGpu],
+    backend: &str,
+    device_id: Option<&str>,
+) -> Option<&'a str> {
+    entries
+        .iter()
+        .filter(|entry| entry.backend.eq_ignore_ascii_case(backend))
+        .find(|entry| {
+            let same_device = match device_id {
+                Some(id) => entry
+                    .device_id
+                    .as_deref()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(id)),
+                None => true,
+            };
+            same_device && !entry.description.trim().is_empty()
+        })
+        .map(|entry| entry.description.trim())
+}
+
+fn resolve_gpu_name(primary: Option<&str>, secondary: Option<&str>, fallback: String) -> String {
+    primary
+        .into_iter()
+        .chain(secondary)
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if fallback.trim().is_empty() {
+                "GPU desconhecida".to_string()
+            } else {
+                fallback
+            }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn uevent_value(uevent: &str, key: &str) -> Option<String> {
+    uevent.lines().find_map(|line| {
+        let (candidate, value) = line.split_once('=')?;
+        (candidate == key).then(|| value.trim().to_string())
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn read_pci_ids() -> Option<String> {
+    for path in ["/usr/share/misc/pci.ids", "/usr/share/hwdata/pci.ids"] {
+        if let Ok(ids) = tokio::fs::read_to_string(path).await {
+            return Some(ids);
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn pci_device_name(contents: &str, vendor: &str, device: &str) -> Option<String> {
+    let vendor = vendor.trim_start_matches("0x");
+    let device = device.trim_start_matches("0x");
+    let mut in_vendor = false;
+    for line in contents.lines() {
+        if !line.starts_with('\t') {
+            in_vendor = line.split_whitespace().next() == Some(vendor);
+            continue;
+        }
+        if in_vendor && !line.starts_with("\t\t") {
+            let mut fields = line.trim_start_matches('\t').splitn(2, char::is_whitespace);
+            if fields
+                .next()
+                .is_some_and(|id| id.eq_ignore_ascii_case(device))
+            {
+                let name = fields.next()?.trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn system_profiler_gpu_name(contents: &str) -> Option<String> {
+    contents
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(key, _)| key.trim() == "Chipset Model")
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|name| !name.is_empty())
 }
 
 // ── Misc host facts ──────────────────────────────────────────────────────────
@@ -1100,5 +1243,82 @@ mod gpu_selection_tests {
         apply_gpu_selection(Some(&[]), &ambas());
         assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "");
         assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
+    }
+
+    #[test]
+    fn descricao_do_backend_tem_precedencia_sobre_pci_ids() {
+        assert_eq!(
+            resolve_gpu_name(
+                Some("AMD Radeon RX 7800 XT (RADV NAVI32)"),
+                Some("Navi 32 [Radeon RX 7700 XT / 7800 XT]"),
+                "AMD Radeon (0x747e)".to_string(),
+            ),
+            "AMD Radeon RX 7800 XT (RADV NAVI32)"
+        );
+    }
+
+    #[test]
+    fn pci_ids_eh_usado_quando_o_backend_nao_responde() {
+        assert_eq!(
+            resolve_gpu_name(
+                None,
+                Some("Navi 32 [Radeon RX 7700 XT / 7800 XT]"),
+                "AMD Radeon (0x747e)".to_string(),
+            ),
+            "Navi 32 [Radeon RX 7700 XT / 7800 XT]"
+        );
+    }
+
+    #[test]
+    fn fallback_por_identificador_nunca_remove_a_placa() {
+        assert_eq!(
+            resolve_gpu_name(None, None, "AMD Radeon (0x747e)".to_string()),
+            "AMD Radeon (0x747e)"
+        );
+    }
+
+    #[test]
+    fn pci_ids_resolve_o_nome_certo_para_cada_placa() {
+        let entries = vec![
+            BackendGpu {
+                backend: "Vulkan".to_string(),
+                description: "Radeon A".to_string(),
+                device_id: Some("0000:03:00.0".to_string()),
+            },
+            BackendGpu {
+                backend: "Vulkan".to_string(),
+                description: "Radeon B".to_string(),
+                device_id: Some("0000:0b:00.0".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            backend_gpu_name(&entries, "Vulkan", Some("0000:03:00.0")),
+            Some("Radeon A")
+        );
+        assert_eq!(
+            backend_gpu_name(&entries, "Vulkan", Some("0000:0b:00.0")),
+            Some("Radeon B")
+        );
+    }
+
+    #[test]
+    fn pci_ids_parser_le_nome_do_dispositivo_sem_tabela_do_produto() {
+        let pci_ids =
+            "1002  Advanced Micro Devices, Inc.\n\t747e  Navi 32 [Radeon RX 7700 XT / 7800 XT]\n";
+        assert_eq!(
+            pci_device_name(pci_ids, "1002", "747e"),
+            Some("Navi 32 [Radeon RX 7700 XT / 7800 XT]".to_string())
+        );
+    }
+
+    #[test]
+    fn system_profiler_le_o_nome_da_gpu_e_nao_o_nome_da_cpu() {
+        assert_eq!(
+            system_profiler_gpu_name(
+                "Graphics/Displays:\n\n    Apple M4:\n      Chipset Model: Apple M4\n"
+            ),
+            Some("Apple M4".to_string())
+        );
     }
 }

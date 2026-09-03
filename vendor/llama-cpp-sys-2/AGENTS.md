@@ -67,6 +67,7 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 | `llama_rs_get_devices` | os handles elegíveis na mesma ordem padrão que o llama.cpp usaria |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
 | `llama_rs_benchmark_device` | uma pontuação de um grafo GGML genérico, com cache por handle no processo; zero significa velocidade indeterminável |
+| `llama_rs_backend_devices_json` | descricao e `device_id` PCI dos dispositivos registrados pelos backends Vulkan, Metal, CUDA e CPU |
 
 `llama_rs_benchmark_device` usa somente a interface pública de backend do GGML
 para executar uma multiplicação matriz-vetor pequena. O POM chama a medição no

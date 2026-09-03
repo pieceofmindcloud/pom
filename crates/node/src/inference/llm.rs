@@ -2228,6 +2228,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Resul
     // The call is idempotent and mirrors `LoadedModel::load`, which also keeps
     // the initialization close to every possible model-loading entry point.
     unsafe { sys::llama_backend_init() };
+    crate::sysmon::mark_backend_initialized();
     let n_devices = unsafe { sys::llama_max_devices() }.max(1);
     let n_overrides = unsafe { sys::llama_max_tensor_buft_overrides() }.max(1);
 
@@ -2868,6 +2869,7 @@ impl LoadedModel {
         log_moe_route_diagnostics_configuration();
         // llama_backend_init is idempotent; call it on every load.
         unsafe { sys::llama_backend_init() };
+        crate::sysmon::mark_backend_initialized();
 
         let path = CString::new(model_path)
             .with_context(|| format!("invalid model path: {model_path}"))?;

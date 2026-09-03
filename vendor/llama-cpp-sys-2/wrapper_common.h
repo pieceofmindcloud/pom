@@ -114,6 +114,11 @@ llama_rs_status llama_rs_context_flash_attn(
     bool * out_enabled,
     bool * out_auto);
 
+// Lista os dispositivos registrados pelos backends do ggml, incluindo a
+// descricao comercial e o identificador PCI quando o backend os conhece.
+// O chamador e dono da string e a libera com `llama_rs_string_free`.
+llama_rs_status llama_rs_backend_devices_json(char ** out_json);
+
 // CPU reference for the differential MoE proof. It uses the tensors loaded by
 // llama.cpp itself and returns the intermediate expert vectors in execution
 // order: gate, up, activation, down. The caller owns all output buffers.

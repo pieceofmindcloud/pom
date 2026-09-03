@@ -48,6 +48,12 @@ cargo test               # testes do nó
   `cudaGraphLaunch` mesmo depois do warmup. Para habilitar esse recurso,
   somente quando houver VRAM livre comprovada, use
   `POM_CUDA_GRAPHS=1 cargo build --release --features cuda`.
+- O sysmon consulta a descrição dos dispositivos no próprio registro de
+  backends do ggml depois que ele é inicializado. A ponte comum
+  `llama_rs_backend_devices_json`, em `vendor/llama-cpp-sys-2`, inclui também o
+  `device_id` PCI para que a descrição Vulkan seja casada com a placa correta.
+  Linux ainda usa `/usr/share/misc/pci.ids` ou `/usr/share/hwdata/pci.ids` como
+  fallback; macOS usa a descrição Metal e depois `system_profiler`.
 - O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
   instala `hf`, Python ou outro runtime externo.
 - O `build.rs` lê o checkout local de `llama.cpp` em modo somente leitura para

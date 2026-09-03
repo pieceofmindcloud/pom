@@ -100,6 +100,17 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   allow)` nela. Tirá-la por `cfg` seria pior: `gpu_kind` é campo serializado, e
   `deploy::free_memory_mb` lê o de **outras** máquinas para decidir se a fatia
   cabe.
+  o nome segue uma política comum: descrição do backend correspondente,
+  `pci.ids` no Linux e identificador da placa como último recurso. O wrapper
+  `llama_rs_backend_devices_json` expõe a descrição e o `device_id` do ggml;
+  o `device_id` PCI é usado para associar a descrição Vulkan à Radeon certa em
+  máquinas com várias placas. Apple Silicon reporta `GpuKind::Unified` com a
+  nota honesta (sem VRAM dedicada para medir) em vez de inventar número, usando
+  a descrição Metal e depois `system_profiler` para o nome. Essa variante só é
+  construída no macOS, e fora dele o `dead_code` acusava - daí o
+  `cfg_attr(not(macos), allow)` nela. Tirá-la por `cfg` seria pior:
+  `gpu_kind` é campo serializado, e `deploy::free_memory_mb` lê o de
+  **outras** máquinas para decidir se a fatia cabe.
 - `sample_disk` - `df -m` no project root (não no cwd); Windows
   `GetDiskFreeSpaceExW`. `sample_disk_at` recebe o destino configurado e mede
   o volume que contém esse caminho, inclusive quando a pasta ainda não existe.

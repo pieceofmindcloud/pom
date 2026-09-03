@@ -511,6 +511,37 @@ static nlohmann::ordered_json llama_rs_context_memory_value(
     return {{"buffers", buffers}};
 }
 
+extern "C" llama_rs_status llama_rs_backend_devices_json(char ** out_json) {
+    if (!out_json) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+    *out_json = nullptr;
+
+    try {
+        auto devices = nlohmann::ordered_json::array();
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (!dev) {
+                continue;
+            }
+
+            ggml_backend_dev_props props = {};
+            ggml_backend_dev_get_props(dev, &props);
+            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+            devices.push_back({
+                {"backend", reg ? ggml_backend_reg_name(reg) : ""},
+                {"description", props.description ? props.description : ""},
+                {"device_id", props.device_id ? props.device_id : nullptr},
+            });
+        }
+
+        *out_json = llama_rs_dup_string(devices.dump());
+        return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
 extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json) {
     if (!ctx || !out_json) {
         return LLAMA_RS_STATUS_INVALID_ARGUMENT;

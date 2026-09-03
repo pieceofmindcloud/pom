@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mold \
     nodejs \
     npm \
+    libshaderc-dev \
+    libvulkan-dev \
+    glslc \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CARGO_HOME=/root/.cargo \
@@ -65,7 +68,7 @@ ARG LLAMA_CPP_COMMIT="unknown"
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_COMMIT} \
-    cargo build --release --features cuda && \
+    cargo build --release --features cuda,vulkan && \
     cp target/release/pom /build/pom
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
@@ -76,6 +79,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libstdc++6 \
     libgomp1 \
+    libvulkan1 \
     nvidia-utils-595 \
     && rm -rf /var/lib/apt/lists/*
 

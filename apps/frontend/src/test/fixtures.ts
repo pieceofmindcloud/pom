@@ -89,6 +89,7 @@ export function fakePeer(over: Partial<PeerView> & Pick<PeerView, "node_id">): P
     is_self: false,
     node: null,
     unreachable: null,
+    rediscovering: false,
     ...over,
   };
 }

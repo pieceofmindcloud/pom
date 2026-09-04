@@ -96,6 +96,14 @@ dual-stack.
   matching `If-None-Match` returns 304 without a body, and the cluster keeps
   a 2s fingerprinted snapshot cache that bypasses its TTL on known state
   changes.
+  A leitura de cada peer no `/api/ui/cluster` percorre `gateway_candidates()`,
+  não um endereço só, e alimenta a memória de falha do `RouteTable`
+  (`mark_failure`/`mark_success`) - a mesma do caminho de inferência. Sem
+  candidato utilizável ela chama `Network::request_peer_addresses` e devolve
+  `rediscovering: true` em vez de `unreachable`, e `model_inventory[]` nomeia em
+  `unreadable_nodes` os pares de quem a cobertura depende sem conseguir ler.
+  Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/rede-p2p.md`,
+  "Endereço que deixou de responder".
   `plan` reads the GGUF header from the node that owns `model_path` and, when
   calculating budget-driven ranges, includes the configured context, sessions
   and K/V cache types in the byte arithmetic. The response exposes weight,

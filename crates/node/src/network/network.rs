@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
@@ -36,6 +37,23 @@ pub const DISCOVERY_SWEEP_TICKS: u64 = 6;
 /// amplificação: a resposta a um `PeerRequest` são `Announce` e `PeerList`, e
 /// nenhuma das duas provoca outro `PeerRequest`.
 pub const SWEEP_FANOUT: usize = 3;
+
+/// De quanto em quanto tempo, no máximo, se repergunta o endereço de um peer
+/// ilegível.
+///
+/// O `Announce` sai a cada `GOSSIP_INTERVAL_SECS`, então uma janela de 30 s dá
+/// tempo de a resposta chegar e ainda mantém o Painel, que relê o cluster em
+/// ciclo curto, longe de virar gerador de tráfego UDP.
+pub const REDISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Até quando a tela pode dizer "reencontrando".
+///
+/// Três perguntas à rede sem resposta não são mais trabalho em curso: são um
+/// peer que anuncia por UDP e não atende no HTTP. Chamar isso de "reencontrando"
+/// para sempre seria a mesma desonestidade do aviso permanente que este trabalho
+/// veio remover, só com outra palavra - a partir daqui a tela volta a dizer que
+/// não consegue ler o par, e diz por quê.
+pub const REDISCOVERY_GIVE_UP: Duration = Duration::from_secs(90);
 
 /// Identidade de um nó num grupo de tensor parallelism (caminho C).
 ///
@@ -480,42 +498,50 @@ impl PeerInfo {
     }
 
     /// Base URL of this peer's HTTP API / web UI.
+    ///
+    /// É o **primeiro** candidato, não o único. Quem tem como tentar mais de
+    /// um endereço deve chamar `gateway_candidates()` e consultar a memória de
+    /// falha (`RouteTable::usable`): um endereço que deixou de responder não
+    /// pode ser o fim da linha do plano de controle só porque é o preferido.
     pub fn gateway_url(&self) -> Option<String> {
-        self.gateway_port.map(|port| {
-            format!(
-                "{}://{}:{}",
-                crate::peer_client::peer_scheme(),
-                ip_host(&self.addr),
-                port
-            )
-        })
+        self.gateway_candidates().into_iter().next()
     }
 
-    /// URLs do gateway, uma por endereço anunciado, para sondas de RTT.
+    /// URLs do gateway, uma por endereço conhecido, em ordem de preferência.
     ///
-    /// A tabela de rotas continua guardando URLs de inferência, mas o health
-    /// do gateway é um alvo mais confiável: ele existe mesmo quando o modelo
-    /// ainda não subiu e a porta de inferência fica restrita à rede local.
+    /// `addr` vem primeiro porque é **fato conhecido**: é o endereço de onde os
+    /// pacotes deste peer chegaram, ou o que ele anunciou de si. Os demais
+    /// candidatos vêm depois, na ordem em que o peer os anunciou. É a mesma
+    /// disciplina de `pipeline::resolve_step_url` - palpite não passa na frente
+    /// de fato conhecido, porque `merge_observed` acrescenta o observado ao
+    /// **fim** da lista e o primeiro candidato costuma ser a LAN do peer.
+    ///
+    /// Ter mais de uma entrada aqui é o que separa esta lista do que ela era:
+    /// enquanto `gateway_url()` era só `addr`, um endereço que morria deixava o
+    /// Painel, o `deploy` e a transferência sem para onde cair, mesmo com um
+    /// endereço vivo já anunciado em `addr_candidates`.
     pub fn gateway_candidates(&self) -> Vec<String> {
         let Some(porta) = self.gateway_port else {
             return Vec::new();
         };
-        let base: Vec<&String> = if self.addr_candidates.is_empty() {
-            vec![&self.addr]
-        } else {
-            self.addr_candidates.iter().collect()
-        };
-        base.iter()
-            .filter(|a| is_valid_destination(a))
-            .map(|a| {
-                format!(
-                    "{}://{}:{}",
-                    crate::peer_client::peer_scheme(),
-                    ip_host(a),
-                    porta
-                )
-            })
-            .collect()
+        let mut base: Vec<&str> = vec![self.addr.as_str()];
+        base.extend(self.addr_candidates.iter().map(String::as_str));
+        let mut urls: Vec<String> = Vec::with_capacity(base.len());
+        for a in base {
+            if !is_valid_destination(a) {
+                continue;
+            }
+            let url = format!(
+                "{}://{}:{}",
+                crate::peer_client::peer_scheme(),
+                ip_host(a),
+                porta
+            );
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
     }
 }
 
@@ -634,6 +660,19 @@ pub struct Network {
     /// node with nothing to offer remote peers but a private LAN IP from
     /// local-interface enumeration. See `set_observed_addr`.
     observed_addr: std::sync::RwLock<Option<String>>,
+    /// Peers cujo endereço este nó está a reencontrar. Ver
+    /// `request_peer_addresses`.
+    rediscovery: std::sync::RwLock<HashMap<String, Rediscovery>>,
+}
+
+/// Uma busca em curso pelo endereço atual de um peer.
+struct Rediscovery {
+    /// Quando a busca começou. É o que decide até quando a tela pode dizer
+    /// "reencontrando" (`REDISCOVERY_GIVE_UP`).
+    desde: Instant,
+    /// Quando a última pergunta saiu, para não repetir antes de
+    /// `REDISCOVERY_INTERVAL`.
+    ultima_pergunta: Instant,
 }
 
 /// Os primeiros 12 bytes de um id, para o log, **sem cortar no meio de um
@@ -838,6 +877,7 @@ impl Network {
             cluster_logs_probe: std::sync::RwLock::new(None),
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
             observed_addr: std::sync::RwLock::new(None),
+            rediscovery: std::sync::RwLock::new(HashMap::new()),
         })
     }
 
@@ -1424,6 +1464,131 @@ impl Network {
         Ok(targets.len())
     }
 
+    /// Repergunta o endereço atual de um peer que ficou ilegível.
+    ///
+    /// Chamado quando **todo** endereço conhecido de um peer está
+    /// desacreditado. Insistir num endereço morto não o ressuscita; o que
+    /// ressuscita o peer é a rede voltar a dizer onde ele está. Duas frentes,
+    /// porque nenhuma sozinha basta:
+    ///
+    /// 1. `PeerRequest` para os bootstrap nodes e para os outros peers vivos -
+    ///    quem responde manda o próprio `Announce` **e** o `PeerList`, e é dali
+    ///    que sai o endereço que o peer perdido anuncia hoje;
+    /// 2. os candidatos desacreditados saem da entrada local, para que o
+    ///    próximo `Announce` do peer a repovoe do zero em vez de somar-se ao
+    ///    cadáver - `merge_observed` só acrescenta.
+    ///
+    /// Não há broadcast na LAN aqui, de propósito: o peer continua vivo (é ele
+    /// que está em `alive_peers`) e o `Announce` dele chega a cada
+    /// `GOSSIP_INTERVAL_SECS` de qualquer modo. O broadcast não traria nada que
+    /// esse `Announce` não traga, e transmitir na LAN a partir de um handler de
+    /// leitura quebraria a regra de que a suíte de rotas nunca fala UDP de
+    /// verdade.
+    ///
+    /// Limitado a uma vez por `REDISCOVERY_INTERVAL` por peer: o Painel relê o
+    /// cluster em ciclo curto, e sem freio isto viraria uma tempestade de UDP
+    /// por atualização de tela. Devolve `true` quando a busca saiu de fato.
+    pub async fn request_peer_addresses(&self, node_id: &str) -> bool {
+        if self.is_detached() {
+            return false;
+        }
+        {
+            let Ok(mut pedidos) = self.rediscovery.write() else {
+                return false;
+            };
+            let agora = Instant::now();
+            match pedidos.get_mut(node_id) {
+                Some(busca) => {
+                    if busca.ultima_pergunta.elapsed() < REDISCOVERY_INTERVAL {
+                        return false;
+                    }
+                    busca.ultima_pergunta = agora;
+                }
+                None => {
+                    pedidos.insert(
+                        node_id.to_string(),
+                        Rediscovery {
+                            desde: agora,
+                            ultima_pergunta: agora,
+                        },
+                    );
+                }
+            }
+        }
+
+        // O cadáver sai da entrada local. Sem isto o `Announce` seguinte cai no
+        // `merge_observed`, que só acrescenta, e o endereço morto seguiria na
+        // frente da fila para sempre.
+        {
+            let mut peers = self.peers.write().await;
+            if let Some(peer) = peers.get_mut(node_id) {
+                peer.addr_candidates
+                    .retain(|addr| !self.routes.host_is_discredited(node_id, addr));
+            }
+        }
+
+        info!(
+            "🔎 Reencontrando {}: nenhum endereço conhecido responde",
+            short(node_id)
+        );
+
+        let pergunta = P2PMessage::PeerRequest {
+            from: self.node_id.clone(),
+        };
+        for bootstrap in &self.bootstrap_nodes {
+            let _ = self.send_to(&pergunta, bootstrap).await;
+        }
+        let vizinhos: Vec<String> = {
+            let peers = self.peers.read().await;
+            peers
+                .values()
+                .filter(|p| p.node_id != node_id && p.is_alive())
+                .filter_map(|p| p.dialable_addr().map(str::to_string))
+                .collect()
+        };
+        for vizinho in &vizinhos {
+            let _ = self.send_to(&pergunta, vizinho).await;
+        }
+        true
+    }
+
+    /// Se este nó está agora reencontrando o peer: já pediu o endereço atual e
+    /// ainda está dentro da janela em que faz sentido esperar a resposta.
+    ///
+    /// É o que separa "não dá para ler" de "estou reencontrando". A tela
+    /// precisa da diferença: a primeira é um beco sem saída, a segunda é
+    /// trabalho em curso - e depois de `REDISCOVERY_GIVE_UP` volta a ser a
+    /// primeira, porque chamar de trabalho em curso o que já não anda seria o
+    /// mesmo aviso desonesto com outra palavra.
+    pub fn is_rediscovering(&self, node_id: &str) -> bool {
+        self.rediscovery
+            .read()
+            .ok()
+            .and_then(|pedidos| pedidos.get(node_id).map(|busca| busca.desde))
+            .is_some_and(|desde| desde.elapsed() < REDISCOVERY_GIVE_UP)
+    }
+
+    /// Envelhece a busca em curso, para um teste alcançar o prazo sem esperar.
+    #[cfg(test)]
+    pub fn age_rediscovery_for_test(&self, node_id: &str, quanto: Duration) {
+        if let Ok(mut pedidos) = self.rediscovery.write() {
+            if let Some(busca) = pedidos.get_mut(node_id) {
+                busca.desde -= quanto;
+                busca.ultima_pergunta -= quanto;
+            }
+        }
+    }
+
+    /// O peer voltou a ser lido: a busca acabou.
+    ///
+    /// Sem isto, uma máquina que se recuperou depois de uma rotação continuaria
+    /// a contar o tempo da busca antiga, e a busca seguinte já nasceria velha.
+    pub fn note_peer_read(&self, node_id: &str) {
+        if let Ok(mut pedidos) = self.rediscovery.write() {
+            pedidos.remove(node_id);
+        }
+    }
+
     /// Get all covered layers in the network (by other peers)
     pub async fn get_covered_layers(&self, model: &str) -> Vec<u32> {
         let peers = self.peers.read().await;
@@ -1804,7 +1969,20 @@ impl Network {
                     let address_changed = peer_address_changed(previous, &peer);
                     let connection_verified = previous.connection_verified;
                     let api_keys_active = previous.api_keys_active;
+                    // O snapshot de outro nó é a lista que o peer anuncia
+                    // **hoje**; o que se herda daqui é só o que este nó sabe e
+                    // o outro não - o endereço observado, que enxerga NAT.
+                    //
+                    // Herdar a lista inteira tornava candidato morto imortal:
+                    // um endereço que o peer deixou de anunciar voltava em todo
+                    // `PeerList`, e o conjunto só crescia. Com IPv6 temporário,
+                    // que roda sozinho, isso é um cadáver novo por rotação.
+                    // Quem já provou que o endereço não atende não o traz de
+                    // volta.
                     for addr in &previous.addr_candidates {
+                        if self.routes.host_is_discredited(&peer.node_id, addr) {
+                            continue;
+                        }
                         peer.merge_observed(addr);
                     }
                     peer.connection_verified = connection_verified;
@@ -1846,13 +2024,28 @@ impl Network {
     }
 
     async fn cleanup_dead_peers(&self) {
-        let mut peers = self.peers.write().await;
-        let before = peers.len();
-        peers.retain(|_, p| p.is_alive());
-        let removed = before - peers.len();
-        if removed > 0 {
-            info!("🧹 Removed {} timed-out peers", removed);
+        let mortos: Vec<String> = {
+            let mut peers = self.peers.write().await;
+            let mortos: Vec<String> = peers
+                .values()
+                .filter(|p| !p.is_alive())
+                .map(|p| p.node_id.clone())
+                .collect();
+            peers.retain(|_, p| p.is_alive());
+            mortos
+        };
+        if mortos.is_empty() {
+            return;
         }
+        // O peer saiu: a memória de endereço dele vai junto. Guardá-la faria um
+        // nó que volta com o mesmo endereço nascer desacreditado.
+        for node_id in &mortos {
+            self.routes.forget(node_id);
+            if let Ok(mut pedidos) = self.rediscovery.write() {
+                pedidos.remove(node_id);
+            }
+        }
+        info!("🧹 Removed {} timed-out peers", mortos.len());
     }
 
     /// Insert or update a peer discovered via libp2p (gossipsub / mDNS).
@@ -2457,6 +2650,143 @@ mod tests {
             tp: None,
             runtime_capacity: None,
         }
+    }
+
+    /// O `PeerList` de outro no traz a lista que o peer anuncia hoje. Herdar a
+    /// lista local inteira por cima dela tornava candidato morto **imortal**: o
+    /// endereco que o peer deixou de anunciar voltava a cada volta de gossip, e
+    /// o conjunto so crescia. Com IPv6 temporario, que roda sozinho, isso e um
+    /// cadaver novo por rotacao - e foi assim que o cluster do captain ficou a
+    /// discar um endereco que nao existia em maquina nenhuma.
+    #[tokio::test]
+    async fn gossip_does_not_resurrect_an_address_already_proved_dead() {
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let assignment = Arc::new(RwLock::new(None));
+        let morto = "[2804:d55:5579:1000:1c20:e551:6a95:9a0d]:42777";
+        let vivo = "[2804:d55:5579:1000:18cc:e839:7c2:dd6a]:42777";
+
+        let mut antigo = peer_com_candidatos(vec![morto]);
+        antigo.node_id = "peer".into();
+        antigo.addr = morto.into();
+        let visto_em = antigo.last_seen;
+        net.insert_peer(antigo).await;
+        // Uma requisicao real ja provou que esse endereco nao atende.
+        net.routes.mark_failure(
+            "peer",
+            "http://[2804:d55:5579:1000:1c20:e551:6a95:9a0d]:8080",
+        );
+
+        let mut fresco = peer_com_candidatos(vec![vivo]);
+        fresco.node_id = "peer".into();
+        fresco.addr = vivo.into();
+        fresco.last_seen = visto_em + chrono::Duration::seconds(1);
+        net.handle_message(
+            P2PMessage::PeerList {
+                peers: vec![fresco],
+            },
+            "127.0.0.1:42777".parse().unwrap(),
+            &assignment,
+        )
+        .await;
+
+        let guardado = net.peers.read().await["peer"].clone();
+        assert!(
+            !guardado.addr_candidates.iter().any(|c| c == morto),
+            "o endereco morto voltou pelo gossip: {:?}",
+            guardado.addr_candidates
+        );
+        assert!(
+            guardado.addr_candidates.iter().any(|c| c == vivo),
+            "o endereco atual tem de ficar: {:?}",
+            guardado.addr_candidates
+        );
+    }
+
+    /// Um candidato que ninguem desacreditou continua herdado: e o endereco
+    /// observado, o unico que enxerga NAT, e quem anuncia nao tem como saber
+    /// dele. A poda e por prova de falha, nao por desconfianca.
+    #[tokio::test]
+    async fn gossip_still_keeps_a_candidate_nobody_discredited() {
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let assignment = Arc::new(RwLock::new(None));
+        let observado = "203.0.113.9:42777";
+        let anunciado = "198.51.100.7:42777";
+
+        let mut antigo = peer_com_candidatos(vec![observado]);
+        antigo.node_id = "peer".into();
+        antigo.addr = observado.into();
+        let visto_em = antigo.last_seen;
+        net.insert_peer(antigo).await;
+
+        let mut fresco = peer_com_candidatos(vec![anunciado]);
+        fresco.node_id = "peer".into();
+        fresco.addr = anunciado.into();
+        fresco.last_seen = visto_em + chrono::Duration::seconds(1);
+        net.handle_message(
+            P2PMessage::PeerList {
+                peers: vec![fresco],
+            },
+            "127.0.0.1:42777".parse().unwrap(),
+            &assignment,
+        )
+        .await;
+
+        let guardado = net.peers.read().await["peer"].clone();
+        assert!(
+            guardado.addr_candidates.iter().any(|c| c == observado),
+            "o endereco observado tem de sobreviver ao gossip: {:?}",
+            guardado.addr_candidates
+        );
+    }
+
+    /// `gateway_url()` era so `peer.addr`, entao o plano de controle tinha um
+    /// endereco e nenhum plano B. `inference_url()` ja preferia candidatos ha
+    /// tempo; o gateway nunca aprendeu.
+    #[test]
+    fn the_gateway_has_one_url_per_known_address_with_the_proven_one_first() {
+        let mut peer = peer_com_candidatos(vec![
+            "10.0.0.5:42777",
+            "[2804:f30::1]:42777",
+            "192.168.1.9:42777",
+        ]);
+        peer.addr = "192.168.1.9:42777".into();
+        assert_eq!(
+            peer.gateway_candidates(),
+            vec![
+                // O `addr` primeiro: e de onde os pacotes do peer chegaram.
+                "http://192.168.1.9:8080".to_string(),
+                "http://10.0.0.5:8080".to_string(),
+                "http://[2804:f30::1]:8080".to_string(),
+            ],
+            "o primeiro e fato conhecido, e nenhuma URL sai repetida"
+        );
+        assert_eq!(
+            peer.gateway_url(),
+            Some("http://192.168.1.9:8080".to_string())
+        );
+    }
+
+    /// Uma rotacao de IPv6 muda `addr_candidates` e chama `invalidate`. Apagar
+    /// ali a memoria de falha era apagar a prova exatamente no evento que mata
+    /// o endereco: o cluster voltava a discar o cadaver na volta seguinte.
+    #[test]
+    fn an_address_rotation_does_not_erase_the_proof_that_the_old_one_died() {
+        let tabela = crate::route::RouteTable::new();
+        tabela.mark_failure("peer", "http://[2804:d55::9]:8080");
+        tabela.invalidate("peer");
+        assert!(
+            tabela.is_failed("peer", "http://[2804:d55::9]:8080"),
+            "a rotacao nao pode apagar a prova de que o endereco antigo morreu"
+        );
+        tabela.forget("peer");
+        assert!(
+            !tabela.is_failed("peer", "http://[2804:d55::9]:8080"),
+            "quando o peer some de vez, a memoria dele vai junto"
+        );
     }
 
     /// O endereco de origem do pacote e acrescentado, nao substitui: e o unico

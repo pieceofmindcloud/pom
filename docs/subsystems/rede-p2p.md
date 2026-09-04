@@ -85,10 +85,86 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 - Um `PeerList` é também uma atualização de estado: se o `last_seen` do
   snapshot for mais novo, o registro existente é substituído para propagar
   mudanças de modelo e faixa entre peers transitivos. Snapshots mais antigos
-  não revertem um anúncio recente; candidatos de endereço e verificação local
-  são preservados no refresh.
+  não revertem um anúncio recente; a verificação local é preservada no refresh,
+  e os candidatos de endereço locais são herdados **menos os que este nó já
+  provou mortos** (`RouteTable::host_is_discredited`). Herdar a lista inteira
+  tornava candidato morto imortal - ver "Endereço que deixou de responder".
 - Nó destacado (`is_detached`, `--no-discovery`) não aprende nem responde nada;
   o socket continua bound, e `rejoin` refaz bootstrap + announce.
+
+### Endereço que deixou de responder
+
+**Endereços IPv6 temporários rodam sozinhos.** As privacy extensions (RFC 4941)
+geram um endereço novo de tempos em tempos e aposentam o anterior; o macOS ainda
+mantém o antigo marcado `deprecated` por um tempo antes de removê-lo. O cluster
+tem de aguentar isso sem configuração: o endereço que um par anunciou ontem pode
+não existir em máquina nenhuma hoje. Fixar `--advertise-addr` **não** é a
+resposta - é um remendo por máquina para um defeito que é de todas.
+
+Quem anuncia já lida com a rotação: `filter_candidates` descarta `deprecated` e
+põe estável antes de temporário. Quem **guarda** é que não lidava:
+
+- `PeerInfo::gateway_url()` era só `peer.addr`, um endereço e nenhum plano B,
+  enquanto `inference_url()` já preferia `addr_candidates`. Todo o plano de
+  controle (Painel, `deploy`, transferência, `devupdate`) discava esse endereço
+  único; morto ele, o Painel mostrava "não respondeu a `/api/ui/node`" para
+  sempre, com o par vivo noutro endereço já dentro de `addr_candidates`.
+- A sonda do `RouteTable` mede `inference_candidates()` - outra porta, outro
+  espaço de URL. Ela nunca ia apanhar um gateway morto, e o Painel nunca
+  perguntava à memória de falha.
+- O `PeerList` herdava a lista de candidatos local inteira por cima do snapshot
+  novo, então o cadáver voltava a cada volta de gossip e o conjunto só crescia.
+- `invalidate` apagava as falhas por `node_id`. A rotação de IPv6 - o evento que
+  **mata** o endereço - era também o que apagava a prova de que ele morreu.
+
+Hoje:
+
+- `gateway_candidates()` devolve uma URL por endereço conhecido, com `addr`
+  primeiro (fato conhecido: é de onde os pacotes chegaram) e os candidatos
+  anunciados depois; `gateway_url()` é só o primeiro dela. Mesma disciplina de
+  `pipeline::resolve_step_url`.
+- A leitura do cluster (`/api/ui/cluster`) percorre esses candidatos e alimenta
+  a **mesma** memória de falha do caminho de inferência: `mark_failure` em erro
+  de transporte ou timeout, `mark_success` em resposta boa. Resposta inválida ou
+  HTTP de erro **não** desacreditam o endereço - quem responde 401 ou 500 está
+  vivo ali, e esconder um defeito de payload atrás de uma busca de rota seria
+  trocar um defeito por outro.
+- `RouteTable::usable` devolve os candidatos ainda não desacreditados. Vazio é
+  informação: significa "todo endereço conhecido deste par falhou".
+- Aí entra `Network::request_peer_addresses`: manda `PeerRequest` aos bootstrap
+  nodes e aos outros peers vivos (quem responde manda `Announce` + `PeerList`) e
+  **poda os candidatos desacreditados da entrada local**, para que o `Announce`
+  seguinte a repovoe em vez de somar-se ao cadáver. Limitado a uma vez por
+  `REDISCOVERY_INTERVAL` (30 s) por peer, porque o Painel relê o cluster em
+  ciclo curto. Sem broadcast na LAN: o par continua vivo e o `Announce` dele
+  chega a cada 5 s de qualquer modo, e transmitir da suíte de rotas quebraria a
+  regra de nunca falar UDP de verdade nos testes.
+- Enquanto isso o `/api/ui/cluster` devolve `rediscovering: true` no par, e a
+  tela diz "reencontrando" em vez de "nada abaixo pode ser lido". A distinção é
+  de produto: um é trabalho em curso que se resolve sozinho, o outro é beco sem
+  saída. **A promessa tem prazo**: passado `REDISCOVERY_GIVE_UP` (90 s, três
+  perguntas) sem leitura boa, o par volta a `unreachable` dizendo que nenhum dos
+  endereços conhecidos respondeu e que a rede não devolveu um novo. Um par que
+  anuncia por UDP e não atende no HTTP existe, e chamá-lo de "reencontrando"
+  para sempre seria repor o aviso desonesto com outra palavra. Uma leitura bem
+  sucedida (`Network::note_peer_read`) encerra a busca, para que a próxima
+  rotação comece do zero.
+- A cobertura sai do gossip, não da leitura, então um par ilegível continua
+  contribuindo camadas - e é honesto que continue, porque o servidor de
+  inferência dele pode estar perfeito e só o endereço de controle é que morreu.
+  O que não pode é ficar invisível: `model_inventory[].unreadable_nodes` nomeia
+  esses pares, e a tela tira o verde de "completo" enquanto a lista não estiver
+  vazia.
+- `cleanup_dead_peers` chama `RouteTable::forget` no peer que expirou, para que
+  um nó que volta com o mesmo endereço não nasça desacreditado.
+
+Provado por `network::tests::gossip_does_not_resurrect_an_address_already_proved_dead`,
+`the_gateway_has_one_url_per_known_address_with_the_proven_one_first`,
+`an_address_rotation_does_not_erase_the_proof_that_the_old_one_died` e pelo
+módulo `webui::dead_address_tests`, que sobe um `/api/ui/node` de verdade e faz
+o Painel recuperar o par pelo endereço vivo numa única leitura - incluindo
+`rediscovering_gives_up_and_says_so_instead_of_promising_forever`, que trava o
+prazo.
 
 ### `normalize` dual-stack
 
@@ -153,20 +229,30 @@ da Tailscale (`100.122.132.97`), antes adotado como público, deixou de ser acei
 ### Rotas dinâmicas (`route.rs`)
 
 Um nó pode ter vários endereços válidos e qual serve depende de quem pergunta.
-`RouteTable` guarda a medição por candidato: sonda `GET /health` num endpoint
-real do peer, preferindo a porta de gateway, com timeout 3 s e re-medida a cada
-5 min. O gateway continua disponível quando o modelo ainda não subiu ou a porta
-de inferência está restrita, mas a rota gravada continua sendo a URL de
-inferência correspondente. Quando o peer anuncia endereço, candidatos ou portas
+`RouteTable` guarda a medição por candidato: sonda `GET /health` na **porta de
+inferência** que o pipeline vai usar, com timeout 3 s e re-medida a cada 5 min.
+Sondar o gateway seria insuficiente - ele pode responder enquanto a porta de
+inferência engole SYN. Quando o peer anuncia endereço, candidatos ou portas
 diferentes, a escolha anterior é invalidada na hora para não reutilizar uma URL
 antiga durante a janela de 5 minutos. O cliente da sonda aceita o certificado
 autoassinado e o hostname do peer; os clientes de inferência continuam com
 pinning. A task
 que mede reaplica ao cliente a política TLS atual antes da sonda. `choose_route` só troca de rota
 atual se o ganho passar de 25% relativo **e** 2 ms absolutos (9,6 vs 7,2 ms
-MacBook↔ksia não pode trocar a cada ciclo); `mark_failure` tira a rota na hora
-quando uma requisição real falhou naquele endereço. `resolve` devolve `None` =
+MacBook↔ksia não pode trocar a cada ciclo). `resolve` devolve `None` =
 "ainda não medido", e o chamador cai no `inference_url` do plano.
+
+A **memória de falha** é a segunda metade da tabela, chaveada por
+`(node_id, URL)`: `mark_failure` grava quando uma requisição real falhou naquele
+endereço e tira a rota na hora, `mark_success` apaga, `is_failed` responde, e
+`usable` filtra uma lista de candidatos. Como a chave é a URL inteira, a porta de
+inferência e a porta do gateway do mesmo host convivem sem se confundir - e é de
+propósito que as duas moram aqui: o plano de controle sofria do mesmo defeito que
+o caminho de inferência sofria, e uma segunda tabela seria a mesma decisão para
+tomar em dois lugares. Uma sonda lenta **não** escreve nessa memória: o timeout
+dela é bem mais apertado que o de uma requisição real, e desacreditar todos os
+candidatos deixaria `resolve_step_url` sem rota nenhuma. `invalidate` descarta a
+escolha e **preserva** as falhas; só `forget`, quando o peer expira, as apaga.
 
 Essa tabela de endereçamento não é a tabela de RTT do mapa. `RttTable` mede
 `GET /health` pelo `TunnelRequest` libp2p/Noise, o mesmo transporte usado pelos

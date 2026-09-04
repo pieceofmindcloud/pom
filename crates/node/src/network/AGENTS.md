@@ -62,7 +62,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   é a fonte, e falha preserva o valor local.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
-  quando o peer muda seus endereços anunciados. `RttTable` guarda a medição
+  quando o peer muda seus endereços anunciados. Guarda também a **memória de
+  falha por `(node_id, URL)`**, que serve tanto ao pipeline quanto ao plano de
+  controle - ver `docs/subsystems/rede-p2p.md`, "Endereço que deixou de
+  responder". `RttTable` guarda a medição
   direcional deste nó para cada destino, sem inferir o sentido inverso.
 
 ## Funções-chave
@@ -80,10 +83,30 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
   origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
   `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. O `PeerList` também
-  atualiza um peer já conhecido quando o snapshot é mais novo, preservando
-  candidatos de endereço e estado local de verificação; snapshots antigos são
+  atualiza um peer já conhecido quando o snapshot é mais novo, preservando o
+  estado local de verificação e os candidatos de endereço **que este nó ainda
+  não provou mortos**; snapshots antigos são
   ignorados para não reverter a cobertura. Nó destacado (`is_detached`) não
   aprende nem responde.
+- `Network::request_peer_addresses` - quando **todo** endereço conhecido de um
+  peer está desacreditado, manda `PeerRequest` aos bootstrap nodes e aos outros
+  peers vivos e poda os candidatos mortos da entrada local, para que o
+  `Announce` seguinte a repovoe. Uma vez por `REDISCOVERY_INTERVAL` (30 s) por
+  peer; `is_rediscovering` é o que o Painel lê para dizer "reencontrando" em vez
+  de "não dá para ler", e ele expira em `REDISCOVERY_GIVE_UP` (90 s) - promessa
+  sem prazo seria o mesmo aviso desonesto com outra palavra. `note_peer_read`
+  encerra a busca quando o par volta a ser lido. Endereços IPv6 temporários
+  rodam sozinhos, e o cluster tem de aguentar isso sem `--advertise-addr`.
+- `Network::cleanup_dead_peers` - além de remover o peer expirado, chama
+  `RouteTable::forget` nele, para que um nó que volta com o mesmo endereço não
+  nasça desacreditado.
+- `PeerInfo::gateway_candidates` / `gateway_url` - uma URL de gateway por
+  endereço conhecido, com `addr` primeiro (fato conhecido: é de onde os pacotes
+  do peer chegaram) e os candidatos anunciados depois; `gateway_url` é só a
+  primeira. Enquanto era só `peer.addr`, o plano de controle inteiro (Painel,
+  `deploy`, transferência, `devupdate`) tinha um endereço e nenhum plano B.
+  Mesma disciplina de `pipeline::resolve_step_url`: palpite não passa na frente
+  de fato conhecido.
 - `Network::discovery_sweep` - PeerRequest rotativo: 3 por varredura, varredura
   a cada 6 tiques (30 s), rodízio cobre o cluster inteiro. É o que aprende peers
   transitivos fora da LAN; sem isto a descoberta é um retrato do arranque.
@@ -195,10 +218,20 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   de inferência que engole SYN. A sonda aceita o certificado autoassinado e o
   hostname do peer; isso não altera o cliente pinado usado pela inferência.
   Timeout de 3 s e intervalo de 5 min.
-- `RouteTable::mark_failure` - tira a rota de uso na hora quando uma requisição
-  real falhou naquele endereço e memoriza a falha por 5 min. A próxima
-  resolução procura outro candidato, em vez de voltar ao endereço morto antes
-  de uma nova sonda bem-sucedida.
+- `RouteTable::mark_failure` / `mark_success` / `is_failed` / `usable` - a
+  memória de falha, chaveada por `(node_id, URL)` e válida por 5 min. Grava
+  quando uma **requisição real** falhou naquele endereço (sonda lenta não
+  escreve: o timeout dela é apertado demais e desacreditar tudo deixaria
+  `resolve_step_url` sem rota). Como a chave é a URL inteira, a porta de
+  inferência e a do gateway do mesmo host convivem - e é a mesma memória que a
+  leitura do Painel usa, em vez de um mecanismo paralelo. `usable` devolve os
+  candidatos ainda vivos; vazio significa "todo endereço deste par falhou", e o
+  chamador deve pedir o atual em vez de insistir.
+- `RouteTable::invalidate` **preserva** a memória de falha; só `forget` a apaga.
+  Apagá-la em `invalidate` significava que a rotação de IPv6 - o evento que mata
+  o endereço - era também o que apagava a prova de que ele morreu.
+- `RouteTable::host_is_discredited` - a mesma pergunta por host, para o gossip
+  decidir se herda um candidato antigo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
   "ainda não medido", e o chamador cai no `inference_url` do plano.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;

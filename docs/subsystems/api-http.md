@@ -507,6 +507,21 @@ troca o fingerprint e força nova coleta antes do fim do TTL. O `ETag` ignora
 somente `system.sampled_at`, que é ruído de amostragem; métricas e topologia
 continuam invalidando a versão. `x-state-version` é monotônico para snapshots
 alterados.
+
+A leitura do `/api/ui/node` de cada peer percorre `PeerInfo::gateway_candidates()`
+- uma URL por endereço conhecido, o `addr` primeiro - e alimenta a memória de
+falha do `RouteTable`: erro de transporte ou timeout desacreditam aquele
+endereço, resposta boa o limpa. Resposta inválida e HTTP de erro **não**
+desacreditam, porque quem responde 401 ou 500 está vivo ali. Cada peer traz
+`unreachable` (atendeu, a leitura quebrou) e `rediscovering` (todo endereço
+conhecido morreu, o nó já pediu o atual à rede) - são estados distintos, nunca
+os dois ao mesmo tempo. `rediscovering` expira em 90 s: passado isso o par volta
+a `unreachable` dizendo que nenhum dos endereços conhecidos respondeu. `model_inventory[].unreadable_nodes` nomeia os pares de
+quem a cobertura depende sem conseguir ler; a cobertura sai do gossip, não da
+leitura, então sem essa lista um modelo apareceria "completo" com metade
+ilegível. Endereços IPv6 temporários rodam sozinhos e o cluster tem de aguentar
+isso sem `--advertise-addr`: ver `docs/subsystems/rede-p2p.md`, "Endereço que
+deixou de responder".
 **`POST /api/ui/chat/telemetry`** - coleta sob demanda feita depois de uma
 execução do Chat. O gateway inclui a medição local e consulta o
 `GET /api/ui/network/rtt` autenticado de cada peer solicitado, aceitando o

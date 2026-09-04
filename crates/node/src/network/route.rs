@@ -102,6 +102,15 @@ const FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 #[derive(Default)]
 pub struct RouteTable {
     por_no: RwLock<HashMap<String, Entrada>>,
+    /// Memória de falha por `(node_id, URL)`.
+    ///
+    /// A chave é a URL inteira, então a porta de inferência e a porta do
+    /// gateway do mesmo host convivem sem se confundir - e é de propósito que
+    /// as duas moram aqui. O plano de controle (o Painel lendo
+    /// `/api/ui/node`) sofre do mesmo defeito que o caminho de inferência
+    /// sofria: sem memória, um endereço morto é rediscado em toda leitura.
+    /// Uma segunda tabela seria um mecanismo paralelo com a mesma decisão
+    /// para tomar em dois lugares.
     falhas: RwLock<HashMap<(String, String), Instant>>,
 }
 
@@ -172,13 +181,72 @@ impl RouteTable {
     /// atualização de `addr_candidates`: durante a janela de 5 minutos da
     /// medição ela faria o pipeline continuar discando um IP de container que
     /// já deixou de ser anunciado.
+    ///
+    /// **A memória de falha não é apagada aqui.** Ela é chaveada pelo
+    /// endereço, então um endereço novo simplesmente não está no mapa, e um
+    /// endereço que voltou a responder é limpo por `mark_success` ou pela
+    /// sonda. Apagar por `node_id` era pior que inútil: um IPv6 temporário
+    /// rodando muda `addr_candidates`, e a rotação - que é exatamente o
+    /// evento que mata o endereço antigo - era também o evento que apagava a
+    /// prova de que ele morreu. O cluster voltava a discar o cadáver.
     pub fn invalidate(&self, node_id: &str) {
         if let Ok(mut t) = self.por_no.write() {
             t.remove(node_id);
         }
+    }
+
+    /// Esquece tudo que se sabe deste peer. Só para quando o peer some.
+    pub fn forget(&self, node_id: &str) {
+        self.invalidate(node_id);
         if let Ok(mut falhas) = self.falhas.write() {
             falhas.retain(|(id, _), _| id != node_id);
         }
+    }
+
+    /// Uma requisição real que respondeu apaga a memória de falha do endereço.
+    ///
+    /// É o contrário de `mark_failure`, e o que permite um endereço voltar ao
+    /// uso antes do fim do `FAILURE_COOLDOWN` quando ele volta a atender.
+    pub fn mark_success(&self, node_id: &str, addr: &str) {
+        if let Ok(mut falhas) = self.falhas.write() {
+            falhas.remove(&(node_id.to_string(), addr.to_string()));
+        }
+    }
+
+    /// Candidatos que ainda não foram desacreditados, na ordem recebida.
+    ///
+    /// Devolver vazio é informação, não erro: significa "todo endereço que
+    /// este nó conhece deste peer falhou recentemente". O chamador não deve
+    /// insistir em nenhum deles - deve pedir o endereço atual do par (ver
+    /// `Network::request_peer_addresses`) e dizer na tela que está
+    /// reencontrando o nó.
+    pub fn usable(&self, node_id: &str, candidatos: &[String]) -> Vec<String> {
+        candidatos
+            .iter()
+            .filter(|url| !self.is_failed(node_id, url))
+            .cloned()
+            .collect()
+    }
+
+    /// Se todo endereço já tentado **neste host** falhou recentemente.
+    ///
+    /// A memória é por URL, e um host tem mais de uma porta. Esta é a pergunta
+    /// que o gossip faz antes de preservar um candidato herdado: o candidato é
+    /// `host:porta-UDP`, e o que falhou foi `http://host:porta-HTTP`. Sem
+    /// comparar por host, um endereço morto ressuscitaria a cada `PeerList`.
+    pub fn host_is_discredited(&self, node_id: &str, addr: &str) -> bool {
+        let alvo = host_of(addr);
+        if alvo.is_empty() {
+            return false;
+        }
+        let Ok(falhas) = self.falhas.read() else {
+            return false;
+        };
+        falhas.iter().any(|((id, url), falhou_em)| {
+            id == node_id
+                && host_of(url) == alvo
+                && falhou_em.elapsed() < FAILURE_COOLDOWN
+        })
     }
 
     /// Grava uma escolha direto, sem sondar. Só para teste.
@@ -196,9 +264,7 @@ impl RouteTable {
                 },
             );
         }
-        if let Ok(mut falhas) = self.falhas.write() {
-            falhas.remove(&(node_id.to_string(), addr.to_string()));
-        }
+        self.mark_success(node_id, addr);
     }
 
     /// Se ja passou tempo suficiente desde a ultima medicao deste peer.
@@ -239,11 +305,15 @@ impl RouteTable {
                     .await;
             let rtt = match resposta {
                 Ok(Ok(r)) if r.status().is_success() => {
-                    if let Ok(mut falhas) = self.falhas.write() {
-                        falhas.remove(&(node_id.to_string(), rota.clone()));
-                    }
+                    self.mark_success(node_id, rota);
                     Some(inicio.elapsed().as_secs_f64() * 1000.0)
                 }
+                // Uma sonda lenta **não** desacredita o endereço: o timeout
+                // dela é 3 s, muito mais apertado que o de uma requisição
+                // real, e `resolve_step_url` deixa de ter rota quando todos os
+                // candidatos estão desacreditados. Só falha de requisição de
+                // verdade escreve na memória - foi assim que 84e7141 a
+                // desenhou, e é assim que ela fica.
                 _ => None,
             };
             medidas.push(Measurement {
@@ -265,6 +335,22 @@ impl RouteTable {
         } else if let Ok(mut t) = self.por_no.write() {
             t.remove(node_id);
         }
+    }
+}
+
+/// O host de um endereço, seja ele URL (`http://[::1]:8080`) ou par
+/// `host:porta` cru (`[::1]:42777`). Sem colchetes, para que as duas formas do
+/// mesmo IPv6 comparem iguais.
+fn host_of(addr: &str) -> &str {
+    let sem_esquema = addr.split_once("://").map_or(addr, |(_, resto)| resto);
+    let sem_caminho = sem_esquema.split('/').next().unwrap_or(sem_esquema);
+    if sem_caminho.starts_with('[') {
+        match sem_caminho.find(']') {
+            Some(fim) => &sem_caminho[1..fim],
+            None => sem_caminho,
+        }
+    } else {
+        sem_caminho.split(':').next().unwrap_or(sem_caminho)
     }
 }
 
@@ -538,6 +624,48 @@ mod tests {
             )
             .await;
         assert_eq!(tabela.resolve("n1"), Some(vivo));
+    }
+
+    /// As duas formas do mesmo endereço têm de comparar iguais: o candidato do
+    /// gossip é `host:porta-UDP` cru e o que falhou é uma URL com esquema e
+    /// outra porta. Sem isto a poda de candidato morto nunca casa e o cadáver
+    /// volta a cada `PeerList`.
+    #[test]
+    fn the_host_is_the_same_whether_it_comes_as_a_url_or_a_bare_pair() {
+        assert_eq!(host_of("http://[2804:d55::9]:8080"), "2804:d55::9");
+        assert_eq!(host_of("[2804:d55::9]:42777"), "2804:d55::9");
+        assert_eq!(host_of("https://192.168.1.9:8181"), "192.168.1.9");
+        assert_eq!(host_of("192.168.1.9:42777"), "192.168.1.9");
+        assert_eq!(host_of("http://192.168.1.9:8080/health"), "192.168.1.9");
+    }
+
+    /// Um endereço desacreditado numa porta desacredita o host para efeito de
+    /// herança de candidato: o candidato do gossip não tem porta HTTP nenhuma.
+    #[test]
+    fn a_dead_gateway_discredits_the_udp_candidate_on_the_same_host() {
+        let tabela = RouteTable::new();
+        tabela.mark_failure("n1", "http://[2804:d55::9]:8080");
+        assert!(tabela.host_is_discredited("n1", "[2804:d55::9]:42777"));
+        assert!(!tabela.host_is_discredited("n1", "[2804:d55::a]:42777"));
+        assert!(!tabela.host_is_discredited("n2", "[2804:d55::9]:42777"));
+    }
+
+    /// `usable` devolve vazio quando tudo falhou, e isso é informação: o
+    /// chamador tem de pedir o endereço atual em vez de escolher um cadáver.
+    #[test]
+    fn usable_is_empty_when_every_candidate_is_discredited() {
+        let tabela = RouteTable::new();
+        let candidatos = vec![
+            "http://10.0.0.5:8080".to_string(),
+            "http://10.0.0.6:8080".to_string(),
+        ];
+        assert_eq!(tabela.usable("n1", &candidatos), candidatos);
+        tabela.mark_failure("n1", &candidatos[0]);
+        assert_eq!(tabela.usable("n1", &candidatos), vec![candidatos[1].clone()]);
+        tabela.mark_failure("n1", &candidatos[1]);
+        assert!(tabela.usable("n1", &candidatos).is_empty());
+        tabela.mark_success("n1", &candidatos[0]);
+        assert_eq!(tabela.usable("n1", &candidatos), vec![candidatos[0].clone()]);
     }
 
     #[tokio::test]

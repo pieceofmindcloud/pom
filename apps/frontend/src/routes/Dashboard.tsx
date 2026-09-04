@@ -198,10 +198,21 @@ export function Dashboard() {
     return <div className="grid h-full place-items-center p-6"><div className="w-full max-w-xl space-y-4"><Skeleton className="h-16 w-full" /><Skeleton className="h-[32rem] w-full" /></div></div>;
   }
 
+  // Quantas máquinas o modelo ativo depende e este nó não conseguiu ler.
+  const coverageUnconfirmed =
+    (c.model_inventory ?? []).find((entry) => entry.model_id === c.active_model)
+      ?.unreadable_nodes?.length ?? 0;
+
   return <div className="flex h-full min-h-0 flex-col bg-ink">
     <div className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-2 shadow-panel backdrop-blur-md">
       <div className="grid min-w-0 flex-1 grid-cols-2 divide-x divide-y divide-line rounded-lg border border-line bg-raised/75 sm:flex sm:divide-y-0">
-        <ClusterStat label={t("dashboard.coverage")} value={c.total_layers > 0 ? pct((c.covered_layers / c.total_layers) * 100) : "—"} detail={c.total_layers > 0 ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers }) : t("dashboard.noModelAssigned")} progress={c.total_layers > 0 ? (c.covered_layers / c.total_layers) * 100 : null} tone={c.complete ? "aqua" : "amber"} />
+        {/*
+          A cobertura sai do que os pares anunciam no gossip, não da leitura de
+          cada um: uma máquina cujo endereço morreu continua contribuindo
+          camadas. Verde de "completo" enquanto metade do modelo está ilegível
+          é o pior estado possível da tela - por isso o âmbar vence.
+        */}
+        <ClusterStat label={t("dashboard.coverage")} value={c.total_layers > 0 ? pct((c.covered_layers / c.total_layers) * 100) : "—"} detail={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : c.total_layers > 0 ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers }) : t("dashboard.noModelAssigned")} progress={c.total_layers > 0 ? (c.covered_layers / c.total_layers) * 100 : null} tone={c.complete && coverageUnconfirmed === 0 ? "aqua" : "amber"} />
         <ClusterStat label={t("dashboard.machines")} value={num(c.peers.length)} detail={num(serving) + " " + t("dashboard.serving")} tone="iris" />
         <ClusterStat label={t("dashboard.model")} value={c.active_model || "—"} detail={c.complete ? t("dashboard.closedPipeline") : t("dashboard.incompletePipeline")} tone={c.complete ? "aqua" : "amber"} />
         <ClusterStat label={t("dashboard.inFlight")} value={num(inFlight)} detail={node.data ? t("dashboard.thisNode", { count: num(node.data.load) }) : t("dashboard.requestsNow")} tone={inFlight > 0 ? "amber" : "neutral"} />

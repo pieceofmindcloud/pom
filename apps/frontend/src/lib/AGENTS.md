@@ -136,6 +136,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "failed" | "thermal"`; the thermal state is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
+  `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
+  de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
+  nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que
+  impede o Painel de pintar "completo" em verde nesse estado. Ver
+  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder".
 - `ShardSet` identifies a slicing round with the technical `group`, readable
   `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen

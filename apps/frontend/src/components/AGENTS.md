@@ -197,6 +197,15 @@ Per-file list:
   `n_batch`/`n_ubatch`, context, KV sequences, threads, GPU layers, KV cache
   type); it is skipped entirely when the peer's `/health` carries no such
   field, and `flash_attn: null` reads as "não sei", never as off.
+  Peer ilegível tem **dois** estados, e o card os separa: `unreachable` é o par
+  que atendeu no endereço anunciado e a leitura quebrou (beco sem saída, ponto
+  rosa), `rediscovering` é o par cujos endereços todos morreram e cujo endereço
+  atual o nó já foi perguntar (trabalho em curso, ponto âmbar a pulsar,
+  `dashboard.rediscovering`). Endereços IPv6 temporários rodam sozinhos, então o
+  segundo estado é o comum e resolve-se na volta seguinte do gossip - mostrá-lo
+  como beco sem saída mandava o utilizador procurar um defeito inexistente. Ver
+  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder".
+  `PipelineRail` e `ModelNetworkCanvas` fazem a mesma distinção.
   `UpdateNode` (update+restart, dev-only via
   `POM_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
   render from here now - e todos numa **barra de ferramentas no topo do

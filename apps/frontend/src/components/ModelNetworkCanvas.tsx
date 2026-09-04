@@ -134,6 +134,8 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
   const hostname = range.node?.hostname || range.short_id;
   const serving = isServing(range.node?.status.state);
   const unreachable = Boolean(range.unreachable);
+  const rediscovering = Boolean(range.rediscovering);
+  const unread = unreachable || rediscovering;
   const kind = machineKind(system);
   // Reaproveita o que o `/api/ui/cluster` já traz: nenhuma chamada nova.
   const placement = layerPlacement(
@@ -149,7 +151,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
     onPointerCancel={onPointerUp}
     onDoubleClick={(event) => { if (!isControlTarget(event.target)) onOpen(); }}
     title={t("canvas.openDetails")}
-    className={clsx("absolute select-none rounded-xl border bg-ink/95 p-3.5 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unreachable && "opacity-75")}
+    className={clsx("absolute select-none rounded-xl border bg-ink/95 p-3.5 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unread && "opacity-75")}
     style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: CARD_HEIGHT, touchAction: "none" }}
   >
     <div className="absolute inset-x-3.5 top-0 h-px bg-iris/70" />
@@ -158,7 +160,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-raised"><MachineIcon system={system} size="sm" /></span>
         <div className="min-w-0"><h3 className="truncate text-sm font-semibold text-fg">{hostname}</h3><p className="truncate text-[10px] text-faint">{kind.label}</p></div>
       </div>
-      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted"><Dot tone={unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={serving && !unreachable} />{unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
+      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted"><Dot tone={rediscovering ? "amber" : unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={rediscovering || (serving && !unread)} />{rediscovering ? t("pipeline.rediscovering") : unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
     </div>
     <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
     {placement && <LayerPlacementMeter placement={placement} />}
@@ -207,6 +209,8 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
   const selected = model && modelIds.includes(model) ? model : cluster.active_model || modelIds[0];
   const ranges = selected ? (graph.byModel[selected] ?? []) : [];
   const inventory = (cluster.model_inventory ?? []).find((entry) => entry.model_id === selected);
+  // Quantas máquinas deste modelo o nó não conseguiu ler nesta passagem.
+  const coverageUnconfirmed = inventory?.unreadable_nodes?.length ?? 0;
   const layoutKey = useMemo(() => deploymentLayoutKey(selected ?? "", ranges.map((range) => ({ node_id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer, changed_at: range.node?.status.changed_at }))), [ranges, selected]);
   const selectedEdges = selected ? cluster.routing_edges.filter((edge) => edge.model_id === selected) : [];
   const candidates = selected ? cluster.candidate_edges.filter((edge) => edge.model_id === selected) : [];
@@ -290,7 +294,13 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
   return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
     <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 rounded-xl border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
       <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label="Modelo">{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}</div>
-      {inventory && <span className={clsx("shrink-0 rounded-md px-2 py-1 font-mono text-[10px]", inventory.complete ? "bg-aqua/15 text-aqua" : "bg-amber/15 text-amber")}>L{inventory.covered_layers}/{inventory.total_layers}</span>}
+      {/*
+        Cobertura completa com máquina ilegível não é completa (ver Dashboard).
+        O distintivo perde o verde e ganha o `?` colado ao número, que é o que
+        se está a afirmar: "32 de 32 - será?". A explicação inteira fica no
+        `title`, para o distintivo não crescer.
+      */}
+      {inventory && <span title={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : undefined} className={clsx("shrink-0 rounded-md px-2 py-1 font-mono text-[10px]", inventory.complete && coverageUnconfirmed === 0 ? "bg-aqua/15 text-aqua" : "bg-amber/15 text-amber")}>L{inventory.covered_layers}/{inventory.total_layers}{coverageUnconfirmed > 0 ? "?" : ""}</span>}
       <span className="h-5 w-px bg-line" />
       <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>

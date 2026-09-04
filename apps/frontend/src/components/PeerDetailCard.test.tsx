@@ -427,6 +427,41 @@ describe("PeerDetailCard · arrumação do card", () => {
   });
 });
 
+/**
+ * Um endereço que morre não pode virar um aviso permanente.
+ *
+ * Endereços IPv6 temporários rodam sozinhos (privacy extensions), então o
+ * endereço que um par anunciou ontem pode não existir em máquina nenhuma hoje.
+ * O nó esquece esse endereço, pergunta o atual e recupera o par sozinho - e é
+ * isso que a tela tem de dizer enquanto acontece, em vez de "nada abaixo pode
+ * ser lido", que manda o utilizador procurar um defeito que se conserta só.
+ */
+describe("PeerDetailCard com o endereço a ser reencontrado", () => {
+  afterEach(cleanup);
+
+  it("diz que o nó está a ser reencontrado, não que nada pode ser lido", () => {
+    mount(fakePeer({ node_id: "z", rediscovering: true }));
+    expect(screen.getByText(/Reencontrando este nó/)).toBeTruthy();
+    expect(screen.queryByText(/a leitura falhou/)).toBeNull();
+  });
+
+  it("continua explicando a falha quando o par atendeu e a leitura é que quebrou", () => {
+    mount(fakePeer({ node_id: "z", unreachable: "HTTP 500" }));
+    expect(screen.getByText(/a leitura falhou: HTTP 500/)).toBeTruthy();
+    expect(screen.queryByText(/Reencontrando este nó/)).toBeNull();
+  });
+
+  /**
+   * A cobertura sai do gossip, não da leitura: o par ilegível continua
+   * contribuindo camadas. A tela tem de dizer que a cobertura não está
+   * confirmada em vez de ficar calada.
+   */
+  it("avisa que a cobertura não está confirmada", () => {
+    mount(fakePeer({ node_id: "z", rediscovering: true }));
+    expect(screen.getByText(/continuam contando para a cobertura/)).toBeTruthy();
+  });
+});
+
 describe("cardRange", () => {
   it("devolve null quando não há faixa em lugar nenhum, em vez de 0-0", () => {
     expect(cardRange(semFatia)).toBeNull();

@@ -1552,6 +1552,11 @@ struct PeerView {
     node: Option<serde_json::Value>,
     /// Why the peer could not be reached, when it could not.
     unreachable: Option<String>,
+    /// Todo endereço conhecido deste peer está desacreditado e o nó já pediu o
+    /// endereço atual dele à rede. Não é o mesmo que `unreachable`: aqui há
+    /// trabalho em curso, e a tela diz "reencontrando" em vez de anunciar um
+    /// beco sem saída.
+    rediscovering: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1653,6 +1658,68 @@ struct ModelCoverageView {
     covered_layers: usize,
     coverage: Vec<bool>,
     complete: bool,
+    /// Máquinas que contribuem camadas para esta cobertura e **não puderam ser
+    /// lidas** nesta passagem.
+    ///
+    /// A cobertura sai das capacidades anunciadas no gossip, não da leitura.
+    /// Sem esta lista, um par ilegível é contribuinte de cobertura em força
+    /// total e a tela mostra "completo" para um modelo cuja metade ninguém
+    /// consegue consultar. Ela não retira as camadas da conta - retirar seria
+    /// mentir na outra direção, porque o peer pode estar servindo muito bem e
+    /// só o endereço de controle é que morreu - mas obriga a tela a dizer que a
+    /// cobertura não está confirmada.
+    unreadable_nodes: Vec<String>,
+}
+
+/// O que uma leitura de `/api/ui/node` produziu para um peer.
+#[derive(Default)]
+struct PeerRead {
+    node: Option<serde_json::Value>,
+    unreachable: Option<String>,
+    rediscovering: bool,
+}
+
+/// Nenhum endereço conhecido do peer responde.
+///
+/// Enquanto a busca pelo endereço atual for recente, isto é "reencontrando" -
+/// trabalho em curso que a volta seguinte do gossip costuma resolver. Passado
+/// `REDISCOVERY_GIVE_UP`, a rede já foi perguntada vezes bastantes: voltar a
+/// dizer "reencontrando" seria o mesmo aviso desonesto de antes com outra
+/// palavra, então a tela volta a dizer que não consegue ler o par.
+fn sem_endereco_vivo(
+    network: &crate::network::Network,
+    node_id: &str,
+    conhecidos: usize,
+) -> PeerRead {
+    if network.is_rediscovering(node_id) {
+        return PeerRead::rediscovering();
+    }
+    PeerRead::failed(format!(
+        "nenhum dos {conhecidos} endereços conhecidos respondeu, e a rede não devolveu um novo"
+    ))
+}
+
+impl PeerRead {
+    fn ok(node: serde_json::Value) -> Self {
+        Self {
+            node: Some(node),
+            ..Self::default()
+        }
+    }
+
+    fn failed(erro: String) -> Self {
+        Self {
+            unreachable: Some(erro),
+            ..Self::default()
+        }
+    }
+
+    fn rediscovering() -> Self {
+        Self {
+            rediscovering: true,
+            ..Self::default()
+        }
+    }
 }
 
 async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]) -> String {
@@ -1747,40 +1814,83 @@ async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Respo
     let connection_key = state.auth.read().await.connection_key.clone();
 
     // Fan out to every peer at once; a slow peer must not serialise the others.
+    //
+    // Cada peer é lido pelos **candidatos**, não por um endereço só, e o
+    // resultado alimenta a memória de falha do `RouteTable` - a mesma de
+    // `mark_failure`/`is_failed` do caminho de inferência. É isso que impede o
+    // Painel de rediscar para sempre um endereço que morreu: quem falha sai de
+    // uso e é reavaliado depois do `FAILURE_COOLDOWN`; quem responde limpa a
+    // marca na hora e vira o preferido da próxima leitura.
     let futures: Vec<_> = peers
         .iter()
         .map(|p| {
             let is_self = p.node_id == self_id;
-            let url = p.gateway_url();
+            let node_id = p.node_id.clone();
+            let candidatos = p.gateway_candidates();
             // Cliente pinado no node_id do destino: com o cluster em TLS, o
             // compartilhado não tem como verificar o certificado do peer e toda
             // chamada de controle falharia - foi assim que a tela de implantar
             // parou de enxergar as fatias dos outros nós.
             let http = state.peer_http.for_peer(&p.node_id);
             let connection_key = connection_key.clone();
+            let routes = state.network.routes.clone();
+            let network = state.network.clone();
             async move {
-                if is_self || url.is_none() {
-                    return (None, None);
+                if is_self || candidatos.is_empty() {
+                    return PeerRead::default();
                 }
                 let http = match http {
                     Ok(c) => c,
-                    Err(e) => return (None, Some(format!("sem cliente: {e}"))),
+                    Err(e) => return PeerRead::failed(format!("sem cliente: {e}")),
                 };
-                let url = format!("{}/api/ui/node", url.unwrap());
-                match tokio::time::timeout(
-                    PEER_TIMEOUT,
-                    http.get(&url).bearer_auth(connection_key).send(),
-                )
-                .await
-                {
-                    Ok(Ok(r)) if r.status().is_success() => match r.json().await {
-                        Ok(v) => (Some(v), None),
-                        Err(e) => (None, Some(format!("resposta inválida: {e}"))),
-                    },
-                    Ok(Ok(r)) => (None, Some(format!("HTTP {}", r.status()))),
-                    Ok(Err(e)) => (None, Some(format!("{e}"))),
-                    Err(_) => (None, Some("timeout".to_string())),
+                let utilizaveis = routes.usable(&node_id, &candidatos);
+                if utilizaveis.is_empty() {
+                    // Todo endereço conhecido está desacreditado. Insistir não
+                    // ressuscita nenhum deles: o que resolve é a rede voltar a
+                    // dizer onde o peer está.
+                    network.request_peer_addresses(&node_id).await;
+                    return sem_endereco_vivo(&network, &node_id, candidatos.len());
                 }
+                let mut ultimo_erro = None;
+                for base in &utilizaveis {
+                    let url = format!("{base}/api/ui/node");
+                    let resposta = tokio::time::timeout(
+                        PEER_TIMEOUT,
+                        http.get(&url).bearer_auth(connection_key.clone()).send(),
+                    )
+                    .await;
+                    match resposta {
+                        Ok(Ok(r)) if r.status().is_success() => match r.json().await {
+                            Ok(v) => {
+                                routes.mark_success(&node_id, base);
+                                network.note_peer_read(&node_id);
+                                return PeerRead::ok(v);
+                            }
+                            // Resposta inválida não é endereço morto: o peer
+                            // atendeu. Desacreditar o endereço aqui esconderia
+                            // um defeito de payload atrás de uma busca de rota.
+                            Err(e) => ultimo_erro = Some(format!("resposta inválida: {e}")),
+                        },
+                        // O mesmo vale para um HTTP de erro: quem responde
+                        // 401 ou 500 está vivo naquele endereço.
+                        Ok(Ok(r)) => ultimo_erro = Some(format!("HTTP {}", r.status())),
+                        Ok(Err(e)) => {
+                            routes.mark_failure(&node_id, base);
+                            ultimo_erro = Some(format!("{e}"));
+                        }
+                        Err(_) => {
+                            routes.mark_failure(&node_id, base);
+                            ultimo_erro = Some("timeout".to_string());
+                        }
+                    }
+                }
+                // Se a última tentativa derrubou o último endereço utilizável,
+                // já se pode pedir o endereço novo nesta mesma passagem.
+                if routes.usable(&node_id, &candidatos).is_empty() {
+                    network.request_peer_addresses(&node_id).await;
+                    return sem_endereco_vivo(&network, &node_id, candidatos.len());
+                }
+                PeerRead::failed(ultimo_erro.unwrap_or_else(|| "sem resposta".to_string()))
             }
         })
         .collect();
@@ -1788,7 +1898,12 @@ async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Respo
     let fetched = futures::future::join_all(futures).await;
 
     let mut views = Vec::new();
-    for (p, (node, unreachable)) in peers.iter().zip(fetched) {
+    for (p, leitura) in peers.iter().zip(fetched) {
+        let PeerRead {
+            node,
+            unreachable,
+            rediscovering,
+        } = leitura;
         let is_self = p.node_id == self_id;
         let node = if is_self {
             // Serialise our own view through the same shape as a remote one.
@@ -1822,6 +1937,7 @@ async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Respo
             is_self,
             node,
             unreachable,
+            rediscovering,
         });
     }
 
@@ -1881,12 +1997,25 @@ async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Respo
                 }
             }
             let covered_layers = coverage.iter().filter(|covered| **covered).count();
+            let mut unreadable_nodes: Vec<String> = views
+                .iter()
+                .filter(|view| !view.is_self && (view.unreachable.is_some() || view.rediscovering))
+                .filter(|view| {
+                    view.capabilities
+                        .iter()
+                        .any(|capability| capability.model_id == model_id)
+                })
+                .map(|view| view.node_id.clone())
+                .collect();
+            unreadable_nodes.sort();
+            unreadable_nodes.dedup();
             ModelCoverageView {
                 model_id,
                 total_layers,
                 covered_layers,
                 complete: total_layers > 0 && covered_layers == total_layers as usize,
                 coverage,
+                unreadable_nodes,
             }
         })
         .collect();
@@ -7936,5 +8065,249 @@ mod capacity_preview_tests {
 
         drop(permits);
         assert!(try_capacity_preview_slot().is_some());
+    }
+}
+
+/// Um endereço anunciado que deixou de responder.
+///
+/// O defeito que estes testes travam: enquanto `gateway_url()` era só
+/// `peer.addr`, o plano de controle tinha **um** endereço e nenhuma memória de
+/// falha. Um IPv6 temporário que roda (macOS gera um novo e aposenta o antigo
+/// sozinho) deixava o Painel a discar um endereço que não existe em máquina
+/// nenhuma, para sempre, com a mensagem "nada abaixo pode ser lido" - enquanto
+/// o mesmo peer estava vivo e anunciado noutro endereço, já dentro de
+/// `addr_candidates`.
+#[cfg(test)]
+mod dead_address_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_with};
+
+    /// Um `/api/ui/node` de verdade na loopback, que conta quantas vezes foi
+    /// lido. Devolve `(porta, contador)`.
+    async fn live_node(hostname: &str) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let contador = hits.clone();
+        let nome = hostname.to_string();
+        let app = Router::new().route(
+            "/api/ui/node",
+            get(move || {
+                let nome = nome.clone();
+                contador.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { Json(json!({ "hostname": nome, "node_id": "outro" })) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        for _ in 0..200 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        (port, hits)
+    }
+
+    /// `127.0.0.2` na mesma porta é o endereço morto: no macOS o SYN some
+    /// (nenhum alias na lo0), no Linux ele é recusado. Os dois chegam ao mesmo
+    /// lugar - erro de transporte - que é o que um endereço aposentado produz.
+    fn dead_host() -> &'static str {
+        "127.0.0.2"
+    }
+
+    fn peer_com_endereco_morto(port: u16) -> PeerInfo {
+        let mut p = peer("outro", "macbook", port);
+        // O que o cluster guardou: o endereço morto na frente, porque é o que
+        // o peer anunciou quando ainda era o dele.
+        p.addr = format!("{}:{port}", dead_host());
+        p.addr_candidates = vec![
+            format!("{}:{port}", dead_host()),
+            format!("127.0.0.1:{port}"),
+        ];
+        p.capabilities = vec![routing_contract::ModelCapability {
+            model_id: "qwen".into(),
+            start_layer: 0,
+            end_layer: 15,
+            total_layers: Some(16),
+            supports_inference: true,
+        }];
+        p.model = "qwen".into();
+        p.start_layer = 0;
+        p.end_layer = 15;
+        p.total_layers = 16;
+        p
+    }
+
+    /// O teste do defeito: uma única leitura do Painel já recupera o peer pelo
+    /// endereço vivo, **sem intervenção manual**, e o endereço morto fica
+    /// registado como tal para não voltar a ser discado.
+    #[tokio::test]
+    async fn a_dead_announced_address_is_forgotten_and_the_peer_is_read_at_the_new_one() {
+        let (port, hits) = live_node("macbook").await;
+        let p = peer_com_endereco_morto(port);
+        let morto = format!("http://{}:{port}", dead_host());
+        let vivo = format!("http://127.0.0.1:{port}");
+        let state = state_with("eu", vec![p]).await;
+
+        let body = body_of(cluster(HeaderMap::new(), State(state.clone())).await).await;
+        let outro = body["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["node_id"] == "outro")
+            .expect("o peer tem de aparecer no cluster");
+
+        assert_eq!(
+            outro["node"]["hostname"], "macbook",
+            "a leitura tinha de cair no endereço vivo em vez de morrer no primeiro"
+        );
+        assert!(
+            outro["unreachable"].is_null(),
+            "o aviso permanente do Painel não pode sobreviver a um peer legível: {}",
+            outro["unreachable"]
+        );
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let routes = &state.network.routes;
+        assert!(
+            routes.is_failed("outro", &morto),
+            "o endereço que não respondeu tem de ficar na memória de falha"
+        );
+        assert!(
+            !routes.is_failed("outro", &vivo),
+            "o endereço que respondeu não pode ficar desacreditado"
+        );
+        let candidatos = state
+            .all_peers()
+            .await
+            .into_iter()
+            .find(|p| p.node_id == "outro")
+            .unwrap()
+            .gateway_candidates();
+        assert_eq!(
+            routes.usable("outro", &candidatos),
+            vec![vivo],
+            "a leitura seguinte não pode voltar a pagar o timeout do endereço morto"
+        );
+    }
+
+    /// Quando **todo** endereço conhecido morre, o nó para de insistir e passa
+    /// a reencontrar o par. A tela precisa disso: "reencontrando" é trabalho em
+    /// curso, "não dá para ler" é beco sem saída.
+    #[tokio::test]
+    async fn when_every_address_is_dead_the_node_asks_for_the_current_one() {
+        let (port, _) = live_node("macbook").await;
+        let mut p = peer_com_endereco_morto(port);
+        p.addr_candidates = vec![format!("{}:{port}", dead_host())];
+        let state = state_with("eu", vec![p]).await;
+
+        // Primeira leitura: descobre que o único endereço não responde.
+        let body = body_of(cluster(HeaderMap::new(), State(state.clone())).await).await;
+        let outro = body["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["node_id"] == "outro")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            outro["rediscovering"], true,
+            "sem endereço utilizável, o Painel mostra o nó a ser reencontrado"
+        );
+        assert!(
+            outro["unreachable"].is_null(),
+            "reencontrando não é inalcançável: o utilizador não pode ler um beco sem saída"
+        );
+        assert!(
+            state.network.is_rediscovering("outro"),
+            "o nó tem de ter pedido o endereço atual do par"
+        );
+
+        // E o cadáver saiu da entrada local, para que o próximo `Announce` do
+        // peer a repovoe em vez de somar-se a ele.
+        let guardados = state.network.peers.read().await["outro"]
+            .addr_candidates
+            .clone();
+        assert!(
+            guardados.is_empty(),
+            "o candidato desacreditado tinha de sair da entrada: {guardados:?}"
+        );
+    }
+
+    /// "Reencontrando" tem prazo. Três perguntas à rede sem resposta não são
+    /// mais trabalho em curso: são um par que anuncia por UDP e não atende no
+    /// HTTP. Insistir na palavra seria repor o aviso desonesto que este
+    /// trabalho veio remover, só que otimista em vez de pessimista.
+    #[tokio::test]
+    async fn rediscovering_gives_up_and_says_so_instead_of_promising_forever() {
+        let (port, _) = live_node("macbook").await;
+        let mut p = peer_com_endereco_morto(port);
+        p.addr_candidates = vec![format!("{}:{port}", dead_host())];
+        let state = state_with("eu", vec![p]).await;
+
+        let ler = |state: GatewayState| async move {
+            body_of(cluster(HeaderMap::new(), State(state)).await)
+                .await["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["node_id"] == "outro")
+                .unwrap()
+                .clone()
+        };
+
+        assert_eq!(ler(state.clone()).await["rediscovering"], true);
+
+        // Envelhecer a busca para além do prazo, sem esperar em tempo real.
+        state
+            .network
+            .age_rediscovery_for_test("outro", crate::network::REDISCOVERY_GIVE_UP);
+
+        let desistiu = ler(state.clone()).await;
+        assert_eq!(
+            desistiu["rediscovering"], false,
+            "passado o prazo, a tela não pode continuar prometendo que reencontra"
+        );
+        assert!(
+            desistiu["unreachable"]
+                .as_str()
+                .is_some_and(|erro| erro.contains("endereços conhecidos")),
+            "e tem de dizer por quê: {}",
+            desistiu["unreachable"]
+        );
+    }
+
+    /// A cobertura sai do gossip, não da leitura. Um par ilegível continua a
+    /// contribuir camadas - e é honesto que continue, porque o servidor de
+    /// inferência dele pode estar perfeito e só o endereço de controle é que
+    /// morreu - mas isso não pode ficar invisível.
+    #[tokio::test]
+    async fn an_unreadable_peer_cannot_pass_for_healthy_coverage() {
+        let (port, _) = live_node("macbook").await;
+        let mut p = peer_com_endereco_morto(port);
+        p.addr_candidates = vec![format!("{}:{port}", dead_host())];
+        let state = state_with("eu", vec![p]).await;
+
+        let body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
+        let qwen = body["model_inventory"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["model_id"] == "qwen")
+            .expect("o modelo anunciado entra no inventário");
+        assert_eq!(
+            qwen["covered_layers"], 16,
+            "as camadas continuam anunciadas; retirá-las seria mentir na outra direção"
+        );
+        assert_eq!(
+            qwen["unreadable_nodes"],
+            json!(["outro"]),
+            "a cobertura tem de dizer de quem ela depende sem conseguir ler"
+        );
     }
 }

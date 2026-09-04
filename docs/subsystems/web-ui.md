@@ -558,6 +558,20 @@ que o nó lê do `n_gpu_layers_effective` do próprio `/health` do servidor de
 inferência, no mesmo poll de 3s que já lhe dá `reported_total_layers`. Nenhuma
 chamada nova: o `/api/ui/cluster` já busca o `/api/ui/node` de cada peer.
 
+Essa busca tem dois desfechos de erro, e a tela os separa. `unreachable` é o par
+que atendeu no endereço anunciado e cuja leitura quebrou - beco sem saída, ponto
+rosa, e a mensagem diz o erro. `rediscovering` é o par cujos endereços todos
+deixaram de responder e cujo endereço atual o nó já foi pedir à rede: ponto âmbar
+a pulsar e "Reencontrando este nó", porque endereços IPv6 temporários rodam
+sozinhos e o estado se resolve na volta seguinte do gossip. Dizer "nada abaixo
+pode ser lido" nesse caso mandava o operador procurar um defeito que se conserta
+sozinho - mas a promessa tem prazo de 90 s, e depois disso o card volta a
+`unreachable`, porque um par que anuncia e não atende existe. Nos dois casos as camadas do par continuam contando para a cobertura -
+o servidor de inferência dele pode estar perfeito e só o endereço de controle é
+que morreu - então o card diz isso, e o cartão "Cobertura" do topo perde o verde
+de "completo" e mostra `dashboard.coverageUnconfirmed` enquanto
+`model_inventory[].unreadable_nodes` do modelo ativo não estiver vazio.
+
 Sem relato do motor a linha não aparece. `layerPlacement` (`src/lib/layerPlacement.ts`)
 devolve `null`, e a tela cala em vez de chutar - dizer "tudo na GPU" sem saber
 seria pior que o silêncio. Negativo é "todas" na convenção do llama.cpp, e lido

@@ -223,6 +223,15 @@ export interface PeerView {
   is_self: boolean;
   node: NodeInfo | null;
   unreachable: string | null;
+  /**
+   * Todo endereço conhecido deste par está desacreditado e o nó já pediu à
+   * rede o endereço atual dele.
+   *
+   * Não é o mesmo que `unreachable`: aqui há trabalho em curso. Endereços IPv6
+   * temporários rodam sozinhos, e a tela precisa dizer "reencontrando" em vez
+   * de anunciar um beco sem saída que se resolve na volta seguinte do gossip.
+   */
+  rediscovering: boolean;
 }
 
 /** Quantos bytes de um grupo de tensores ficaram num buffer. */
@@ -366,6 +375,15 @@ export interface ModelCoverage {
   covered_layers: number;
   coverage: boolean[];
   complete: boolean;
+  /**
+   * Máquinas que contribuem camadas para esta cobertura e não puderam ser
+   * lidas nesta passagem.
+   *
+   * A cobertura sai do que os pares anunciam no gossip, não da leitura de
+   * cada um. Sem esta lista, um par ilegível conta como saudável e a tela diz
+   * "completo" para um modelo cuja metade ninguém consegue consultar.
+   */
+  unreadable_nodes: string[];
 }
 
 /** A handoff selected by the backend routing planner for the active model. */

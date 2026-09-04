@@ -410,17 +410,33 @@ export function PeerDetailCard({
           )}
           <span className="flex items-center gap-1 text-[0.66rem] text-muted">
             <Dot
-              tone={peer.unreachable ? "rose" : serverStateTone(n?.status.state)}
-              pulse={serving}
+              tone={
+                peer.rediscovering
+                  ? "amber"
+                  : peer.unreachable
+                    ? "rose"
+                    : serverStateTone(n?.status.state)
+              }
+              pulse={serving || peer.rediscovering}
             />
-            {peer.unreachable ?? serverStateLabel(n?.status.state)}
+            {peer.rediscovering
+              ? t("dashboard.rediscoveringShort")
+              : (peer.unreachable ?? serverStateLabel(n?.status.state))}
           </span>
         </div>
       </div>
 
-      {peer.unreachable ? (
+      {peer.rediscovering || peer.unreachable ? (
         <div className="space-y-2 px-3 py-3 text-[0.75rem] text-muted">
-          {t("dashboard.unreachable", { error: peer.unreachable })}
+          {/*
+            Reencontrando não é o mesmo que ilegível. O endereço morreu, o nó
+            já pediu o atual, e a próxima volta do gossip costuma resolver:
+            dizer só "nada abaixo pode ser lido" mandava o utilizador procurar
+            um defeito que se conserta sozinho.
+          */}
+          {peer.rediscovering
+            ? t("dashboard.rediscovering")
+            : t("dashboard.unreachable", { error: peer.unreachable ?? "" })}
           <GpuTemperature
             gpuKind={system?.gpu_kind ?? "none"}
             temperature={null}

@@ -101,4 +101,32 @@ describe("Dashboard", () => {
 
     await waitFor(() => expect(screen.getByText("RTT 7.4 ms")).toBeTruthy());
   });
+
+  /**
+   * A cobertura sai do que os pares anunciam no gossip, não da leitura de cada
+   * um: uma máquina cujo endereço anunciado morreu continua contribuindo
+   * camadas. Mostrar "completo" em verde nesse estado é o pior que a tela pode
+   * fazer - o operador acredita numa pipeline fechada que ninguém consegue
+   * consultar.
+   */
+  it("não dá cobertura por confirmada quando uma máquina dela não pôde ser lida", async () => {
+    const cluster = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      { ...fakeSlicePeer("b", 16, 31), rediscovering: true },
+    ], "qwen35");
+    cluster.model_inventory = [{
+      model_id: "qwen35",
+      total_layers: 32,
+      covered_layers: 32,
+      coverage: [],
+      complete: true,
+      unreadable_nodes: ["b"],
+    }];
+
+    mount(cluster);
+
+    await waitFor(() =>
+      expect(screen.getByText("1 máquina desta cobertura não pôde ser lida")).toBeTruthy(),
+    );
+  });
 });

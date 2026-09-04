@@ -5152,6 +5152,13 @@ pub(crate) async fn reconfigure_local(
                 ));
             };
             let tp_none = slice.tp.is_none();
+            // `from_params` deixa `inference_port` em 0; a identidade da fatia
+            // não o carrega. Sem este override o servidor de inferência subia
+            // em `[::]:0` (porta efêmera) num redeploy, e o túnel/HTTP direto
+            // não achava mais o peer.
+            let inference_port = state.network.inference_port.ok_or_else(|| {
+                "este nó subiu sem --inference-port; não dá para reconfigurar a fatia".to_string()
+            })?;
             NodeConfig {
                 deploy_id: slice.deploy_id,
                 deployment_name: slice.deployment_name,
@@ -5164,6 +5171,7 @@ pub(crate) async fn reconfigure_local(
                 peer_index: slice.peer_index,
                 primary: slice.primary,
                 tp: slice.tp,
+                inference_port,
                 single_peer: slice.single_peer,
                 no_embeddings: slice.no_embeddings.unwrap_or(params.no_embeddings),
                 ..NodeConfig::from_params(&params, tp_none)

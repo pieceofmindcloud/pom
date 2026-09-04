@@ -619,6 +619,14 @@ do nó. O contrafactual do captain confirmou a causa: trocar o endereço
 anunciado de IPv6 para o IPv4 da LAN fez a execução voltar à ordem de **43
 tok/s**.
 
+A validação pós-correção fechou o contrafactual sem depender do contorno: o
+captain restaurou o endereço IPv6 original e mediu novamente a inferência,
+sem regressão e com o mesmo resultado rápido observado no IPv4. Pela API,
+`/api/generate` com a cabeça remota passou de **2,2 tok/s** antes da correção
+para **67,4 tok/s** depois, com **TTFT de 58 ms** e **949 ms** ponta a ponta.
+Isso coloca o caminho remoto na mesma ordem do caminho local, medido em **95,4
+tok/s**.
+
 Há três fatos diferentes:
 
 - **Gatilho:** um candidato de endereço anunciado, em especial um IPv6 que não

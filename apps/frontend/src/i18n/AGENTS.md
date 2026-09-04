@@ -32,7 +32,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
   labels in both locale blocks for the nested history menu and date column. The
   `nav.deploymentLogs`, `deploymentLogs.*`, `deployments.viewLogs` and
   `network.logs*` groups keep the cluster process-log console distinct from the
-  request audit in both locale blocks.
+  request audit in both locale blocks. Chat telemetry also keeps paired labels
+  for the current `/health` path snapshot, the path observed by the request
+  trace, mixed paths and their divergence.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou

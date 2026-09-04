@@ -2469,6 +2469,11 @@ impl InferState {
         if self.engine.moe_hook_enabled() {
             return Ok(hidden);
         }
+        if self.engine.moe_external_executor_enabled() {
+            bail!(
+                "executor externo de MoE está ativo, mas o hook não está instalado; recusa para evitar executar os experts duas vezes"
+            );
+        }
         let Some(moe) = self.moe.as_ref() else {
             if let Some(reason) = self.moe_fallback_reason.as_deref() {
                 timings.record_moe_reason(reason);

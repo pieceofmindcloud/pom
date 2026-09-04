@@ -2800,6 +2800,12 @@ impl LlmEngine {
                 Arc::as_ptr(&state) as *mut c_void,
             );
         }
+        if let Some(mtp) = self.mtp.as_ref() {
+            mtp.set_moe_callback(
+                Some(moe_ffn_callback),
+                Arc::as_ptr(&state) as *mut c_void,
+            );
+        }
         self.moe_callback = Some(state);
         Ok(())
     }
@@ -3384,6 +3390,7 @@ impl LlmEngine {
                         n_vocab,
                         mtp_model,
                         mtp_offload_kqv,
+                        cfg.moe_external_executor && mtp_loaded.is_none(),
                     ) {
                         Ok(Some(d)) => (Some(d), None, None),
                         Ok(None) => {
@@ -6097,6 +6104,7 @@ mod tests {
             engine.n_embd_out,
             engine.n_vocab,
             None,
+            false,
             false,
         )
         .expect("a guarda interna deve recusar sem abortar");

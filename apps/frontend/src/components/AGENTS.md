@@ -76,7 +76,10 @@ Per-file list:
   também os timings ponta a ponta com o processamento medido no nó, para não
   chamar de gargalo do backend uma espera que ocorreu fora dele. Mostra também
   o executor MoE efetivo e o motivo publicado pelo runtime quando há fallback
-  CPU ou indisponibilidade.
+  CPU ou indisponibilidade. O cartão distingue o caminho selecionado no
+  snapshot atual de `/health` do caminho observado no trace desta requisição;
+  cada fase também mostra seu `selected_path`, e uma divergência entre os dois
+  escopos é sinalizada.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

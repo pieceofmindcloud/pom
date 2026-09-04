@@ -20,6 +20,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   produto. Alcança o estado da coletiva TP por `tp_probe` (ver abaixo).
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
+  Quando o modelo alvo usa MoE externo metadata-only, `LlmEngine::set_moe_runtime`
+  instala o mesmo callback também no contexto MTP; o acompanhante CPU do recuo
+  mantém o caminho nativo porque seus pesos de experts estão presentes.
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
   fallback CPU do router executa os experts selecionados em workers escopados

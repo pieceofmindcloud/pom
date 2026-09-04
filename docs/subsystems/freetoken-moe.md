@@ -482,7 +482,7 @@ chamada: `14` chamadas para `27` fichas, contra `60` para `61` e `196` para
 prioridade. O sampling MoE também acumulou `33,495 ms` de top-k em 61 fichas
 e `113,09 ms` em 197 fichas; os bytes medidos foram cerca de 28 vezes maiores.
 
-A primeira fatia de correção atua no maior buraco medido: o pipeline K CUDA
+A primeira fatia de correção daquela medição atuou no maior buraco medido: o pipeline K CUDA
 mantém workspace de device por executor e reutiliza buffers entre chamadas,
 alocando somente quando a capacidade do lote cresce. Gate/up e down Q6_K
 usam redução cooperativa por linha com 128 threads; Q2_K e Q3_K usam a mesma
@@ -495,20 +495,125 @@ O benchmark sintético na geometria Q6_K real (`hidden=2048`,
 alocação na primeira capacidade. É uma medida do executor, não uma promessa
 de E2E. A suíte CUDA na ksia passou com `325` testes e zero falhas.
 
-O E2E pós-fatia ainda precisa ser coletado nos dois modelos. A tabela de
-entrega permanece deliberadamente pendente até o binário novo servir a mesma
-requisição:
+Na data desta fase o E2E pós-fatia ainda precisava ser coletado nos dois
+modelos. A tabela histórica permaneceu pendente até o binário novo servir a
+mesma requisição:
 
 | caminho | antes | depois | referência |
 |---|---:|---:|---:|
 | Qwen3.6 MoE | `0,3 tok/s` | pendente de E2E | llama.cpp `160 tok/s` |
 | Ornith Q6_K MoE | `15,9`/`15,4 tok/s` | pendente de E2E | llama.cpp `36,2`/`38,2 tok/s` |
 
-Com a nova evidência, a ordem de trabalho é: prefill em lote; fichas por
-chamada e especulação; ponte Q2_K/Q3_K para o UD-IQ3_XXS; depois paralelismo
-CPU de referência, sampling e bytes por ficha. A telemetria continua
-obrigatória para confirmar `moe_executor`, `moe_executor_dtypes`,
-`moe_executor_reason`, TTFT, fases e tok/s depois do deploy.
+Com a nova evidência, a ordem de trabalho é: corrigir o MTP no contexto
+metadata-only do MoE; confirmar a especulação por chamada; atacar o custo base
+de `5,8x` por chamada, incluindo a duplicação estrutural e a sincronização
+antecipada; só então atacar o prefill, que continua a pior distância por
+chamada. A telemetria continua obrigatória para confirmar `moe_executor`,
+`moe_executor_dtypes`, `moe_executor_reason`, MTP, TTFT, fases e tok/s depois
+do deploy.
+
+### Fase 5.4: escopo da telemetria e primeira fatia de prefill - 2026-09-04
+
+O par pós-implantação do captain usou `Ornith-1.5-35B-Q4_K_M.gguf` e confirmou
+que a ponte CUDA estava ativa (`moe_executor=cuda`). O resultado ainda ficou
+longe do denso: no turno longo, `11,3 tok/s` no MoE contra `140,7 tok/s` no
+llama.cpp; o prefill ficou em `16,1 tok/s` contra `1.343,6 tok/s` e o p50 por
+chamada foi `2.515,7 ms` contra `135,8 ms`. No decode, foram `197` chamadas
+para `198` fichas no MoE, contra `62` para `197` no denso; o p50 foi `84,6 ms`
+contra `20,8 ms`. O acerto de prefixo com 19 fichas não retirou o custo de
+`3.106,96 ms` do prefill MoE. Esse par é a linha de base E2E da fatia seguinte,
+não uma prova isolada de ganho da ponte.
+
+O par Q6_K com CUDA confirma a prioridade, mas não prova o ganho da ponte:
+Q6_K já estava entre os dtypes cobertos antes da mudança. No turno longo, o
+MoE foi de `15,4` para `16,4 tok/s`, enquanto o prefill mediu `17,0` e
+`23,4 tok/s` contra `619,0 tok/s` do llama.cpp. O p50 do prefill CUDA ficou em
+`1.826 ms` contra `54,6 ms`, uma distância de 33x; o decode ficou em
+`50,3 ms` contra `21,7 ms` e ainda houve `196` chamadas para `197` fichas,
+contra `73` para `197`. A prova da ponte continua sendo o Qwen
+`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, que antes caía para `CPUReference` por
+Q2_K/Q3_K.
+
+A aparente contradição entre `caminho selecionado: moe/q4_0` no ambiente e
+`llama.cpp` nos hops foi investigada no código. O `/health` usado pelo cartão
+de ambiente publica o estado atual do processo: `InferState.inference_path`,
+executor MoE instalado e colocação efetiva. Já cada `NodeTimings` do trace é
+criado durante a requisição e publica `selected_path`, `executed_engine`,
+`executed_engines`, `engine_mismatch` e `mixed_execution`. São escopos
+distintos. O código também recusa um executor externo MoE sem callback e recusa
+um callback instalado que não tenha observado nenhum forward, portanto não há
+fallback denso silencioso autorizado no binário atual.
+
+Assim, as linhas resumidas como "motor llama.cpp" não permitem concluir um
+desvio de caminho sem os campos `selected_path`, `engine_mismatch`,
+`mixed_execution`, `node_id` e o trace bruto da mesma resposta. A conclusão
+comprovada é que o rótulo do ambiente estava sendo usado como se fosse prova
+da requisição, embora seja apenas um snapshot atual. O cartão de telemetria
+agora mostra separadamente `estado atual` e `nesta execução`, mostra o
+`selected_path` em cada fase e avisa quando um snapshot atual diverge do path
+observado. Se um trace bruto novo trouxer `selected_path=moe/q4_0` e
+`executed_engine=llama.cpp`, ele aparecerá como divergência explícita e deve
+ser tratado como processo antigo ou desvio real, nunca como resultado MoE.
+
+A primeira fatia de otimização do prefill preserva o lote inteiro no executor
+CUDA e troca os kernels escalares de gate/up e down por uma redução cooperativa
+de 128 threads por linha para Q2_K, Q3_K, Q4_K e Q6_K. O benchmark sintético,
+com `hidden=2048`, `intermediate=512`, 28 tokens e 224 rotas, mediu:
+
+| dtype | parede | kernel | H2D | D2H | alocação |
+|---|---:|---:|---:|---:|---:|
+| Q4_K | `12,471 ms` | `11,907 ms` | `0,118 ms` | `0,194 ms` | `0,153 ms` |
+| Q6_K | `11,517 ms` | `11,080 ms` | `0,116 ms` | `0,098 ms` | `0,152 ms` |
+
+Essa medida é do executor isolado na ksia, com `nvcc 12.9`, `CUDAARCHS=120`
+e target separado; não é ainda o depois E2E. O `FIT_MAX_UBATCH` continua em
+`512`. A suíte CUDA passou com `325` testes e o diferencial novo de Q4_K em
+lote passou; o número E2E após essa fatia fica para a implantação integrada do
+captain.
+
+### Fase 5.5: MTP no modelo MoE e controle sem especulação - 2026-09-04
+
+O controle do captain no mesmo `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, com MTP e
+especulação desligados nos dois motores, isolou o custo base. O MoE fez `16,9`
+tok/s contra `93,7` do llama.cpp no turno longo; ambos produziram uma ficha por
+chamada, mas o p50 da chamada foi `57,4 ms` contra `9,9 ms`, uma distância de
+`5,8x`. O prefill continuou separado e muito pior: `1.105,8-3.065,9 ms` por
+chamada no MoE contra `37,8-42,3 ms`, ou `26x-73x`. Portanto MTP não explica o
+custo base, embora possa multiplicar a diferença: no par anterior o denso fazia
+`3,8` fichas por chamada.
+
+O `/health` do deploy MoE mostrou `mtp_ready=false` com
+`llama_decode no contexto MTP falhou rc=-1`. A causa é a combinação do modelo
+metadata-only com o fork: `llama_init_from_model` herda
+`moe_external_executor`, mas o contexto `nextn` não tinha callback. O fork
+recusa esse decode para não tentar experts nativos sem buffers. A correção em
+`MtpDrafter` registra se o contexto usa ownership externo e
+`LlmEngine::set_moe_runtime` instala o callback do runtime tanto no alvo quanto
+no contexto MTP. O acompanhante CPU usado quando o contexto MTP recua para RAM
+continua nativo e não recebe esse hook.
+
+O caminho de especulação já existia: `should_draft` exige `mtp_ready` para MTP,
+`mtp_draft` constrói o lote e a cauda verifica cada posição pelo sampler normal.
+Assim, depois que o contexto externo ficar pronto, o mesmo caminho volta a
+produzir lotes maiores no MoE sem alterar a distribuição da resposta. A
+telemetria esperada após a implantação é `mtp_ready=true`, sem
+`mtp_unavailable_reason`, e `speculation_active=true` quando o draft atingir o
+limiar de probabilidade.
+
+O callback externo do MoE já é o ponto de substituição de `build_moe_ffn` no
+fork usado pelo projeto: quando o ownership externo está ativo, o builder
+retorna o nó do callback e não acrescenta as matmuls nativas dos experts. No
+Rust, o caminho de hidden/residual agora também falha fechado se o executor
+externo estiver ativo sem hook, em vez de rodar um segundo forward no sidecar.
+Isso preserva a correção e evita que um binário incompatível transforme uma
+falha de instalação em duplicação silenciosa. O fork vendorizado não foi
+alterado nesta fatia.
+
+A ordem de medição e otimização fica: (1) confirmar MTP funcional no MoE;
+(2) confirmar a especulação por chamada; (3) reduzir o custo base de `5,8x`,
+incluindo qualquer duplicação comprovada e a sincronização antecipada; (4)
+atacar o prefill, que segue sendo a maior distância absoluta. A medição E2E
+após a correção MTP fica para a implantação integrada do captain.
 
 #### Procedimento E2E para a implantação do captain
 
@@ -543,13 +648,15 @@ curl -fsS "$GATEWAY/api/generate" \
   --data "$(jq -nc --arg model "$MODEL" --arg prompt "$PROMPT" \
     '{model:$model,prompt:$prompt,max_tokens:64}')" \
   | tee "ornith-q6k-${MODE}.json" \
-  | jq '{tokens_generated,tokens_per_sec,duration_ms,timings,trace:{input_tokens,output_tokens,hops:[.trace.hops[] | {prefill,decode}]}}'
+  | jq '{tokens_generated,tokens_per_sec,duration_ms,timings,trace:{input_tokens,output_tokens,hops:[.trace.hops[] | {node_id,start_layer,end_layer,prefill:(.prefill | {selected_path,executed_engine,executed_engines,engine_mismatch,mixed_execution,processing_ms,calls,node_p50_ms,node_p95_ms,moe_executor,moe_executor_dtypes,moe_executor_reason}),decode:(.decode | {selected_path,executed_engine,executed_engines,engine_mismatch,mixed_execution,processing_ms,calls,node_p50_ms,node_p95_ms,moe_executor,moe_executor_dtypes,moe_executor_reason})}]}}'
 ```
 
 Repetir o mesmo bloco para
 `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`. No resultado MoE, exigir
 `moe_executor=cuda`, dtypes `[14]` no Ornith e `[10,11,21,22,23]` no Qwen,
 sem `moe_executor_reason`; no denso, exigir `moe_executor=not-requested`.
+No Qwen MoE após esta correção, exigir também `mtp_ready=true` e
+`mtp_unavailable_reason=null`.
 Comparar `timings.generation_tokens_per_sec` e `tokens_per_sec` como geração,
 `timings.prefill_tokens_per_sec` como prefill e `timings.ttft_ms` como TTFT.
 Também registrar de `trace.hops[].prefill` e `.decode` os campos
@@ -601,8 +708,9 @@ medição MoE desse modelo também fizer parte da entrega. A captura local usa
 fila `try_send` limitada, então qualquer aumento deve ser investigado sem
 transformar o envio em espera síncrona.
 
-A investigação da medição Gemma4 encontrou uma divergência anterior a qualquer
-otimização de kernel. O contexto captura `l_out-29`, mas em
+A investigação histórica da medição Gemma4 encontrou, antes da costura do
+callback externo atual, uma divergência anterior a qualquer otimização de
+kernel. O contexto capturava `l_out-29`, mas em
 `vendor/llama-cpp-sys-2/llama.cpp/src/models/gemma4.cpp` esse tensor é criado
 depois de `build_moe_ffn`, `ffn_post_norm`, a soma residual e `build_cvec`. O
 callback de captura copia o tensor e retorna `true`; portanto a chamada de
@@ -610,16 +718,24 @@ callback de captura copia o tensor e retorna `true`; portanto a chamada de
 chama o `MoeRuntime` depois de `take_residual`. Isso acrescenta uma passada dos
 experts à passada completa do llama.cpp, em vez de substituir `build_moe_ffn`.
 
-O contrafactual mínimo foi identificado no próprio callback: retornar `false`
+O contrafactual mínimo foi identificado no próprio callback daquela versão:
+retornar `false`
 ao encontrar `l_out-29` só abandonaria nós posteriores a esse tensor, mas não
 impediria o `build_moe_ffn` que já o produziu. Logo, esse contrafactual não
-elimina o trabalho duplicado; a correção estrutural precisa mover a fronteira
-para antes do FFN MoE e injetar a saída no restante do bloco. A medição também
-mostra uma segunda causa possível, ainda não quantificada isoladamente: o
+elimina o trabalho duplicado; a correção estrutural precisava mover a fronteira
+para antes do FFN MoE e injetar a saída no restante do bloco. A fonte atual do
+fork já faz essa substituição no `build_moe_ffn`: com
+`moe_external_executor`, o builder retorna o nó customizado antes das matmuls
+nativas. O Rust também deixa de aplicar o sidecar ao hidden quando o hook está
+instalado e recusa fechado se o executor externo estiver sem hook. Portanto o
+perfil histórico não deve ser usado para afirmar duplicação no binário atual;
+ele precisa ser repetido na implantação integrada e conferido pelos campos
+`executed_engine`, `engine_mismatch` e `mixed_execution`. A medição também
+mostrou uma segunda causa possível, ainda não quantificada isoladamente: o
 executor CUDA atual aloca buffers e copia hidden, gate/up e down de host para a
 GPU em cada chamada, sincroniza os kernels e copia o resultado de volta. Esse
-perfil só deve ser otimizado depois de a telemetria confirmar `moe_executor=cuda`
-e separar o custo da transferência do custo do kernel.
+perfil só deve ser otimizado depois de separar o custo da transferência do
+custo do kernel.
 
 O renderer Gemma4 lê `tokenizer.chat_template` do próprio GGUF, valida os
 marcadores `<bos>`, `<|turn>`, `<turn|>`, `<|think|>`, `<|channel>` e

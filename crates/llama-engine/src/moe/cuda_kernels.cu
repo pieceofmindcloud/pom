@@ -1140,7 +1140,12 @@ __global__ void kquant_down_route_kernel(
         payload_scale(payload, 5);
 }
 
-__global__ void kquant_gate_up_q6_route_kernel(
+// Each block computes one output row. The scalar kernel above assigned one
+// thread to each row, which made a real prefill batch launch hundreds of
+// thousands of long serial dot products. Keep the route layout unchanged,
+// but let 128 threads share every dot product for all supported K-quants.
+__global__ void kquant_gate_up_cooperative_route_kernel(
+    uint32_t dtype,
     const uint8_t * const *payloads,
     const uint32_t *token_ids,
     int pair_count,
@@ -1158,7 +1163,7 @@ __global__ void kquant_gate_up_q6_route_kernel(
     const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
     float value = 0.0f;
     for (int column = threadIdx.x; column < hidden; column += blockDim.x) {
-        value += k_value_q6_k(matrix, row, column, hidden) * input[column];
+        value += k_value(dtype, matrix, row, column, hidden) * input[column];
     }
     __shared__ float partials[128];
     partials[threadIdx.x] = value;
@@ -1174,7 +1179,8 @@ __global__ void kquant_gate_up_q6_route_kernel(
     }
 }
 
-__global__ void kquant_down_q6_route_kernel(
+__global__ void kquant_down_cooperative_route_kernel(
+    uint32_t dtype,
     const uint8_t * const *payloads,
     int pair_count,
     int hidden,
@@ -1192,7 +1198,7 @@ __global__ void kquant_down_q6_route_kernel(
     const float *input = activated + pair * intermediate;
     float value = 0.0f;
     for (int column = threadIdx.x; column < intermediate; column += blockDim.x) {
-        value += k_value_q6_k(matrix, row, column, intermediate) * input[column];
+        value += k_value(dtype, matrix, row, column, intermediate) * input[column];
     }
     __shared__ float partials[128];
     partials[threadIdx.x] = value;
@@ -3992,10 +3998,10 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         result = cuda_status(cudaEventRecord(start));
         if (result != 0) goto finish;
     }
-    if (dtype == 14) {
-        kquant_gate_up_q6_route_kernel<<<
+    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 14) {
+        kquant_gate_up_cooperative_route_kernel<<<
             2 * intermediate_i * pair_count, block_size>>>(
-                pipeline->d_payloads, pipeline->d_token_ids, pair_count,
+                dtype, pipeline->d_payloads, pipeline->d_token_ids, pair_count,
                 intermediate_i, hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
     } else {
         kquant_gate_up_route_kernel<<<
@@ -4010,9 +4016,9 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         block_size>>>(pipeline->d_gate_up, pair_count, intermediate_i, pipeline->d_activated);
     result = cuda_status(cudaGetLastError());
     if (result != 0) goto finish;
-    if (dtype == 14) {
-        kquant_down_q6_route_kernel<<<hidden_i * pair_count, block_size>>>(
-            pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
+    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 14) {
+        kquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(
+            dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
             expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
     } else {
         kquant_down_route_kernel<<<

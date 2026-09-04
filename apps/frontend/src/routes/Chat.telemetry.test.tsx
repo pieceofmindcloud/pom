@@ -77,6 +77,31 @@ const twoPeerTrace: RequestTrace = {
   ],
 };
 
+const contradictoryTrace: RequestTrace = {
+  ...trace,
+  hops: [{
+    node_id: "abcdef0123456789",
+    start_layer: 0,
+    end_layer: 15,
+    prefill: phase({
+      processing_ms: 880,
+      round_trip_ms: 920,
+      calls: 5,
+      selected_path: "dense/llama.cpp",
+      executed_engine: "llama.cpp",
+      engine_mismatch: false,
+    }),
+    decode: phase({
+      processing_ms: 300,
+      round_trip_ms: 420,
+      calls: 34,
+      selected_path: "dense/llama.cpp",
+      executed_engine: "llama.cpp",
+      engine_mismatch: false,
+    }),
+  }],
+};
+
 const environment: ExecutionTelemetryEnvironment = {
   snapshotCaptured: true,
   cluster: {
@@ -176,6 +201,16 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText("motor MoE")).toBeTruthy();
   });
 
+  it("separates the current health path from the path observed in this execution", () => {
+    mount(<ExecutionTelemetry trace={contradictoryTrace} environment={environment} />);
+
+    expect(screen.getByText("estado atual: caminho selecionado: moe/q4_0")).toBeTruthy();
+    expect(screen.getByText("nesta execução: caminho selecionado: dense/llama.cpp")).toBeTruthy();
+    expect(screen.getByText(/O estado atual diverge desta execução/)).toBeTruthy();
+    expect(screen.getByText(/Os valores do ambiente são um snapshot atual de \/health/)).toBeTruthy();
+    expect(screen.getAllByText("caminho selecionado: dense/llama.cpp").length).toBeGreaterThan(0);
+  });
+
   it("shows unknown when a hop has no engine field", () => {
     mount(<ExecutionTelemetry trace={twoPeerTrace} />);
 
@@ -212,10 +247,10 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText(/Ajuste à memória: desligado/)).toBeTruthy();
     expect(screen.getByText(/Pedido de offload KV: ligado/)).toBeTruthy();
     expect(screen.getByText(/Pedido de offload KV: desligado/)).toBeTruthy();
-    expect(screen.getByText("caminho selecionado: moe/q4_0")).toBeTruthy();
+    expect(screen.getByText("estado atual: caminho selecionado: moe/q4_0")).toBeTruthy();
     expect(screen.getByText("executor MoE: cpu-reference")).toBeTruthy();
     expect(screen.getByText(/motivo do executor MoE: dtype IQ3_S/)).toBeTruthy();
-    expect(screen.getByText("caminho selecionado: desconhecido")).toBeTruthy();
+    expect(screen.getByText("estado atual: caminho selecionado: não informado")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: ativo")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: desligado")).toBeTruthy();
   });

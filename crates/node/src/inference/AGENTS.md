@@ -97,6 +97,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o caminho selecionado e o estado efetivo do executor MoE
   (`moe_requested`, `moe_executor`, dtypes e motivo), pois não representa uma
   requisição. O
+  caminho MoE com executor externo não aplica o runtime aos hidden states uma
+  segunda vez: se o hook não estiver instalado, a requisição falha fechado em
+  vez de executar experts nativos e externos. O contexto MTP criado sobre o
+  modelo metadata-only recebe o mesmo hook no `LlmEngine`; sem isso
+  `llama_decode` do contexto `nextn` falha e a sessão perde MTP.
   estado é acessado por `lock_inference_state`: um mutex envenenado vira erro
   HTTP ou falha da requisição em lote, nunca um novo panic em `unwrap`. EOS
   fecha apenas o acumulador da resposta; a sessão permanece disponível para

@@ -2176,6 +2176,103 @@ mod tests {
     }
 
     #[test]
+    fn executor_cuda_q4k_preserva_lote_de_prefill_do_decoder_cpu() {
+        let format = KQuantFormat::Q4K;
+        let hidden = 256;
+        let intermediate = 256;
+        let tokens = 3;
+        let payloads = (0..2)
+            .map(|_| k_payload(format, hidden, intermediate))
+            .collect::<Vec<_>>();
+        let hidden_values = (0..tokens * hidden)
+            .map(|index| ((index as f32) * 0.013).sin())
+            .collect::<Vec<_>>();
+        let expected = (0..tokens)
+            .flat_map(|token| {
+                let token_hidden = &hidden_values[token * hidden..(token + 1) * hidden];
+                let experts = payloads
+                    .iter()
+                    .map(|payload| {
+                        KQuantExpert::from_payload(format, hidden, intermediate, payload)
+                            .unwrap()
+                            .run(token_hidden)
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                (0..hidden).map(move |index| {
+                    0.25 * experts[0][index] + 0.75 * experts[1][index]
+                })
+            })
+            .collect::<Vec<_>>();
+        let executor = KQuantCudaExecutor::new_with_cache(
+            format,
+            hidden,
+            intermediate,
+            measured_device_cache(4_000_000).unwrap(),
+        )
+        .unwrap();
+        let model = "cuda-q4-batch";
+        let leases = payloads
+            .iter()
+            .enumerate()
+            .map(|(expert, payload)| {
+                executor
+                    .resident_admit(
+                        super::super::cache::ExpertKey::new(
+                            model,
+                            0,
+                            expert as u32,
+                            format.name(),
+                        ),
+                        payload,
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let route_leases = (0..tokens)
+            .flat_map(|_| {
+                (0..leases.len()).map(|expert| {
+                    executor
+                        .resident_lookup(&super::super::cache::ExpertKey::new(
+                            model,
+                            0,
+                            expert as u32,
+                            format.name(),
+                        ))
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let token_ids = (0..tokens)
+            .flat_map(|token| [token as u32, token as u32])
+            .collect::<Vec<_>>();
+        let weights = (0..tokens)
+            .flat_map(|_| [0.25f32, 0.75f32])
+            .collect::<Vec<_>>();
+        let token_offsets = (0..=tokens).map(|token| token * 2).collect::<Vec<_>>();
+        let actual = executor
+            .run_route_batch_resident(
+                &route_leases,
+                &token_ids,
+                &weights,
+                &token_offsets,
+                &hidden_values,
+                tokens,
+            )
+            .unwrap();
+
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            let absolute = (actual - expected).abs();
+            let relative = absolute / expected.abs().max(f32::MIN_POSITIVE);
+            assert!(
+                absolute <= 1.0e-3 || relative <= 1.0e-5,
+                "{actual} != {expected} (absolute={absolute}, relative={relative})"
+            );
+        }
+    }
+
+    #[test]
     fn executor_cuda_q6_k_gate_up_oito_experts_hidden_2048_e_finito() {
         let format = KQuantFormat::Q6K;
         let hidden = 2048;
@@ -2229,89 +2326,91 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "benchmark explícito do lote CUDA Q6_K"]
-    fn benchmark_cuda_q6_k_lote_prefill() {
-        let format = KQuantFormat::Q6K;
-        let hidden = 2048;
-        let intermediate = 512;
-        let tokens = 28;
-        let payloads = (0..8)
-            .map(|_| k_payload(format, hidden, intermediate))
-            .collect::<Vec<_>>();
-        let executor = KQuantCudaExecutor::new_with_cache(
-            format,
-            hidden,
-            intermediate,
-            measured_device_cache(64 * 1024 * 1024).unwrap(),
-        )
-        .unwrap();
-        let leases = payloads
-            .iter()
-            .enumerate()
-            .map(|(expert, payload)| {
-                executor
-                    .resident_admit(
-                        super::super::cache::ExpertKey::new(
-                            "cuda-q6-benchmark",
-                            0,
-                            expert as u32,
-                            format.name(),
-                        ),
-                        payload,
-                    )
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
-        let mut hidden_values = Vec::with_capacity(tokens * hidden);
-        let route_leases = (0..tokens)
-            .flat_map(|_| {
-                (0..leases.len()).map(|expert| {
-                    executor
-                        .resident_lookup(&super::super::cache::ExpertKey::new(
-                            "cuda-q6-benchmark",
-                            0,
-                            expert as u32,
-                            format.name(),
-                        ))
-                        .unwrap()
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut token_ids = Vec::with_capacity(tokens * leases.len());
-        let mut weights = Vec::with_capacity(tokens * leases.len());
-        let mut token_offsets = Vec::with_capacity(tokens + 1);
-        token_offsets.push(0);
-        for token in 0..tokens {
-            hidden_values.extend((0..hidden).map(|index| {
-                ((token * hidden + index) as f32 * 0.001).sin()
-            }));
-            token_ids.extend(std::iter::repeat_n(token as u32, leases.len()));
-            weights.extend(std::iter::repeat_n(1.0 / leases.len() as f32, leases.len()));
-            token_offsets.push(token_ids.len());
-        }
-        let started = Instant::now();
-        let output = executor
-            .run_route_batch_resident(
-                &route_leases,
-                &token_ids,
-                &weights,
-                &token_offsets,
-                &hidden_values,
-                tokens,
+    #[ignore = "benchmark explícito do lote CUDA Q4_K e Q6_K"]
+    fn benchmark_cuda_k_quants_lote_prefill() {
+        for (label, format) in [("Q4_K", KQuantFormat::Q4K), ("Q6_K", KQuantFormat::Q6K)] {
+            let hidden = 2048;
+            let intermediate = 512;
+            let tokens = 28;
+            let model = format!("cuda-{label}-benchmark");
+            let payloads = (0..8)
+                .map(|_| k_payload(format, hidden, intermediate))
+                .collect::<Vec<_>>();
+            let executor = KQuantCudaExecutor::new_with_cache(
+                format,
+                hidden,
+                intermediate,
+                measured_device_cache(64 * 1024 * 1024).unwrap(),
             )
             .unwrap();
-        let wall_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        let diagnostics = executor.diagnostics();
-        eprintln!(
-            "CUDA Q6_K prefill benchmark tokens={tokens} routes={} wall_ms={wall_ms:.3} alloc_ms={:.3} kernel_ms={:.3} h2d_ms={:.3} d2h_ms={:.3}",
-            token_ids.len(),
-            diagnostics.alloc_ms,
-            diagnostics.kernel_ms,
-            diagnostics.h2d_ms,
-            diagnostics.d2h_ms,
-        );
-        assert_eq!(output.len(), tokens * hidden);
-        assert!(output.iter().all(|value| value.is_finite()));
+            let leases = payloads
+                .iter()
+                .enumerate()
+                .map(|(expert, payload)| {
+                    executor
+                        .resident_admit(
+                            super::super::cache::ExpertKey::new(
+                                &model,
+                                0,
+                                expert as u32,
+                                format.name(),
+                            ),
+                            payload,
+                        )
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let mut hidden_values = Vec::with_capacity(tokens * hidden);
+            let route_leases = (0..tokens)
+                .flat_map(|_| {
+                    (0..leases.len()).map(|expert| {
+                        executor
+                            .resident_lookup(&super::super::cache::ExpertKey::new(
+                                &model,
+                                0,
+                                expert as u32,
+                                format.name(),
+                            ))
+                            .unwrap()
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut token_ids = Vec::with_capacity(tokens * leases.len());
+            let mut weights = Vec::with_capacity(tokens * leases.len());
+            let mut token_offsets = Vec::with_capacity(tokens + 1);
+            token_offsets.push(0);
+            for token in 0..tokens {
+                hidden_values.extend((0..hidden).map(|index| {
+                    ((token * hidden + index) as f32 * 0.001).sin()
+                }));
+                token_ids.extend(std::iter::repeat_n(token as u32, leases.len()));
+                weights.extend(std::iter::repeat_n(1.0 / leases.len() as f32, leases.len()));
+                token_offsets.push(token_ids.len());
+            }
+            let started = Instant::now();
+            let output = executor
+                .run_route_batch_resident(
+                    &route_leases,
+                    &token_ids,
+                    &weights,
+                    &token_offsets,
+                    &hidden_values,
+                    tokens,
+                )
+                .unwrap();
+            let wall_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            let diagnostics = executor.diagnostics();
+            eprintln!(
+                "CUDA {label} prefill benchmark tokens={tokens} routes={} wall_ms={wall_ms:.3} alloc_ms={:.3} kernel_ms={:.3} h2d_ms={:.3} d2h_ms={:.3}",
+                token_ids.len(),
+                diagnostics.alloc_ms,
+                diagnostics.kernel_ms,
+                diagnostics.h2d_ms,
+                diagnostics.d2h_ms,
+            );
+            assert_eq!(output.len(), tokens * hidden);
+            assert!(output.iter().all(|value| value.is_finite()));
+        }
     }
 
     #[test]

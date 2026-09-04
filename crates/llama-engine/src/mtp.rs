@@ -97,6 +97,11 @@ pub struct MtpDrafter {
     verify_h: Vec<f32>,
     verify_rows: usize,
     allocation: crate::llm::MtpAllocation,
+    /// O modelo que sustenta este contexto foi carregado com os experts em
+    /// modo metadata-only. Nesse caso o contexto MTP também precisa do hook
+    /// externo; sem ele `llama_decode` recusa o grafo antes de executar a
+    /// cabeça nextn.
+    external_moe_executor: bool,
 }
 
 // SAFETY: o `llama_context` é usado sob o mesmo `Mutex` que serializa o
@@ -205,6 +210,7 @@ impl MtpDrafter {
         n_vocab: usize,
         mtp_model: Option<std::sync::Arc<crate::llm::LoadedModel>>,
         offload_kqv: bool,
+        external_moe_executor: bool,
     ) -> Result<Option<Self>> {
         // `llama_model_n_layer_nextn` is metadata only: it stays positive on
         // a target loaded with `load_mtp=false`, even though its nextn tensor
@@ -271,7 +277,23 @@ impl MtpDrafter {
             verify_h: Vec::new(),
             verify_rows: 0,
             allocation,
+            external_moe_executor,
         }))
+    }
+
+    /// Instala no contexto MTP o mesmo callback que substitui os experts no
+    /// contexto alvo. O modelo externo não contém buffers dos experts por
+    /// desenho; deixar este contexto sem callback faz cada `llama_decode`
+    /// falhar com `rc=-1` e desliga MTP para a sessão.
+    pub fn set_moe_callback(
+        &self,
+        callback: sys::llama_moe_ffn_callback,
+        userdata: *mut std::os::raw::c_void,
+    ) {
+        if !self.external_moe_executor {
+            return;
+        }
+        unsafe { sys::llama_set_moe_ffn_callback(self.ctx, callback, userdata) };
     }
 
     pub fn allocation(&self) -> crate::llm::MtpAllocation {

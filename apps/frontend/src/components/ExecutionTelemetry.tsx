@@ -85,6 +85,34 @@ function executionLabel(
   return engine;
 }
 
+function phasePathLabel(
+  t: ReturnType<typeof useI18n>["t"],
+  selectedPath: string | undefined,
+) {
+  return t("chat.telemetry.phasePath", {
+    value: selectedPath ?? t("chat.telemetry.pathNotReported"),
+  });
+}
+
+function executionPathsForNode(trace: RequestTrace, nodeId: string) {
+  const paths = trace.hops
+    .filter((hop) => hop.node_id === nodeId)
+    .flatMap((hop) => isPhasedHop(hop)
+      ? [hop.prefill.selected_path, hop.decode.selected_path]
+      : [hop.selected_path])
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
+  return Array.from(new Set(paths));
+}
+
+function executionPathLabel(
+  t: ReturnType<typeof useI18n>["t"],
+  paths: string[],
+) {
+  if (paths.length === 0) return t("chat.telemetry.pathNotReported");
+  if (paths.length > 1) return t("chat.telemetry.pathMixed");
+  return paths[0];
+}
+
 function ExecutionNetwork({
   trace,
   environment,
@@ -148,6 +176,7 @@ function ExecutionEnvironment({
         <h3 className="font-medium text-fg">{t("chat.telemetry.environmentTitle")}</h3>
         <span className="text-[0.66rem] text-faint">{t("chat.telemetry.machineCount", { count: nodeIds.length })}</span>
       </div>
+      <p className="mt-1 text-[0.68rem] leading-relaxed text-faint">{t("chat.telemetry.environmentScopeExplain")}</p>
       {!environment.snapshotCaptured ? (
         <p className="mt-2 text-[0.72rem] text-muted">{t("chat.telemetry.snapshotMissing")}</p>
       ) : (
@@ -165,7 +194,13 @@ function ExecutionEnvironment({
               const gpuValue = gpuNames.length > 0 ? gpuNames.join(", ") : system?.gpu_kind || null;
               const placement = health?.placement;
               const counts = placement ? effectivePlacementCounts(placement.layers) : null;
-              const selectedPath = health?.selected_path ?? t("chat.telemetry.engineUnknown");
+              const currentPath = health?.selected_path;
+              const currentPathLabel = currentPath ?? t("chat.telemetry.pathNotReported");
+              const observedPaths = executionPathsForNode(trace, nodeId);
+              const observedPath = executionPathLabel(t, observedPaths);
+              const pathMismatch = currentPath != null
+                && observedPaths.length === 1
+                && observedPaths[0] !== currentPath;
               const syncState = typeof health?.profile_sync_enabled === "boolean"
                 ? health.profile_sync_enabled
                   ? t("chat.telemetry.profileSyncActive")
@@ -179,11 +214,13 @@ function ExecutionEnvironment({
                       <p className="truncate font-mono text-[0.64rem] text-faint">{nodeId}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                      <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.selectedPath", { value: selectedPath })}</span>
+                      <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.currentPath", { value: currentPathLabel })}</span>
+                      <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.observedPath", { value: observedPath })}</span>
                       <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.profileSync", { state: syncState })}</span>
                       {health?.moe_executor && <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.moeExecutor", { value: health.moe_executor })}</span>}
                     </div>
                   </div>
+                  {pathMismatch && <p className="mt-2 break-words text-amber-300">{t("chat.telemetry.environmentPathMismatch", { current: currentPath, observed: observedPaths[0] })}</p>}
                   <div className="mt-2 grid min-w-0 gap-2 text-[0.68rem] sm:grid-cols-2">
                     <div className="min-w-0">
                       <p className="mb-1 font-medium uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.capacity")}</p>
@@ -341,7 +378,10 @@ function PhaseRow({
         ? <td className="py-1 pr-3 align-top text-fg" rowSpan={4}>L{hop.start_layer}-L{hop.end_layer}<br /><span className="text-faint">{hop.node_id.slice(0, 10)}</span></td>
         : null}
       <td className="py-1 pr-3">{label}</td>
-      <td className="py-1 pr-3">{executionLabel(t, phase)}</td>
+      <td className="py-1 pr-3">
+        <span className="block">{executionLabel(t, phase)}</span>
+        <span className="block text-faint">{phasePathLabel(t, phase.selected_path)}</span>
+      </td>
       <td className="py-1 pr-3 text-right">{phase.calls}</td>
       <td className="py-1 pr-3 text-right">{gatewayMs} ms</td>
       <td className="py-1 pr-3 text-right">{phase.node_decode_ms} ms</td>
@@ -391,7 +431,10 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
     <tr className="border-t border-line/70">
       <td className="py-1 pr-3 align-top text-fg" rowSpan={2}>L{hop.start_layer}-L{hop.end_layer}<br /><span className="text-faint">{hop.node_id.slice(0, 10)}</span></td>
       <td className="py-1 pr-3">{t("chat.telemetry.legacyBoth")}</td>
-      <td className="py-1 pr-3">{engineLabel(t, hop.executed_engine)}</td>
+      <td className="py-1 pr-3">
+        <span className="block">{engineLabel(t, hop.executed_engine)}</span>
+        <span className="block text-faint">{phasePathLabel(t, hop.selected_path)}</span>
+      </td>
       <td className="py-1 pr-3 text-right">{hop.calls}</td>
       <td className="py-1 pr-3 text-right">{gatewayMs} ms</td>
       <td className="py-1 pr-3 text-right">{hop.node_decode_ms} ms</td>

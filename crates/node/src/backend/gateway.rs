@@ -1727,8 +1727,12 @@ async fn generate_stream_inner(
         let cfg = state.runtime.config().await;
         let n_batch = cfg.as_ref().map(|c| c.n_batch).unwrap_or(512);
         (
+            // Um pedaço é decodificado como um `llama_batch` no head; maior que
+            // `n_batch` aborta o llama.cpp. `prompt_chunk_tokens` é o mesmo
+            // clamp de `prompt_budget_error`, e é ele que vale - não o valor
+            // cru do knob.
             cfg.as_ref()
-                .map(|c| c.prefill_chunk_tokens)
+                .map(prompt_chunk_tokens)
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
             cfg.as_ref()
                 .map(|c| c.prefill_max_inflight_chunks as usize)

@@ -3490,6 +3490,13 @@ impl LlmEngine {
         unsafe { sys::llama_n_ctx(self.ctx) }
     }
 
+    /// `cparams.n_batch` do contexto vivo. Um `llama_decode` com mais tokens
+    /// que isto dispara `GGML_ASSERT(n_tokens_all <= cparams.n_batch)`, que
+    /// aborta o processo inteiro - por isso os chamadores conferem antes.
+    pub fn n_batch(&self) -> u32 {
+        unsafe { sys::llama_n_batch(self.ctx) }
+    }
+
     pub fn offload_kqv(&self) -> bool {
         // The setting is immutable for this context and carried in the engine
         // configuration only during construction. Keep a copy visible through

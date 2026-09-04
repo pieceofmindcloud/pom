@@ -4563,6 +4563,24 @@ pub(crate) fn preserve_batch_identity(request_meta: &Value, response_meta: &mut 
     }
 }
 
+/// Recusa um pedaço de prefill maior que o `n_batch` do contexto **antes** de
+/// chamar `llama_decode`, que dispara `GGML_ASSERT(n_tokens_all <=
+/// cparams.n_batch)` e aborta o processo inteiro. O gateway já clampa o tamanho
+/// do pedaço em `prompt_chunk_tokens`; esta guarda cobre um head cujo `n_batch`
+/// é menor que o do nó que planejou, e o item isolado que o scheduler deixa
+/// passar. O erro nomeia os knobs a ajustar.
+fn guard_chunk_fits_batch(engine: &LlmEngine, n_tokens: usize, chunk_index: u32) -> Result<()> {
+    let n_batch = engine.n_batch();
+    if n_tokens as u64 > n_batch as u64 {
+        bail!(
+            "pedaço {chunk_index} tem {n_tokens} tokens, acima do n_batch={n_batch} deste nó; \
+             o llama.cpp abortaria. Reduza prefill_chunk_tokens para <= n_batch, ou aumente \
+             n_batch, nos ajustes avançados da implantação"
+        );
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prefill_blocking(
     state: SharedState,
@@ -4724,6 +4742,7 @@ fn prefill_blocking(
     let engine_timing;
     if let Some((hidden, shape)) = tensor {
         n_tokens = shape[0];
+        guard_chunk_fits_batch(&s.engine, n_tokens, chunk_index)?;
         engine_timing = s.engine.decode_hidden(
             &hidden,
             &shape,
@@ -4738,6 +4757,7 @@ fn prefill_blocking(
             bail!("chunk {chunk_index} não tem tokens");
         }
         n_tokens = tokens_for_chunk.len();
+        guard_chunk_fits_batch(&s.engine, n_tokens, chunk_index)?;
         engine_timing = s
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
@@ -5213,6 +5233,18 @@ fn prefill_batch_blocking(
         }
     }
     if let Some(error) = transform_error {
+        let message = error.to_string();
+        for (reply, _) in prepared {
+            replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
+        }
+        return replies;
+    }
+
+    // Um `llama_decode` com mais tokens que `n_batch` aborta o processo. O
+    // scheduler já corta o lote em `n_batch`, mas deixa passar um item isolado
+    // maior que isso; recusa aqui é um pedido perdido, não o nó inteiro.
+    let batch_tokens: usize = prepared.iter().map(|(_, item)| item.n_tokens).sum();
+    if let Err(error) = guard_chunk_fits_batch(&s.engine, batch_tokens, prepared[0].1.chunk_index) {
         let message = error.to_string();
         for (reply, _) in prepared {
             replies.push((reply, Err(anyhow::anyhow!(message.clone()))));

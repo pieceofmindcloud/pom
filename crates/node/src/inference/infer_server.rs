@@ -711,6 +711,10 @@ async fn run_scheduler(
     stats: Arc<SchedulerStats>,
 ) {
     let mut queue = crate::scheduler::SchedulerQueue::new(cfg.clone());
+    let slot_freed = {
+        let guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.slot_freed.clone()
+    };
     loop {
         if queue.is_empty() {
             let Some(command) = rx.recv().await else {
@@ -742,11 +746,57 @@ async fn run_scheduler(
             stats.queue_depth.store(queue.len(), Ordering::Relaxed);
         }
 
-        let Some(class) = queue.front_class() else {
+        let Some(front_class) = queue.front_class() else {
             continue;
         };
-        let selection = queue.take_batch(Instant::now(), class);
+
+        // Admissão de sessão: um prefill de sessão nova só entra se houver slot
+        // - livre, ou uma sessão retida despejável (`evict_retained`). Sem
+        // slot, o item fica na fila FIFO em vez de ir ao worker e voltar com
+        // "seq pool esgotado".
+        let (present, new_slots) = {
+            let guard = state.lock().unwrap_or_else(|e| e.into_inner());
+            let present: std::collections::HashSet<String> =
+                guard.sessions.keys().cloned().collect();
+            let retained = guard.sessions.values().filter(|s| s.retained).count();
+            (present, guard.seq_pool.len() + retained)
+        };
+        let is_existing = |sid: &str| present.contains(sid);
+
+        // A classe da frente primeiro (FIFO por chegada); depois as demais, para
+        // que a decodificação de uma sessão viva não fique presa atrás de um
+        // prefill de sessão nova que está esperando um slot.
+        let mut selection = crate::scheduler::BatchSelection {
+            items: Vec::new(),
+            total_tokens: 0,
+        };
+        for class in [
+            front_class,
+            crate::scheduler::WorkClass::PrefillTokens,
+            crate::scheduler::WorkClass::PrefillHidden,
+            crate::scheduler::WorkClass::DecodeTokens,
+            crate::scheduler::WorkClass::DecodeHidden,
+        ] {
+            let sel = queue.take_batch(Instant::now(), class, is_existing, new_slots);
+            if !sel.items.is_empty() {
+                selection = sel;
+                break;
+            }
+        }
+
         if selection.items.is_empty() {
+            // Só há prefill de sessão nova esperando slot. Aguarda trabalho
+            // novo OU um slot liberado, sem busy-loop.
+            stats.queue_depth.store(queue.len(), Ordering::Relaxed);
+            tokio::select! {
+                command = rx.recv() => match command {
+                    Some(command) => {
+                        let _ = queue.try_push(command.into_queue_item());
+                    }
+                    None => return,
+                },
+                _ = slot_freed.notified() => {}
+            }
             continue;
         }
         stats.queue_depth.store(queue.len(), Ordering::Relaxed);
@@ -2100,6 +2150,12 @@ struct InferState {
     /// Diretório de snapshots de KV cache (`Config::slot_save_path`), ou `None`
     /// quando o recurso está desligado nesta máquina. Ver `save_slot`.
     slot_dir: Option<std::path::PathBuf>,
+    /// Acordado sempre que um slot de sequência pode ter ficado livre (fim de
+    /// sessão, retenção, coleta de ociosidade, despejo). O `run_scheduler`
+    /// espera nele quando o item da frente é um prefill de sessão nova e não
+    /// há slot: a requisição fica na fila FIFO em vez de ser recusada com
+    /// "seq pool esgotado".
+    slot_freed: Arc<tokio::sync::Notify>,
     original_block_count: Option<u32>,
     inference_path: crate::executor::InferencePath,
     /// Corte de confiança do rascunho MTP — ver `NodeConfig::mtp_min_probability`.
@@ -2389,6 +2445,7 @@ impl InferState {
                 .map(str::trim)
                 .filter(|d| !d.is_empty())
                 .map(std::path::PathBuf::from),
+            slot_freed: Arc::new(tokio::sync::Notify::new()),
             original_block_count: None, // filled in after engine load
             inference_path,
             mtp_min_probability: cfg.mtp_min_probability,
@@ -2594,6 +2651,9 @@ impl InferState {
         let _ = session.finish_token_stream();
         session.retained = true;
         session.last_used = Instant::now();
+        // Uma sessão retida vira slot reclamável (`evict_retained`): um prefill
+        // de sessão nova que esperava pode agora entrar.
+        self.signal_slot_freed();
         Some(prompt_len)
     }
 
@@ -2793,6 +2853,9 @@ impl InferState {
                 self.free_seq(s.prompt_seq);
             }
         }
+        if count > 0 {
+            self.signal_slot_freed();
+        }
         count
     }
 
@@ -2828,7 +2891,14 @@ impl InferState {
             let _ = s.finish_token_stream();
             self.wipe_kv(&s);
             self.free_seq(s.prompt_seq);
+            self.signal_slot_freed();
         }
+    }
+
+    /// Acorda o `run_scheduler` para ele reavaliar um prefill de sessão nova
+    /// que ficou esperando slot.
+    fn signal_slot_freed(&self) {
+        self.slot_freed.notify_one();
     }
 }
 

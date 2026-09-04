@@ -65,9 +65,10 @@ Two files carry all of it: a static message table and a small provider. Tests:
 The chat telemetry additions live in both locale blocks: execution RTT, the
 source-to-destination edge scope, machine capacity/configuration, effective
 placement, per-peer `POM_PROFILE_SYNC`, backend-reported execution engine,
-execution diagnosis, TP collective table, prefix reuse and transmitted-token
-counts, overlap status, per-traversal transport identity/bytes, AI-analysis
-action and initial-model mark must remain available in
+  execution diagnosis, TP collective table, prefix reuse and transmitted-token
+  counts, overlap status, per-traversal transport identity/bytes, AI-analysis
+  action, initial-model mark and the explicit "time outside the node" diagnosis
+  must remain available in
 English and Brazilian Portuguese. Generic configuration state labels for
 fit-memory and KV offload are separate from the per-peer `POM_PROFILE_SYNC`
 state labels. The footnote explains the measurements but does not claim a fixed

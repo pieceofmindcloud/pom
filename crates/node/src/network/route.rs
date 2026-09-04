@@ -78,12 +78,21 @@ use std::time::{Duration, Instant};
 /// De quanto em quanto tempo os candidatos sao remedidos.
 pub const INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
 /// Uma sonda que passa disso conta como falha.
+#[cfg(not(test))]
 const TIMEOUT_SONDA: Duration = Duration::from_secs(3);
+
+#[cfg(test)]
+const TIMEOUT_SONDA: Duration = Duration::from_millis(50);
 
 struct Entrada {
     escolha: RouteChoice,
     medido_em: Instant,
 }
+
+/// Falha de transporte recente. A entrada permanece até uma nova sonda bem
+/// sucedida ou até expirar, para que uma sessão seguinte não volte a pagar o
+/// timeout do mesmo endereço.
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// Por onde este no fala com cada peer.
 ///
@@ -93,6 +102,7 @@ struct Entrada {
 #[derive(Default)]
 pub struct RouteTable {
     por_no: RwLock<HashMap<String, Entrada>>,
+    falhas: RwLock<HashMap<(String, String), Instant>>,
 }
 
 impl RouteTable {
@@ -134,6 +144,26 @@ impl RouteTable {
                 t.remove(node_id);
             }
         }
+        if let Ok(mut falhas) = self.falhas.write() {
+            falhas.insert((node_id.to_string(), addr.to_string()), Instant::now());
+        }
+    }
+
+    /// Informa se uma requisição real já falhou recentemente neste endereço.
+    pub fn is_failed(&self, node_id: &str, addr: &str) -> bool {
+        let Ok(mut falhas) = self.falhas.write() else {
+            return false;
+        };
+        let chave = (node_id.to_string(), addr.to_string());
+        let Some(falhou_em) = falhas.get(&chave).copied() else {
+            return false;
+        };
+        if falhou_em.elapsed() >= FAILURE_COOLDOWN {
+            falhas.remove(&chave);
+            false
+        } else {
+            true
+        }
     }
 
     /// Descarta a escolha quando o peer anuncia outra topologia de endereços.
@@ -145,6 +175,9 @@ impl RouteTable {
     pub fn invalidate(&self, node_id: &str) {
         if let Ok(mut t) = self.por_no.write() {
             t.remove(node_id);
+        }
+        if let Ok(mut falhas) = self.falhas.write() {
+            falhas.retain(|(id, _), _| id != node_id);
         }
     }
 
@@ -163,6 +196,9 @@ impl RouteTable {
                 },
             );
         }
+        if let Ok(mut falhas) = self.falhas.write() {
+            falhas.remove(&(node_id.to_string(), addr.to_string()));
+        }
     }
 
     /// Se ja passou tempo suficiente desde a ultima medicao deste peer.
@@ -178,11 +214,10 @@ impl RouteTable {
 
     /// Mede todos os candidatos e grava a escolha.
     ///
-    /// A sonda e `GET /health` por HTTP(S), nao ICMP: mede um endpoint real do
-    /// peer, com firewall e proxy no meio. Quando há gateway anunciado, ele é
-    /// usado como alvo porque continua disponível mesmo sem um modelo carregado
-    /// ou com a porta de inferência restrita. A rota gravada ainda é a URL de
-    /// inferência correspondente, nunca a URL do gateway.
+    /// A sonda e `GET /health` por HTTP(S), nao ICMP: mede exatamente a porta
+    /// de inferência que o pipeline vai usar, com firewall e proxy no meio.
+    /// Sondar o gateway seria insuficiente: ele pode responder enquanto a
+    /// porta de inferência engole SYN.
     ///
     /// O cliente da sonda aceita o certificado autoassinado do nó. Isso só vale
     /// para medir latência: os clientes que transportam inferência continuam
@@ -193,36 +228,20 @@ impl RouteTable {
         node_id: &str,
         candidatos: &[String],
     ) {
-        let pares: Vec<(String, String)> = candidatos
-            .iter()
-            .cloned()
-            .map(|endereco| (endereco.clone(), endereco))
-            .collect();
-        self.measure_peer_with_probes(clientes, node_id, &pares)
-            .await;
-    }
-
-    /// Mede endpoints de sondagem, mas grava a rota correspondente usada pela
-    /// inferência. O gateway é um bom alvo de health quando o servidor de
-    /// inferência ainda não subiu ou sua porta não está exposta, e não pode
-    /// substituir o endereço que o pipeline precisa discar.
-    pub async fn measure_peer_with_probes(
-        &self,
-        clientes: &crate::peer_client::PeerClients,
-        node_id: &str,
-        pares: &[(String, String)],
-    ) {
         let Ok(http) = clientes.probe() else {
             return;
         };
-        let mut medidas = Vec::with_capacity(pares.len());
-        for (rota, sonda) in pares {
+        let mut medidas = Vec::with_capacity(candidatos.len());
+        for rota in candidatos {
             let inicio = Instant::now();
             let resposta =
-                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{sonda}/health")).send())
+                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{rota}/health")).send())
                     .await;
             let rtt = match resposta {
                 Ok(Ok(r)) if r.status().is_success() => {
+                    if let Ok(mut falhas) = self.falhas.write() {
+                        falhas.remove(&(node_id.to_string(), rota.clone()));
+                    }
                     Some(inicio.elapsed().as_secs_f64() * 1000.0)
                 }
                 _ => None,
@@ -519,6 +538,36 @@ mod tests {
             )
             .await;
         assert_eq!(tabela.resolve("n1"), Some(vivo));
+    }
+
+    #[tokio::test]
+    async fn a_route_probe_must_test_the_inference_endpoint() {
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let blackhole_addr = blackhole.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((stream, _)) = blackhole.accept().await else {
+                return;
+            };
+            let _stream = stream;
+            std::future::pending::<()>().await;
+        });
+
+        let inference = format!("http://{blackhole_addr}");
+        let healthy_inference = tests_support::health_server(0).await;
+        let tabela = RouteTable::new();
+        tabela
+            .measure_peer(
+                &crate::peer_client::PeerClients::new(Duration::from_secs(10)),
+                "n1",
+                &[inference, healthy_inference.clone()],
+            )
+            .await;
+
+        assert_eq!(
+            tabela.resolve("n1"),
+            Some(healthy_inference),
+            "a sonda precisa medir a porta de inferência, não um gateway diferente"
+        );
     }
 
     /// Um peer nunca medido nao resolve para nada - o chamador cai no

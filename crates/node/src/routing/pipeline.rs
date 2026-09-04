@@ -593,15 +593,21 @@ pub fn resolve_step_url(
     }
     let escolhido = tabela
         .resolve(&step.node_id)
-        .filter(|url| step.inference_candidates.iter().any(|c| c == url))
+        .filter(|url| {
+            step.inference_candidates.iter().any(|c| c == url)
+                && !tabela.is_failed(&step.node_id, url)
+        })
         .unwrap_or_else(|| {
-            if step.inference_url.is_empty() {
+            if !step.inference_url.is_empty()
+                && !tabela.is_failed(&step.node_id, &step.inference_url)
+            {
+                step.inference_url.clone()
+            } else {
                 step.inference_candidates
-                    .first()
+                    .iter()
+                    .find(|candidate| !tabela.is_failed(&step.node_id, candidate))
                     .cloned()
                     .unwrap_or_default()
-            } else {
-                step.inference_url.clone()
             }
         });
     fixadas.insert(step.node_id.clone(), escolhido.clone());
@@ -851,7 +857,7 @@ mod ipv6_tests {
 
     #[test]
     fn f8_is_refused_when_any_pipeline_step_lacks_the_capability() {
-        let mut missing = step(&[CAP_FRAME_DTYPE_F8]);
+        let mut missing = step(&[]);
         missing.node_id = "old-peer".into();
         let error = plan_of(vec![step(&[CAP_FRAME_DTYPE_F8]), missing])
             .validate_wire_dtype(crate::wire::WireDtype::F8)
@@ -995,6 +1001,24 @@ mod ipv6_tests {
         assert_eq!(
             resolve_step_url(&step, &tabela, &mut fixadas),
             "http://rapido:8181"
+        );
+    }
+
+    #[test]
+    fn a_failed_route_is_not_selected_again_when_another_address_exists() {
+        let tabela = crate::route::RouteTable::new();
+        tabela.remember_for_test("n1", "http://blackhole:8181", 1.0);
+        tabela.mark_failure("n1", "http://blackhole:8181");
+        let mut fixadas = std::collections::HashMap::new();
+        let step = step_com(
+            vec!["http://blackhole:8181", "http://healthy:8181"],
+            "http://blackhole:8181",
+        );
+
+        assert_eq!(
+            resolve_step_url(&step, &tabela, &mut fixadas),
+            "http://healthy:8181",
+            "uma falha real deve tirar o endereço da sessão seguinte"
         );
     }
 

@@ -69,7 +69,11 @@ pub const DIRECT_REPLY_DEADLINE: Duration = Duration::from_secs(600);
 const DIRECT_TRACE_GRACE: Duration = Duration::from_secs(2);
 
 /// Tentativas de entrega do resultado direto, por URL candidata.
-const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(test))]
+const DELIVERY_TIMEOUT: Duration = Duration::from_millis(500);
+
+#[cfg(test)]
+const DELIVERY_TIMEOUT: Duration = Duration::from_millis(50);
 
 // ── Inbox ─────────────────────────────────────────────────────────────────────
 
@@ -669,6 +673,15 @@ async fn deliver_meta_at(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    let urls: Vec<String> = urls
+        .iter()
+        .filter_map(|url| url.as_str().map(str::to_owned))
+        .collect();
+    let route_key = reply_to
+        .get("node_id")
+        .and_then(|value| value.as_str())
+        .map(|node_id| format!("reply:{node_id}"))
+        .unwrap_or_else(|| format!("reply:urls:{}", urls.join("\u{1f}")));
     // Sem node_id no `reply_to` o remetente roda binário antigo: não há o que
     // fixar, e a entrega vai pelo cliente compartilhado. Num cluster estrito
     // ela será recusada do outro lado, que é o resultado correto - o que não
@@ -684,7 +697,7 @@ async fn deliver_meta_at(
         None => http.plain(),
     };
     let mut last = String::new();
-    for url in urls.iter().filter_map(|u| u.as_str()) {
+    for url in http.route_order(&route_key, &urls) {
         let target = format!("{url}{path}");
         match cliente
             .post(&target)
@@ -694,7 +707,10 @@ async fn deliver_meta_at(
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => return true,
+            Ok(r) if r.status().is_success() => {
+                http.remember_route_success(&route_key, &url);
+                return true;
+            }
             // `410` é resposta, não falha de rota: o gateway desistiu deste
             // quadro. Tentar o próximo endereço só acharia o mesmo inbox.
             Ok(r) if r.status() == StatusCode::GONE => {
@@ -702,7 +718,10 @@ async fn deliver_meta_at(
                 return false;
             }
             Ok(r) => last = format!("{target} respondeu {}", r.status()),
-            Err(e) => last = format!("{target}: {e}"),
+            Err(e) => {
+                http.remember_route_failure(&route_key, &url);
+                last = format!("{target}: {e}");
+            }
         }
     }
     warn!("resultado direto não chegou ao gateway ({last})");
@@ -803,6 +822,70 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_blackholed_reply_address_is_tried_only_once_across_stream_batches() {
+        use axum::{body::Bytes, routing::post, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+
+        let blackhole_hits = Arc::new(AtomicUsize::new(0));
+        let blackhole_hits_task = blackhole_hits.clone();
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let blackhole_addr = blackhole.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = blackhole.accept().await else {
+                    break;
+                };
+                blackhole_hits_task.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let _stream = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+
+        let healthy_hits = Arc::new(AtomicUsize::new(0));
+        let healthy_hits_task = healthy_hits.clone();
+        let healthy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let healthy_addr = healthy_listener.local_addr().unwrap();
+        let healthy = Router::new().route(
+            REMOTE_STREAM_RESULT_PATH,
+            post(move |_body: Bytes| {
+                let healthy_hits = healthy_hits_task.clone();
+                async move {
+                    healthy_hits.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::OK, "ok")
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(healthy_listener, healthy).await;
+        });
+
+        let reply_to = json!({
+            "ticket": "blackhole-ticket",
+            "node_id": "gateway-blackhole-test",
+            "urls": [
+                format!("http://{blackhole_addr}"),
+                format!("http://{healthy_addr}"),
+            ],
+        });
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let started = Instant::now();
+
+        assert!(deliver_stream_batch(&http, &reply_to, json!({"index": 1})).await);
+        assert!(deliver_stream_batch(&http, &reply_to, json!({"index": 2})).await);
+
+        assert_eq!(blackhole_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(healthy_hits.load(Ordering::SeqCst), 2);
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "a rota morta voltou a ser paga: {:?}",
+            started.elapsed()
+        );
+    }
 
     #[tokio::test]
     async fn a_delivered_result_reaches_the_ticket_that_asked_for_it() {

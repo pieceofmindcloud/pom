@@ -427,7 +427,7 @@ export function ExecutionTelemetry({
   analyzeDisabled?: boolean;
 }) {
   const { t } = useI18n();
-  const analysis = analyzeTelemetry(trace);
+  const analysis = analyzeTelemetry(trace, timings);
   const tpRows = trace.hops.flatMap((hop) => {
     if (!isPhasedHop(hop)) return [];
     return [

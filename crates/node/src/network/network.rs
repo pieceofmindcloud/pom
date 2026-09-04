@@ -1432,21 +1432,9 @@ impl Network {
                     if precisa_rota {
                         let candidatos = peer.inference_candidates();
                         if !candidatos.is_empty() {
-                            let sondas = peer.gateway_candidates();
-                            let pares: Vec<(String, String)> = candidatos
-                                .into_iter()
-                                .enumerate()
-                                .map(|(index, inferencia)| {
-                                    let sonda = sondas
-                                        .get(index)
-                                        .cloned()
-                                        .unwrap_or_else(|| inferencia.clone());
-                                    (inferencia, sonda)
-                                })
-                                .collect();
                             net_routes
                                 .routes
-                                .measure_peer_with_probes(&clientes, &peer.node_id, &pares)
+                                .measure_peer(&clientes, &peer.node_id, &candidatos)
                                 .await;
                         }
                     }

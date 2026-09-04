@@ -39,9 +39,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
-  quem colcheta IPv6. O cliente destinado a outro nó marca requests de
-  controle com `x-pom-internal-node`; o cliente `plain()` para Ollama e
-  loopback não envia essa marca.
+  quem colcheta IPv6, além da preferência e da quarentena temporária de rotas
+  que falharam. O cliente destinado a outro nó marca requests de controle com
+  `x-pom-internal-node` e limita a abertura TCP a 2 s; o cliente `plain()` para
+  Ollama e loopback não envia essa marca.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
@@ -65,8 +66,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `Network::start` - spawna o receive loop, o loop de gossip (5 s: announce
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
   de rotas e RTT (30 s, sonda lenta não segura o gossip). A política TLS inicial
-  é aplicada antes de `start`; a task mede o RTT por libp2p quando o peer
-  anuncia o túnel e usa o health HTTP apenas para peers antigos.
+  é aplicada antes de `start`; a task sonda `/health` na porta de inferência de
+  cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
   origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
   `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. O `PeerList` também
@@ -177,14 +178,15 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `choose_route` - melhor candidato vivo; só troca de rota atual se o ganho
   passar de 25% relativo **e** 2 ms absolutos (medido 9,6 vs 7,2 ms
   MacBook↔ksia não pode trocar a cada ciclo).
-- `RouteTable::measure_peer` - sonda `GET /health` num endpoint real do peer,
-  preferindo a porta de gateway porque ela continua disponível sem modelo ou
-  quando a porta de inferência está restrita. A escolha gravada continua sendo
-  a URL de inferência correspondente. A sonda aceita o certificado autoassinado
-  e o hostname do peer; isso não altera o cliente pinado usado pela inferência.
+- `RouteTable::measure_peer` - sonda `GET /health` na própria URL de inferência
+  anunciada, não no gateway. Assim um gateway saudável não promove uma porta
+  de inferência que engole SYN. A sonda aceita o certificado autoassinado e o
+  hostname do peer; isso não altera o cliente pinado usado pela inferência.
   Timeout de 3 s e intervalo de 5 min.
 - `RouteTable::mark_failure` - tira a rota de uso na hora quando uma requisição
-  real falhou naquele endereço, sem esperar o ciclo.
+  real falhou naquele endereço e memoriza a falha por 5 min. A próxima
+  resolução procura outro candidato, em vez de voltar ao endereço morto antes
+  de uma nova sonda bem-sucedida.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
   "ainda não medido", e o chamador cai no `inference_url` do plano.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;
@@ -226,12 +228,6 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (`backend/transfer.rs`). O protocolo existe mas ninguém implementa o lado
   servidor.
 
-- **Um hop inalcançável custa o timeout de `connect` do sistema antes de o
-  túnel ser tentado**: `relay::send_frame` fixa 600 s por requisição (sobrepõe
-  o do cliente), então quem decide é o SO - medido em **75 s** no macOS contra
-  um endereço que engole os SYN (`relay::tests::the_tunnel_carries_a_real_frame_to_a_live_peer`).
-  O desvio pelo túnel funciona e é rápido depois disso; o problema é o tempo
-  até chegar nele.
 - **O `receive_loop` não tem isolamento de pânico**: ele aguarda
   `handle_message` em linha, então um pânico ali mata a task e o nó **para de
   receber UDP para sempre**, enquanto HTTP, gossip e TUI seguem saudáveis - a

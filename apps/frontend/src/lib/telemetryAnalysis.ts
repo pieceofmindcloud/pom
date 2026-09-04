@@ -1,10 +1,11 @@
-import type { LegacyHopTrace, PhaseTrace, RequestTrace, TpTelemetry } from "./chatStream";
+import type { GenerationTimings, LegacyHopTrace, PhaseTrace, RequestTrace, TpTelemetry } from "./chatStream";
 import { isPhasedHop } from "./chatStream";
 import type { LayerPlacement } from "./types";
 
 export type TelemetryAnalysisKind =
   | "tp-network"
   | "pipeline-network"
+  | "outside-node"
   | "queue"
   | "backend"
   | "balanced";
@@ -107,7 +108,7 @@ export function effectivePlacementCounts(layers: LayerPlacement[]): PlacementCou
   }, { gpu: 0, cpu: 0, mixed: 0, unknown: 0 });
 }
 
-export function analyzeTelemetry(trace: RequestTrace): TelemetryAnalysis {
+export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTimings): TelemetryAnalysis {
   const rows = phases(trace);
   const tpRows = rows.filter((row): row is typeof row & { data: PhaseTrace & { tp: TpTelemetry } } => Boolean(row.data.tp?.enabled));
   const tpWait = total(tpRows, (phase) => phase.tp?.wait_ms ?? 0);
@@ -115,6 +116,19 @@ export function analyzeTelemetry(trace: RequestTrace): TelemetryAnalysis {
   const pipelineNetwork = total(rows, (phase) => phase.network_ms + phase.node_residual_ms);
   const lockWait = total(rows, (phase) => phase.node_lock_wait_ms);
   const processing = total(rows, (phase) => phase.processing_ms);
+  const outsideNode = timings == null ? 0 : Math.max(0, timings.total_ms - processing);
+
+  if (timings != null && outsideNode >= Math.max(100, processing * 0.35)) {
+    return {
+      kind: "outside-node",
+      severity: outsideNode >= Math.max(500, processing * 0.7) ? "critical" : "warning",
+      titleKey: "chat.telemetry.analysis.outsideNodeTitle",
+      detailKey: "chat.telemetry.analysis.outsideNodeDetail",
+      nextStepKey: "chat.telemetry.analysis.outsideNodeNextStep",
+      evidence: `total ${formatMs(timings.total_ms)} / node processing ${formatMs(processing)} / outside ${formatMs(outsideNode)}`,
+      tpObserved: tpRows.length > 0,
+    };
+  }
 
   if (tpRows.length > 0 && tpWait > 0 && tpWait >= Math.max(100, decode * 0.35)) {
     return {

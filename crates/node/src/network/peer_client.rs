@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Se este nó fala TLS com os peers, visível de qualquer lugar do processo.
 ///
@@ -82,8 +82,25 @@ pub struct PeerClients {
     plain: reqwest::Client,
     internal_plain: reqwest::Client,
     per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
+    reply_routes: Arc<RwLock<HashMap<String, ReplyRouteState>>>,
     auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
 }
+
+struct ReplyRouteState {
+    preferred: Option<String>,
+    failed: HashMap<String, Instant>,
+}
+
+const REPLY_ROUTE_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// Um endereço anunciado que engole SYN não pode entregar o controle do
+/// processo ao timeout do sistema operacional. O timeout total da requisição
+/// continua sendo escolhido pelo chamador, mas a conexão tem teto próprio.
+#[cfg(not(test))]
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(test)]
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 
 impl PeerClients {
     pub fn new(timeout: Duration) -> Self {
@@ -91,15 +108,18 @@ impl PeerClients {
             timeout,
             tls: Arc::new(AtomicBool::new(false)),
             plain: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
                 .build()
                 .expect("cliente HTTP sem TLS não pode falhar na construção"),
             internal_plain: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
                 .default_headers(internal_node_headers())
                 .build()
                 .expect("cliente HTTP interno sem TLS não pode falhar na construção"),
             per_peer: Arc::new(RwLock::new(HashMap::new())),
+            reply_routes: Arc::new(RwLock::new(HashMap::new())),
             auth: Arc::new(RwLock::new(None)),
         }
     }
@@ -176,6 +196,7 @@ impl PeerClients {
             return Ok(self.internal_plain.clone());
         }
         reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(self.timeout)
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true)
@@ -198,6 +219,7 @@ impl PeerClients {
         }
         let cfg = crate::tls::client_config(node_id)?;
         let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(self.timeout)
             .default_headers(internal_node_headers())
             .use_preconfigured_tls(cfg)
@@ -228,6 +250,71 @@ impl PeerClients {
             .unwrap_or_default();
         v.sort();
         v
+    }
+
+    /// Ordena endereços de retorno, mantendo a rota que já respondeu e
+    /// removendo endereços que falharam recentemente.
+    ///
+    /// A rota é usada uma vez por lote de decode. Sem esta memória,
+    /// um IPv4/IPv6 que aceita o SYN mas nunca responde é tentado de novo em
+    /// cada lote e o custo do timeout vira custo por ficha.
+    pub(crate) fn route_order(
+        &self,
+        key: &str,
+        candidates: &[String],
+    ) -> Vec<String> {
+        let Ok(mut routes) = self.reply_routes.write() else {
+            return candidates.to_vec();
+        };
+        let state = routes.entry(key.to_string()).or_insert_with(|| ReplyRouteState {
+            preferred: None,
+            failed: HashMap::new(),
+        });
+        let now = Instant::now();
+        state
+            .failed
+            .retain(|url, failed_at| candidates.iter().any(|candidate| candidate == url)
+                && now.duration_since(*failed_at) < REPLY_ROUTE_FAILURE_COOLDOWN);
+
+        let mut ordered = Vec::with_capacity(candidates.len());
+        if let Some(preferred) = state.preferred.as_ref().filter(|url| {
+            candidates.iter().any(|candidate| candidate == *url)
+                && !state.failed.contains_key(*url)
+        }) {
+            ordered.push(preferred.clone());
+        }
+        for candidate in candidates {
+            if !ordered.iter().any(|url| url == candidate)
+                && !state.failed.contains_key(candidate)
+            {
+                ordered.push(candidate.clone());
+            }
+        }
+        ordered
+    }
+
+    pub(crate) fn remember_route_failure(&self, key: &str, url: &str) {
+        if let Ok(mut routes) = self.reply_routes.write() {
+            let state = routes.entry(key.to_string()).or_insert_with(|| ReplyRouteState {
+                preferred: None,
+                failed: HashMap::new(),
+            });
+            state.failed.insert(url.to_string(), Instant::now());
+            if state.preferred.as_deref() == Some(url) {
+                state.preferred = None;
+            }
+        }
+    }
+
+    pub(crate) fn remember_route_success(&self, key: &str, url: &str) {
+        if let Ok(mut routes) = self.reply_routes.write() {
+            let state = routes.entry(key.to_string()).or_insert_with(|| ReplyRouteState {
+                preferred: None,
+                failed: HashMap::new(),
+            });
+            state.failed.remove(url);
+            state.preferred = Some(url.to_string());
+        }
     }
 }
 

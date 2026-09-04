@@ -83,6 +83,15 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// uma tentativa de conexão morta por ficha.
 const OPEN_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// Só vale para receber os cabeçalhos da abertura. Depois que o canal abre,
+/// o corpo continua vivo até `CHANNEL_LIFETIME`, sem transformar uma geração
+/// longa em uma conexão interrompida prematuramente.
+#[cfg(not(test))]
+const LINK_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(test)]
+const LINK_OPEN_TIMEOUT: Duration = Duration::from_millis(50);
+
 /// Teto de vida de um canal. O cliente HTTP do peer é construído com timeout
 /// total, e o corpo em fluxo conta para ele: sem um teto explícito o canal
 /// morreria no timeout comum de requisição. Quando este prazo vence, o canal
@@ -440,8 +449,10 @@ async fn open(
     let response = clients
         .authorize_inference_request(request)
         .await
-        .send()
+        .send();
+    let response = tokio::time::timeout(LINK_OPEN_TIMEOUT, response)
         .await
+        .map_err(|_| anyhow!("canal com {node_id} não abriu antes do timeout de conexão"))?
         .map_err(|error| anyhow!("canal com {node_id} não abriu: {error}"))?;
     if !response.status().is_success() {
         return Err(anyhow!(
@@ -521,6 +532,7 @@ async fn open(
 /// degradar para o caminho por requisição. Uma recusa HTTP do peer volta como
 /// [`crate::relay::HttpRefusal`], igual ao caminho por requisição, porque ela
 /// é a resposta considerada do peer e trocar de transporte não a muda.
+#[cfg(test)]
 pub async fn send_batch(
     clients: &crate::peer_client::PeerClients,
     node_id: &str,
@@ -529,7 +541,80 @@ pub async fn send_batch(
     body: Bytes,
     peer_label: &str,
 ) -> Result<LinkResponse> {
-    let channel = channel_for(clients, node_id, base_url).await?;
+    send_batch_with_candidates(
+        clients,
+        node_id,
+        base_url,
+        &[],
+        batch_id,
+        body,
+        peer_label,
+    )
+    .await
+}
+
+/// Abre o canal persistente pela primeira rota saudável anunciada. A abertura
+/// é a única fase em que o endereço ainda não está memorizado como saudável;
+/// uma falha de conexão é registrada e a alternativa seguinte assume já nesta
+/// chamada. Depois que um canal abre, `send_batch` mantém sua semântica de não
+/// repetir um frame já enviado em outra rota.
+pub async fn send_batch_with_candidates(
+    clients: &crate::peer_client::PeerClients,
+    node_id: &str,
+    base_url: &str,
+    candidates: &[String],
+    batch_id: &str,
+    body: Bytes,
+    peer_label: &str,
+) -> Result<LinkResponse> {
+    let mut route_candidates = Vec::with_capacity(candidates.len() + 1);
+    if !base_url.is_empty() {
+        route_candidates.push(base_url.to_string());
+    }
+    let additional: Vec<String> = candidates
+        .iter()
+        .filter(|candidate| !route_candidates.contains(candidate))
+        .cloned()
+        .collect();
+    route_candidates.extend(additional);
+    let route_key = format!("inference:{node_id}");
+    let ordered = clients.route_order(&route_key, &route_candidates);
+    let mut last_error = String::new();
+    for base in ordered {
+        let channel = match channel_for(clients, node_id, &base).await {
+            Ok(channel) => channel,
+            Err(error) => {
+                last_error = error.to_string();
+                clients.remember_route_failure(&route_key, &base);
+                continue;
+            }
+        };
+        match send_batch_on_channel(&channel, node_id, batch_id, body.clone(), peer_label).await {
+            Ok(response) => {
+                clients.remember_route_success(&route_key, &base);
+                return Ok(response);
+            }
+            Err(error) if error.downcast_ref::<crate::relay::HttpRefusal>().is_some() => {
+                return Err(error)
+            }
+            Err(error) => {
+                clients.remember_route_failure(&route_key, &base);
+                return Err(error);
+            }
+        }
+    }
+    Err(anyhow!(
+        "canal com {node_id} não abriu por nenhuma rota: {last_error}"
+    ))
+}
+
+async fn send_batch_on_channel(
+    channel: &Arc<Channel>,
+    node_id: &str,
+    batch_id: &str,
+    body: Bytes,
+    peer_label: &str,
+) -> Result<LinkResponse> {
     let frame = encode_envelope(0, batch_id, &body)?;
     let bytes_sent = frame.len() as u64;
 
@@ -907,12 +992,62 @@ mod tests {
             .await
             .expect_err("segunda tentativa também falha");
         assert!(
-            error.to_string().contains("quarentena"),
-            "a segunda tentativa devia parar na quarentena, veio: {error}"
+            error.to_string().contains("nenhuma rota"),
+            "a segunda tentativa devia parar na memória de falha, veio: {error}"
         );
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "a quarentena existe para não pagar a conexão morta de novo"
+        );
+    }
+
+    #[tokio::test]
+    async fn uma_abertura_blackhole_cai_para_a_rota_saudavel_e_nao_se_repete() {
+        let blackhole_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let blackhole_hits_task = blackhole_hits.clone();
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let blackhole_addr = blackhole.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = blackhole.accept().await {
+                blackhole_hits_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let _stream = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+
+        let healthy = spawn_link_server(echo_after(std::collections::HashMap::new())).await;
+        let bad = format!("http://{blackhole_addr}");
+        let candidates = vec![healthy.clone()];
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let started = Instant::now();
+        for batch_id in ["blackhole-1", "blackhole-2"] {
+            let response = send_batch_with_candidates(
+                &clients,
+                "blackhole-fallback",
+                &bad,
+                &candidates,
+                batch_id,
+                Bytes::from(batch("/v1/step", batch_id, "item-0")),
+                "blackhole-fallback",
+            )
+            .await
+            .expect("a rota saudável deve assumir o canal");
+            assert_eq!(
+                wire::peek_batch_header(&response.body).unwrap().batch_id,
+                batch_id
+            );
+        }
+        assert_eq!(
+            blackhole_hits.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(channels_opened("blackhole-fallback", &healthy), 1);
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "a abertura morta voltou a ser paga: {:?}",
+            started.elapsed()
         );
     }
 

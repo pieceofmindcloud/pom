@@ -60,7 +60,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `link.rs` (860) - a ligação persistente entre andares
   (`transport/link-v1`, `POST /v1/link`): um corpo de ida em fluxo e um corpo
   de volta em fluxo carregando quadros `frame/v1-batch` sucessivos, em vez de
-  uma requisição por ativação. Os quadros vão num envelope
+  uma requisição por ativação. A abertura tem teto de 2 s e testa os candidatos
+  de endereço com memória de falha; a quarentena de 30 s evita reabrir o mesmo
+  destino depois de uma falha. Os quadros vão num envelope
   `[tamanho][status][batch_id][corpo]`; o `batch_id` - o mesmo do
   `BatchCoordinator` - correlaciona ida e volta e é o que permite várias
   sessões no mesmo canal. Um canal por aresta (`node_id` + URL), aberto sob
@@ -114,8 +116,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
   limpeza de erro/cancelamento. `/v1/step-stream` inicia um produtor no peer
   remoto e um emissor separado: cada um usa a mesma decodificação existente,
-  mas os tokens retornam ao gateway em lotes oportunistas limitados, sem
-  temporizador e com contrapressão.
+  mas os tokens retornam ao gateway em lotes oportunistas limitados, com
+  timeout de entrega de 500 ms e contrapressão.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   inicializa o backend para que o sysmon possa consultar descricoes de
   dispositivos, decode, hidden state com
@@ -963,9 +965,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   resultado), e o prazo `DIRECT_REPLY_DEADLINE=600 s` (hop morreu depois de
   aceitar).
 - `deliver_result` - a cauda (ou o hop que falhou) tenta cada URL de `reply_to`
-  em ordem, `DELIVERY_TIMEOUT=30 s` por tentativa; `410` para de tentar (o
-  inbox já não existe); falhou em todas, o gateway fecha no prazo - não há
-  terceira via.
+  em ordem de preferência, com memória de falha por 5 min e
+  `DELIVERY_TIMEOUT=500 ms` por tentativa; `410` para de tentar (o inbox já não
+  existe). Uma URL que engole SYN é paga uma vez, a alternativa assume e os
+  lotes seguintes não repetem a espera.
 - `deliver_failure` - entrega um `RelayFailure` no lugar do resultado para o
   gateway nomear o nó morto em vez de esperar o prazo inteiro.
 - `hop_entry`/`accumulate` - cada hop descreve a si mesmo na ida: a lista viaja

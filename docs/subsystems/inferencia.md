@@ -364,9 +364,11 @@ tradicionais:
    remoto e recebe os tokens por callbacks em `/v1/remote-stream-result`. O
    head mantém o laço de geração; em um pipeline com mais hops, os demais peers
    continuam dentro do relay do head. O produtor põe cada token numa fila
-   limitada a 16 itens e não espera o callback; o emissor drena, sem sleep ou
-   temporizador, até 8 itens que já estejam prontos. Se a fila enche, o envio
-   do callback espera e aplica contrapressão até a geração. EOS e erro enviam
+   limitada a 16 itens e não espera o callback; o emissor drena, até 8 itens que
+  já estejam prontos. Se a fila enche, o envio do callback espera e aplica
+  contrapressão até a geração. Cada URL de callback que falha fica fora por 5
+  min e a entrega tem teto de 500 ms por tentativa, então uma rota que engole
+  SYN não é repetida a cada lote. EOS e erro enviam
    um lote terminal; stop, limite, ciclo e cancelamento removem o ticket e
    fazem uma entrega atrasada receber `410 Gone`. Em plano MTP fatiado, o
    control frame inicial leva `speculate.source="mtp"`; a cauda devolve
@@ -519,8 +521,10 @@ requisição por cima dela.
 
 `transport/link-v1` mantém **um canal por aresta** (`node_id` + URL de
 inferência): um único `POST /v1/link` cujo corpo de ida é um fluxo de quadros
-binários e cujo corpo de volta é outro fluxo de quadros binários. Cada quadro,
-nas duas direções:
+binários e cujo corpo de volta é outro fluxo de quadros binários. A abertura
+testa os candidatos de endereço, tem teto de 2 s para os cabeçalhos e deixa a
+rota que falhou em memória por 5 min; a quarentena adicional de 30 s evita
+reabrir a mesma URL. Cada quadro, nas duas direções:
 
 ```
 [4B BE tamanho do resto][2B BE status][2B BE tamanho do id][id][frame/v1-batch]
@@ -605,6 +609,75 @@ guardar a rota por sessão - não é transporte puro, e não foi feita aqui.
 O canal também é o que garante que **uma** ligação atende muitas fichas e
 muitas sessões: a bancada afirma zero conexões novas depois do aquecimento, e
 seis sessões concorrentes com dez fichas cada cabendo numa ligação só.
+
+### 2.1.1 Regressão de endereço anunciado e memória de falha (2026-09-04)
+
+A regressão que derrubou a cabeça remota para **2,2 tok/s**, com **TTFT de
+6,04 s** e **31 s ponta a ponta**, não era trabalho do llama.cpp: o nó mediu
+**593 ms** de processamento, enquanto a execução aguardou cerca de 30 s fora
+do nó. O contrafactual do captain confirmou a causa: trocar o endereço
+anunciado de IPv6 para o IPv4 da LAN fez a execução voltar à ordem de **43
+tok/s**.
+
+Há três fatos diferentes:
+
+- **Gatilho:** um candidato de endereço anunciado, em especial um IPv6 que não
+  aceitava a rota de tráfego real, era usado para abrir a conexão TCP. O sistema
+  operacional aguardava o timeout de conexão antes de a escada de transporte
+  prosseguir. No `remote-stream`, introduzido por **`7ace9d5`**, a cauda também
+  tentava a lista de callbacks do `reply_to` a cada lote, sempre começando no
+  mesmo endereço e sem memória de falha. O resultado era uma espera repetida
+  por lote, observada como cerca de 553 ms por ficha com o motor parado.
+- **Condição que mascarava:** a cabeça local não precisava entregar callbacks
+  pela rota remota, e o IPv4 escolhido pelo operador era alcançável. Além disso,
+  desde **`1738c88`** a task de rotas sondava o `/health` do gateway e gravava a
+  URL de inferência correspondente; um gateway saudável podia, portanto,
+  promover uma porta de inferência que engolia SYN. `RouteTable::mark_failure`
+  removia a escolha, mas não guardava o endereço falho: a resolução seguinte
+  podia escolhê-lo outra vez. A tela também olhava apenas para os campos medidos
+  no nó e na rede, por isso dizia que o backend dominava apesar de o total
+  ponta a ponta estar muito maior.
+- **Sintoma visível:** 8 callbacks `remote-stream` para 56 fichas, uma troca de
+  transporte no meio, TTFT alto e taxa de geração 43 vezes menor, embora
+  `llama_decode` e o processamento do nó permanecessem próximos do caminho
+  local.
+
+O RTT cru mostrou que a rede explica parte da anomalia, mas não os 30 s: pelo
+  tailnet, o ping entre as máquinas ficou em **3,9-4,4 ms** de média e o
+  `/health` em **9-22 ms**; pelo IPv4 direto da LAN, a média foi **25,0 ms**,
+  com máximo de **91,7 ms**, e o sentido inverso para o IPv4 privado não foi
+  alcançável. Esse jitter é alto para duas máquinas na mesma LAN e justifica
+  conferir Wi-Fi e economia de energia, mas não pode produzir centenas de
+  milissegundos por ficha quando o RTT do callback aparece como zero: o atraso
+  estava na tentativa de conexão e não era medido pelo trace de
+  `remote-stream`.
+
+A correção é estrutural e vale para IPv4 e IPv6:
+
+1. `RouteTable::measure_peer` sonda `/health` na própria porta de inferência,
+   nunca em uma porta de gateway paralela.
+2. Falhas reais ficam memorizadas por **5 min** em `RouteTable` e em
+   `PeerClients`; uma resolução ou callback não escolhe novamente o endereço
+   que falhou enquanto há candidato alternativo.
+3. O `PeerClients` limita a abertura TCP a **2 s**, sem reduzir o timeout de
+   processamento de uma requisição longa. A entrega de resultado/callback tem
+   teto de **500 ms** por tentativa, e testa a próxima URL na mesma chamada.
+4. O `transport/link-v1`, introduzido por **`d7b4e6e`**, ajuda depois de uma
+   abertura que falha, pois sua quarentena de 30 s evita reabrir a mesma URL.
+   Antes desta correção ela só cobria a chave do canal, não os demais
+   candidatos, e a abertura ainda podia ficar presa no timeout de conexão.
+   Agora o canal testa as URLs anunciadas, limita a abertura e compartilha a
+   memória de falha. A quarentena deixa de ser uma espera escondida por ficha,
+   sem ser tratada como a causa do callback repetido.
+
+O teste `a_blackholed_reply_address_is_tried_only_once_across_stream_batches`
+reproduz um destino que aceita a conexão e não responde: a primeira entrega
+  registra a falha e usa a alternativa saudável; a segunda entrega não toca
+  mais no destino morto. Os testes equivalentes de `relay` e `link` verificam o
+  mesmo contrafactual no frame direto e na abertura persistente. A API não tem
+  um caminho especial: `/api/generate`, `/v1/chat/completions` e a interface
+  chamam `generate_stream_with_stops`, então uma execução pela API sofre a
+  mesma seleção de endereço e recebe a mesma correção.
 
 ### 2.2 Cópias no caminho quente do `wire.rs`
 

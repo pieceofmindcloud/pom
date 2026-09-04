@@ -8,7 +8,7 @@
  * tira do modelo uma máquina que não está em modelo nenhum.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { PeerDetailCard, cardRange } from "./PeerDetailCard";
 import { LocaleProvider } from "../i18n/provider";
@@ -43,8 +43,15 @@ describe("PeerDetailCard sem fatia", () => {
     expect(screen.getByText("sem fatia")).toBeTruthy();
   });
 
+  /**
+   * A frase saiu da faixa que ocupava uma linha inteira do card e entrou no
+   * `[i]` do próprio distintivo. O que se afirma continua sendo o mesmo: quem
+   * perguntar "por que sem fatia?" recebe resposta, sem que o card gaste uma
+   * linha com ela em toda máquina ociosa da rede.
+   */
   it("diz que a máquina está na rede e não serve camada nenhuma", () => {
     mount(semFatia);
+    fireEvent.click(screen.getByRole("button", { name: "O que é sem fatia" }));
     expect(screen.getByText(/não serve nenhuma faixa de camadas/i)).toBeTruthy();
   });
 
@@ -169,8 +176,12 @@ describe("PeerDetailCard · parâmetros de carga", () => {
     expect(screen.getByText("não sei")).toBeTruthy();
   });
 
+  /** O aviso do fit virou o `[i]` do próprio título da seção. */
   it("avisa que o fit mexeu nos valores pedidos", () => {
     montaCom(params);
+    fireEvent.click(
+      screen.getByRole("button", { name: "O que é Parâmetros de carga do llama.cpp" }),
+    );
     expect(screen.getByText(/O fit do llama.cpp ajustou este contexto/)).toBeTruthy();
   });
 
@@ -278,6 +289,94 @@ describe("temperatura das GPUs", () => {
     mount(peer);
     expect(screen.getByText("sensor indisponível")).toBeTruthy();
     expect(screen.queryByText("temperatura desconhecida")).toBeNull();
+  });
+});
+
+/**
+ * O card é lido numa tela, e a máquina reporta muito. O que se afirma aqui é a
+ * arrumação: o que se **faz** com a máquina fica no topo, e o que ela **tem**
+ * aparece inteiro - todas as partições, não só a do projeto.
+ */
+describe("PeerDetailCard · arrumação do card", () => {
+  afterEach(cleanup);
+
+  it("põe as ações no topo, antes do que a máquina reporta", () => {
+    mount(fakeSlicePeer("a", 0, 15));
+    const sair = screen.getByRole("button", { name: /sair da rede/i });
+    const ram = screen.getByText("RAM");
+    // `DOCUMENT_POSITION_FOLLOWING` = a RAM vem depois do botão no documento.
+    expect(sair.compareDocumentPosition(ram) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  /**
+   * Uma máquina com NVMe e HDD, ou com `/` e `/dados` separados, aparecia como
+   * um volume só - e quem decide onde cabe um GGUF de 40 GB não via o disco
+   * onde ele caberia.
+   */
+  it("mostra uma barra por partição montada", () => {
+    const peer = fakeSlicePeer("discos", 0, 15, {
+      node: fakeNode({
+        node_id: "discos",
+        short_id: "discos",
+        hostname: "node-discos",
+        system: fakeSystem({
+          disk: { total_mb: 500000, free_mb: 200000, mount_point: "/", device: "/dev/nvme0n1p2" },
+          disks: [
+            { total_mb: 500000, free_mb: 200000, mount_point: "/", device: "/dev/nvme0n1p2" },
+            { total_mb: 2000000, free_mb: 1500000, mount_point: "/dados", device: "/dev/sda1" },
+          ],
+        }),
+      }),
+    });
+    mount(peer);
+    expect(screen.getByText("Disco · /")).toBeTruthy();
+    expect(screen.getByText("Disco · /dados")).toBeTruthy();
+  });
+
+  /** Um nó que ainda não publica a lista não perde o disco que já publicava. */
+  it("recai no volume do projeto quando o nó não lista as partições", () => {
+    const peer = fakeSlicePeer("antigo", 0, 15, {
+      node: fakeNode({
+        node_id: "antigo",
+        short_id: "antigo",
+        hostname: "node-antigo",
+        system: fakeSystem({ disks: [] }),
+      }),
+    });
+    mount(peer);
+    expect(screen.getByText("Disco · /")).toBeTruthy();
+  });
+
+  it("guarda os parâmetros de carga num bloco que se abre", () => {
+    mount(fakeSlicePeer("lp2", 0, 31), {
+      loaded: true,
+      health: {
+        mtp_ready: false,
+        placement: null,
+        load_params: {
+          n_ctx: 8192,
+          n_ctx_seq: 8192,
+          n_batch: 512,
+          n_ubatch: 128,
+          n_seq_max: 8,
+          n_threads: 8,
+          n_threads_batch: 8,
+          flash_attn: true,
+          flash_attn_auto: true,
+          kv_unified: true,
+          embeddings: true,
+          n_rs_seq: 0,
+          offload_kqv: true,
+          cache_type_k: "f16",
+          cache_type_v: "f16",
+          n_gpu_layers: 99,
+          fit_memory_applied: false,
+        },
+      } as never,
+    });
+    const titulo = screen.getByText("Parâmetros de carga do llama.cpp");
+    expect(titulo.closest("details")).toBeTruthy();
+    expect(titulo.closest("details")!.open).toBe(false);
   });
 });
 

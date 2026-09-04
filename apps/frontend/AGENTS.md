@@ -19,7 +19,7 @@ remain local until the deploy preflight.
 ## Build tooling
 
 - Vite 6 + `@vitejs/plugin-react`; React 18, TypeScript 5.7 (project references), Tailwind 3.4 via PostCSS (`postcss.config.js`: `tailwindcss` + `autoprefixer`).
-- `vite.config.ts` - dev server on port 5199, `strictPort`, base `/admin-ui/`, and a proxy of every node-owned path (`/api`, `/v1`, `/admin`, `/admin-ui`, `/peers`, `/health`, `/generate`) to `VITE_API_TARGET` (default `http://127.0.0.1:8080`; point it at a real node, e.g. `VITE_API_TARGET=http://192.168.100.138:8090`). There is no sample backend - every screen reads a live node. `cacheDir` is pinned to `node_modules/.vite` because the default fallback silently loses config (no PostCSS, no proxy) when a branch switch restarts the dev server mid-rewrite. `build.outDir = "dist"`, no sourcemaps. Production chunks split the route screens, common vendors and each generated reference document; `npm run build` verifies the resulting sizes.
+- `vite.config.ts` - dev server on port 5199, `strictPort`, base `/admin-ui/`, and a proxy of every node-owned path (`/api`, `/v1`, `^/admin(?!-ui)`, `/peers`, `/health`, `/generate`) to `VITE_API_TARGET` (default `http://127.0.0.1:8080`; point it at a real node, e.g. `VITE_API_TARGET=http://192.168.100.138:8090`). **`/admin-ui` não é encaminhado**, ainda que o nó também o sirva: é o `base` desta aplicação, e encaminhá-lo fazia o `npm run dev` devolver o bundle já construído do nó em vez do código local - a tela não mudava por mais que se editasse. E `/admin` precisa ser expressão regular, porque a chave de texto do proxy do Vite casa por prefixo de string e não por segmento: `/admin-ui/src/App.tsx` começa com `/admin`. There is no sample backend - every screen reads a live node. `cacheDir` is pinned to `node_modules/.vite` because the default fallback silently loses config (no PostCSS, no proxy) when a branch switch restarts the dev server mid-rewrite. `build.outDir = "dist"`, no sourcemaps. Production chunks split the route screens, common vendors and each generated reference document; `npm run build` verifies the resulting sizes.
 - Tailwind colors are named after CSS variables declared in `src/index.css` (`tailwind.config.js` maps `ink/surface/raised/line/fg/muted/faint/iris/aqua/amber/rose/sky/lime`); fonts Space Grotesk (display), IBM Plex Sans (sans), JetBrains Mono (mono).
 - Vitest 3 - `npm test` = `vitest run`. There is no vitest config file; test files that need a DOM opt in per file with the `// @vitest-environment jsdom` pragma (e.g. `routes/Chat.telemetry.test.tsx`, `i18n/provider.test.tsx`).
 - tsconfig: `tsconfig.app.json` (strict, `noUnusedLocals/Parameters`, `@/* -> ./src/*` alias, excludes `*.test.*`) and `tsconfig.node.json` for the build config itself.
@@ -66,6 +66,11 @@ aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
 - `/implantar` -> DeployModel (first-level entry for putting models in service,
   full-bleed Deploy Studio with central cluster map, property inspector and
   draggable peer strip; whole-model mode accepts exactly one map machine)
+- `/implantacoes` -> Deployments, full-bleed como a de Logs: o mesmo
+  `DeploymentInspector` da tela de implantar abre à direita, em somente
+  leitura, com os parâmetros da versão escolhida
+- `/setup` -> SetupWizard, **fora da moldura**: sem Sidebar nem Topbar, como o
+  `Setup` do primeiro arranque (`isWizard` no `App.tsx` devolve antes do shell)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
   filtros, abas de requisições/estatísticas, tabela densa, scroll infinito e

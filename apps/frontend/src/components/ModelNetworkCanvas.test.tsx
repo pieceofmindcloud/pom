@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
 import { LocaleProvider } from "../i18n/provider";
 import type { ChatTelemetryRtt, ClusterView } from "../lib/types";
-import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer } from "../test/fixtures";
+import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
 import { deploymentLayoutKey, writePositions } from "../lib/networkLayout";
 
 describe("edgeStyle", () => {
@@ -376,5 +376,47 @@ describe("ModelNetworkCanvas: organizar e redefinir", () => {
     expect(cardDe(container, "ksia").style.left).not.toBe("900px");
     const top = (nome: string) => parseFloat(cardDe(container, nome).style.top);
     expect(Math.abs(top("ksia") - top("macbook"))).toBeLessThan(1);
+  });
+});
+
+/**
+ * Duas placas na mesma caixa não são um detalhe do card grande: o card em
+ * miniatura era onde a segunda GPU sumia. A VRAM aqui é a soma - é o que a
+ * máquina tem a oferecer - e a temperatura ganha uma linha por placa, porque
+ * uma pode estar fervendo enquanto a outra dorme.
+ */
+describe("ModelNetworkCanvas: máquina com mais de uma GPU", () => {
+  afterEach(cleanup);
+
+  const duasGpus = fakeCluster([
+    fakeSlicePeer("a", 0, 31, {
+      node: fakeNode({
+        node_id: "a",
+        short_id: "a",
+        hostname: "ksia",
+        system: fakeSystem({
+          gpu_kind: "nvidia",
+          gpus: [
+            { index: 0, name: "RTX 5090", vendor: "nvidia", vram_total_mb: 32768, vram_used_mb: 8192, vram_used_pct: 25, utilization_pct: 30, temperature_c: 61 },
+            { index: 1, name: "RTX 3090", vendor: "nvidia", vram_total_mb: 24576, vram_used_mb: 4096, vram_used_pct: 16, utilization_pct: 10, temperature_c: 78 },
+          ],
+        }),
+      }),
+    }),
+  ]);
+
+  it("soma a VRAM das duas placas em vez de mostrar só a primeira", () => {
+    mount(duasGpus);
+    // (8192 + 4096) / 1024 = 12,0 GiB de (32768 + 24576) / 1024 = 56,0 GiB.
+    expect(screen.getByText("12.0 / 56.0 GiB")).toBeTruthy();
+    expect(screen.getByText("VRAM · 2 GPUs")).toBeTruthy();
+  });
+
+  it("mostra a temperatura de cada placa, nomeada", () => {
+    mount(duasGpus);
+    expect(screen.getByText(/61,0 °C/)).toBeTruthy();
+    expect(screen.getByText(/78,0 °C/)).toBeTruthy();
+    expect(screen.getByText("RTX 5090")).toBeTruthy();
+    expect(screen.getByText("RTX 3090")).toBeTruthy();
   });
 });

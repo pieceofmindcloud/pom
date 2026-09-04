@@ -28,6 +28,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
 - `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
   the GPU badge; missing or non-finite readings stay explicitly unknown.
+- `gpu.ts` - `sumVram`/`vramUsedPct`: a VRAM somada das placas que a reportam,
+  `null` quando nenhuma reporta (memória unificada, placa sem leitura). É o que
+  o card em miniatura do Fluxo mostra - antes ele lia só `gpus[0]` e metade do
+  hardware de uma caixa com duas placas sumia da tela. Testes em `gpu.test.ts`.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.

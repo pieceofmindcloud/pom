@@ -47,9 +47,17 @@ interface ReleaseResult {
 export function ReleaseSlice({
   startLayer,
   endLayer,
+  /**
+   * Só o botão, para a barra de ferramentas do card de máquina. A nota que a
+   * versão larga mostra ao lado dele já é dita, e melhor, pela confirmação -
+   * repeti-la numa barra de cinco botões era linha gasta com o que ninguém lê
+   * antes de clicar.
+   */
+  compact = false,
 }: {
   startLayer: number;
   endLayer: number;
+  compact?: boolean;
 }) {
   const { t } = useI18n();
   const [probe, setProbe] = useState<CandidateProbe | null>(null);
@@ -101,22 +109,31 @@ export function ReleaseSlice({
 
   const successor = probe?.candidate;
 
+  const trigger = (
+    <Button
+      size="sm"
+      variant="outline"
+      loading={probing}
+      onClick={() => void ask()}
+      className="shrink-0"
+      icon={compact ? <HandCoins className="h-3.5 w-3.5" /> : undefined}
+    >
+      {t("release.button")}
+    </Button>
+  );
+
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
-        <Footnote icon={<HandCoins className="h-3.5 w-3.5" />} className="min-w-0 flex-1">
-          {t("release.note", { range })}
-        </Footnote>
-        <Button
-          size="sm"
-          variant="outline"
-          loading={probing}
-          onClick={() => void ask()}
-          className="shrink-0"
-        >
-          {t("release.button")}
-        </Button>
-      </div>
+      {compact ? (
+        trigger
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
+          <Footnote icon={<HandCoins className="h-3.5 w-3.5" />} className="min-w-0 flex-1">
+            {t("release.note", { range })}
+          </Footnote>
+          {trigger}
+        </div>
+      )}
 
       <Confirm
         open={probe != null}

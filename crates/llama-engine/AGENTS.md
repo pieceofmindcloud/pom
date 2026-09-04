@@ -44,7 +44,12 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 - `kv_cache.rs` - `KvCacheType` (era `node/src/utils/config.rs`; `Config` de
   `node` só o referencia como campo).
 - `sysmon.rs` - monitor de CPU/RAM/disco/GPU. A raiz do projeto que ele mede é
-  injetada por `node` (`sysmon::set_disk_root`).
+  injetada por `node` (`sysmon::set_disk_root`). Cada família de GPU tem a
+  própria leitura - `nvidia-smi`, sysfs do `amdgpu` + `/proc/<pid>/fdinfo`, e
+  `ioreg -c AGXAccelerator` no Apple Silicon -, e o que uma plataforma não
+  informa fica `None` em vez de virar zero. `disk` é o volume do projeto;
+  `disks` é toda partição montada. Detalhe por plataforma em
+  `docs/subsystems/operacao.md` ("Monitor de carga").
 - `lib.rs` - re-exporta `KvCacheType`, `DEFAULT_FIT_MEMORY_MARGIN_MB` e
   `llama_cpp_sys_2` (para `node` alcançar a FFI crua sem redeclarar a dep).
 
@@ -54,6 +59,13 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 vive nele), `inference/executor.rs`, `models/splitter.rs` (usa `gguf` e, nos
 testes, `llama_engine::llama_cpp_sys_2`), e todo o resto do pipeline
 (`infer_server.rs`, `prefill.rs`, `direct.rs`, `runtime.rs`, ...).
+
+## Defeitos anotados
+
+- `llm::pool_tests::fit_mode_caps_compute_microbatch_without_changing_prompt_batch`
+  falha em `cargo test -p llama-engine --lib`: espera o microlote em 128 e
+  recebe 512. Verificado numa árvore limpa de `origin/feat/implantar3`, sem
+  relação com o monitor de carga; é do caminho do fit/MoE, que está em obra.
 
 ## Maintaining this file
 

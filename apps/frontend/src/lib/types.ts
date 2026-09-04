@@ -47,6 +47,8 @@ export interface DiskStat {
   total_mb: number;
   free_mb: number;
   mount_point: string;
+  /** Dispositivo por trás da montagem (`/dev/nvme0n1p2`); vazio quando não se sabe. */
+  device: string;
 }
 
 export interface SystemLoad {
@@ -61,7 +63,15 @@ export interface SystemLoad {
   gpus: GpuStat[];
   gpu_processes: GpuProcess[];
   wired_mb: number | null;
+  /** O volume onde as fatias moram - o que responde "cabe outra?". */
   disk: DiskStat;
+  /**
+   * Todo volume montado na máquina, um por partição.
+   *
+   * Lista vazia é "não perguntei", não "não tem disco": um nó velho não
+   * publica este campo, e a tela recai no `disk`.
+   */
+  disks: DiskStat[];
   sampled_at: string;
 }
 

@@ -9,7 +9,7 @@
  * marcar as duas como padrão, o operador reimplanta a errada.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Deployments } from "./Deployments";
 import { LocaleProvider } from "../i18n/provider";
@@ -309,5 +309,57 @@ describe("Deployments", () => {
     await waitFor(() => expect(redeployDeployment).toHaveBeenCalledWith("d-aaaaaaaa", {
       version: 1,
     }));
+  });
+
+  /**
+   * O mesmo inspetor da tela de implantar, aqui em somente leitura: é o que
+   * responde "com que parâmetros esta versão subiu?" sem obrigar a abrir o
+   * diálogo de reimplantar, que é um formulário editável e sugere mudança.
+   */
+  it("abre as propriedades de uma versão em somente leitura", async () => {
+    listDeployments.mockResolvedValue({
+      node_id: "eu",
+      deployments: [
+        row("d-aaaaaaaa", {
+          serving: true,
+          isDefault: true,
+          versions: [
+            { version: 1, n_ctx: 8192 },
+            { version: 2, n_ctx: 16384 },
+          ],
+          activeVersion: 2,
+        }),
+      ],
+    });
+
+    mount();
+    await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
+    click(screen.getByRole("button", { name: "Ver versões" }));
+
+    // Fechado, o inspetor não existe.
+    expect(screen.queryByText("Configurações padrões")).toBeNull();
+
+    click(screen.getByRole("button", { name: "Ver as propriedades da versão 1" }));
+
+    expect(screen.getByText("Propriedades da versão 1")).toBeTruthy();
+    expect(screen.getByText("Configurações padrões")).toBeTruthy();
+    expect(screen.getByText("Configurações POM")).toBeTruthy();
+    expect(screen.getByText("Configurações POM (DESENV)")).toBeTruthy();
+
+    // Somente leitura de verdade: o valor está escrito, não num campo.
+    const inspector = screen.getByText("Configurações padrões").closest("aside");
+    expect(inspector).toBeTruthy();
+    expect(inspector!.querySelectorAll("input")).toHaveLength(0);
+    expect(inspector!.querySelectorAll("select")).toHaveLength(0);
+    expect(within(inspector!).getByText("8192")).toBeTruthy();
+    // E o interruptor do plano continua legível, sem ser acionável.
+    const noThinking = within(inspector!).getByRole("checkbox", {
+      name: "Desativar thinking",
+    }) as HTMLButtonElement;
+    expect(noThinking.getAttribute("aria-checked")).toBe("true");
+    expect(noThinking.disabled).toBe(true);
+
+    click(screen.getByRole("button", { name: "Fechar as propriedades" }));
+    expect(screen.queryByText("Configurações padrões")).toBeNull();
   });
 });

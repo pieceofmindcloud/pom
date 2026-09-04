@@ -232,7 +232,19 @@ export default function App() {
   // o layout de tela cheia não rola por dentro.
   const isFullBleed =
     allowed &&
-    (isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar" || location.pathname === "/logs" || location.pathname === "/setup");
+    (isDashboard ||
+      location.pathname === "/documentacao" ||
+      location.pathname === "/implantar" ||
+      location.pathname === "/implantacoes" ||
+      location.pathname === "/logs");
+  /*
+   * O assistente é a única tela que sai da moldura inteira: ele guia a
+   * configuração do zero, com barra de progresso e uma pergunta por vez, e o
+   * menu ao lado convida a sair pelo meio para uma tela que ainda não faz
+   * sentido. Renderiza como o `Setup` do primeiro arranque - sem Sidebar, sem
+   * Topbar -, e não só sem enchimento como as outras de tela cheia.
+   */
+  const isWizard = allowed && location.pathname === "/setup";
   /*
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -261,6 +273,16 @@ export default function App() {
   if (adminSurface.data === "local-only") return <AdminLocalOnly />;
   if (adminSurface.data === "requires-token" && !adminReady) {
     return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
+  }
+
+  if (isWizard) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={<RouteFallback fullScreen />}>
+          <SetupWizard />
+        </Suspense>
+      </ErrorBoundary>
+    );
   }
 
   return (
@@ -310,7 +332,6 @@ export default function App() {
                       <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
                       <Route path="/fatias" element={<Page><Shards /></Page>} />
                       <Route path="/implantar" element={<Page><DeployModel /></Page>} />
-                      <Route path="/setup" element={<Page><SetupWizard /></Page>} />
                       <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
                       {/* Keep the former deploy URL working for old bookmarks. */}
                       <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />

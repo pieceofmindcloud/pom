@@ -43,10 +43,16 @@ export function placementOf(buffers: BufferBytes[]): Placement {
   return "mixed";
 }
 
+/*
+ * As cores saem dos tokens do produto (`tailwind.config.js`), não da paleta
+ * numérica do Tailwind: aqui `lime` e `amber` são cores planas, então
+ * `bg-lime-400` não existe e o Tailwind não gerava classe nenhuma - a tira de
+ * camadas saía invisível, uma faixa vazia no meio do card.
+ */
 const CELL: Record<Placement, string> = {
-  gpu: "bg-lime-400/80",
+  gpu: "bg-lime/80",
   cpu: "bg-line-strong",
-  mixed: "bg-amber-400/80",
+  mixed: "bg-amber/80",
   unknown: "bg-line",
 };
 
@@ -124,9 +130,9 @@ export function ModelPlacementSection({
 
   if (!placement) {
     return (
-      <div className="border-t border-line px-5 py-3">
-        <div className="eyebrow mb-2">{t("placement.title")}</div>
-        <p className="text-xs leading-relaxed text-muted">{t("placement.unavailable")}</p>
+      <div className="border-t border-line px-3 py-2.5">
+        <div className="eyebrow mb-1.5">{t("placement.title")}</div>
+        <p className="text-[0.7rem] leading-relaxed text-muted">{t("placement.unavailable")}</p>
       </div>
     );
   }
@@ -137,10 +143,10 @@ export function ModelPlacementSection({
   const kv = contextMemory ? kvCacheBuffers(contextMemory) : [];
 
   return (
-    <div className="space-y-3 border-t border-line px-5 py-4">
+    <div className="space-y-2 border-t border-line px-3 py-2.5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <div className="eyebrow">{t("placement.title")}</div>
-        <span className="font-mono text-xs text-muted">
+        <span className="font-mono text-[0.7rem] text-muted">
           {t("placement.summary", {
             gpu: counts.gpu + counts.mixed,
             total: placement.n_layer,
@@ -158,25 +164,25 @@ export function ModelPlacementSection({
         <Legend tone="cpu" label={t("placement.onCpu", { count: counts.cpu })} />
       </div>
 
-      <dl className="grid gap-x-6 gap-y-4 pt-1 sm:grid-cols-2">
-        <KeyValue label={t("placement.weights")}>
-          <span className="font-mono text-xs">
+      <dl className="grid gap-x-3 gap-y-2 pt-0.5 sm:grid-cols-2">
+        <KeyValue compact label={t("placement.weights")}>
+          <span className="font-mono text-[0.7rem]">
             {t("placement.weightsDetail", {
               gpu: bytes(weights.gpu),
               cpu: bytes(weights.cpu),
             })}
           </span>
         </KeyValue>
-        <KeyValue label={t("placement.kvCache")}>
+        <KeyValue compact label={t("placement.kvCache")}>
           {kv.length > 0 ? (
-            <span className="font-mono text-xs">
+            <span className="font-mono text-[0.7rem]">
               {kv.map((b) => `${b.buffer} ${bytes(b.context)}`).join(" · ")}
             </span>
           ) : (
             // Sem medida, a flag é tudo que se pode dizer - e se diz como
             // pedido, não como fato, porque numa GPU cheia o llama.cpp
             // recarrega com ela desligada.
-            <span className="text-xs text-muted">
+            <span className="text-[0.7rem] text-muted">
               {t(offloadKqv ? "placement.kvRequestedGpu" : "placement.kvRequestedCpu")}
             </span>
           )}
@@ -184,14 +190,14 @@ export function ModelPlacementSection({
         {/* A cabeça de saída é uma pergunta à parte: ela só vai para a GPU
             quando `n_gpu_layers` passa do número de blocos, e num pipeline é o
             último peer quem a carrega. */}
-        <KeyValue label={t("placement.output")}>
-          <span className="font-mono text-xs">
+        <KeyValue compact label={t("placement.output")}>
+          <span className="font-mono text-[0.7rem]">
             {placement.output.buffers.map((b) => `${b.buffer} ${bytes(b.bytes)}`).join(" · ") ||
               placement.output.device}
           </span>
         </KeyValue>
-        <KeyValue label={t("placement.devices")}>
-          <span className="text-xs">
+        <KeyValue compact label={t("placement.devices")}>
+          <span className="text-[0.7rem]">
             {placement.devices.map((d) => d.description || d.name).join(" · ") ||
               t("placement.cpuOnly")}
           </span>

@@ -202,24 +202,27 @@ pub struct SystemLoad {
     /// Free space where the model slices live, so the screen can say whether
     /// another slice fits before anyone starts downloading one.
     pub disk: DiskStat,
+    /// Todo sistema de arquivos montado nesta máquina, um por partição.
+    ///
+    /// `disk` responde "cabe outra fatia?", que é uma pergunta sobre **um**
+    /// volume - o do projeto. Isto responde outra: "que discos esta máquina
+    /// tem?". Uma máquina com NVMe e HDD, ou com `/` e `/dados` separados,
+    /// aparecia como um volume só, e quem decide onde pôr um GGUF de 40 GB não
+    /// via o disco onde ele caberia.
+    pub disks: Vec<DiskStat>,
     pub sampled_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct DiskStat {
     pub total_mb: u64,
     pub free_mb: u64,
     pub mount_point: String,
-}
-
-impl Default for DiskStat {
-    fn default() -> Self {
-        DiskStat {
-            total_mb: 0,
-            free_mb: 0,
-            mount_point: String::new(),
-        }
-    }
+    /// O dispositivo por trás do ponto de montagem (`/dev/nvme0n1p2`), quando a
+    /// plataforma o informa. É o que distingue dois discos de duas partições do
+    /// mesmo disco; vazio quando não se sabe.
+    #[serde(default)]
+    pub device: String,
 }
 
 // ── Disk ─────────────────────────────────────────────────────────────────────
@@ -268,12 +271,14 @@ pub fn sample_disk_at(path: &Path) -> DiskStat {
                 total_mb: total / 1_048_576,
                 free_mb: free_caller / 1_048_576,
                 mount_point: mount,
+                device: String::new(),
             };
         }
         return DiskStat {
             total_mb: 0,
             free_mb: 0,
             mount_point: mount,
+            device: String::new(),
         };
     }
 
@@ -298,6 +303,7 @@ pub fn sample_disk_at(path: &Path) -> DiskStat {
                             total_mb: total,
                             free_mb: free,
                             mount_point: mount,
+                            device: fields[0].to_string(),
                         };
                     }
                 }
@@ -308,7 +314,104 @@ pub fn sample_disk_at(path: &Path) -> DiskStat {
             total_mb: 0,
             free_mb: 0,
             mount_point: mount,
+            device: String::new(),
         }
+    }
+}
+
+/// Nomes que o `df` usa para coisas que não são disco.
+///
+/// Um `tmpfs` é RAM e um `devfs` não guarda byte nenhum; listá-los ao lado do
+/// NVMe faria a tela prometer espaço que não existe. O corte é por nome do
+/// dispositivo porque o `df -P` não informa o tipo do sistema de arquivos.
+const PSEUDO_FILESYSTEMS: &[&str] = &[
+    "devfs",
+    "devtmpfs",
+    "tmpfs",
+    "overlay",
+    "squashfs",
+    "efivarfs",
+    "udev",
+    "none",
+    "map",
+    "shm",
+];
+
+/// Uma linha do `df -k -P`, lida da direita para a esquerda.
+///
+/// Da direita porque só o **fim** da linha tem posição garantida: o POSIX fixa
+/// seis colunas, mas o nome do dispositivo pode conter espaço (`map auto_home`
+/// no macOS) e empurraria tudo se a leitura começasse pela esquerda. Ponto de
+/// montagem com espaço continua fora do alcance de qualquer análise por
+/// colunas, e o `df` não oferece outra saída.
+///
+/// A unidade é KiB, não MB: `-P` fixa blocos de 512 bytes no macOS e ignora o
+/// `-m`, então pedir megabytes ali devolvia números 2048 vezes maiores. `-k` é
+/// a unidade que o POSIX garante nos dois sistemas.
+fn parse_df_line(line: &str) -> Option<DiskStat> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 6 {
+        return None;
+    }
+    let last = fields.len() - 1;
+    let mount_point = fields[last].to_string();
+    let total_mb = fields[last - 4].parse::<u64>().ok()? / 1024;
+    let free_mb = fields[last - 2].parse::<u64>().ok()? / 1024;
+    let device = fields[..last - 4].join(" ");
+    Some(DiskStat {
+        total_mb,
+        free_mb,
+        mount_point,
+        device,
+    })
+}
+
+/// Os volumes reais de uma saída de `df -k -P`, sem os pseudo sistemas de
+/// arquivos e sem repetir um ponto de montagem.
+fn parse_df_all(output: &str) -> Vec<DiskStat> {
+    let mut out: Vec<DiskStat> = Vec::new();
+    for line in output.lines().skip(1) {
+        let Some(disk) = parse_df_line(line) else {
+            continue;
+        };
+        // Volume de tamanho zero não é disco: é uma montagem sintética.
+        if disk.total_mb == 0 {
+            continue;
+        }
+        let head = disk.device.split_whitespace().next().unwrap_or_default();
+        if PSEUDO_FILESYSTEMS.contains(&head) {
+            continue;
+        }
+        if out.iter().any(|seen| seen.mount_point == disk.mount_point) {
+            continue;
+        }
+        out.push(disk);
+    }
+    out.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
+    out
+}
+
+/// Todo volume montado nesta máquina.
+///
+/// Lista vazia quer dizer "não consegui perguntar", e a tela mostra isso como
+/// desconhecido em vez de "esta máquina não tem disco".
+pub fn sample_all_disks() -> Vec<DiskStat> {
+    // Windows não tem `df`; sem uma enumeração de volumes escrita à mão, o
+    // volume do projeto continua sendo o único que esta plataforma reporta.
+    #[cfg(windows)]
+    {
+        let only = sample_disk();
+        return if only.total_mb > 0 { vec![only] } else { Vec::new() };
+    }
+
+    #[cfg(not(windows))]
+    {
+        let out = std::process::Command::new("df")
+            .args(["-k", "-P"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok());
+        out.as_deref().map(parse_df_all).unwrap_or_default()
     }
 }
 
@@ -358,6 +461,9 @@ async fn sample_uncached() -> SystemLoad {
         disk: tokio::task::spawn_blocking(sample_disk)
             .await
             .unwrap_or_else(|_| DiskStat::default()),
+        disks: tokio::task::spawn_blocking(sample_all_disks)
+            .await
+            .unwrap_or_default(),
         ram,
         gpu_kind,
         gpu_note,
@@ -494,10 +600,16 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
     let (mut gpus, procs) = nvidia_smi().await.unwrap_or_default();
 
     #[cfg(target_os = "linux")]
+    let mut procs = procs;
+    #[cfg(target_os = "linux")]
     {
         // Índices continuam a contagem da NVIDIA para não haver dois `index: 0`
         // - a interface usa esse número para falar de uma placa específica.
-        gpus.extend(amd_sysfs(gpus.len() as u32, &backend_gpus, pci_ids.as_deref()).await);
+        let amd = amd_sysfs(gpus.len() as u32, &backend_gpus, pci_ids.as_deref()).await;
+        if !amd.is_empty() {
+            procs.extend(amd_gpu_processes().await);
+        }
+        gpus.extend(amd);
     }
 
     // O nó só reporta as placas que pode usar. Os índices originais são
@@ -522,8 +634,9 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
         };
         let note = (amd > 0).then(|| {
             "Radeon lida pelo sysfs do amdgpu e servida pelo backend Vulkan \
-             (compile com `--features vulkan`). Ao contrário do nvidia-smi, esse \
-             caminho não lista processos por GPU."
+             (compile com `--features vulkan`). Os processos com VRAM em mão \
+             saem de /proc/<pid>/fdinfo, então a lista cobre o que este \
+             usuário pode ler - o próprio nó sempre entra."
                 .to_string()
         });
         return (kind, note, gpus, procs);
@@ -535,12 +648,20 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
             let name = mac_gpu_name(&backend_gpus)
                 .await
                 .unwrap_or_else(|| "Apple Silicon GPU".to_string());
+            // O acelerador publica as próprias estatísticas no IORegistry, sem
+            // root e sem `powermetrics`: uso do núcleo e memória de sistema
+            // que a GPU tem em mão. É a única leitura de GPU que este alvo
+            // oferece a um processo comum - a temperatura mora no SMC, atrás
+            // de API privada, e por isso continua desconhecida.
+            let stats = mac_accelerator_stats().await.unwrap_or_default();
             return (
                 GpuKind::Unified,
                 Some(
                     "Memória unificada: a GPU usa a mesma RAM do sistema, \
-                     não existe VRAM dedicada para medir. O indicador mais \
-                     próximo é a memória wired, onde ficam os buffers do Metal."
+                     não existe VRAM dedicada para medir. O que aparece como \
+                     memória da GPU é a memória de sistema que o acelerador \
+                     tem em uso, lida do IORegistry; a temperatura fica no \
+                     SMC, que não é legível sem privilégio."
                         .to_string(),
                 ),
                 vec![GpuStat {
@@ -548,9 +669,9 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
                     name,
                     vendor: GpuVendor::Apple,
                     vram_total_mb: None,
-                    vram_used_mb: None,
+                    vram_used_mb: stats.in_use_memory_mb,
                     vram_used_pct: None,
-                    utilization_pct: None,
+                    utilization_pct: stats.utilization_pct,
                     temperature_c: None,
                 }],
                 Vec::new(),
@@ -789,6 +910,107 @@ async fn amd_sysfs(
     out
 }
 
+/// Um valor de `fdinfo` do DRM: número mais unidade (`1024 KiB`), em bytes.
+///
+/// O kernel escreve KiB na maioria dos campos, mas a especificação
+/// (`drm-usage-stats`) permite outras unidades, e ler o número sem olhar a
+/// unidade é como um "1 MiB" vira "1 byte".
+#[cfg(any(target_os = "linux", test))]
+fn parse_drm_size_bytes(value: &str) -> Option<u64> {
+    let mut parts = value.split_whitespace();
+    let amount = parts.next()?.parse::<u64>().ok()?;
+    let unit = parts.next().unwrap_or("B");
+    let factor = match unit {
+        "B" => 1,
+        "KiB" => 1024,
+        "MiB" => 1024 * 1024,
+        "GiB" => 1024 * 1024 * 1024,
+        _ => return None,
+    };
+    Some(amount * factor)
+}
+
+/// O que um `fdinfo` de um descritor do amdgpu diz: cliente e VRAM em mão.
+///
+/// `None` quando o descritor não é do amdgpu - a maioria deles não é, e este é
+/// o filtro que faz a varredura ser barata.
+#[cfg(any(target_os = "linux", test))]
+fn parse_amdgpu_fdinfo(text: &str) -> Option<(String, u64)> {
+    let field = |key: &str| -> Option<&str> {
+        text.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.trim() == key).then(|| value.trim())
+        })
+    };
+    if field("drm-driver")? != "amdgpu" {
+        return None;
+    }
+    let client = field("drm-client-id")?.to_string();
+    // `drm-resident-vram` é o nome novo do mesmo número; onde os dois existem,
+    // ele é o que conta as páginas de fato residentes.
+    let vram = field("drm-resident-vram")
+        .or_else(|| field("drm-memory-vram"))
+        .and_then(parse_drm_size_bytes)
+        .unwrap_or(0);
+    Some((client, vram))
+}
+
+/// Quem segura VRAM nas Radeon desta máquina, lido de `/proc/<pid>/fdinfo`.
+///
+/// É o equivalente do que o `nvidia-smi` entrega de graça nas NVIDIA, e a
+/// razão de a seção "processos na GPU" ficar vazia numa máquina AMD: nada a
+/// preenchia. O kernel publica por descritor, então o mesmo contexto aparece
+/// várias vezes - `drm-client-id` é o que desduplica.
+///
+/// Um processo de outro usuário recusa a leitura, e recusa é o caso comum:
+/// esta lista é honestamente **o que este usuário pode ver**, não a máquina
+/// inteira. O processo que interessa - o próprio nó - está sempre nela.
+#[cfg(target_os = "linux")]
+async fn amd_gpu_processes() -> Vec<GpuProcess> {
+    let mut out: Vec<GpuProcess> = Vec::new();
+    let Ok(mut procs) = tokio::fs::read_dir("/proc").await else {
+        return out;
+    };
+    while let Ok(Some(entry)) = procs.next_entry().await {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(mut fds) = tokio::fs::read_dir(entry.path().join("fdinfo")).await else {
+            continue;
+        };
+        let mut seen: Vec<String> = Vec::new();
+        let mut bytes = 0u64;
+        while let Ok(Some(fd)) = fds.next_entry().await {
+            let Ok(text) = tokio::fs::read_to_string(fd.path()).await else {
+                continue;
+            };
+            let Some((client, vram)) = parse_amdgpu_fdinfo(&text) else {
+                continue;
+            };
+            if seen.contains(&client) {
+                continue;
+            }
+            seen.push(client);
+            bytes += vram;
+        }
+        if bytes == 0 {
+            continue;
+        }
+        let comm = tokio::fs::read_to_string(entry.path().join("comm"))
+            .await
+            .map(|c| c.trim().to_string())
+            .unwrap_or_default();
+        out.push(GpuProcess {
+            pid,
+            name: if comm.is_empty() { format!("pid {pid}") } else { comm },
+            used_mb: bytes as f64 / 1_048_576.0,
+        });
+    }
+    out.sort_by(|a, b| b.used_mb.total_cmp(&a.used_mb));
+    out
+}
+
 /// Temperatura da placa, em `hwmon/hwmon<N>/temp1_input` (milésimos de grau).
 ///
 /// O `<N>` é atribuído na ordem em que os drivers registram, então varia entre
@@ -804,6 +1026,76 @@ async fn amd_temperature(device: &std::path::Path) -> Option<f64> {
         }
     }
     None
+}
+
+/// O que o acelerador da Apple publica sobre si mesmo.
+///
+/// Campo ausente é `None`, nunca zero: "a GPU está a 0%" e "não perguntei" são
+/// respostas diferentes, e a tela mostra as duas de forma diferente.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct MacAcceleratorStats {
+    utilization_pct: Option<f64>,
+    in_use_memory_mb: Option<f64>,
+}
+
+/// Lê `PerformanceStatistics` do acelerador no IORegistry.
+///
+/// `AGXAccelerator` é a classe do Apple Silicon; `IOAccelerator` cobre os Macs
+/// Intel, onde a GPU é discreta ou integrada da Intel/AMD. A saída de texto do
+/// `ioreg` é usada de propósito em vez do plist (`-a`): o dicionário de
+/// estatísticas cabe numa linha e a leitura vira uma varredura de chaves, sem
+/// arrastar um parser de XML para dentro do monitor.
+#[cfg(target_os = "macos")]
+async fn mac_accelerator_stats() -> Option<MacAcceleratorStats> {
+    for class in ["AGXAccelerator", "IOAccelerator"] {
+        let out = command_output(
+            "ioreg",
+            vec!["-r".into(), "-d".into(), "1".into(), "-w".into(), "0".into(), "-c".into(), class.to_string()],
+        )
+        .await;
+        let Some(out) = out else { continue };
+        let stats = parse_ioreg_accelerator(&String::from_utf8_lossy(&out.stdout));
+        if stats != MacAcceleratorStats::default() {
+            return Some(stats);
+        }
+    }
+    None
+}
+
+/// O valor numérico de uma chave dentro do dicionário do `ioreg`.
+///
+/// As chaves vêm entre aspas e o valor logo depois do `=`, com ou sem espaço:
+/// `"Device Utilization %"=37`.
+#[cfg(any(target_os = "macos", test))]
+fn ioreg_number(text: &str, key: &str) -> Option<f64> {
+    let needle = format!("\"{key}\"");
+    let at = text.find(&needle)? + needle.len();
+    let rest = text[at..].trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let digits: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    digits.parse().ok()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_ioreg_accelerator(text: &str) -> MacAcceleratorStats {
+    MacAcceleratorStats {
+        utilization_pct: ioreg_number(text, "Device Utilization %"),
+        // O IORegistry publica bytes; a tela fala em MB como no resto do painel.
+        in_use_memory_mb: ioreg_number(text, "In use system memory")
+            .map(|bytes| bytes / 1_048_576.0),
+    }
+}
+
+/// Fora do macOS o tipo existe só para o teste do parser compilar.
+#[cfg(all(not(target_os = "macos"), test))]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct MacAcceleratorStats {
+    utilization_pct: Option<f64>,
+    in_use_memory_mb: Option<f64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1026,6 +1318,50 @@ mod tests {
         let s = sample().await;
         assert!(s.ram.total_mb > 0.0, "total RAM should be discoverable");
         assert!(s.cpu_count > 0);
+    }
+
+    /// A leitura de verdade desta máquina, conferida contra a outra chamada de
+    /// `df` que o nó já fazia. É este cruzamento que pega uma troca de unidade:
+    /// `-P` fixa blocos de 512 bytes no macOS e ignora o `-m`, e sem esta
+    /// conferência os volumes apareceriam 2048 vezes maiores do que são.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn os_volumes_desta_maquina_batem_com_o_df_do_projeto() {
+        let disks = tokio::task::spawn_blocking(sample_all_disks).await.unwrap();
+        assert!(!disks.is_empty(), "a máquina deveria ter ao menos um volume");
+        for disk in &disks {
+            assert!(disk.total_mb > 0, "{} sem tamanho", disk.mount_point);
+            assert!(disk.free_mb <= disk.total_mb, "{} livre > total", disk.mount_point);
+        }
+
+        let raiz = disks
+            .iter()
+            .find(|d| d.mount_point == "/")
+            .expect("a raiz deveria estar montada");
+        let referencia = sample_disk_at(Path::new("/"));
+        let diferenca = raiz.total_mb.abs_diff(referencia.total_mb) as f64;
+        assert!(
+            diferenca / (referencia.total_mb.max(1) as f64) < 0.01,
+            "raiz medida em {} MB pelas duas chamadas, {} MB pela outra",
+            raiz.total_mb,
+            referencia.total_mb
+        );
+    }
+
+    /// O acelerador da Apple ou responde as duas medidas, ou não responde
+    /// nenhuma. O que não pode acontecer é responder um número fora de escala.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn o_acelerador_desta_maquina_reporta_uso_plausivel() {
+        let Some(stats) = mac_accelerator_stats().await else {
+            return;
+        };
+        if let Some(uso) = stats.utilization_pct {
+            assert!((0.0..=100.0).contains(&uso), "uso da GPU em {uso}%");
+        }
+        if let Some(mb) = stats.in_use_memory_mb {
+            assert!(mb >= 0.0);
+        }
     }
 
     #[tokio::test]
@@ -1334,5 +1670,84 @@ mod gpu_selection_tests {
             ),
             Some("Apple M4".to_string())
         );
+    }
+
+    /// O nome do dispositivo pode ter espaço (`map auto_home`), e é por isso
+    /// que a linha é lida da direita. Lida da esquerda, o ponto de montagem
+    /// desta linha viraria "0" e o total viraria "auto_home".
+    #[test]
+    fn df_le_a_linha_da_direita_para_a_esquerda() {
+        let disk = parse_df_line("/dev/disk3s1s1  482797652  16686060  17602564  49%  /").unwrap();
+        assert_eq!(disk.device, "/dev/disk3s1s1");
+        // KiB do `df -k` viram MB aqui: 482797652 KiB = 471480 MB.
+        assert_eq!(disk.total_mb, 471_482);
+        assert_eq!(disk.free_mb, 17_190);
+        assert_eq!(disk.mount_point, "/");
+
+        let com_espaco = parse_df_line("map auto_home  0  0  0  100%  /System/Volumes/home").unwrap();
+        assert_eq!(com_espaco.device, "map auto_home");
+        assert_eq!(com_espaco.mount_point, "/System/Volumes/home");
+    }
+
+    /// Um `tmpfs` é RAM e um `devfs` não guarda byte: listá-los prometeria
+    /// espaço que não existe. A mesma montagem duas vezes também não entra.
+    #[test]
+    fn df_lista_so_volumes_de_verdade_e_sem_repetir() {
+        let saida = "Filesystem 1048576-blocks Used Available Capacity Mounted on\n\
+             /dev/nvme0n1p2 500000 100000 400000 20% /\n\
+             devfs 0 0 0 100% /dev\n\
+             tmpfs 16000 0 16000 0% /dev/shm\n\
+             /dev/sda1 2000000 1000000 1000000 50% /dados\n\
+             /dev/sda1 2000000 1000000 1000000 50% /dados\n";
+        let disks = parse_df_all(saida);
+        assert_eq!(
+            disks
+                .iter()
+                .map(|d| d.mount_point.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/", "/dados"]
+        );
+        assert_eq!(disks[1].device, "/dev/sda1");
+    }
+
+    /// A GPU da Apple não tem VRAM para medir, mas publica uso e memória em
+    /// mão. Campo ausente continua `None`: "0%" e "não perguntei" são
+    /// respostas diferentes.
+    #[test]
+    fn ioreg_le_uso_e_memoria_do_acelerador() {
+        let saida = "+-o AGXAcceleratorG16_B0  <class AGXAcceleratorG16_B0>\n    {\n\
+             \"PerformanceStatistics\" = {\"Alloc system memory\"=1610612736,\"Device Utilization %\"=37,\"In use system memory\"=1073741824}\n    }\n";
+        let stats = parse_ioreg_accelerator(saida);
+        assert_eq!(stats.utilization_pct, Some(37.0));
+        assert_eq!(stats.in_use_memory_mb, Some(1024.0));
+
+        assert_eq!(parse_ioreg_accelerator("sem nada"), MacAcceleratorStats::default());
+    }
+
+    /// O `fdinfo` do amdgpu escreve a unidade junto do número. Lê-lo sem a
+    /// unidade transformaria 1 MiB em 1 byte.
+    #[test]
+    fn fdinfo_do_amdgpu_conta_a_vram_com_a_unidade() {
+        let fdinfo = "pos:\t0\nflags:\t02100002\n\
+             drm-driver:\tamdgpu\n\
+             drm-client-id:\t12\n\
+             drm-memory-vram:\t2048 KiB\n\
+             drm-memory-gtt:\t256 KiB\n";
+        assert_eq!(
+            parse_amdgpu_fdinfo(fdinfo),
+            Some(("12".to_string(), 2 * 1024 * 1024))
+        );
+
+        // `drm-resident-vram` é o nome novo e vence onde os dois existem.
+        let novo = "drm-driver:\tamdgpu\ndrm-client-id:\t7\n\
+             drm-resident-vram:\t1 MiB\ndrm-memory-vram:\t9 MiB\n";
+        assert_eq!(
+            parse_amdgpu_fdinfo(novo),
+            Some(("7".to_string(), 1024 * 1024))
+        );
+
+        // Descritor que não é do amdgpu não entra na conta.
+        assert_eq!(parse_amdgpu_fdinfo("drm-driver:\ti915\ndrm-client-id:\t1\n"), None);
+        assert_eq!(parse_amdgpu_fdinfo("pos:\t0\n"), None);
     }
 }

@@ -49,7 +49,10 @@ export function GpuTemperature({
     <div
       className={compact
         ? "mt-2 flex items-center justify-between gap-2 text-[10px]"
-        : "flex min-w-0 items-center justify-between gap-3 rounded-lg border border-line bg-raised/60 px-3 py-2"}
+        // Duas placas cabem lado a lado num card de máquina, e o nome delas
+        // pode carregar o índice que as distingue: o aperto de antes cortava
+        // "GeForce RTX 5060 Ti #0" em "GeForce RT…".
+        : "flex min-w-0 items-center justify-between gap-2 rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-[0.7rem]"}
       aria-label={`${label ?? t("dashboard.gpuTemperature")}: ${value}`}
     >
       <span className="flex min-w-0 items-center gap-1.5 text-faint">

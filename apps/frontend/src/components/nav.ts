@@ -3,14 +3,15 @@ import {
   Boxes,
   FolderTree,
   Gauge,
+  History,
   KeyRound,
   Layers,
   ListTree,
   MessagesSquare,
   Network,
-  Search,
   Rocket,
   Scissors,
+  Search,
   Send,
   Settings,
   SlidersHorizontal,
@@ -45,23 +46,23 @@ export const NAV: NavSection[] = [
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat" },
   {
-      labelKey: "nav.models",
-      icon: Boxes,
-      children: [
-        { labelKey: "nav.remoteModels", to: "/modelos/remotos", icon: Search },
-        { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
-        { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
+    labelKey: "nav.models",
+    icon: Boxes,
+    children: [
+      { labelKey: "nav.remoteModels", to: "/modelos/remotos", icon: Search },
+      { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
+      { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
       { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
     ],
   },
   {
     labelKey: "nav.deployments",
-    icon: Boxes,
+    icon: Rocket,
     children: [
       { labelKey: "nav.deploy", to: "/implantar", icon: Rocket },
       // Separada de "implantar" de proposito: uma cria, a outra mostra e
       // ajusta o que ja existe. Sao dois momentos diferentes do mesmo trabalho.
-      { labelKey: "nav.history", to: "/implantacoes", icon: Boxes },
+      { labelKey: "nav.history", to: "/implantacoes", icon: History },
     ],
   },
   {

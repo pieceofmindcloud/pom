@@ -32,8 +32,11 @@ partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
 
 ### Temperatura da GPU
 
-O Painel Fluxo mostra a maior leitura conhecida da máquina no card de cada
-faixa, enquanto Detalhes mostra uma linha por GPU. As faixas normal, atenção e
+Os dois cards mostram **uma linha por GPU**: o do Fluxo mostrava só a maior
+leitura da máquina e o medidor de VRAM da primeira placa, então numa caixa com
+duas placas metade do hardware sumia da tela - e a segunda podia estar
+fervendo sem ninguém ver. A VRAM do card em miniatura é a **soma** das placas
+que a reportam (`lib/gpu.ts`), e placas de nome igual ganham `#índice`. As faixas normal, atenção e
 crítica usam os tons existentes `aqua`, `amber` e `rose`; máquinas sem GPU
 omitem a seção de temperatura, enquanto uma GPU cujo sensor não responde mostra
 "temperatura desconhecida" e "sensor indisponível". A API
@@ -79,7 +82,11 @@ vindos de fora com uma página HTML 403 autocontida; `/v1/**`, `/api/generate`,
 
 `src/components/nav.ts` tem o menu como dados (`NAV`: seções e folhas com
 `labelKey`, rota e `end`), consumido pela Sidebar e pelo roteador de
-`src/App.tsx`. Dentro de `Modelos`, a ordem é `Encontrar Modelos HF`, `Modelos
+`src/App.tsx`. `Implantações` usa o foguete (`Rocket`) e `Histórico` o
+relógio (`History`): as duas seções usavam `Boxes`, o mesmo ícone de
+`Modelos`, e duas seções com o mesmo desenho não se distinguem de relance. A
+folha `/implantar` mantém `Rocket` sem colidir com a seção, porque a Sidebar
+não desenha ícone de folha. Dentro de `Modelos`, a ordem é `Encontrar Modelos HF`, `Modelos
 inteiros`, `Fatiar modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
 somente ícones, e as seções com folhas exibem um submenu ao passar o mouse ou
 receber foco. A escolha fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
@@ -96,16 +103,21 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   serviço)
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
   versões por `deploy_id`, reimplantação por versão ou por parâmetros novos, e
-  desimplantação)
+  desimplantação). Tela cheia, como a de Logs, e clicar na linha de uma versão
+  abre à direita o **mesmo** inspetor da tela de implantar, em somente
+  leitura, com os parâmetros com que aquela versão subiu
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
   requisições paginadas por scroll infinito, estatísticas agregadas e inspetor
   JSON
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
-- `/setup` -> `SetupWizard`, protótipo navegável do primeiro acesso. Em um nó já
-  configurado, a rota continua disponível para rever os seis caminhos; em modo
-  setup, a decisão de `/api/ui/node` retorna antes e mantém `Setup`, o bootstrap
-  real que escolhe Principal/Nó e gera a chave de conexão.
+- `/setup` -> `SetupWizard`, protótipo navegável do primeiro acesso, **em tela
+  inteira**: sem Sidebar e sem Topbar, como o `Setup` do bootstrap. O
+  assistente guia a configuração do zero, e o menu ao lado convidava a sair
+  pelo meio para uma tela que ainda não faz sentido. Em um nó já configurado, a
+  rota continua disponível para rever os seis caminhos; em modo setup, a
+  decisão de `/api/ui/node` retorna antes e mantém `Setup`, o bootstrap real
+  que escolhe Principal/Nó e gera a chave de conexão.
 - `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
   `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
@@ -336,15 +348,31 @@ Detalhes lista a **rede inteira**, não a pipeline: `networkPeers`
 camadas (`pipelinePeers`) de quem está conectado sem fatia (`others`, por
 nome). Máquina sem fatia é `model` vazio com `total_layers` zerado
 (`hasSlice`), **não** uma faixa "0-0", e o card não escreve faixa nenhuma
-nesse caso. Cada card tem as duas saídas lado a lado (`RemoveNode` - sai do
-modelo, só quando serve; `LeaveNode` - sai da rede, sempre) e o botão de
-atualizar/reiniciar só quando o peer anuncia `dev_update`. Ao lado de
+nesse caso.
+
+As ações da máquina ficam numa **barra de ferramentas no topo do card**, junto
+do distintivo de MTP: liberar memória (`ReleaseSlice`, só na própria máquina),
+`RemoveNode` (sai do modelo, só quando serve), `LeaveNode` (sai da rede,
+sempre) e atualizar/reiniciar quando o peer anuncia `dev_update`. Estavam
+espalhadas pelo pé do card, uma por seção, e reiniciar uma máquina era rolar
+até o fim de tudo o que ela reporta.
+
+O card é denso de propósito, para caber numa tela: o que é útil sem precisar
+estar sempre visível mora num `[i]` (a razão de "sem fatia", o aviso do
+`gpu_note`, a nota do fit, o caminho do modelo, pid e reinícios), e
+"Parâmetros de carga do llama.cpp" e "Processos na GPU" são blocos fechados
+que se abrem. Os discos são **um medidor por partição montada** (`disks` do
+`/api/ui/cluster`), porque uma máquina com NVMe e HDD, ou com `/` e `/dados`
+separados, aparecia como um volume só - e quem decide onde cabe um GGUF de
+40 GB não via o disco onde ele caberia. Um nó que ainda não publique a lista
+recai no volume do projeto. Ao lado de
 "Adicionar nó" há `UndeployPipeline` quando há modelo no ar. `PipelineRail`
 ainda exporta `pipelinePeers`/`trackOf` usados pelo Dashboard e DeployModel.
 
 Numa máquina servindo, o card traz também **"Como o modelo foi carregado"**
 (`ModelPlacement.tsx`): uma tira com uma célula por camada - verde inteira na
-GPU, âmbar dividida, cinza na CPU -, os pesos de cada lado em bytes, onde o
+GPU, âmbar dividida, cinza na CPU (as cores saem dos tokens do produto; a tira
+saiu invisível enquanto pedia `bg-lime-400`, que não existe nesta paleta) -, os pesos de cada lado em bytes, onde o
 cache KV ficou e a cabeça de saída. É a resposta medida, não a configuração:
 uma camada conta pelos **bytes** dela em cada buffer, então os experts de um
 MoE empurrados para a CPU aparecem como camada dividida em vez de camada
@@ -586,6 +614,21 @@ impressão digital é só modelo + conjunto de faixas.
   exibe hops, capacidade e latência conhecida, além de rotas alternativas e
   distribuição projetada de carga. Cada card separa a faixa física carregada da
   sub-faixa efetivamente executada.
+  O inspetor é um componente próprio (`components/DeploymentInspector.tsx`), e é
+  **o mesmo** que o Histórico usa em somente leitura: uma lista de propriedades
+  só, e não duas cópias que divergem no primeiro campo novo. Ele tem três
+  categorias, e a fronteira entre elas é de quem é o parâmetro - *Configurações
+  padrões* (o que o llama.cpp já tem: contexto, sessões, máx. tokens, batch,
+  chunk de prefill, amostragem, cache K/V da instalação, desativar
+  thinking/embeddings, especulativa e MTP), *Configurações POM* (motor de
+  inferência, ajustar à memória, chunks em voo, juntar fatias vizinhas e
+  precisão do estado oculto) e *Configurações POM (DESENV)* (as três janelas do
+  detector de ciclo, o interruptor dele e o recuo do MTP para a RAM). O `[i]`
+  vem **antes** do nome, e não depois: com nomes de larguras diferentes, os
+  ícones à direita do texto ficavam serrilhados, e antes do nome eles formam uma
+  coluna reta do topo ao pé do painel. O combo do motor não oferece
+  "Automático" e assume `llama.cpp` ao montar - é escolha de apresentação; o
+  backend continua aceitando os três modos.
   Os cards são um **preview de como o sistema fica depois da implantação**, não
   do estado atual: cada GPU de cada máquina ganha uma barra de VRAM projetada
   (uso previsto contra o total, com o uso de agora como tracinho) que se
@@ -597,7 +640,9 @@ impressão digital é só modelo + conjunto de faixas.
   nem no piso; os dois casos pedem uma confirmação nomeando as máquinas ao
   `Implantar` - é aviso, não bloqueio, para o operador reduzir ou aumentar o
   contexto como quiser. Cada parâmetro do painel direito tem um `[i]` que abre
-  no hover/foco/toque com o que ele significa e como afeta a inferência. As arestas vêm do grafo de execução do
+  no hover/foco/toque com o que ele significa e como afeta a inferência; quando
+  o nó reporta uma capacidade duvidosa ou limitada, o mesmo lugar da coluna
+  mostra o triângulo âmbar com a razão. As arestas vêm do grafo de execução do
   planejador: ligam apenas sub-faixas contíguas, mantêm ramos equivalentes de
   entrada e mostram o RTT direcional usado para escolher entre eles. O canvas
   não inventa pontes pela ordem dos cards, o que preserva uma entrada rápida
@@ -605,7 +650,8 @@ impressão digital é só modelo + conjunto de faixas.
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
   (contexto, batch, amostragem, sessões) ficam
   separadas das propriedades por
-  máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
+  máquina (`n_gpu_layers`, KV e capacidade local, na mesma linha de propriedade
+  das globais - `[i]`, nome, controle); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. A precisão do estado
   oculto (f16/f8) só aparece quando o estado atravessa a fronteira de um peer -
   um pipeline de fatias com faixas adjacentes distintas; em modelo inteiro,

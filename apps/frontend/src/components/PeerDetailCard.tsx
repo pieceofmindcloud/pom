@@ -14,17 +14,17 @@
  */
 import clsx from "clsx";
 import { motion } from "framer-motion";
-import { RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { ChevronRight, RefreshCw } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { Confirm, Modal } from "./Confirm";
 import { GpuTemperature } from "./GpuTemperature";
-import { MachineIcon, gpuLabel, machineKind } from "./MachineIcon";
+import { MachineIcon, gpuDisplayName, machineKind } from "./MachineIcon";
 import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
 import { LeaveNode } from "./LeaveNode";
 import { ModelPlacementSection } from "./ModelPlacement";
-import { Badge, Button, Dot, Footnote, KeyValue, Meter } from "./ui";
+import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
 import { devUpdate } from "../lib/api";
 import {
   isServing,
@@ -37,7 +37,7 @@ import {
 import { hasSlice } from "../lib/networkPeers";
 import { useInvalidate, usePeerRuntime } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import type { PeerLoadParams, PeerView } from "../lib/types";
+import type { DiskStat, PeerLoadParams, PeerRuntimeHealth, PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 /** O botão de atualizar e reiniciar, só visível quando o peer aceita o pedido. */
@@ -96,62 +96,70 @@ function UpdateNode({
 }
 
 /**
- * A seção de colocação, com a busca que a alimenta.
+ * Um bloco que se abre. `<details>` porque a semântica já existe no navegador:
+ * abre por clique e por teclado, e o estado é do elemento, não de um `useState`
+ * que se perde quando a lista de máquinas se renova sob o card.
+ */
+function Accordion({
+  title,
+  children,
+  tip,
+}: {
+  title: string;
+  children: ReactNode;
+  tip?: string;
+}) {
+  return (
+    <details className="group border-t border-line">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
+        <ChevronRight
+          aria-hidden="true"
+          className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90"
+        />
+        <span className="eyebrow">{title}</span>
+        {tip && (
+          <span onClick={(event) => event.preventDefault()}>
+            <InfoTip label={title} message={tip} />
+          </span>
+        )}
+      </summary>
+      <div className="pb-1">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * O que este nó reporta sobre o modelo carregado: MTP, parâmetros de carga e
+ * colocação das camadas.
  *
- * Separada do card porque tem um ciclo de vida próprio: é a única parte que faz
- * uma chamada extra, e ela só acontece com a seção montada. Enquanto a resposta
- * não chega, a seção não existe - um esqueleto piscando num card que já está
- * cheio de números seria ruído, e a informação aqui nunca é urgente.
+ * A saúde chega pronta do card, e não de uma busca própria: o distintivo de
+ * MTP subiu para a barra de ferramentas, e duas chamadas para o mesmo
+ * `/health` - uma para a barra, outra para esta seção - seriam duas respostas
+ * possivelmente diferentes na mesma tela.
  */
 function PeerPlacement({
-  nodeId,
-  enabled,
+  health,
   kqvRequested,
   mtpRequested,
 }: {
-  nodeId: string;
-  enabled: boolean;
+  health: PeerRuntimeHealth | undefined;
   kqvRequested: boolean;
   mtpRequested: boolean;
 }) {
   const { t } = useI18n();
-  const { data } = usePeerRuntime(nodeId, enabled);
-  const health = data?.health;
-  if (!data || !health) return null;
+  if (!health) return null;
   return (
     <>
-      {mtpRequested && (
-        <section
+      {mtpRequested && !health.mtp_ready && (
+        <p
           role="status"
-          aria-label={t("dashboard.mtpStatus")}
-          className="border-t border-line px-5 py-3"
+          className="border-t border-line px-3 py-2 text-[0.7rem] leading-relaxed text-rose"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="eyebrow">{t("dashboard.mtpStatus")}</span>
-            <Badge
-              tone={health.mtp_ready ? "aqua" : "rose"}
-              className="px-1.5 py-0 text-[0.68rem]"
-            >
-              {health.mtp_ready
-                ? health.mtp_allocation === "ram"
-                  ? t("dashboard.mtpReadyRam")
-                  : health.mtp_allocation === "vram"
-                    ? t("dashboard.mtpReadyVram")
-                    : t("dashboard.mtpReadyUnknown")
-                : t("dashboard.mtpUnavailable")}
-            </Badge>
-          </div>
-          {!health.mtp_ready && (
-            <>
-              <p className="mt-1.5 text-xs leading-relaxed text-rose">
-                {t("dashboard.mtpUnavailableDetail")}
-              </p>
-              <p className="mt-1 break-words text-xs leading-relaxed text-muted">
-                {health.mtp_unavailable_reason ?? t("dashboard.mtpReasonUnknown")}
-              </p>
-            </>
-          )}
-        </section>
+          {t("dashboard.mtpUnavailableDetail")}{" "}
+          <span className="break-words text-muted">
+            {health.mtp_unavailable_reason ?? t("dashboard.mtpReasonUnknown")}
+          </span>
+        </p>
       )}
       {health.load_params && <LoadParamsSection params={health.load_params} />}
       <ModelPlacementSection
@@ -187,56 +195,55 @@ function LoadParamsSection({ params }: { params: PeerLoadParams }) {
           ? t("dashboard.faOffAuto")
           : t("dashboard.faOff");
   return (
-    <section aria-label={t("dashboard.loadParams")} className="border-t border-line px-5 py-4">
-      <div className="eyebrow mb-3">{t("dashboard.loadParams")}</div>
-      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-        <KeyValue label={t("dashboard.paramFlashAttn")}>
+    <Accordion
+      title={t("dashboard.loadParams")}
+      tip={params.fit_memory_applied ? t("dashboard.paramsFitNote") : undefined}
+    >
+      <dl className="grid gap-x-3 gap-y-2 px-3 pb-2 sm:grid-cols-3">
+        <KeyValue compact label={t("dashboard.paramFlashAttn")}>
           <Badge
             tone={params.flash_attn === null ? "neutral" : params.flash_attn ? "aqua" : "amber"}
-            className="px-1.5 py-0 text-[0.68rem]"
+            className="px-1.5 py-0 text-[0.62rem]"
           >
             {fa}
           </Badge>
         </KeyValue>
-        <KeyValue label={t("dashboard.paramBatch")}>
+        <KeyValue compact label={t("dashboard.paramBatch")}>
           <span className="font-mono">
             {num(params.n_batch)} / {num(params.n_ubatch)}
           </span>
         </KeyValue>
-        <KeyValue label={t("dashboard.paramCtx")}>
+        <KeyValue compact label={t("dashboard.paramCtx")}>
           <span className="font-mono">
             {num(params.n_ctx)} / {num(params.n_ctx_seq)}
           </span>
         </KeyValue>
-        <KeyValue label={t("dashboard.paramSeqMax")}>
+        <KeyValue compact label={t("dashboard.paramSeqMax")}>
           <span className="font-mono">
             {num(params.n_seq_max)}
             {params.kv_unified ? " · " + t("dashboard.paramKvUnified") : ""}
           </span>
         </KeyValue>
-        <KeyValue label={t("dashboard.paramThreads")}>
+        <KeyValue compact label={t("dashboard.paramThreads")}>
           <span className="font-mono">
             {num(params.n_threads)} / {num(params.n_threads_batch)}
           </span>
         </KeyValue>
-        <KeyValue label={t("dashboard.paramGpuLayers")}>
+        <KeyValue compact label={t("dashboard.paramGpuLayers")}>
           <span className="font-mono">{num(params.n_gpu_layers)}</span>
         </KeyValue>
-        <KeyValue label={t("dashboard.paramCacheType")}>
+        <KeyValue compact label={t("dashboard.paramCacheType")}>
           <span className="font-mono">
             {params.cache_type_k} / {params.cache_type_v}
           </span>
         </KeyValue>
-        <KeyValue label={t("dashboard.paramKqv")}>
-          {t(params.offload_kqv ? "dashboard.paramOnGpu" : "dashboard.paramOnCpu")}
+        <KeyValue compact label={t("dashboard.paramKqv")}>
+          <Badge tone={params.offload_kqv ? "aqua" : "amber"} className="px-1.5 py-0 text-[0.62rem]">
+            {t(params.offload_kqv ? "dashboard.paramOnGpu" : "dashboard.paramOnCpu")}
+          </Badge>
         </KeyValue>
       </dl>
-      {params.fit_memory_applied && (
-        <p className="mt-3 text-xs leading-relaxed text-muted">
-          {t("dashboard.paramsFitNote")}
-        </p>
-      )}
-    </section>
+    </Accordion>
   );
 }
 
@@ -251,6 +258,30 @@ export function cardRange(peer: PeerView): [number, number] | null {
   const cfg = peer.node?.config;
   if (cfg && cfg.total_layers > 0) return [cfg.start_layer, cfg.end_layer];
   return null;
+}
+
+/**
+ * Um disco, com o mesmo desenho de qualquer outro medidor do card.
+ *
+ * `disks` traz uma entrada por partição montada, e o rótulo é o ponto de
+ * montagem porque é ele que distingue duas partições do mesmo disco; o
+ * dispositivo entra no `title` para quem precisa saber de que disco físico se
+ * trata. Um nó antigo, que ainda não publica a lista, cai no volume único.
+ */
+function DiskMeter({ disk, label }: { disk: DiskStat; label: string }) {
+  const { t } = useI18n();
+  const used = disk.total_mb > 0 ? ((disk.total_mb - disk.free_mb) / disk.total_mb) * 100 : null;
+  return (
+    <div className="min-w-0" title={disk.device || undefined}>
+      <Meter
+        compact
+        label={label}
+        value={used}
+        tone={used != null && used > 90 ? "rose" : "amber"}
+        detail={disk.total_mb > 0 ? megabytes(disk.free_mb) + " " + t("dashboard.free") : "—"}
+      />
+    </div>
+  );
 }
 
 export function PeerDetailCard({
@@ -279,6 +310,21 @@ export function PeerDetailCard({
   // "carregando" para sempre.
   const vramGpus = (system?.gpus ?? []).filter((g) => g.vram_used_pct != null);
   const range = cardRange(peer);
+  /*
+   * O `/health` é pedido uma vez por card, aqui, e não dentro da seção de
+   * colocação: o distintivo de MTP subiu para a barra de ferramentas e a
+   * seção continua embaixo, e duas buscas para o mesmo lugar poderiam mostrar
+   * duas respostas na mesma tela. `enabled` continua sendo o que impede um
+   * `/health` por card a cada ciclo do Painel.
+   */
+  const runtime = usePeerRuntime(peer.node_id, serving);
+  const health = serving ? runtime.data?.health : undefined;
+  const mtpRequested = cfg?.mtp_enabled ?? false;
+  /*
+   * A lista de volumes, com o volume do projeto como recuo. A lista vazia é
+   * um nó que ainda não publica o campo, não uma máquina sem disco.
+   */
+  const disks = system ? (system.disks?.length ? system.disks : [system.disk]) : [];
 
   return (
     <motion.div
@@ -295,36 +341,41 @@ export function PeerDetailCard({
         )}
       />
 
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-5 py-4">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-raised">
-            <MachineIcon system={system} />
+      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-line px-3 py-2.5">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-line bg-raised">
+            <MachineIcon system={system} size="sm" />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="truncate font-display text-[0.95rem] font-semibold text-fg">
+            <div className="flex items-center gap-1.5">
+              <h3 className="truncate font-display text-[0.86rem] font-semibold text-fg">
                 {n?.hostname || peer.short_id}
               </h3>
               {peer.is_self && (
-                <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">
+                <Badge tone="neutral" className="px-1.5 py-0 text-[0.58rem]">
                   {t("dashboard.here")}
                 </Badge>
               )}
             </div>
-            <p className="truncate text-xs text-muted">{kind.label}</p>
+            <p className="truncate text-[0.66rem] text-muted">{kind.label}</p>
           </div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1.5">
+        <div className="flex shrink-0 items-center gap-2">
           {range ? (
-            <span className={clsx("font-mono text-sm font-semibold", track.text)}>
+            <span className={clsx("font-mono text-[0.78rem] font-semibold", track.text)}>
               {layerRange(range[0], range[1])}
             </span>
           ) : (
-            <Badge tone="neutral" className="px-1.5 py-0 text-[0.68rem]">
-              {t("dashboard.noSlice")}
-            </Badge>
+            // A explicação de "sem fatia" saiu da faixa larga que ocupava uma
+            // linha inteira do card e entrou no `[i]` do próprio distintivo.
+            <span className="flex items-center gap-1">
+              <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">
+                {t("dashboard.noSlice")}
+              </Badge>
+              <InfoTip label={t("dashboard.noSlice")} message={t("dashboard.noSliceDetail")} />
+            </span>
           )}
-          <span className="flex items-center gap-1.5 text-[0.72rem] text-muted">
+          <span className="flex items-center gap-1 text-[0.66rem] text-muted">
             <Dot
               tone={peer.unreachable ? "rose" : serverStateTone(n?.status.state)}
               pulse={serving}
@@ -335,7 +386,7 @@ export function PeerDetailCard({
       </div>
 
       {peer.unreachable ? (
-        <div className="space-y-3 px-5 py-5 text-sm text-muted">
+        <div className="space-y-2 px-3 py-3 text-[0.75rem] text-muted">
           {t("dashboard.unreachable", { error: peer.unreachable })}
           <GpuTemperature
             gpuKind={system?.gpu_kind ?? "none"}
@@ -345,14 +396,75 @@ export function PeerDetailCard({
         </div>
       ) : (
         <>
-          {!range && (
-            <p className="border-b border-line bg-raised/50 px-5 py-2.5 text-xs leading-relaxed text-muted">
-              {t("dashboard.noSliceDetail")}
-            </p>
-          )}
+          {/*
+            A barra de ferramentas da máquina, no topo.
+            Estavam espalhados pelo pé do card, um por seção, e para reiniciar
+            uma máquina era preciso rolar até o fim de tudo o que ela reporta.
+            Aqui são o que se faz *com* esta máquina, e ficam onde ela é
+            nomeada. O distintivo do MTP vem junto porque é estado de operação,
+            não medida: responde "o rascunho está de pé?" e onde ele coube.
+          */}
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-line bg-raised/40 px-3 py-2">
+            {mtpRequested && health && (
+              <span className="flex items-center gap-1">
+                <Badge
+                  tone={health.mtp_ready ? "aqua" : "rose"}
+                  className="px-1.5 py-0 text-[0.62rem]"
+                >
+                  {health.mtp_ready
+                    ? health.mtp_allocation === "ram"
+                      ? t("dashboard.mtpReadyRam")
+                      : health.mtp_allocation === "vram"
+                        ? t("dashboard.mtpReadyVram")
+                        : t("dashboard.mtpReadyUnknown")
+                    : t("dashboard.mtpUnavailable")}
+                </Badge>
+                <InfoTip
+                  label={t("dashboard.mtpStatus")}
+                  message={
+                    health.mtp_ready
+                      ? t("dashboard.mtpStatus")
+                      : `${t("dashboard.mtpUnavailableDetail")} ${
+                          health.mtp_unavailable_reason ?? t("dashboard.mtpReasonUnknown")
+                        }`
+                  }
+                />
+              </span>
+            )}
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+              {/* Só no card da própria máquina: quem libera a memória é o nó
+                  dono dela, nunca um coordenador metendo a mão. */}
+              {peer.is_self && cfg && (
+                <ReleaseSlice compact startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
+              )}
+              {/* Duas saídas diferentes: "Remover" tira do modelo e deixa a
+                  máquina no cluster; "Sair da rede" tira do cluster inteiro. */}
+              {serving && group && range && (
+                <RemoveNode
+                  nodeId={peer.node_id}
+                  group={group}
+                  range={range}
+                  existingRanges={otherRanges}
+                />
+              )}
+              <LeaveNode
+                nodeId={peer.node_id}
+                hostname={n?.hostname || peer.short_id}
+                isSelf={peer.is_self}
+              />
+              {n?.dev_update && (
+                <UpdateNode
+                  nodeId={peer.node_id}
+                  hostname={n.hostname || peer.short_id}
+                  isSelf={peer.is_self}
+                />
+              )}
+            </div>
+          </div>
 
-          <div className="grid gap-4 px-5 py-4 sm:grid-cols-2">
+          <div className="grid gap-2.5 px-3 py-2.5 sm:grid-cols-2">
             <Meter
+              compact
               label="RAM"
               value={system?.ram.used_pct ?? null}
               tone={
@@ -377,8 +489,9 @@ export function PeerDetailCard({
               // onde implantar.
               vramGpus.map((g) => (
                 <Meter
+                  compact
                   key={g.index}
-                  label={t("dashboard.vram", { name: gpuLabel(g) })}
+                  label={t("dashboard.vram", { name: gpuDisplayName(g, system?.gpus ?? []) })}
                   value={g.vram_used_pct ?? null}
                   tone={(g.vram_used_pct ?? 0) > 88 ? "rose" : "lime"}
                   detail={t("dashboard.usedOf", {
@@ -398,6 +511,7 @@ export function PeerDetailCard({
               // this branch and bounced forever, since nothing was ever going
               // to populate `wired_mb` for it.
               <Meter
+                compact
                 label={t("dashboard.wiredMemory")}
                 value={
                   system?.wired_mb != null && system.ram.total_mb > 0
@@ -408,33 +522,47 @@ export function PeerDetailCard({
                 detail={system?.wired_mb != null ? megabytes(system.wired_mb) : "—"}
               />
             ) : (
-              <Meter label={t("dashboard.noGpu")} value={0} tone="sky" detail="—" />
+              <Meter compact label={t("dashboard.noGpu")} value={0} tone="sky" detail="—" />
             )}
-            {hasGpu && <div className="min-w-0 sm:col-span-2">
-              <div className="eyebrow mb-2">{t("dashboard.gpuTemperature")}</div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {system?.gpus.map((g) => (
-                  <GpuTemperature
-                    key={g.index}
-                    gpuKind={system?.gpu_kind ?? "none"}
-                    temperature={g.temperature_c}
-                    policy={n?.thermal}
-                    label={gpuLabel(g)}
-                  />
-                ))}
+            {hasGpu && (
+              <div className="min-w-0 sm:col-span-2">
+                <div className="mb-1.5 flex items-center gap-1">
+                  <span className="eyebrow">{t("dashboard.gpuTemperature")}</span>
+                  {/* O aviso do sysmon sobre o que estes números significam
+                      nesta plataforma era um parágrafo permanente no card;
+                      agora é o `[i]` de quem tem a dúvida. */}
+                  {system?.gpu_note && (
+                    <InfoTip label={t("dashboard.gpuTemperature")} message={system.gpu_note} />
+                  )}
+                </div>
+                {/* Uma placa por linha: em duas colunas o nome da placa, com o
+                    índice que a distingue da irmã, não cabia ao lado do selo de
+                    temperatura e saía cortado. */}
+                <div className="grid gap-1.5">
+                  {system?.gpus.map((g) => (
+                    <GpuTemperature
+                      key={g.index}
+                      gpuKind={system?.gpu_kind ?? "none"}
+                      temperature={g.temperature_c}
+                      policy={n?.thermal}
+                      label={gpuDisplayName(g, system?.gpus ?? [])}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>}
+            )}
+            {/* Uma barra por partição montada: a máquina que guarda os GGUF num
+                segundo disco aparecia como um volume só, e quem decide onde cabe
+                um arquivo de 40 GB não via o disco onde ele caberia. */}
+            {disks.map((disk) => (
+              <DiskMeter
+                key={disk.mount_point + disk.device}
+                disk={disk}
+                label={t("dashboard.disk", { path: disk.mount_point || "—" })}
+              />
+            ))}
             <Meter
-              label={t("dashboard.disk", { path: system?.disk.mount_point || "—" })}
-              value={
-                system && system.disk.total_mb > 0
-                  ? ((system.disk.total_mb - system.disk.free_mb) / system.disk.total_mb) * 100
-                  : null
-              }
-              tone="amber"
-              detail={system ? megabytes(system.disk.free_mb) + " " + t("dashboard.free") : "—"}
-            />
-            <Meter
+              compact
               label={t("dashboard.load", { count: system?.cpu_count ?? "—" })}
               value={
                 system && system.cpu_count > 0
@@ -446,148 +574,103 @@ export function PeerDetailCard({
             />
           </div>
 
-          {system?.gpu_note && (
-            <p className="border-t border-line px-5 py-2.5 text-xs leading-relaxed text-faint">
-              {system.gpu_note}
-            </p>
-          )}
-
-          <dl className="grid gap-x-6 gap-y-4 border-t border-line px-5 py-4 sm:grid-cols-2">
-            <KeyValue label={t("dashboard.model")}>
+          <dl className="grid gap-x-3 gap-y-2 border-t border-line px-3 py-2.5 sm:grid-cols-3">
+            <KeyValue compact label={t("dashboard.model")}>
               {cfg?.model_label ? (
                 <span className="font-mono">{cfg.model_label}</span>
               ) : (
                 <span className="text-muted">{t("dashboard.noneLoaded")}</span>
               )}
             </KeyValue>
-            <KeyValue label={t("dashboard.role")}>
-              {cfg
-                ? cfg.single_peer
-                  ? t("dashboard.single")
-                  : cfg.start_layer === 0
-                    ? t("dashboard.prompt")
-                    : cfg.end_layer + 1 >= cfg.total_layers
-                      ? t("dashboard.tokens")
-                      : t("dashboard.middle")
-                : (n?.role ?? "—")}
+            <KeyValue compact label={t("dashboard.role")}>
+              <Badge tone={range ? "iris" : "neutral"} className="px-1.5 py-0 text-[0.62rem]">
+                {cfg
+                  ? cfg.single_peer
+                    ? t("dashboard.single")
+                    : cfg.start_layer === 0
+                      ? t("dashboard.prompt")
+                      : cfg.end_layer + 1 >= cfg.total_layers
+                        ? t("dashboard.tokens")
+                        : t("dashboard.middle")
+                  : (n?.role ?? "—")}
+              </Badge>
             </KeyValue>
-            <KeyValue label={t("dashboard.file")}>
-              {cfg?.model_path ? <span className="font-mono text-xs">{cfg.model_path}</span> : "—"}
-            </KeyValue>
-            <KeyValue label={t("dashboard.context")}>
-              {cfg ? (
-                <span className="font-mono text-xs">
-                  n_ctx {num(cfg.n_ctx)} · n_batch {num(cfg.n_batch)} · {cfg.max_sessions}{" "}
-                  {t("dashboard.session", { count: cfg.max_sessions })}
-                </span>
-              ) : (
-                "—"
-              )}
-            </KeyValue>
-            <KeyValue label={t("dashboard.inference")}>
-              {peer.inference_url ? (
-                <span className="font-mono text-xs">{peer.inference_url}</span>
-              ) : (
-                t("dashboard.notAdvertised")
-              )}
-            </KeyValue>
-            <KeyValue label={t("dashboard.server")}>
-              {n ? (
-                <span className="text-xs">
-                  {n.status.detail || serverStateLabel(n.status.state)}
-                  {n.status.pid ? ` · pid ${n.status.pid}` : ""}
-                  {n.status.restarts > 0
-                    ? " · " + t("dashboard.restarts", { count: n.status.restarts })
-                    : ""}
-                </span>
-              ) : (
-                "—"
-              )}
-            </KeyValue>
-            {/* Logo abaixo do servidor, e não escondido no cabeçalho: a pergunta
+            {/* Logo ao lado do papel, e não escondido no cabeçalho: a pergunta
                 que este campo responde é "os nós estão todos na mesma versão?",
                 e ela se responde comparando cards lado a lado. */}
-            <KeyValue label={t("dashboard.build")}>
-              {n?.build_commit ? <span className="font-mono text-xs">{n.build_commit}</span> : "—"}
+            <KeyValue compact label={t("dashboard.build")}>
+              {n?.build_commit ? <span className="font-mono">{n.build_commit}</span> : "—"}
+            </KeyValue>
+            {/* O arquivo é um caminho longo e raramente é a pergunta: fica no
+                `[i]`, e o card ganha a linha de volta. */}
+            <KeyValue compact label={t("dashboard.context")}>
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="truncate font-mono">
+                  {cfg
+                    ? `${num(cfg.n_ctx)} · ${cfg.max_sessions} ${t("dashboard.session", { count: cfg.max_sessions })}`
+                    : "—"}
+                </span>
+                {cfg && (
+                  <InfoTip
+                    label={t("dashboard.context")}
+                    message={`n_ctx ${num(cfg.n_ctx)} · n_batch ${num(cfg.n_batch)}${
+                      cfg.model_path ? ` · ${cfg.model_path}` : ""
+                    }`}
+                  />
+                )}
+              </span>
             </KeyValue>
             {/* Por onde este nó fala com aquele: com vários endereços
                 anunciados, "qual deles ganhou" só se responde aqui. */}
-            <KeyValue label={t("dashboard.route")}>
+            <KeyValue compact label={t("dashboard.route")}>
               {peer.route ? (
-                <span className="font-mono text-xs">
+                <span className="font-mono">
                   {peer.route.addr} · {Math.round(peer.route.rtt_ms)} ms
                 </span>
               ) : (
                 <span className="text-muted">{t("dashboard.routeUnmeasured")}</span>
               )}
             </KeyValue>
+            <KeyValue compact label={t("dashboard.server")}>
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="truncate">
+                  {n ? n.status.detail || serverStateLabel(n.status.state) : "—"}
+                </span>
+                {n && (
+                  <InfoTip
+                    label={t("dashboard.server")}
+                    message={[
+                      peer.inference_url ?? t("dashboard.notAdvertised"),
+                      n.status.pid ? `pid ${n.status.pid}` : null,
+                      n.status.restarts > 0
+                        ? t("dashboard.restarts", { count: n.status.restarts })
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  />
+                )}
+              </span>
+            </KeyValue>
           </dl>
 
-          {/* Only on this machine's own card: the slice is released by the node
-              that owns the memory, never by a coordinator reaching in. */}
-          {peer.is_self && cfg && (
-            <ReleaseSlice startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
-          )}
-
-          {/* Duas saídas diferentes, lado a lado porque são as duas coisas que
-              se pode querer fazer com *esta* máquina daqui:
-
-              - "Remover" a tira do modelo e a deixa no cluster, pronta para
-                receber outra faixa;
-              - "Sair da rede" a tira do cluster inteiro.
-
-              Nos dois casos quem libera a memória é o dono dela - estes botões
-              só encaminham. A saída da rede aparece sempre; tirar do modelo, só
-              quando há um modelo de onde tirar. */}
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-5 py-3">
-            {serving && group && range && (
-              <RemoveNode
-                nodeId={peer.node_id}
-                group={group}
-                range={range}
-                existingRanges={otherRanges}
-              />
-            )}
-            <LeaveNode
-              nodeId={peer.node_id}
-              hostname={n?.hostname || peer.short_id}
-              isSelf={peer.is_self}
-            />
-          </div>
-
-          {n?.dev_update && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
-              <Footnote icon={<RefreshCw className="h-3.5 w-3.5" />} className="min-w-0 flex-1">
-                {t("dashboard.devUpdate")}
-              </Footnote>
-              <UpdateNode
-                nodeId={peer.node_id}
-                hostname={n.hostname || peer.short_id}
-                isSelf={peer.is_self}
-              />
-            </div>
-          )}
-
           {/* Só faz pergunta quem tem a quem perguntar: sem modelo carregado
-              não há colocação nenhuma a mostrar, e o `enabled` evita um
-              `/health` por card a cada ciclo do Painel. */}
+              não há colocação nenhuma a mostrar. */}
           {serving && (
             <PeerPlacement
-              nodeId={peer.node_id}
-              enabled={serving}
+              health={health}
               kqvRequested={cfg?.offload_kqv ?? true}
-              mtpRequested={cfg?.mtp_enabled ?? false}
+              mtpRequested={mtpRequested}
             />
           )}
 
           {system && system.gpu_processes.length > 0 && (
-            <div className="border-t border-line px-5 py-3">
-              <div className="eyebrow mb-2">{t("dashboard.gpuProcesses")}</div>
-              <ul className="space-y-1">
+            <Accordion title={t("dashboard.gpuProcesses")}>
+              <ul className="space-y-0.5 px-3 pb-2">
                 {system.gpu_processes.map((p) => (
                   <li
                     key={p.pid}
-                    className="flex items-baseline justify-between gap-3 font-mono text-xs"
+                    className="flex items-baseline justify-between gap-3 font-mono text-[0.7rem]"
                   >
                     <span className="truncate text-muted">
                       {p.name} <span className="text-faint">#{p.pid}</span>
@@ -596,7 +679,7 @@ export function PeerDetailCard({
                   </li>
                 ))}
               </ul>
-            </div>
+            </Accordion>
           )}
         </>
       )}

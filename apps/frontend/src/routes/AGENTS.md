@@ -11,7 +11,11 @@ writes as translation keys.
 Per-file list:
 
 - `SetupWizard.tsx` - Protótipo navegável do primeiro acesso, mantido na rota
-  `/setup` mesmo depois da configuração inicial. Usa `setupWizardTypes.ts` para
+  `/setup` mesmo depois da configuração inicial. Renderiza **fora da moldura**,
+  como o `Setup.tsx` do primeiro arranque: sem Sidebar e sem Topbar (o
+  `isWizard` do `App.tsx` devolve antes do shell). O assistente guia a
+  configuração do zero, e o menu ao lado convidava a sair pelo meio para uma
+  tela que ainda não faz sentido. Usa `setupWizardTypes.ts` para
   o estado central e `setupWizardMocks.ts` para hardware, nós, modelos,
   capabilities, redes públicas e saúde simulados; os seis caminhos terminam
   no mesmo resumo e não fazem chamadas ao backend. O `Setup.tsx` continua
@@ -108,8 +112,11 @@ Per-file list:
   `useNetworkRtt`, with the same badge presentation used by deployment.
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
-  Simple/Complete strategy, central peer map, compact property inspector and
-  draggable bottom peer strip. Three shapes, chosen by the
+  Simple/Complete strategy, central peer map, compact property inspector
+  (`../components/DeploymentInspector`, o mesmo componente que o Histórico usa
+  em somente leitura) and draggable bottom peer strip. O que continua no
+  `DeployModel` e não migrou para o inspetor são as seções que só a tela de
+  implantar tem: grupo TP, tensor paralelo e a aba da máquina. Three shapes, chosen by the
   mode bar at the top and carried to the node as `kind`: **a set of shards**
   (below), **a whole model** (one model picker from `../lib/wholeModels`, with
   the deployment map as its only machine choice and no coverage
@@ -237,7 +244,14 @@ Per-file list:
   o controle de reabertura permanece na coluna compacta existente.
 - `Deployments.tsx` - lista as implantações registradas no cluster via
   `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
-  criação mais recente e mostra a coluna "Criada". Cada linha expande
+  criação mais recente e mostra a coluna "Criada". Tela cheia, como a de Logs:
+  cabeçalho fixo, tabela rolando por dentro e, quando há versão escolhida, um
+  inspetor à direita (`lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]`).
+  Clicar na linha de uma versão abre o `DeploymentInspector` em `readOnly` com
+  `version.params` - o mesmo inspetor da tela de implantar, sem duplicar a
+  lista de propriedades. O cache KV **não** entra ali: é da instalação e do
+  momento, não da versão, e mostrar o valor de hoje ao lado do que subiu ontem
+  seria inventar um registro que ninguém guardou. Cada linha expande
   (`VersionList`) e mostra `deployment.versions` da mais nova para a mais
   antiga, com a badge "Ativa" em `active_version` e um botão "Reimplantar esta
   versão" (`redeployDeployment(id, { version })`). O botão "Reimplantar com

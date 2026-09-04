@@ -22,7 +22,10 @@ export function fakeSystem(over: Partial<SystemLoad> = {}): SystemLoad {
     gpus: [],
     gpu_processes: [],
     wired_mb: 2048,
-    disk: { total_mb: 500000, free_mb: 200000, mount_point: "/" },
+    disk: { total_mb: 500000, free_mb: 200000, mount_point: "/", device: "/dev/disk3s1s1" },
+    disks: [
+      { total_mb: 500000, free_mb: 200000, mount_point: "/", device: "/dev/disk3s1s1" },
+    ],
     sampled_at: "2026-08-15T00:00:00Z",
     ...over,
   };

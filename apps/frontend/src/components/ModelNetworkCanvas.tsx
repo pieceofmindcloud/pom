@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { LayoutGrid, Minus, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { machineKind, MachineIcon } from "./MachineIcon";
+import { gpuDisplayName, machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
 import { GpuTemperature } from "./GpuTemperature";
 import { Button, Dot } from "./ui";
@@ -21,7 +21,7 @@ import {
   type CanvasPosition,
 } from "../lib/networkLayout";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
-import { highestKnownTemperature } from "../lib/thermal";
+import { sumVram } from "../lib/gpu";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
@@ -118,10 +118,17 @@ export function isControlTarget(target: EventTarget | null): boolean {
 
 function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen: () => void }) {
   const system = range.node?.system;
-  const gpu = system?.gpus[0];
-  const temperature = highestKnownTemperature(system?.gpus.map((g) => g.temperature_c) ?? []);
-  const vramUsed = gpu?.vram_used_mb != null ? gpu.vram_used_mb / 1024 : null;
-  const vramTotal = gpu?.vram_total_mb != null ? gpu.vram_total_mb / 1024 : null;
+  /*
+   * Uma máquina pode ter mais de uma placa, e o card em miniatura mostrava só
+   * a primeira: numa caixa com duas RTX, metade da VRAM sumia da tela e a
+   * segunda placa podia estar fervendo sem ninguém ver. A VRAM aqui é a soma
+   * das placas - é o total que a máquina tem a oferecer - e a temperatura
+   * ganha uma linha por placa logo abaixo.
+   */
+  const gpus = system?.gpus ?? [];
+  const vram = sumVram(gpus);
+  const vramUsed = vram ? vram.used / 1024 : null;
+  const vramTotal = vram ? vram.total / 1024 : null;
   const ramUsed = system ? system.ram.used_mb / 1024 : null;
   const ramTotal = system ? system.ram.total_mb / 1024 : null;
   const hostname = range.node?.hostname || range.short_id;
@@ -155,13 +162,26 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
     </div>
     <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
     {placement && <LayerPlacementMeter placement={placement} />}
-    <Meter label="VRAM" used={vramUsed} total={vramTotal} unknown={!gpu || vramTotal == null} />
-    <GpuTemperature
-      gpuKind={system?.gpu_kind ?? "none"}
-      temperature={temperature}
-      policy={range.node?.thermal}
-      compact
-    />
+    <Meter label={gpus.length > 1 ? t("canvas.vramTotal", { count: gpus.length }) : "VRAM"} used={vramUsed} total={vramTotal} unknown={vramTotal == null} />
+    {gpus.length > 0 ? (
+      gpus.map((g) => (
+        <GpuTemperature
+          key={g.index}
+          gpuKind={system?.gpu_kind ?? "none"}
+          temperature={g.temperature_c}
+          policy={range.node?.thermal}
+          label={gpus.length > 1 ? gpuDisplayName(g, gpus) : undefined}
+          compact
+        />
+      ))
+    ) : (
+      <GpuTemperature
+        gpuKind={system?.gpu_kind ?? "none"}
+        temperature={null}
+        policy={range.node?.thermal}
+        compact
+      />
+    )}
     <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
     <Meter label={t("canvas.load")} used={range.load} total={8} />
   </article>;

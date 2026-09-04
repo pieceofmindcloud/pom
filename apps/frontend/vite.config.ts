@@ -59,8 +59,22 @@ function brandHtml(): Plugin {
 const target = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
 const docsDirectory = fileURLToPath(new URL("./src/docs", import.meta.url)).replace(/\\/g, "/");
 
-/** Every path the node owns. Anything else is served by Vite itself. */
-const proxied = ["/api", "/v1", "/admin", "/admin-ui", "/peers", "/health", "/generate"];
+/**
+ * Every path the node owns. Anything else is served by Vite itself.
+ *
+ * `/admin-ui` **não** entra aqui, ainda que o nó também o sirva: é o `base`
+ * desta aplicação, e encaminhá-lo fazia o `npm run dev` devolver o bundle já
+ * construído do nó em vez do código local. A tela não mudava por mais que se
+ * editasse, e a única pista era o `index.html` vir com nomes de arquivo
+ * versionados (`assets/index-C_gaTk6C.js`).
+ *
+ * `/admin` sozinho não bastava tirar da lista: a chave de texto do proxy do
+ * Vite casa por **prefixo de string**, não por segmento de caminho, então
+ * `/admin-ui/src/App.tsx` começa com `/admin` e era encaminhado do mesmo
+ * jeito. Por isso o `/admin` do nó entra como expressão regular que exclui o
+ * `-ui` explicitamente.
+ */
+const proxied = ["/api", "/v1", "^/admin(?!-ui)", "/peers", "/health", "/generate"];
 
 export default defineConfig({
   base: "/admin-ui/",

@@ -57,7 +57,7 @@ import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemo
 import { useToast } from "../lib/toast";
 import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
 import { Confirm } from "../components/Confirm";
-import { CapabilitySwitch, MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
+import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
@@ -65,7 +65,6 @@ import {
   Badge,
   Button,
   ErrorState,
-  InfoTip,
   Input,
   Select,
   Skeleton,
@@ -76,48 +75,13 @@ import type {
   DeploySelection,
   DeployStrategy,
   CacheTypesResponse,
-  InferenceMode,
   KvCacheType,
   RuntimeParams,
   TpLaunch,
-  WireDtype,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 const rangeKey = (start: number, end: number) => `${start}-${end}`;
-
-type NumericRuntimeKey =
-  | "n_ctx"
-  | "n_batch"
-  | "max_new_tokens"
-  | "max_sessions"
-  | "prefill_chunk_tokens"
-  | "prefill_max_inflight_chunks"
-  | "temperature"
-  | "top_p"
-  | "top_k"
-  | "repeat_penalty"
-  | "repeat_last_n"
-  | "cycle_detection_min_window_tokens"
-  | "cycle_detection_max_window_tokens"
-  | "cycle_detection_repetitions";
-
-const GLOBAL_NUMERIC_KNOBS: Array<{ key: NumericRuntimeKey; label: string; step?: string }> = [
-  { key: "n_ctx", label: "Contexto" },
-  { key: "n_batch", label: "Batch" },
-  { key: "max_new_tokens", label: "Máx. tokens" },
-  { key: "max_sessions", label: "Sessões" },
-  { key: "prefill_chunk_tokens", label: "Chunk prefill" },
-  { key: "prefill_max_inflight_chunks", label: "Chunks em voo" },
-  { key: "temperature", label: "Temperatura", step: "0.05" },
-  { key: "top_p", label: "Top-p", step: "0.01" },
-  { key: "top_k", label: "Top-k" },
-  { key: "repeat_penalty", label: "Penalidade", step: "0.01" },
-  { key: "repeat_last_n", label: "Janela repetição" },
-  { key: "cycle_detection_min_window_tokens", label: "Ciclo: janela mínima" },
-  { key: "cycle_detection_max_window_tokens", label: "Ciclo: janela máxima" },
-  { key: "cycle_detection_repetitions", label: "Ciclo: repetições" },
-];
 
 const DEFAULT_CACHE_TYPES: KvCacheType[] = [
   "f32",
@@ -130,18 +94,6 @@ const DEFAULT_CACHE_TYPES: KvCacheType[] = [
   "q5_0",
   "q5_1",
 ];
-
-const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
-  f32: "F32",
-  f16: "F16",
-  bf16: "BF16",
-  q8_0: "Q8_0",
-  q4_0: "Q4_0",
-  q4_1: "Q4_1",
-  iq4_nl: "IQ4_NL",
-  q5_0: "Q5_0",
-  q5_1: "Q5_1",
-};
 
 /** The plan on screen, in the shape the routes accept it back.
  *
@@ -336,36 +288,6 @@ function Coverage({
   );
 }
 
-function Switch({
-  checked,
-  onChange,
-  label,
-  hint,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
-  hint?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div className={`flex items-start gap-2.5 ${disabled ? "opacity-55" : ""}`}>
-      <span className="mt-0.5">
-        {disabled ? (
-          <Tick on={false} label={label} onToggle={() => {}} />
-        ) : (
-          <Tick on={checked} label={label} onToggle={() => onChange(!checked)} />
-        )}
-      </span>
-      <span className="min-w-0">
-        <span className={`block text-[0.82rem] ${disabled ? "text-muted" : "text-fg"}`}>{label}</span>
-        {hint && <span className="mt-0.5 block text-xs text-faint">{hint}</span>}
-      </span>
-    </div>
-  );
-}
-
 export function DeployModel() {
   const { t } = useI18n();
   const cluster = useClusterCatalog();
@@ -399,8 +321,6 @@ export function DeployModel() {
   const nodeParams = useRef<RuntimeParams | null>(null);
   /** `null` means "the node's default" — merged units off. */
   const [merge, setMerge] = useState<boolean | null>(null);
-  /** Half-typed numbers, so clearing a field does not snap back to a digit. */
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [asked, setAsked] = useState(false);
   /** Segundo confirm, separado do de cobertura parcial: a projeção de VRAM
    *  passa da capacidade de alguma máquina. Avisa, não bloqueia - o operador
@@ -845,11 +765,6 @@ export function DeployModel() {
   const inferenceModeSupported = inferenceModeReason == null;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
-  const hiddenStateCapability = p?.capabilities?.hidden_state_f8;
-  const hiddenStateDtype = eff.hidden_state_dtype ?? "f16";
-  const f8Unavailable = hiddenStateCapability
-    ? hiddenStateCapability.state !== "supported"
-    : false;
   /**
    * `hidden_state_dtype` só faz algo quando o estado oculto atravessa a
    * fronteira de um peer - ou seja, num pipeline de fatias com faixas
@@ -861,15 +776,6 @@ export function DeployModel() {
   const crossesPeerBoundary =
     kind === "shards" &&
     new Set(rows.map((r) => `${r.start_layer}-${r.end_layer}`)).size >= 2;
-
-  /** Edit one knob. The draft keeps the field usable while it is half-typed. */
-  function setKnob(key: keyof RuntimeParams, text: string) {
-    setDrafts((d) => ({ ...d, [key]: text }));
-    const value = Number(text);
-    if (text !== "" && Number.isFinite(value)) {
-      setParams({ ...eff, [key]: value });
-    }
-  }
 
   function edit(next: (base: DeploySelection[]) => DeploySelection[]) {
     setSelection(next(rows.map((r) => ({ ...r }))).slice().sort(byLayer));
@@ -1042,7 +948,6 @@ export function DeployModel() {
     setSettled(null);
     const defaults = nodeParams.current ?? p?.params ?? null;
     setParams(defaults);
-    setDrafts(defaults ? { n_ctx: String(defaults.n_ctx) } : {});
     setMerge(p?.merge ?? null);
     setPreferredNodeIds([]);
     preserveEmptyPrimary.current = true;
@@ -1383,139 +1288,33 @@ export function DeployModel() {
             </div>
 
             {inspectorTab === "global" ? <>
-            <section className="border-b border-iris/20 bg-iris/[0.04] pb-3">
-              <p className="border-b border-iris/20 bg-iris/10 px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Configurações globais</p>
-              <div className="space-y-1 px-2 pt-2">
-                {GLOBAL_NUMERIC_KNOBS.map(({ key, label, step }) => (
-                  <div key={key} className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                    <span className="flex min-w-0 items-center gap-1 text-muted">
-                      <span className="truncate">{label}</span>
-                      <InfoTip label={label} message={t("deploy.knob." + key + "Hint")} />
-                    </span>
-                    <Input aria-label={label} name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
-                  </div>
-                ))}
-                {crossesPeerBoundary && (
-                  <>
-                    <div className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-1.5 text-[0.65rem]">
-                      <span className="flex min-w-0 items-center gap-1 text-muted">
-                        <span className="truncate">{t("deploy.knob.hidden_state_dtype")}</span>
-                        <InfoTip label={t("deploy.knob.hidden_state_dtype")} message={t("deploy.knob.hidden_state_dtypeHint")} />
-                      </span>
-                      <Select
-                        aria-label={t("deploy.knob.hidden_state_dtype")}
-                        name="hidden_state_dtype"
-                        value={hiddenStateDtype}
-                        onChange={(event) => setParams({ ...eff, hidden_state_dtype: event.target.value as WireDtype })}
-                        compact
-                      >
-                        <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
-                        <option value="f8" disabled={f8Unavailable}>{t("deploy.knob.hidden_state_dtypeF8")}</option>
-                      </Select>
-                    </div>
-                    {hiddenStateCapability && f8Unavailable && (
-                      <p role="alert" className="text-[0.6rem] leading-relaxed text-amber">
-                        {t("deploy.knob.hidden_state_dtypeUnavailable")}{hiddenStateCapability.reason}
-                      </p>
-                    )}
-                  </>
-                )}
-                <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
-                <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
-                <CapabilitySwitch capability={p?.capabilities?.no_embeddings} alwaysVisible checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
-                <CapabilitySwitch alwaysVisible checked={eff.cycle_detection_enabled ?? true} onChange={(value) => setParams({ ...eff, cycle_detection_enabled: value })} label={t("deploy.cycleDetection")} hint={t("deploy.cycleDetectionHint")} />
-              </div>
-            </section>
-
-            {isMoePlan && (
-              <section className="border-b border-amber/25 bg-amber/[0.04] px-2 py-3">
-                <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-amber">Motor de inferência</p>
-                <label className="mt-2 grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
-                  <span className="truncate text-muted">Escolha para os três modos</span>
-                  <Select
-                    aria-label="Motor de inferência"
-                    name="inference_mode"
-                    value={eff.inference_mode ?? "auto"}
-                    onChange={(event) => setParams({ ...eff, inference_mode: event.target.value as InferenceMode })}
-                    compact
-                  >
-                    <option value="auto">Automático</option>
-                    <option value="dense">llama.cpp</option>
-                    <option value="moe">MoE</option>
-                  </Select>
-                </label>
-                <p className="mt-1.5 text-[0.6rem] leading-relaxed text-faint">A decisão usa metadata real do GGUF e é enviada ao modelo inteiro, às fatias e ao Tensor Parallelism.</p>
-                {!inferenceModeSupported && (
-                  <p role="alert" className="mt-2 rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
-                    {inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido."}
-                  </p>
-                )}
-              </section>
+            <DeploymentInspector
+              value={eff}
+              onChange={setParams}
+              capabilities={p?.capabilities}
+              cacheTypes={{
+                k: cacheTypeK,
+                v: cacheTypeV,
+                choices: cacheTypeChoices,
+                busy: cacheTypes.isLoading || savingCacheTypes,
+                onChange: (part, next) => void updateCacheTypes(part, next),
+              }}
+              merge={isWhole ? undefined : { value: effMerge, onChange: setMerge }}
+              showInferenceMode={isMoePlan}
+              inferenceModeAlert={
+                inferenceModeSupported
+                  ? undefined
+                  : (inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido.")
+              }
+              showHiddenStateDtype={crossesPeerBoundary}
+            />
+            {isMoePlan && !inferenceModeSupported && (
+              <p role="alert" className="border-b border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
+                {inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido."}
+              </p>
             )}
-
-            <section className="border-b border-aqua/20 bg-aqua/[0.035] px-2 py-3">
-              <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-aqua">Cache KV da instalação</p>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <label className="min-w-0 text-[0.62rem]">
-                  <span className="mb-1 block text-muted">Cache K</span>
-                  <Select
-                    aria-label="Cache K"
-                    name="cache_type_k"
-                    value={cacheTypeK}
-                    disabled={cacheTypes.isLoading || savingCacheTypes}
-                    onChange={(event) => void updateCacheTypes("k", event.target.value as KvCacheType)}
-                    compact
-                  >
-                    {cacheTypeChoices.map((choice) => (
-                      <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
-                    ))}
-                  </Select>
-                </label>
-                <label className="min-w-0 text-[0.62rem]">
-                  <span className="mb-1 block text-muted">Cache V</span>
-                  <Select
-                    aria-label="Cache V"
-                    name="cache_type_v"
-                    value={cacheTypeV}
-                    disabled={cacheTypes.isLoading || savingCacheTypes}
-                    onChange={(event) => void updateCacheTypes("v", event.target.value as KvCacheType)}
-                    compact
-                  >
-                    {cacheTypeChoices.map((choice) => (
-                      <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
-                    ))}
-                  </Select>
-                </label>
-              </div>
-            </section>
-            {/*
-              * Duas faixas vizinhas na mesma máquina só passam quando são
-              * juntadas antes de subir: `split` renomeia os blocos de toda
-              * fatia para `blk.0..`, então duas não carregam lado a lado, e
-              * `splitter::merge` é o inverso disso. O planejador recusa o par
-              * sem esta flag, e a mensagem de recusa manda "juntar as fatias
-              * vizinhas na tela" - o controle tem que existir, ou a recusa
-              * aponta para lugar nenhum. Foi exatamente o que aconteceu quando
-              * a reescrita do canvas apagou este interruptor.
-              *
-              * Vive sob a mesma condição que decide se `merge` é enviado, e não
-              * outra: um controle que a requisição ignora, ou um valor enviado
-              * sem controle, é como ele se perdeu da primeira vez.
-              */}
-            {!isWhole && (
-              <section className="border-b border-line py-3">
-                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Fatias</p>
-                <Switch
-                  checked={effMerge}
-                  onChange={(value) => setMerge(value)}
-                  label={t("deploy.merge")}
-                  hint={t("deploy.mergeHint")}
-                />
-              </section>
-            )}
-
             {isTp && tpGroup && (
-              <section className="border-b border-line py-3">
+              <section className="border-b border-line px-2 py-3">
                 <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{hasSlicedTp ? "Grupo Tensor Parallelism" : "Modelo inteiro"}</p>
                 <dl className="grid grid-cols-3 gap-2 text-[0.6rem]">
                   <div><dt className="text-faint">Quantização</dt><dd className="font-mono text-muted">{wholeModel?.quant ?? tpGroup?.quant ?? "-"}</dd></div>
@@ -1540,63 +1339,8 @@ export function DeployModel() {
               </section>
             )}
 
-            <section className="border-b border-line py-3">
-              <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Execução</p>
-              <div className="space-y-2">
-                <CapabilitySwitch
-                  capability={p?.capabilities?.speculative_decoding}
-                  checked={eff.speculative_decoding_enabled ?? false}
-                  onChange={(value) => setParams({ ...eff, speculative_decoding_enabled: value })}
-                  label="Decodificação especulativa"
-                />
-                {eff.speculative_decoding_enabled &&
-                  p?.capabilities?.speculative_decoding?.state !== "unsupported" && (
-                  <div className="space-y-1.5">
-                    <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                      <span className="truncate text-muted">Largura do rascunho</span>
-                      <Input name="speculative_k" type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} compact className="text-right font-mono" />
-                    </label>
-                    <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                      <span className="truncate text-muted">Janela de busca</span>
-                      <Input name="speculative_lookup_window" type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} compact className="text-right font-mono" />
-                    </label>
-                  </div>
-                )}
-                <CapabilitySwitch
-                  capability={p?.capabilities?.mtp}
-                  checked={eff.mtp_enabled ?? false}
-                  onChange={(value) => setParams({
-                    ...eff,
-                    mtp_enabled: value,
-                    ...(value ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
-                  })}
-                  label="Predição multi-token (MTP)"
-                />
-                {eff.mtp_enabled &&
-                  p?.capabilities?.mtp?.state !== "unsupported" && (
-                  <div className="space-y-1.5">
-                    <CapabilitySwitch
-                      alwaysVisible
-                      checked={eff.mtp_cpu_fallback_enabled ?? true}
-                      onChange={(value) => setParams({ ...eff, mtp_cpu_fallback_enabled: value })}
-                      label={t("deploy.mtpCpuFallback")}
-                      hint={t("deploy.mtpCpuFallbackHint")}
-                    />
-                    <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                      <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
-                      <Input aria-label="Tokens rascunhados pelo MTP" name="mtp_draft_tokens" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
-                    </label>
-                    <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                      <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                      <Input aria-label="Probabilidade mínima do MTP" name="mtp_min_probability" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} compact className="text-right font-mono" />
-                    </label>
-                  </div>
-                )}
-              </div>
-            </section>
-
             {isTp && (wholeModel || tpGroup) && (
-              <section className="border-b border-line py-3">
+              <section className="border-b border-line px-2 py-3">
                 <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Tensor paralelo</p>
                 <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
                   <span className="truncate text-muted">Principal</span>
@@ -1720,10 +1464,19 @@ export function DeployModel() {
                       </div>
                     </>
                   )}
+                  {/* As duas propriedades por máquina usam a mesma linha das
+                      globais: o `[i]` antes do nome, na mesma coluna, e o
+                      controle à direita. A explicação do KV cache era um
+                      parágrafo fixo debaixo do interruptor; agora está no `[i]`,
+                      como todas as outras. */}
                   {first && (
-                    <div className="mt-3 space-y-2 border-t border-line pt-2">
-                      <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="flex min-w-0 items-center gap-1 text-muted"><span className="truncate">Camadas GPU</span><InfoTip label="Camadas GPU" message={t("deploy.knob.n_gpu_layersHint")} /></span><Input aria-label="Camadas GPU" name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></div>
-                      <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" hint={t("deploy.knob.offload_kqvHint")} />
+                    <div className="mt-3 space-y-1 border-t border-line pt-2">
+                      <InspectorRow label="Camadas GPU" tip={t("deploy.knob.n_gpu_layersHint")}>
+                        <Input aria-label="Camadas GPU" name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" />
+                      </InspectorRow>
+                      <InspectorRow label="KV cache na GPU" tip={t("deploy.knob.offload_kqvHint")}>
+                        <Tick on={first.offload_kqv ?? eff.offload_kqv} label="KV cache na GPU" onToggle={() => setPeerKqv(machine.node_id, !(first.offload_kqv ?? eff.offload_kqv))} />
+                      </InspectorRow>
                     </div>
                   )}
                   </div>

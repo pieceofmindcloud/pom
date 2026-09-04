@@ -290,7 +290,8 @@ describe("DeployModel", () => {
     });
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
-    expect(screen.getByText("Cache KV da instalação")).toBeTruthy();
+    // Os combos do cache KV moram na categoria "Configurações padrões".
+    expect(screen.getByText("Configurações padrões")).toBeTruthy();
     const cacheK = screen.getByRole("combobox", { name: "Cache K" });
     const cacheV = screen.getByRole("combobox", { name: "Cache V" });
     expect((cacheK as HTMLSelectElement).value).toBe("f16");
@@ -748,7 +749,7 @@ describe("DeployModel", () => {
 
     await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
-    expect(screen.getByText("Configurações globais")).toBeTruthy();
+    expect(screen.getByText("Configurações padrões")).toBeTruthy();
     expect(screen.queryByText("Camadas nesta máquina")).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: /Máquina:/ }));

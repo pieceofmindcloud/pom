@@ -326,9 +326,12 @@ function usePositionedPopover() {
 export function AlertTooltip({
   label,
   message,
+  /** Densidade do inspetor: mesmo tamanho do `[i]`, sem a moldura do aviso. */
+  compact = false,
 }: {
   label: string;
   message: string;
+  compact?: boolean;
 }) {
   const { open, setOpen, pinned, setPinned, position, triggerRef, tooltipRef } =
     usePositionedPopover();
@@ -356,7 +359,12 @@ export function AlertTooltip({
           setPinned(next);
           setOpen(next);
         }}
-        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-amber/35 bg-amber/10 text-amber transition-colors hover:bg-amber/20 focus-visible:ring-2 focus-visible:ring-amber/60"
+        className={clsx(
+          "flex shrink-0 items-center justify-center text-amber transition-colors focus-visible:ring-2 focus-visible:ring-amber/60",
+          compact
+            ? "h-4 w-4 rounded-full hover:text-fg"
+            : "mt-0.5 h-6 w-6 rounded-md border border-amber/35 bg-amber/10 hover:bg-amber/20",
+        )}
       >
         <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5" />
       </button>
@@ -533,17 +541,27 @@ export function Meter({
   value,
   detail,
   tone = "iris",
+  /** Densidade do card de máquina, onde cabem oito medidores numa tela. */
+  compact = false,
 }: {
   label: string;
   value: number | null;
   detail?: ReactNode;
   tone?: Tone;
+  compact?: boolean;
 }) {
   return (
     <div className="min-w-0">
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <span className="truncate text-[0.8rem] text-muted">{label}</span>
-        <span className="shrink-0 font-mono text-[0.78rem] tabular-nums text-fg">
+      <div className={clsx("flex items-baseline justify-between gap-2", compact ? "mb-1" : "mb-1.5")}>
+        <span className={clsx("truncate text-muted", compact ? "text-[0.68rem]" : "text-[0.8rem]")}>
+          {label}
+        </span>
+        <span
+          className={clsx(
+            "shrink-0 font-mono tabular-nums text-fg",
+            compact ? "text-[0.66rem]" : "text-[0.78rem]",
+          )}
+        >
           {detail}
         </span>
       </div>
@@ -688,11 +706,22 @@ export function Footnote({
   );
 }
 
-export function KeyValue({ label, children }: { label: string; children: ReactNode }) {
+export function KeyValue({
+  label,
+  children,
+  /** Densidade do card de máquina. */
+  compact = false,
+}: {
+  label: string;
+  children: ReactNode;
+  compact?: boolean;
+}) {
   return (
     <div className="min-w-0">
-      <dt className="eyebrow mb-1">{label}</dt>
-      <dd className="break-path text-sm text-fg">{children}</dd>
+      <dt className={clsx("eyebrow", compact ? "mb-0.5" : "mb-1")}>{label}</dt>
+      <dd className={clsx("break-path text-fg", compact ? "text-[0.72rem]" : "text-sm")}>
+        {children}
+      </dd>
     </div>
   );
 }

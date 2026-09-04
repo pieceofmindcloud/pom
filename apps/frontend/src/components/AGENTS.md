@@ -24,7 +24,10 @@ crashes the next.
 Per-file list:
 
 - `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine
-  details. It uses `SystemLoad.gpu_kind` as the source of truth: `none` returns
+  details. Uma máquina pode ter mais de uma placa: os dois cards mostram **uma
+  linha por GPU**, nomeada por `gpuDisplayName` (que acrescenta `#índice`
+  quando duas placas têm o mesmo nome, o caso das duas RTX 5060 Ti da ksia).
+  It uses `SystemLoad.gpu_kind` as the source of truth: `none` returns
   no markup, while a real GPU with a missing reading shows only the unavailable
   sensor message. Flow and machine details pass through this component so the
   no-GPU guard cannot be forgotten by a caller. Normal, attention, critical and
@@ -37,7 +40,10 @@ Per-file list:
   `ErrorState` (renders `localizeServerText` on the error message),
   `Mono`/`ScrollX`/`Footnote`/`KeyValue`. Everything is token-based class names
   (e.g. `bg-iris`, `border-line`) with `clsx`, no runtime styling.
-- `AlertTooltip` (ui.tsx) - aviso compacto usado no inspetor: o ícone âmbar é
+- `AlertTooltip` (ui.tsx) - `compact` deixa o ícone do tamanho do `[i]`, sem
+  moldura, para caber na coluna de ícones do `DeploymentInspector`; `Meter` e
+  `KeyValue` ganharam `compact` pelo mesmo motivo no card de máquina. É o aviso
+  compacto usado no inspetor: o ícone âmbar é
   focável e acionável por foco ou clique, e o texto completo é renderizado em
   portal fixo, com quebra explícita de palavras para mensagens longas e ids sem
   espaços. `InfoTip` é a versão neutra (ícone `[i]`, sem peso de aviso) para
@@ -73,7 +79,10 @@ Per-file list:
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`.
-- `nav.ts` — `NAV`: the menu as data — an ordered array of `NavSection`
+- `nav.ts` — `NAV`: the menu as data — a seção Implantações usa `Rocket` (era
+  `Boxes`, o mesmo ícone de Modelos) e o Histórico usa `History`; o submenu não
+  desenha ícone de folha, então `Rocket` na seção e na folha `/implantar` não
+  colidem. A tabela em si é an ordered array of `NavSection`
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and
   `end` (whether the sidebar should match child routes too). The sidebar and the
   App router both consume it; the routes themselves are declared in `../App.tsx`.
@@ -184,7 +193,16 @@ Per-file list:
   field, and `flash_attn: null` reads as "não sei", never as off.
   `UpdateNode` (update+restart, dev-only via
   `POM_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
-  render from here now. `PeerPlacement` (interno) é a única parte do card que
+  render from here now - e todos numa **barra de ferramentas no topo do
+  card**, junto do distintivo de MTP, em vez de espalhados pelo pé: reiniciar
+  uma máquina era rolar até o fim de tudo o que ela reporta. O card é denso de
+  propósito (`compact` em `Meter`/`KeyValue`, seções `px-3 py-2.5`) para caber
+  numa tela; o que é útil sem precisar estar sempre visível vive num `InfoTip`
+  (a razão de "sem fatia", o `gpu_note`, a nota do fit, caminho do modelo, pid
+  e reinícios), e "Parâmetros de carga do llama.cpp" e "Processos na GPU" são
+  `<details>` fechados. Os discos são **um medidor por partição montada**
+  (`system.disks`), com recuo para `system.disk` num nó que ainda não publique
+  a lista. `PeerPlacement` (interno) é a única parte do card que
   faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do
   `usePeerRuntime` é o que impede um `/health` por card a cada ciclo do Painel.
   Quando a configuração pediu MTP, o mesmo card também mostra
@@ -339,6 +357,21 @@ Key logic carriers:
   rolagem interna para preservar o tamanho dos cards e alinhar a curva aos
   endpoints mesmo quando o conteúdo é mais largo que o painel. A separação existe porque este grafo
   representa uma implantação ainda não aplicada.
+- `DeploymentInspector.tsx` - o inspetor de propriedades de uma implantação, e
+  **um só** para os dois ecrãs: a tela de implantar o usa editável, o Histórico
+  o usa com `readOnly` para mostrar com que parâmetros uma versão subiu. Em
+  somente leitura não há `<input>` desabilitado: há o valor escrito. Três
+  categorias, e a fronteira entre elas é de quem é o parâmetro - *Configurações
+  padrões* (o que o llama.cpp já tem, incluindo os combos de cache KV da
+  instalação), *Configurações POM* (motor, ajuste de memória, chunks em voo,
+  fusão de fatias, precisão do estado oculto) e *Configurações POM (DESENV)*
+  (detector de ciclo e recuo do MTP para a RAM). O `[i]` vem **antes** do nome,
+  numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
+  O combo do motor não oferece "Automático" e assume `dense` ao montar - é
+  apresentação, o backend continua aceitando os três modos. Números de ponto
+  flutuante passam por `showNumber`, senão a temperatura sai como
+  `0.699999988079071`. Os controles de cache KV, fusão de fatias e precisão do
+  estado oculto só aparecem quando quem monta os passa.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
   inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,

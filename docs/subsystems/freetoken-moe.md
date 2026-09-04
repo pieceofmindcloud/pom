@@ -490,8 +490,8 @@ ponte de dtype e a rota heterogênea também usa redução cooperativa para os
 formatos cobertos. O `FIT_MAX_UBATCH` permanece `512`.
 
 O benchmark sintético na geometria Q6_K real (`hidden=2048`,
-`intermediate=512`, 28 tokens e 224 rotas) mediu `12,308 ms` de parede, com
-`11,737 ms` de kernel, `0,119 ms` de H2D, `0,199 ms` de D2H e `0,156 ms` de
+`intermediate=512`, 28 tokens e 224 rotas) mediu `12,233 ms` de parede, com
+`11,653 ms` de kernel, `0,118 ms` de H2D, `0,194 ms` de D2H e `0,157 ms` de
 alocação na primeira capacidade. É uma medida do executor, não uma promessa
 de E2E. A suíte CUDA na ksia passou com `325` testes e zero falhas.
 

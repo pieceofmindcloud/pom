@@ -26,7 +26,8 @@ Two files carry all of it: a static message table and a small provider. Tests:
   The administrative access form also keeps a paired stable username label for
   browser password-manager recognition.
   Dashboard machine details also has paired labels for requested MTP status,
-  its measured VRAM/RAM location and its runtime unavailability reason. The
+  its measured VRAM/RAM location, its runtime unavailability reason and the
+  effective context reservation when multiple sessions put KV on a device. The
   deployment form labels the opt-out for the RAM fallback in both locales.
   The Deployments section has separate `nav.history` and `deployments.created`
   labels in both locale blocks for the nested history menu and date column. The

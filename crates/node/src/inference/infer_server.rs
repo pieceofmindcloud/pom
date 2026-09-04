@@ -1037,6 +1037,20 @@ mod tests {
     }
 
     #[test]
+    fn health_dense_nao_sinaliza_executor_moe() {
+        let (requested, executor, dtypes, reason) = moe_health_summary(
+            crate::executor::InferencePath::DenseLlamaCpp,
+            None,
+            None,
+        );
+
+        assert!(!requested);
+        assert_eq!(executor, "not-requested");
+        assert!(dtypes.is_empty());
+        assert!(reason.is_none());
+    }
+
+    #[test]
     fn telemetria_detecta_execucao_mista_no_mesmo_hop() {
         let mut timings = NodeTimings {
             selected_path: crate::executor::InferencePath::MoeQ4_0,

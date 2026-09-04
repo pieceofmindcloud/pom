@@ -23,7 +23,7 @@ import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
 import { LeaveNode } from "./LeaveNode";
-import { ModelPlacementSection } from "./ModelPlacement";
+import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
 import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
 import { devUpdate } from "../lib/api";
 import {
@@ -150,6 +150,7 @@ function PeerPlacement({
   if (!health) return null;
   return (
     <>
+      <ContextReservationNotice health={health} />
       {mtpRequested && !health.mtp_ready && (
         <p
           role="status"
@@ -169,6 +170,38 @@ function PeerPlacement({
         fitApplied={health.fit_memory_applied ?? false}
       />
     </>
+  );
+}
+
+/**
+ * O contexto total é multiplicado por `max_sessions` antes de chegar ao
+ * llama.cpp. Quando o KV medido está na GPU, duas ou mais sessões podem levar
+ * o fit ao limite e transformar uma configuração aparentemente inocente numa
+ * degradação grande por chamada. O aviso usa somente o estado efetivo do
+ * `/health`, não a configuração pedida pelo deploy.
+ */
+function ContextReservationNotice({ health }: { health: PeerRuntimeHealth }) {
+  const { t } = useI18n();
+  const gpuKv =
+    health.context_memory?.buffers.some(
+      (buffer) => buffer.context > 0 && !isCpuBuffer(buffer.buffer),
+    ) ?? false;
+  if (health.max_sessions <= 1 || !gpuKv) return null;
+
+  return (
+    <p
+      role="status"
+      className="border-t border-line px-3 py-2 text-[0.7rem] leading-relaxed text-amber"
+    >
+      {t("dashboard.contextSessionsWarning", {
+        sessions: num(health.max_sessions),
+        total: num(health.n_ctx_total),
+        perSession: num(health.n_ctx_per_session),
+        fit: health.fit_memory_applied
+          ? t("dashboard.contextFitApplied")
+          : t("dashboard.contextFitNotApplied"),
+      })}
+    </p>
   );
 }
 

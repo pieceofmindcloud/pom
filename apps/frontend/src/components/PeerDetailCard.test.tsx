@@ -121,6 +121,53 @@ describe("PeerDetailCard com fatia", () => {
   });
 });
 
+describe("PeerDetailCard · reserva de contexto", () => {
+  afterEach(cleanup);
+
+  it("expõe quando várias sessões multiplicam o KV na GPU", () => {
+    mount(fakeSlicePeer("context", 0, 31), {
+      loaded: true,
+      health: {
+        mtp_ready: true,
+        max_sessions: 2,
+        n_ctx_total: 500224,
+        n_ctx_per_session: 250112,
+        fit_memory_applied: true,
+        context_memory: {
+          buffers: [
+            { buffer: "CUDA0", device: "CUDA0", model: 0, context: 2_000_000_000, compute: 0 },
+          ],
+        },
+        placement: null,
+      } as never,
+    });
+
+    expect(screen.getByRole("status").textContent).toMatch(
+      /500\.224.*2 sessões.*250\.112.*KV.*GPU/i,
+    );
+  });
+
+  it("não cria alerta para a configuração de uma sessão", () => {
+    mount(fakeSlicePeer("context-one", 0, 31), {
+      loaded: true,
+      health: {
+        mtp_ready: true,
+        max_sessions: 1,
+        n_ctx_total: 250112,
+        n_ctx_per_session: 250112,
+        context_memory: {
+          buffers: [
+            { buffer: "CUDA0", device: "CUDA0", model: 0, context: 1_000_000_000, compute: 0 },
+          ],
+        },
+        placement: null,
+      } as never,
+    });
+
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
 describe("PeerDetailCard · parâmetros de carga", () => {
   const params = {
     n_ctx: 8192,

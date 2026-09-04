@@ -158,7 +158,7 @@ Quando `mtp_enabled=true`, o fit primeiro encaixa o modelo principal e seu
 contexto sem MTP. Antes de considerar a reserva opcional, lê
 `general.architecture` e verifica uma lista gerada pelo próprio fork para as
 arquiteturas que implementam `LLM_GRAPH_TYPE_DECODER_MTP`. O
-`crates/node/build/mtp_arch.rs` encontra a verificação efetiva em cada
+`crates/llama-engine/build/mtp_arch.rs` encontra a verificação efetiva em cada
 `src/models/*.cpp`, cruza a classe com o dispatch de `llama-model.cpp` e
 resolve o nome oficial na tabela `LLM_ARCH_NAMES` de `llama-arch.cpp`.
 Comentários que apenas mencionam o símbolo não contam, e a verificação precisa

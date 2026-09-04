@@ -1044,6 +1044,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "dashboard.file": () => "File",
     "dashboard.context": () => "Context",
     "dashboard.session": ({ count }) => Number(count) === 1 ? "session" : "sessions",
+    "dashboard.contextSessionsWarning": ({ sessions, total, perSession, fit }) =>
+      "This runtime reserves " + String(total) + " context tokens for " + String(sessions) +
+      " sessions (" + String(perSession) + " per session), with KV on the GPU. " + String(fit) +
+      " More sessions multiply KV memory and can sharply increase per-call latency when VRAM is tight.",
+    "dashboard.contextFitApplied": () => "Memory fit was applied.",
+    "dashboard.contextFitNotApplied": () => "Memory fit was not applied.",
     "dashboard.inference": () => "Inference",
     "dashboard.notAdvertised": () => "not advertised",
     "dashboard.server": () => "Server",
@@ -2761,6 +2767,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "dashboard.file": () => "Arquivo",
     "dashboard.context": () => "Contexto",
     "dashboard.session": ({ count }) => Number(count) === 1 ? "sessão" : "sessões",
+    "dashboard.contextSessionsWarning": ({ sessions, total, perSession, fit }) =>
+      "Este runtime reserva " + String(total) + " tokens de contexto para " + String(sessions) +
+      " sessões (" + String(perSession) + " por sessão), com o KV na GPU. " + String(fit) +
+      " Mais sessões multiplicam a memória do KV e podem aumentar muito o tempo por chamada quando a VRAM está no limite.",
+    "dashboard.contextFitApplied": () => "O fit de memória foi aplicado.",
+    "dashboard.contextFitNotApplied": () => "O fit de memória não foi aplicado.",
     "dashboard.inference": () => "Inferência",
     "dashboard.notAdvertised": () => "não anunciada",
     "dashboard.server": () => "Servidor",

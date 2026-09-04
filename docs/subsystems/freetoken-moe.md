@@ -615,6 +615,41 @@ incluindo qualquer duplicação comprovada e a sincronização antecipada; (4)
 atacar o prefill, que segue sendo a maior distância absoluta. A medição E2E
 após a correção MTP fica para a implantação integrada do captain.
 
+### Fase 5.6: diagnóstico da reserva de sessões - 2026-09-04
+
+A revisão da janela entre o binário bom e o mau não encontrou uma regressão no
+caminho denso. `99d8977` só instala o callback externo no MTP quando
+`moe_external_executor` está ativo; `74ab819` deixa a captura de logs fora do
+caminho quando ela está desativada; e `84e7141` consulta o mapa de rotas no
+envio, não durante o `llama_decode` local. Portanto nenhum desses commits
+explica o salto de `20,8 ms` para `87,5 ms` por chamada.
+
+O contrafactual controlado foi executado na ksia com o binário `4868f79`, o
+GGUF real `Ornith-1.5-35B-Q4_K_M.gguf`, GPU `99`, `n_batch=512`, MTP ligado e
+os mesmos prompt e parâmetros. A única variável foi `max_sessions`:
+
+| configuração | node_p50_ms por chamada | observação |
+|---|---:|---|
+| `max_sessions=1` | `20,944 ms` | linha alinhada ao binário bom do captain |
+| `max_sessions=2` | `105,3-124,4 ms` | mesmo binário, sem alteração de código |
+
+No segundo caso, `/health` confirmou `n_ctx_total=500224`, `n_ctx_per_session=250112`,
+`kv_seq_max=4` e `max_sessions=2`; a ocupação medida das duas RTX 5060 Ti
+ficou em aproximadamente `15,3 GiB` por placa. A diferença reproduz o efeito
+de fit e reserva de KV que contamina a comparação, embora o harness próprio
+tenha uma latência absoluta maior que a implantação do captain. O resultado
+descarta a hipótese de regressão introduzida pelo callback MTP no caminho
+denso e identifica `max_sessions=2` com janela de `250k` como a causa do caso
+medido.
+
+O cartão de detalhes agora mostra um aviso localizado quando o `/health`
+efetivo combina múltiplas sessões com KV medido em dispositivo: total de
+contexto, contexto por sessão, estado do fit e o risco de latência por pressão
+de VRAM. Uma sessão ou KV em CPU não gera o aviso. A mudança é diagnóstica e
+não altera a seleção densa, MTP, transporte ou executor MoE. Para comparar
+throughput com a linha de base, fixe `max_sessions=1` ou registre explicitamente
+o total de contexto e a ocupação de VRAM de cada execução.
+
 #### Procedimento E2E para a implantação do captain
 
 Quando a implantação integrada estiver pronta, o captain deve medir cada

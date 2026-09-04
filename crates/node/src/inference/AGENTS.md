@@ -662,7 +662,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   com backpressure antes de alocar sessão e resposta `429 Retry-After` quando
   a fila atingiu o limite. Com `batch_window_ms=0`, o primeiro item segue ao
   worker sem espera temporizada; um valor positivo mantém a janela de coleta.
-  O `/health` expõe os limites e os últimos contadores de lote.
+  O `/health` expõe os limites e os últimos contadores de lote. `moe_health_summary`
+  mantém o isolamento observável: um runtime denso publica
+  `moe_executor=not-requested`, sem dtypes nem motivo MoE; o teste no
+  `infer_server` trava esse contrato mesmo quando MTP está ativo.
 - bloco de resposta direta (nos dois handlers, quando `direct_reply_to(&meta)`
   existe) - acumula `hop_timings` na ida (`direct::accumulate` +
   `direct::hop_entry`); cauda (`next_hops` vazio): spawna `direct::deliver_result`

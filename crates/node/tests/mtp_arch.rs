@@ -1,2 +1,2 @@
-#[path = "../build/mtp_arch.rs"]
+#[path = "../../llama-engine/build/mtp_arch.rs"]
 mod mtp_arch;

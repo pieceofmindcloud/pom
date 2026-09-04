@@ -1,8 +1,8 @@
 # tests/ - testes de integração do node
 
-- `mtp_arch.rs` inclui o extrator usado pelo `build.rs` para que as regras de
-  tokenização, mapeamento e falha ruidosa também rodem no harness normal do
-  Cargo. O teste não lê nem altera o fork do `llama.cpp`.
+- `mtp_arch.rs` inclui o extrator usado por `crates/llama-engine/build.rs` para
+  que as regras de tokenização, mapeamento e falha ruidosa também rodem no
+  harness normal do Cargo. O teste não lê nem altera o fork do `llama.cpp`.
 
 ## Maintaining this file
 

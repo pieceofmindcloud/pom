@@ -395,6 +395,11 @@ Key logic carriers:
   desabilita a opção e exibe a razão devolvida pelo servidor.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
+- `PeerDetailCard.ContextReservationNotice` (PeerDetailCard.tsx) - when the
+  live `/health` reports multiple sessions with KV measured on a device, the
+  card shows the effective total and per-session context and warns that the KV
+  reservation can raise per-call latency under tight VRAM. A single session or
+  an unmeasured/CPU KV cache does not create this warning.
 - `ModelPlacement.placementOf` (ModelPlacement.tsx:39) — "gpu" / "cpu" /
   "mixed" / "unknown" pelos bytes de peso em cada buffer; `isCpuBuffer` é quem
   reconhece o host (`CPU`, `CPU_Mapped`), e é por nome porque é assim que o

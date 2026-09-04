@@ -510,6 +510,54 @@ CPU de referência, sampling e bytes por ficha. A telemetria continua
 obrigatória para confirmar `moe_executor`, `moe_executor_dtypes`,
 `moe_executor_reason`, TTFT, fases e tok/s depois do deploy.
 
+#### Procedimento E2E para a implantação do captain
+
+Quando a implantação integrada estiver pronta, o captain deve medir cada
+modelo em duas seleções separadas, `dense` e `moe`, mantendo a mesma máquina,
+GPUs, `n_ctx`, `n_batch=512`, `n_gpu_layers`, número de sessões, temperatura,
+prompt e `max_tokens`. A seleção deve ser feita no deploy e o processo deve
+ser reiniciado pelo ciclo normal da implantação; não se deve tentar trocar
+`POM_INFERENCE_MODE` num processo já servindo.
+
+Em cada seleção, confirmar primeiro a porta de inferência e guardar a
+telemetria de executor:
+
+```bash
+MODEL=Ornith-1.5-35B-Q6_K.gguf
+GATEWAY=http://ksia:8080
+INFERENCE=http://ksia:8092
+
+curl -fsS "$INFERENCE/health" |
+  jq '{selected_path,moe_requested,moe_executor,moe_executor_dtypes,moe_executor_reason,n_ubatch_effective,mtp_ready,mtp_unavailable_reason}'
+```
+
+Depois executar a mesma requisição em cada modo. O `tee` guarda o JSON bruto;
+o `jq` imprime geração, TTFT, prefill, decode, contagem de chamadas e a
+telemetria por hop:
+
+```bash
+MODE=dense # repetir com MODE=moe após selecionar o deploy correspondente
+PROMPT='Escreva hello world 10 vezes.'
+curl -fsS "$GATEWAY/api/generate" \
+  -H 'content-type: application/json' \
+  --data "$(jq -nc --arg model "$MODEL" --arg prompt "$PROMPT" \
+    '{model:$model,prompt:$prompt,max_tokens:64}')" \
+  | tee "ornith-q6k-${MODE}.json" \
+  | jq '{tokens_generated,tokens_per_sec,duration_ms,timings,trace:{input_tokens,output_tokens,hops:[.trace.hops[] | {prefill,decode}]}}'
+```
+
+Repetir o mesmo bloco para
+`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`. No resultado MoE, exigir
+`moe_executor=cuda`, dtypes `[14]` no Ornith e `[10,11,21,22,23]` no Qwen,
+sem `moe_executor_reason`; no denso, exigir `moe_executor=not-requested`.
+Comparar `timings.generation_tokens_per_sec` e `tokens_per_sec` como geração,
+`timings.prefill_tokens_per_sec` como prefill e `timings.ttft_ms` como TTFT.
+Também registrar de `trace.hops[].prefill` e `.decode` os campos
+`processing_ms`, `calls`, `node_p50_ms`, `node_p95_ms`, bytes e
+`moe_executor_diagnostics`. Guardar o intervalo completo do log para conferir
+que `POM_MOE_LAYER_INPUT` só aparece quando
+`POM_MOE_LAYER_INPUT_DIAGNOSTIC=1` foi explicitamente solicitado.
+
 A investigação da medição Gemma4 encontrou uma divergência anterior a qualquer
 otimização de kernel. O contexto captura `l_out-29`, mas em
 `vendor/llama-cpp-sys-2/llama.cpp/src/models/gemma4.cpp` esse tensor é criado

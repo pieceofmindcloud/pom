@@ -63,7 +63,9 @@ apresenta hops e RTTs direcionais e como o perfil Inference reduz a vista sem
 criar autorização no backend. `inferencia.md` registra também
 as causas conhecidas de perda do estado de sessão, o estado de disponibilidade
 do MTP no `/health` e a tarefa de observabilidade recomendada para distingui-las
-em campo.
+em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
+2026-09-04, a reaplicação da rota morta por lote e a memória de falha que a
+corrige.
 
 O armazenamento local unificado está especificado em
 `superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no

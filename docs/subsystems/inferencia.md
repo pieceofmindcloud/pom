@@ -671,13 +671,18 @@ A correção é estrutural e vale para IPv4 e IPv6:
    sem ser tratada como a causa do callback repetido.
 
 O teste `a_blackholed_reply_address_is_tried_only_once_across_stream_batches`
-reproduz um destino que aceita a conexão e não responde: a primeira entrega
-  registra a falha e usa a alternativa saudável; a segunda entrega não toca
-  mais no destino morto. Os testes equivalentes de `relay` e `link` verificam o
-  mesmo contrafactual no frame direto e na abertura persistente. A API não tem
-  um caminho especial: `/api/generate`, `/v1/chat/completions` e a interface
-  chamam `generate_stream_with_stops`, então uma execução pela API sofre a
-  mesma seleção de endereço e recebe a mesma correção.
+reproduz um destino que aceita o SYN e não responde ao HTTP: a primeira entrega
+registra a falha e usa a alternativa saudável; a segunda entrega não toca mais
+no destino morto. Os testes equivalentes de `relay` e `link` verificam o mesmo
+contrafactual no frame direto e na abertura persistente. Com a implementação
+anterior, a asserção de uma única conexão falhava porque `blackhole_hits` ficava
+em 2; com a memória de falha, fica em 1. A bancada ignorada
+`the_tunnel_carries_a_real_frame_to_a_live_peer` também usa `192.0.2.1` (TEST-NET)
+para exercitar um endereço que engole SYN e confirmar que o timeout de abertura
+acontece antes do fallback. A API não tem um caminho especial:
+`/api/generate`, `/v1/chat/completions` e a interface chamam
+`generate_stream_with_stops`, então uma execução pela API sofre a mesma seleção
+de endereço e recebe a mesma correção.
 
 ### 2.2 Cópias no caminho quente do `wire.rs`
 

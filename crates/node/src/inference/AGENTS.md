@@ -247,9 +247,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   identidade de `task_budget` para impedir que o KV de outro marcador seja
   reutilizado. `PrefixCache::adopt` registra uma sessão restaurada do disco
   como hit ocupado. `PrefixDiskIndex` (Phase 3) é a camada de disco opcional:
-  índice `(rota, prompt, tokens, bytes, updated_at)` por `key_hash`, com TTL de
-  7 dias e orçamento LRU (`slot_auto_max_bytes`), persistido em
-  `prefix-auto-index.json` no `slot_save_path` do gateway. Ligado por
+  índice `(rota, prompt, tokens, bytes, updated_at)` por `key_hash`, persistido
+  em `prefix-auto-index.json` no `slot_save_path` do gateway. `record` supersede
+  os ancestrais de prefixo estrito da mesma rota (uma linhagem, um `.bin`),
+  aplica TTL configurável (`slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS`,
+  padrão 7 dias) e orçamento LRU (`slot_auto_max_bytes`, padrão 2 GiB),
+  devolvendo os `key_hash` a apagar. O gateway ainda faz debounce por
+  `SLOT_AUTO_MIN_GROWTH_TOKENS` antes de regravar. Ligado por
   `slot_persist_prefix_cache`; ver `inferencia.md` §3.1.1.
 - `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
   **escolha**. A referência acompanha lookup, insert, busy, release e eviction;

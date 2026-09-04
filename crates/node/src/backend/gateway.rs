@@ -2560,6 +2560,25 @@ async fn generate_stream_inner(
                 let sid = session_id.clone();
                 tokio::spawn(async move {
                     let hash = prefix_key_hash(&key, &prompt);
+                    // Debounce: se o prefixo retido cresceu pouco desde o
+                    // último snapshot desta linhagem, só renova o carimbo e
+                    // não regrava (cada spill é um serialize de KV + fan-out).
+                    if let Some(ancestor) =
+                        disk.longest_prefix_match(&key.model, &key.hops, &prompt)
+                    {
+                        if retained_tokens.saturating_sub(ancestor.cached_tokens)
+                            < crate::prefix_cache::SLOT_AUTO_MIN_GROWTH_TOKENS
+                        {
+                            disk.touch(&ancestor.key_hash);
+                            debug!(
+                                "spill de prefixo pulado: +{} tokens desde {} (< {})",
+                                retained_tokens.saturating_sub(ancestor.cached_tokens),
+                                &ancestor.key_hash[..8.min(ancestor.key_hash.len())],
+                                crate::prefix_cache::SLOT_AUTO_MIN_GROWTH_TOKENS,
+                            );
+                            return;
+                        }
+                    }
                     match snapshot_deployment(&plan, &auto_slot_name(&hash), &sid, &clients).await {
                         Ok(bytes) => {
                             for stale in disk.record(
@@ -2844,6 +2863,7 @@ pub(crate) fn build_prefix_disk_index(
     Some(crate::prefix_cache::PrefixDiskIndex::load(
         path,
         config.slot_auto_max_bytes(),
+        config.slot_auto_ttl_secs(),
     ))
 }
 
@@ -4892,6 +4912,7 @@ pub(crate) mod testkit {
                 slot_save_path: None,
                 slot_persist_prefix_cache: false,
                 slot_auto_max_bytes: None,
+                slot_auto_ttl_secs: None,
                 connection_key: "chave".into(),
                 gateway_port: 8080,
                 admin_exposure: Default::default(),

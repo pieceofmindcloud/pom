@@ -1128,6 +1128,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         slot_save_path: None,
         slot_persist_prefix_cache: false,
         slot_auto_max_bytes: None,
+        slot_auto_ttl_secs: None,
     }));
 
     // The same interface the configured node serves, so setup is not a second
@@ -1486,7 +1487,9 @@ async fn start_gateway_only(
         local_assignment: assignment_shared.clone(),
         loads: Arc::new(LoadTracker::new()),
         prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
-        prefix_disk: None,
+        // Nó implantado pela UI (sem `--model`): é este o caminho comum, e o
+        // cache de prefixo persistente precisa do índice aqui também.
+        prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
         cycle_config: crate::cycle::CycleConfig {

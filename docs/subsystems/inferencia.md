@@ -933,6 +933,15 @@ reinício, sem chamada manual:
   `key_hash = hash(PrefixRouteKey + cache_key)`. Um índice pequeno
   (`prefix-auto-index.json`, ao lado dos `.bin` no `slot_save_path` deste
   gateway) guarda `(rota, prompt, tokens, bytes, updated_at)` por `key_hash`.
+- **Debounce.** Se o prefixo retido cresceu menos que
+  `SLOT_AUTO_MIN_GROWTH_TOKENS` (256) desde o último snapshot da mesma
+  linhagem, o turno só renova o carimbo do ancestral e **não** regrava - cada
+  spill é um serialize de KV mais um fan-out.
+- **Supersessão.** Ao gravar, `PrefixDiskIndex::record` solta toda entrada da
+  mesma rota cujo prompt é prefixo estrito do novo e apaga os `.bin` dela
+  (`erase_snapshot`). Uma conversa que cresce mantém **um** `.bin`, não um por
+  turno. Uma conversa que se ramifica perde o ponto intermediário e cai no
+  ancestral que sobrar ou no prefill frio.
 - **Reload no miss.** Quando o `PrefixCache` em memória não tem a conversa
   (típico logo após um reinício), o gateway procura no índice o maior prefixo
   **estrito** do prompt pedido; achando, `restore_deployment` recria o KV em
@@ -940,9 +949,11 @@ reinício, sem chamada manual:
   (`PrefixCache::adopt`) e o turno segue como um acerto normal - a cabeça
   reaproveita pela mesma regra só-acrescentar. O trace publica
   `prefix_reuse_status = "disk"`.
-- **Limites.** `slot_auto_max_bytes` (padrão 8 GiB, somado entre fatias) com
-  despejo LRU por `updated_at`, e TTL de 7 dias. Um `.bin` despejado é apagado
-  com `erase_snapshot`.
+- **Limites.** `slot_auto_max_bytes` (padrão 2 GiB, somado entre fatias) com
+  despejo LRU por `updated_at`, e um TTL configurável por `slot_auto_ttl_secs`
+  no `pom.json` ou `POM_SLOT_AUTO_TTL_SECS` (padrão 7 dias). `updated_at` é
+  renovado a cada gravação e a cada restauração, então uma conversa ativa não
+  expira. Um `.bin` despejado é apagado com `erase_snapshot`.
 - **Fronteiras.** O índice é **local do gateway**: se o papel de gateway mudar
   de máquina, o novo gateway não enxerga as entradas e cai no prefill frio (os
   `.bin` órfãos saem por TTL/LRU). Um `restore` que falha (arquivo sumiu num

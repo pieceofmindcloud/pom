@@ -120,6 +120,7 @@ mod tests {
             slot_save_path: None,
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
             connection_key: key.into(),
             gateway_port: 8080,
             admin_exposure: Default::default(),

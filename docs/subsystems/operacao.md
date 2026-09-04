@@ -41,9 +41,11 @@ medidas em campo.
 - **Cache de prefixo persistente:** `slot_persist_prefix_cache` no `pom.json`
   (ou `POM_SLOT_PERSIST_PREFIX_CACHE=1`) faz o gateway gravar o KV retido ao
   fim de cada turno e restaurá-lo num miss depois de um reinício, sem chamada
-  manual. Desligado por padrão; exige `slot_save_path` em todos os hops.
-  `slot_auto_max_bytes` limita o disco (padrão 8 GiB). Ver `inferencia.md`
-  §3.1.1.
+  manual. Desligado por padrão; exige `slot_save_path` em todos os hops. Uma
+  conversa que cresce mantém um só snapshot (supersessão); turnos curtos não
+  regravam (debounce). `slot_auto_max_bytes` limita o disco (padrão 2 GiB) e
+  `slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS` o TTL (padrão 7 dias, renovado
+  a cada uso). Ver `inferencia.md` §3.1.1.
 
 ## Subida (cluster de duas máquinas)
 

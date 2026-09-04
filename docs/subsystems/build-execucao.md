@@ -297,6 +297,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_UI_DIST` | Onde `webapp.rs` lê o bundle da UI (padrão `<project_root>/apps/frontend/dist`). A imagem Docker a seta explicitamente. |
 | `POM_SLOT_SAVE_PATH` | Diretório de snapshots de KV cache (`--slot-save-path` do llama-server). Vence o campo `slot_save_path` do `pom.json`; a flag `--slot-save-path` vence a env var. Por processo, não persistida. Ausente desliga `POST /v1/session/slot` e `/admin/slots`. Ver `inferencia.md` §3.1.1. |
 | `POM_SLOT_PERSIST_PREFIX_CACHE` | `1`/`true`/`yes`/`on` liga o cache de prefixo persistente (gateway grava/restaura o KV retido entre reinícios). Vence `slot_persist_prefix_cache` do `pom.json`; exige `slot_save_path` em todos os hops. Desligado por padrão. Ver `inferencia.md` §3.1.1. |
+| `POM_SLOT_AUTO_TTL_SECS` | TTL de um snapshot automático de prefixo sem uso, em segundos (padrão 7 dias). Vence `slot_auto_ttl_secs` do `pom.json`. Lido no arranque do gateway. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` faz o nó **receptor** aceitar toda oferta de transferência sem clique. Só desenvolvimento; lida uma vez no arranque. O remetente não pode pedi-la. |
 | `POM_DEV_UPDATE` | `=1` liga o portão de "Atualizar e reiniciar" no card do peer (`devupdate.rs`). Por processo, nunca na config. |
 | `POM_BUILD_FEATURES` | Features com que a máquina compila no devupdate (`cuda`/`metal`); sem ela a ksia perde a GPU no primeiro clique. |

@@ -20,13 +20,20 @@ use std::time::Instant;
 
 const DEFAULT_CAPACITY: usize = 32;
 
-/// Um snapshot automático em disco expira depois disto sem uso. Vale para a
-/// entrada do índice e, indiretamente, para o `.bin` que ela referencia.
-pub const SLOT_AUTO_TTL_SECS: i64 = 7 * 24 * 3600;
+/// TTL padrão de um snapshot automático em disco sem uso, em segundos. Vale
+/// para a entrada do índice e, indiretamente, para o `.bin` que ela referencia.
+/// `updated_at` é renovado a cada gravação e a cada restauração. Ajustável por
+/// `Config.slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS`.
+pub const DEFAULT_SLOT_AUTO_TTL_SECS: i64 = 7 * 24 * 3600;
 
 /// Orçamento padrão de disco para os snapshots automáticos de prefixo, somado
 /// entre todas as fatias. Ajustável por `Config.slot_auto_max_bytes`.
-pub const DEFAULT_SLOT_AUTO_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub const DEFAULT_SLOT_AUTO_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Um turno cujo prefixo retido cresceu menos que isto desde o último snapshot
+/// da mesma linhagem não regrava: só renova o carimbo do ancestral. Corta a
+/// amplificação de escrita numa conversa com turnos curtos.
+pub const SLOT_AUTO_MIN_GROWTH_TOKENS: u32 = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PrefixRouteKey {
@@ -333,22 +340,25 @@ pub struct DiskPrefixEntry {
 pub struct PrefixDiskIndex {
     path: PathBuf,
     max_bytes: u64,
+    ttl_secs: i64,
     state: Mutex<Vec<DiskPrefixEntry>>,
 }
 
 impl PrefixDiskIndex {
     /// Lê o índice do disco, poda o que passou do TTL e devolve o handle.
-    pub fn load(path: impl Into<PathBuf>, max_bytes: u64) -> Arc<Self> {
+    pub fn load(path: impl Into<PathBuf>, max_bytes: u64, ttl_secs: i64) -> Arc<Self> {
         let path = path.into();
+        let ttl_secs = ttl_secs.max(1);
         let mut entries: Vec<DiskPrefixEntry> = std::fs::read(&path)
             .ok()
             .and_then(|raw| serde_json::from_slice(&raw).ok())
             .unwrap_or_default();
-        let cutoff = now_secs() - SLOT_AUTO_TTL_SECS;
+        let cutoff = now_secs() - ttl_secs;
         entries.retain(|entry| entry.updated_at >= cutoff);
         Arc::new(Self {
             path,
             max_bytes: max_bytes.max(1),
+            ttl_secs,
             state: Mutex::new(entries),
         })
     }
@@ -375,8 +385,9 @@ impl PrefixDiskIndex {
             .cloned()
     }
 
-    /// Insere ou atualiza a entrada de um `key_hash` e aplica TTL e orçamento.
-    /// Devolve os `key_hash` que saíram, para o chamador apagar os `.bin`.
+    /// Insere ou atualiza a entrada de um `key_hash`, solta os ancestrais que
+    /// ele supersede e aplica TTL e orçamento. Devolve os `key_hash` que
+    /// saíram, para o chamador apagar os `.bin` correspondentes em cada hop.
     pub fn record(
         &self,
         model: &str,
@@ -400,7 +411,25 @@ impl PrefixDiskIndex {
         });
 
         let mut dropped = Vec::new();
-        let cutoff = now - SLOT_AUTO_TTL_SECS;
+
+        // Supersessão: um snapshot mais longo na mesma rota cobre todo prefixo
+        // estrito dele, então uma conversa que cresce mantém um só `.bin` em
+        // vez de um por turno. Uma conversa que se ramifica (um turno anterior
+        // editado) perde o ponto intermediário e cai no ancestral que sobrar
+        // ou no prefill frio - aceitável para um cache.
+        state.retain(|entry| {
+            let superseded = entry.key_hash != key_hash
+                && entry.route_model == model
+                && entry.route_hops == hops
+                && prompt.len() > entry.prompt.len()
+                && prompt.starts_with(&entry.prompt);
+            if superseded {
+                dropped.push(entry.key_hash.clone());
+            }
+            !superseded
+        });
+
+        let cutoff = now - self.ttl_secs;
         state.retain(|entry| {
             let keep = entry.updated_at >= cutoff || entry.key_hash == key_hash;
             if !keep {
@@ -545,29 +574,41 @@ mod tests {
         hit.discard();
     }
 
+    fn tmp_index(tag: &str, max_bytes: u64) -> (std::path::PathBuf, Arc<PrefixDiskIndex>) {
+        let dir = std::env::temp_dir().join(format!("pom-prefix-idx-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let idx = PrefixDiskIndex::load(
+            dir.join("index.json"),
+            max_bytes,
+            DEFAULT_SLOT_AUTO_TTL_SECS,
+        );
+        (dir, idx)
+    }
+
     #[test]
     fn disk_index_matches_the_longest_strict_prefix_only() {
-        let dir = std::env::temp_dir().join(format!("pom-prefix-idx-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let idx = PrefixDiskIndex::load(dir.join("index.json"), DEFAULT_SLOT_AUTO_MAX_BYTES);
+        let (dir, idx) = tmp_index("match", DEFAULT_SLOT_AUTO_MAX_BYTES);
         let hops = vec!["h1".to_string(), "h2".to_string()];
+        // O longo entra primeiro; o curto depois **não** é supersedido (curto
+        // não cobre longo), então os dois coexistem para este teste de match.
+        idx.record("m", &hops, "h_turn2", "system\nuser1\nassist1\nuser2", 8, 1_000);
         idx.record("m", &hops, "h_sys", "system", 2, 1_000);
-        idx.record("m", &hops, "h_turn1", "system\nuser1", 4, 1_000);
 
-        // Prefixo estrito: pega o mais longo.
-        let hit = idx
-            .longest_prefix_match("m", &hops, "system\nuser1\nuser2")
-            .expect("match");
-        assert_eq!(hit.key_hash, "h_turn1");
-        // Igualdade com a entrada mais longa não conta (a cabeça não
-        // conseguiria reaproveitar): cai na entrada anterior, ainda estrita.
+        // Dois casam; o mais longo vence.
         assert_eq!(
-            idx.longest_prefix_match("m", &hops, "system\nuser1")
+            idx.longest_prefix_match("m", &hops, "system\nuser1\nassist1\nuser2\nuser3")
+                .expect("match")
+                .key_hash,
+            "h_turn2"
+        );
+        // Um ramo diverge cedo: só o prefixo do sistema casa.
+        assert_eq!(
+            idx.longest_prefix_match("m", &hops, "system\noutra coisa")
                 .expect("cai no prefixo do sistema")
                 .key_hash,
             "h_sys"
         );
-        // Igualdade com a única entrada compatível não casa.
+        // Igualdade não casa (a cabeça não conseguiria reaproveitar).
         assert!(idx.longest_prefix_match("m", &hops, "system").is_none());
         // Rota diferente não casa.
         assert!(idx
@@ -577,19 +618,58 @@ mod tests {
     }
 
     #[test]
-    fn disk_index_evicts_by_ttl_and_budget_and_reports_dropped_hashes() {
-        let dir = std::env::temp_dir().join(format!("pom-prefix-idx-b-{}", std::process::id()));
+    fn disk_index_supersedes_prefix_ancestors_on_the_same_route() {
+        let (dir, idx) = tmp_index("sup", DEFAULT_SLOT_AUTO_MAX_BYTES);
+        let r1 = vec!["h".to_string()];
+        assert!(idx.record("m", &r1, "a", "sys", 1, 1_000).is_empty());
+        // Turno seguinte da mesma linhagem: solta o ancestral "a".
+        assert_eq!(idx.record("m", &r1, "b", "sys\nu1", 3, 1_000), vec!["a"]);
+        assert_eq!(idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000), vec!["b"]);
+        assert_eq!(idx.stats().0, 1, "uma linhagem, um snapshot");
+
+        // Outra rota não é tocada.
+        idx.record("m", &["outro".to_string()], "d", "sys\nu1", 3, 1_000);
+        assert_eq!(idx.stats().0, 2);
+
+        // Um ramo (turno anterior editado) diverge de "c" e coexiste com ele.
+        assert!(idx
+            .record("m", &r1, "e", "sys\nu1\nOUTRO", 5, 1_000)
+            .is_empty());
+        assert_eq!(idx.stats().0, 3);
         let _ = std::fs::remove_dir_all(&dir);
-        let idx = PrefixDiskIndex::load(dir.join("index.json"), 2_500);
+    }
+
+    #[test]
+    fn disk_index_evicts_by_budget_and_reports_dropped_hashes() {
+        let (dir, idx) = tmp_index("budget", 2_500);
         let hops = vec!["h".to_string()];
         idx.record("m", &hops, "a", "p-a", 1, 1_000);
         idx.record("m", &hops, "b", "p-b", 1, 1_000);
         // Terceiro empurra o total a 3_000 > 2_500: o mais antigo ("a") sai.
+        // ("p-a"/"p-b"/"p-c" não são prefixos entre si, então a supersessão
+        // não dispara e o teste isola o orçamento.)
         let dropped = idx.record("m", &hops, "c", "p-c", 1, 1_000);
         assert!(dropped.contains(&"a".to_string()), "dropped = {dropped:?}");
         let (count, bytes) = idx.stats();
         assert_eq!(count, 2);
         assert_eq!(bytes, 2_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_index_ttl_is_configurable_and_prunes_on_record() {
+        let (dir, _idx) = tmp_index("ttl", DEFAULT_SLOT_AUTO_MAX_BYTES);
+        // TTL de 1 s via load abaixo; aqui usamos um índice novo com ttl curto.
+        let short = PrefixDiskIndex::load(dir.join("short.json"), DEFAULT_SLOT_AUTO_MAX_BYTES, 1);
+        short.record("m", &["h".to_string()], "old", "p-old", 1, 10);
+        // Força o carimbo para o passado e regrava outra entrada: "old" expira.
+        {
+            let mut st = short.state.lock().unwrap();
+            st.iter_mut().for_each(|e| e.updated_at -= 10);
+        }
+        let dropped = short.record("m", &["h".to_string()], "new", "p-new", 1, 10);
+        assert!(dropped.contains(&"old".to_string()), "dropped = {dropped:?}");
+        assert_eq!(short.stats().0, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

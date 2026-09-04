@@ -183,10 +183,15 @@ pub struct Config {
     #[serde(default)]
     pub slot_persist_prefix_cache: bool,
     /// Orçamento de disco para os snapshots automáticos de prefixo, somado
-    /// entre as fatias. `None` usa `DEFAULT_SLOT_AUTO_MAX_BYTES` (8 GiB). Use
+    /// entre as fatias. `None` usa `DEFAULT_SLOT_AUTO_MAX_BYTES` (2 GiB). Use
     /// `slot_auto_max_bytes()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_auto_max_bytes: Option<u64>,
+    /// TTL de um snapshot automático de prefixo sem uso, em segundos. `None`
+    /// usa `DEFAULT_SLOT_AUTO_TTL_SECS` (7 dias). A env `POM_SLOT_AUTO_TTL_SECS`
+    /// vence o campo. Use `slot_auto_ttl_secs()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_auto_ttl_secs: Option<u64>,
 }
 
 impl fmt::Debug for Config {
@@ -229,6 +234,7 @@ impl fmt::Debug for Config {
             .field("slot_save_path", &self.slot_save_path)
             .field("slot_persist_prefix_cache", &self.slot_persist_prefix_cache)
             .field("slot_auto_max_bytes", &self.slot_auto_max_bytes)
+            .field("slot_auto_ttl_secs", &self.slot_auto_ttl_secs)
             .finish()
     }
 }
@@ -520,6 +526,17 @@ impl Config {
             .filter(|n| *n > 0)
             .unwrap_or(crate::prefix_cache::DEFAULT_SLOT_AUTO_MAX_BYTES)
     }
+
+    /// TTL efetivo dos snapshots automáticos de prefixo, em segundos.
+    /// `POM_SLOT_AUTO_TTL_SECS` vence o campo do `pom.json`.
+    pub fn slot_auto_ttl_secs(&self) -> i64 {
+        crate::brand::env("SLOT_AUTO_TTL_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .or_else(|| self.slot_auto_ttl_secs.map(|n| n as i64))
+            .filter(|n| *n > 0)
+            .unwrap_or(crate::prefix_cache::DEFAULT_SLOT_AUTO_TTL_SECS)
+    }
 }
 
 /// `<project_root>/models` — where every slice has always landed.
@@ -634,6 +651,7 @@ mod tests {
             slot_save_path: None,
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -698,6 +716,7 @@ mod tests {
             slot_save_path: None,
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -803,6 +822,7 @@ mod tests {
             slot_save_path: None,
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
         cfg.admin_exposure = AdminExposure::Network;
         cfg.admin_access_token = Some("admin_super_secret".into());
@@ -917,6 +937,7 @@ mod tests {
             slot_save_path: None,
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

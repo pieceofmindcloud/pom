@@ -42,7 +42,8 @@ x-node: &node
     # the NVIDIA card too - POM's sysmon counts AMD-only devices on the Vulkan
     # side. NVIDIA stays on CUDA, AMD stays on Vulkan/RADV.
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    POM_SLOT_PERSIST_PREFIX_CACHE: 1 
+    POM_SLOT_PERSIST_PREFIX_CACHE: 1
+    RUST_LOG: info,pom=debug
 
 services:
   node-gpu:

@@ -15,6 +15,7 @@ use super::format_plain::PlainFormat;
 use super::format_q4_0::{
     decode_row as q4_decode_row, parse_tensor_table, read_scalar_vector, Q4LoadError, TensorSpec,
 };
+use super::router::dispatch_route_parallel;
 use memmap2::Mmap;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -165,6 +166,8 @@ impl TensorDecoder {
 #[cfg(any(feature = "cuda", test))]
 pub fn cuda_tensor_row_bytes(dtype: u32, columns: usize) -> Option<usize> {
     let (block_elements, block_bytes) = match dtype {
+        10 => (256, 84),
+        11 => (256, 110),
         12 => (256, 144),
         14 => (256, 210),
         18 => (256, 98),
@@ -195,7 +198,7 @@ pub fn cuda_tensor_bank_expected_bytes(
 
 #[cfg(feature = "cuda")]
 pub fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
-    matches!(dtype, 12 | 14 | 18 | 21 | 22 | 23 | 39)
+    matches!(dtype, 10 | 11 | 12 | 14 | 18 | 21 | 22 | 23 | 39)
 }
 
 #[derive(Clone, Copy)]
@@ -776,15 +779,16 @@ impl HeterogeneousMoeSource {
         expert: u32,
         routes: &[(usize, f32)],
         hidden: &[f32],
-        output: &mut [f32],
+        output_len: usize,
         activation: i32,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<f32>, String> {
         let inventory = self
             .layers
             .get(layer as usize)
             .ok_or_else(|| "camada MoE fora do inventário heterogêneo".to_string())?;
         let hidden_width = inventory.hidden;
         let intermediate = inventory.intermediate;
+        let mut output = vec![0.0; output_len];
         let route_values = routes
             .len()
             .checked_mul(intermediate)
@@ -940,7 +944,7 @@ impl HeterogeneousMoeSource {
                     weight * dot(&decoded, gated) * down_scale * down_input_scale;
             }
         }
-        Ok(())
+        Ok(output)
     }
 
     pub fn run_expert(
@@ -1096,17 +1100,10 @@ impl HeterogeneousMoeSource {
         if ids.is_empty() || ids.len() != weights.len() {
             return Err("rota heterogênea sem ids/pesos correspondentes".into());
         }
-        let mut output = vec![0.0; self.layer_geometry(layer).map_err(|e| e.to_string())?.0];
-        for (&expert, &weight) in ids.iter().zip(weights) {
-            if !weight.is_finite() {
-                return Err("peso de rota heterogênea não finito".into());
-            }
-            let values = self.run_expert(cache, model, layer, expert, hidden, activation)?;
-            for (out, value) in output.iter_mut().zip(values) {
-                *out += weight * value;
-            }
-        }
-        Ok(output)
+        dispatch_route_parallel(ids, weights, |expert| {
+            self.run_expert(cache, model, layer, expert, hidden, activation)
+        })
+        .map_err(|error| error.to_string())
     }
 
     pub fn run_route_batch_from_source(
@@ -1189,18 +1186,38 @@ impl HeterogeneousMoeSource {
                 by_expert.entry(expert).or_default().push((token, weight));
             }
         }
+        let results = std::thread::scope(|scope| {
+            by_expert
+                .into_iter()
+                .map(|(expert, routes)| {
+                    scope.spawn(move || {
+                        self.run_expert_batch(
+                            cache,
+                            model,
+                            layer,
+                            expert,
+                            &routes,
+                            hidden,
+                            expected_hidden,
+                            activation,
+                        )
+                        .map(|output| (expert, output))
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|worker| {
+                    worker
+                        .join()
+                        .map_err(|_| "thread de execução do expert entrou em panic".to_string())?
+                })
+                .collect::<Result<BTreeMap<_, _>, String>>()
+        })?;
         let mut output = vec![0.0; expected_hidden];
-        for (expert, routes) in by_expert {
-            self.run_expert_batch(
-                cache,
-                model,
-                layer,
-                expert,
-                &routes,
-                hidden,
-                &mut output,
-                activation,
-            )?;
+        for expert_output in results.into_values() {
+            for (out, value) in output.iter_mut().zip(expert_output) {
+                *out += value;
+            }
         }
         Ok(output)
     }
@@ -1311,6 +1328,14 @@ mod tests {
         let expert_bank = cuda_tensor_bank_expected_bytes(18, 32_768, 256, 8).unwrap();
 
         assert_eq!(expert_bank, one_expert * 8);
+    }
+
+    #[test]
+    fn geometria_cuda_heterogenea_cobre_q2k_e_q3k() {
+        assert_eq!(cuda_tensor_row_bytes(10, 2_048), Some(672));
+        assert_eq!(cuda_tensor_row_bytes(11, 2_048), Some(880));
+        assert_eq!(cuda_tensor_expected_bytes(10, 256, 2_048), Some(172_032));
+        assert_eq!(cuda_tensor_expected_bytes(11, 256, 2_048), Some(225_280));
     }
 
     #[test]

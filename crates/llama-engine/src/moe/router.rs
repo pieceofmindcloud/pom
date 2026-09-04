@@ -20,6 +20,7 @@ pub enum RouteError {
     InvalidWeightSum,
     MismatchedRouteLengths { ids: usize, weights: usize },
     OutputWidth { expected: usize, actual: usize },
+    WorkerPanic,
 }
 
 impl fmt::Display for RouteError {
@@ -41,6 +42,9 @@ impl fmt::Display for RouteError {
                     formatter,
                     "saída de expert tem {actual}, esperado {expected}"
                 )
+            }
+            Self::WorkerPanic => {
+                write!(formatter, "thread de execução do expert entrou em panic")
             }
         }
     }
@@ -76,6 +80,64 @@ where
     let mut output = None::<Vec<f32>>;
     for (&expert, &weight) in ids.iter().zip(weights) {
         let values = execute(expert).map_err(DispatchError::Expert)?;
+        let target = output.get_or_insert_with(|| vec![0.0; values.len()]);
+        if target.len() != values.len() {
+            return Err(DispatchError::Route(RouteError::OutputWidth {
+                expected: target.len(),
+                actual: values.len(),
+            }));
+        }
+        for (slot, value) in target.iter_mut().zip(values) {
+            *slot += weight * value;
+        }
+    }
+    output.ok_or(DispatchError::Route(RouteError::InvalidWeightSum))
+}
+
+/// Executa em paralelo uma rota já resolvida e agrega na mesma ordem dos ids.
+///
+/// O callback precisa ser somente leitura e thread-safe. Os resultados são
+/// recolhidos antes da soma para que a ordem de ponto flutuante permaneça
+/// determinística e um panic de worker vire erro de inferência, não panic do
+/// servidor.
+pub fn dispatch_route_parallel<E, F>(
+    ids: &[u32],
+    weights: &[f32],
+    execute: F,
+) -> Result<Vec<f32>, DispatchError<E>>
+where
+    E: Send,
+    F: Fn(u32) -> Result<Vec<f32>, E> + Sync,
+{
+    if ids.is_empty() {
+        return Err(DispatchError::Route(RouteError::InvalidWeightSum));
+    }
+    if ids.len() != weights.len() {
+        return Err(DispatchError::Route(RouteError::MismatchedRouteLengths {
+            ids: ids.len(),
+            weights: weights.len(),
+        }));
+    }
+    if weights.iter().any(|weight| !weight.is_finite()) {
+        return Err(DispatchError::Route(RouteError::InvalidWeightSum));
+    }
+
+    let values = std::thread::scope(|scope| {
+        let execute = &execute;
+        ids.iter()
+            .map(|&expert| scope.spawn(move || execute(expert)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| match worker.join() {
+                Ok(Ok(values)) => Ok(values),
+                Ok(Err(error)) => Err(DispatchError::Expert(error)),
+                Err(_) => Err(DispatchError::Route(RouteError::WorkerPanic)),
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+
+    let mut output = None::<Vec<f32>>;
+    for (weight, values) in weights.iter().copied().zip(values) {
         let target = output.get_or_insert_with(|| vec![0.0; values.len()]);
         if target.len() != values.len() {
             return Err(DispatchError::Route(RouteError::OutputWidth {
@@ -185,6 +247,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn top_k_e_deterministico_em_empate() {
@@ -233,6 +296,22 @@ mod tests {
         })
         .unwrap();
         assert!((output[0] - 0.5).abs() < 1e-6);
+        assert!((output[1] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dispatch_route_parallel_executa_experts_concorrentes_e_preserva_ordem() {
+        let barrier = Arc::new(Barrier::new(2));
+        let output = dispatch_route_parallel(&[2, 0], &[0.25, 0.75], {
+            let barrier = Arc::clone(&barrier);
+            move |expert| {
+                barrier.wait();
+                Ok::<_, ()>(vec![expert as f32 + 1.0, 1.0])
+            }
+        })
+        .unwrap();
+
+        assert!((output[0] - 1.5).abs() < 1e-6);
         assert!((output[1] - 1.0).abs() < 1e-6);
     }
 }

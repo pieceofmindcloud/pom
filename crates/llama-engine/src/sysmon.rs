@@ -927,6 +927,7 @@ fn pci_device_name(contents: &str, vendor: &str, device: &str) -> Option<String>
     None
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn system_profiler_gpu_name(contents: &str) -> Option<String> {
     contents
         .lines()

@@ -21,7 +21,11 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
-  `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`.
+  `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
+  fallback CPU do router executa os experts selecionados em workers escopados
+  e agrega os vetores na ordem original para manter o resultado determinístico;
+  a cobertura CUDA por dtype e os números da ksia ficam em
+  `docs/subsystems/freetoken-moe.md`.
 - `collective.rs` - `reduce_sum` + `ReduceBarrier` do tensor parallelism
   (caminho C). O transporte HTTP e a coordenação com o primary ficam em
   `crates/node/src/inference/tp.rs`, que **não** migrou.

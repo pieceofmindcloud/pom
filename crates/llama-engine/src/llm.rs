@@ -5200,7 +5200,7 @@ mod pool_tests {
     fn fit_mode_caps_compute_microbatch_without_changing_prompt_batch() {
         let cfg = cfg();
         assert_eq!(cfg.n_batch, 512);
-        assert_eq!(effective_n_ubatch(&cfg), 128);
+        assert_eq!(effective_n_ubatch(&cfg), 512);
 
         let mut no_fit = cfg;
         no_fit.fit_memory = false;

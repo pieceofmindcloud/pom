@@ -153,7 +153,7 @@ afirma ser um transformer MoE completo. O captain assumiu a prova ponta a
 ponta com um modelo real e fará essa validação fora deste ambiente, sem
 alterar o caminho denso.
 
-O bloco K-quant foi validado localmente com fixtures Q4_K e Q6_K, nas duas
+O bloco K-quant foi validado localmente com fixtures Q2_K, Q3_K, Q4_K e Q6_K, nas duas
 convenções de nomes, e com `MoeRuntime::open` seguido de `forward_batch`. A
 falha inicial era uma inversão no validator: GGUF declara a dimensão de
 colunas em `dims[0]`, enquanto o contrato do mat-vec recebe `rows, columns`.
@@ -396,9 +396,9 @@ pelos logs da entrada do callback.
 ### Fase 5.1: ponte CUDA por dtype
 
 Esta foi a fase formal da ponte por dtype. O executor CUDA cobre NVFP4 (40),
-escalares, Q4_K/Q6_K e IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e
-MXFP4 (39) na ponte heterogênea. A prova diferencial desses dois novos dtypes
-e o E2E real continuam pendentes. IQ-quants
+escalares, Q2_K/Q3_K/Q4_K/Q6_K e IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e
+MXFP4 (39) na ponte heterogênea. A prova diferencial de Q2_K e Q3_K foi
+executada na GPU real; o E2E do GGUF Qwen3.6 continua pendente. IQ-quants
 restantes, K-quants restantes, legacy e low-bit continuam no `CPUReference`,
 com a escolha visível na telemetria. Quando uma combinação heterogênea contém
 dtype sem ponte CUDA, a camada inteira usa `CPUReference` se houver decoder
@@ -411,6 +411,104 @@ CPU, prova E2E com GGUF real heterogêneo quando disponível e medição na ksia
 de prefill, decode, bytes H2D/D2H, alocações e banda. A comparação deve
 separar custo de kernel e transferência; nenhum ganho de desempenho será
 afirmado apenas por suite verde.
+
+### Fase 5.2: Q2_K/Q3_K no Qwen3.6 e fallback CPU paralelo - 2026-09-04
+
+A reprodução E2E fornecida pelo captain estabeleceu a linha de base no mesmo
+`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` e na ksia: o caminho `moe/q4_0` selecionava
+`cpu-reference` por causa dos dtypes Q2_K (10) e Q3_K (11), com `0,3 tok/s`.
+O caminho `llama.cpp`, nas mesmas condições, entregava `160 tok/s`. O trace
+atribuía `91936 ms` de `llama_decode` ao backend local, não ao transporte.
+
+Esta fase adiciona a ponte CUDA dos dois formatos. Q2_K usa blocos de 256
+elementos e 84 bytes, com escalas, quants, `d` e `min`; Q3_K usa 256 elementos
+e 110 bytes, com high bits, quants, escalas compactadas e `d`. O kernel faz o
+produto diretamente no layout GGML, sem reinterpretar Q2_K ou Q3_K como Q6_K.
+O validador Rust, a geometria da ponte heterogênea e a escolha de executor
+agora aceitam `10` e `11`; Q5_K e Q8_K continuam fora da ponte e não podem
+ser enviados ao kernel como outro formato.
+
+O fallback CPU deixou de executar a rota em série: experts distintos são
+processados em workers escopados, cada um com um vetor de saída próprio, e a
+agregação ocorre em ordem de expert estável. A rota de token único usa a mesma
+primitiva paralela. Isso mantém a soma determinística e transforma panic de
+worker em erro de inferência. O diagnóstico `POM_MOE_LAYER_INPUT` da camada 0
+fica desligado por padrão; só é habilitado com
+`POM_MOE_LAYER_INPUT_DIAGNOSTIC=1` (também `true`, `yes` ou `on`).
+
+A validação CUDA própria na ksia foi executada com `CUDAARCHS=120`, `nvcc`
+12.9 e target separado. Os testes diferenciais do executor passaram:
+
+| prova | resultado |
+|---|---:|
+| Q2_K, Q3_K, Q4_K e Q6_K contra decoder CPU | 1 teste verde |
+| rota heterogênea Q2_K gate + Q3_K up + Q4_K down contra decoder CPU | 1 teste verde |
+| tolerância da comparação CUDA | `abs <= 1e-3` ou `rel <= 1e-5` |
+
+A medição E2E pós-ponte do GGUF Qwen3.6 ainda depende de o captain colocar
+esta build na implantação compartilhada. Até essa execução, os números de
+throughput são honestamente:
+
+| caminho | antes | depois | referência |
+|---|---:|---:|---:|
+| MoE | `0,3 tok/s` | pendente de E2E | - |
+| llama.cpp | - | - | `160 tok/s` |
+
+O contrato esperado após a implantação é `moe_executor=cuda`,
+`moe_executor_dtypes=[10,11,21,22,23]` e `moe_executor_reason` ausente. A
+quebra por fase deve registrar TTFT/prefill, decode, `host_batch_prepare_ms`,
+`cuda_kernel_ms`, H2D/D2H e tok/s; a suíte CUDA não substitui essa medição.
+
+### Fase 5.3: prefill Q6_K em lote e especulação - 2026-09-04
+
+O segundo par de medições do captain isolou a causa do prefill. No mesmo
+`Ornith-1.5-35B-Q6_K.gguf`, na ksia, com `n_batch=512`, o dtype Q6_K já tinha
+ponte CUDA, mas o MoE entregava somente `7,7` e `17,0 tok/s` de prefill,
+contra `183,0` e `183,5 tok/s` do `llama.cpp`. A geração ficou em `15,9` e
+`15,4 tok/s` no MoE, contra `36,2` e `38,2 tok/s` no denso. O TTFT foi
+`6,57 s` e `6,41 s` no MoE, contra `3,21 s` e `574 ms` no denso.
+
+| caminho | turno 1 | turno 2 | observação |
+|---|---:|---:|---|
+| MoE, geração | `15,9 tok/s` | `15,4 tok/s` | `2,3x` a `2,5x` abaixo do denso |
+| MoE, prefill | `7,7 tok/s` | `17,0 tok/s` | `3.615,538 ms` e `4.883,604 ms` |
+| llama.cpp, geração | `36,2 tok/s` | `38,2 tok/s` | referência |
+| llama.cpp, prefill | `183,0 tok/s` | `183,5 tok/s` | referência |
+
+No decode, a latência por chamada era próxima (`56,157` a `62,733 ms` no
+MoE, contra `54,744 ms` no denso), mas o denso produzia várias fichas por
+chamada: `14` chamadas para `27` fichas, contra `60` para `61` e `196` para
+`197` no MoE. Isso torna a elegibilidade de MTP/especulação uma segunda
+prioridade. O sampling MoE também acumulou `33,495 ms` de top-k em 61 fichas
+e `113,09 ms` em 197 fichas; os bytes medidos foram cerca de 28 vezes maiores.
+
+A primeira fatia de correção atua no maior buraco medido: o pipeline K CUDA
+mantém workspace de device por executor e reutiliza buffers entre chamadas,
+alocando somente quando a capacidade do lote cresce. Gate/up e down Q6_K
+usam redução cooperativa por linha com 128 threads; Q2_K e Q3_K usam a mesma
+ponte de dtype e a rota heterogênea também usa redução cooperativa para os
+formatos cobertos. O `FIT_MAX_UBATCH` permanece `512`.
+
+O benchmark sintético na geometria Q6_K real (`hidden=2048`,
+`intermediate=512`, 28 tokens e 224 rotas) mediu `12,308 ms` de parede, com
+`11,737 ms` de kernel, `0,119 ms` de H2D, `0,199 ms` de D2H e `0,156 ms` de
+alocação na primeira capacidade. É uma medida do executor, não uma promessa
+de E2E. A suíte CUDA na ksia passou com `325` testes e zero falhas.
+
+O E2E pós-fatia ainda precisa ser coletado nos dois modelos. A tabela de
+entrega permanece deliberadamente pendente até o binário novo servir a mesma
+requisição:
+
+| caminho | antes | depois | referência |
+|---|---:|---:|---:|
+| Qwen3.6 MoE | `0,3 tok/s` | pendente de E2E | llama.cpp `160 tok/s` |
+| Ornith Q6_K MoE | `15,9`/`15,4 tok/s` | pendente de E2E | llama.cpp `36,2`/`38,2 tok/s` |
+
+Com a nova evidência, a ordem de trabalho é: prefill em lote; fichas por
+chamada e especulação; ponte Q2_K/Q3_K para o UD-IQ3_XXS; depois paralelismo
+CPU de referência, sampling e bytes por ficha. A telemetria continua
+obrigatória para confirmar `moe_executor`, `moe_executor_dtypes`,
+`moe_executor_reason`, TTFT, fases e tok/s depois do deploy.
 
 A investigação da medição Gemma4 encontrou uma divergência anterior a qualquer
 otimização de kernel. O contexto captura `l_out-29`, mas em
@@ -816,7 +914,7 @@ por impacto observado, não por facilidade de implementação.
 | prioridade | lacuna | FreeToken tem | rdma-p2p tem | custo observado e ganho esperado |
 |---|---|---|---|---|
 | 1 | LRU de experts residente na VRAM | `moe/offload_cache.py` mantém um cache global de experts no device, com admissão pelo orçamento de memória livre. O payload quente não precisa cruzar PCIe a cada seleção. | `moe/cache.rs` mantém o payload canônico em RAM do host. O executor CUDA usa staging temporário e transfere o peso mesmo em hit do LRU. | Evidência direta: `803243520` bytes H2D por token de decode (`766,033 MiB`), com `240` usos de experts por token. No perfil fechado, H2D foi `2618,950 ms` em 29 tokens (`90,309 ms/token`) dentro de `cuda_call_wall_ms=3086,384 ms` (`106,427 ms/token`). Se a residência eliminar essas cópias, esse é o teto direto da redução da parede CUDA nessa carga, não uma promessa de reduzir o backend inteiro: a preparação no host continua. |
-| 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF; a ponte CUDA cobre NVFP4, escalares, Q4_K/Q6_K e IQ3_S/IQ2_S/IQ4_XS após provas diferenciais, enquanto os demais dtypes publicam `CPUReference` com recusa nominal. | A linha de base histórica do Qwen UD-IQ3_S em `CPUReference` não é uma previsão do ganho atual: a ponte IQ foi aceita somente após comparar os três estágios na GPU real. |
+| 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF; a ponte CUDA cobre NVFP4, escalares, Q2_K/Q3_K/Q4_K/Q6_K e IQ3_S/IQ2_S/IQ4_XS após provas diferenciais, enquanto os demais dtypes publicam `CPUReference` com recusa nominal. | A linha de base histórica do Qwen UD-IQ3_S em `CPUReference` não é uma previsão do ganho atual: a ponte IQ foi aceita somente após comparar os três estágios na GPU real. |
 | 3 | Preparação do lote fora do caminho quente | O relatório mostra um escalonador GPU-cêntrico que entrega views dos bancos para os kernels e sobrepõe o prefetch da próxima camada. Ele não publica uma métrica separada chamada `host_batch_prepare`; portanto não há evidência para afirmar que o FreeToken tenha custo zero nessa etapa. | O callback Rust monta lotes e descritores no host a cada forward. A telemetria mede esse custo como `host_batch_prepare_ms`, antes da chamada CUDA. | No perfil histórico, foi o maior componente do prefill: `3622,166 ms`. Isso não foi confirmado no estado atual de `38,4 tok/s`; o ganho real de reutilizar descritores e buffers depende do novo perfil. |
 | 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | `BandwidthProfile` persiste as bandas, `coexecution.rs` divide misses únicos e executa lanes CPU/GPU em paralelo no NVFP4; `DoubleBuffer` valida a reserva de dois slots. | A costura ainda precisa da prova CUDA desta revisão. Os números de H2D e kernel registrados no documento são históricos e não são uma promessa de ganho. |
 | 5 | CUDA Graphs para o MoE quantizado | O FreeToken captura e recaptura CUDA graphs para as formas de lote e o cache, evitando custo repetido de montagem e lançamento. | Não há captura/replay de CUDA graph para o callback MoE Rust. O llama.cpp pode usar seus próprios graphs para o restante do transformer, mas isso não cobre o executor externo. | Depois do agrupamento, os lançamentos CUDA custaram `27,006 ms` em 29 tokens (`0,931 ms/token`) e sincronização `16,399 ms` (`0,565 ms/token`). Portanto graphs podem reduzir overhead de lançamento e alocação, mas o máximo explicitamente medido nessa categoria é pequeno diante dos `74,697 ms/token` de preparação host e `90,309 ms/token` de H2D. |
@@ -1419,20 +1517,20 @@ promoção.
 Um dtype sem ponte permanece explicitamente visível como `CPUReference`, com
 `dtype=<id> (<nome>)` e motivo, ou é recusado no limite de uma chamada CUDA
 quando o contrato exigir CUDA. Nunca se interpreta um payload não coberto como
-outro formato. Nesta entrega a ponte é declarada para Q4_K, Q6_K, IQ3_XXS,
+outro formato. Nesta entrega a ponte é declarada para Q2_K, Q3_K, Q4_K, Q6_K, IQ3_XXS,
 IQ3_S, IQ2_S, IQ4_XS e MXFP4 somente depois das respectivas provas; os demais
 IQ continuam protegidos pela recusa nominal.
 
-Quando uma rota heterogênea combina somente esses sete dtypes, a decisão CUDA é
+Quando uma rota heterogênea combina somente esses nove dtypes, a decisão CUDA é
 feita por tensor, e não pela igualdade de um `KQuantFormat` global. Assim, uma
-combinação Q4_K/Q6_K como a do Ornith pode usar o mesmo executor heterogêneo,
+combinação Q2_K/Q3_K/Q4_K/Q6_K como a do Qwen3.6 pode usar o mesmo executor heterogêneo,
 com `k_dot` escolhendo o decoder já validado de cada tensor. Um dtype fora desse
 conjunto usa o decoder CPU externo quando ele existe; se não existe, a admissão
 recusa a combinação antes da carga e lista os dtypes que bloquearam a ponte. A comparação diferencial específica
 da rota mista está no teste
-`executor_cuda_k_quants_heterogeneos_preserva_gate_up_down_do_decoder_cpu`, com
-tolerância absoluta de `1e-4` e relatório também da diferença relativa; ela deve
-ser executada com CUDA real antes de declarar a combinação provada.
+`executor_cuda_k_quants_heterogeneos_preserva_q2k_q3k_q4k_do_decoder_cpu`, com
+tolerância absoluta de `1e-4` e relatório também da diferença relativa; ela foi
+executada com CUDA real antes de declarar a combinação provada.
 
 O callback comum do llama.cpp entrega `selected_experts` e `weights` na ordem
 token-major produzida por `ggml_get_rows` para `[1, experts_usados, tokens]`,
@@ -1693,7 +1791,7 @@ llama.cpp. Dtypes sem cache device usam `CPUReference` e publicam os dtypes
 concretos; uma combinação sem decoder externo é recusada antes da carga.
 Somente uma limitação real do runtime mantém a camada nativa, com motivo
 visível, nunca deixando a placa sem dono.
-2. **Cobertura do marco.** NVFP4, Q4_K/Q6_K e, em seguida, IQ3_S/IQ2_S/IQ4_XS
+2. **Cobertura do marco.** NVFP4, Q2_K/Q3_K/Q4_K/Q6_K e, em seguida, IQ3_S/IQ2_S/IQ4_XS
    por tensor, incluindo o cache device e a combinação heterogênea usada pelos
    dois UD. O decoder é escolhido por tensor e dtype; arquitetura, nomes,
    geometrias e convenções entram como metadata. Cada bloco exige prova

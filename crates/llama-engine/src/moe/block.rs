@@ -23,7 +23,9 @@ use super::format_low_bits::{LowBitExecuteError, LowBitExecutor, LowBitFormat, L
 use super::format_nvfp4::{Nvfp4BackendKind, Nvfp4ExecuteError, Nvfp4Executor, Nvfp4Source};
 use super::format_plain::{PlainExecuteError, PlainExecutor, PlainFormat, PlainSource};
 use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
-use super::router::{dispatch_route, dispatch_top_k, select_top_k, DispatchError, RouteError};
+use super::router::{
+    dispatch_route_parallel, dispatch_top_k, select_top_k, DispatchError, RouteError,
+};
 use std::fmt;
 use std::sync::Arc;
 
@@ -109,10 +111,10 @@ fn dispatch_resolved<E, F>(
     execute: F,
 ) -> Result<Vec<f32>, MoeBlockError>
 where
-    E: fmt::Display,
-    F: FnMut(u32) -> Result<Vec<f32>, E>,
+    E: fmt::Display + Send,
+    F: Fn(u32) -> Result<Vec<f32>, E> + Sync,
 {
-    dispatch_route(ids, weights, execute).map_err(|error| match error {
+    dispatch_route_parallel(ids, weights, execute).map_err(|error| match error {
         DispatchError::Route(error) => MoeBlockError::Route(error),
         DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
     })
@@ -745,22 +747,30 @@ impl KQuantMoeBlock {
         for token in 0..tokens {
             let token_start = token * source.hidden();
             let token_hidden = &hidden[token_start..token_start + source.hidden()];
-            for index in token_offsets[token]..token_offsets[token + 1] {
-                if token_ids[index] != token as u32 {
-                    return Err(MoeBlockError::Executor(
-                        "lote CPU K-quant não está em ordem token-major".into(),
-                    ));
-                }
-                let key =
-                    ExpertKey::new(&self.model, self.layer, experts[index], self.format.name());
-                let values =
-                    self.executor
-                        .run_from_source_cpu(source, key, self.layer, token_hidden)?;
-                let output_slice = &mut output[token_start..token_start + source.hidden()];
-                for (out, value) in output_slice.iter_mut().zip(values) {
-                    *out += weights[index] * value;
-                }
+            let route_start = token_offsets[token];
+            let route_end = token_offsets[token + 1];
+            if token_ids[route_start..route_end]
+                .iter()
+                .any(|&token_id| token_id != token as u32)
+            {
+                return Err(MoeBlockError::Executor(
+                    "lote CPU K-quant não está em ordem token-major".into(),
+                ));
             }
+            let route_output = dispatch_route_parallel(
+                &experts[route_start..route_end],
+                &weights[route_start..route_end],
+                |expert| {
+                    let key = ExpertKey::new(&self.model, self.layer, expert, self.format.name());
+                    self.executor
+                        .run_from_source_cpu(source, key, self.layer, token_hidden)
+                },
+            )
+            .map_err(|error| match error {
+                DispatchError::Route(error) => MoeBlockError::Route(error),
+                DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+            })?;
+            output[token_start..token_start + source.hidden()].copy_from_slice(&route_output);
         }
         Ok(output)
     }

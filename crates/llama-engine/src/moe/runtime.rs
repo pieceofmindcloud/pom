@@ -33,7 +33,7 @@ use std::fmt;
 use std::path::Path;
 #[cfg(feature = "cuda")]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(feature = "cuda")]
 use std::time::Duration;
 
@@ -345,6 +345,26 @@ fn summarize_layer_input(values: &[f32]) -> LayerInputSummary {
     summary
 }
 
+fn moe_layer_input_diagnostic_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn moe_layer_input_diagnostic_requested() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        moe_layer_input_diagnostic_enabled(
+            std::env::var("POM_MOE_LAYER_INPUT_DIAGNOSTIC")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
 fn log_moe_layer_input_diagnostic(
     source: &MoeSource,
     layer: u32,
@@ -355,7 +375,7 @@ fn log_moe_layer_input_diagnostic(
     expert_count_used: usize,
     weight_before_ffn: bool,
 ) {
-    if layer != 0 {
+    if layer != 0 || !moe_layer_input_diagnostic_requested() {
         return;
     }
     let summary = summarize_layer_input(hidden);
@@ -725,7 +745,7 @@ fn make_external_executor_plan(
     let bridge_supported = match detected {
         ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => cuda_compiled,
         ExpertFormat::Nvfp4 => cuda_compiled && !nvfp4_cpu_requested,
-        ExpertFormat::Q4K | ExpertFormat::Q6K => {
+        ExpertFormat::Q2K | ExpertFormat::Q3K | ExpertFormat::Q4K | ExpertFormat::Q6K => {
             cuda_compiled
                 && single_dtype
                 && KQuantFormat::from_dtype(dtypes[0]).is_ok_and(|format| format.cuda_supported())
@@ -2255,6 +2275,16 @@ mod tests {
     }
 
     #[test]
+    fn diagnostico_de_entrada_exige_porta_explicita() {
+        assert!(!moe_layer_input_diagnostic_enabled(None));
+        assert!(!moe_layer_input_diagnostic_enabled(Some("0")));
+        assert!(!moe_layer_input_diagnostic_enabled(Some("false")));
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(moe_layer_input_diagnostic_enabled(Some(value)), "{value}");
+        }
+    }
+
+    #[test]
     fn replay_cpu_finito_substitui_saida_cuda_nao_finita() {
         let output = vec![1.0, 2.0];
 
@@ -2350,6 +2380,29 @@ mod tests {
         assert!(plan.enabled());
         assert_eq!(plan.layers, vec![1, 1, 1]);
         assert!(plan.reason.is_none());
+    }
+
+    #[test]
+    fn q2k_e_q3k_entram_na_ponte_cuda_heterogenea() {
+        assert!(KQuantFormat::Q2K.cuda_supported());
+        assert!(KQuantFormat::Q3K.cuda_supported());
+        assert!(cuda_heterogeneous_dtype_supported(10));
+        assert!(cuda_heterogeneous_dtype_supported(11));
+        let plan = make_external_executor_plan(
+            ExpertFormat::Heterogeneous,
+            vec![10, 11, 21, 22, 23],
+            40,
+            true,
+            false,
+        );
+        assert!(plan.enabled());
+        assert!(plan.reason.is_none());
+
+        for (format, dtype) in [(ExpertFormat::Q2K, 10), (ExpertFormat::Q3K, 11)] {
+            let plan = make_external_executor_plan(format, vec![dtype], 2, true, false);
+            assert!(plan.enabled(), "{format:?}");
+            assert!(plan.reason.is_none(), "{format:?}: {:?}", plan.reason);
+        }
     }
 
     #[test]

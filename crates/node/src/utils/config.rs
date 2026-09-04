@@ -114,6 +114,10 @@ pub struct Config {
     /// `tls_policy`.
     #[serde(default)]
     pub tls_required: bool,
+    /// Coleta de logs de processo para o nó principal. A decisão é do
+    /// principal e os demais nós só adotam a resposta autenticada da catraca.
+    #[serde(default)]
+    pub cluster_logs_enabled: bool,
     /// Directories holding **whole** models.
     ///
     /// `None` — the field missing from an old `pom.json`, or never edited —
@@ -219,6 +223,7 @@ impl fmt::Debug for Config {
             .field("api_key_count", &self.api_keys.len())
             .field("blocked_nodes", &self.blocked_nodes)
             .field("tls_required", &self.tls_required)
+            .field("cluster_logs_enabled", &self.cluster_logs_enabled)
             .field("model_dirs", &self.model_dirs)
             .field("shard_dir", &self.shard_dir)
             .field("shard_max_gb", &self.shard_max_gb)
@@ -633,6 +638,7 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             role: Role::Principal,
             tls_required: false,
+            cluster_logs_enabled: false,
             connection_key: "test-key".into(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -698,6 +704,7 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             role: Role::Node,
             tls_required: false,
+            cluster_logs_enabled: false,
             connection_key: "node-key".into(),
             gateway_port: 8090,
             admin_exposure: AdminExposure::Localhost,
@@ -810,6 +817,7 @@ mod tests {
             api_keys: vec![],
             blocked_nodes: vec![],
             tls_required: false,
+            cluster_logs_enabled: false,
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
@@ -902,6 +910,7 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             role: Role::Principal,
             tls_required: false,
+            cluster_logs_enabled: false,
             connection_key: "k".into(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,

@@ -82,7 +82,8 @@ Per-file list:
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`.
 - `nav.ts` — `NAV`: the menu as data — a seção Implantações usa `Rocket` (era
-  `Boxes`, o mesmo ícone de Modelos) e o Histórico usa `History`; o submenu não
+  `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e a consola de
+  processo usa `Terminal` logo abaixo de Histórico; o submenu não
   desenha ícone de folha, então `Rocket` na seção e na folha `/implantar` não
   colidem. A tabela em si é an ordered array of `NavSection`
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and

@@ -552,6 +552,127 @@ impl PomDb {
         })
     }
 
+    /// Persiste um lote na ordem em que o principal o aceitou. O contador de
+    /// perdas é global ao banco porque uma linha descartada não tem mais
+    /// `deploy_id` confiável para uma segunda tentativa.
+    pub fn append_cluster_logs(
+        &self,
+        entries: &[crate::cluster_logs::LogEntry],
+        dropped: u64,
+    ) -> Result<()> {
+        if entries.is_empty() && dropped == 0 {
+            return Ok(());
+        }
+        self.with_write("persistir logs do cluster", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            for entry in entries {
+                tx.execute(
+                    "INSERT INTO cluster_logs (
+                        node_id, node_name, deploy_id, origin_at, received_at,
+                        level, target, message
+                     ) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?)",
+                    params![
+                        &entry.node_id,
+                        &entry.node_name,
+                        &entry.deploy_id,
+                        &entry.origin_at,
+                        &entry.level,
+                        &entry.target,
+                        &entry.message,
+                    ],
+                )?;
+            }
+            if dropped > 0 {
+                tx.execute(
+                    "INSERT INTO cluster_log_counters (counter_key, value)
+                     VALUES ('dropped', ?)
+                     ON CONFLICT(counter_key) DO UPDATE SET
+                        value = cluster_log_counters.value + excluded.value",
+                    params![dropped as i64],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Lê a janela mais recente e devolve-a em ordem crescente de chegada.
+    /// `origin_at` nunca aparece no ORDER BY: relógios remotos são apenas
+    /// informação, não uma fonte de ordenação.
+    pub fn cluster_logs(
+        &self,
+        deploy_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::cluster_logs::StoredLogEntry>> {
+        let limit = limit.clamp(1, 1000) as i64;
+        self.with_read("ler logs do cluster", |connection| {
+            let mut rows = Vec::new();
+            if let Some(deploy_id) = deploy_id {
+                let mut statement = connection.prepare(
+                    "SELECT received_seq, received_at, node_id, node_name,
+                            deploy_id, origin_at, level, target, message
+                     FROM cluster_logs
+                     WHERE deploy_id = ?
+                     ORDER BY received_seq DESC LIMIT ?",
+                )?;
+                let mapped = statement.query_map(params![deploy_id, limit], |row| {
+                    Ok(crate::cluster_logs::StoredLogEntry {
+                        received_seq: row.get::<_, i64>(0)? as u64,
+                        received_at: row.get(1)?,
+                        node_id: row.get(2)?,
+                        node_name: row.get(3)?,
+                        deploy_id: row.get(4)?,
+                        origin_at: row.get(5)?,
+                        level: row.get(6)?,
+                        target: row.get(7)?,
+                        message: row.get(8)?,
+                    })
+                })?;
+                for row in mapped {
+                    rows.push(row?);
+                }
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT received_seq, received_at, node_id, node_name,
+                            deploy_id, origin_at, level, target, message
+                     FROM cluster_logs
+                     ORDER BY received_seq DESC LIMIT ?",
+                )?;
+                let mapped = statement.query_map(params![limit], |row| {
+                    Ok(crate::cluster_logs::StoredLogEntry {
+                        received_seq: row.get::<_, i64>(0)? as u64,
+                        received_at: row.get(1)?,
+                        node_id: row.get(2)?,
+                        node_name: row.get(3)?,
+                        deploy_id: row.get(4)?,
+                        origin_at: row.get(5)?,
+                        level: row.get(6)?,
+                        target: row.get(7)?,
+                        message: row.get(8)?,
+                    })
+                })?;
+                for row in mapped {
+                    rows.push(row?);
+                }
+            }
+            rows.reverse();
+            Ok(rows)
+        })
+    }
+
+    pub fn cluster_log_dropped(&self) -> Result<u64> {
+        self.with_read("ler perdas dos logs do cluster", |connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT value FROM cluster_log_counters WHERE counter_key = 'dropped'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0) as u64)
+        })
+    }
+
     fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
         self.with_write("salvar configuração local", |connection| {
             connection.execute(
@@ -1017,6 +1138,23 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             prompt,
             tokenize = 'unicode61'
         );
+        CREATE TABLE IF NOT EXISTS cluster_logs (
+            received_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id TEXT NOT NULL,
+            node_name TEXT NOT NULL,
+            deploy_id TEXT NOT NULL,
+            origin_at TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            level TEXT NOT NULL,
+            target TEXT NOT NULL,
+            message TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS cluster_logs_deploy_seq_idx
+            ON cluster_logs(deploy_id, received_seq);
+        CREATE TABLE IF NOT EXISTS cluster_log_counters (
+            counter_key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
+        );
         PRAGMA user_version = 1;",
     )?;
     Ok(())
@@ -1159,6 +1297,8 @@ mod tests {
             "audit_requests",
             "audit_request_hops",
             "audit_prompt_fts",
+            "cluster_logs",
+            "cluster_log_counters",
         ] {
             assert!(
                 tables.contains(&table.to_string()),
@@ -1168,6 +1308,39 @@ mod tests {
         assert_eq!(db.journal_mode().expect("ler journal"), "wal");
         remove_database(&path);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cluster_logs_keep_deploy_id_and_database_arrival_order() {
+        let path = temporary_path("cluster-logs");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        let first = crate::cluster_logs::LogEntry {
+            node_id: "node-b".into(),
+            node_name: "ksia".into(),
+            deploy_id: "deploy-1".into(),
+            origin_at: "2099-01-01T00:00:00Z".into(),
+            level: "INFO".into(),
+            target: "test".into(),
+            message: "primeiro recebido".into(),
+        };
+        let second = crate::cluster_logs::LogEntry {
+            origin_at: "2000-01-01T00:00:00Z".into(),
+            message: "segundo recebido".into(),
+            ..first.clone()
+        };
+
+        db.append_cluster_logs(&[first, second], 3)
+            .expect("persistir logs");
+        let rows = db
+            .cluster_logs(Some("deploy-1"), 100)
+            .expect("ler logs");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].message, "primeiro recebido");
+        assert_eq!(rows[1].message, "segundo recebido");
+        assert_eq!(rows[0].received_seq + 1, rows[1].received_seq);
+        assert_eq!(rows[0].deploy_id, "deploy-1");
+        assert_eq!(db.cluster_log_dropped().unwrap(), 3);
+        remove_database(&path);
     }
 
     #[test]

@@ -115,6 +115,7 @@ mod tests {
             cache_type_v: crate::config::KvCacheType::F16,
             role: Role::Principal,
             tls_required: false,
+            cluster_logs_enabled: false,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,

@@ -17,7 +17,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
   `socket2`, `tower-http` (compression-full), `rusqlite` bundled para a
-  auditoria persistente, `routing-contract` (path).
+  auditoria persistente, `arc-swap` para snapshots lock-free do contexto de
+  captura de logs, `routing-contract` (path).
 - O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
   runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
@@ -118,7 +119,9 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI). A rota
     de prévia de capacidade faz somente estimativa analítica, com quatro
     admissões por processo e `429` imediato quando todas estão ocupadas.
-13. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
+13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o
+    `Discovery` mantém o behaviour request/response de logs separado do túnel
+    de inferência e só envia lotes ao principal. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
     UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a
     cada 30 min.

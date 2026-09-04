@@ -34,6 +34,8 @@ gated e a licença antes do download.
 - `subsystems/freetoken-moe.md` - método, medições e invariantes do goal que
   adiciona o caminho MoE próprio ao lado do caminho denso, incluindo o marco
   dos quatro modelos da ksia, a salvaguarda por dtype e o goal CUDA posterior.
+- `subsystems/rede-p2p.md` - descoberta, identidade, TLS e o canal unidirecional
+  de logs de processo enviado ao principal.
 
 ## subsystems/
 

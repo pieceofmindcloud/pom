@@ -184,6 +184,9 @@ pub enum P2PMessage {
         /// modelo carregou. Ausente em anúncios antigos ou durante o boot.
         #[serde(default)]
         runtime_capacity: Option<RuntimeCapacity>,
+        /// Gatilho para a catraca autenticada da coleta de logs.
+        #[serde(default)]
+        cluster_logs_enabled: bool,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -615,6 +618,12 @@ pub struct Network {
     /// configuração nem a chave de conexão - quem sabe buscar e gravar é a task
     /// montada no `main.rs`. Ver `tls_policy`.
     tls_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
+    /// Canal da catraca autenticada da política de logs.
+    cluster_logs_probe:
+        std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
+    /// Política local de captura de logs. O valor do anúncio é gatilho, nunca
+    /// é adotado diretamente.
+    cluster_logs_enabled: Arc<AtomicBool>,
     /// This node's own address, as reported by a peer's libp2p `identify`
     /// response (`info.observed_addr` — the address *that peer* saw us
     /// connecting from). `host:port`, same shape as `advertise_addr`. Set
@@ -826,6 +835,8 @@ impl Network {
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
+            cluster_logs_probe: std::sync::RwLock::new(None),
+            cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
             observed_addr: std::sync::RwLock::new(None),
         })
     }
@@ -1117,6 +1128,7 @@ impl Network {
                 .read()
                 .expect("runtime capacity lock")
                 .capacity,
+            cluster_logs_enabled: self.cluster_logs_enabled(),
         }
     }
 
@@ -1234,6 +1246,68 @@ impl Network {
         if let Ok(mut slot) = self.tls_probe.write() {
             *slot = Some(tx);
         }
+    }
+
+    pub fn cluster_logs_enabled(&self) -> bool {
+        self.cluster_logs_enabled.load(Ordering::Acquire)
+    }
+
+    /// A política só muda pela interface do principal ou pela resposta
+    /// autenticada da catraca. Nunca pelo booleano recebido no gossip.
+    pub fn set_cluster_logs_enabled(&self, enabled: bool) {
+        self.cluster_logs_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn set_cluster_logs_probe(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>,
+    ) {
+        if let Ok(mut slot) = self.cluster_logs_probe.write() {
+            *slot = Some(tx);
+        }
+    }
+
+    /// An announce is only a prompt to ask the principal for the effective
+    /// policy. The announced value is never adopted directly, whether the
+    /// announce arrived over UDP or gossipsub.
+    pub fn trigger_cluster_logs_probe(
+        &self,
+        node_id: &str,
+        role: &str,
+        announced: bool,
+        tls: bool,
+    ) {
+        if let crate::cluster_logs_policy::PolicyOutcome::Fetch { principal } =
+            crate::cluster_logs_policy::on_announce(
+                self.cluster_logs_enabled(),
+                announced,
+                role.eq_ignore_ascii_case("principal"),
+                node_id,
+            )
+        {
+            if let Ok(slot) = self.cluster_logs_probe.read() {
+                if let Some(tx) = slot.as_ref() {
+                    let _ = tx.send((principal, tls));
+                }
+            }
+        }
+    }
+
+    /// Retorna somente o principal conhecido e seu endereço libp2p. Um nó
+    /// nunca escolhe outro nó comum como próximo salto de logs.
+    pub async fn principal_peer(&self) -> Option<(libp2p::PeerId, Vec<String>)> {
+        let peers = self.peers.read().await;
+        peers
+            .values()
+            .filter(|peer| peer.is_alive() && peer.role.eq_ignore_ascii_case("principal"))
+            .find_map(|peer| {
+                let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
+                let mut addresses = peer.addr_candidates.clone();
+                if addresses.is_empty() {
+                    addresses.push(peer.addr.clone());
+                }
+                Some((peer_id, addresses))
+            })
     }
 
     /// Leave the network: stop speaking, stop listening, forget the peers.
@@ -1552,6 +1626,7 @@ impl Network {
                 libp2p_peer_id,
                 tp,
                 runtime_capacity,
+                cluster_logs_enabled,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -1647,6 +1722,13 @@ impl Network {
                         }
                     }
                 }
+
+                self.trigger_cluster_logs_probe(
+                    &peer.node_id,
+                    &peer.role,
+                    cluster_logs_enabled,
+                    tls,
+                );
 
                 // O endereco de onde o pacote veio e o unico comprovadamente
                 // funcional, mas nao invalida os outros: por isso entra no

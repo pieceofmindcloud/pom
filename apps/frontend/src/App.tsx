@@ -136,6 +136,7 @@ export const routeLoaders = {
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
+  deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
@@ -163,6 +164,7 @@ const SetupWizard = lazyRoute(routeLoaders.setupWizard);
 const Chat = lazyRoute(routeLoaders.chat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
+const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const Preferences = lazyRoute(routeLoaders.preferences);
@@ -236,7 +238,8 @@ export default function App() {
       location.pathname === "/documentacao" ||
       location.pathname === "/implantar" ||
       location.pathname === "/implantacoes" ||
-      location.pathname === "/logs");
+      location.pathname === "/logs" ||
+      location.pathname === "/implantacoes/logs");
   /*
    * O assistente é a única tela que sai da moldura inteira: ele guia a
    * configuração do zero, com barra de progresso e uma pergunta por vez, e o
@@ -333,6 +336,7 @@ export default function App() {
                       <Route path="/fatias" element={<Page><Shards /></Page>} />
                       <Route path="/implantar" element={<Page><DeployModel /></Page>} />
                       <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
+                      <Route path="/implantacoes/logs" element={<Page><DeploymentLogs /></Page>} />
                       {/* Keep the former deploy URL working for old bookmarks. */}
                       <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
                       <Route path="/transferencias" element={<Page><Transfers /></Page>} />

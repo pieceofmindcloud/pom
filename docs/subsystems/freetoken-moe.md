@@ -558,6 +558,49 @@ Também registrar de `trace.hops[].prefill` e `.decode` os campos
 que `POM_MOE_LAYER_INPUT` só aparece quando
 `POM_MOE_LAYER_INPUT_DIAGNOSTIC=1` foi explicitamente solicitado.
 
+#### Procedimento E2E do impacto dos logs na ksia
+
+O teste de impacto deve comparar o mesmo modelo, máquina, plano, prompt e
+parâmetros com a captura desligada e ligada. O interruptor é aplicado pelo
+principal, sem reinício, e a chamada de geração continua na rota pública:
+
+```bash
+MODEL=Ornith-1.5-35B-Q6_K.gguf
+GATEWAY=http://ksia:8080
+TOKEN='connection-key-do-cluster'
+PROMPT='Escreva hello world 10 vezes.'
+BODY=$(jq -nc --arg model "$MODEL" --arg prompt "$PROMPT" \
+  '{model:$model,prompt:$prompt,max_tokens:64}')
+
+for enabled in false true; do
+  curl -fsS -X POST "$GATEWAY/api/ui/network/logs" \
+    -H "authorization: Bearer $TOKEN" \
+    -H 'content-type: application/json' \
+    --data "{\"logs_enabled\":$enabled}" >/dev/null
+  curl -fsS "$GATEWAY/api/generate" \
+    --data "$BODY" >/dev/null
+  for run in $(seq 1 10); do
+    curl -fsS "$GATEWAY/api/generate" \
+      --data "$BODY" > "cluster-logs-${enabled}-${run}.json"
+  done
+  jq -s '{runs:length,
+    mean_generation_tok_s: ([.[].timings.generation_tokens_per_sec // 0] | add / length),
+    mean_total_tok_s: ([.[].tokens_per_sec // 0] | add / length),
+    mean_ttft_ms: ([.[].timings.ttft_ms // 0] | add / length)}' \
+    cluster-logs-${enabled}-*.json
+done
+```
+
+Guardar os vinte JSONs e registrar no relatório o sistema, commit, modelo,
+GPU, `n_ctx`, `n_batch=512`, `n_gpu_layers`, sessões, temperatura e os dez
+valores de cada lado. Comparar a mediana e a média de
+`generation_tokens_per_sec` e `tokens_per_sec`; conferir também que o
+`GET /api/ui/cluster-logs` contém linhas quando `enabled=true` e que o contador
+de descartes permanece explícito. Repetir trocando `MODEL` pelo Qwen3.6 se a
+medição MoE desse modelo também fizer parte da entrega. A captura local usa
+fila `try_send` limitada, então qualquer aumento deve ser investigado sem
+transformar o envio em espera síncrona.
+
 A investigação da medição Gemma4 encontrou uma divergência anterior a qualquer
 otimização de kernel. O contexto captura `l_out-29`, mas em
 `vendor/llama-cpp-sys-2/llama.cpp/src/models/gemma4.cpp` esse tensor é criado

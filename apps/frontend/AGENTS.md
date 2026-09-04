@@ -69,6 +69,8 @@ aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
 - `/implantacoes` -> Deployments, full-bleed como a de Logs: o mesmo
   `DeploymentInspector` da tela de implantar abre à direita, em somente
   leitura, com os parâmetros da versão escolhida
+- `/implantacoes/logs` -> DeploymentLogs, consola terminal dos logs de processo
+  do cluster, em ordem de chegada no principal e filtrável por `deploy_id`
 - `/setup` -> SetupWizard, **fora da moldura**: sem Sidebar nem Topbar, como o
   `Setup` do primeiro arranque (`isWizard` no `App.tsx` devolve antes do shell)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
@@ -103,7 +105,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, requests/stats, chat/telemetry, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key.
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
 - Auth: `api.ts` sends same-origin credentials so the gateway can use its
   `HttpOnly` admin session. It signs requests with the cluster connection key
   (picked up unauthenticated from `/api/ui/node`), matching `ApiKeyAuth` in the

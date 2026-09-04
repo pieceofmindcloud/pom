@@ -431,6 +431,37 @@ clientes, muda o que o anúncio diz e liga/desliga a recusa de texto claro. Os
 demais nós adotam dentro de um ciclo de gossip (5 s), e o operador pode virar
 quantas vezes quiser.
 
+## Logs de processo do cluster
+
+O log de processo usa um protocolo request/response próprio do swarm,
+`/pom/cluster-logs/1.0.0`, separado de `infer_tunnel.rs`. Cada nó envia lotes
+somente ao peer que conhece como principal; não há malha, retransmissão ou
+encaminhamento de logs entre nós. O principal registra cada entrada na ordem de
+chegada, sem ordenar pelo relógio remoto, e guarda `origin_at` apenas como dado
+informativo.
+
+`cluster_logs_enabled` no `Announce` é somente gatilho. Quando diverge da
+política local, o nó faz uma busca autenticada em `GET /api/cluster/logs` no
+principal e só grava o valor retornado; falha na busca preserva o valor local.
+O interruptor administrativo aplica a mudança sem reinício.
+
+A prova local de contrapressão roda com
+`cargo test -p node --bin pom cluster_logs --no-default-features -- --nocapture`.
+Ela enche uma fila de capacidade 1, exige que a segunda emissão retorne
+imediatamente como descarte e confere o contador. O microbenchmark incluído na
+mesma suíte, em Apple M4, fez 50.000 emissões e 782 lotes. Em cinco execuções,
+as medianas foram `305 ns/linha` para `try_push` e `373 ns/linha` para receber e
+formar lotes de até 64 entradas. A medida é do caminho de captura e lote, não de
+inferência; o escritor SQLite e o transporte ficam fora da thread que emite.
+
+O `tracing` entra numa fila própria limitada a 1024 entradas. A captura usa
+snapshot lock-free do contexto e `try_send`, portanto nunca espera uma
+atualização de identidade, a inferência ou a rede; fila cheia descarta a entrada
+e acumula a contagem. Uma task fora do caminho quente envia até 64 entradas a
+cada 100 ms, em modo best-effort, sem retentativa agressiva. O principal grava
+as linhas em `pom.db`, associadas ao `deploy_id`, e também persiste o contador
+de descartes.
+
 ## 6. Defeitos anotados
 
 - **DEFEITO ANOTADO: bitswap é protocolo órfão** - `bitswap_behaviour` está no

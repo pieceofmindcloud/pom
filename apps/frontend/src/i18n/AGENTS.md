@@ -29,7 +29,10 @@ Two files carry all of it: a static message table and a small provider. Tests:
   its measured VRAM/RAM location and its runtime unavailability reason. The
   deployment form labels the opt-out for the RAM fallback in both locales.
   The Deployments section has separate `nav.history` and `deployments.created`
-  labels in both locale blocks for the nested history menu and date column.
+  labels in both locale blocks for the nested history menu and date column. The
+  `nav.deploymentLogs`, `deploymentLogs.*`, `deployments.viewLogs` and
+  `network.logs*` groups keep the cluster process-log console distinct from the
+  request audit in both locale blocks.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou

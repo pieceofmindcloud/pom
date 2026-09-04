@@ -47,6 +47,23 @@ const messages: Record<Locale, Record<string, Message>> = {
       "TLS between nodes matters most when inference crosses the internet. If everything runs locally over 127.0.0.1, communication between nodes mainly uses libp2p, which is secure by nature - TLS is optional in that case and may even reduce inference speed.",
     "network.tlsNotAuthority": () =>
       "Only the main node decides this, and the decision applies to the whole cluster.",
+    "network.logsTitle": () => "Process logs between nodes",
+    "network.logsSubtitle": () =>
+      "When on, this node reports its process log to the main node. The bounded queue drops lines under pressure so inference is never held up.",
+    "network.logsState": () => "Cluster collection",
+    "network.logsOn": () => "collecting",
+    "network.logsOff": () => "paused",
+    "network.logsEnable": () => "Turn logs on",
+    "network.logsDisable": () => "Turn logs off",
+    "network.logsEnabled": () => "Process logs turned on",
+    "network.logsDisabled": () => "Process logs turned off",
+    "network.logsPropagates": () =>
+      "No restart needed. Other nodes confirm the policy with the main node before adopting it.",
+    "network.logsFailed": () => "Could not change the process log policy",
+    "network.logsHowItWorks": () =>
+      "Every node sends only to the main node over a separate libp2p protocol. The main node stores arrival order and deployment id in SQLite.",
+    "network.logsNotAuthority": () =>
+      "Only the main node decides this, and the decision applies to the whole cluster.",
     "network.thermalTitle": () => "GPU thermal protection",
     "network.thermalSubtitle": () =>
       "The model is unloaded above the limit and returns only after every GPU stays cool for the cooldown.",
@@ -121,6 +138,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "nav.deploy": () => "Deploy to network",
     "nav.deployments": () => "Deployments",
     "nav.history": () => "History",
+    "nav.deploymentLogs": () => "Deployment logs",
     "deployments.title": () => "Deployments",
     "deployments.subtitle": () =>
       "Every deployment in the cluster. A deployment ties a set of machines to a model; the same model can be deployed more than once, with different machines or different settings.",
@@ -133,6 +151,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deployments.created": () => "Created",
     "deployments.state": () => "State",
     "deployments.actions": () => "Actions",
+    "deployments.viewLogs": () => "View process logs",
     "deployments.kind.shards": () => "Slices",
     "deployments.kind.whole": () => "Whole model",
     "deployments.kind.tensor_parallel": () => "Tensor parallel",
@@ -176,6 +195,18 @@ const messages: Record<Locale, Record<string, Message>> = {
     "nav.sendFile": () => "Send a file",
     "nav.inProgress": () => "In progress",
     "nav.logs": () => "Logs",
+    "deploymentLogs.title": () => "Deployment logs",
+    "deploymentLogs.subtitle": () =>
+      "The cluster process console. Lines are shown in the order they reached the main node.",
+    "deploymentLogs.filterLabel": () => "Filter by deployment",
+    "deploymentLogs.allDeployments": () => "All deployments",
+    "deploymentLogs.consoleTitle": () => "Cluster console",
+    "deploymentLogs.consoleSubtitle": () => "Node names and source timestamps are informational; arrival order is authoritative.",
+    "deploymentLogs.live": () => "Live",
+    "deploymentLogs.offline": () => "Offline",
+    "deploymentLogs.dropped": ({ count }) => String(count) + " lines dropped before delivery",
+    "deploymentLogs.emptyTitle": () => "No process logs yet",
+    "deploymentLogs.emptyHint": () => "Turn on process logs from Preferences on the main node.",
     "nav.settings": () => "Settings",
     "nav.network": () => "Network",
     "nav.preferences": () => "Preferences",
@@ -1728,6 +1759,23 @@ const messages: Record<Locale, Record<string, Message>> = {
       "O TLS entre nós vale sobretudo quando a inferência atravessa a internet. Se tudo corre localmente por 127.0.0.1, a comunicação entre nós passa principalmente por libp2p, que já é segura por natureza - o TLS torna-se opcional nesse caso e pode inclusive reduzir a velocidade da inferência.",
     "network.tlsNotAuthority": () =>
       "Só o nó principal decide isso, e a decisão vale para o cluster inteiro.",
+    "network.logsTitle": () => "Logs de processo entre nós",
+    "network.logsSubtitle": () =>
+      "Ligado, este nó envia seu log de processo ao principal. A fila limitada descarta linhas sob pressão para nunca segurar a inferência.",
+    "network.logsState": () => "Coleta do cluster",
+    "network.logsOn": () => "coletando",
+    "network.logsOff": () => "pausada",
+    "network.logsEnable": () => "Ligar logs",
+    "network.logsDisable": () => "Desligar logs",
+    "network.logsEnabled": () => "Logs de processo ligados",
+    "network.logsDisabled": () => "Logs de processo desligados",
+    "network.logsPropagates": () =>
+      "Não precisa reiniciar. Os demais nós confirmam a política com o principal antes de adotar.",
+    "network.logsFailed": () => "Não deu para mudar a política de logs de processo",
+    "network.logsHowItWorks": () =>
+      "Cada nó envia somente ao principal por um protocolo libp2p separado. O principal grava a ordem de chegada e o deploy_id no SQLite.",
+    "network.logsNotAuthority": () =>
+      "Só o nó principal decide isso, e a decisão vale para o cluster inteiro.",
     "network.thermalTitle": () => "Proteção térmica da GPU",
     "network.thermalSubtitle": () =>
       "O modelo é desimplantado acima do limite e só volta depois que todas as GPUs permanecem frias pelo cooldown.",
@@ -1802,6 +1850,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "nav.deploy": () => "Implantar na rede",
     "nav.deployments": () => "Implantações",
     "nav.history": () => "Histórico",
+    "nav.deploymentLogs": () => "Logs da implantação",
     "deployments.title": () => "Implantações",
     "deployments.subtitle": () =>
       "Tudo que está implantado no cluster. Uma implantação liga um conjunto de máquinas a um modelo; o mesmo modelo pode estar no ar mais de uma vez, em máquinas ou com parâmetros diferentes.",
@@ -1814,6 +1863,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deployments.created": () => "Criada",
     "deployments.state": () => "Estado",
     "deployments.actions": () => "Ações",
+    "deployments.viewLogs": () => "Ver logs de processo",
     "deployments.kind.shards": () => "Fatias",
     "deployments.kind.whole": () => "Modelo inteiro",
     "deployments.kind.tensor_parallel": () => "Tensor parallel",
@@ -1856,6 +1906,18 @@ const messages: Record<Locale, Record<string, Message>> = {
     "nav.sendFile": () => "Enviar um arquivo",
     "nav.inProgress": () => "Em andamento",
     "nav.logs": () => "Logs",
+    "deploymentLogs.title": () => "Logs da implantação",
+    "deploymentLogs.subtitle": () =>
+      "A consola do processo do cluster. As linhas aparecem na ordem em que chegaram ao principal.",
+    "deploymentLogs.filterLabel": () => "Filtrar por implantação",
+    "deploymentLogs.allDeployments": () => "Todas as implantações",
+    "deploymentLogs.consoleTitle": () => "Consola do cluster",
+    "deploymentLogs.consoleSubtitle": () => "Nomes dos nós e horários de origem são informativos; a ordem de chegada é a que vale.",
+    "deploymentLogs.live": () => "Ao vivo",
+    "deploymentLogs.offline": () => "Indisponível",
+    "deploymentLogs.dropped": ({ count }) => String(count) + " linhas descartadas antes do envio",
+    "deploymentLogs.emptyTitle": () => "Nenhum log de processo ainda",
+    "deploymentLogs.emptyHint": () => "Ligue os logs de processo em Preferências no nó principal.",
     "nav.settings": () => "Configurações",
     "nav.network": () => "Rede",
     "nav.preferences": () => "Preferências",

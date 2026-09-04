@@ -167,6 +167,8 @@ pub fn routes() -> Router<GatewayState> {
         )
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
         .route("/api/ui/network/tls", post(save_tls))
+        .route("/api/ui/network/logs", post(save_cluster_logs))
+        .route("/api/ui/cluster-logs", get(cluster_logs))
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route(
             "/api/ui/deploy/capacity-preview",
@@ -259,6 +261,10 @@ pub struct NodeInfo {
     /// decidir entre interruptor e leitura; a checagem que vale é a do
     /// `save_tls`, no servidor.
     pub tls_authority: bool,
+    /// Se este nó recolhe e envia logs de processo do cluster.
+    pub cluster_logs_enabled: bool,
+    /// Só o principal pode mudar a política de logs.
+    pub cluster_logs_authority: bool,
     pub thermal: ThermalPolicy,
 }
 
@@ -275,6 +281,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         advertise_addr,
         tls_required,
         tls_authority,
+        cluster_logs_authority,
         thermal,
         admin_exposure,
         admin_access_token_configured,
@@ -286,6 +293,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
             cfg.connection_key.clone(),
             cfg.advertise_addr.clone(),
             cfg.tls_required,
+            cfg.role == crate::config::Role::Principal,
             cfg.role == crate::config::Role::Principal,
             cfg.thermal,
             cfg.admin_exposure,
@@ -347,9 +355,43 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         effective_address: state.network.announce_addr(),
         tls_required,
         tls_authority,
+        cluster_logs_enabled: state.network.cluster_logs_enabled(),
+        cluster_logs_authority,
         thermal,
         system,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct ClusterLogsQuery {
+    deploy_id: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn cluster_logs(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(query): Query<ClusterLogsQuery>,
+) -> Response {
+    if state.auth.read().await.role != crate::config::Role::Principal {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "os logs do cluster só estão disponíveis no nó principal." })),
+        )
+            .into_response();
+    }
+    match state
+        .cluster_logs
+        .list(query.deploy_id.as_deref(), query.limit)
+        .await
+    {
+        Ok(logs) => Json(logs).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não deu para ler os logs: {error}") })),
+        )
+            .into_response(),
+    }
 }
 
 fn mask_access_token(token: &str) -> String {
@@ -1205,6 +1247,47 @@ async fn save_tls(
     );
 
     Json(json!({ "tls_required": req.tls_required })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SaveClusterLogsRequest {
+    pub logs_enabled: bool,
+}
+
+/// Liga ou desliga a coleta do cluster sem reinício. O principal grava a
+/// política e os demais nós a adotam apenas após a busca autenticada descrita
+/// em `cluster_logs_policy`.
+async fn save_cluster_logs(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveClusterLogsRequest>,
+) -> Response {
+    if state.auth.read().await.role != crate::config::Role::Principal {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "só o nó principal decide os logs do cluster." })),
+        )
+            .into_response();
+    }
+
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.cluster_logs_enabled = req.logs_enabled;
+        if let Err(error) = cfg.save() {
+            return bad_request(format!(
+                "não deu para gravar {}: {error}",
+                crate::brand::config_filename()
+            ));
+        }
+    }
+
+    state.network.set_cluster_logs_enabled(req.logs_enabled);
+    state.cluster_logs.set_enabled(req.logs_enabled);
+    info!(
+        "logs de processo do cluster {} pela interface",
+        if req.logs_enabled { "ligados" } else { "desligados" }
+    );
+    Json(json!({ "logs_enabled": req.logs_enabled })).into_response()
 }
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -6425,6 +6508,58 @@ mod tls_settings_tests {
         let info = node_info(State(state)).await;
         assert!(info.0.tls_required);
         assert!(info.0.tls_authority);
+    }
+}
+
+#[cfg(test)]
+mod cluster_logs_settings_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, state_with};
+
+    #[tokio::test]
+    async fn no_comum_nao_pode_ligar_logs() {
+        let state = state_with("eu", vec![]).await;
+
+        let response = save_cluster_logs(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveClusterLogsRequest { logs_enabled: true }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!state.cluster_logs.enabled());
+        assert!(!state.network.cluster_logs_enabled());
+        assert!(!state.auth.read().await.cluster_logs_enabled);
+    }
+
+    #[tokio::test]
+    async fn principal_liga_e_desliga_logs_sem_reinicio() {
+        let state = state_with("eu", vec![]).await;
+        state.auth.write().await.role = crate::config::Role::Principal;
+
+        let response = save_cluster_logs(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveClusterLogsRequest { logs_enabled: true }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["logs_enabled"], true);
+        assert!(state.cluster_logs.enabled());
+        assert!(state.network.cluster_logs_enabled());
+        assert!(state.auth.read().await.cluster_logs_enabled);
+
+        let response = save_cluster_logs(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveClusterLogsRequest { logs_enabled: false }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!state.cluster_logs.enabled());
+        assert!(!state.network.cluster_logs_enabled());
+        assert!(!state.auth.read().await.cluster_logs_enabled);
     }
 }
 

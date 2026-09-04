@@ -66,6 +66,8 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     effective_address: "10.0.0.1:42777",
     tls_required: false,
     tls_authority: false,
+    cluster_logs_enabled: false,
+    cluster_logs_authority: false,
     ...over,
   };
 }

@@ -44,7 +44,11 @@ altera a captura local.
 A camada de captura não aguarda locks assíncronos, SQLite ou rede. As filas de
 captura, transporte e persistência são limitadas. O transporte dedicado tem
 timeout curto e não reutiliza o túnel de inferência. O benchmark de tok/s será
-registrado no commit com a mesma máquina, modelo e prompt nos dois estados.
+feito pelo captain na ksia, com a mesma máquina, modelo e prompt nos dois
+estados, conforme o procedimento em `docs/subsystems/freetoken-moe.md`. Nesta
+árvore a prova executável é a fila cheia que descarta sem bloquear e o
+microbenchmark de enfileiramento e formação de lotes, com os números registrados
+em `docs/subsystems/rede-p2p.md`.
 
 ## Testes
 

@@ -261,6 +261,10 @@ Per-file list:
   ativa uma implantação e a desimplanta pelo `deploy_id`. O painel do job de
   reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
   Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
+- `DeploymentLogs.tsx` - consola full-bleed do log de processo do cluster em
+  `/implantacoes/logs`. Consulta os lotes persistidos do principal, atualiza a
+  cada segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
+  `deploy_id`; não é a auditoria paginada de requisições em `Logs.tsx`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   No perfil `inference`, mostra só a chave ativa deste nó, esconde o seletor de
@@ -294,8 +298,9 @@ Per-file list:
   token only in network mode, and saves them to `pom.json` through
   `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
   choice out of Network and explains when it is useful, plus `ThermalPanel` and
-  `HuggingFaceSettingsPanel`. The access token is a human credential and is not
-  the cluster `connection_key`.
+  `HuggingFaceSettingsPanel`. Também monta o interruptor de logs do cluster,
+  disponível apenas ao principal e aplicado em tempo real. The access token is
+  a human credential and is not the cluster `connection_key`.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e

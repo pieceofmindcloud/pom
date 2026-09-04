@@ -199,6 +199,10 @@ export interface NodeInfo {
   tls_required: boolean;
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
+  /** Se este nó coleta e envia logs de processo do cluster. */
+  cluster_logs_enabled: boolean;
+  /** Só o principal pode mudar a política de logs. */
+  cluster_logs_authority: boolean;
   thermal: ThermalPolicy;
 }
 
@@ -863,6 +867,24 @@ export interface RequestLogResponse {
   by_token: Record<string, number>;
   by_node: Record<string, number>;
   storage: "sqlite" | string;
+}
+
+/** Linha do log de processo persistida pelo nó principal. */
+export interface ClusterLogEntry {
+  received_seq: number;
+  received_at: string;
+  node_id: string;
+  node_name: string;
+  deploy_id: string;
+  origin_at: string;
+  level: string;
+  target: string;
+  message: string;
+}
+
+export interface ClusterLogResponse {
+  entries: ClusterLogEntry[];
+  dropped: number;
 }
 
 export interface RequestUsageStats {

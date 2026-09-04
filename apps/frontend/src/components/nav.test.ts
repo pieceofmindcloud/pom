@@ -25,6 +25,7 @@ describe("navigation structure", () => {
     expect(deployments?.children?.map((child) => [child.labelKey, child.to])).toEqual([
       ["nav.deploy", "/implantar"],
       ["nav.history", "/implantacoes"],
+      ["nav.deploymentLogs", "/implantacoes/logs"],
     ]);
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });

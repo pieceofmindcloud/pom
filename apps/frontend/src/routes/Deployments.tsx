@@ -20,7 +20,7 @@
  * planejar e o que copiar.
  */
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Layers, RefreshCw, Star, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Layers, RefreshCw, Star, Terminal, X } from "lucide-react";
 import {
   activateDeployment,
   redeployDeployment,
@@ -416,6 +416,13 @@ function Row({
             deixava o ícone solto à esquerda, e a linha inteira crescia. */}
         <td className="whitespace-nowrap px-5 py-3">
           <div className="flex flex-col items-start gap-1">
+            <a
+              href={`/implantacoes/logs?deploy_id=${encodeURIComponent(d.deploy_id)}`}
+              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-line px-2.5 text-[0.8rem] font-medium text-muted transition-colors hover:border-line-strong hover:text-fg"
+            >
+              <Terminal className="h-3.5 w-3.5" />
+              {t("deployments.viewLogs")}
+            </a>
             <Button
               size="sm"
               variant="ghost"

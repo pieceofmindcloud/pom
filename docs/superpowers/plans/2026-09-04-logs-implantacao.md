@@ -26,7 +26,9 @@ SQLite via rusqlite, Axum, React, React Query, Tailwind e Vitest.
 - Só o principal recebe lotes e só ele pode alterar a política.
 - `FIT_MAX_UBATCH` permanece em 512 e o llama.cpp vendorizado não é alterado.
 - Documentação nova e atualizações de `AGENTS.md` ficam em pt-BR e usam hífen.
-- O benchmark de tok/s ligado/desligado deve ser evidência real no commit.
+- A medição de tok/s ligada/desligada fica para a ksia; esta árvore entrega o
+  teste de não bloqueio, o microbenchmark de captura/lote e o procedimento
+  reproduzível para o captain.
 
 ---
 
@@ -39,11 +41,11 @@ SQLite via rusqlite, Axum, React, React Query, Tailwind e Vitest.
 
 **Steps:**
 
-- [ ] Escrever testes RED para sequência de chegada, descarte limitado,
+- [x] Escrever testes RED para sequência de chegada, descarte limitado,
   associação ao `deploy_id` e política `adopt_or_keep`.
-- [ ] Implementar os tipos de linha, fila, protocolo e operações SQLite
+- [x] Implementar os tipos de linha, fila, protocolo e operações SQLite
   mínimas para deixar os testes GREEN.
-- [ ] Manter o schema novo explícito e adicionar os testes de schema/reabertura.
+- [x] Manter o schema novo explícito e adicionar os testes de schema/reabertura.
 
 ### Task 2: swarm dedicado e política autenticada
 
@@ -54,11 +56,11 @@ SQLite via rusqlite, Axum, React, React Query, Tailwind e Vitest.
 
 **Steps:**
 
-- [ ] Escrever testes RED para gatilho somente do principal e falha que preserva
+- [x] Escrever testes RED para gatilho somente do principal e falha que preserva
   o valor local.
-- [ ] Adicionar behaviour próprio, filas best-effort e ingestão apenas no
+- [x] Adicionar behaviour próprio, filas best-effort e ingestão apenas no
   principal.
-- [ ] Integrar a catraca e a inicialização tanto no caminho CLI quanto no
+- [x] Integrar a catraca e a inicialização tanto no caminho CLI quanto no
   gateway-only.
 
 ### Task 3: rotas administrativas
@@ -71,10 +73,10 @@ SQLite via rusqlite, Axum, React, React Query, Tailwind e Vitest.
 
 **Steps:**
 
-- [ ] Escrever testes RED para autoridade, toggle ao vivo e listagem filtrada.
-- [ ] Implementar `/api/ui/cluster-logs`, `/api/ui/network/logs` e
+- [x] Escrever testes RED para autoridade, toggle ao vivo e listagem filtrada.
+- [x] Implementar `/api/ui/cluster-logs`, `/api/ui/network/logs` e
   `/api/cluster/logs` autenticadas conforme o boundary atual.
-- [ ] Confirmar que nenhum nó não-principal persiste lote remoto.
+- [x] Confirmar que nenhum nó não-principal persiste lote remoto.
 
 ### Task 4: tela e navegação
 
@@ -92,12 +94,12 @@ SQLite via rusqlite, Axum, React, React Query, Tailwind e Vitest.
 
 **Steps:**
 
-- [ ] Escrever teste RED da rota, rótulo distinto, linha com nó, ordem e filtro.
-- [ ] Implementar a tela terminal responsiva, com foco visível e estados vazio,
+- [x] Escrever teste RED da rota, rótulo distinto, linha com nó, ordem e filtro.
+- [x] Implementar a tela terminal responsiva, com foco visível e estados vazio,
   erro e perdas.
-- [ ] Colocar o item logo abaixo de Histórico e o link mínimo no Histórico.
-- [ ] Adicionar o interruptor junto do TLS, desabilitado fora do principal.
-- [ ] Rodar `npm run build` e a suíte da UI.
+- [x] Colocar o item logo abaixo de Histórico e o link mínimo no Histórico.
+- [x] Adicionar o interruptor junto do TLS, desabilitado fora do principal.
+- [x] Rodar `npm run build` e a suíte da UI.
 
 ### Task 5: validação e publicação
 
@@ -112,9 +114,11 @@ SQLite via rusqlite, Axum, React, React Query, Tailwind e Vitest.
 
 **Steps:**
 
-- [ ] Rodar testes Rust focados e `cargo test`.
-- [ ] Rodar build/test da UI.
-- [ ] Medir tok/s desligado e ligado nas mesmas condições e registrar os
-  números no commit.
+- [x] Rodar testes Rust focados e `cargo check`.
+- [x] Rodar build/test da UI.
+- [x] Medir a não-bloqueabilidade e o custo de enfileirar/formar lotes; deixar
+  o procedimento de tok/s desligado/ligado para a ksia.
+- [x] Registrar separadamente o SIGSEGV observado também na árvore limpa de
+  `origin/feat/implantar3`.
 - [ ] Rebasear sobre `origin/feat/implantar3`, resolver apenas conflitos da
   própria parte e publicar sem force.

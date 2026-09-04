@@ -30,6 +30,7 @@ import type {
   CatalogResponse,
   ChatTelemetryNetwork,
   ClusterView,
+  ClusterLogResponse,
   Job,
   NodeInfo,
   PathsResponse,
@@ -79,6 +80,7 @@ export const keys = {
   networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
+  clusterLogs: (deployId: string | undefined) => ["cluster-logs", deployId ?? "all"] as const,
   remoteModels: (query: string, ggufOnly: boolean, page: number) =>
     ["remote-models", query, ggufOnly, page] as const,
   remoteModelDetails: (repoId: string, revision: string | undefined) =>
@@ -343,6 +345,19 @@ export function useDeployments() {
     queryKey: keys.deployments,
     queryFn: () => optional(listDeployments(), { node_id: "", deployments: [] }),
     refetchInterval: 10000,
+  });
+}
+
+/** Logs de processo em ordem de chegada ao principal. */
+export function useClusterLogs(deployId?: string) {
+  const query = new URLSearchParams();
+  if (deployId) query.set("deploy_id", deployId);
+  const suffix = query.toString();
+  return useQuery<ClusterLogResponse>({
+    queryKey: keys.clusterLogs(deployId),
+    queryFn: () =>
+      api.get<ClusterLogResponse>(`/api/ui/cluster-logs${suffix ? `?${suffix}` : ""}`),
+    refetchInterval: 1000,
   });
 }
 

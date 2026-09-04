@@ -469,6 +469,21 @@ ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
 implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 `rede-p2p.md`, seção 5.
 
+**`GET /api/cluster/logs`** - exige `ConnectionAuth` e devolve
+`{ logs_enabled }`. É a fonte autenticada que os nós consultam quando o campo
+`cluster_logs_enabled` do anúncio dispara a catraca; não aceita o anúncio como
+política.
+
+**`POST /api/ui/network/logs`** - corpo `{ logs_enabled: bool }`, liga ou
+desliga a captura e o envio do log de processo do cluster em tempo real. Só o
+principal recebe a operação; o efeito é aplicado sem reinício e anunciado como
+gatilho para a busca autenticada dos demais nós.
+
+**`GET /api/ui/cluster-logs`** - exige `ConnectionAuth` no principal e devolve
+as linhas persistidas em ordem de chegada, com `deploy_id`, timestamp de origem,
+nome do nó e contador de descartes. Aceita `deploy_id` e `limit`; não reordena
+por `origin_at`.
+
 **`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
 política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o
 limite e a margem são finitos, positivos e formam uma histerese válida, grava a
@@ -536,7 +551,8 @@ loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
   `peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), `/v1/relay-result` e
 `/v1/remote-stream-result` (abaixo). `GET /api/ui/requests` e
-`/api/ui/requests/stats` são exceções porque podem conter conteúdo sensível e
+`/api/ui/requests/stats` e `/api/ui/cluster-logs` são exceções porque podem
+conter conteúdo sensível e
 exigem `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
 

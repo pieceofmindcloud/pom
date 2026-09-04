@@ -39,6 +39,10 @@ mod direct;
 mod direct_lab;
 #[path = "network/discovery.rs"]
 mod discovery;
+#[path = "network/cluster_logs.rs"]
+mod cluster_logs;
+#[path = "network/cluster_logs_policy.rs"]
+mod cluster_logs_policy;
 #[path = "utils/display.rs"]
 mod display;
 #[path = "inference/executor.rs"]
@@ -148,7 +152,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -349,11 +353,13 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     respawn::remember_argv(std::env::args().collect());
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(false)
+    let (log_capture, log_receiver) = cluster_logs::LogCapture::new(
+        cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY,
+    );
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
         .init();
 
     // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
@@ -382,6 +388,7 @@ async fn main() -> Result<()> {
 
     // ── Load existing config ─────────────────────────────────────────────────
     let mut app_config = config::Config::load()?;
+    let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
     app_config.api_keys = database.api_keys()?;
     app_config.thermal = database
         .thermal_policy()?
@@ -465,6 +472,7 @@ async fn main() -> Result<()> {
             args.advertise_addr.clone(),
             args.public_addr.clone(),
             !args.no_cycle_detection,
+            cluster_logs,
         )
         .await;
     }
@@ -631,6 +639,8 @@ async fn main() -> Result<()> {
         node_display_name,
         advertise_addr,
         tls_required: app_config.tls_required,
+        cluster_logs: cluster_logs.clone(),
+        cluster_logs_enabled: app_config.cluster_logs_enabled,
         relay_peer_keys: relay_peer_keys.clone(),
         serve_relay: args.serve_relay,
         use_default_relays: !args.no_default_relays,
@@ -640,6 +650,7 @@ async fn main() -> Result<()> {
     let net = stack.net;
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
+    let cluster_logs = stack.cluster_logs;
     let pkarr_node = stack.pkarr_node;
     let disc_dial_tx = stack.disc_dial_tx;
     let p2p_port = net.bind_addr.port();
@@ -795,6 +806,12 @@ async fn main() -> Result<()> {
             auth_config.clone(),
             tls_server.clone(),
         );
+        cluster_logs_policy::spawn_ratchet(
+            net.clone(),
+            peer_clients.clone(),
+            auth_config.clone(),
+            cluster_logs.clone(),
+        );
 
         let gw_state = GatewayState {
             network: net.clone(),
@@ -819,6 +836,7 @@ async fn main() -> Result<()> {
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
+            cluster_logs: cluster_logs.clone(),
             cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
             model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
                 Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
@@ -1102,6 +1120,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     let config = Arc::new(RwLock::new(Config {
         role: Role::Principal,
         tls_required: false,
+        cluster_logs_enabled: false,
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,
@@ -1190,6 +1209,8 @@ struct P2pStackArgs {
     /// Sem isso a URL já nascia em HTTPS pelo cliente global, mas a sonda
     /// começava em HTTP e todos os RTTs remotos ficavam ausentes.
     tls_required: bool,
+    cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    cluster_logs_enabled: bool,
     /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
     /// *inside* this function, after it loads its own `pkarr_node` — not
     /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
@@ -1209,6 +1230,7 @@ struct P2pStackArgs {
 /// pkarr dial/publish — none of which belong inside this shared helper).
 struct P2pStack {
     net: Arc<Network>,
+    cluster_logs: Arc<cluster_logs::ClusterLogs>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
     pkarr_node: Option<pkarr_node::PkarrNode>,
     assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>>,
@@ -1234,6 +1256,10 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .filter(|addr| !addr.is_empty())
         .collect();
     infer_tunnel::set_local_node_id(args.node_id.clone());
+    let cluster_logs = args.cluster_logs.clone();
+    cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
+    cluster_logs.set_principal(args.role.eq_ignore_ascii_case("principal"));
+    cluster_logs.set_enabled(args.cluster_logs_enabled);
 
     let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
         Ok(n) => {
@@ -1307,6 +1333,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
     );
     net.set_tls(args.tls_required);
+    net.set_cluster_logs_enabled(args.cluster_logs_enabled);
 
     if args.no_discovery {
         net.detach().await;
@@ -1316,6 +1343,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
         Arc::new(RwLock::new(None));
     net.clone().start(assignment_shared.clone()).await?;
+    let (log_tx, log_rx) = mpsc::channel(cluster_logs::LOG_TRANSPORT_QUEUE_CAPACITY);
+    cluster_logs.start(net.clone(), assignment_shared.clone(), log_tx);
 
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
     // messages are published to gossipsub every 5 s so internet peers learn
@@ -1332,6 +1361,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         net.clone(),
         libp2p_keypair,
         tunnel_rx,
+        log_rx,
+        cluster_logs.clone(),
     ) {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
@@ -1370,6 +1401,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
 
     Ok(P2pStack {
         net,
+        cluster_logs,
         tunnel_tx,
         pkarr_node,
         assignment_shared,
@@ -1394,6 +1426,7 @@ async fn start_gateway_only(
     advertise_addr_cli: String,
     public_addr_cli: String,
     cycle_detection_enabled: bool,
+    cluster_logs: Arc<cluster_logs::ClusterLogs>,
 ) -> Result<()> {
     use crate::gateway::{start_gateway, GatewayState};
     use crate::pipeline::LoadTracker;
@@ -1424,6 +1457,8 @@ async fn start_gateway_only(
         node_display_name,
         advertise_addr,
         tls_required: app_config.tls_required,
+        cluster_logs: cluster_logs.clone(),
+        cluster_logs_enabled: app_config.cluster_logs_enabled,
         // No CLI here to source pkarr/relay peer keys from — see the plan's
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],
@@ -1435,6 +1470,7 @@ async fn start_gateway_only(
     let net = stack.net;
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
+    let cluster_logs = stack.cluster_logs;
 
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
@@ -1479,6 +1515,12 @@ async fn start_gateway_only(
         auth_state.clone(),
         tls_server.clone(),
     );
+    cluster_logs_policy::spawn_ratchet(
+        net.clone(),
+        peer_clients.clone(),
+        auth_state.clone(),
+        cluster_logs.clone(),
+    );
 
     let gw_state = GatewayState {
         network: net.clone(),
@@ -1509,6 +1551,7 @@ async fn start_gateway_only(
         // "no tunnel available" outcome `send_frame_via_tunnel` treats as.
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
+        cluster_logs,
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
         model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
             Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(

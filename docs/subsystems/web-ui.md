@@ -106,6 +106,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   desimplantação). Tela cheia, como a de Logs, e clicar na linha de uma versão
   abre à direita o **mesmo** inspetor da tela de implantar, em somente
   leitura, com os parâmetros com que aquela versão subiu
+- `/implantacoes/logs` -> DeploymentLogs, consola terminal do log de processo de
+  todo o cluster, em ordem de chegada ao principal e com filtro por `deploy_id`;
+  não confundir com a auditoria de requisições em `/logs`
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
   requisições paginadas por scroll infinito, estatísticas agregadas e inspetor
@@ -430,6 +433,22 @@ para não mentir antes do clique.
 Virar não pede reinício e vale nos dois sentidos; o toast diz que os demais nós
 adotam em poucos segundos, que é o ciclo de gossip mais a busca autenticada da
 catraca (ver `rede-p2p.md`, seção 5).
+
+## Logs de processo da implantação
+
+`DeploymentLogs.tsx`, em `/implantacoes/logs`, é a consola terminal do processo
+do cluster e não a auditoria de requisições de `/logs`. O fundo preto e a fonte
+monoespaçada deixam cada linha com o nome da máquina, nível e horário de origem;
+as linhas chegam do principal já na ordem de chegada e a tela consulta novos
+lotes a cada segundo. O seletor de implantação envia `deploy_id`, permitindo
+abrir os mesmos logs a partir de uma implantação no Histórico.
+
+`Preferences.tsx` mostra o painel "Logs do cluster" junto do TLS. O interruptor
+fica desabilitado fora do principal e o backend também rejeita a operação nesses
+nós. O estado e a autoridade vêm de `GET /api/ui/node`; a alteração usa
+`POST /api/ui/network/logs` e não exige reinício. O contador de entradas
+descartadas pela fila limitada aparece acima do terminal, para a tela não
+apresentar uma visão incompleta como se fosse o fluxo integral.
 
 ## Chat
 

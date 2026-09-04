@@ -1811,6 +1811,32 @@ medição do transporte usado para iniciar o stream.
 
 ## 11. Defeitos anotados
 
+- **SIGSEGV ao iniciar o contexto, independente dos logs (2026-09-04)**: na
+  Apple M4, o binário release foi iniciado com o mesmo comando para
+  `target/qwen2.5-0.5b-instruct-q4_k_m.gguf` e
+  `target/gemma-3-270m-it-Q8_0.gguf`, usando `--memory 16000MB`,
+  `--n-ctx 1024`, `--n-batch 512`, `--n-gpu-layers 0`, `--no-discovery` e
+  `--single-peer`. Os dois carregaram pesos, reservaram o contexto e
+  terminaram antes de aceitar requisições. O backtrace LLDB recuperado nos
+  dois foi `EXC_BAD_ACCESS (code=1, address=0x0)` em
+  `libsystem_platform.dylib` / `_platform_strlen + 4`; a pilha acima do
+  frame libc não foi recuperável pelo unwinder desta execução.
+
+  Comandos exatos da árvore desta tarefa:
+
+  ```bash
+  rtk lldb --batch -o 'settings set target.env-vars POM_HOME=/Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/target/bench-home POM_UI_DIST=/Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/apps/frontend/dist' -o run -o 'bt all' -o quit -- ./target/release/pom --model /Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/target/qwen2.5-0.5b-instruct-q4_k_m.gguf --memory 16000MB --port 52777 --inference-port 18181 --no-discovery --single-peer --start-layer 0 --end-layer 23 --n-ctx 1024 --n-batch 512 --max-new-tokens 64 --n-gpu-layers 0 --no-thinking
+  rtk lldb --batch -o 'settings set target.env-vars POM_HOME=/Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/target/bench-home POM_UI_DIST=/Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/apps/frontend/dist' -o run -o 'bt all' -o quit -- ./target/release/pom --model /Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/target/gemma-3-270m-it-Q8_0.gguf --memory 16000MB --port 52778 --inference-port 18182 --no-discovery --single-peer --start-layer 0 --end-layer 23 --n-ctx 1024 --n-batch 512 --max-new-tokens 64 --n-gpu-layers 0 --no-thinking
+  ```
+
+  Para separar o achado desta mudança, `origin/feat/implantar3` em
+  `4868f79764f906eeb5e71e49e028a0245b6376a4` foi exportado para uma árvore
+  limpa, compilado com o mesmo checkout de `llama.cpp` e executado com o
+  mesmo par de comandos, trocando apenas o binário por
+  `target/clean-origin-pom` e as portas por `52779/18183` e `52780/18184`.
+  Qwen e Gemma reproduziram o mesmo `EXC_BAD_ACCESS` em
+  `_platform_strlen + 4`. O problema não foi investigado nesta tarefa.
+
 - (não é defeito, é o comportamento de hoje) Porta ocupada: `runtime::free_port` acha quem segura a porta (`lsof -ti :PORT`
   no Unix, `netstat -ano`+`taskkill` no Windows) e mata (SIGKILL) antes de subir
   o servidor. Não conseguindo (ocupante não identificável, ou porta ainda presa

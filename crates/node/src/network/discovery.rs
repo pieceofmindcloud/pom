@@ -1,3 +1,4 @@
+use crate::cluster_logs::{self, ClusterLogs, ClusterLogsCodec, LogOutbound};
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
 use crate::network::{is_valid_destination, Network, P2PMessage, PeerInfo};
 use crate::wire;
@@ -225,6 +226,7 @@ struct DiscBehaviour {
     autonat: autonat::Behaviour,
     relay_server: relay::Behaviour,
     infer_tunnel: request_response::Behaviour<InferTunnelCodec>,
+    cluster_logs: request_response::Behaviour<ClusterLogsCodec>,
 }
 
 pub struct Discovery {
@@ -236,6 +238,8 @@ pub struct Discovery {
     announce_rx: mpsc::Receiver<Vec<u8>>,
     dial_rx: mpsc::Receiver<Multiaddr>,
     tunnel_rx: mpsc::Receiver<TunnelOutbound>,
+    log_rx: mpsc::Receiver<LogOutbound>,
+    logs: Arc<ClusterLogs>,
     relay_peer_addrs: HashSet<Multiaddr>,
     relay_peer_ids: HashSet<PeerId>,
     connected_relays: HashSet<PeerId>,
@@ -268,6 +272,8 @@ impl Discovery {
         network: Arc<Network>,
         keypair: libp2p::identity::Keypair,
         tunnel_rx: mpsc::Receiver<TunnelOutbound>,
+        log_rx: mpsc::Receiver<LogOutbound>,
+        logs: Arc<ClusterLogs>,
     ) -> Result<Self> {
         let libp2p_port = udp_port.saturating_add(10000);
         let topic = gossipsub::IdentTopic::new(GOSSIP_TOPIC);
@@ -354,6 +360,7 @@ impl Discovery {
                 let relay_server = relay::Behaviour::new(peer_id, relay_server_cfg);
 
                 let infer_tunnel = infer_tunnel::infer_tunnel_behaviour();
+                let cluster_logs = cluster_logs::cluster_logs_behaviour();
 
                 DiscBehaviour {
                     gossipsub,
@@ -365,6 +372,7 @@ impl Discovery {
                     autonat: autonat::Behaviour::new(peer_id, autonat::Config::default()),
                     relay_server,
                     infer_tunnel,
+                    cluster_logs,
                 }
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
@@ -416,6 +424,8 @@ impl Discovery {
             announce_rx,
             dial_rx,
             tunnel_rx,
+            log_rx,
+            logs,
             relay_peer_addrs,
             relay_peer_ids,
             connected_relays: HashSet::new(),
@@ -433,6 +443,8 @@ impl Discovery {
             mut announce_rx,
             mut dial_rx,
             mut tunnel_rx,
+            mut log_rx,
+            logs,
             relay_peer_addrs,
             relay_peer_ids,
             mut connected_relays,
@@ -453,7 +465,7 @@ impl Discovery {
             tokio::select! {
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &inbound_response_tx).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &inbound_response_tx, &logs).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -483,6 +495,16 @@ impl Discovery {
                     let request_id = swarm.behaviour_mut().infer_tunnel.send_request(&peer_id, request);
                     pending_tunnel.insert(request_id, reply);
                 }
+                out = log_rx.recv() => {
+                    let Some(LogOutbound { peer_id, addr_candidates, request }) = out else { break };
+                    if !swarm.is_connected(&peer_id) {
+                        if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
+                            debug!("cluster-logs: peer {peer_id} indisponível: {error}");
+                            continue;
+                        }
+                    }
+                    let _ = swarm.behaviour_mut().cluster_logs.send_request(&peer_id, request);
+                }
             }
         }
     }
@@ -501,6 +523,7 @@ async fn handle_event(
         oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
     >,
     inbound_response_tx: &mpsc::Sender<InboundTunnelResponse>,
+    logs: &ClusterLogs,
 ) {
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
@@ -533,6 +556,7 @@ async fn handle_event(
                 libp2p_peer_id,
                 tp,
                 runtime_capacity,
+                cluster_logs_enabled,
             }) = serde_json::from_slice(&message.data)
             {
                 let dial_for_tunnel = libp2p_peer_id
@@ -554,7 +578,7 @@ async fn handle_event(
                 network
                     .insert_peer(PeerInfo {
                         deploy_id,
-                        node_id,
+                        node_id: node_id.clone(),
                         pubkey,
                         // O caminho do gossipsub nao tem endereco de origem para
                         // reescrever, e o anunciado costuma ser o literal
@@ -573,7 +597,7 @@ async fn handle_event(
                         inference_port,
                         inference_frame_capabilities,
                         gateway_port,
-                        role,
+                        role: role.clone(),
                         tls,
                         hostname,
                         capabilities,
@@ -586,6 +610,13 @@ async fn handle_event(
                         runtime_capacity,
                     })
                     .await;
+
+                network.trigger_cluster_logs_probe(
+                    &node_id,
+                    &role,
+                    cluster_logs_enabled,
+                    tls,
+                );
 
                 // Warm the connection ahead of ever needing the NAT-tunnel
                 // fallback: a relay reservation / DCuTR hole-punch has time
@@ -800,6 +831,35 @@ async fn handle_event(
                     "infer-tunnel: inbound call from {} failed: {:?}",
                     peer, error
                 );
+            }
+            request_response::Event::ResponseSent { .. } => {}
+        },
+
+        // ── Cluster process logs: principal-only receiver ───────────────────
+        // This request/response behaviour is separate from the inference
+        // tunnel. The bounded writer owns persistence, so the swarm answers
+        // without waiting for SQLite or the browser.
+        SwarmEvent::Behaviour(DiscBehaviourEvent::ClusterLogs(event)) => match event {
+            request_response::Event::Message { peer, message, .. } => match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    let accepted = logs.try_ingest_remote(request);
+                    if !accepted {
+                        debug!("cluster-logs: lote recusado de {peer}");
+                    }
+                    let _ = swarm
+                        .behaviour_mut()
+                        .cluster_logs
+                        .send_response(channel, cluster_logs::LogResponse { accepted });
+                }
+                request_response::Message::Response { .. } => {}
+            },
+            request_response::Event::OutboundFailure { peer, error, .. } => {
+                debug!("cluster-logs: envio para {peer} falhou: {error:?}");
+            }
+            request_response::Event::InboundFailure { peer, error, .. } => {
+                debug!("cluster-logs: lote recebido de {peer} falhou: {error:?}");
             }
             request_response::Event::ResponseSent { .. } => {}
         },

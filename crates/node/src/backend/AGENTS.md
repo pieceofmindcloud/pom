@@ -54,7 +54,10 @@ dual-stack.
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas. O histórico identifica modelos inteiros pelo caminho local, sem
+  conversas e linhas do log de processo por `deploy_id`. Os logs preservam a
+  ordem de chegada no principal, guardam o timestamp de origem só como dado
+  informativo e acumulam descartes da fila limitada. O histórico identifica
+  modelos inteiros pelo caminho local, sem
   hashear os pesos durante o registro do catálogo; hashes de conteúdo ficam
   nas fronteiras explícitas de implantação, fatiamento e transferência.
   `PomDb` mantém uma conexão configurada no arranque, reutilizada
@@ -83,7 +86,8 @@ dual-stack.
   arquivos locais emprestam o nome a cada iteração.
 - `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths, thermal policy (`GET/POST /api/ui/thermal`), slice retention
+  storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
+  logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank

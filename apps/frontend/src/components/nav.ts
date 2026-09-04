@@ -16,6 +16,7 @@ import {
   Settings,
   SlidersHorizontal,
   Sparkles,
+  Terminal,
   Upload,
   type LucideIcon,
 } from "lucide-react";
@@ -63,6 +64,7 @@ export const NAV: NavSection[] = [
       // Separada de "implantar" de proposito: uma cria, a outra mostra e
       // ajusta o que ja existe. Sao dois momentos diferentes do mesmo trabalho.
       { labelKey: "nav.history", to: "/implantacoes", icon: History },
+      { labelKey: "nav.deploymentLogs", to: "/implantacoes/logs", icon: Terminal },
     ],
   },
   {

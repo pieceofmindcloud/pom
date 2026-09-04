@@ -53,6 +53,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the peers in that trace without polling the whole cluster.
   `useNetworkRtt` asks the same authenticated telemetry route for the current
   deployment edges shown on the Dashboard and refreshes them every 15 s.
+  `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
+  por `deploy_id`, e atualiza a consola a cada segundo.
   `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
   available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
@@ -83,7 +85,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `saveHuggingFaceToken` e `useHuggingFaceTokenConfig`; o tipo de resposta
   contém apenas `configured`, `masked` e `source`, nunca o token bruto.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
-- `types.ts` - all API shapes served by the node, one authoritative source.
+- `types.ts` - all API shapes served by the node, one authoritative source,
+  incluindo `ClusterLogEntry` e o estado de autoridade do interruptor de logs.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
   the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
   `tp_size`, which the UI turns into one-based labels such as `1of4`.

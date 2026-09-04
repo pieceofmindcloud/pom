@@ -28,8 +28,14 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
   (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
   atende requisição (ver Defeitos).
+- `cluster_logs.rs` - captura limitada do `tracing` e transporte request/response
+  separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão e só o
+  principal ingere e persiste lotes.
+- `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
+  campo anunciado só dispara a leitura da política no principal.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
-  (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência. Põe peers
+  (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência e o
+  protocolo de logs do cluster. Põe peers
   no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
   antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
@@ -51,6 +57,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `tls_policy.rs` - a catraca: o campo `tls` do Announce é gatilho, e só a
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
+- `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
+  `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
+  é a fonte, e falha preserva o valor local.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. `RttTable` guarda a medição
@@ -106,6 +115,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `max_new_tokens` (perna); apply, erro, stop e thermal unload limpam o campo
   antes de anunciar. Não existe anúncio ou fallback
   para formatos de frame anteriores, porque o produto ainda não foi lançado.
+  `cluster_logs_enabled` também é anunciado, mas só como gatilho da catraca:
+  a política efetiva vem de uma busca autenticada no principal.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
   (`None` = nó sem TP). Cada `TpMember` leva o `PeerId`, os candidatos de
@@ -125,7 +136,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT/
-  Bitswap só logam.
+  Bitswap só logam. O request/response de logs usa um behaviour próprio,
+  responde apenas no nó principal e nunca retransmite por outro peer.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.

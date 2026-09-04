@@ -159,6 +159,8 @@ pub struct GatewayState {
     /// conseguiu derivá-los da identidade. `None` só nos servidores de teste,
     /// que sobem em `127.0.0.1:0` e não têm par de chaves a apresentar.
     pub tls_server: Option<crate::serve::TlsServer>,
+    /// Captura, transporte e persistência dos logs de processo do cluster.
+    pub cluster_logs: Arc<crate::cluster_logs::ClusterLogs>,
     /// Retrato curto do cluster, isolado por gateway e por instância de teste.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.
@@ -192,6 +194,7 @@ fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == "/health"
         || path == "/handshake"
         || path == crate::tls_policy::TLS_POLICY_PATH
+        || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
         || path.starts_with("/api/transfer/")
         || path.starts_with("/v1/")
 }
@@ -3270,6 +3273,10 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
+        .route(
+            crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
+            get(cluster_logs_policy),
+        )
         .route("/handshake", post(session::handle_handshake))
         // Onde a cauda de um pipeline entrega o resultado. Sem autenticação de
         // chave por desenho: o hop que responde é um par de inferência, que
@@ -3330,6 +3337,15 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     // aceita, junto com a decisão entre TLS e texto claro.
     crate::serve::serve(listener, app, tls_server).await?;
     Ok(())
+}
+
+async fn cluster_logs_policy(
+    _auth: crate::auth::ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "logs_enabled": state.network.cluster_logs_enabled(),
+    }))
 }
 
 /// Probe the same IPv6 dual-stack bind used by the gateway before any model
@@ -4888,6 +4904,10 @@ pub(crate) mod testkit {
             uuid::Uuid::new_v4().simple()
         ));
         let database = Arc::new(crate::db::PomDb::open(&database_path).expect("banco de teste"));
+        let (capture, receiver) = crate::cluster_logs::LogCapture::new(
+            crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY,
+        );
+        let cluster_logs = crate::cluster_logs::ClusterLogs::new(capture, receiver, database.clone());
         GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),
@@ -4911,6 +4931,7 @@ pub(crate) mod testkit {
                 cache_type_v: crate::config::KvCacheType::F16,
                 role: Role::Node,
                 tls_required: false,
+                cluster_logs_enabled: false,
                 node_name: None,
                 huggingface_token: None,
                 slot_save_path: None,
@@ -4936,6 +4957,7 @@ pub(crate) mod testkit {
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: None,
             tls_server: None,
+            cluster_logs,
             cluster_cache: Arc::new(Mutex::new(Default::default())),
             model_service: Arc::new(crate::model_provider_backend::ModelService::new(Arc::new(
                 crate::huggingface::HuggingFaceProvider::new(),

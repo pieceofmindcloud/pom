@@ -78,7 +78,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
   de rotas e RTT (30 s, sonda lenta não segura o gossip). A política TLS inicial
   é aplicada antes de `start`; a task sonda `/health` na porta de inferência de
-  cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel.
+  cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel. O
+  tratamento de cada datagrama é protegido por `catch_unwind`, com contexto no
+  aviso e limite de frequência para não inundar o log se o pânico se repetir.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
   origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
   `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. O `PeerList` também
@@ -260,7 +262,6 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 
 ## Pendências
 
-- O loop UDP ainda precisa isolar pânicos por mensagem; ver `TODO.md`, item 19.
 - Os testes UDP ainda podem transmitir na LAN real; ver `TODO.md`, item 20.
 
 ## Maintaining this file

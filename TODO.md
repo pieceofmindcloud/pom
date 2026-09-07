@@ -48,15 +48,6 @@ contexto e não devem voltar a ser propostas como defeitos novos.
   **Esforço:** médio, incluindo headers, fan-out do rank 0 e testes com dois
   ranks.
 
-- [ ] **19 - Pânico pode matar o loop UDP**
-  **Fonte:** `crates/node/src/network/network.rs:1742-1755`.
-  **Prática:** `receive_loop` aguarda `handle_message` em linha, sem isolamento
-  de pânico; um pânico futuro encerra a task e o processo pode continuar
-  parecendo saudável enquanto deixa de receber anúncios.
-  **Afetados:** descoberta e atualização de rotas em todos os nós.
-  **Esforço:** baixo/médio, isolando cada mensagem ou usando `catch_unwind` em
-  futures e adicionando teste de falha.
-
 - [ ] **20 - Testes UDP transmitem na LAN real**
   **Fonte:** `crates/node/src/network/network.rs:1075-1082,1368-1393`.
   **Prática:** `broadcast_local` envia para `255.255.255.255:42777`, e testes
@@ -235,7 +226,7 @@ atuais desta lista.
 
 ## Itens da triagem anterior incorporados
 
-Os itens pós-triagem sobre pânico no `receive_loop` e broadcast UDP são agora
-os itens 19 e 20. Os adiados `routing-base::plan`, `undeploy_authority` e
-`crates/types` são agora os itens 5, 12 e 25, respectivamente, com a evidência
-atualizada. Nenhum desses contextos foi descartado.
+O item pós-triagem sobre broadcast UDP continua como item 20. Os adiados
+`routing-base::plan`, `undeploy_authority` e `crates/types` são agora os itens
+5, 12 e 25, respectivamente, com a evidência atualizada. Nenhum desses
+contextos foi descartado.

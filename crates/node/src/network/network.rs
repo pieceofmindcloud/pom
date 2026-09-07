@@ -1,13 +1,15 @@
 use crate::model::LayerAssignment;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use futures::FutureExt;
 use routing_contract::ModelCapability;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration as StdDuration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
@@ -584,6 +586,8 @@ pub struct Network {
     /// reduzir o contexto efetivo depois que o llama.cpp carrega o GGUF.
     runtime_capacity: std::sync::RwLock<RuntimeCapacityState>,
     socket: Arc<UdpSocket>,
+    #[cfg(test)]
+    test_panic_on_next_message: AtomicBool,
     /// Set while the operator has taken this node off the network.
     ///
     /// A detached node keeps serving its own UI and API — that is how the
@@ -691,6 +695,62 @@ fn short(id: &str) -> &str {
         fim -= 1;
     }
     &id[..fim]
+}
+
+const PANIC_LOG_INTERVAL: StdDuration = StdDuration::from_secs(10);
+
+/// Limita a frequência dos avisos quando uma entrada defeituosa faz o handler
+/// entrar em pânico em todos os datagramas. O primeiro pânico é sempre visível;
+/// os seguintes são contados e aparecem no próximo aviso permitido.
+#[derive(Debug, Default)]
+struct PanicLogLimiter {
+    last_logged: Option<Instant>,
+    suppressed: u64,
+}
+
+impl PanicLogLimiter {
+    fn record(&mut self, now: Instant) -> Option<u64> {
+        match self.last_logged {
+            None => {
+                self.last_logged = Some(now);
+                Some(0)
+            }
+            Some(last) if now.duration_since(last) >= PANIC_LOG_INTERVAL => {
+                self.last_logged = Some(now);
+                Some(std::mem::take(&mut self.suppressed))
+            }
+            Some(_) => {
+                self.suppressed += 1;
+                None
+            }
+        }
+    }
+}
+
+fn message_context(msg: &P2PMessage) -> String {
+    match msg {
+        P2PMessage::Announce { node_id, .. } => {
+            format!("Announce node_id={}", short(node_id))
+        }
+        P2PMessage::PeerRequest { from } => format!("PeerRequest from={}", short(from)),
+        P2PMessage::PeerList { peers } => format!("PeerList peers={}", peers.len()),
+        P2PMessage::Heartbeat { node_id, .. } => {
+            format!("Heartbeat node_id={}", short(node_id))
+        }
+        P2PMessage::LocalDiscover { from, port } => {
+            format!("LocalDiscover from={} port={port}", short(from))
+        }
+    }
+}
+
+fn panic_context(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    "non-string panic payload".into()
 }
 
 fn peer_address_changed(previous: &PeerInfo, current: &PeerInfo) -> bool {
@@ -864,6 +924,8 @@ impl Network {
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
             socket: Arc::new(socket),
+            #[cfg(test)]
+            test_panic_on_next_message: AtomicBool::new(false),
             detached: AtomicBool::new(false),
             routes: Arc::new(crate::route::RouteTable::new()),
             rtts: Arc::new(crate::route::RttTable::new()),
@@ -1741,12 +1803,28 @@ impl Network {
 
     async fn receive_loop(&self, assignment: Arc<RwLock<Option<LayerAssignment>>>) {
         let mut buf = vec![0u8; 65535];
+        let mut panic_log = PanicLogLimiter::default();
         loop {
             match self.socket.recv_from(&mut buf).await {
                 Ok((len, src)) => {
                     let data = &buf[..len];
                     if let Ok(msg) = serde_json::from_slice::<P2PMessage>(data) {
-                        self.handle_message(msg, src, &assignment).await;
+                        let context = message_context(&msg);
+                        if let Err(payload) =
+                            AssertUnwindSafe(self.handle_message(msg, src, &assignment))
+                                .catch_unwind()
+                                .await
+                        {
+                            if let Some(suppressed) = panic_log.record(Instant::now()) {
+                                warn!(
+                                    source = %src,
+                                    message = %context,
+                                    panic = %panic_context(payload.as_ref()),
+                                    suppressed,
+                                    "UDP message handler panicked; receive loop continues"
+                                );
+                            }
+                        }
                     }
                 }
                 Err(e) => warn!("UDP recv error: {}", e),
@@ -1760,6 +1838,14 @@ impl Network {
         src: SocketAddr,
         assignment: &Arc<RwLock<Option<LayerAssignment>>>,
     ) {
+        #[cfg(test)]
+        if self
+            .test_panic_on_next_message
+            .swap(false, Ordering::SeqCst)
+        {
+            panic!("injected UDP message handler panic");
+        }
+
         // A node the operator took off the network does not learn peers and does
         // not answer them. The socket stays bound so rejoining costs nothing.
         if self.is_detached() {
@@ -2115,6 +2201,18 @@ mod tests {
         assert_eq!(short("0123456789abcdef"), "0123456789ab");
         // Não corta no meio de um caractere multibyte.
         assert_eq!(short("ááááááá"), "áááááá");
+    }
+
+    #[test]
+    fn repeated_handler_panics_are_rate_limited_in_the_log() {
+        let first = Instant::now();
+        let later = first + PANIC_LOG_INTERVAL;
+        let mut limiter = PanicLogLimiter::default();
+
+        assert_eq!(limiter.record(first), Some(0));
+        assert_eq!(limiter.record(first), None);
+        assert_eq!(limiter.record(first), None);
+        assert_eq!(limiter.record(later), Some(2));
     }
 
     /// O gossipsub e o UDP têm que publicar o mesmo anúncio, inclusive quando o
@@ -3132,6 +3230,67 @@ mod tests {
 
         assert_eq!(net.discovery_sweep(DISCOVERY_SWEEP_TICKS).await.unwrap(), 0);
         assert!(recv_msg(&sock, 300).await.is_none(), "nó destacado falou");
+    }
+
+    /// Um pânico no tratamento de um datagrama não pode matar a task que drena
+    /// o socket: o datagrama seguinte ainda precisa atualizar o peer conhecido.
+    #[tokio::test]
+    async fn receive_loop_survives_a_panicking_message_and_processes_the_next() {
+        let net = Arc::new(
+            Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+                .await
+                .unwrap(),
+        );
+        let assignment = Arc::new(RwLock::new(None));
+        let initial = Utc::now();
+        net.peers
+            .write()
+            .await
+            .insert("peer".into(), dummy_peer("peer", "127.0.0.1:42777"));
+
+        net.test_panic_on_next_message.store(true, Ordering::SeqCst);
+        let loop_task = {
+            let net = net.clone();
+            let assignment = assignment.clone();
+            tokio::spawn(async move { net.receive_loop(assignment).await })
+        };
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let destination = SocketAddr::new(
+            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            net.bind_addr.port(),
+        );
+
+        let panic_message = P2PMessage::Heartbeat {
+            node_id: "peer".into(),
+            timestamp: initial,
+        };
+        sender
+            .send_to(&serde_json::to_vec(&panic_message).unwrap(), destination)
+            .await
+            .unwrap();
+
+        let next_timestamp = initial + chrono::Duration::seconds(1);
+        let next_message = P2PMessage::Heartbeat {
+            node_id: "peer".into(),
+            timestamp: next_timestamp,
+        };
+        sender
+            .send_to(&serde_json::to_vec(&next_message).unwrap(), destination)
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if net.peers.read().await["peer"].last_seen == next_timestamp {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("o receive_loop não processou a mensagem depois do pânico");
+
+        loop_task.abort();
     }
 
     #[tokio::test]

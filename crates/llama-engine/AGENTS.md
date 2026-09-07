@@ -4,7 +4,7 @@
 
 Todo o código Rust que fala com `llama-cpp-sys-2`, tirado de `crates/node` para
 um crate próprio: editar backend/rede/roteamento de `node` não recompila nem
-re-typecheck estes módulos (`llm.rs` sozinho tem 250 KB). `node` depende deste
+re-typecheck estes módulos (o wrapper `llm/` reúne 250 KB de código). `node` depende deste
 crate e **re-exporta** os módulos em `main.rs`, então `crate::llm::…`,
 `crate::wire::…`, `crate::gguf::…` etc. continuam resolvendo em `node` sem tocar
 os ~40 arquivos que os usam.
@@ -15,9 +15,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 
 ## Módulos (`src/`)
 
-- `llm.rs` - wrapper FFI do llama.cpp: modelo, contexto, batch, sampler, cache
-  KV, captura do residual, callback de eval. É a única superfície `unsafe` do
-  produto. Alcança o estado da coletiva TP por `tp_probe` (ver abaixo).
+- `llm/` - wrapper FFI do llama.cpp dividido por responsabilidade em captura,
+  configuração, modelo, engine, batch, amostragem e testes. É a única
+  superfície `unsafe` do produto. Alcança o estado da coletiva TP por
+  `tp_probe` (ver abaixo).
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   Quando o modelo alvo usa MoE externo metadata-only, `LlmEngine::set_moe_runtime`

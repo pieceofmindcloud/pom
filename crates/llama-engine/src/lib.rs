@@ -20,6 +20,7 @@ pub mod device_placement;
 pub mod gguf;
 pub mod kv_budget;
 pub mod kv_cache;
+#[path = "llm/mod.rs"]
 pub mod llm;
 pub mod moe;
 pub mod mtp;

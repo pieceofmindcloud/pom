@@ -300,3 +300,11 @@ default do llama.cpp e somente `false` passa `-nkvo`. Um `llama-server`
 preexistente só é reutilizado quando o `CMakeCache.txt` confirma a árvore do
 fork com CUDA e `LLAMA_BUILD_SERVER=ON`; builds necessários usam diretório
 externo para não alterar a árvore fonte.
+
+Quando o snapshot traz `mtp_enabled=true`, a referência local também ativa a
+cabeça MTP do mesmo GGUF com `--spec-type draft-mtp`,
+`--spec-draft-n-max=mtp_draft_tokens` e
+`--spec-draft-p-min=mtp_min_probability`. Com MTP e lookup ligados no POM, o
+POM escolhe MTP primeiro, então o harness mapeia o caminho efetivo MTP e
+registra `speculative_k` e `speculative_lookup_window` como configuração não
+executada simultaneamente.

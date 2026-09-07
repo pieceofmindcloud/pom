@@ -112,6 +112,60 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertEqual(plan["llama_flags"]["ctx_size"], 8192)
         self.assertEqual(plan["llama_flags"]["ctx_per_session"], 4096)
 
+    def test_plan_maps_pom_mtp_to_llama_server_draft_mtp_flags(self):
+        config = self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]
+        config.update(
+            {
+                "mtp_enabled": True,
+                "mtp_draft_tokens": 3,
+                "mtp_min_probability": 0.75,
+                "mtp_cpu_fallback_enabled": True,
+                "speculative_decoding_enabled": True,
+                "speculative_k": 4,
+                "speculative_lookup_window": 3,
+            }
+        )
+        plan = build_bench_plan(select_deployment(self.snapshot))
+        self.assertEqual(plan["pom_config"]["mtp_draft_tokens"], 3)
+        self.assertEqual(plan["llama_flags"]["spec_type"], "draft-mtp")
+        self.assertEqual(plan["llama_flags"]["spec_draft_n_max"], 3)
+        self.assertEqual(plan["llama_flags"]["spec_draft_p_min"], 0.75)
+        self.assertTrue(plan["llama_flags"]["mtp_cpu_fallback"])
+        self.assertEqual(plan["llama_flags"]["speculation_source"], "mtp")
+
+    def test_server_command_enables_mtp_with_same_draft_limits(self):
+        config = self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]
+        config.update(
+            {
+                "mtp_enabled": True,
+                "mtp_draft_tokens": 3,
+                "mtp_min_probability": 0.75,
+                "speculative_decoding_enabled": True,
+            }
+        )
+
+        class StubRemote:
+            def __init__(self):
+                self.commands = []
+
+            def run(self, command, timeout=None):
+                self.commands.append(command)
+                return RemoteResult(0, "4242\n", "")
+
+        remote = StubRemote()
+        _start_server(
+            remote,
+            "/tmp/llama-server",
+            "/data/model.gguf",
+            build_bench_plan(select_deployment(self.snapshot)),
+            8090,
+            "/tmp/bench.log",
+        )
+        command = remote.commands[0]
+        self.assertIn("--spec-type draft-mtp", command)
+        self.assertIn("--spec-draft-n-max 3", command)
+        self.assertIn("--spec-draft-p-min 0.75", command)
+
     def test_completion_payload_maps_sampling_and_budget(self):
         payload = make_completion_payload(
             "prompt", 8, {"temperature": 0.7, "top_k": 40, "top_p": 0.9, "repeat_penalty": 1.15}

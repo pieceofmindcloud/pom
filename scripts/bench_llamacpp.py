@@ -260,6 +260,19 @@ def build_bench_plan(
             "repeat_penalty",
         )
     }
+    core.update(
+        {
+            "mtp_enabled": bool(config.get("mtp_enabled", False)),
+            "mtp_draft_tokens": config.get("mtp_draft_tokens", 3),
+            "mtp_min_probability": config.get("mtp_min_probability", 0.0),
+            "mtp_cpu_fallback_enabled": bool(config.get("mtp_cpu_fallback_enabled", True)),
+            "speculative_decoding_enabled": bool(
+                config.get("speculative_decoding_enabled", False)
+            ),
+            "speculative_k": config.get("speculative_k", 4),
+            "speculative_lookup_window": config.get("speculative_lookup_window", 3),
+        }
+    )
     if n_ctx_override is not None:
         if n_ctx_override <= 0:
             raise ConfigError("--n-ctx deve ser inteiro positivo")
@@ -271,6 +284,15 @@ def build_bench_plan(
     for key in ("n_batch", "n_gpu_layers", "max_sessions"):
         if not isinstance(core[key], int) or core[key] <= 0:
             raise ConfigError(f"config.{key} deve ser inteiro positivo")
+    if not isinstance(core["mtp_draft_tokens"], int) or core["mtp_draft_tokens"] <= 0:
+        raise ConfigError("config.mtp_draft_tokens deve ser inteiro positivo")
+    if not isinstance(core["speculative_k"], int) or core["speculative_k"] <= 0:
+        raise ConfigError("config.speculative_k deve ser inteiro positivo")
+    if not isinstance(core["speculative_lookup_window"], int) or core["speculative_lookup_window"] <= 0:
+        raise ConfigError("config.speculative_lookup_window deve ser inteiro positivo")
+    if not isinstance(core["mtp_min_probability"], (int, float)) or not 0 <= core["mtp_min_probability"] <= 1:
+        raise ConfigError("config.mtp_min_probability deve estar entre 0 e 1")
+    mtp_enabled = core["mtp_enabled"]
     return {
         "deployment_id": deployment.get("deploy_id"),
         "model_label": deployment.get("label"),
@@ -291,10 +313,15 @@ def build_bench_plan(
             "parallel": core["max_sessions"],
             "kv_offload": bool(core["offload_kqv"]),
             "tensor_split": "automatic (sem --tensor-split)",
+            "spec_type": "draft-mtp" if mtp_enabled else "none",
+            "spec_draft_n_max": core["mtp_draft_tokens"] if mtp_enabled else 0,
+            "spec_draft_p_min": core["mtp_min_probability"] if mtp_enabled else 0.0,
+            "mtp_cpu_fallback": core["mtp_cpu_fallback_enabled"],
+            "speculation_source": "mtp" if mtp_enabled else "none",
         },
         "not_replicated": [
-            "mtp_enabled/mtp_draft_tokens/mtp_min_probability",
-            "speculative_decoding_enabled/speculative_k/speculative_lookup_window",
+            "speculative_decoding_enabled/speculative_k/speculative_lookup_window "
+            "(quando mtp_enabled=true, o POM escolhe MTP antes do lookup)",
             "hidden_state_dtype (servidor local nao troca estado oculto)",
             "fit_memory (llama-server recebe n_ctx fixo; nao usa o ajuste do POM)",
             "prefill_max_inflight_chunks e a topologia distribuida",
@@ -752,6 +779,17 @@ def _start_server(
     ]
     if not flags["kv_offload"]:
         command_args.append("-nkvo")
+    if flags["spec_type"] != "none":
+        command_args.extend(
+            [
+                "--spec-type",
+                flags["spec_type"],
+                "--spec-draft-n-max",
+                str(flags["spec_draft_n_max"]),
+                "--spec-draft-p-min",
+                str(flags["spec_draft_p_min"]),
+            ]
+        )
     command = (
         "nohup "
         + shlex.join(command_args)

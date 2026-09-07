@@ -44,6 +44,9 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   o default do llama.cpp e so `false` acrescenta `-nkvo`. Um binario preexistente
   so e aceito quando o `CMakeCache.txt` prova o mesmo source com CUDA e
   `LLAMA_BUILD_SERVER=ON`; caso contrario o build vai para fora da arvore.
+  Quando `mtp_enabled=true`, a configuracao vira `--spec-type draft-mtp`,
+  `--spec-draft-n-max` e `--spec-draft-p-min`; o fork usa a cabeca `nextn` do
+  proprio GGUF, sem modelo draft separado.
   A CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
   tarefa. Se o `nvcc` nao estiver no `PATH` remoto, o harness autodetecta
   `/usr/local/cuda/bin/nvcc`, `/usr/local/cuda-13.0/bin/nvcc` ou

@@ -67,3 +67,31 @@ não são reproduzidos pelo `llama-server`. Deployments `shards` e
 `tensor_parallel` continuam recusados pelo harness.
 
 Artefatos da corrida oficial: `.bench-llamacpp-unified/2026-09-07_174246-Qwen3.6-35B-A3B-UD-IQ3_XXS.llamacpp.{csv,summary.md,metadata.json}`.
+
+## Corrida E2E pelo wrapper local
+
+O wrapper `/Users/jairpereira/scripts/pom-bench-llama.sh` foi testado com o
+deployment real. Ele chamou diretamente o clone por `RDMA_P2P_DIR`, usou o
+snapshot fixado por `LLAMACPP_CONFIG_JSON` e gravou os artefatos em
+`/Users/jairpereira/scripts/reports/`:
+
+```text
+2026-09-07_175925-Qwen3.6-35B-A3B-UD-IQ3_XXS-llama.md
+2026-09-07_175925-Qwen3.6-35B-A3B-UD-IQ3_XXS.llamacpp.csv
+2026-09-07_175925-Qwen3.6-35B-A3B-UD-IQ3_XXS.llamacpp.summary.md
+2026-09-07_175925-Qwen3.6-35B-A3B-UD-IQ3_XXS.llamacpp.metadata.json
+```
+
+As medianas dessa execução foram 116.77, 107.61, 129.56, 114.12 e 104.55
+generation tok/s nos cinco prompts. O log confirmou MTP, cache unificado e
+aceitação de draft entre 0.80 e 1.00. O POM não expõe atualmente contadores de
+tokens draft propostos/aceitos por pedido. A diferença de velocidade entre
+prompts repetitivos e variados no POM, ausente no llama.cpp, fica como pergunta
+aberta: seria preciso instrumentar a telemetria MTP do POM para comparar a taxa
+de aceitação por prompt. Não foi alterada a lógica de inferência do POM.
+
+O wrapper falha explicitamente quando não encontra o clone e aceita
+`RDMA_P2P_DIR`; as flags após `--` são encaminhadas ao harness. A CLI completa
+do harness está no cabeçalho de `scripts/bench-llamacpp.sh --help` e o wrapper
+usa o snapshot mais recente de `~/scripts/reports` quando
+`LLAMACPP_CONFIG_JSON` não é definido.

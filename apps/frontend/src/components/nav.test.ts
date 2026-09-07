@@ -93,9 +93,10 @@ describe("navForProfile", () => {
     expect(JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)))).toBe(before);
   });
 
-  it("deixa o inference apenas com conversa, documentação e API keys", () => {
-    const sections = navForProfile("inference");
+  it("deixa o infer com rede local, conversa, documentação e API keys", () => {
+    const sections = navForProfile("infer");
     expect(sections.flatMap((section) => section.children ?? []).map((child) => child.to)).toEqual([
+      "/config/rede",
       "/config/keys/api",
     ]);
     expect(sections.map((section) => section.to)).toEqual(["/chat", "/documentacao", undefined]);

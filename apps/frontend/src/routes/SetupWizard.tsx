@@ -73,12 +73,12 @@ const FLOW_STEPS: Record<WizardIntent, WizardStep[]> = {
 };
 
 const ROLE_PRESETS: Record<WizardIntent, PomSetup["roles"]> = {
-  quick: { admin: true, node: true, inference: true },
-  personal: { admin: true, node: true, inference: true },
-  organization: { admin: true, node: false, inference: false },
-  contributor: { admin: false, node: true, inference: false },
-  inference: { admin: false, node: false, inference: true },
-  advanced: { admin: true, node: true, inference: true },
+  quick: { admin: true, node: true, infer: true },
+  personal: { admin: true, node: true, infer: true },
+  organization: { admin: true, node: false, infer: false },
+  contributor: { admin: false, node: true, infer: false },
+  inference: { admin: false, node: false, infer: true },
+  advanced: { admin: true, node: true, infer: true },
 };
 
 export function SetupWizard() {

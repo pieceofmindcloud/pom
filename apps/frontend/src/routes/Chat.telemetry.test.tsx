@@ -344,7 +344,7 @@ describe("telemetria no chat por perfil", () => {
     trace,
   };
 
-  function mountBubble(profile: "admin" | "node" | "inference") {
+  function mountBubble(profile: "admin" | "node" | "infer") {
     return render(
       <LocaleProvider initialLocale="pt-BR">
         <ProfileProvider initialProfile={profile}>
@@ -354,8 +354,8 @@ describe("telemetria no chat por perfil", () => {
     );
   }
 
-  it("não mostra telemetria no chat para inference", () => {
-    mountBubble("inference");
+  it("não mostra telemetria no chat para infer", () => {
+    mountBubble("infer");
 
     expect(screen.getByText("resposta")).toBeTruthy();
     expect(screen.queryByText("pipeline:abc→def")).toBeNull();

@@ -13,7 +13,7 @@
  * para os nós e a pipeline.
  *
  * Rota que não aparece em `RESTRICTED` é livre para todo perfil, exceto o
- * `inference`, que tem uma vista reduzida explícita abaixo. O padrão é
+ * `infer`, que tem uma vista reduzida explícita abaixo. O padrão é
  * permissivo de propósito: a restrição é a exceção que alguém escreveu
  * deliberadamente, e uma tela nova não deixa de abrir porque foi esquecida
  * numa lista.
@@ -34,14 +34,10 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
 };
 
 /**
- * Vista reduzida do inference, não fronteira de segurança.
- *
- * O captain decidiu entregar a interface agora e deixar autenticação,
- * escopos da credencial e recusa no servidor para
- * `rdma-perfis-escopo-backend`. Até lá, a chave de conexão continua sendo
- * aceita pelo backend como hoje.
+ * Vista local do infer. A rota de rede permanece visível para que o nó possa
+ * se auto-promover, mas o backend retorna somente dados desta máquina.
  */
-const INFERENCE_ROUTES = ["/chat", "/documentacao", "/config/keys/api"] as const;
+const INFER_ROUTES = ["/chat", "/documentacao", "/config/keys/api", "/config/rede"] as const;
 
 /** `/implantarx` não está sob `/implantar`. */
 function isUnder(path: string, prefix: string): boolean {
@@ -61,9 +57,21 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 
 /** Se este perfil pode abrir esta rota. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
-  if (profile === "inference") {
-    return INFERENCE_ROUTES.some((prefix) => isUnder(path, prefix));
+  if (profile === "infer") {
+    return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
   }
   const allowed = routeProfiles(path);
   return allowed === null || allowed.includes(profile);
+}
+
+/**
+ * A tela inicial de cada perfil.
+ *
+ * O `/` é o Painel, que o `infer` não abre. Sem isto, um nó de inferência
+ * abre a interface direto na tela de recusa - um beco, ainda por cima
+ * mandando trocar de perfil, coisa que deixou de existir. Fica aqui, ao lado
+ * da tabela de rotas, para não virar uma segunda lista.
+ */
+export function homeRoute(profile: Profile): string {
+  return canAccessRoute("/", profile) ? "/" : "/chat";
 }

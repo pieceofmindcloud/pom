@@ -35,7 +35,7 @@ pub async fn get_setup_key(State(config): State<AuthState>) -> impl IntoResponse
 
 #[derive(Deserialize)]
 pub struct SaveSetupRequest {
-    pub role: String,
+    pub profile: String,
     #[serde(default)]
     pub bootstrap: String,
     #[serde(default)]
@@ -46,7 +46,19 @@ pub async fn save_setup(
     State(config): State<AuthState>,
     Json(req): Json<SaveSetupRequest>,
 ) -> impl IntoResponse {
-    let role = if req.role == "principal" {
+    let profile = match req.profile.as_str() {
+        "admin" => crate::profile::NodeProfile::Admin,
+        "infer" => crate::profile::NodeProfile::Infer,
+        "node" => crate::profile::NodeProfile::Node,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "perfil inválido" })),
+            )
+                .into_response();
+        }
+    };
+    let role = if profile == crate::profile::NodeProfile::Admin {
         Role::Principal
     } else {
         Role::Node
@@ -54,6 +66,7 @@ pub async fn save_setup(
 
     let mut cfg = config.write().await;
     cfg.role = role.clone();
+    cfg.profile = profile;
 
     if role == Role::Node {
         if !req.connection_key.is_empty() {
@@ -227,4 +240,3 @@ pub(super) fn bad_request(message: impl Into<String>) -> Response {
 /// so future filters have an obvious home.
 #[allow(dead_code)]
 pub(super) type UiQuery = Query<HashMap<String, String>>;
-

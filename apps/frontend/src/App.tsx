@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { canAccessRoute } from "./lib/access";
+import { canAccessRoute, homeRoute } from "./lib/access";
 import {
   api,
   clearAdminAccessToken,
@@ -341,7 +341,14 @@ export default function App() {
         >
           <ErrorBoundary resetKey={location.pathname}>
             <Suspense fallback={<RouteFallback />}>
-              {!allowed ? (
+              {!allowed && location.pathname === "/" ? (
+                /*
+                 * O `/` é o Painel, que o `infer` não abre. Mandá-lo para a
+                 * recusa faria a interface abrir num beco: a tela inicial do
+                 * perfil é quem responde por ele.
+                 */
+                <Navigate to={homeRoute(profile)} replace />
+              ) : !allowed ? (
                 <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
                   <Page>
                     <Forbidden />

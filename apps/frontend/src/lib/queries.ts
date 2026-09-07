@@ -176,7 +176,7 @@ export function useAdminAccessInfo() {
   });
 }
 
-export function useNode() {
+export function useNode(enabled = true) {
   return useQuery({
     queryKey: keys.node,
     queryFn: async () => {
@@ -186,6 +186,7 @@ export function useNode() {
       if (node.connection_key) setConnectionKey(node.connection_key);
       return node;
     },
+    enabled,
     refetchInterval: 4000,
   });
 }
@@ -391,10 +392,11 @@ export function useOffers() {
   });
 }
 
-export function useAdminNodes() {
+export function useAdminNodes(enabled = true) {
   return useQuery({
     queryKey: keys.adminNodes,
     queryFn: () => api.get<AdminNode[]>("/admin/nodes"),
+    enabled,
     refetchInterval: 8000,
   });
 }

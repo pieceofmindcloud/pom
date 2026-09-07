@@ -27,6 +27,7 @@ pub fn routes() -> Router<GatewayState> {
             get(get_cache_types).post(save_cache_types),
         )
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
+        .route("/api/ui/network/promote", post(promote_self_to_node))
         .route("/api/ui/network/tls", post(save_tls))
         .route("/api/ui/network/logs", post(save_cluster_logs))
         .route("/api/ui/cluster-logs", get(cluster_logs))
@@ -70,4 +71,3 @@ pub fn routes() -> Router<GatewayState> {
     // duas rotas e a setup.html (ver `start_setup_mode` em main.rs). O unico
     // consumidor e aquela pagina, servida so enquanto nao ha `pom.json`.
 }
-

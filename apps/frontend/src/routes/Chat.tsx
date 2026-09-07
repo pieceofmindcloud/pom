@@ -186,7 +186,7 @@ export function Bubble({
 }) {
   const { t } = useI18n();
   const { profile } = useProfile();
-  const showTelemetry = profile !== "inference";
+  const showTelemetry = profile !== "infer";
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
   return (
@@ -430,7 +430,7 @@ function SessionList({
 export function Chat() {
   const { t, locale } = useI18n();
   const { profile } = useProfile();
-  const showTelemetry = profile !== "inference";
+  const showTelemetry = profile !== "infer";
   const { sessions, upsert, remove } = useChatSessions();
   const models = useServableModels();
   const cluster = useCluster();

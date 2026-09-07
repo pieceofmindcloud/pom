@@ -241,3 +241,24 @@ mod dead_address_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod profile_network_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_with};
+
+    #[tokio::test]
+    async fn infer_network_response_contains_only_the_local_node() {
+        let state = state_with("eu", vec![peer("outro", "salem", 1)]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+
+        let body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
+        let peers = body["peers"].as_array().expect("peers precisa ser uma lista");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0]["node_id"], "eu");
+        assert!(
+            !peers.iter().any(|peer| peer["node_id"] == "outro"),
+            "infer não pode receber dados de outro nó"
+        );
+    }
+}

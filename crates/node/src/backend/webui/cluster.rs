@@ -268,7 +268,24 @@ pub(super) fn remove_system_sample_time(node: &mut serde_json::Value) {
 }
 
 pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Response {
-    let peers = state.all_peers().await;
+    let profile = state.auth.read().await.profile;
+    if !profile.allows(crate::profile::ProfileAction::ViewNetwork) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "este perfil não pode abrir a rede" })),
+        )
+            .into_response();
+    }
+    let self_id = state.network.node_id.clone();
+    let peers = state
+        .all_peers()
+        .await
+        .into_iter()
+        .filter(|peer| {
+            profile.allows(crate::profile::ProfileAction::ViewNetworkPeers)
+                || peer.node_id == self_id
+        })
+        .collect::<Vec<_>>();
     let fingerprint = cluster_fingerprint(&state, &peers).await;
     let mut cache = state.cluster_cache.lock().await;
     if let Some(snapshot) = cache.get(&fingerprint, Instant::now(), CLUSTER_CACHE_TTL) {
@@ -279,7 +296,6 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             snapshot.version,
         );
     }
-    let self_id = state.network.node_id.clone();
     let connection_key = state.auth.read().await.connection_key.clone();
 
     // Fan out to every peer at once; a slow peer must not serialise the others.
@@ -562,6 +578,21 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
 /// `ready_for_pipeline` já percorre - um só código, então o card do nó local
 /// nunca mostra menos que o card de um remoto.
 pub(super) async fn peer_runtime(State(state): State<GatewayState>, Path(node_id): Path<String>) -> Response {
+    if !state
+        .auth
+        .read()
+        .await
+        .profile
+        .allows(crate::profile::ProfileAction::ViewNetworkPeers)
+        && node_id != state.network.node_id
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "o perfil infer só pode ver a própria máquina" })),
+        )
+            .into_response();
+    }
+
     let Some(peer) = state
         .all_peers()
         .await
@@ -604,8 +635,17 @@ pub(super) async fn peer_runtime(State(state): State<GatewayState>, Path(node_id
 
 /// Each peer's installed models, so the setup screen can say who is missing what.
 pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse {
-    let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
+    let profile = state.auth.read().await.profile;
+    let peers = state
+        .all_peers()
+        .await
+        .into_iter()
+        .filter(|peer| {
+            profile.allows(crate::profile::ProfileAction::ViewNetworkPeers)
+                || peer.node_id == self_id
+        })
+        .collect::<Vec<_>>();
     let connection_key = state.auth.read().await.connection_key.clone();
     let local = local_catalog(&state).await;
     // O nome que este nó anuncia, não o hostname cru do SO. Ver `models`.
@@ -697,4 +737,3 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
 
     Json(json!({ "peers": out }))
 }
-

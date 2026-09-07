@@ -1,5 +1,6 @@
 use crate::auth::{AuthState, ConnectionAuth, InternalNodeAuth};
 use crate::config::{ApiKey, Role};
+use crate::profile::{NodeProfile, ProfileAction, PromoteNodeToAdminCommand};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -18,6 +19,7 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
         .route("/admin/nodes", get(list_nodes))
         .route("/admin/nodes/{id}/block", post(block_node))
         .route("/admin/nodes/{id}/unblock", post(unblock_node))
+        .route("/admin/nodes/{id}/promote-admin", post(promote_node_to_admin))
         .route("/admin/nodes/{id}", delete(remove_node))
         .route("/admin/regenerate-key", post(regenerate_key))
         .route("/admin/api-keys", get(list_api_keys).post(generate_api_key))
@@ -253,6 +255,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
         .route(
             "/api/internal/api-keys/validate",
             post(internal_validate_api_key),
+        )
+        .route(
+            "/api/internal/profile/promote-admin",
+            post(internal_promote_node_to_admin),
         )
 }
 
@@ -500,6 +506,19 @@ async fn list_nodes(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
 ) -> impl IntoResponse {
+    if !state
+        .auth
+        .read()
+        .await
+        .profile
+        .allows(ProfileAction::ViewNetworkPeers)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "o perfil infer só pode ver a própria máquina" })),
+        )
+            .into_response();
+    }
     let blocked = state.auth.read().await.blocked_nodes.clone();
     let self_id = state.network.node_id.clone();
 
@@ -543,7 +562,154 @@ async fn list_nodes(
         }));
     }
 
-    Json(nodes)
+    Json(nodes).into_response()
+}
+
+/// Send the only remote profile change from the administrator node. The
+/// connection key protects the transport, and the target additionally checks
+/// the administrator node's signature and its principal announcement.
+async fn promote_node_to_admin(
+    _auth: ConnectionAuth,
+    State(state): State<crate::gateway::GatewayState>,
+    Path(node_id): Path<String>,
+) -> axum::response::Response {
+    let (profile, role, connection_key) = {
+        let cfg = state.auth.read().await;
+        (cfg.profile, cfg.role.clone(), cfg.connection_key.clone())
+    };
+    if !profile.allows(ProfileAction::PromoteNodeToAdmin) || role != Role::Principal {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "somente o administrador pode promover um nó" })),
+        )
+            .into_response();
+    }
+    if node_id == state.network.node_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "o administrador já é este nó" })),
+        )
+            .into_response();
+    }
+
+    let Some(peer) = state
+        .network
+        .alive_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == node_id)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "nó desconhecido ou fora da rede" })),
+        )
+            .into_response();
+    };
+    let Some(base) = peer.gateway_url() else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "o nó não anuncia uma porta de gateway" })),
+        )
+            .into_response();
+    };
+    let client = match state.peer_http.for_peer(&node_id) {
+        Ok(client) => client,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("não foi possível alcançar o nó: {error}") })),
+            )
+                .into_response();
+        }
+    };
+    let command = crate::profile::signed_promotion_command(
+        &state.admin_signing_key,
+        &state.network.node_id,
+        &node_id,
+    );
+    let response = client
+        .post(format!("{base}/api/internal/profile/promote-admin"))
+        .bearer_auth(connection_key)
+        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+        .json(&command)
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => {
+            Json(json!({ "profile": "admin", "node_id": node_id })).into_response()
+        }
+        Ok(response) => {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "promoção recusada pelo nó".to_string());
+            (status, body).into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("a promoção não chegou ao nó: {error}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// Target-side authorization for a node -> admin promotion.
+///
+/// `InternalNodeAuth` alone is deliberately insufficient: every node knows
+/// the cluster connection key. The target accepts only a valid signature from
+/// a currently announced principal peer, so another node cannot impersonate
+/// the administrator by calling this internal route directly.
+async fn internal_promote_node_to_admin(
+    _auth: InternalNodeAuth,
+    State(state): State<crate::gateway::GatewayState>,
+    Json(command): Json<PromoteNodeToAdminCommand>,
+) -> axum::response::Response {
+    if command.target_node_id != state.network.node_id
+        || !crate::profile::verifies_promotion_command(&command)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "comando de administrador inválido" })),
+        )
+            .into_response();
+    }
+
+    let principal_known = state.network.alive_peers().await.into_iter().any(|peer| {
+        peer.node_id == command.actor_node_id
+            && peer.role.eq_ignore_ascii_case("principal")
+            && peer.pubkey == command.actor_pubkey
+    });
+    if !principal_known {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "o remetente não é o administrador conhecido" })),
+        )
+            .into_response();
+    }
+
+    let mut cfg = state.auth.write().await;
+    if !crate::profile::can_promote_node_to_admin(NodeProfile::Admin, cfg.profile)
+        || cfg.role != Role::Node
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "somente um nó pode ser promovido" })),
+        )
+            .into_response();
+    }
+    cfg.profile = NodeProfile::Admin;
+    cfg.role = Role::Principal;
+    if let Err(error) = cfg.save() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
+        )
+            .into_response();
+    }
+    drop(cfg);
+    state.network.set_role("Principal");
+    Json(json!({ "profile": "admin", "node_id": state.network.node_id })).into_response()
 }
 
 async fn block_node(
@@ -814,6 +980,94 @@ mod tests {
             .api_keys
             .iter()
             .any(|key| key.id == key_id && !key.active));
+    }
+
+    #[tokio::test]
+    async fn a_non_admin_cannot_promote_another_node() {
+        let state = crate::gateway::testkit::state_with(
+            "eu",
+            vec![crate::gateway::testkit::peer("outro", "salem", 8081)],
+        )
+        .await;
+        let response = promote_node_to_admin(
+            ConnectionAuth,
+            State(state),
+            Path("outro".to_string()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn an_admin_command_is_authorized_and_bound_to_its_target() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let actor = crate::identity::NodeId::from_pubkey(&signing_key.verifying_key()).0;
+        let command =
+            crate::profile::signed_promotion_command(&signing_key, &actor, "target");
+
+        assert!(NodeProfile::Admin.allows(ProfileAction::PromoteNodeToAdmin));
+        assert!(crate::profile::verifies_promotion_command(&command));
+
+        let mut replay = command.clone();
+        replay.target_node_id = "other-target".into();
+        assert!(!crate::profile::verifies_promotion_command(&replay));
+    }
+
+    /// Builds the administrator peer exactly as the target sees it in gossip:
+    /// announced as `principal` and carrying the pubkey that signed the command.
+    fn admin_peer(signing_key: &ed25519_dalek::SigningKey, gateway_port: u16) -> crate::network::PeerInfo {
+        let node_id = crate::identity::NodeId::from_pubkey(&signing_key.verifying_key()).0;
+        let mut peer = crate::gateway::testkit::peer(&node_id, "admin-box", gateway_port);
+        peer.role = "principal".into();
+        peer.pubkey = hex::encode(signing_key.verifying_key().as_bytes());
+        peer
+    }
+
+    /// Hiding the button is not authorization: a peer that signs a perfectly
+    /// valid command but is not the announced principal is refused by the
+    /// target itself.
+    #[tokio::test]
+    async fn a_signed_command_from_a_peer_that_is_not_the_principal_is_refused() {
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let actor = crate::identity::NodeId::from_pubkey(&impostor.verifying_key()).0;
+        let mut peer = admin_peer(&impostor, 8081);
+        // Announced as an ordinary node, so it is not the administrator.
+        peer.role = "node".into();
+        let state = crate::gateway::testkit::state_with("alvo", vec![peer]).await;
+        let command = crate::profile::signed_promotion_command(&impostor, &actor, "alvo");
+
+        let response =
+            internal_promote_node_to_admin(InternalNodeAuth, State(state.clone()), Json(command))
+                .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(state.auth.read().await.profile, NodeProfile::Node);
+    }
+
+    /// The one promotion the administrator may perform: an announced principal
+    /// turns a `node` into an `admin`, and the target persists it.
+    #[tokio::test]
+    async fn the_administrator_promotes_a_node_to_admin() {
+        let admin = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let actor = crate::identity::NodeId::from_pubkey(&admin.verifying_key()).0;
+        let state =
+            crate::gateway::testkit::state_with("alvo", vec![admin_peer(&admin, 8081)]).await;
+        let command = crate::profile::signed_promotion_command(&admin, &actor, "alvo");
+
+        let response =
+            internal_promote_node_to_admin(InternalNodeAuth, State(state.clone()), Json(command))
+                .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let cfg = state.auth.read().await;
+        assert_eq!(cfg.profile, NodeProfile::Admin);
+        assert_eq!(cfg.role, Role::Principal);
+        // What gets persisted is asserted on the serialized config rather than
+        // on the file: `Config::config_path()` is process-global, so pointing
+        // it at a temp file here would capture the writes of every other test
+        // saving concurrently in this same binary.
+        assert_eq!(serde_json::to_value(&*cfg).unwrap()["profile"], "admin");
     }
 
     #[tokio::test]

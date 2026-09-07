@@ -19,7 +19,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   root, do diretório do `pom.db` e da UI. `POM_DB_DIR` aponta o banco para um
   volume; sem ele, fica na raiz do projeto. O estado operacional usa
   `backend::db::PomDb`; os campos legados continuam serializáveis em `pom.json`
-  para não destruir a cópia de segurança antiga.
+  para não destruir a cópia de segurança antiga. O campo obrigatório
+  `profile` é o perfil oficial do nó; um `pom.json` antigo sem ele exige novo
+  setup, sem migração.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque.
@@ -144,7 +146,14 @@ desconhecida e nunca é convertido em alarme pela proteção térmica.
 
 ## Defeitos anotados
 
-Nenhum.
+- `impl Display for Role` (`config.rs`) devolve rótulos humanos fixos em pt-BR
+  (`Principal`, `Nó`), e é esse texto que sai no `role` de `/api/ui/node` e
+  aparece cru na tela de rede, ao lado do `profile`. Duas consequências: a
+  string visível não passa pela i18n (a tela em inglês mostra "Nó"), e o mesmo
+  campo `role` é um **token** (`principal`/`node`) em `/admin/nodes`, então os
+  dois endpoints falam línguas diferentes. O `profile` já nasce token e é
+  traduzido na tela (`t("profile.<perfil>")`); `role` deveria seguir o mesmo
+  caminho. Não corrigido aqui porque muda o contrato de `/api/ui/node`.
 
 ## Maintaining this file
 

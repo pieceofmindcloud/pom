@@ -61,14 +61,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   values remain unchanged. It prevents effects that capture `useQueries` data
   from writing state on every render; the Chat regression test covers this
   navigation freeze.
-- `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`/`inference`): tipo, provider,
-  `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
-  desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia
-  telas no navegador e nada mais; a credencial continua sendo a chave de conexão
-  verificada no nó.
+- `profile.tsx` - o perfil persistido que o nó entrega em `/api/ui/node`
+  (`admin`/`node`/`infer`), o provider e `useProfile()`. Não há setter nem
+  `localStorage`: o navegador só apresenta o valor e deriva dele o menu/guarda
+  de rota. **Não é autorização** - o backend continua sendo a fronteira.
 - `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
-  para a lista de perfis; para `inference`, só `/chat`, `/documentacao` e `/config/keys/api` são
-  visíveis. No Chat, esse perfil também esconde os resumos e o painel de telemetria.
+  para a lista de perfis; para `infer`, `/chat`, `/documentacao`, `/config/keys/api`
+  e `/config/rede` são visíveis. No Chat, esse perfil também esconde os resumos
+  e o painel de telemetria.
   `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
@@ -239,17 +239,21 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `usableSelection(remembered, ranges, machineIds)` - prunes remembered rows against what the cluster still offers (deleted slices, left machines); returns `null` when nothing survives so the caller keeps the node's own suggestion.
 
 ### profile.tsx / access.ts
-- `PROFILES` / `Profile` - `["admin", "node", "inference"]` e a união literal.
-- `DEFAULT_PROFILE` - `admin`. Abrir como `node` esconderia telas de quem sempre
-  as teve, sem a pessoa saber que existe perfil para trocar.
-- `ProfileProvider({ children, initialProfile })` - estado inicial de
-  `initialProfile` (usado pelos testes) ou do `localStorage` `pom.profile`;
-  valor desconhecido guardado cai no padrão. Escreve `<html data-profile>`.
+- `PROFILES` / `Profile` - `["admin", "node", "infer"]` e a união literal.
+- `DEFAULT_PROFILE` - `admin` somente enquanto `/api/ui/node` ainda não respondeu.
+  A resposta do nó substitui o fallback assim que chega.
+- `ProfileProvider({ children, initialProfile })` - lê o perfil de `useNode()`;
+  `initialProfile` existe somente para testes de apresentação. Escreve
+  `<html data-profile>` e não persiste estado no navegador.
+- `homeRoute(profile)` - a tela inicial do perfil: `/` para quem abre o Painel,
+  `/chat` para quem não abre. O `App.tsx` redireciona com ela em vez de mostrar
+  a recusa, senão o `infer` abriria a interface num beco - e a recusa mandava
+  trocar de perfil, controle que deixou de existir.
 - `routeProfiles(path)` - os perfis que entram, ou `null` quando a rota é livre.
   Casa por segmento (`/logs` cobre futuras filhas, e **não** `/logs-antigos`) e
   a chave mais específica vence.
-- `canAccessRoute(path, profile)` - para o `inference`, permite somente a vista de
-  conversa, documentação e API keys. É apresentação, não escopo de credencial; a fronteira
+- `canAccessRoute(path, profile)` - para o `infer`, permite somente a vista de
+  conversa, documentação, API keys e rede local. É apresentação, não escopo de credencial; a fronteira
   real ficou para `rdma-perfis-escopo-backend`.
 
 ### theme.tsx

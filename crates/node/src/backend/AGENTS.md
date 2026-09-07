@@ -206,6 +206,11 @@ dual-stack.
   (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
   máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
+- `profile.rs` - `NodeProfile` is the durable product profile, separate from
+  `Role`; it is the one source for network visibility and profile promotions.
+  The web UI serializes it through `GET /api/ui/node`. Infer nodes can read a
+  local-only network view and self-promote; only a principal admin can send the
+  signed node-to-admin command.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de

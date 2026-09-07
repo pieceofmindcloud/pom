@@ -53,9 +53,11 @@ remain local until the deploy preflight.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
-O terceiro perfil, `inference`, é uma vista reduzida da interface: só conversa,
-documentação e API keys do próprio nó. Isso não é autorização e não altera a chave de conexão
-aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
+O perfil `infer` é uma vista reduzida da interface: conversa, documentação,
+API key e a tela de rede local para auto-promoção. O valor vem de `/api/ui/node`,
+é propriedade persistida do nó e aparece na toolbar. Isso não substitui a
+autorização do backend: o servidor também limita a resposta da rede e as
+promoções.
 
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)

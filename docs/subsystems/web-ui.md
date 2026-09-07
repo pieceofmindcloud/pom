@@ -158,7 +158,7 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   pelo meio para uma tela que ainda não faz sentido. Em um nó já configurado, a
   rota continua disponível para rever os seis caminhos; em modo setup, a
   decisão de `/api/ui/node` retorna antes e mantém `Setup`, o bootstrap real
-  que escolhe Principal/Nó e gera a chave de conexão.
+  que escolhe `admin`, `node` ou `infer` e gera a chave de conexão.
 - `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
   `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
@@ -207,17 +207,19 @@ credencial sem reiniciar o processo; a precedência segue a documentada em
 
 ### Perfis: o que cada um enxerga
 
-Duas pessoas abrem a mesma interface com trabalhos diferentes. O **administrador**
-opera o cluster; o **nó** cuida da própria máquina; o **Inference** tem uma vista
-reduzida para conversar com os modelos disponíveis, ler a documentação e cuidar
-da própria API key.
-O perfil é o que separa essas vistas.
+O nó anuncia um perfil persistido em `pom.json`: `admin`, `node` ou `infer`.
+O administrador opera o cluster; o nó cuida da própria máquina; o `infer` tem
+uma vista reduzida para conversar com os modelos, ler a documentação, cuidar
+da própria API key e abrir a rede local para auto-promoção.
+`GET /api/ui/node` é a fonte usada pelo browser e a toolbar mostra o rótulo
+pela i18n.
 
 `src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
 ausente é livre para `admin` e `node`. Hoje `/implantar`, `/implantacoes` e
-`/logs` e `/estatisticas` são só do administrador. Para `inference`, `canAccessRoute` permite
-somente `/chat`, `/documentacao` e `/config/keys/api`. No Chat, a telemetria da
-execução e seus resumos também ficam ocultos. A chave casa **segmento inteiro**, então
+`/logs` e `/estatisticas` são só do administrador. Para `infer`,
+`canAccessRoute` permite somente `/chat`, `/documentacao`, `/config/keys/api` e
+`/config/rede`. No Chat, a telemetria da execução e seus resumos também ficam
+ocultos. A chave casa **segmento inteiro**, então
 `/logs` não cobre `/logs-antigos`.
 
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
@@ -257,19 +259,18 @@ Uma seção com folhas some quando **nenhuma** folha sobra - "Logs" desaparece
 inteira para o perfil `node`, "Configurações" continuaria de pé se só uma folha
 fechasse.
 
-**Isto não é autorização, é apresentação.** O perfil vive no navegador
-(`localStorage` `pom.profile`) e não muda nada do lado do nó: a credencial continua
-sendo a chave de conexão, verificada no gateway (ver *Autenticação*). Um perfil
-trocado na tela não abre nem fecha rota nenhuma da API. A decisão do captain foi
-entregar esta vista reduzida agora e deixar autenticação, escopos da credencial e
-recusa no servidor para a tarefa `rdma-perfis-escopo-backend`. Até lá, não há
-fronteira real de permissão para inference.
+**Isto não é a única autorização.** O perfil chega do nó em `pom.json` e o
+browser o usa para apresentação e navegação; a credencial continua sendo a
+chave de conexão, verificada no gateway (ver *Autenticação*). O backend também
+impõe a vista local do `infer`: `/api/ui/cluster` e `/api/ui/cluster/models`
+não fan-outam para peers, `/admin/nodes` responde 403 e detalhes de outra
+máquina respondem 403. Não existe troca de perfil na interface.
 
-O seletor `Administrador | Nó | Inferência` na barra superior (`components/ProfileSwitcher.tsx`)
-é **andaime de desenvolvimento**: existe para conferir a tela pelos olhos de cada
-perfil, inclusive o id `inference`, e por isso usa borda tracejada e âmbar, para não
-se confundir com um controle de operação. `PROFILE_SWITCHER_ENABLED` (`lib/profile.tsx`) em `false`
-apaga o botão; quando o perfil chegar do nó, o componente e a constante saem.
+Na tela `/config/rede`, um `infer` vê os dados da própria máquina e pode chamar
+`POST /api/ui/network/promote` para se tornar `node`. O administrador pode
+promover um nó com `POST /admin/nodes/{id}/promote-admin`; o gateway exige
+perfil/role administrativos, e o alvo exige uma assinatura do principal
+conhecido junto da `connection_key` de transporte.
 
 A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
 cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em `aqua` quando a política
@@ -280,7 +281,7 @@ o TLS caísse seria pior que nenhum**: a ausência se lê como "a tela não most
 isso", não como "está em texto claro" - por isso os dois estados têm formas e
 cores diferentes.
 
-Na tela `TokenKeys`, o perfil `inference` vê apenas as chaves ativas do próprio
+Na tela `TokenKeys`, o perfil `infer` vê apenas as chaves ativas do próprio
 nó, não escolhe outro nó e não oferece revogação manual. Gerar uma nova chave usa
 o endpoint atual e, em seguida, revoga a anterior; a semântica da vista é uma
 chave ativa por nó, com a nova substituindo a anterior. Esse fluxo ainda não é
@@ -870,6 +871,11 @@ Nenhum outro em aberto nesta tela.
 - DEFEITO ANOTADO: `LeaveNode` reusa o rótulo do gatilho no botão de
   confirmar - a janela mostra dois botões com o mesmo texto ("Sair da rede").
   Cosmético, mas um usuário pode confundir o gatilho com a confirmação.
+- DEFEITO ANOTADO: em janela estreita (~420 px) a coluna de conteúdo estoura na
+  horizontal e os painéis saem cortados à direita - `node_id`, texto de ajuda e
+  botões ficam fora da viewport. Não é de uma tela só: reproduz igual em
+  `/config/rede` e em `/config/preferencias`, então é da moldura, não do painel.
+  Verificado em captura headless a 420x900 nas duas telas.
 
 ## O nome de uma máquina é um só
 

@@ -265,6 +265,7 @@ mod tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             role: Role::Principal,
+            profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
             cluster_logs_enabled: false,
             node_name: None,

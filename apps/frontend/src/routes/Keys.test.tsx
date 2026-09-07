@@ -36,7 +36,7 @@ vi.mock("../lib/api", async (original) => ({
 vi.mock("../lib/queries", () => ({
   useApiKeys: () => ({ data: [mocks.oldKey, mocks.foreignKey], isLoading: false, isError: false, isFetching: false, refetch: mocks.refetch }),
   useCluster: () => ({ data: { peers: [] } }),
-  useNode: () => ({ data: fakeNode({ node_id: "inference-node", role: "inference" }) }),
+  useNode: () => ({ data: fakeNode({ node_id: "inference-node", role: "node" }) }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -48,7 +48,7 @@ vi.mock("../lib/toast", () => ({
 
 import { TokenKeys } from "./Keys";
 
-function mount(profile: "admin" | "inference" = "inference") {
+function mount(profile: "admin" | "infer" = "infer") {
   return render(
     <MemoryRouter
       initialEntries={["/config/keys/api"]}
@@ -63,7 +63,7 @@ function mount(profile: "admin" | "inference" = "inference") {
   );
 }
 
-describe("TokenKeys no perfil inference", () => {
+describe("TokenKeys no perfil infer", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();

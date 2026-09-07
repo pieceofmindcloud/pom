@@ -12,6 +12,7 @@ pub struct NodeInfo {
     /// Este nó aceita atualizar-se pela interface. A tela só desenha o botão
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
     pub dev_update: bool,
+    pub profile: crate::profile::NodeProfile,
     pub role: String,
     pub connection_key: String,
     pub p2p_port: u16,
@@ -65,6 +66,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         .map(|cfg| cfg.deployment_name.clone())
         .unwrap_or_default();
     let (
+        profile,
         role,
         conn_key,
         advertise_addr,
@@ -78,6 +80,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
     ) = {
         let cfg = state.auth.read().await;
         (
+            cfg.profile,
             cfg.role.to_string(),
             cfg.connection_key.clone(),
             cfg.advertise_addr.clone(),
@@ -102,6 +105,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         hostname: state.network.hostname.clone(),
         build_commit: crate::BUILD_COMMIT.to_string(),
         dev_update: crate::devupdate::enabled(),
+        profile,
         role,
         connection_key: conn_key,
         p2p_port: state.network.bind_addr.port(),
@@ -135,7 +139,11 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         inference_port: state.network.inference_port,
         config,
         status: state.runtime.status().await,
-        peer_count: state.network.alive_peers().await.len(),
+        peer_count: if profile.allows(crate::profile::ProfileAction::ViewNetworkPeers) {
+            state.network.alive_peers().await.len()
+        } else {
+            0
+        },
         load: state.loads.load(&state.network.node_id).await,
         active_model: state.active_model().await,
         active_deployment,
@@ -980,6 +988,35 @@ pub(super) async fn save_advertise_addr(
     .into_response()
 }
 
+/// An inference-only node may volunteer its own hardware. This is the sole
+/// profile promotion that the node can authorize locally.
+pub(super) async fn promote_self_to_node(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    let mut cfg = state.auth.write().await;
+    if !cfg
+        .profile
+        .allows(crate::profile::ProfileAction::SelfPromoteToNode)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "somente um nó infer pode se auto-promover" })),
+        )
+            .into_response();
+    }
+    cfg.profile = crate::profile::NodeProfile::Node;
+    if let Err(error) = cfg.save() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
+        )
+            .into_response();
+    }
+    drop(cfg);
+    Json(json!({ "profile": "node", "node_id": state.network.node_id })).into_response()
+}
+
 #[derive(Deserialize)]
 pub struct SaveTlsRequest {
     pub tls_required: bool,
@@ -1107,6 +1144,18 @@ pub(super) struct RttReport {
 /// porque o relatório faz parte da telemetria interna usada para escolher
 /// rotas de inferência.
 pub(super) async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Json<RttReport> {
+    if !state
+        .auth
+        .read()
+        .await
+        .profile
+        .allows(crate::profile::ProfileAction::ViewNetworkPeers)
+    {
+        return Json(RttReport {
+            source_node_id: state.network.node_id.clone(),
+            measurements: Vec::new(),
+        });
+    }
     let mut measurements = local_rtt_measurements(&state);
     measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
 
@@ -1147,6 +1196,17 @@ pub(super) async fn chat_telemetry(
     State(state): State<GatewayState>,
     Json(request): Json<ChatTelemetryRequest>,
 ) -> Json<ChatTelemetryResponse> {
+    if !state
+        .auth
+        .read()
+        .await
+        .profile
+        .allows(crate::profile::ProfileAction::ViewNetworkPeers)
+    {
+        return Json(ChatTelemetryResponse {
+            measurements: Vec::new(),
+        });
+    }
     let requested: std::collections::HashSet<String> = request
         .node_ids
         .into_iter()
@@ -1318,4 +1378,3 @@ pub(super) fn append_chat_telemetry_measurements(
             }),
     );
 }
-

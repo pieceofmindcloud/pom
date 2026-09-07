@@ -571,7 +571,7 @@ pub struct Network {
     pub gateway_port: Option<u16>,
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
-    pub role: String,
+    pub role: Arc<std::sync::RwLock<String>>,
     pub hostname: String,
     /// Address peers should keep for this node, already `host:port`.
     ///
@@ -1025,7 +1025,7 @@ impl Network {
             ollama_port: init.ollama_port,
             inference_port: init.inference_port,
             gateway_port: init.gateway_port,
-            role: String::new(),
+            role: Arc::new(std::sync::RwLock::new(String::new())),
             hostname: String::new(),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
@@ -1052,9 +1052,18 @@ impl Network {
 
     /// Label this node carries in its announces.
     pub fn with_identity(mut self, role: String, hostname: String) -> Self {
-        self.role = role;
+        *self.role.write().expect("role lock") = role;
         self.hostname = hostname;
         self
+    }
+
+    /// Change the role announced by this process after a profile promotion.
+    pub fn set_role(&self, role: impl Into<String>) {
+        *self.role.write().expect("role lock") = role.into();
+    }
+
+    pub fn role_label(&self) -> String {
+        self.role.read().expect("role lock").clone()
     }
 
     /// Record the libp2p `PeerId` this node's swarm ended up with, so
@@ -1316,7 +1325,7 @@ impl Network {
                 caps
             },
             gateway_port: self.gateway_port,
-            role: self.role.clone(),
+            role: self.role_label(),
             tls: self.tls_enabled(),
             hostname: self.hostname.clone(),
             capabilities: assignment

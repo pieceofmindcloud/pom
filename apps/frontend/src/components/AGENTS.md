@@ -11,7 +11,7 @@ for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 the Dashboard details tab and in the window the Flow canvas opens. Test files
 present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`, `LeaveNode.test.tsx`,
 `UndeployPipeline.test.tsx`, `ModelNetworkCanvas.test.tsx`,
-`PeerDetailCard.test.tsx`, `ProfileSwitcher.test.tsx`. Fake peers for these tests come from
+`PeerDetailCard.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves. A partial
 `node` can slip past one component's `?.` and crash the next; the maintenance
 pendência está em `TODO.md`, item 23.
@@ -123,19 +123,13 @@ Per-file list:
   keeps the TLS policy link beside those flags: icon-only, with different icon
   and tone for encrypted versus cleartext and the meaning in
   `aria-label`/`title`.
-- `ProfileSwitcher.tsx` — **Andaime de desenvolvimento.** Alterna o perfil ativo
-  (`admin`/`node`/`inference`) direto na barra superior para conferir a tela pelos olhos de
-  cada perfil. Borda tracejada e âmbar de propósito: não é controle de operação
-  e não concede permissão nenhuma - quem manda é `../lib/profile.tsx`.
-  `PROFILE_SWITCHER_ENABLED` false faz o componente renderizar `null`; quando o
-  perfil passar a chegar do nó, este arquivo sai inteiro.
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
-  coverage), o `ProfileSwitcher`, the bell (`Notifications`), and `NodeActions` - a menu to unload
+  coverage), o selo i18n do perfil persistido do nó, the bell (`Notifications`), and `NodeActions` - a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network
   (`POST /api/ui/leave`), each behind a `Confirm`. Mobile drawer renders
   `SidebarContent` inside an animated panel.

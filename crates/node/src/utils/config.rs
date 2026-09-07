@@ -77,6 +77,9 @@ pub struct ApiKey {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub role: Role,
+    /// Product profile owned by this node. Unlike `role`, it is not selected
+    /// by the browser and is intentionally required in the new schema.
+    pub profile: crate::profile::NodeProfile,
     #[serde(default)]
     pub connection_key: String,
     #[serde(default = "default_gateway_port")]
@@ -206,6 +209,7 @@ impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
             .field("role", &self.role)
+            .field("profile", &self.profile)
             .field(
                 "connection_key",
                 if self.connection_key.is_empty() {
@@ -644,6 +648,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             role: Role::Principal,
+            profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
             cluster_logs_enabled: false,
             connection_key: "test-key".into(),
@@ -677,7 +682,7 @@ mod tests {
     #[test]
     fn removed_output_capacity_field_is_rejected_explicitly() {
         let legacy_field = ["max", "output", "tokens"].join("_");
-        let mut value = serde_json::json!({"role": "principal", "connection_key": "k"});
+        let mut value = serde_json::json!({"role": "principal", "profile": "admin", "connection_key": "k"});
         value
             .as_object_mut()
             .unwrap()
@@ -692,7 +697,7 @@ mod tests {
         // Keep this fixture in the test source. `pom.json` is runtime state and
         // intentionally ignored by Git, so a compile must never depend on it.
         let cfg: Config = serde_json::from_str(
-            r#"{"role":"principal","connection_key":"reference-test","gateway_port":8080,"p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#,
+            r#"{"role":"principal","profile":"admin","connection_key":"reference-test","gateway_port":8080,"p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#,
         )
         .unwrap();
         let value = serde_json::to_value(cfg).unwrap();
@@ -710,6 +715,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             role: Role::Node,
+            profile: crate::profile::NodeProfile::Node,
             tls_required: false,
             cluster_logs_enabled: false,
             connection_key: "node-key".into(),
@@ -737,26 +743,18 @@ mod tests {
         assert_eq!(parsed.role, Role::Node);
     }
 
-    /// A `pom.json` written before the directories were configurable has
-    /// to keep behaving exactly as it did: auto-detected libraries, slices in
-    /// `<project_root>/models`.
+    /// A config without the official profile is not a supported schema. The
+    /// operator recreates it through setup instead of silently guessing.
     #[test]
-    fn a_config_without_the_new_fields_keeps_todays_behaviour() {
+    fn a_config_without_profile_requires_reinitialization() {
         let old = r#"{"role":"principal","connection_key":"k","gateway_port":8080,
                       "p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#;
-        let cfg: Config = serde_json::from_str(old).unwrap();
-        assert!(cfg.model_dirs_are_default());
-        assert_eq!(cfg.model_dir_paths(), crate::catalog::default_model_dirs());
-        assert_eq!(cfg.shard_dir_path(), default_shard_dir());
-        assert_eq!(cfg.shard_max_gb(), 100.0);
-        assert_eq!(cfg.thermal, crate::thermal::ThermalPolicy::default());
-        assert_eq!(cfg.admin_exposure, AdminExposure::Localhost);
-        assert!(cfg.admin_access_token.is_none());
+        assert!(serde_json::from_str::<Config>(old).is_err());
     }
 
     #[test]
     fn thermal_policy_is_configurable_and_survives_roundtrip() {
-        let mut cfg: Config = serde_json::from_str(r#"{"role":"node"}"#).unwrap();
+        let mut cfg: Config = serde_json::from_str(r#"{"role":"node","profile":"node"}"#).unwrap();
         cfg.thermal = crate::thermal::ThermalPolicy {
             limit_c: 82.0,
             hysteresis_c: 7.0,
@@ -773,7 +771,7 @@ mod tests {
     #[test]
     fn cache_types_are_persisted_as_installation_settings() {
         let cfg: Config =
-            serde_json::from_str(r#"{"role":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
+            serde_json::from_str(r#"{"role":"node","profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
                 .unwrap();
         let json = serde_json::to_value(cfg).unwrap();
 
@@ -784,19 +782,19 @@ mod tests {
     #[test]
     fn invalid_cache_type_is_rejected() {
         let result: Result<Config, _> =
-            serde_json::from_str(r#"{"role":"node","cache_type_k":"not-a-type"}"#);
+            serde_json::from_str(r#"{"role":"node","profile":"node","cache_type_k":"not-a-type"}"#);
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cache_type_defaults_to_f16_and_preserves_iq4_nl_spelling() {
-        let defaulted: Config = serde_json::from_str(r#"{"role":"node"}"#).unwrap();
+        let defaulted: Config = serde_json::from_str(r#"{"role":"node","profile":"node"}"#).unwrap();
         assert_eq!(defaulted.cache_type_k, KvCacheType::F16);
         assert_eq!(defaulted.cache_type_v, KvCacheType::F16);
 
         let typed: Config =
-            serde_json::from_str(r#"{"role":"node","cache_type_k":"iq4_nl"}"#).unwrap();
+            serde_json::from_str(r#"{"role":"node","profile":"node","cache_type_k":"iq4_nl"}"#).unwrap();
         assert_eq!(typed.cache_type_k, KvCacheType::Iq4Nl);
         assert_eq!(typed.cache_type_k.as_str(), "iq4_nl");
     }
@@ -813,6 +811,7 @@ mod tests {
         ));
         let mut cfg = Config {
             role: Role::Node,
+            profile: crate::profile::NodeProfile::Node,
             connection_key: String::new(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -866,7 +865,7 @@ mod tests {
     #[test]
     fn an_explicit_empty_list_is_not_the_default_list() {
         let cfg: Config = serde_json::from_str(
-            r#"{"role":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
+            r#"{"role":"node","profile":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
         )
         .unwrap();
         assert!(!cfg.model_dirs_are_default());
@@ -881,7 +880,7 @@ mod tests {
     /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
     #[test]
     fn config_antiga_parseia_sem_tls_required() {
-        let cfg: Config = serde_json::from_str(r#"{"role":"node","connection_key":"k"}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"role":"node","profile":"node","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
     }
 
@@ -895,7 +894,7 @@ mod tests {
     #[test]
     fn tls_required_sobrevive_ao_roundtrip() {
         let cfg: Config =
-            serde_json::from_str(r#"{"role":"principal","tls_required":true}"#).unwrap();
+            serde_json::from_str(r#"{"role":"principal","profile":"admin","tls_required":true}"#).unwrap();
         assert!(cfg.tls_required);
         let texto = serde_json::to_string(&cfg).unwrap();
         let volta: Config = serde_json::from_str(&texto).unwrap();
@@ -904,7 +903,7 @@ mod tests {
 
     #[test]
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
-        let cfg: Config = serde_json::from_str(r#"{"role":"node","shard_dir":"   "}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"role":"node","profile":"node","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
     }
 
@@ -916,6 +915,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             role: Role::Principal,
+            profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
             cluster_logs_enabled: false,
             connection_key: "k".into(),

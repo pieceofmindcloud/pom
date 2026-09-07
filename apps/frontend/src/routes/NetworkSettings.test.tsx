@@ -8,20 +8,22 @@
  * uso mas o **estado** continua visível - esconder o painel faria o operador de
  * um nó comum não ter onde ver se o tráfego da máquina dele está cifrado.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { TlsPanel } from "./Preferences";
 import { NetworkSettings } from "./NetworkSettings";
+import { api } from "../lib/api";
 
 const queryMocks = vi.hoisted(() => ({
   node: {
     data: {
-      hostname: "salem",
+      hostname: "infer-box",
       node_id: "a",
       p2p_port: 42777,
       gateway_port: 8080,
       inference_port: 8181,
+      profile: "node",
       role: "principal",
       detached: false,
       advertise_addr: null,
@@ -42,7 +44,7 @@ vi.mock("../lib/toast", () => ({
 vi.mock("../lib/queries", () => ({
   useNode: () => queryMocks.node,
   useCluster: () => queryMocks.cluster,
-  useAdminNodes: () => queryMocks.nodes,
+  useAdminNodes: (enabled = true) => (enabled ? queryMocks.nodes : { data: undefined }),
   useInvalidate: () => vi.fn(),
 }));
 
@@ -99,5 +101,34 @@ describe("NetworkSettings", () => {
     expect(screen.queryByText("Proteção térmica da GPU")).toBeNull();
     expect(screen.queryByText("Hugging Face")).toBeNull();
     expect(screen.queryByText("Criptografia entre nós")).toBeNull();
+  });
+
+  it("mantém a rede acessível ao infer, sem listar peers, e oferece auto-promoção", async () => {
+    queryMocks.node.data.profile = "infer";
+    queryMocks.nodes.data = [{
+      node_id: "outro",
+      short_id: "outro",
+      hostname: "salem",
+      addr: "127.0.0.1:8081",
+      role: "node",
+      is_self: false,
+      connected: true,
+      blocked: false,
+      verified: true,
+    }];
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    expect(screen.getAllByText("infer").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /promover a node/i })).toBeTruthy();
+    expect(screen.queryByText("Nós conhecidos")).toBeNull();
+    expect(screen.queryByText("salem")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /promover a node/i }));
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/promote"));
   });
 });

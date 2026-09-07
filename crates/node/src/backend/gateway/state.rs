@@ -116,6 +116,8 @@ pub struct GatewayState {
     pub gateway_port: u16,
     /// Setup-level configuration (role, connection key, bootstrap nodes).
     pub auth: AuthState,
+    /// Long-lived identity used to sign administrator-only profile commands.
+    pub admin_signing_key: Arc<ed25519_dalek::SigningKey>,
     /// In-memory browser sessions. It is intentionally not persisted beside
     /// the configuration and is bound to the current admin access token.
     pub(crate) admin_sessions: crate::auth::AdminSessionState,
@@ -470,7 +472,7 @@ impl GatewayState {
                     caps
                 },
                 gateway_port: Some(self.gateway_port),
-                role: self.network.role.clone(),
+                role: self.network.role_label(),
                 hostname: self.network.hostname.clone(),
                 capabilities: local
                     .as_ref()

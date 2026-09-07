@@ -36,6 +36,7 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     node_id: "a",
     short_id: "a",
     hostname: "salem",
+    profile: "node",
     role: "peer",
     connection_key: "",
     p2p_port: 42777,

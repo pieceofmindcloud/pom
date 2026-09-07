@@ -9,6 +9,7 @@ import {
   Network,
   Radio,
   Save,
+  ShieldCheck,
   ShieldOff,
   Undo2,
 } from "lucide-react";
@@ -42,12 +43,19 @@ export function NetworkSettings() {
   const { t } = useI18n();
   const node = useNode();
   const cluster = useCluster();
-  const nodes = useAdminNodes();
+  const isInfer = node.data?.profile === "infer";
+  const nodes = useAdminNodes(node.data !== undefined && !isInfer);
   const toast = useToast();
   const invalidate = useInvalidate();
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [promotionPending, setPromotionPending] = useState<{
+    id: string;
+    hostname: string;
+  } | null>(null);
+  const [promoting, setPromoting] = useState<string | null>(null);
+  const [promotingSelf, setPromotingSelf] = useState(false);
 
   const [advertiseAddr, setAdvertiseAddr] = useState("");
   const [addrSaving, setAddrSaving] = useState(false);
@@ -110,6 +118,33 @@ export function NetworkSettings() {
     }
   }
 
+  async function promoteSelf() {
+    setPromotingSelf(true);
+    try {
+      await api.post("/api/ui/network/promote");
+      toast.success(t("network.promoted"), t("network.promotedDetail"));
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("network.promotionFailed"), e);
+    } finally {
+      setPromotingSelf(false);
+    }
+  }
+
+  async function promoteNode(id: string) {
+    setPromoting(id);
+    try {
+      await api.post(`/admin/nodes/${id}/promote-admin`);
+      toast.success(t("network.nodePromoted"), t("network.nodePromotedDetail"));
+      void nodes.refetch();
+    } catch (e) {
+      toast.fromError(t("network.promotionFailed"), e);
+    } finally {
+      setPromoting(null);
+      setPromotionPending(null);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -155,9 +190,32 @@ export function NetworkSettings() {
                 </Mono>
               </KeyValue>
               <KeyValue label={t("network.role")}>{node.data.role}</KeyValue>
+              <KeyValue label={t("network.profile")}>
+                {t(`profile.${node.data.profile}`)}
+              </KeyValue>
             </dl>
           )}
         </Panel>
+
+        {isInfer && (
+          <Panel>
+            <PanelHeader
+              eyebrow={t("network.profile")}
+              title={t("profile.infer")}
+              subtitle={t("network.inferPromotionDetail")}
+              actions={
+                <Button
+                  variant="primary"
+                  loading={promotingSelf}
+                  icon={<ShieldCheck className="h-3.5 w-3.5" />}
+                  onClick={() => void promoteSelf()}
+                >
+                  {t("network.promoteSelf")}
+                </Button>
+              }
+            />
+          </Panel>
+        )}
 
         <Panel>
           <PanelHeader
@@ -247,24 +305,44 @@ export function NetworkSettings() {
                       {n.connected ? t("network.connected") : t("network.away")}
                     </span>
                     {!n.is_self && (
-                      <Button
-                        size="sm"
-                        variant={n.blocked ? "outline" : "danger"}
-                        icon={
-                          n.blocked ? (
-                            <Undo2 className="h-3.5 w-3.5" />
-                          ) : (
-                            <Ban className="h-3.5 w-3.5" />
-                          )
-                        }
-                        onClick={() =>
-                          n.blocked
-                            ? void setBlocked(n.node_id, false)
-                            : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })
-                        }
-                      >
-                        {n.blocked ? t("network.unblock") : t("network.block")}
-                      </Button>
+                      <>
+                        {node.data?.profile === "admin" &&
+                          n.role?.toLowerCase() !== "principal" &&
+                          !n.blocked && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              loading={promoting === n.node_id}
+                              icon={<ShieldCheck className="h-3.5 w-3.5" />}
+                              onClick={() =>
+                                setPromotionPending({
+                                  id: n.node_id,
+                                  hostname: n.hostname || n.short_id,
+                                })
+                              }
+                            >
+                              {t("network.promoteAdmin")}
+                            </Button>
+                          )}
+                        <Button
+                          size="sm"
+                          variant={n.blocked ? "outline" : "danger"}
+                          icon={
+                            n.blocked ? (
+                              <Undo2 className="h-3.5 w-3.5" />
+                            ) : (
+                              <Ban className="h-3.5 w-3.5" />
+                            )
+                          }
+                          onClick={() =>
+                            n.blocked
+                              ? void setBlocked(n.node_id, false)
+                              : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })
+                          }
+                        >
+                          {n.blocked ? t("network.unblock") : t("network.block")}
+                        </Button>
+                      </>
                     )}
                   </div>
                 ))}
@@ -289,6 +367,17 @@ export function NetworkSettings() {
         busy={busy}
         onConfirm={() => pending && void setBlocked(pending.id, true)}
         onCancel={() => setPending(null)}
+      />
+      <Confirm
+        open={promotionPending !== null}
+        title={t("network.promoteAdminTitle", {
+          hostname: promotionPending?.hostname ?? "",
+        })}
+        description={t("network.promoteAdminDescription")}
+        confirmLabel={t("network.promoteAdmin")}
+        busy={promoting !== null}
+        onConfirm={() => promotionPending && void promoteNode(promotionPending.id)}
+        onCancel={() => setPromotionPending(null)}
       />
     </>
   );

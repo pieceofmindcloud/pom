@@ -46,6 +46,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   cópia das últimas 500 linhas, retorno da cópia, filtro e estados de coleta.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
+Os identificadores oficiais de perfil são `admin`, `node` e `infer`. O rótulo
+visível do primeiro passa por `profile.admin`; os dois últimos permanecem
+minúsculos por decisão de produto. A toolbar, a tela de rede e o bootstrap
+usam essas chaves, nunca literais cravados nos componentes.
+
 ## Como editar mensagens
 
 - `SUPPORTED_LOCALES = ["en", "pt-BR"]`, e `Locale` continua sendo a união literal.

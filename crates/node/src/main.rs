@@ -24,6 +24,11 @@ mod cluster_logs;
 mod cluster_logs_policy;
 #[path = "utils/config.rs"]
 mod config;
+#[path = "profile.rs"]
+pub(crate) mod profile;
+#[cfg(test)]
+#[path = "profile_tests.rs"]
+mod profile_tests;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
@@ -880,6 +885,7 @@ async fn async_main(
             database: database.clone(),
             gateway_port,
             auth: auth_config,
+            admin_signing_key: Arc::new(identity.signing_key.clone()),
             admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
@@ -1168,6 +1174,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     config::validate_gateway_port(gateway_port)?;
     let config = Arc::new(RwLock::new(Config {
         role: Role::Principal,
+        profile: crate::profile::NodeProfile::Admin,
         tls_required: false,
         cluster_logs_enabled: false,
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
@@ -1591,6 +1598,7 @@ async fn start_gateway_only(
         database,
         gateway_port,
         auth: auth_state,
+        admin_signing_key: Arc::new(identity.signing_key.clone()),
         admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
         transfers: Default::default(),
         reply_inbox: crate::direct::ReplyInbox::new(),

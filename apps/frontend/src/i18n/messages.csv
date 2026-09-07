@@ -619,7 +619,7 @@ errorBoundary.detail,"The rest of the interface is still available: use the menu
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar
 forbidden.back,Back to dashboard,Voltar ao painel
-forbidden.detail,"The active profile is {profile}, and this screen is not part of it. Switch profile to open it.","O perfil ativo é {profile}, e esta tela não faz parte dele. Troque de perfil para abri-la."
+forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil
 huggingFace.clear,Remove saved token,Remover token salvo
 huggingFace.cleared,Saved Hugging Face token removed,Token salvo do Hugging Face removido
@@ -816,6 +816,7 @@ network.connected,connected,conectado
 network.detached,Disconnected from network,Fora da rede
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."
+network.inferPromotionDetail,This node sees only itself on the network. Promote it when you want it to share its hardware.,Este nó enxerga somente a si mesmo na rede. Promova-o quando quiser que ele compartilhe o hardware.
 network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}}","{count}{count, plural, =1 { nó conhecido} other { nós conhecidos}}"
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
@@ -836,11 +837,21 @@ network.logsTitle,Process logs between nodes,Logs de processo entre nós
 network.noAddress,no address,sem endereço
 network.noNodes,No known nodes,Nenhum nó conhecido
 network.noNodesDetail,"Not even this machine appears, which usually means it has not announced itself yet.","Nem esta máquina aparece, o que normalmente quer dizer que ela ainda não está anunciando."
+network.nodePromoted,Node promoted,Node promovido
+network.nodePromotedDetail,The administrator profile is now active on the selected machine.,O perfil Administrador agora está ativo na máquina selecionada.
 network.offlineDetail,Off the network: stopped announcing and forgot known peers.,Fora da rede: parou de anunciar e esqueceu os peers que conhecia.
 network.onlineDetail,"On the network, announcing every five seconds.","Na rede, anunciando a cada cinco segundos."
 network.operationFailed,The node did not accept the operation,A operação não foi aceita pelo nó
 network.portValues,P2P {p2p} · gateway {gateway} · inference {inference},P2P {p2p} · gateway {gateway} · inferência {inference}
 network.ports,Ports,Portas
+network.profile,Profile,Perfil
+network.promoteAdmin,Promote to administrator,Promover a administrador
+network.promoteAdminDescription,The administrator command will change this node into the cluster administrator.,O comando do administrador vai transformar este nó no administrador do cluster.
+network.promoteAdminTitle,Promote {hostname}?,Promover {hostname}?
+network.promoteSelf,Become a node,Promover a node
+network.promoted,Node profile enabled,Perfil node ativado
+network.promotedDetail,This machine now shares its hardware with the network.,Esta máquina agora compartilha o hardware com a rede.
+network.promotionFailed,The profile promotion was refused,A promoção de perfil foi recusada
 network.rejoin,Rejoin network,Voltar para a rede
 network.role,Role,Papel
 network.subtitle,Which machines this node sees and which it refuses to serve.,"Quem este nó enxerga, e quem ele se recusa a atender."
@@ -982,10 +993,8 @@ preferences.portInvalid,Enter a port between 1 and 65535.,Informe uma porta entr
 preferences.subtitle,Local protection and model-provider credentials for this node.,Proteção local e credenciais de provedor deste nó.
 preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador
-profile.inference,Inference,Inferência
-profile.node,Node,Nó
-profile.switcher,Profile being previewed,Perfil em visualização
-profile.switcherHint,Development control: it previews what each profile sees on screen and grants no permission.,Controle de desenvolvimento: mostra a tela como cada perfil a vê e não concede permissão nenhuma.
+profile.infer,infer,infer
+profile.node,node,node
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada
@@ -1092,11 +1101,13 @@ sendFile.resume,"The transfer resumes with Range and verifies MD5 before the fil
 sendFile.subtitle,Choose a GGUF already present in this machine''s catalog and a destination.,Escolha um GGUF que já esteja no catálogo desta máquina e uma máquina de destino.
 sendFile.title,Send a file from this machine,Enviar um arquivo desta máquina
 setup.addresses,Addresses other nodes should use,Endereços que os outros nós devem usar
+setup.adminDetail,Creates the cluster key and administers the network.,Cria a chave do cluster e administra a rede.
 setup.connectionKey,Cluster connection key,Chave de conexão do cluster
 setup.connectionKeyDetail,The same string on every machine: the operator credential and API key. Every new node joins with it.,É a mesma string em todas as máquinas: credencial de operador e chave da API. Cada nó novo entra com ela.
 setup.connectionKeyHint,The same string generated on the principal machine.,A mesma string gerada na máquina principal.
 setup.copied,Copied,Copiada
 setup.copy,Copy,Copiar
+setup.inferDetail,Joins with inference only and can later share this machine with the network.,Entra somente para inferência e pode depois compartilhar esta máquina com a rede.
 setup.keepBeforeContinue,Keep this before continuing,Guarde antes de seguir
 setup.keyFailed,Could not create the key: {error},Não deu para gerar a chave: {error}
 setup.keyNote,"You can change the key later under Settings › Connection keys, but changing it on only one machine disconnects the others until they are updated.","A chave pode ser trocada depois em Configurações › Chaves de conexão, mas trocar numa máquina só derruba as outras até serem atualizadas."

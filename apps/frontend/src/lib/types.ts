@@ -6,6 +6,7 @@
  * status and node config), `src/transfer.rs` (transfers), `src/admin.rs`
  * (nodes and keys). Anything typed loosely here is loose in the API too.
  */
+import type { Profile } from "./profile";
 
 export interface MemStat {
   total_mb: number;
@@ -170,6 +171,7 @@ export interface NodeInfo {
   node_id: string;
   short_id: string;
   hostname: string;
+  profile: Profile;
   role: string;
   connection_key: string;
   p2p_port: number;

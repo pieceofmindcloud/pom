@@ -367,10 +367,17 @@ ele chega à geração; se o modelo servido sabe usá-lo é medição em cluster
 
 `GET /admin/nodes` (inclui nós bloqueados mas desconectados, para o painel não
 ficar vazio), `POST /admin/nodes/{id}/block`, `POST /admin/nodes/{id}/unblock`,
-`DELETE /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST
+`POST /admin/nodes/{id}/promote-admin`, `DELETE /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST
 /admin/api-keys`, `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers`
 (stub, ver Defeitos). `list_nodes` adiciona entradas para bloqueados fora da
 rede.
+
+`POST /admin/nodes/{id}/promote-admin` só é aceito pelo nó cujo `NodeProfile` é
+`admin` e cujo `Role` é `Principal`. O administrador assina o alvo com a
+identidade Ed25519; o alvo aceita a mudança somente quando a assinatura é
+válida, o remetente é um peer principal conhecido e o alvo ainda é `node`.
+`POST /api/internal/profile/promote-admin` é a rota nó-a-nó correspondente e
+não é uma autorização de navegador.
 
 `DELETE /admin/api-keys/{key}` desativa a chave no `pom.db` sem apagar a linha e
 acrescenta uma revogação com o `node_id` do operador autenticado e o horário.

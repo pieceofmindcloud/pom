@@ -11,11 +11,11 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { isServing } from "../lib/format";
 import { useCluster, useInvalidate, useNode } from "../lib/queries";
+import { useProfile } from "../lib/profile";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Confirm } from "./Confirm";
 import { Notifications } from "./Notifications";
-import { ProfileSwitcher } from "./ProfileSwitcher";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
 export { TlsChip } from "./TlsIndicator";
@@ -59,6 +59,21 @@ function NodeChip() {
         </Badge>
       )}
     </div>
+  );
+}
+
+function ProfileBadge() {
+  const { profile } = useProfile();
+  const { t } = useI18n();
+
+  return (
+    <Badge
+      data-testid="node-profile"
+      tone="iris"
+      className="max-w-[9rem] truncate"
+    >
+      {t(`profile.${profile}`)}
+    </Badge>
   );
 }
 
@@ -228,8 +243,7 @@ export function Topbar() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {/* Andaime de desenvolvimento, some sozinho quando desligado. */}
-          <ProfileSwitcher />
+          <ProfileBadge />
           <Notifications />
           <NodeActions />
         </div>

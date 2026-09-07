@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canAccessRoute, routeProfiles } from "./access";
+import { canAccessRoute, homeRoute, routeProfiles } from "./access";
 
 describe("canAccessRoute", () => {
   it("deixa o administrador entrar nas telas de operação do cluster", () => {
@@ -37,12 +37,21 @@ describe("canAccessRoute", () => {
     expect(routeProfiles("/implantar")).toEqual(["admin"]);
   });
 
-  it("limita o inference à conversa, documentação e à sua tela de chave", () => {
-    expect(canAccessRoute("/chat", "inference")).toBe(true);
-    expect(canAccessRoute("/config/keys/api", "inference")).toBe(true);
-    expect(canAccessRoute("/documentacao", "inference")).toBe(true);
-    for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/rede", "/config/keys/conexao"]) {
-      expect(canAccessRoute(path, "inference")).toBe(false);
+  it("manda cada perfil para uma tela inicial que ele abre", () => {
+    // O `/` é o Painel: o infer cairia na recusa, que é um beco.
+    expect(homeRoute("infer")).toBe("/chat");
+    expect(canAccessRoute(homeRoute("infer"), "infer")).toBe(true);
+    expect(homeRoute("admin")).toBe("/");
+    expect(homeRoute("node")).toBe("/");
+  });
+
+  it("mantém o infer na rede local, conversa, documentação e sua chave", () => {
+    expect(canAccessRoute("/chat", "infer")).toBe(true);
+    expect(canAccessRoute("/config/keys/api", "infer")).toBe(true);
+    expect(canAccessRoute("/config/rede", "infer")).toBe(true);
+    expect(canAccessRoute("/documentacao", "infer")).toBe(true);
+    for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/keys/conexao"]) {
+      expect(canAccessRoute(path, "infer")).toBe(false);
     }
   });
 });

@@ -88,7 +88,7 @@ export function TokenKeys() {
   const cluster = useCluster();
   const node = useNode();
   const toast = useToast();
-  const inference = profile === "inference";
+  const inference = profile === "infer";
 
   const [label, setLabel] = useState("");
   const [nodeId, setNodeId] = useState("");

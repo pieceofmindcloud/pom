@@ -38,7 +38,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
-  dual-stack, gossip, lifecycle de peers, varredura de descoberta.
+  dual-stack, gossip, lifecycle de peers, varredura de descoberta. O papel
+  anunciado por `with_identity` pode ser atualizado por `set_role` quando um
+  nó recebe a promoção assinada para administrador.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é

@@ -443,15 +443,18 @@ export function Badge({
   tone = "neutral",
   mono = false,
   className,
+  "data-testid": testId,
   children,
 }: {
   tone?: Tone;
   mono?: boolean;
   className?: string;
+  "data-testid"?: string;
   children: ReactNode;
 }) {
   return (
     <span
+      data-testid={testId}
       className={clsx(
         "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5",
         "text-[0.72rem] font-medium leading-5",

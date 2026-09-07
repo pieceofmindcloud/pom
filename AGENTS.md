@@ -152,8 +152,10 @@ quebra o produto inteiro.
   somente uma API key ativa. A superfície administrativa da UI usa sessão em memória com cookie
   `HttpOnly`; o token humano não vai para storage nem URL. Em modo local, a
   mesma fronteira cobre os ficheiros estáticos, mas nunca as rotas da pipeline.
-  Sem `pom.json` o nó sobe em **modo setup**, que serve só a tela de escolha
-  Principal/Nó e gera essa chave. → `api-http.md`, `web-ui.md`
+  Sem `pom.json` o nó sobe em **modo setup**, que escolhe o perfil inicial
+  `admin`, `node` ou `infer` e gera essa chave quando necessário. O perfil
+  persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
+  continua sendo o mecanismo de autenticação. → `api-http.md`, `web-ui.md`
 - **Política de primeira versão.** O produto ainda não foi lançado. Portanto,
   não manter no runtime código de compatibilidade, adapters ou fallbacks para
   versões antigas de protocolos - especialmente formatos de inferência v1/v2.

@@ -185,6 +185,10 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   de barra, o popover compacto e a janela WebKit; não carregam credenciais nem
   implementam uma API paralela.
 
+`profile.rs` é a fonte única do perfil persistido do nó (`admin`, `node` ou
+`infer`) e das capacidades de visibilidade/promoção. O perfil não substitui
+`Role`, que continua descrevendo autenticação e topologia.
+
 O protocolo de inferência ainda não foi lançado. `frame/v1-batch` é o primeiro
 e único contrato oficial: não manter fallback, adapter ou código de
 compatibilidade para formatos v1/v2 anteriores. Mudanças futuras devem

@@ -12,6 +12,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
+import { ProfileProvider } from "../lib/profile";
 import { fakeNode } from "../test/fixtures";
 import type { NodeInfo } from "../lib/types";
 
@@ -20,9 +21,11 @@ let nodeData: NodeInfo | undefined;
 vi.mock("../lib/queries", async (original) => ({
   ...(await original<typeof import("../lib/queries")>()),
   useNode: () => ({ data: nodeData }),
+  useCluster: () => ({ data: { peers: [], complete: false } }),
 }));
 
 const { TlsChip } = await import("./TlsIndicator");
+const { Topbar } = await import("./Topbar");
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -31,6 +34,21 @@ function mount() {
       <LocaleProvider initialLocale="pt-BR">
         <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <TlsChip />
+        </MemoryRouter>
+      </LocaleProvider>
+    </QueryClientProvider>,
+  );
+}
+
+function mountTopbar(profile: "admin" | "node" | "infer") {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <LocaleProvider initialLocale="pt-BR">
+        <MemoryRouter>
+          <ProfileProvider initialProfile={profile}>
+            <Topbar />
+          </ProfileProvider>
         </MemoryRouter>
       </LocaleProvider>
     </QueryClientProvider>,
@@ -68,5 +86,18 @@ describe("TlsChip", () => {
     nodeData = undefined;
     const { container } = mount();
     expect(container.textContent).toBe("");
+  });
+});
+
+describe("perfil na toolbar", () => {
+  afterEach(cleanup);
+
+  it("mostra o perfil oficial vindo do contexto e não oferece seletor", () => {
+    nodeData = fakeNode({ profile: "infer" });
+    mountTopbar("infer");
+
+    expect(screen.getByTestId("node-profile").textContent).toBe("infer");
+    expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
   });
 });

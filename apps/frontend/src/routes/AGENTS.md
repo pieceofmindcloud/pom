@@ -36,7 +36,7 @@ Per-file list:
   while the request trace shows the executed engine and mixed/mismatch flags.
   The runtime record keeps stable identity between unchanged polls so the
   telemetry snapshot cannot trigger a render loop that freezes navigation.
-  O perfil `inference` oculta desta tela a origem, os resumos de tempo e
+  O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
   autorização.
   Missing snapshots stay visible as missing data. The environment card also
@@ -276,10 +276,8 @@ Per-file list:
   auditoria paginada de requisições em `Logs.tsx`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
-  No perfil `inference`, mostra só a chave ativa deste nó, esconde o seletor de
-  nó e, ao gerar uma chave nova, revoga a anterior. É fluxo de interface: o
-  backend ainda não impõe o escopo nem a unicidade; isso ficou para
-  `rdma-perfis-escopo-backend`. `ConnectionKeys`: the cluster operator key -
+  No perfil `infer`, mostra só a chave ativa deste nó, esconde o seletor de nó
+  e, ao gerar uma chave nova, revoga a anterior. `ConnectionKeys`: the cluster operator key -
   `POST /admin/regenerate-key`.
 - `Logs.tsx` - tela autenticada de auditoria em largura total. A barra aplica
   filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a tela de
@@ -303,6 +301,10 @@ Per-file list:
 - `NetworkSettings.tsx` - Admin view: this node's membership
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
+  O perfil `infer` também abre `/config/rede`, mas o backend devolve somente a
+  própria máquina e oferece `POST /api/ui/network/promote`; não carrega peers
+  nem inventário remoto. O administrador pode promover um nó via
+  `POST /admin/nodes/:id/promote-admin`.
 - `Preferences.tsx` - Local settings screen under Configurações: owns the
   administrative exposure mode and gateway port, displays the generated access
   token only in network mode, and saves them to `pom.json` through
@@ -314,14 +316,15 @@ Per-file list:
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
-  manda trocar de perfil em vez de mandar procurar defeito de rota. Quem a
+  manda usar o nó autorizado em vez de mandar procurar defeito de rota. Quem a
   escolhe é o guarda em `../App.tsx`, pela tabela de `../lib/access.ts`.
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
   it again and the receiver sees only an opaque grant.
-- `Setup.tsx` — First run (no `pom.json`): choose Principal (mints key via
-  `GET /api/setup/key`) or Nó (paste key + `ip:port` bootstrap), then
+- `Setup.tsx` — First run (no `pom.json`): choose the initial profile
+  `admin`, `node` or `infer`; `admin` mints the key via `GET /api/setup/key`,
+  while the other two paste the key + `ip:port` bootstrap, then
   `POST /api/setup/save`; the node writes config, respawns, and the screen
   reloads itself after 4 s. Uses `../components/Logo` and `LanguageSelect` from
   the i18n provider.

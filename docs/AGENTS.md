@@ -42,7 +42,9 @@ gated e a licença antes do download.
 
 ## subsystems/
 
-Os guias permanentes do runtime ficam em `docs/subsystems/`. `fatiamento.md`
+Os guias permanentes do runtime ficam em `docs/subsystems/`. `rede-p2p.md`
+documenta também que os testes usam o `Network::testkit` em loopback, com
+destino de anúncio injetável e sem broadcast global. `fatiamento.md`
 documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas,
 o rebase de metadata de camadas para a numeração local e a leitura somente de
 cabeçalho do catálogo, inclusive para o modelo selecionado. `paralelismo.md`

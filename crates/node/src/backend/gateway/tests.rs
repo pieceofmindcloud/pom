@@ -1232,9 +1232,9 @@ mod peer_visibility_tests {
 ///
 /// Existe porque três módulos precisavam do mesmo andaime — `transfer`,
 /// `deploy` e `webui` todos testam handlers que só falam a verdade com um
-/// `GatewayState` inteiro atrás deles. Nada aqui fala UDP: a tabela de peers é
-/// semeada à mão, então um teste nunca anuncia nada na LAN nem esbarra num
-/// cluster de verdade.
+/// `GatewayState` inteiro atrás deles. A tabela de peers é semeada à mão e o
+/// socket de teste fica preso à loopback, então um teste nunca anuncia na LAN
+/// nem esbarra num cluster de verdade.
 #[cfg(test)]
 pub(crate) mod testkit {
     use super::*;
@@ -1290,7 +1290,7 @@ pub(crate) mod testkit {
         peers: Vec<PeerInfo>,
     ) -> GatewayState {
         let net = Arc::new(
-            Network::new(node_id.into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit(node_id.into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera")
                 .with_identity(String::new(), hostname.into()),
@@ -1458,7 +1458,7 @@ pub(crate) mod testkit {
         });
 
         state.gateway_port = port;
-        let net = Network::new("eu".into(), "pk".into(), 0, vec![], None, None, Some(port))
+        let net = Network::testkit("eu".into(), "pk".into(), vec![], None, None, Some(port))
             .await
             .expect("socket UDP em porta efêmera");
         // Primeiro da lista de `self_reply_hosts`, então a cauda acerta na

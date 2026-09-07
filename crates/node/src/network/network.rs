@@ -134,6 +134,13 @@ struct RuntimeCapacityState {
     capacity: Option<RuntimeCapacity>,
 }
 
+struct NetworkInit {
+    bootstrap_nodes: Vec<String>,
+    ollama_port: Option<u16>,
+    inference_port: Option<u16>,
+    gateway_port: Option<u16>,
+}
+
 /// Message types exchanged between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -551,6 +558,9 @@ pub struct Network {
     pub node_id: String,
     pub pubkey: String,
     pub bind_addr: SocketAddr,
+    /// Destino do anúncio local. Em produção é o broadcast IPv4 global; o
+    /// testkit injeta um destino loopback para nunca alcançar a LAN.
+    broadcast_addr: SocketAddr,
     pub peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
     pub bootstrap_nodes: Vec<String>,
     /// Port of the local Ollama instance, advertised in P2P messages.
@@ -886,6 +896,28 @@ impl Network {
         inference_port: Option<u16>,
         gateway_port: Option<u16>,
     ) -> Result<Self> {
+        Self::new_with_broadcast_addr(
+            node_id,
+            pubkey,
+            port,
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT),
+            NetworkInit {
+                bootstrap_nodes,
+                ollama_port,
+                inference_port,
+                gateway_port,
+            },
+        )
+        .await
+    }
+
+    async fn new_with_broadcast_addr(
+        node_id: String,
+        pubkey: String,
+        port: u16,
+        broadcast_addr: SocketAddr,
+        init: NetworkInit,
+    ) -> Result<Self> {
         // Bind dual-stack IPv6 so peers on IPv6 (including link-local fe80::) can be reached.
         // Falls back to IPv4-only if the OS has IPv6 disabled.
         let (socket, bind_addr) = {
@@ -909,15 +941,90 @@ impl Network {
             }
         };
 
-        Ok(Network {
+        Ok(Self::from_bound_socket(
             node_id,
             pubkey,
             bind_addr,
+            broadcast_addr,
+            socket,
+            init,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn testkit(
+        node_id: String,
+        pubkey: String,
+        bootstrap_nodes: Vec<String>,
+        ollama_port: Option<u16>,
+        inference_port: Option<u16>,
+        gateway_port: Option<u16>,
+    ) -> Result<Self> {
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let bind_addr = socket.local_addr()?;
+        Ok(Self::from_bound_socket(
+            node_id,
+            pubkey,
+            bind_addr,
+            bind_addr,
+            socket,
+            NetworkInit {
+                bootstrap_nodes,
+                ollama_port,
+                inference_port,
+                gateway_port,
+            },
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn testkit_with_broadcast_addr(
+        node_id: String,
+        pubkey: String,
+        bootstrap_nodes: Vec<String>,
+        ollama_port: Option<u16>,
+        inference_port: Option<u16>,
+        gateway_port: Option<u16>,
+        broadcast_addr: SocketAddr,
+    ) -> Result<Self> {
+        if !broadcast_addr.ip().is_loopback() {
+            return Err(anyhow::anyhow!("o testkit UDP só aceita destinos loopback"));
+        }
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let bind_addr = socket.local_addr()?;
+        Ok(Self::from_bound_socket(
+            node_id,
+            pubkey,
+            bind_addr,
+            broadcast_addr,
+            socket,
+            NetworkInit {
+                bootstrap_nodes,
+                ollama_port,
+                inference_port,
+                gateway_port,
+            },
+        ))
+    }
+
+    fn from_bound_socket(
+        node_id: String,
+        pubkey: String,
+        bind_addr: SocketAddr,
+        broadcast_addr: SocketAddr,
+        socket: UdpSocket,
+        init: NetworkInit,
+    ) -> Self {
+        Self {
+            node_id,
+            pubkey,
+            bind_addr,
+            broadcast_addr,
             peers: Arc::new(RwLock::new(HashMap::new())),
-            bootstrap_nodes,
-            ollama_port,
-            inference_port,
-            gateway_port,
+            bootstrap_nodes: init.bootstrap_nodes,
+            ollama_port: init.ollama_port,
+            inference_port: init.inference_port,
+            gateway_port: init.gateway_port,
             role: String::new(),
             hostname: String::new(),
             advertise_addr: std::sync::RwLock::new(None),
@@ -940,7 +1047,7 @@ impl Network {
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
             observed_addr: std::sync::RwLock::new(None),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
-        })
+        }
     }
 
     /// Label this node carries in its announces.
@@ -1134,11 +1241,13 @@ impl Network {
         Ok(())
     }
 
-    /// Broadcast to local network (only nodes on DISCOVERY_PORT receive this)
+    /// Broadcast to the configured discovery destination.
     pub async fn broadcast_local(&self, msg: &P2PMessage) -> Result<()> {
         let data = serde_json::to_vec(msg)?;
-        let broadcast_addr = format!("255.255.255.255:{}", DISCOVERY_PORT);
-        if let Err(e) = self.send_bytes(&data, &broadcast_addr).await {
+        if let Err(e) = self
+            .send_bytes(&data, &self.broadcast_addr.to_string())
+            .await
+        {
             debug!("LAN broadcast failed: {e}");
         }
         Ok(())
@@ -2222,18 +2331,10 @@ mod tests {
     /// ficava invisível pela internet enquanto a LAN o via normalmente.
     #[tokio::test]
     async fn gossipsub_and_udp_publish_the_same_announce() {
-        let net = Network::new(
-            "n".into(),
-            "p".into(),
-            0,
-            vec![],
-            None,
-            Some(8181),
-            Some(8080),
-        )
-        .await
-        .unwrap()
-        .with_identity("Principal".into(), "macbook".into());
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
+            .await
+            .unwrap()
+            .with_identity("Principal".into(), "macbook".into());
 
         let asgn = LayerAssignment {
             deploy_id: String::new(),
@@ -2289,18 +2390,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn announce_carries_the_capacity_confirmed_by_inference_health() {
-        let net = Network::new(
+    async fn testkit_broadcasts_only_to_an_injected_loopback_endpoint() {
+        let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let destination = probe.local_addr().unwrap();
+        let net = Network::testkit_with_broadcast_addr(
             "n".into(),
             "p".into(),
-            0,
             vec![],
             None,
-            Some(8181),
-            Some(8080),
+            None,
+            None,
+            destination,
         )
         .await
         .unwrap();
+
+        assert!(net.bind_addr.ip().is_loopback());
+        assert!(net.broadcast_addr.ip().is_loopback());
+        assert_ne!(
+            net.broadcast_addr,
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT)
+        );
+
+        net.announce(None).await.unwrap();
+        assert!(recv_msg(&probe, 500).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn testkit_default_is_isolated_from_the_global_broadcast() {
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
+            .await
+            .unwrap();
+
+        assert!(net.bind_addr.ip().is_loopback());
+        assert!(net.broadcast_addr.ip().is_loopback());
+        assert_eq!(net.broadcast_addr, net.bind_addr);
+        assert_ne!(
+            net.broadcast_addr,
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT)
+        );
+    }
+
+    #[tokio::test]
+    async fn testkit_rejects_a_global_broadcast_endpoint() {
+        let result = Network::testkit_with_broadcast_addr(
+            "n".into(),
+            "p".into(),
+            vec![],
+            None,
+            None,
+            None,
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn production_network_keeps_the_global_broadcast_default() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            net.broadcast_addr,
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT)
+        );
+    }
+
+    #[tokio::test]
+    async fn announce_carries_the_capacity_confirmed_by_inference_health() {
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
+            .await
+            .unwrap();
         net.set_runtime_capacity(Some(RuntimeCapacity {
             n_ctx: 100_000,
             max_new_tokens: 32_000,
@@ -2329,17 +2492,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_old_runtime_generation_cannot_restore_its_capacity() {
-        let net = Network::new(
-            "n".into(),
-            "p".into(),
-            0,
-            vec![],
-            None,
-            Some(8181),
-            Some(8080),
-        )
-        .await
-        .unwrap();
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
+            .await
+            .unwrap();
         net.set_runtime_generation(2);
 
         net.set_runtime_capacity_for_generation(
@@ -2370,7 +2525,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_ephemeral_p2p_socket_never_announces_port_zero() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap();
 
@@ -2481,7 +2636,7 @@ mod tests {
     /// (e.g. a new peer connects) must never override it.
     #[tokio::test]
     async fn a_pinned_address_always_outranks_an_observed_one() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap()
             .with_advertise_addr(Some("198.51.100.9:42777".into()));
@@ -2496,7 +2651,7 @@ mod tests {
     /// sentinel with something equally useless.
     #[tokio::test]
     async fn a_private_observed_address_is_ignored() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap();
 
@@ -2511,7 +2666,7 @@ mod tests {
     /// actually override an earlier pin, since that's the entire point.
     #[tokio::test]
     async fn set_advertise_addr_overrides_a_previous_pin_live() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap()
             .with_advertise_addr(Some("198.51.100.9:42777".into()));
@@ -2528,7 +2683,7 @@ mod tests {
     /// back to an observed address if no current public local address exists.
     #[tokio::test]
     async fn clearing_the_pin_falls_back_to_an_observed_address() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap()
             .with_advertise_addr(Some("198.51.100.9:42777".into()));
@@ -2551,7 +2706,7 @@ mod tests {
     /// *before* calling this — this test documents what happens if it didn't.
     #[tokio::test]
     async fn an_unparseable_value_clears_rather_than_corrupts() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap();
         net.set_advertise_addr(Some(""));
@@ -3067,17 +3222,14 @@ mod tests {
         assert_eq!(peer.libp2p_peer_id, None);
     }
 
-    /// The LAN broadcast goes to `255.255.255.255:42777` no matter which port
-    /// this node runs on, so a node brought up to try the interface out lands
-    /// in whatever cluster is on the wire. Starting detached (`--no-discovery`)
-    /// is the only way to run one safely next to a live cluster, and it only
-    /// holds if neither the announce nor the bootstrap request goes out.
+    /// A detached node must not announce or query bootstrap peers. This keeps
+    /// the `--no-discovery` contract explicit even when its socket remains
+    /// bound for the later `rejoin`.
     #[tokio::test]
     async fn a_detached_node_neither_announces_nor_looks_for_bootstrap() {
-        let net = Network::new(
+        let net = Network::testkit(
             "n".into(),
             "p".into(),
-            0,
             vec!["127.0.0.1:1".into()],
             None,
             None,
@@ -3151,7 +3303,7 @@ mod tests {
     #[tokio::test]
     async fn a_known_peer_is_asked_for_its_peers_periodically() {
         let (sock, addr) = probe().await;
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap();
         net.peers
@@ -3175,7 +3327,7 @@ mod tests {
     /// tempo.
     #[tokio::test]
     async fn the_sweep_rotates_over_a_bounded_subset() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap();
         let mut probes = Vec::new();
@@ -3219,7 +3371,7 @@ mod tests {
     #[tokio::test]
     async fn a_detached_node_does_not_sweep() {
         let (sock, addr) = probe().await;
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap();
         net.peers
@@ -3295,7 +3447,7 @@ mod tests {
 
     #[tokio::test]
     async fn ipv6_destinations_are_left_alone() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None, None)
             .await
             .unwrap();
         let v6: SocketAddr = "[fe80::1]:42777".parse().unwrap();

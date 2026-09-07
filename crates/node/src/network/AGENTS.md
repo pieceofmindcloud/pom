@@ -74,6 +74,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `IPV6_V6ONLY` desligado **antes** do bind (depois não tem efeito; no Windows o
   padrão é 1 e um nó lá não veria peer IPv4 nenhum). Sem IPv6 no SO, cai para
   `0.0.0.0`.
+- `Network::testkit` - socket UDP isolado em `127.0.0.1:0`, com o destino do
+  anúncio local preso à loopback; `testkit_with_broadcast_addr` permite injetar
+  um endpoint loopback para observar o datagrama e recusa o broadcast global.
 - `Network::start` - spawna o receive loop, o loop de gossip (5 s: announce
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
   de rotas e RTT (30 s, sonda lenta não segura o gossip). A política TLS inicial
@@ -259,10 +262,6 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - **Chama**: `network.rs` ← `identity.rs` (via main), `addrs.rs`
   (`self_addr_candidates`), `route.rs` (`Network.routes`); `discovery.rs` →
   `network.rs::insert_peer`.
-
-## Pendências
-
-- Os testes UDP ainda podem transmitir na LAN real; ver `TODO.md`, item 20.
 
 ## Maintaining this file
 

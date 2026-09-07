@@ -386,8 +386,8 @@ dual-stack.
   delivers into `reply_inbox`); it serves with
   `axum::serve(...).tcp_nodelay(true)` because Nagle delayed the small SSE
   writes. `#[cfg(test)] mod testkit` is the shared scaffold for route tests - a
-  whole `GatewayState` with the peer table seeded by hand, no UDP, nothing
-  touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
+  whole `GatewayState` with the peer table seeded by hand; its network socket
+  is loopback-only and nothing touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
   `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
   JSON body (used by the transfer, deploy and webui tests).
 - `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo

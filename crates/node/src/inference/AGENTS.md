@@ -519,6 +519,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `spawn_health_watch` também publica no `Network` o `RuntimeCapacity` efetivo
   (`n_ctx`, `max_new_tokens`); apply, erro, stop e unload térmico removem esse
   valor até o próximo runtime pronto.
+  Os testes de `runtime.rs` usam `Network::testkit`, com socket e destino UDP
+  presos à loopback, para que anúncios de readiness nunca alcancem a LAN.
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção. O fixture não

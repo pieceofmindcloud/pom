@@ -59,6 +59,9 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
    sem IPv6 no SO cai para `0.0.0.0`). Porta padrão `DISCOVERY_PORT` = 42777.
    Se a configuração pedir porta `0`, o SO escolhe uma porta efêmera e o nó
    conserva essa porta real no anúncio; o TCP libp2p também deriva dela.
+   Os testes usam `Network::testkit`, que liga somente em `127.0.0.1:0` e
+   injeta um destino loopback para o anúncio local; `testkit_with_broadcast_addr`
+   aceita um endpoint loopback explícito e recusa o broadcast global.
 2. **Bootstrap:** `Network::start` chama `bootstrap_discovery` logo no início
    (envia `PeerRequest` a cada bootstrap configurado). `main.rs` então espera
    ~2 s juntando `Announce` antes de calcular a faixa de camadas.

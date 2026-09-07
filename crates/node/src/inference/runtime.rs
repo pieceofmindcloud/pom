@@ -1595,7 +1595,7 @@ mod tests {
         let port = ocupante.local_addr().unwrap().port();
 
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );
@@ -1846,7 +1846,7 @@ mod tests {
         });
 
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );
@@ -1892,7 +1892,7 @@ mod tests {
     #[tokio::test]
     async fn a_fatia_que_nao_carregou_aparece_no_status_com_a_razao() {
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );
@@ -1917,7 +1917,7 @@ mod tests {
     #[tokio::test]
     async fn parada_manual_cancela_a_retomada_termica_pendente() {
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );

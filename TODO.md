@@ -205,7 +205,6 @@ atuais desta lista.
 
 ## Itens da triagem anterior incorporados
 
-O item pós-triagem sobre broadcast UDP continua como item 20. Os adiados
-`routing-base::plan`, `undeploy_authority` e `crates/types` são agora os itens
-5, 12 e 25, respectivamente, com a evidência atualizada. Nenhum desses
-contextos foi descartado.
+Os adiados `routing-base::plan`, `undeploy_authority` e `crates/types` são agora
+os itens 5, 12 e 25, respectivamente, com a evidência atualizada. Nenhum
+desses contextos foi descartado.

@@ -27,7 +27,7 @@ mod continuation_lab;
 mod cycle;
 #[path = "backend/db.rs"]
 mod db;
-#[path = "backend/deploy.rs"]
+#[path = "backend/deploy/mod.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
 mod deployment;
@@ -136,7 +136,7 @@ mod tp;
 mod transfer;
 #[path = "backend/webapp.rs"]
 mod webapp;
-#[path = "backend/webui.rs"]
+#[path = "backend/webui/mod.rs"]
 mod webui;
 
 use anyhow::Result;

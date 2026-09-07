@@ -85,7 +85,9 @@ dual-stack.
   O handler clona o `ModelFile` antes de criar a task `'static`, não mantém
   empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
   arquivos locais emprestam o nome a cada iteração.
-- `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
+- `webui/` - the `/api/ui/*` control API behind the dashboard, split into
+  `mod.rs`, `routes.rs`, `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
+  `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs` and test fragments:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
@@ -175,7 +177,7 @@ dual-stack.
   `activated_at` e depois `active_version`, a versão corrente antes de
   `redeploy`/`activate` a usarem.
 - `POST /api/ui/deployments/:id/redeploy` (`redeploy_endpoint` →
-  `run_redeploy`, `deploy.rs`): mesmo `deploy_id`, mesmas máquinas e faixas.
+  `run_redeploy`, `deploy/`): mesmo `deploy_id`, mesmas máquinas e faixas.
   `RedeployRequest` carrega `params` (opcional), `version` (opcional) e
   `per_node`; informe um dos dois (400 quando faltam os dois ou `version` não
   existe). `RedeployRequest::resolve` roda antes do desvio TP: `version`
@@ -188,7 +190,7 @@ dual-stack.
   (`release_one` em paralelo), e **sobe uma máquina de cada vez** esperando
   cada uma reportar `ready` (`wait_for_peer_serving_with_timeout`). Funciona
   mesmo se um nó não estava servindo: `/api/ui/reconfigure` aceita um
-  `ReconfigureSlice` opcional (`webui.rs`) e `reconfigure_local` reconstrói o
+  `ReconfigureSlice` opcional (`webui/`) e `reconfigure_local` reconstrói o
   `NodeConfig` dele. O arquivo é resolvido em três degraus: o `model_path`
   fotografado antes do unload; o `part_sha256` do registro
   (`transfer::find_part`); e, quando o registro não tem hash de parte (modelo
@@ -201,7 +203,9 @@ dual-stack.
   (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
   máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
-- `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
+- `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
+  `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
+  `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
@@ -446,9 +450,9 @@ dual-stack.
   (end_turn / max_tokens / tool_use / stop_sequence), `blocking_response` and
   `stream_response` with the Anthropic SSE event names. `tool_choice` is
   parsed-and-ignored; `stop_sequences` is applied by the gateway matcher.
-- `webui.rs` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
+- `webui/` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
   `pub(crate) PEER_TIMEOUT=4s` (reused by
-  deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
+  deploy/). Registers the `/api/ui/*` routes: `node` (GET node_info),
   `model-identity` (POST, prova um arquivo já catalogado por caminho canônico
   e opcionalmente calcula seu SHA-256),
   `model-metadata` (POST, lê e publica somente o cabeçalho do modelo selecionado
@@ -500,7 +504,7 @@ dual-stack.
   Os testes que chamam `apply_cluster_policy` também seguram
   `peer_client::POLITICA_GLOBAL`, porque o esquema TLS global é compartilhado
   por toda a suíte.
-- `deploy.rs` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
+- `deploy/` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
   qual inventário o `survey` lê: `shard_sets`, ou os modelos inteiros via
   `parse_whole`, que lê um GGUF não fatiado como a faixa `0..total-1`. O
   `tensor_parallel` (caminho C) nomeia o grupo (primary + workers); a v1 da
@@ -535,10 +539,10 @@ dual-stack.
   cada origem publica somente suas medições diretas, e `route_options` usa a
   chave `(from_node_id, to_node_id)`. A latência do gateway não é reutilizada
   para uma aresta entre dois peers remotos.
-- `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
+- `deploy/` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).
-- `deploy.rs` - `RuntimeParams.fit_memory` fica ligado por padrão em shards e
+- `deploy/` - `RuntimeParams.fit_memory` fica ligado por padrão em shards e
   modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
@@ -557,7 +561,7 @@ dual-stack.
   cadeia; quando solicitado, `launch` valida todos os peers antes de parar
   qualquer processo, recusando intermediários comprovadamente inseguros e
   permitindo topologia indeterminada somente com o controle avisado.
-- `deploy.rs` - `overlapping_layers`, `split_position`. Routes: `POST
+- `deploy/` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST
   /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove`, `POST

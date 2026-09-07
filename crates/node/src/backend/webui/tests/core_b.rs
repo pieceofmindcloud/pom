@@ -1,0 +1,429 @@
+/// **A máquina tem um nome, e é um só.**
+///
+/// `node_name` do `pom.json` é como o operador batiza a máquina, e é o nome
+/// que o nó anuncia aos peers (`network.hostname`). O catálogo respondia com
+/// `sysmon`, o hostname cru do sistema operacional — e o seletor "Enviar
+/// para..." da tela de fatias, que lê daí, era o único lugar do aplicativo que
+/// chamava a máquina por outro nome. Numa máquina com dois nós era pior: os
+/// dois relatavam o mesmo hostname do SO, a tela via colisão e desempatava
+/// com o prefixo do `node_id`.
+#[cfg(test)]
+mod node_name_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_named};
+
+    #[tokio::test]
+    async fn o_catalogo_local_se_apresenta_pelo_nome_do_no() {
+        let state = state_named("eu", "atena", vec![]).await;
+
+        let corpo = body_of(models(State(state)).await.into_response()).await;
+
+        assert_eq!(
+            corpo["hostname"], "atena",
+            "o catálogo tem que dizer o nome do nó, não o hostname do SO"
+        );
+    }
+
+    #[tokio::test]
+    async fn o_catalogo_do_cluster_tambem() {
+        let state = state_named("eu", "atena", vec![]).await;
+
+        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+
+        let eu = &corpo["peers"][0];
+        assert_eq!(eu["is_self"], true);
+        assert_eq!(eu["hostname"], "atena");
+    }
+
+    /// Um peer que não respondeu continua sendo uma máquina com nome: o que
+    /// ele anunciou está na tabela local. Sem isto o objeto saía **sem
+    /// `hostname`** e a tela caía no `node_id` — um prefixo hexadecimal no
+    /// lugar do nome da máquina, que é o rótulo errado do relato.
+    #[tokio::test]
+    async fn um_peer_que_nao_respondeu_ainda_tem_nome() {
+        // A porta do peer falso não tem ninguém ouvindo: a consulta falha.
+        let mut mudo = peer("outro", "ksia", 1);
+        mudo.hostname = "ksia".into();
+        let state = state_named("eu", "atena", vec![mudo]).await;
+
+        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+
+        let outro = corpo["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["node_id"] == "outro")
+            .expect("o peer entra na lista mesmo sem responder");
+        assert!(!outro["error"].is_null(), "e a falha continua reportada");
+        assert_eq!(
+            outro["hostname"], "ksia",
+            "sem nome a tela cai no node_id, que é um prefixo hexadecimal"
+        );
+    }
+}
+
+/// `/api/ui/peer/:node_id/runtime` - como aquela máquina carregou o modelo.
+#[cfg(test)]
+mod peer_runtime_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_with};
+
+    /// Um servidor de inferência que responde `/health` com a colocação.
+    async fn fake_inference() -> u16 {
+        let app = Router::new().route(
+            "/health",
+            get(|| async {
+                Json(json!({
+                    "status": "ok",
+                    "offload_kqv": true,
+                    "mtp_ready": false,
+                    "mtp_allocation": null,
+                    "mtp_unavailable_reason": "MTP context allocation failed",
+                    "placement": { "n_layer": 1, "layers": [] },
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        port
+    }
+
+    #[tokio::test]
+    async fn unknown_machine_is_a_404_and_not_an_empty_answer() {
+        let state = state_with("eu", vec![]).await;
+        let r = peer_runtime(State(state), Path("ninguem".to_string())).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Máquina na rede sem servidor de inferência não é falha de rede: é o
+    /// estado normal de quem não recebeu fatia. A tela precisa distinguir os
+    /// dois, então isto responde 200 dizendo que não há o que mostrar.
+    #[tokio::test]
+    async fn a_machine_without_an_inference_server_is_not_an_error() {
+        let state = state_with("eu", vec![peer("outro", "ksia", 9)]).await;
+        let r = peer_runtime(State(state), Path("outro".to_string())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = body_of(r).await;
+        assert_eq!(body["loaded"], false);
+        assert!(body["reason"].is_string(), "a tela precisa do motivo");
+    }
+
+    /// O `/health` do peer chega inteiro, sem passar por um tipo intermediário:
+    /// um campo novo no servidor de inferência aparece na tela sem que esta
+    /// rota mude.
+    #[tokio::test]
+    async fn the_peers_health_is_forwarded_whole() {
+        let port = fake_inference().await;
+        let mut p = peer("outro", "ksia", 9);
+        p.inference_port = Some(port);
+        let state = state_with("eu", vec![p]).await;
+
+        let r = peer_runtime(State(state), Path("outro".to_string())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = body_of(r).await;
+        assert_eq!(body["loaded"], true);
+        assert_eq!(body["health"]["offload_kqv"], true);
+        assert_eq!(body["health"]["mtp_ready"], false);
+        assert_eq!(body["health"]["mtp_allocation"], serde_json::Value::Null);
+        assert_eq!(
+            body["health"]["mtp_unavailable_reason"],
+            "MTP context allocation failed"
+        );
+        assert_eq!(body["health"]["placement"]["n_layer"], 1);
+    }
+}
+
+#[cfg(test)]
+mod state_transport_tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::header::{ETAG, IF_NONE_MATCH};
+
+    #[test]
+    fn the_etag_changes_when_the_ui_payload_changes() {
+        let before = etag_for_json(&json!({ "jobs": [] }));
+        let after = etag_for_json(&json!({
+            "jobs": [{ "id": "job-1", "state": "running" }]
+        }));
+
+        assert_ne!(
+            before, after,
+            "uma mudança visível precisa invalidar a versão"
+        );
+    }
+
+    #[test]
+    fn the_etag_stays_when_the_ui_payload_does_not_change() {
+        let first = etag_for_json(&json!({ "offers": [] }));
+        let second = etag_for_json(&json!({ "offers": [] }));
+
+        assert_eq!(first, second, "o mesmo retrato precisa manter a versão");
+    }
+
+    #[test]
+    fn cluster_version_ignores_only_the_sampling_timestamp() {
+        let first = json!({
+            "node": { "system": { "sampled_at": "2026-01-01T00:00:00Z", "ram": { "used_mb": 10 } } }
+        });
+        let second = json!({
+            "node": { "system": { "sampled_at": "2026-01-01T00:00:01Z", "ram": { "used_mb": 10 } } }
+        });
+        let changed = json!({
+            "node": { "system": { "sampled_at": "2026-01-01T00:00:01Z", "ram": { "used_mb": 11 } } }
+        });
+
+        assert_eq!(cluster_etag(&first), cluster_etag(&second));
+        assert_ne!(cluster_etag(&second), cluster_etag(&changed));
+    }
+
+    #[tokio::test]
+    async fn an_matching_etag_returns_304_without_a_body() {
+        let payload = json!({ "jobs": [] });
+        let first = conditional_json(&HeaderMap::new(), &payload);
+        let etag = first.headers().get(ETAG).cloned().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(IF_NONE_MATCH, etag);
+
+        let second = conditional_json(&headers, &payload);
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert!(
+            to_bytes(second.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty(),
+            "304 não pode remandar o JSON"
+        );
+    }
+}
+
+#[cfg(test)]
+mod chat_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn directional_report_is_kept_only_for_verified_sources_and_requested_targets() {
+        let requested = ["a", "b", "c"].into_iter().map(str::to_string).collect();
+        let mut output = Vec::new();
+        append_chat_telemetry_measurements(
+            &mut output,
+            "a",
+            RttReport {
+                source_node_id: "wrong-source".into(),
+                measurements: vec![crate::route::RttMeasurement {
+                    target_node_id: "b".into(),
+                    rtt_ms: 12.5,
+                    transport: "libp2p".into(),
+                }],
+            },
+            &requested,
+        );
+        assert!(output.is_empty(), "a resposta não pode trocar a origem");
+
+        append_chat_telemetry_measurements(
+            &mut output,
+            "a",
+            RttReport {
+                source_node_id: "a".into(),
+                measurements: vec![
+                    crate::route::RttMeasurement {
+                        target_node_id: "b".into(),
+                        rtt_ms: 12.5,
+                        transport: "libp2p".into(),
+                    },
+                    crate::route::RttMeasurement {
+                        target_node_id: "outside-pipeline".into(),
+                        rtt_ms: 99.0,
+                        transport: "libp2p".into(),
+                    },
+                ],
+            },
+            &requested,
+        );
+        assert_eq!(
+            output,
+            vec![ChatTelemetryMeasurement {
+                from_node_id: "a".into(),
+                to_node_id: "b".into(),
+                rtt_ms: 12.5,
+                transport: "libp2p".into(),
+            }]
+        );
+    }
+}
+
+#[cfg(test)]
+mod chat_history_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn chat_history_route_persists_and_deletes_authenticated_sessions() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let app = routes().with_state(state.clone());
+        let payload = serde_json::json!({
+            "id": "conversation-1",
+            "title": "Teste",
+            "titled": true,
+            "model": "model.gguf",
+            "modelAtStart": "model.gguf",
+            "updatedAt": "2026-09-02T12:00:00Z",
+            "messages": [{
+                "id": "message-1",
+                "role": "user",
+                "content": "Olá",
+                "at": "2026-09-02T11:59:00Z"
+            }]
+        });
+        let saved = app
+            .clone()
+            .oneshot(
+                Request::post("/api/ui/chat/history")
+                    .header("authorization", "Bearer chave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.status(), StatusCode::OK);
+        assert_eq!(state.database.chat_sessions().unwrap().len(), 1);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::get("/api/ui/chat/history")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(listed).await;
+        assert_eq!(body[0]["messages"][0]["content"], "Olá");
+
+        let deleted = app
+            .oneshot(
+                Request::delete("/api/ui/chat/history/conversation-1")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        assert!(state.database.chat_sessions().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod capacity_preview_tests {
+    use super::*;
+
+    fn gpu(index: u32, total_mb: f64, used_mb: f64) -> sysmon::GpuStat {
+        sysmon::GpuStat {
+            index,
+            name: format!("gpu{index}"),
+            vendor: sysmon::GpuVendor::Nvidia,
+            vram_total_mb: Some(total_mb),
+            vram_used_mb: Some(used_mb),
+            vram_used_pct: None,
+            utilization_pct: None,
+            temperature_c: None,
+        }
+    }
+
+    #[test]
+    fn single_gpu_takes_the_whole_projection() {
+        let gpus = vec![gpu(0, 16_000.0, 2_000.0)];
+        let (projections, fits, note) = split_projection(4_000 * 1024 * 1024, &gpus);
+        assert_eq!(projections.len(), 1);
+        assert_eq!(projections[0].vram_used_mb, 2_000);
+        assert_eq!(projections[0].vram_projected_mb, 6_000);
+        assert!(fits);
+        // Uma única GPU não precisa de nota de divisão estimada - não há
+        // divisão nenhuma a fazer.
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn multiple_gpus_use_the_analytic_free_capacity_split() {
+        let gpus = vec![gpu(0, 8_000.0, 0.0), gpu(1, 8_000.0, 0.0)];
+        let (projections, fits, note) = split_projection(4_000 * 1024 * 1024, &gpus);
+        assert_eq!(projections[0].vram_projected_mb, 2_000);
+        assert_eq!(projections[1].vram_projected_mb, 2_000);
+        assert!(fits);
+        assert!(
+            note.is_some(),
+            "a divisão analítica precisa ser identificada"
+        );
+    }
+
+    #[test]
+    fn without_a_native_split_the_estimate_follows_free_capacity_and_says_so() {
+        // GPU 0 já tem menos livre que a GPU 1, então recebe menos do peso
+        // novo - e a nota tem que dizer que é estimativa.
+        let gpus = vec![gpu(0, 8_000.0, 6_000.0), gpu(1, 8_000.0, 0.0)];
+        let (projections, _fits, note) = split_projection(2_000 * 1024 * 1024, &gpus);
+        let added0 = projections[0].vram_projected_mb - projections[0].vram_used_mb;
+        let added1 = projections[1].vram_projected_mb - projections[1].vram_used_mb;
+        // GPU 0 tinha 2 GiB livres contra 8 GiB da GPU 1, então recebe uma
+        // fatia proporcionalmente menor do peso novo.
+        assert!(added0 < added1, "added0={added0} added1={added1}");
+        assert!(note.is_some());
+    }
+
+    #[test]
+    fn a_projection_over_capacity_does_not_fit() {
+        let gpus = vec![gpu(0, 4_000.0, 3_500.0)];
+        let (projections, fits, _note) = split_projection(1_000 * 1024 * 1024, &gpus);
+        assert!(projections[0].vram_projected_mb > projections[0].vram_total_mb);
+        assert!(!fits);
+    }
+
+    #[test]
+    fn a_machine_with_no_gpu_always_fits() {
+        let (projections, fits, note) = split_projection(999 * 1024 * 1024, &[]);
+        assert!(projections.is_empty());
+        assert!(fits);
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn analytic_capacity_uses_amber_only_for_adjustable_default_layers() {
+        assert_eq!(capacity_verdict(true, true, 99, 32), (true, false));
+        assert_eq!(capacity_verdict(false, true, 99, 32), (true, true));
+        assert_eq!(capacity_verdict(false, true, 16, 32), (false, false));
+        assert_eq!(capacity_verdict(false, false, 99, 32), (false, false));
+    }
+
+    #[test]
+    fn preview_admission_is_bounded_without_waiting() {
+        let permits: Vec<_> = (0..CAPACITY_PREVIEW_MAX_IN_FLIGHT)
+            .map(|_| try_capacity_preview_slot().expect("a vaga deveria estar disponível"))
+            .collect();
+
+        assert!(
+            try_capacity_preview_slot().is_none(),
+            "uma prévia excedente precisa ser recusada sem formar fila"
+        );
+
+        drop(permits);
+        assert!(try_capacity_preview_slot().is_some());
+    }
+}
+

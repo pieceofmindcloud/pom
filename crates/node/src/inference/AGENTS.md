@@ -723,6 +723,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   scheduler (`queue_depth`, limites, tamanho e tokens do último lote). O motor observado sai por
   `node_timings.executed_engine` e `executed_engines` em cada hop do
   prefill/decode e é agregado no `RequestTrace` sem inferência da tela.
+- `NodeTimings` também publica, por chamada de `step`, os contadores MTP
+  `mtp_draft_tokens_proposed`, `mtp_draft_tokens_accepted` e
+  `mtp_draft_tokens_rejected`. `proposed` conta o draft submetido à verificação
+  do alvo, não um `next_draft` que ficou sem uso no corte do orçamento.
+  `RequestTrace` soma essas amostras por requisição e serializa
+  `mtp_acceptance_rate` como aceitos/propostos, com `null` quando não houve
+  proposta. Os incrementos ficam fora do laço por token e não mudam a política
+  de especulação.
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha com base no convite e em `mtp_ready` ou em um draft pré-fabricado.
   Recusar é resposta legítima, não erro: a cabeça omite `draft` no quadro e a
@@ -906,6 +914,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   ausente. O transporte remoto registra `remote-stream` uma vez por callback
   de lote, com bytes recebidos e processamento agregado; o callback não é uma
   nova medição de RTT, por isso `round_trip_ms` fica zero nessa entrada.
+  `RequestTrace` também carrega os contadores MTP por requisição e a taxa
+  derivada, enquanto os campos `node_timings` preservam os valores de cada
+  hop/step para auditoria.
 
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;

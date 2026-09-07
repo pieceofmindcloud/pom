@@ -86,7 +86,8 @@ Para separar o efeito da forma da saída do efeito da origem de rede, rode
 `./scripts/bench-rotas.sh <rotulo>`. O script executa uma chamada de
 aquecimento por origem, depois três repetições em cada combinação de
 `mac-local`, `mac-ksia`, `ksia-local`, `salem-ksia` com os prompts
-`p-curto/p-longo` e `repetitivo/variado`. Ele omite `model` por padrão,
+`p-curto-repetitivo`, `p-curto-variado`, `p-longo-repetitivo`,
+`p-longo-variado` e `p-prefill-aleatorio`. Ele omite `model` por padrão,
 então o gateway usa o modelo que a rede estiver servindo naquele momento. Use
 `POM_BENCH_MODEL=...` somente para uma comparação que exija um modelo
 explícito.
@@ -98,8 +99,10 @@ calculada em cada linha como
 `trace.output_tokens / trace.hops[0].decode.calls`. Para `salem-ksia`,
 defina `SALEM_PASS` no ambiente no momento da execução; a senha não pertence
 ao script. Os prompts longos são preenchidos por texto determinístico e a
-tabela final mostra as medianas de `fichas/chamada`,
-`generation_tok/s`, `ttft_ms`, `node_p50_ms` e `total_ms`.
+tabela final mostra as medianas de `fichas/chamada`, `generation_tok/s`,
+`mtp_acceptance_rate`, `ttft_ms`, `node_p50_ms` e `total_ms`. O prompt
+`p-prefill-aleatorio` usa 1200 palavras hexadecimais novas por chamada e
+limita a saída a 8 tokens, como o benchmark de referência.
 
 `--n-gpu-layers` (padrão 0) decide quantas camadas vão para a VRAM; sem a
 feature de build correta (`metal`/`cuda`) o modelo roda todo em CPU. Para

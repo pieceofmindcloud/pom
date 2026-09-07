@@ -278,10 +278,12 @@ O procedimento de subida está em `operacao.md`.
 - `old/scripts/request.sh` - `POST /api/generate` para o gateway com o prompt
   como primeiro argumento (`GATEWAY`/`PORT` sobrescrevem o host/porta).
 - `scripts/bench-rotas.sh` - bateria de medicao da geracao que compara quatro
-  origens e quatro prompts fixos, grava um CSV estavel e imprime medianas por
-  celula. O modelo e omitido por padrao para usar o modelo ativo da rede;
-  `POM_BENCH_MODEL` fixa um modelo somente quando desejado. Para a origem da
-  salem, exporte `SALEM_PASS` sem gravar a senha em arquivo.
+  origens e cinco prompts, grava um CSV estavel com os contadores e a taxa de
+  aceitacao MTP por requisicao ao final das colunas existentes e imprime
+  medianas por celula. O modelo e omitido por padrao para usar o modelo ativo
+  da rede; `POM_BENCH_MODEL` fixa
+  um modelo somente quando desejado. Para a origem da salem, exporte
+  `SALEM_PASS` sem gravar a senha em arquivo.
 
 O detector conservador de ciclos vem ligado por padrão em cada processo. Para
 manter o comportamento anterior, o operador pode iniciar um nó com

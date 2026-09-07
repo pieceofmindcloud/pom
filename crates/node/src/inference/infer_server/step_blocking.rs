@@ -76,6 +76,10 @@ pub(crate) fn step_blocking(
     }
     let input_was_hidden = tensor.is_some();
     let selected_moe = s.inference_path.is_moe();
+    let mtp_verification = speculate
+        .as_ref()
+        .is_some_and(|spec| spec.source == DraftSource::Mtp)
+        || mtp_k.is_some();
     let mut moe_forwarded = false;
     let tensor = if let Some((hidden, shape)) = tensor {
         let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
@@ -243,6 +247,7 @@ pub(crate) fn step_blocking(
             timings.sampling_us += verification_started.elapsed().as_micros() as u64;
 
             let accept_len = longest_match(&sampled, &draft);
+            record_mtp_verification(&mut timings, mtp_verification, draft.len(), accept_len);
             // A cabeça `nextn` guarda uma linha de estado oculto por posição
             // decodificada; qual delas alimenta a próxima rodada só se sabe
             // depois de a verificação dizer até onde o rascunho valeu. Sem
@@ -497,4 +502,47 @@ pub(crate) fn step_blocking(
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;
     Ok(TimedReply { bytes, timings })
+}
+
+/// Registra somente drafts submetidos à verificação do alvo. O `next_draft`
+/// pode ser preparado no fim de uma rodada que termina pelo orçamento, sem
+/// nunca ser verificado; contá-lo no denominador distorceria a aceitação.
+fn record_mtp_verification(
+    timings: &mut NodeTimings,
+    mtp_verification: bool,
+    draft_len: usize,
+    accepted_len: usize,
+) {
+    if mtp_verification {
+        timings.mtp_draft_tokens_proposed = draft_len as u64;
+        timings.mtp_draft_tokens_accepted = accepted_len as u64;
+        timings.mtp_draft_tokens_rejected = draft_len.saturating_sub(accepted_len) as u64;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetria_mtp_separa_propostas_aceites_e_rejeitadas() {
+        let mut timings = NodeTimings::default();
+
+        record_mtp_verification(&mut timings, true, 7, 5);
+
+        assert_eq!(timings.mtp_draft_tokens_proposed, 7);
+        assert_eq!(timings.mtp_draft_tokens_accepted, 5);
+        assert_eq!(timings.mtp_draft_tokens_rejected, 2);
+    }
+
+    #[test]
+    fn telemetria_mtp_nao_conta_verificacao_que_nao_e_mtp() {
+        let mut timings = NodeTimings::default();
+
+        record_mtp_verification(&mut timings, false, 7, 5);
+
+        assert_eq!(timings.mtp_draft_tokens_proposed, 0);
+        assert_eq!(timings.mtp_draft_tokens_accepted, 0);
+        assert_eq!(timings.mtp_draft_tokens_rejected, 0);
+    }
 }

@@ -131,6 +131,11 @@ pub(super) struct NodeTimings {
     pub(super) executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub(super) moe: MoeTimings,
     pub(super) tp: Option<crate::tp::TpDecodeTelemetry>,
+    /// Contadores de tokens do MTP neste hop e nesta chamada de step.
+    /// Incrementos acontecem uma vez por lote, nunca no laço por token.
+    pub(super) mtp_draft_tokens_proposed: u64,
+    pub(super) mtp_draft_tokens_accepted: u64,
+    pub(super) mtp_draft_tokens_rejected: u64,
 }
 
 impl NodeTimings {
@@ -253,6 +258,9 @@ impl NodeTimings {
                 .collect::<Vec<_>>(),
             "engine_mismatch": self.engine_mismatch(),
             "mixed_execution": self.mixed_execution(),
+            "mtp_draft_tokens_proposed": self.mtp_draft_tokens_proposed,
+            "mtp_draft_tokens_accepted": self.mtp_draft_tokens_accepted,
+            "mtp_draft_tokens_rejected": self.mtp_draft_tokens_rejected,
             "tp": self
                 .tp
                 .as_ref()
@@ -944,6 +952,22 @@ mod tests {
         assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
         assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
         assert_ne!(json["backend_completion_ms"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn telemetria_mtp_expoe_contadores_de_tokens() {
+        let timings = NodeTimings {
+            mtp_draft_tokens_proposed: 7,
+            mtp_draft_tokens_accepted: 5,
+            mtp_draft_tokens_rejected: 2,
+            ..Default::default()
+        };
+
+        let value = timings.json();
+
+        assert_eq!(value["mtp_draft_tokens_proposed"], 7);
+        assert_eq!(value["mtp_draft_tokens_accepted"], 5);
+        assert_eq!(value["mtp_draft_tokens_rejected"], 2);
     }
 
     #[test]

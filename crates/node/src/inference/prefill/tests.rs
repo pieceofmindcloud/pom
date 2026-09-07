@@ -153,6 +153,110 @@ mod tests {
     }
 
     #[test]
+    fn trace_agrega_aceitacao_mtp_por_requisicao() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        let node_timings = |proposed, accepted, rejected| {
+            json!({
+                "mtp_draft_tokens_proposed": proposed,
+                "mtp_draft_tokens_accepted": accepted,
+                "mtp_draft_tokens_rejected": rejected,
+            })
+        };
+
+        trace.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &node_timings(7, 5, 2),
+        );
+        trace.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &node_timings(3, 2, 1),
+        );
+
+        assert_eq!(trace.mtp_draft_tokens_proposed, 10);
+        assert_eq!(trace.mtp_draft_tokens_accepted, 7);
+        assert_eq!(trace.mtp_draft_tokens_rejected, 3);
+        assert_eq!(trace.mtp_acceptance_rate, Some(0.7));
+
+        let serialized = serde_json::to_value(&trace).unwrap();
+        assert_eq!(serialized["mtp_draft_tokens_proposed"], 10);
+        assert_eq!(serialized["mtp_draft_tokens_accepted"], 7);
+        assert_eq!(serialized["mtp_draft_tokens_rejected"], 3);
+        assert_eq!(serialized["mtp_acceptance_rate"], 0.7);
+
+        let no_mtp = serde_json::to_value(RequestTrace::new("qwen", &[("no1", 0, 15)])).unwrap();
+        assert!(no_mtp["mtp_acceptance_rate"].is_null());
+    }
+
+    #[test]
+    fn trace_funde_pernas_mtp_com_taxa_ponderada() {
+        let mut first = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        first.record_hop(
+            0,
+            Phase::Decode,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "mtp_draft_tokens_proposed": 10,
+                "mtp_draft_tokens_accepted": 7,
+                "mtp_draft_tokens_rejected": 3,
+            }),
+        );
+        let mut second = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        second.record_hop(
+            0,
+            Phase::Decode,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "mtp_draft_tokens_proposed": 10,
+                "mtp_draft_tokens_accepted": 10,
+                "mtp_draft_tokens_rejected": 0,
+            }),
+        );
+
+        first.merge(&second);
+
+        assert_eq!(first.mtp_draft_tokens_proposed, 20);
+        assert_eq!(first.mtp_draft_tokens_accepted, 17);
+        assert_eq!(first.mtp_draft_tokens_rejected, 3);
+        assert_eq!(first.mtp_acceptance_rate, Some(0.85));
+    }
+
+    #[test]
     fn hop_trace_does_not_claim_a_dtype_when_no_hidden_state_crossed() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
 

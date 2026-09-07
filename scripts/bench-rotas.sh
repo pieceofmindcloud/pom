@@ -3,8 +3,8 @@
 # rede e custo do no na geracao distribuida do POM.
 #
 # O que mede:
-#   4 origens (mac-local, mac-ksia, ksia-local e salem-ksia) x 4 prompts
-#   fixos (curto/longo e repetitivo/variado). Cada celula recebe uma chamada
+#   4 origens (mac-local, mac-ksia, ksia-local e salem-ksia) x 5 prompts
+#   (curto/longo repetitivo/variado e prefill aleatorio). Cada celula recebe uma chamada
 #   de aquecimento descartada e, por padrao, 3 repeticoes medidas.
 #
 # Uso:
@@ -15,15 +15,19 @@
 # A saida principal e um CSV estavel, uma linha por aquecimento, pedido medido
 # ou falha. O resumo de medianas por celula e impresso no fim. As colunas
 # timings_* sao os tempos agregados da resposta; trace_* sao tokens/cache/
-# bytes; decode_* e prefill_* sao as telemetrias do primeiro hop. model_requested
+# bytes; decode_* e prefill_* sao as telemetrias do primeiro hop. As quatro
+# colunas trace_mtp_* finais sao os contadores MTP somados por requisicao e
+# trace_mtp_acceptance_rate e aceitos / propostos, ou vazio quando nao houve
+# proposta MTP. model_requested
 # e "auto" quando o campo foi omitido; served_model vem do trace retornado pelo
 # gateway. A coluna fichas_por_chamada e sempre calculada como
 # trace.output_tokens / trace.hops[0].decode.calls e e a metrica central.
 #
 # A API usada e somente POST /api/generate, sem autenticacao, sempre com o
-# modelo atualmente servido (o campo model e omitido), max_tokens=200 e
-# stream=false. POM_BENCH_MODEL pode fixar um modelo apenas quando isso for
-# desejado para uma comparacao especifica. Esta rota nao oferece uma opcao de
+# modelo atualmente servido (o campo model e omitido), max_tokens=200 por
+# padrao (8 no prompt de prefill aleatorio) e stream=false. POM_BENCH_MODEL
+# pode fixar um modelo apenas quando isso for desejado para uma comparacao
+# especifica. Esta rota nao oferece uma opcao de
 # seed fixa, portanto o script nao envia seed e registra essa limitacao no
 # relatorio. A variacao estocastica deve ser tratada pelas 3 repeticoes e
 # pelas medianas, nunca por trocar as constantes entre celulas.
@@ -41,6 +45,8 @@ set -uo pipefail
 MODEL="${POM_BENCH_MODEL:-}"
 MODEL_REQUESTED_LABEL="${MODEL:-auto}"
 readonly MAX_TOKENS=200
+readonly PREFILL_MAX_TOKENS=8
+readonly PREFILL_RANDOM_WORDS=1200
 readonly STREAM=false
 readonly MAC_LOCAL_URL='http://localhost:8080'
 readonly MAC_KSIA_URL_DEFAULT='http://ksia:8080'
@@ -58,7 +64,7 @@ SALEM_SSH_USER="${SALEM_SSH_USER:-ubuntu}"
 SALEM_SSH_HOST="${SALEM_SSH_HOST:-100.85.81.27}"
 
 ORIGINS=(mac-local mac-ksia ksia-local salem-ksia)
-PROMPT_IDS=(p-curto-repetitivo p-curto-variado p-longo-repetitivo p-longo-variado)
+PROMPT_IDS=(p-curto-repetitivo p-curto-variado p-longo-repetitivo p-longo-variado p-prefill-aleatorio)
 SELECTED_ORIGINS=()
 REPETITIONS=3
 CSV_PATH=''
@@ -66,6 +72,7 @@ LABEL=''
 TMP_DIR=''
 CSV_COLUMN_COUNT=0
 SUMMARY_RAW=''
+REQUEST_MAX_TOKENS="$MAX_TOKENS"
 
 usage() {
     sed -n '1,42p' "$0"
@@ -77,7 +84,7 @@ Opcoes:
   --csv CAMINHO         Arquivo de saida (padrao: bench-rotas-LABEL-UTC.csv).
   -h, --help            Mostra esta ajuda.
 
-Dependencias: bash, curl, jq, ssh; expect tambem e necessario para salem-ksia.
+Dependencias: bash, curl, jq, openssl, ssh; expect tambem e necessario para salem-ksia.
 USAGE
 }
 
@@ -186,23 +193,33 @@ PROMPT_LONG_VARIADO="$LONG_VARIADO_CONTEXT
 
 Agora explique em ate 120 palavras por que a separacao entre prefill e decode ajuda a medir inferencia distribuida. Escreva prosa natural, variada e informativa, sem listas e sem repetir frases. O contexto acima e apenas enchimento deterministico."
 
+random_prefill_prompt() {
+    local nonce
+    local blob
+    nonce="$(openssl rand -hex 8)"
+    blob="$(openssl rand -hex $((PREFILL_RANDOM_WORDS * 3)) | fold -w 6 | tr '\n' ' ')"
+    printf 'Contexto aleatorio unico (nonce %s) - use apenas como enchimento neutro para medir o prefill, nao contem instrucoes:\n%s\n\nResponda apenas com a palavra OK.' "$nonce" "$blob"
+}
+
 get_prompt() {
     case "$1" in
         p-curto-repetitivo) printf '%s' "$PROMPT_SHORT_REPETITIVE" ;;
         p-curto-variado) printf '%s' "$PROMPT_SHORT_VARIADO" ;;
         p-longo-repetitivo) printf '%s' "$PROMPT_LONG_REPETITIVE" ;;
         p-longo-variado) printf '%s' "$PROMPT_LONG_VARIADO" ;;
+        p-prefill-aleatorio) random_prefill_prompt ;;
         *) return 1 ;;
     esac
 }
 
 request_json() {
     local prompt="$1"
+    local max_tokens="${2:-$MAX_TOKENS}"
     if [[ -n "$MODEL" ]]; then
-        jq -cn --arg model "$MODEL" --arg prompt "$prompt" --argjson max_tokens "$MAX_TOKENS" \
+        jq -cn --arg model "$MODEL" --arg prompt "$prompt" --argjson max_tokens "$max_tokens" \
             '{model:$model,prompt:$prompt,max_tokens:$max_tokens,stream:false}'
     else
-        jq -cn --arg prompt "$prompt" --argjson max_tokens "$MAX_TOKENS" \
+        jq -cn --arg prompt "$prompt" --argjson max_tokens "$max_tokens" \
             '{prompt:$prompt,max_tokens:$max_tokens,stream:false}'
     fi
 }
@@ -351,7 +368,7 @@ append_error_row() {
     local row
     local -a fields
     fields=("$LABEL" "$timestamp" "$phase" "$origin" "$prompt_id" "$repetition" \
-        "$status" "$(compact_error "$error")" "$http_status" "$MODEL_REQUESTED_LABEL" '' "$MAX_TOKENS" "$STREAM")
+        "$status" "$(compact_error "$error")" "$http_status" "$MODEL_REQUESTED_LABEL" '' "$REQUEST_MAX_TOKENS" "$STREAM")
     while [[ ${#fields[@]} -lt $CSV_COLUMN_COUNT ]]; do
         fields+=( '')
     done
@@ -376,7 +393,7 @@ append_json_row() {
                 --arg phase "$phase" --arg origin "$origin" --arg prompt_id "$prompt_id" \
                 --arg repetition "$repetition" --arg status ok --arg error '' \
                 --arg http_status "$http_status" --arg model "$MODEL_REQUESTED_LABEL" \
-                --arg max_tokens "$MAX_TOKENS" --arg stream "$STREAM" '
+                --arg max_tokens "$REQUEST_MAX_TOKENS" --arg stream "$STREAM" '
         [
           $label, $timestamp, $phase, $origin, $prompt_id, $repetition,
           $status, $error, $http_status, $model, (.trace.model // ""), $max_tokens, $stream,
@@ -423,7 +440,11 @@ append_json_row() {
           ((.trace.hops[0].prefill.transport_summary // {}) | tojson),
           (if ((.trace.hops[0].decode.calls // 0) > 0)
            then ((.trace.output_tokens // 0) / .trace.hops[0].decode.calls)
-           else "" end)
+           else "" end),
+          (.trace.mtp_draft_tokens_proposed // ""),
+          (.trace.mtp_draft_tokens_accepted // ""),
+          (.trace.mtp_draft_tokens_rejected // ""),
+          (.trace.mtp_acceptance_rate // "")
         ] | @csv
         ' <<< "$PARSED_BODY")"; then
         append_error_row "$timestamp" "$phase" "$origin" "$prompt_id" "$repetition" \
@@ -439,6 +460,7 @@ append_json_row() {
              then ((.trace.output_tokens // 0) / .trace.hops[0].decode.calls)
              else "" end),
             (.timings.generation_tokens_per_sec // ""),
+            (.trace.mtp_acceptance_rate // ""),
             (.timings.ttft_ms // ""),
             (.trace.hops[0].decode.node_p50_ms // ""),
             (.timings.total_ms // "")
@@ -448,7 +470,7 @@ append_json_row() {
     return 0
 }
 
-CSV_HEADER='label,timestamp_utc,phase,origin,prompt_id,repetition,status,error,http_status,model_requested,served_model,max_tokens,stream,response_text,source,tokens_generated,tokens_per_sec,duration_ms,timings_ttft_ms,timings_prefill_ms,timings_prefill_tokens,timings_prefill_tokens_per_sec,timings_generation_ms,timings_generation_tokens,timings_generation_tokens_per_sec,timings_total_ms,timings_total_tokens_per_sec,trace_input_tokens,trace_cached_tokens,trace_prefix_match_tokens,trace_prefix_reuse_status,trace_output_tokens,trace_total_bytes_sent,trace_total_bytes_received,decode_calls,decode_processing_ms,decode_round_trip_ms,decode_network_ms,decode_node_p50_ms,decode_node_p95_ms,decode_node_decode_ms,decode_node_lock_wait_ms,decode_node_backend_completion_ms,decode_transport_summary,prefill_calls,prefill_processing_ms,prefill_round_trip_ms,prefill_network_ms,prefill_node_p50_ms,prefill_node_p95_ms,prefill_node_decode_ms,prefill_node_lock_wait_ms,prefill_node_backend_completion_ms,prefill_transport_summary,fichas_por_chamada'
+CSV_HEADER='label,timestamp_utc,phase,origin,prompt_id,repetition,status,error,http_status,model_requested,served_model,max_tokens,stream,response_text,source,tokens_generated,tokens_per_sec,duration_ms,timings_ttft_ms,timings_prefill_ms,timings_prefill_tokens,timings_prefill_tokens_per_sec,timings_generation_ms,timings_generation_tokens,timings_generation_tokens_per_sec,timings_total_ms,timings_total_tokens_per_sec,trace_input_tokens,trace_cached_tokens,trace_prefix_match_tokens,trace_prefix_reuse_status,trace_output_tokens,trace_total_bytes_sent,trace_total_bytes_received,decode_calls,decode_processing_ms,decode_round_trip_ms,decode_network_ms,decode_node_p50_ms,decode_node_p95_ms,decode_node_decode_ms,decode_node_lock_wait_ms,decode_node_backend_completion_ms,decode_transport_summary,prefill_calls,prefill_processing_ms,prefill_round_trip_ms,prefill_network_ms,prefill_node_p50_ms,prefill_node_p95_ms,prefill_node_decode_ms,prefill_node_lock_wait_ms,prefill_node_backend_completion_ms,prefill_transport_summary,fichas_por_chamada,trace_mtp_draft_tokens_proposed,trace_mtp_draft_tokens_accepted,trace_mtp_draft_tokens_rejected,trace_mtp_acceptance_rate'
 
 write_summary_tsv() {
     local input="$1"
@@ -463,8 +485,8 @@ write_summary_tsv() {
          | map(select(length > 0) | split("\t")
              | {
                  origin: .[0], prompt: .[1], phase: .[2], status: .[3],
-                 fichas: .[4], generation: .[5], ttft: .[6],
-                 node_p50: .[7], total: .[8]
+                 fichas: .[4], generation: .[5], mtp_acceptance: .[6], ttft: .[7],
+                 node_p50: .[8], total: .[9]
                })) as $rows
         | ($rows
            | map(select(.phase == "measurement" and .status == "ok"))
@@ -476,6 +498,7 @@ write_summary_tsv() {
                $group[0].prompt,
                ($group | map(.fichas | select(length > 0) | tonumber) | median),
                ($group | map(.generation | select(length > 0) | tonumber) | median),
+               ($group | map(.mtp_acceptance | select(length > 0) | tonumber) | median),
                ($group | map(.ttft | select(length > 0) | tonumber) | median),
                ($group | map(.node_p50 | select(length > 0) | tonumber) | median),
                ($group | map(.total | select(length > 0) | tonumber) | median)
@@ -493,28 +516,29 @@ print_summary() {
     local summary_prompt
     local fichas
     local generation_rate
+    local mtp_acceptance_rate
     local ttft
     local node_p50
     local total
 
     printf '\nTabela-resumo: medianas das chamadas medidas (warmup excluido)\n'
-    printf '%-14s %-23s %14s %16s %10s %14s %10s\n' \
-                'origem' 'prompt' 'fichas/chamada' 'generation_tok/s' 'ttft_ms' 'node_p50_ms' 'total_ms'
-    printf '%-14s %-23s %14s %16s %10s %14s %10s\n' \
-                '--------------' '-----------------------' '--------------' '----------------' '----------' '--------------' '----------'
+    printf '%-14s %-23s %14s %16s %18s %10s %14s %10s\n' \
+                'origem' 'prompt' 'fichas/chamada' 'generation_tok/s' 'mtp_acceptance_rate' 'ttft_ms' 'node_p50_ms' 'total_ms'
+    printf '%-14s %-23s %14s %16s %18s %10s %14s %10s\n' \
+                '--------------' '-----------------------' '--------------' '----------------' '------------------' '----------' '--------------' '----------'
 
     for origin in "${SELECTED_ORIGINS[@]}"; do
         for prompt_id in "${PROMPT_IDS[@]}"; do
             row="$(awk -F '\t' -v wanted_origin="$origin" -v wanted_prompt="$prompt_id" \
                         '$1 == wanted_origin && $2 == wanted_prompt { print; exit }' "$summary_tsv")"
             if [[ -n "$row" ]]; then
-                IFS=$'\t' read -r summary_origin summary_prompt fichas generation_rate ttft node_p50 total <<< "$row"
-                printf '%-14s %-23s %14s %16s %10s %14s %10s\n' \
+                IFS=$'\t' read -r summary_origin summary_prompt fichas generation_rate mtp_acceptance_rate ttft node_p50 total <<< "$row"
+                printf '%-14s %-23s %14s %16s %18s %10s %14s %10s\n' \
                             "$summary_origin" "$summary_prompt" "$fichas" "$generation_rate" \
-                            "$ttft" "$node_p50" "$total"
+                            "$mtp_acceptance_rate" "$ttft" "$node_p50" "$total"
             else
-                printf '%-14s %-23s %14s %16s %10s %14s %10s\n' \
-                            "$origin" "$prompt_id" 'indisponivel' '-' '-' '-' '-'
+                printf '%-14s %-23s %14s %16s %18s %10s %14s %10s\n' \
+                            "$origin" "$prompt_id" 'indisponivel' '-' '-' '-' '-' '-'
             fi
         done
     done
@@ -526,12 +550,14 @@ collect_one() {
     local prompt_id="$3"
     local repetition="$4"
     local prompt="$5"
+    local request_max_tokens="${6:-$MAX_TOKENS}"
     local timestamp
     local body
     local row_status
 
+    REQUEST_MAX_TOKENS="$request_max_tokens"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    body="$(request_json "$prompt")"
+    body="$(request_json "$prompt" "$request_max_tokens")"
     run_request "$origin" "$body"
     parse_request_output
 
@@ -572,6 +598,7 @@ main() {
     require_command curl
     require_command jq
     require_command ssh
+    require_command openssl
    if contains salem-ksia "${SELECTED_ORIGINS[@]}"; then
        require_command expect
         require_command base64
@@ -591,6 +618,7 @@ main() {
     echo "medicao=$LABEL csv=$CSV_PATH model_requested=$MODEL_REQUESTED_LABEL max_tokens=$MAX_TOKENS stream=$STREAM" >&2
     echo 'seed: nao enviada; /api/generate nao oferece semente fixa' >&2
     echo "prompts longos: 180 linhas de enchimento deterministico por prompt" >&2
+    echo "prefill aleatorio: $PREFILL_RANDOM_WORDS palavras hexicas unicas por chamada, max_tokens=$PREFILL_MAX_TOKENS" >&2
 
     for origin in "${SELECTED_ORIGINS[@]}"; do
         warmup_failed=0
@@ -602,9 +630,13 @@ main() {
             continue
         fi
         for prompt_id in "${PROMPT_IDS[@]}"; do
-            prompt="$(get_prompt "$prompt_id")"
             for repetition in $(seq 1 "$REPETITIONS"); do
-                collect_one measurement "$origin" "$prompt_id" "$repetition" "$prompt" || true
+                prompt="$(get_prompt "$prompt_id")"
+                request_max_tokens="$MAX_TOKENS"
+                if [[ "$prompt_id" == p-prefill-aleatorio ]]; then
+                    request_max_tokens="$PREFILL_MAX_TOKENS"
+                fi
+                collect_one measurement "$origin" "$prompt_id" "$repetition" "$prompt" "$request_max_tokens" || true
             done
         done
     done

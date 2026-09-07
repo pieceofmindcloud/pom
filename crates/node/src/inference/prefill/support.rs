@@ -972,6 +972,15 @@ pub struct RequestTrace {
     /// nesta requisição. `<= prefill_max_inflight_chunks`; `1` quando a
     /// sobreposição não pegou (prompt de um pedaço só, janela em 1, modo anel).
     pub prefill_pipeline_depth_max: u32,
+    /// Tokens draft que o caminho MTP propôs nesta requisição, somados entre
+    /// todos os hops e steps.
+    pub mtp_draft_tokens_proposed: u64,
+    /// Tokens draft que passaram no critério de aceitação do MTP.
+    pub mtp_draft_tokens_accepted: u64,
+    /// Tokens draft que foram verificados mas não foram aceitos pelo MTP.
+    pub mtp_draft_tokens_rejected: u64,
+    /// `accepted / proposed`; nulo quando a requisição não propôs tokens MTP.
+    pub mtp_acceptance_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1113,6 +1122,10 @@ impl RequestTrace {
             prefill_max_inflight_chunks: 1,
             prefill_overlapped_chunks: 0,
             prefill_pipeline_depth_max: 0,
+            mtp_draft_tokens_proposed: 0,
+            mtp_draft_tokens_accepted: 0,
+            mtp_draft_tokens_rejected: 0,
+            mtp_acceptance_rate: None,
             hops: steps
                 .iter()
                 .map(|(node_id, start_layer, end_layer)| HopTrace {
@@ -1214,8 +1227,28 @@ impl RequestTrace {
             tls,
             node,
         );
+        self.record_mtp_counts(node);
         self.total_bytes_sent += bytes_sent;
         self.total_bytes_received += bytes_received;
+    }
+
+    fn record_mtp_counts(&mut self, node: &serde_json::Value) {
+        let get = |key: &str| node.get(key).and_then(|value| value.as_u64()).unwrap_or(0);
+        self.mtp_draft_tokens_proposed = self
+            .mtp_draft_tokens_proposed
+            .saturating_add(get("mtp_draft_tokens_proposed"));
+        self.mtp_draft_tokens_accepted = self
+            .mtp_draft_tokens_accepted
+            .saturating_add(get("mtp_draft_tokens_accepted"));
+        self.mtp_draft_tokens_rejected = self
+            .mtp_draft_tokens_rejected
+            .saturating_add(get("mtp_draft_tokens_rejected"));
+        self.refresh_mtp_acceptance_rate();
+    }
+
+    fn refresh_mtp_acceptance_rate(&mut self) {
+        self.mtp_acceptance_rate = (self.mtp_draft_tokens_proposed > 0)
+            .then(|| self.mtp_draft_tokens_accepted as f64 / self.mtp_draft_tokens_proposed as f64);
     }
 
     pub fn record_hop_from_sent(
@@ -1337,6 +1370,16 @@ impl RequestTrace {
     pub fn merge(&mut self, other: &RequestTrace) {
         self.total_bytes_sent += other.total_bytes_sent;
         self.total_bytes_received += other.total_bytes_received;
+        self.mtp_draft_tokens_proposed = self
+            .mtp_draft_tokens_proposed
+            .saturating_add(other.mtp_draft_tokens_proposed);
+        self.mtp_draft_tokens_accepted = self
+            .mtp_draft_tokens_accepted
+            .saturating_add(other.mtp_draft_tokens_accepted);
+        self.mtp_draft_tokens_rejected = self
+            .mtp_draft_tokens_rejected
+            .saturating_add(other.mtp_draft_tokens_rejected);
+        self.refresh_mtp_acceptance_rate();
         self.transport_trace_complete &= other.transport_trace_complete;
         if self.prefix_reuse_status.is_none() {
             self.prefix_reuse_status = other.prefix_reuse_status.clone();

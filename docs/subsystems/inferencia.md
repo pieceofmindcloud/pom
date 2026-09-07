@@ -1511,6 +1511,15 @@ valores são iguais.
   composição (`decode_hidden(..., tokens)`). Sem ela - peer velho que não
   ecoa - o `observe` desliga o MTP com aviso: a resposta continua correta, só
   não especulativa.
+- **A aceitação é telemetria por requisição.** Cada `step` publica em
+  `node_timings` os contadores `mtp_draft_tokens_proposed`,
+  `mtp_draft_tokens_accepted` e `mtp_draft_tokens_rejected`. `proposed` é o
+  tamanho do draft efetivamente submetido à verificação, portanto cada token
+  verificado termina em aceito ou rejeitado. O gateway soma os contadores de
+  todos os hops e pernas no `RequestTrace` e calcula `mtp_acceptance_rate` como
+  `accepted / proposed`; sem proposta MTP a taxa é `null`. A contagem ocorre uma
+  vez por lote verificado, fora do laço por token, e não altera os parâmetros nem
+  o critério da especulação.
 - **Exige binário novo em todos os hops.** `supports_mtp` pede
   `speculate/v1-mtp-sliced` em cada step (o protocolo `tokens`/`mtp_k`/
   `next_draft` só existe em build novo - um peer velho no anel receberia um
@@ -1900,13 +1909,6 @@ medição do transporte usado para iniciar o stream.
   conferem que o repasse chegou. A causa não foi investigada aqui; o que está
   medido é que a instabilidade não depende do canal persistente - ela aparece
   igual na árvore sem ele.
-- **MTP sem medição de tok/s** (2026-08-16, cortado por cota): a implementação
-  está completa e verde nos testes de unidade, mas o ganho ponta a ponta não
-  foi medido neste projeto - nem no caso fatiado, onde o que falta medir é a
-  taxa de aceitação do `next_draft` (ver seção 5.2). O que existe é a medição
-  do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
-  Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
-  pom é expectativa, não fato.
 ## Nota de versão
 
 Documentado a partir dos fontes na branch `fm/rdma-gateway-remoto-por-token`

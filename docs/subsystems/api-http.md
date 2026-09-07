@@ -95,6 +95,10 @@ haver chave.
   de abrir o SSE. `finish_reason` e `partial` também aparecem no corpo: uma
   geração interrompida pelo detector de ciclo tem `finish_reason: "cycle"` e
   `partial: true`; esse motivo não é um corte silencioso nem uma nova execução.
+  `trace` também expõe, por requisição, `mtp_draft_tokens_proposed`,
+  `mtp_draft_tokens_accepted`, `mtp_draft_tokens_rejected` e
+  `mtp_acceptance_rate` (`accepted / proposed`, ou `null` sem proposta MTP).
+  `proposed` conta somente o draft que chegou à verificação do alvo.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).
@@ -630,8 +634,10 @@ começando com `pipeline:` e com **dois** hops é a prova.
 `x_pom.timings` é extensão própria, tanto no último chunk do SSE quanto nas
 respostas não-streaming. O formato compatível com OpenAI continua intacto:
 clientes que ignoram `x_pom` continuam lendo `usage`, `choices` e os demais
-campos padrão. A auditoria em `GET /api/ui/requests` devolve esse mesmo objeto
-em `timings`, separado do `telemetry` por hop.
+campos padrão. `x_pom.trace` carrega o mesmo `RequestTrace`, incluindo os quatro
+campos de aceitação MTP por requisição. A auditoria em
+`GET /api/ui/requests` preserva esse mesmo objeto em `telemetry`, ao lado de
+`timings` de geração.
 
 `x_pom.finish_reason: "cycle"` e `x_pom.partial: true` identificam uma parada
 por repetição nos adaptadores OpenAI e Anthropic, no chunk final e na resposta

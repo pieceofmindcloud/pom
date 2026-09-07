@@ -686,7 +686,19 @@ pub(super) fn aggregate_remote_node_timings(items: &[RemoteStreamItem]) -> Value
             continue;
         };
         for (key, value) in values {
-            if key.ends_with("_ms") {
+            if matches!(
+                key.as_str(),
+                "mtp_draft_tokens_proposed"
+                    | "mtp_draft_tokens_accepted"
+                    | "mtp_draft_tokens_rejected"
+            ) {
+                let total = merged
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .saturating_add(value.as_u64().unwrap_or(0));
+                merged.insert(key.clone(), json!(total));
+            } else if key.ends_with("_ms") {
                 let total = merged.get(key).and_then(Value::as_f64).unwrap_or(0.0)
                     + value.as_f64().unwrap_or(0.0);
                 merged.insert(key.clone(), json!(total));
@@ -861,6 +873,41 @@ mod remote_stream_tests {
         assert_eq!(batch["done"], true);
         assert!(error.is_none());
         assert!(terminal);
+    }
+
+    #[test]
+    fn lote_remoto_soma_contadores_mtp_de_rodadas_agrupadas() {
+        let timings = |proposed, accepted, rejected| {
+            json!({
+                "mtp_draft_tokens_proposed": proposed,
+                "mtp_draft_tokens_accepted": accepted,
+                "mtp_draft_tokens_rejected": rejected,
+            })
+        };
+        let items = [
+            token_with_node_timings(timings(7, 5, 2)),
+            token_with_node_timings(timings(3, 2, 1)),
+        ];
+
+        let aggregated = aggregate_remote_node_timings(&items);
+
+        assert_eq!(aggregated["mtp_draft_tokens_proposed"], 10);
+        assert_eq!(aggregated["mtp_draft_tokens_accepted"], 7);
+        assert_eq!(aggregated["mtp_draft_tokens_rejected"], 3);
+    }
+
+    fn token_with_node_timings(node_timings: Value) -> RemoteStreamItem {
+        RemoteStreamItem::Token(RemoteStreamToken {
+            token_id: 0,
+            text: String::new(),
+            done: false,
+            processing_ms: 0,
+            node_timings: Some(node_timings),
+            speculated: true,
+            speculation_active: true,
+            speculation_disabled_reason: None,
+            next_draft: None,
+        })
     }
 
     #[test]

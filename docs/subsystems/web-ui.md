@@ -311,11 +311,12 @@ clientes da pipeline. Chamadas de controle entre nós usam a segunda com um
 marcador interno próprio, que o navegador nunca envia.
 
 `GET /api/ui/node` devolve a `connection_key` do cluster depois da catraca, e o
-`useNode()` guarda a chave em `localStorage` (`codai.connectionKey`), para então
-assinar cada request com `Authorization: Bearer <key>` - o mesmo
-`ApiKeyAuth`/`ConnectionAuth` do `auth.rs`, que também aceita `x-api-key`. A
-chave de conexão continua sendo a credencial das rotas `/v1` e dos handlers de
-operador; ela não substitui o token administrativo no navegador. `POST
+`useNode()` guarda a chave em `localStorage` (`codai.connectionKey`) para
+assinar somente as requisições administrativas com `Authorization: Bearer
+<key>`. A inferência usa exclusivamente a API key dedicada `pom-[node_id]`,
+obtida em `POST /api/ui/chat-key` e enviada como `X-API-Key` em cada chamada
+`/api/generate` ou `/v1`. Se ela for revogada, a próxima tentativa cria uma
+substituta e repete a mensagem uma única vez. `POST
 /api/setup/key` e `/api/setup/save` **não** estão no router normal de
 propósito: só o modo setup (sem `pom.json`) as serve, porque `GET
 /api/setup/key` rotacionaria a credencial num nó já configurado.
@@ -325,8 +326,9 @@ túnel, usados pelo deploy TP para transportar o endereço correto até cada
 rank.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
-local do navegador e não vale como credencial. Toda rota da API continua exigindo
-a chave de conexão, seja qual for o perfil na tela.
+local do navegador e não vale como credencial. As rotas administrativas usam a
+chave de conexão; `/api/generate` e `/v1` usam exclusivamente a API key
+dedicada de inferência, seja qual for o perfil na tela.
 
 ## Janelas modais: portal e pilha de Esc
 

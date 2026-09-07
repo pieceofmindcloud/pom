@@ -83,7 +83,9 @@ planejador não fechou a cobertura `0..total_layers`.
 ## Bateria de rotas e forma da saída
 
 Para separar o efeito da forma da saída do efeito da origem de rede, rode
-`./scripts/bench-rotas.sh <rotulo>`. O script executa uma chamada de
+`POM_BENCH_API_KEY=sk-... ./scripts/bench-rotas.sh <rotulo>`. A variável é
+obrigatória, usada somente como cabeçalho de inferência e nunca aparece no
+CSV ou no resumo. O script executa uma chamada de
 aquecimento por origem, depois três repetições em cada combinação de
 `mac-local`, `mac-ksia`, `ksia-local`, `salem-ksia` com os prompts
 `p-curto-repetitivo`, `p-curto-variado`, `p-longo-repetitivo`,

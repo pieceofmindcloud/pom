@@ -11,12 +11,14 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   inclui ao final os contadores
   `trace_mtp_draft_tokens_{proposed,accepted,rejected}` e
   `trace_mtp_acceptance_rate`, preservando a ordem das colunas anteriores; o
-  quinto prompt usa 1200 palavras hexadecimais novas e `max_tokens=8`. Por
-  padrao omite `model` no `/api/generate`, para o gateway usar o modelo
-  atualmente servido; `POM_BENCH_MODEL` e um override
-  opcional. A origem `salem-ksia` usa `SALEM_PASS` em tempo de execucao,
-  nunca uma senha gravada no repositorio. Veja o cabecalho do script para as
-  colunas, URLs e opcoes `--origens`, `--repeticoes` e `--csv`.
+  quinto prompt usa 1200 palavras hexadecimais novas e `max_tokens=8`. Envia a
+  API key de inferência em `POM_BENCH_API_KEY` para cada chamada ao
+  `/api/generate`; a variável não é impressa nem gravada no CSV. Por padrao
+  omite `model` no `/api/generate`, para o gateway usar o modelo atualmente
+  servido; `POM_BENCH_MODEL` e um override opcional. A origem `salem-ksia`
+  usa `SALEM_PASS` em tempo de execucao, nunca uma senha gravada no
+  repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
+  `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
   exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,

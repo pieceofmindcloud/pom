@@ -64,6 +64,10 @@ pub struct ApiKey {
     pub key: String,
     pub label: String,
     pub node_id: String,
+    /// Node that minted this key. It remains stable when the key is
+    /// synchronized to another node or assigned to a consumer node.
+    #[serde(default)]
+    pub origin_node_id: String,
     #[serde(default)]
     pub active: bool,
     pub created_at: String,
@@ -509,7 +513,10 @@ impl Config {
     /// `POM_SLOT_PERSIST_PREFIX_CACHE` (`1`/`true`/`yes`/`on`) vence o campo do
     /// `pom.json`.
     pub fn slot_persist_prefix_cache_enabled(&self) -> bool {
-        match crate::brand::env("SLOT_PERSIST_PREFIX_CACHE").ok().as_deref() {
+        match crate::brand::env("SLOT_PERSIST_PREFIX_CACHE")
+            .ok()
+            .as_deref()
+        {
             Some(v) => matches!(
                 v.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
@@ -925,6 +932,7 @@ mod tests {
                     key: "sk-old".into(),
                     label: "old".into(),
                     node_id: "n1".into(),
+                    origin_node_id: "n1".into(),
                     active: false,
                     created_at: "2026-01-01T00:00:00Z".into(),
                 },
@@ -933,6 +941,7 @@ mod tests {
                     key: "sk-active".into(),
                     label: "active".into(),
                     node_id: "n1".into(),
+                    origin_node_id: "n1".into(),
                     active: true,
                     created_at: "2026-02-01T00:00:00Z".into(),
                 },

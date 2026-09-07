@@ -4,10 +4,10 @@
  * Paths are relative: in production the node serves this app on its own gateway
  * port, and in development Vite proxies the same paths (see `vite.config.ts`).
  *
- * The connection key authenticates nodes and pipeline clients. The separate
- * `X-POM-Access-Token` only authenticates a person to the administrative
- * surface; it is kept in memory for this browser tab and never replaces the
- * connection key.
+ * The connection key authenticates the administrative surface. Inference uses
+ * the browser's dedicated `pom-[node_id]` API key, created by `/api/ui/chat-key`.
+ * The separate `X-POM-Access-Token` only authenticates a person to the
+ * administrative surface; it is kept in memory for this browser tab.
  */
 
 import { getActiveLocale } from "../i18n/locales";
@@ -27,6 +27,8 @@ const KEY_STORAGE = storageKey("connectionKey");
 
 let connectionKey: string = localStorage.getItem(KEY_STORAGE) ?? "";
 let adminAccessToken = "";
+let chatApiKey: string | null = null;
+let chatApiKeyRequest: Promise<string> | null = null;
 
 export const ADMIN_ACCESS_TOKEN_HEADER = "X-POM-Access-Token";
 
@@ -62,6 +64,34 @@ export function setAdminAccessToken(token: string) {
 
 export function clearAdminAccessToken() {
   setAdminAccessToken("");
+}
+
+function isInferencePath(path: string): boolean {
+  const pathname = path.split("?", 1)[0];
+  return pathname === "/api/generate" || pathname === "/generate" || pathname.startsWith("/v1/");
+}
+
+export function forgetChatApiKey() {
+  chatApiKey = null;
+}
+
+/** Return the node-owned API key reserved for this UI's inference requests. */
+export async function ensureChatApiKey(force = false): Promise<string> {
+  if (!force && chatApiKey) return chatApiKey;
+  if (chatApiKeyRequest) return chatApiKeyRequest;
+  chatApiKeyRequest = (async () => {
+    const response = await request<{ key?: unknown }>("/api/ui/chat-key", {
+      method: "POST",
+    });
+    if (typeof response.key !== "string" || !response.key) {
+      throw new ApiError(502, "the chat API key was not provisioned");
+    }
+    chatApiKey = response.key;
+    return response.key;
+  })().finally(() => {
+    chatApiKeyRequest = null;
+  });
+  return chatApiKeyRequest;
 }
 
 /** Thrown for any non-2xx answer, carrying whatever the node explained. */
@@ -110,29 +140,41 @@ export async function request<T>(
   path: string,
   { method = "GET", body, auth = true, signal }: RequestOptions = {},
 ): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
-  if (adminAccessToken && isAdminSurfacePath(path)) {
-    headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+  const inference = isInferencePath(path);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (inference) {
+      headers["X-API-Key"] = await ensureChatApiKey(attempt > 0);
+    } else if (auth && connectionKey) {
+      headers.Authorization = `Bearer ${connectionKey}`;
+    }
+    if (adminAccessToken && isAdminSurfacePath(path)) {
+      headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+    }
+
+    const res = await fetch(path, {
+      method,
+      headers,
+      credentials: "same-origin",
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    });
+
+    if (inference && (res.status === 401 || res.status === 403) && attempt === 0) {
+      forgetChatApiKey();
+      continue;
+    }
+    if (!res.ok) {
+      const { message, body: detail } = await explain(res);
+      throw new ApiError(res.status, message, detail);
+    }
+    if (res.status === 204) return undefined as T;
+
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
   }
-
-  const res = await fetch(path, {
-    method,
-    headers,
-    credentials: "same-origin",
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
-
-  if (!res.ok) {
-    const { message, body: detail } = await explain(res);
-    throw new ApiError(res.status, message, detail);
-  }
-  if (res.status === 204) return undefined as T;
-
-  const text = await res.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  throw new ApiError(502, "inference authentication failed");
 }
 
 type ConditionalCacheEntry = {
@@ -163,48 +205,40 @@ export async function requestConditional<T>(
   { auth = true, signal }: Pick<RequestOptions, "auth" | "signal"> = {},
 ): Promise<T> {
   const cached = conditionalCache.get(path);
-  const headers: Record<string, string> = {};
-  if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
-  if (adminAccessToken && isAdminSurfacePath(path)) {
-    headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+  const inference = isInferencePath(path);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {};
+    if (inference) headers["X-API-Key"] = await ensureChatApiKey(attempt > 0);
+    else if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+    if (adminAccessToken && isAdminSurfacePath(path)) {
+      headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+    }
+    if (cached) headers["If-None-Match"] = cached.etag;
+
+    let res = await fetch(path, { method: "GET", headers, credentials: "same-origin", signal });
+    if (inference && (res.status === 401 || res.status === 403) && attempt === 0) {
+      forgetChatApiKey();
+      continue;
+    }
+    // A 304 without a local value is not useful to a new tab. Recover with one
+    // unconditional read instead of exposing an impossible empty state.
+    if (res.status === 304 && !cached) {
+      res = await fetch(path, { method: "GET", headers: { ...headers, "If-None-Match": "" }, credentials: "same-origin", signal });
+    }
+    if (res.status === 304 && cached) return cached.data as T;
+    if (!res.ok) {
+      const { message, body: detail } = await explain(res);
+      throw new ApiError(res.status, message, detail);
+    }
+
+    const text = await res.text();
+    const data = (text ? JSON.parse(text) : undefined) as T;
+    const etag = res.headers.get("ETag");
+    if (etag) conditionalCache.set(path, { etag, data });
+    else conditionalCache.delete(path);
+    return data;
   }
-  if (cached) headers["If-None-Match"] = cached.etag;
-
-  let res = await fetch(path, {
-    method: "GET",
-    headers,
-    credentials: "same-origin",
-    signal,
-  });
-
-  // A 304 without a local value is not useful to a new tab. Recover with one
-  // unconditional read instead of exposing an impossible empty state.
-  if (res.status === 304 && !cached) {
-    res = await fetch(path, {
-      method: "GET",
-      headers: {
-        ...(auth && connectionKey ? { Authorization: `Bearer ${connectionKey}` } : {}),
-        ...(adminAccessToken && isAdminSurfacePath(path)
-          ? { [ADMIN_ACCESS_TOKEN_HEADER]: adminAccessToken }
-          : {}),
-      },
-      credentials: "same-origin",
-      signal,
-    });
-  }
-
-  if (res.status === 304 && cached) return cached.data as T;
-  if (!res.ok) {
-    const { message, body: detail } = await explain(res);
-    throw new ApiError(res.status, message, detail);
-  }
-
-  const text = await res.text();
-  const data = (text ? JSON.parse(text) : undefined) as T;
-  const etag = res.headers.get("ETag");
-  if (etag) conditionalCache.set(path, { etag, data });
-  else conditionalCache.delete(path);
-  return data;
+  throw new ApiError(502, "inference authentication failed");
 }
 
 export const api = {
@@ -439,25 +473,32 @@ export async function* streamSse(
   body: unknown,
   signal?: AbortSignal,
 ): AsyncGenerator<string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-  };
-  if (connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
-  if (adminAccessToken && isAdminSurfacePath(path)) {
-    headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+  let res: Response | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "X-API-Key": await ensureChatApiKey(attempt > 0),
+    };
+    if (adminAccessToken && isAdminSurfacePath(path)) {
+      headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+    }
+    res = await fetch(path, {
+      method: "POST",
+      headers,
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+      signal,
+    });
+    if ((res.status === 401 || res.status === 403) && attempt === 0) {
+      forgetChatApiKey();
+      continue;
+    }
+    break;
   }
-
-  const res = await fetch(path, {
-    method: "POST",
-    headers,
-    credentials: "same-origin",
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok) {
-    const { message, body: detail } = await explain(res);
-    throw new ApiError(res.status, message, detail);
+  if (!res || !res.ok) {
+    const { message, body: detail } = await explain(res!);
+    throw new ApiError(res?.status ?? 502, message, detail);
   }
   if (!res.body) {
     throw new ApiError(

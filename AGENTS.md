@@ -147,8 +147,9 @@ quebra o produto inteiro.
   apagar `.pom-node.key` cria uma máquina nova. Não confundir com
   `.pom.key`, do pkarr. → `rede-p2p.md`
 - **A chave de conexão é a mesma no cluster inteiro** e é a credencial de
-  operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e as rotas
-  `/v1`. A superfície administrativa da UI usa sessão em memória com cookie
+  operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e a
+  sincronização nó-a-nó. `POST /api/generate` e todas as rotas `/v1/` aceitam
+  somente uma API key ativa. A superfície administrativa da UI usa sessão em memória com cookie
   `HttpOnly`; o token humano não vai para storage nem URL. Em modo local, a
   mesma fronteira cobre os ficheiros estáticos, mas nunca as rotas da pipeline.
   Sem `pom.json` o nó sobe em **modo setup**, que serve só a tela de escolha

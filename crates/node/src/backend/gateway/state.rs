@@ -173,6 +173,7 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == "/handshake"
         || path == crate::tls_policy::TLS_POLICY_PATH
         || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
+        || path.starts_with("/api/internal/")
         || path.starts_with("/api/transfer/")
         || path.starts_with("/v1/")
 }
@@ -549,7 +550,10 @@ pub(super) fn self_dial_host(advertised: Option<String>, local_ip: Option<String
 /// Reduz uma fotografia de peers para a capacidade do modelo selecionado.
 /// Manter essa função sobre um slice permite que `/v1/models` use exatamente
 /// o mesmo snapshot para descobrir IDs e publicar seus limites.
-pub(super) fn runtime_capacity_from_peers(peers: &[PeerInfo], model: &str) -> (Option<RuntimeCapacity>, bool) {
+pub(super) fn runtime_capacity_from_peers(
+    peers: &[PeerInfo],
+    model: &str,
+) -> (Option<RuntimeCapacity>, bool) {
     let (label, deploy_id) = crate::deployment::split_selector(model);
     let matching: Vec<&PeerInfo> = peers
         .iter()

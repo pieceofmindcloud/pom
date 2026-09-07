@@ -167,6 +167,7 @@ struct BatchKey {
     dtype: WireDtype,
     route: String,
     contract: String,
+    auth_partition: String,
 }
 
 struct BatchCall {
@@ -208,6 +209,7 @@ impl BatchCoordinator {
         path: &str,
         meta: &Value,
         dtype: WireDtype,
+        auth_partition: String,
     ) -> BatchKey {
         let route = meta
             .get("next_hops")
@@ -231,6 +233,7 @@ impl BatchCoordinator {
             dtype,
             route,
             contract,
+            auth_partition,
         }
     }
 
@@ -255,7 +258,12 @@ impl BatchCoordinator {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut meta = meta.clone();
         meta["item_id"] = Value::from(item_id.clone());
-        let key = Self::key(step, path, &meta, dtype);
+        let auth_partition = meta
+            .get("session_id")
+            .and_then(Value::as_str)
+            .and_then(|session_id| clients.inference_token_for_session(session_id))
+            .unwrap_or_default();
+        let key = Self::key(step, path, &meta, dtype, auth_partition);
         let (reply, receiver) = oneshot::channel();
         let call = BatchCall {
             clients: clients.clone(),
@@ -365,6 +373,7 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
             Bytes::from(body),
             first.attempts,
             &first.peer_label,
+            first.meta.get("session_id").and_then(Value::as_str),
         )
         .await?;
         let (_, decoded) = wire::decode_batch_items(&response.body)?;
@@ -748,6 +757,7 @@ pub async fn send_frame(
         peer_label,
         false,
         on_issue,
+        None,
     )
     .await
 }
@@ -768,6 +778,7 @@ async fn send_frame_with_protocol(
     peer_label: &str,
     transport_fallback: bool,
     mut on_issue: impl FnMut(SendIssue),
+    session_id: Option<&str>,
 ) -> Result<SentFrame> {
     // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
     // certificado esperado deste destino, e o pinning é o que distingue o peer
@@ -806,7 +817,7 @@ async fn send_frame_with_protocol(
                 .body(body.clone())
                 .timeout(DIRECT_FRAME_TIMEOUT);
             let sent = clients
-                .authorize_inference_request(request)
+                .authorize_inference_request_for_session(request, session_id)
                 .await
                 .send()
                 .await;
@@ -933,6 +944,7 @@ async fn send_batch_body(
     body: Bytes,
     attempts: u32,
     peer_label: &str,
+    session_id: Option<&str>,
 ) -> Result<BatchTransportResponse> {
     if let Some(local) = local {
         debug!(peer = peer_label, path, "inferência em processo em batch");
@@ -982,7 +994,7 @@ async fn send_batch_body(
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
         && !crate::infer_tunnel::is_local_node(&step.node_id)
     {
-        match crate::link::send_batch_with_candidates(
+        match crate::link::send_batch_with_session(
             clients,
             &step.node_id,
             &step.inference_url,
@@ -990,6 +1002,7 @@ async fn send_batch_body(
             batch_id,
             body.clone(),
             peer_label,
+            session_id,
         )
         .await
         {
@@ -1016,7 +1029,7 @@ async fn send_batch_body(
     }
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = clients.inference_token().await;
+        let auth = session_id.and_then(|id| clients.inference_token_for_session(id));
         match send_batch_via_tunnel(
             tunnel,
             peer_id,
@@ -1025,6 +1038,7 @@ async fn send_batch_body(
             body.to_vec(),
             peer_label,
             auth,
+            session_id,
         )
         .await
         {
@@ -1067,7 +1081,7 @@ async fn send_batch_body(
                 .body(body.clone())
                 .timeout(DIRECT_FRAME_TIMEOUT);
             let response = clients
-                .authorize_inference_request(request)
+                .authorize_inference_request_for_session(request, session_id)
                 .await
                 .send()
                 .await;
@@ -1126,12 +1140,19 @@ async fn send_batch_via_tunnel(
     body: Vec<u8>,
     peer_label: &str,
     auth_token: Option<String>,
+    session_id: Option<&str>,
 ) -> Result<BatchTransportResponse> {
     let mut headers = Vec::new();
     if let Some(token) = auth_token {
         headers.push((
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),
+        ));
+    }
+    if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
+        headers.push((
+            crate::auth::INFERENCE_SESSION_HEADER.to_string(),
+            session_id.to_string(),
         ));
     }
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1457,10 +1478,11 @@ pub async fn send_frame_or_tunnel(
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
+    let session_id = meta.get("session_id").and_then(Value::as_str);
     let mut transport_fallback = false;
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = clients.inference_token().await;
+        let auth = session_id.and_then(|id| clients.inference_token_for_session(id));
         match send_frame_via_tunnel_with_auth(
             tunnel,
             peer_id,
@@ -1473,6 +1495,7 @@ pub async fn send_frame_or_tunnel(
             use_batch_frame,
             peer_label,
             auth,
+            session_id,
         )
         .await
         {
@@ -1500,6 +1523,7 @@ pub async fn send_frame_or_tunnel(
         peer_label,
         transport_fallback,
         on_issue,
+        session_id,
     )
     .await
 }
@@ -1580,6 +1604,7 @@ pub async fn send_frame_via_tunnel(
         false,
         peer_label,
         None,
+        None,
     )
     .await
 }
@@ -1596,6 +1621,7 @@ async fn send_frame_via_tunnel_with_auth(
     use_batch_frame: bool,
     peer_label: &str,
     auth_token: Option<String>,
+    session_id: Option<&str>,
 ) -> Result<SentFrame> {
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
@@ -1612,6 +1638,12 @@ async fn send_frame_via_tunnel_with_auth(
         headers.push((
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),
+        ));
+    }
+    if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
+        headers.push((
+            crate::auth::INFERENCE_SESSION_HEADER.to_string(),
+            session_id.to_string(),
         ));
     }
     let outbound = TunnelOutbound {

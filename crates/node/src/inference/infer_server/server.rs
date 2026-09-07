@@ -279,7 +279,12 @@ impl InferState {
     /// llama.cpp serializa as células da sequência com suas posições, e o
     /// sidecar `.json` grava a identidade do modelo e da fatia para a
     /// restauração recusar um estado incompatível.
-    pub(super) fn save_slot(&self, sid: &str, dir: &std::path::Path, name: &str) -> Result<SlotSidecar> {
+    pub(super) fn save_slot(
+        &self,
+        sid: &str,
+        dir: &std::path::Path,
+        name: &str,
+    ) -> Result<SlotSidecar> {
         let name = sanitize_slot_name(name)?;
         let session = self
             .sessions
@@ -344,8 +349,8 @@ impl InferState {
         }
         let raw = std::fs::read(slot_json_path(dir, name))
             .with_context(|| format!("ler sidecar de {name}"))?;
-        let sidecar: SlotSidecar = serde_json::from_slice(&raw)
-            .with_context(|| format!("sidecar de {name} ilegível"))?;
+        let sidecar: SlotSidecar =
+            serde_json::from_slice(&raw).with_context(|| format!("sidecar de {name} ilegível"))?;
         self.check_slot_compatible(&sidecar)?;
 
         let seq = self.alloc_seq().ok_or_else(|| {
@@ -516,6 +521,7 @@ pub async fn run(
     tls: Option<crate::serve::TlsServer>,
     auth: Option<crate::auth::AuthState>,
     database: Option<Arc<crate::db::PomDb>>,
+    network: Option<Arc<crate::network::Network>>,
     model_cache: Arc<ModelCache>,
     reuse_weights: bool,
 ) -> Result<()> {
@@ -689,7 +695,7 @@ pub async fn run(
         .route("/v1/session/slot", post(handle_slot));
     let inference_routes = if let Some(auth) = auth.clone() {
         inference_routes.layer(middleware::from_fn_with_state(
-            (auth, database.clone()),
+            (auth, database.clone(), network.clone()),
             require_inference_auth,
         ))
     } else {
@@ -712,7 +718,7 @@ pub async fn run(
     );
     let link_routes = if let Some(auth) = auth.clone() {
         link_routes.layer(middleware::from_fn_with_state(
-            (auth, database.clone()),
+            (auth, database.clone(), network.clone()),
             require_inference_auth,
         ))
     } else {
@@ -726,7 +732,7 @@ pub async fn run(
     );
     let tp_routes = if let Some(auth) = auth {
         tp_routes.layer(middleware::from_fn_with_state(
-            (auth, database),
+            (auth, database, network),
             require_inference_auth,
         ))
     } else {
@@ -1406,7 +1412,11 @@ pub(super) async fn handle_slot(
     }
 }
 
-pub(super) fn replicate_slot_call(state: &SharedState, headers: &axum::http::HeaderMap, req: &SlotRequest) {
+pub(super) fn replicate_slot_call(
+    state: &SharedState,
+    headers: &axum::http::HeaderMap,
+    req: &SlotRequest,
+) {
     if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
         return; // já é a réplica
     }
@@ -1604,7 +1614,12 @@ pub(super) fn rollback_session(
 /// O quadro é repassado byte a byte, com o id do decode no cabeçalho. Quem
 /// recebe o cabeçalho é réplica: abre o decode com o id recebido e **não**
 /// retransmite, senão o grupo se multiplicaria a cada salto.
-pub(super) fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &str, body: &Bytes) {
+pub(super) fn open_tp_decode(
+    state: &SharedState,
+    headers: &axum::http::HeaderMap,
+    rota: &str,
+    body: &Bytes,
+) {
     if headers.get(BATCH_CHILD_HEADER).is_some() {
         return;
     }

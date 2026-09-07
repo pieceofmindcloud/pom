@@ -19,11 +19,8 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
             get(cluster_logs_policy),
         )
         .route("/handshake", post(session::handle_handshake))
-        // Onde a cauda de um pipeline entrega o resultado. Sem autenticação de
-        // chave por desenho: o hop que responde é um par de inferência, que
-        // nunca teve a chave do operador. Quem autoriza é o ticket — um UUID v4
-        // sorteado por quadro, que só a própria cadeia recebeu, e que deixa de
-        // existir assim que o quadro fecha.
+        // Onde a cauda de um pipeline entrega o resultado. A API key da sessão
+        // autentica o peer e o ticket limita a entrega ao quadro em andamento.
         .route(
             crate::direct::RELAY_RESULT_PATH,
             post(handle_relay_result).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
@@ -121,11 +118,16 @@ pub(super) async fn cluster_tls(
     }))
 }
 
-pub(super) async fn handle_relay_result(State(state): State<GatewayState>, body: Bytes) -> impl IntoResponse {
+pub(super) async fn handle_relay_result(
+    _auth: crate::auth::ApiKeyAuth,
+    State(state): State<GatewayState>,
+    body: Bytes,
+) -> impl IntoResponse {
     crate::direct::handle_relay_result(&state.reply_inbox, body)
 }
 
 pub(super) async fn handle_remote_stream_result(
+    _auth: crate::auth::ApiKeyAuth,
     State(state): State<GatewayState>,
     body: Bytes,
 ) -> impl IntoResponse {
@@ -133,7 +135,13 @@ pub(super) async fn handle_remote_stream_result(
 }
 
 /// Accept raw bytes so callers don't need `Content-Type: application/json`.
-pub(super) async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl IntoResponse {
+pub(super) async fn handle_generate(
+    auth: crate::auth::ApiKeyAuth,
+    State(state): State<GatewayState>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let inference_token = auth.token().to_string();
+    let caller = auth.into_caller();
     let req: GenerateRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -169,7 +177,7 @@ pub(super) async fn handle_generate(State(state): State<GatewayState>, body: Byt
             record_rejected(
                 &state,
                 "/api/generate",
-                crate::reqlog::Caller::anonymous(),
+                caller.clone(),
                 model.clone(),
                 prompt_for_audit,
                 request_details.clone(),
@@ -202,7 +210,7 @@ pub(super) async fn handle_generate(State(state): State<GatewayState>, body: Byt
         record_rejected(
             &state,
             "/api/generate",
-            crate::reqlog::Caller::anonymous(),
+            caller.clone(),
             model.clone(),
             req.prompt.clone(),
             request_details.clone(),
@@ -236,13 +244,12 @@ pub(super) async fn handle_generate(State(state): State<GatewayState>, body: Byt
         req.prompt.len()
     );
 
-    // `/api/generate` has never been behind auth, so there is no credential to
-    // attribute the request to — the log says exactly that instead of guessing.
     match generate_blocking_with_stops(
         "/api/generate",
-        crate::reqlog::Caller::anonymous(),
+        caller,
         GenerationInput {
             state,
+            inference_token,
             model,
             prompt: req.prompt,
             chat_template: true,

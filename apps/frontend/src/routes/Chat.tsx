@@ -2,9 +2,9 @@
  * The chat.
  *
  * It talks to the cluster the same way any other client does — `POST
- * /v1/chat/completions` with `stream: true`, signed with the connection key —
- * so what shows up here is exactly what a harness would get. No separate path,
- * no shortcut through the local node.
+ * /v1/chat/completions` with `stream: true`, using the dedicated API key owned
+ * by this UI, so what shows up here is exactly what a harness would get. No
+ * separate inference path or shortcut through the local node.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";

@@ -839,6 +839,7 @@ async fn conversa_com_hops_fault(
         let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
             crate::gateway::GenerationInput {
                 state: state.clone(),
+                inference_token: "test-api-key".into(),
                 model: "lab".into(),
                 prompt,
                 chat_template: true,

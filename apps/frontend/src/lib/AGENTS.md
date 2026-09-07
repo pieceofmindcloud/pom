@@ -112,8 +112,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### api.ts
 - `request<T>(path, opts)` - the single ordinary fetch path: JSON body,
-  same-origin credentials for the server session, optional
-  `Authorization: Bearer <connectionKey>`, throws `ApiError` on non-2xx.
+  same-origin credentials for the server session, connection-key auth for
+  administration, and the dedicated `pom-[node_id]` API key for `/v1/*` and
+  `/api/generate`; a 401/403 replaces that key once and retries.
   Everything in the app goes through it; the human token remains in memory only.
 - `requestConditional<T>(path, opts)` / `api.getConditional` - GET with an
   in-memory ETag cache. It sends `If-None-Match`, returns the cached object
@@ -125,7 +126,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `class ApiError` - carries `status` and the decoded JSON `body` so 409-style refusals (e.g. delete warnings list) survive to the caller.
 - `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
 - `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
-- `streamSse(path, body, signal)` - async generator yielding each `data:` payload of an SSE stream (blank-line framing); used by Chat for `/v1/chat/completions`.
+- `ensureChatApiKey` / `forgetChatApiKey` - keep the UI-only `pom-[node_id]`
+  key in memory and recreate it after revocation without exposing its value.
+- `streamSse(path, body, signal)` - async generator yielding each `data:`
+  payload of an SSE stream (blank-line framing); used by Chat for
+  `/v1/chat/completions`, with one replacement-key retry.
 - `api.get/post/del` - typed conveniences over `request`.
 - `devUpdate(nodeId)` - update+restart a machine, repassing to a peer when `node_id` is not this node (`src/devupdate.rs`).
 - `addNode` / `removeNode` - add/remove one machine to a deployed model (`/api/ui/deploy/node{,/remove}`).

@@ -23,11 +23,11 @@
 # gateway. A coluna fichas_por_chamada e sempre calculada como
 # trace.output_tokens / trace.hops[0].decode.calls e e a metrica central.
 #
-# A API usada e somente POST /api/generate, sem autenticacao, sempre com o
-# modelo atualmente servido (o campo model e omitido), max_tokens=200 por
-# padrao (8 no prompt de prefill aleatorio) e stream=false. POM_BENCH_MODEL
-# pode fixar um modelo apenas quando isso for desejado para uma comparacao
-# especifica. Esta rota nao oferece uma opcao de
+# A API usada e somente POST /api/generate, autenticada com a API key informada
+# em POM_BENCH_API_KEY, sempre com o modelo atualmente servido (o campo model
+# e omitido), max_tokens=200 por padrao (8 no prompt de prefill aleatorio) e
+# stream=false. POM_BENCH_MODEL pode fixar um modelo apenas quando isso for
+# desejado para uma comparacao especifica. Esta rota nao oferece uma opcao de
 # seed fixa, portanto o script nao envia seed e registra essa limitacao no
 # relatorio. A variacao estocastica deve ser tratada pelas 3 repeticoes e
 # pelas medianas, nunca por trocar as constantes entre celulas.
@@ -43,6 +43,7 @@
 set -uo pipefail
 
 MODEL="${POM_BENCH_MODEL:-}"
+API_KEY="${POM_BENCH_API_KEY:-}"
 MODEL_REQUESTED_LABEL="${MODEL:-auto}"
 readonly MAX_TOKENS=200
 readonly PREFILL_MAX_TOKENS=8
@@ -84,6 +85,7 @@ Opcoes:
   --csv CAMINHO         Arquivo de saida (padrao: bench-rotas-LABEL-UTC.csv).
   -h, --help            Mostra esta ajuda.
 
+Variaveis obrigatorias: POM_BENCH_API_KEY (API key de inferencia do POM).
 Dependencias: bash, curl, jq, openssl, ssh; expect tambem e necessario para salem-ksia.
 USAGE
 }
@@ -234,8 +236,8 @@ generate_url() {
 remote_curl_command() {
     local url="$1"
     url="$(generate_url "$url")"
-    printf "curl -sS --connect-timeout %s --max-time %s -H 'Content-Type: application/json' --write-out '\\n__POM_HTTP_STATUS__:%%{http_code}' --data-binary @- %q" \
-                "$CURL_CONNECT_TIMEOUT" "$CURL_MAX_TIME" "$url"
+    printf "curl -sS --connect-timeout %s --max-time %s -H 'Content-Type: application/json' -H %q --write-out '\\n__POM_HTTP_STATUS__:%%{http_code}' --data-binary @- %q" \
+                "$CURL_CONNECT_TIMEOUT" "$CURL_MAX_TIME" "X-API-Key: $API_KEY" "$url"
 }
 
 remote_curl_command_with_body() {
@@ -256,6 +258,7 @@ run_local_request() {
     url="$(generate_url "$url")"
     if raw="$(printf '%s' "$body" | curl -sS --connect-timeout "$CURL_CONNECT_TIMEOUT" \
                 --max-time "$CURL_MAX_TIME" -H 'Content-Type: application/json' \
+                -H "X-API-Key: $API_KEY" \
                 --write-out "$HTTP_MARKER%{http_code}" --data-binary @- "$url")"; then
         REQUEST_RC=0
     else
@@ -595,6 +598,7 @@ main() {
     local warmup_failed
 
     parse_args "$@"
+    [[ -n "$API_KEY" ]] || die 'POM_BENCH_API_KEY deve conter uma API key de inferencia ativa'
     require_command curl
     require_command jq
     require_command ssh

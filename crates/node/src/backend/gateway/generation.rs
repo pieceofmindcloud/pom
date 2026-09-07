@@ -8,6 +8,7 @@ pub(super) async fn generate_stream_inner(
     let request_started = Instant::now();
     let GenerationInput {
         state,
+        inference_token,
         model,
         prompt,
         chat_template,
@@ -110,6 +111,9 @@ pub(super) async fn generate_stream_inner(
     );
     let mut session_id = prefix_lease.session_id().to_string();
     let mut reuse_prefix = prefix_lease.is_hit();
+    state
+        .peer_http
+        .remember_inference_token(&session_id, &inference_token);
 
     // Camada de disco (Phase 3): um miss em memória que casa um snapshot
     // automático em disco - típico depois de um reinício - restaura o KV em
@@ -148,9 +152,7 @@ pub(super) async fn generate_stream_inner(
                         disk_restore_hash = Some(entry.key_hash);
                     }
                     Err(error) => {
-                        warn!(
-                            "restauração de prefixo do disco falhou ({error}); seguindo a frio"
-                        );
+                        warn!("restauração de prefixo do disco falhou ({error}); seguindo a frio");
                         disk.forget(&entry.key_hash);
                     }
                 }
@@ -179,6 +181,7 @@ pub(super) async fn generate_stream_inner(
             state.gateway_port,
         ),
         state.network.node_id.clone(),
+        session_id.clone(),
     );
 
     info!(
@@ -1143,7 +1146,7 @@ pub(super) async fn rewind_sessions(
             }))
             .timeout(REWIND_TIMEOUT);
         match clients
-            .authorize_inference_request(request)
+            .authorize_inference_request_for_session(request, Some(session_id))
             .await
             .send()
             .await
@@ -1196,7 +1199,7 @@ pub(super) async fn release_sessions(
             .json(&serde_json::json!({ "session_id": session_id }))
             .timeout(Duration::from_secs(10));
         match clients
-            .authorize_inference_request(request)
+            .authorize_inference_request_for_session(request, Some(session_id))
             .await
             .send()
             .await
@@ -1247,7 +1250,12 @@ pub(super) async fn rollback_sessions(
                 "batch_width": batch_width,
             }))
             .timeout(Duration::from_secs(10));
-        match http.authorize_inference_request(request).await.send().await {
+        match http
+            .authorize_inference_request_for_session(request, Some(session_id))
+            .await
+            .send()
+            .await
+        {
             Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
                 Ok(body) => {
                     if !body
@@ -1328,8 +1336,12 @@ pub(super) async fn slot_call_step(
         .for_peer(&step.node_id)
         .map_err(|e| format!("sem cliente para {}: {e}", step.node_id))?;
     let request = http.post(&url).json(&body).timeout(Duration::from_secs(60));
+    let session_id = body
+        .get("session_id")
+        .or_else(|| body.get("dest_session_id"))
+        .and_then(serde_json::Value::as_str);
     let response = clients
-        .authorize_inference_request(request)
+        .authorize_inference_request_for_session(request, session_id)
         .await
         .send()
         .await
@@ -1403,15 +1415,10 @@ pub(crate) async fn resolve_plan_for_model(
         .map(|p| p.total_layers)
         .filter(|n| *n > 0)
         .ok_or_else(|| format!("nenhum peer serve o modelo '{model}'"))?;
-    let deploy_id = peers
-        .iter()
-        .find(|p| p.deploy_id == model)
-        .map(|_| model);
+    let deploy_id = peers.iter().find(|p| p.deploy_id == model).map(|_| model);
     crate::pipeline::plan_pipeline(&peers, model, deploy_id, total_layers, &state.loads)
         .await
-        .ok_or_else(|| {
-            format!("nenhum pipeline cobre 0..{total_layers} do modelo '{model}'")
-        })
+        .ok_or_else(|| format!("nenhum pipeline cobre 0..{total_layers} do modelo '{model}'"))
 }
 
 /// Grava um snapshot de KV de uma implantação: cada hop persiste a fatia dele
@@ -1441,7 +1448,10 @@ pub(crate) async fn snapshot_deployment(
                 done.push(step);
             }
             Err(error) => {
-                warn!("snapshot '{snapshot_name}' falhou em {}: {error}", step.node_id);
+                warn!(
+                    "snapshot '{snapshot_name}' falhou em {}: {error}",
+                    step.node_id
+                );
                 for prev in &done {
                     let body = serde_json::json!({
                         "action": "erase",
@@ -1477,13 +1487,15 @@ pub(crate) async fn restore_deployment(
             "slot_name": slot_name_for_step(snapshot_name, &step.node_id),
             "dest_session_id": new_session_id,
         });
-        let result = slot_call_step(step, body, clients).await.and_then(|payload| {
-            payload
-                .get("restored_tokens")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32)
-                .ok_or_else(|| format!("{} não informou restored_tokens", step.node_id))
-        });
+        let result = slot_call_step(step, body, clients)
+            .await
+            .and_then(|payload| {
+                payload
+                    .get("restored_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
+                    .ok_or_else(|| format!("{} não informou restored_tokens", step.node_id))
+            });
         match result {
             Ok(tokens) => match agreed {
                 Some(prev) if prev != tokens => {
@@ -1496,7 +1508,10 @@ pub(crate) async fn restore_deployment(
                 _ => agreed = Some(tokens),
             },
             Err(error) => {
-                warn!("restore '{snapshot_name}' falhou em {}: {error}", step.node_id);
+                warn!(
+                    "restore '{snapshot_name}' falhou em {}: {error}",
+                    step.node_id
+                );
                 release_sessions(plan, new_session_id, clients).await;
                 return Err(error);
             }

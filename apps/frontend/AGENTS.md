@@ -107,9 +107,10 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 - Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
 - Auth: `api.ts` sends same-origin credentials so the gateway can use its
-  `HttpOnly` admin session. It signs requests with the cluster connection key
-  (picked up unauthenticated from `/api/ui/node`), matching `ApiKeyAuth` in the
-  Rust `auth.rs`; the human access token is never persisted by the browser.
+  `HttpOnly` admin session. Administrative requests use the cluster connection
+  key, while `/v1/*` chat requests use the dedicated `pom-[node_id]` API key
+  created by `/api/ui/chat-key`; a rejected key is replaced once before
+  retrying. The human access token is never persisted by the browser.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 
 ## Pendências

@@ -19,8 +19,9 @@ The gateway keeps the pipeline transport separate from the administrative
 surface. `/api/ui/**` and `/admin/**` plus the static UI surface pass through
 the same boundary: localhost mode checks the real peer address, network mode
 checks a server-side `HttpOnly` session minted from `X-POM-Access-Token`, and
-the `connection_key` remains a separate node-to-node credential. `/api/generate`,
-`/v1/**`, `/health`, `/peers`, `/handshake` and the inference listener remain
+  the `connection_key` remains a separate node-to-node credential. `/api/generate`
+  and `/v1/**` accept only active inference API keys; `/health`, `/peers`,
+  `/handshake` and the inference listener remain
 dual-stack.
 
 ## Files
@@ -31,13 +32,15 @@ dual-stack.
   Sessions use a cryptographically random identifier, bind to the current
   token digest, expire after the single `ADMIN_SESSION_TTL` value and never
   persist in the browser or on disk. `ConnectionAuth` (connection-key bearer
-  only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, from
-  `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
+  only), `InternalNodeAuth` (that key plus an internal marker), `ApiKeyAuth`
+  (active inference API key only, from `authorization: Bearer` or `x-api-key`),
+  `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
-  `Caller`. `is_valid_inference_token` aplica a mesma regra na porta 8181: a
-  `connection_key` compartilhada ou uma API key ativa lida de `pom.db`, para
-  que criação e revogação entre processos tenham efeito sem reinício.
+  `Caller`. `is_valid_inference_token` aplica a mesma regra na porta 8181 com
+  uma API key ativa lida de `pom.db`, para que criação e revogação entre
+  processos tenham efeito sem reinício. Uma chave desconhecida é consultada no
+  principal pelo canal interno autenticado e falha fechada em timeout ou erro.
 - `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
   geração, snapshots/planejamento, HTTP e testes: `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
@@ -677,11 +680,12 @@ dual-stack.
   `/health` watcher promotes to `Serving`); a `devupdate` write could only
   lie.
 - `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
-  optional), compares to `connection_key`; `ApiKeyAuth` accepts `authorization`
-  or `x-api-key`, and the connection key counts as operator
-  (`Caller::operator()`). `api_key_identity` supplies the stable non-secret API
-  key id used by the audit trail. `inference_token` chooses the shared connection key,
-  falling back to the first active API key for internal inference calls.
+  optional), compares to `connection_key`; `InternalNodeAuth` adds the private
+  marker used by admin synchronization. `ApiKeyAuth` accepts `authorization`
+  or `x-api-key`, but only for an active API key, and `api_key_identity`
+  supplies the stable non-secret id used by the audit trail. `inference_token`
+  chooses an active API key for internal inference calls and never the
+  connection key.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
 - `reqlog.rs` - `AuditLog::begin` records the exact prompt, request body,
   resolved model, entry node, API-key identity and arrival time before

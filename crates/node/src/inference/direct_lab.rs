@@ -528,10 +528,15 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         steps,
         edges: vec![],
     };
-    let reply = crate::direct::DirectReply::new(inbox, vec![gateway_url], "gateway".into());
+    let session = uuid::Uuid::new_v4().to_string();
+    let reply = crate::direct::DirectReply::new(
+        inbox,
+        vec![gateway_url],
+        "gateway".into(),
+        session.clone(),
+    );
     let http = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
     let routes = crate::route::RouteTable::new();
-    let session = uuid::Uuid::new_v4().to_string();
 
     let first = crate::prefill::run_with_options(
         &plan,

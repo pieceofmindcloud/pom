@@ -4,7 +4,7 @@ pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
 #[path = "network/addrs.rs"]
 pub mod addrs;
 #[path = "backend/admin.rs"]
-mod admin;
+pub(crate) mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
 // `brand` e o cluster llama.cpp saíram para crates próprios (`crates/brand` e
@@ -12,12 +12,16 @@ mod auth;
 // reconstrua. Re-exportados abaixo para que `crate::brand::…`, `crate::llm::…`
 // etc. continuem resolvendo em todo o `node` sem tocar os ~40 arquivos que os
 // usam. Ver `docs/subsystems/build-execucao.md`.
-use ::brand as brand;
+use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "backend/capabilities.rs"]
 mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
+#[path = "network/cluster_logs.rs"]
+mod cluster_logs;
+#[path = "network/cluster_logs_policy.rs"]
+mod cluster_logs_policy;
 #[path = "utils/config.rs"]
 mod config;
 #[cfg(test)]
@@ -39,10 +43,6 @@ mod direct;
 mod direct_lab;
 #[path = "network/discovery.rs"]
 mod discovery;
-#[path = "network/cluster_logs.rs"]
-mod cluster_logs;
-#[path = "network/cluster_logs_policy.rs"]
-mod cluster_logs_policy;
 #[path = "utils/display.rs"]
 mod display;
 #[path = "inference/executor.rs"]
@@ -353,9 +353,8 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     respawn::remember_argv(std::env::args().collect());
-    let (log_capture, log_receiver) = cluster_logs::LogCapture::new(
-        cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY,
-    );
+    let (log_capture, log_receiver) =
+        cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_subscriber::fmt::layer().with_target(false))

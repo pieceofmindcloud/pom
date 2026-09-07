@@ -1106,6 +1106,7 @@ impl NodeRuntime {
                 .is_some_and(|dir| !dir.is_empty()),
         );
         let capacity_net = self.net.clone();
+        let network = self.net.clone();
         let auth = self.auth.clone();
         let database = self.database.clone();
         let model_cache = self.model_cache.clone();
@@ -1182,6 +1183,7 @@ impl NodeRuntime {
                     tls.clone(),
                     auth.clone(),
                     database.clone(),
+                    Some(network.clone()),
                     model_cache.clone(),
                     reuse_weights,
                 )

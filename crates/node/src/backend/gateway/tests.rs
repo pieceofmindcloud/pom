@@ -7,6 +7,82 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
+    async fn inference_auth_probe(_: crate::auth::ApiKeyAuth) -> StatusCode {
+        StatusCode::OK
+    }
+
+    #[tokio::test]
+    async fn inference_routes_are_api_key_only_for_generate_and_v1() {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        state
+            .database
+            .insert_api_key(&crate::config::ApiKey {
+                id: "ui-key".into(),
+                key: "sk-active".into(),
+                label: "pom-eu".into(),
+                node_id: "eu".into(),
+                origin_node_id: "eu".into(),
+                active: true,
+                created_at: "2026-09-07T00:00:00Z".into(),
+            })
+            .unwrap();
+        let app = Router::new()
+            .route("/api/generate", post(inference_auth_probe))
+            .route("/v1/models", get(inference_auth_probe))
+            .with_state(state);
+
+        for path in ["/api/generate", "/v1/models"] {
+            let method = if path == "/api/generate" {
+                "POST"
+            } else {
+                "GET"
+            };
+            let absent = Request::builder()
+                .method(method)
+                .uri(path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(absent).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+
+            let connection = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", "Bearer connection-secret")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(connection).await.unwrap().status(),
+                StatusCode::FORBIDDEN
+            );
+
+            let active = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("x-api-key", "sk-active")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(active).await.unwrap().status(),
+                StatusCode::OK
+            );
+
+            let independent = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", "Bearer stale-api-key")
+                .header("x-api-key", "sk-active")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(independent).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+    }
+
     #[tokio::test]
     async fn local_admin_boundary_does_not_restrict_pipeline_routes() {
         let state = testkit::state_with("eu", vec![]).await;
@@ -455,9 +531,13 @@ mod tests {
             stop: None,
         })
         .unwrap();
-        let response = handle_generate(State(state), axum::body::Bytes::from(request))
-            .await
-            .into_response();
+        let response = handle_generate(
+            crate::auth::ApiKeyAuth::for_test(crate::reqlog::Caller::operator()),
+            State(state),
+            axum::body::Bytes::from(request),
+        )
+        .await
+        .into_response();
         assert_eq!(response.status(), StatusCode::OK);
         let body = crate::gateway::testkit::body_of(response).await;
         assert_eq!(body["response"], "seed alpha beta alpha beta alpha beta ");
@@ -1308,10 +1388,10 @@ pub(crate) mod testkit {
             uuid::Uuid::new_v4().simple()
         ));
         let database = Arc::new(crate::db::PomDb::open(&database_path).expect("banco de teste"));
-        let (capture, receiver) = crate::cluster_logs::LogCapture::new(
-            crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY,
-        );
-        let cluster_logs = crate::cluster_logs::ClusterLogs::new(capture, receiver, database.clone());
+        let (capture, receiver) =
+            crate::cluster_logs::LogCapture::new(crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
+        let cluster_logs =
+            crate::cluster_logs::ClusterLogs::new(capture, receiver, database.clone());
         GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),

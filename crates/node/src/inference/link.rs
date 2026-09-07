@@ -406,6 +406,7 @@ async fn channel_for(
     clients: &crate::peer_client::PeerClients,
     node_id: &str,
     base_url: &str,
+    session_id: Option<&str>,
 ) -> Result<Arc<Channel>> {
     let key = target_key(node_id, base_url);
     {
@@ -438,7 +439,7 @@ async fn channel_for(
         return Err(anyhow!("canal com {node_id} em quarentena após falha"));
     }
 
-    match open(clients, node_id, base_url).await {
+    match open(clients, node_id, base_url, session_id).await {
         Ok(channel) => {
             if let Ok(mut opened) = pool().opened.lock() {
                 *opened.entry(key.clone()).or_default() += 1;
@@ -457,6 +458,7 @@ async fn open(
     clients: &crate::peer_client::PeerClients,
     node_id: &str,
     base_url: &str,
+    session_id: Option<&str>,
 ) -> Result<Arc<Channel>> {
     let http = clients.for_peer(node_id)?;
     let url = format!("{}{}", base_url.trim_end_matches('/'), LINK_PATH);
@@ -468,7 +470,10 @@ async fn open(
         // a geração toda. Ver `CHANNEL_LIFETIME`.
         .timeout(CHANNEL_LIFETIME)
         .body(reqwest::Body::wrap_stream(rx.map(Ok::<_, std::io::Error>)));
-    let response = clients.authorize_inference_request(request).await.send();
+    let response = clients
+        .authorize_inference_request_for_session(request, session_id)
+        .await
+        .send();
     let response = tokio::time::timeout(LINK_OPEN_TIMEOUT, response)
         .await
         .map_err(|_| anyhow!("canal com {node_id} não abriu antes do timeout de conexão"))?
@@ -568,6 +573,7 @@ pub async fn send_batch(
 /// uma falha de conexão é registrada e a alternativa seguinte assume já nesta
 /// chamada. Depois que um canal abre, `send_batch` mantém sua semântica de não
 /// repetir um frame já enviado em outra rota.
+#[allow(dead_code)]
 pub async fn send_batch_with_candidates(
     clients: &crate::peer_client::PeerClients,
     node_id: &str,
@@ -576,6 +582,22 @@ pub async fn send_batch_with_candidates(
     batch_id: &str,
     body: Bytes,
     peer_label: &str,
+) -> Result<LinkResponse> {
+    send_batch_with_session(
+        clients, node_id, base_url, candidates, batch_id, body, peer_label, None,
+    )
+    .await
+}
+
+pub async fn send_batch_with_session(
+    clients: &crate::peer_client::PeerClients,
+    node_id: &str,
+    base_url: &str,
+    candidates: &[String],
+    batch_id: &str,
+    body: Bytes,
+    peer_label: &str,
+    session_id: Option<&str>,
 ) -> Result<LinkResponse> {
     let mut route_candidates = Vec::with_capacity(candidates.len() + 1);
     if !base_url.is_empty() {
@@ -591,7 +613,7 @@ pub async fn send_batch_with_candidates(
     let ordered = clients.route_order(&route_key, &route_candidates);
     let mut last_error = String::new();
     for base in ordered {
-        let channel = match channel_for(clients, node_id, &base).await {
+        let channel = match channel_for(clients, node_id, &base, session_id).await {
             Ok(channel) => channel,
             Err(error) => {
                 last_error = error.to_string();

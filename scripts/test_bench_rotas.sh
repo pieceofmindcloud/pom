@@ -38,6 +38,11 @@ if [[ "$*" != */api/generate* ]]; then
     exit 90
 fi
 
+if [[ "$*" != *"X-API-Key: sk-test-bench"* ]]; then
+    echo "API key de inferencia ausente no request" >&2
+    exit 91
+fi
+
 REQUEST_BODY="$(cat)"
 if [[ "$REQUEST_BODY" == *"Gemma4-26b-NVFP4.gguf"* ]]; then
     echo "modelo fixo indevido no corpo" >&2
@@ -51,7 +56,7 @@ chmod +x "$FAKE_BIN/curl"
 FAKE_RESPONSE='{"response":"ok","source":"pipeline:test","tokens_generated":5,"tokens_per_sec":4.0,"duration_ms":1250,"timings":{"ttft_ms":300,"prefill_ms":200,"prefill_tokens":20,"prefill_tokens_per_sec":100.0,"generation_ms":1000,"generation_tokens":5,"generation_tokens_per_sec":5.0,"total_ms":1250,"total_tokens_per_sec":4.0},"trace":{"input_tokens":20,"cached_tokens":3,"prefix_match_tokens":3,"prefix_reuse_status":"partial","output_tokens":5,"mtp_draft_tokens_proposed":10,"mtp_draft_tokens_accepted":8,"mtp_draft_tokens_rejected":2,"mtp_acceptance_rate":0.8,"total_bytes_sent":100,"total_bytes_received":200,"hops":[{"decode":{"calls":2,"processing_ms":40,"round_trip_ms":50,"network_ms":10,"node_p50_ms":19.5,"node_p95_ms":20.5,"node_decode_ms":19.0,"node_lock_wait_ms":0.5,"node_backend_completion_ms":18.0,"transport_summary":{"transports":[{"transport":"direct","calls":2}]}}, "prefill":{"calls":1,"processing_ms":200,"round_trip_ms":210,"network_ms":10,"node_p50_ms":190,"node_p95_ms":195,"node_decode_ms":190,"node_lock_wait_ms":0,"node_backend_completion_ms":180,"transport_summary":{"transports":[{"transport":"direct","calls":1}]}}}]}}'
 
 CSV_ONE="$TMP_DIR/one.csv"
-PATH="$FAKE_BIN:$PATH" POM_FAKE_RESPONSE="$FAKE_RESPONSE" \
+PATH="$FAKE_BIN:$PATH" POM_FAKE_RESPONSE="$FAKE_RESPONSE" POM_BENCH_API_KEY='sk-test-bench' \
     "$SCRIPT" test-one --origens mac-local --repeticoes 1 --csv "$CSV_ONE" \
     > "$TMP_DIR/one.summary"
 
@@ -71,7 +76,7 @@ grep -Fq '0.8' "$TMP_DIR/one.summary"
 grep -Fq 'p-prefill-aleatorio' "$CSV_ONE"
 
 CSV_TWO="$TMP_DIR/two.csv"
-PATH="$FAKE_BIN:$PATH" POM_FAKE_RESPONSE="$FAKE_RESPONSE" \
+PATH="$FAKE_BIN:$PATH" POM_FAKE_RESPONSE="$FAKE_RESPONSE" POM_BENCH_API_KEY='sk-test-bench' \
     POM_FAKE_FAIL_KSIA=1 "$SCRIPT" test-two \
     --origens mac-local,mac-ksia --repeticoes 1 --csv "$CSV_TWO" \
     > "$TMP_DIR/two.summary"

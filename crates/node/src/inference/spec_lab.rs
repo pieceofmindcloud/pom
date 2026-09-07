@@ -534,6 +534,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
     let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
         crate::gateway::GenerationInput {
             state,
+            inference_token: "test-api-key".into(),
             model: "lab".into(),
             prompt: "um prompt qualquer para a bancada".into(),
             chat_template: true,

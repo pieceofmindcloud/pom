@@ -275,11 +275,12 @@ impl PomDb {
         }
         self.with_write("salvar chave de API", |connection| {
             connection.execute(
-                "INSERT INTO api_keys (id, key, label, node_id, active, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)
+                "INSERT INTO api_keys (id, key, label, node_id, origin_node_id, active, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     label = excluded.label,
                     node_id = excluded.node_id,
+                    origin_node_id = excluded.origin_node_id,
                     active = CASE
                         WHEN EXISTS (
                             SELECT 1 FROM api_key_revocations
@@ -292,6 +293,11 @@ impl PomDb {
                     &key.key,
                     &key.label,
                     &key.node_id,
+                    if key.origin_node_id.is_empty() {
+                        &key.node_id
+                    } else {
+                        &key.origin_node_id
+                    },
                     key.active as i64,
                     &key.created_at,
                 ],
@@ -303,7 +309,7 @@ impl PomDb {
     pub fn api_keys(&self) -> Result<Vec<ApiKey>> {
         self.with_read("ler chaves de API", |connection| {
             let mut statement = connection.prepare(
-                "SELECT id, key, label, node_id, active, created_at
+                "SELECT id, key, label, node_id, origin_node_id, active, created_at
                  FROM api_keys ORDER BY created_at, id",
             )?;
             let rows = statement.query_map([], |row| {
@@ -312,8 +318,9 @@ impl PomDb {
                     key: row.get(1)?,
                     label: row.get(2)?,
                     node_id: row.get(3)?,
-                    active: row.get::<_, i64>(4)? != 0,
-                    created_at: row.get(5)?,
+                    origin_node_id: row.get(4)?,
+                    active: row.get::<_, i64>(5)? != 0,
+                    created_at: row.get(6)?,
                 })
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -325,7 +332,7 @@ impl PomDb {
         self.with_read("consultar chave de API", |connection| {
             connection
                 .query_row(
-                    "SELECT id, key, label, node_id, active, created_at
+                    "SELECT id, key, label, node_id, origin_node_id, active, created_at
                      FROM api_keys WHERE key = ? AND active = 1",
                     params![token],
                     |row| {
@@ -334,13 +341,40 @@ impl PomDb {
                             key: row.get(1)?,
                             label: row.get(2)?,
                             node_id: row.get(3)?,
-                            active: row.get::<_, i64>(4)? != 0,
-                            created_at: row.get(5)?,
+                            origin_node_id: row.get(4)?,
+                            active: row.get::<_, i64>(5)? != 0,
+                            created_at: row.get(6)?,
                         })
                     },
                 )
                 .optional()
                 .context("consultar API key no banco local")
+        })
+    }
+
+    pub fn active_api_key_named(&self, label: &str, node_id: &str) -> Result<Option<ApiKey>> {
+        self.with_read("consultar chave nomeada de API", |connection| {
+            connection
+                .query_row(
+                    "SELECT id, key, label, node_id, origin_node_id, active, created_at
+                     FROM api_keys
+                     WHERE label = ? AND node_id = ? AND active = 1
+                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                    params![label, node_id],
+                    |row| {
+                        Ok(ApiKey {
+                            id: row.get(0)?,
+                            key: row.get(1)?,
+                            label: row.get(2)?,
+                            node_id: row.get(3)?,
+                            origin_node_id: row.get(4)?,
+                            active: row.get::<_, i64>(5)? != 0,
+                            created_at: row.get(6)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("consultar chave nomeada de API")
         })
     }
 
@@ -350,7 +384,7 @@ impl PomDb {
             let tx = connection.unchecked_transaction()?;
             let key = tx
                 .query_row(
-                    "SELECT id, key FROM api_keys WHERE (key = ? OR id = ?) AND active = 1",
+                    "SELECT id, key FROM api_keys WHERE (key = ? OR id = ?)",
                     params![key_or_id, key_or_id],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
@@ -366,8 +400,9 @@ impl PomDb {
             tx.execute(
                 "INSERT INTO api_key_revocations
                     (key_id, key_sha256, revoked_by, revoked_at)
-                 VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                params![&key_id, secret_digest(&secret), revoked_by],
+                 SELECT ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE NOT EXISTS (SELECT 1 FROM api_key_revocations WHERE key_id = ?)",
+                params![&key_id, secret_digest(&secret), revoked_by, &key_id],
             )?;
             tx.commit()?;
             Ok(true)
@@ -384,6 +419,40 @@ impl PomDb {
                 statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .context("ler histórico de revogações")
+        })
+    }
+
+    /// Revoke every active key from an origin. The update and audit inserts
+    /// are one transaction, so retries are safe and cannot duplicate history.
+    pub fn revoke_api_keys_by_origin(&self, origin: &str, revoked_by: &str) -> Result<usize> {
+        self.with_write("revogar chaves da origem", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            let ids = {
+                let mut statement = tx.prepare(
+                    "SELECT id, key FROM api_keys
+                     WHERE origin_node_id = ? OR (origin_node_id = '' AND node_id = ?)",
+                )?;
+                let rows = statement.query_map(params![origin, origin], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let mut changed = 0;
+            for (id, secret) in ids {
+                changed += tx.execute(
+                    "UPDATE api_keys SET active = 0 WHERE id = ? AND active = 1",
+                    params![&id],
+                )?;
+                tx.execute(
+                    "INSERT INTO api_key_revocations
+                        (key_id, key_sha256, revoked_by, revoked_at)
+                     SELECT ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     WHERE NOT EXISTS (SELECT 1 FROM api_key_revocations WHERE key_id = ?)",
+                    params![&id, secret_digest(&secret), revoked_by, &id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(changed)
         })
     }
 
@@ -870,6 +939,7 @@ impl PomDb {
             key: format!("secret-{marker}"),
             label: marker.into(),
             node_id: String::new(),
+            origin_node_id: String::new(),
             active: true,
             created_at: marker.into(),
         };
@@ -885,8 +955,8 @@ impl PomDb {
         self.with_write("teste de escrita presa", |connection| {
             let transaction = connection.unchecked_transaction()?;
             transaction.execute(
-                "INSERT INTO api_keys (id, key, label, node_id, active, created_at)
-                 VALUES ('held-write', 'held-secret', 'held', '', 1, 'held')",
+                "INSERT INTO api_keys (id, key, label, node_id, origin_node_id, active, created_at)
+                 VALUES ('held-write', 'held-secret', 'held', '', '', 1, 'held')",
                 [],
             )?;
             started.send(()).expect("sinalizar escrita presa");
@@ -1005,6 +1075,7 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             key TEXT NOT NULL UNIQUE,
             label TEXT NOT NULL,
             node_id TEXT NOT NULL,
+            origin_node_id TEXT NOT NULL DEFAULT '',
             active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
             created_at TEXT NOT NULL
         );
@@ -1157,6 +1228,22 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         PRAGMA user_version = 1;",
     )?;
+    let has_origin_node_id = connection
+        .prepare("PRAGMA table_info(api_keys)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|column| column == "origin_node_id");
+    if !has_origin_node_id {
+        connection.execute(
+            "ALTER TABLE api_keys ADD COLUMN origin_node_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+        connection.execute(
+            "UPDATE api_keys SET origin_node_id = node_id WHERE origin_node_id = ''",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -1232,12 +1319,7 @@ fn model_identity(model: &DiscoveredModel) -> Result<(String, &'static str, Stri
         // keyed by the configured path; deployment still proves content with
         // its separate identity route before copying or launching.
         let identity = model.path.clone();
-        Ok((
-            format!("path:{identity}"),
-            "path",
-            identity,
-            "whole",
-        ))
+        Ok((format!("path:{identity}"), "path", identity, "whole"))
     }
 }
 
@@ -1331,9 +1413,7 @@ mod tests {
 
         db.append_cluster_logs(&[first, second], 3)
             .expect("persistir logs");
-        let rows = db
-            .cluster_logs(Some("deploy-1"), 100)
-            .expect("ler logs");
+        let rows = db.cluster_logs(Some("deploy-1"), 100).expect("ler logs");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].message, "primeiro recebido");
         assert_eq!(rows[1].message, "segundo recebido");
@@ -1443,6 +1523,7 @@ mod tests {
             key: "sk-secret".into(),
             label: "operador".into(),
             node_id: "node-a".into(),
+            origin_node_id: "node-a".into(),
             active: true,
             created_at: "2026-09-02T10:00:00Z".into(),
         })
@@ -1459,6 +1540,7 @@ mod tests {
             key: "sk-secret".into(),
             label: "operador".into(),
             node_id: "node-a".into(),
+            origin_node_id: "node-a".into(),
             active: true,
             created_at: "2026-09-02T10:00:00Z".into(),
         };
@@ -1468,6 +1550,38 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].1, "node-a");
         assert!(!history[0].2.is_empty());
+        remove_database(&path);
+    }
+
+    #[test]
+    fn revoking_an_origin_is_idempotent_and_does_not_touch_other_origins() {
+        let path = temporary_path("revoke-origin");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        for (id, origin) in [("a-1", "node-a"), ("a-2", "node-a"), ("b-1", "node-b")] {
+            db.insert_api_key(&ApiKey {
+                id: id.into(),
+                key: format!("sk-{id}"),
+                label: id.into(),
+                node_id: origin.into(),
+                origin_node_id: origin.into(),
+                active: true,
+                created_at: "2026-09-07T00:00:00Z".into(),
+            })
+            .unwrap();
+        }
+
+        assert_eq!(
+            db.revoke_api_keys_by_origin("node-a", "principal").unwrap(),
+            2
+        );
+        assert_eq!(
+            db.revoke_api_keys_by_origin("node-a", "principal").unwrap(),
+            0
+        );
+        assert!(db.api_key_for_token("sk-a-1").unwrap().is_none());
+        assert!(db.api_key_for_token("sk-a-2").unwrap().is_none());
+        assert!(db.api_key_for_token("sk-b-1").unwrap().is_some());
+        assert_eq!(db.api_key_revocations().unwrap().len(), 2);
         remove_database(&path);
     }
 
@@ -1550,9 +1664,7 @@ mod tests {
 
     #[test]
     fn a_deployment_keeps_its_versions_across_save_and_reopen() {
-        use crate::deployment::{
-            Deployment, DeploymentKind, DeploymentModel, DeploymentNode,
-        };
+        use crate::deployment::{Deployment, DeploymentKind, DeploymentModel, DeploymentNode};
         let path = temporary_path("deployment-versions");
 
         let no = DeploymentNode {

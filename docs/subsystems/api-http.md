@@ -39,6 +39,11 @@ a condição de a cabeça rascunhar na decodificação especulativa.
 - **Dev update** (`devupdate.rs`): `POST /api/ui/dev/update`, `POST
   /api/ui/dev/restart` (gated por `POM_DEV_UPDATE`).
 - **Operador** (`admin.rs`): `/admin/*`.
+- **Sincronização de API keys** (`admin.rs`): o nó principal expõe
+  `/api/internal/api-keys/{upsert,revoke,revoke-origin,validate}` somente para
+  chamadas nó-a-nó autenticadas pela `connection_key` e pelo marcador interno.
+  O registro central guarda `origin_node_id`; notificações de criação e
+  revogação são idempotentes e têm três tentativas com timeout limitado.
 - **UI** (`webapp.rs`): `GET /` redireciona para `/admin-ui/`, que serve o
   bundle do disco (`config::ui_dist_dir()`); assets e rotas SPA ficam sob esse
   mount. O fallback de API continua 404 JSON, e miss com extensão vira
@@ -95,6 +100,9 @@ haver chave.
   de abrir o SSE. `finish_reason` e `partial` também aparecem no corpo: uma
   geração interrompida pelo detector de ciclo tem `finish_reason: "cycle"` e
   `partial: true`; esse motivo não é um corte silencioso nem uma nova execução.
+  A rota aceita somente `Authorization: Bearer <API key ativa>` ou
+  `x-api-key: <API key ativa>`; a `connection_key`, token ausente e caller
+  anônimo são recusados antes do pipeline.
   `trace` também expõe, por requisição, `mtp_draft_tokens_proposed`,
   `mtp_draft_tokens_accepted`, `mtp_draft_tokens_rejected` e
   `mtp_acceptance_rate` (`accepted / proposed`, ou `null` sem proposta MTP).
@@ -129,10 +137,11 @@ haver chave.
   que envia o corpo anterior e não sabe repetir com a assinatura, vê 403 e
   nunca é admitido.
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
-  resultado direto (`relay/v2-direct`). Sem auth de chave por desenho (ver
-  abaixo); ticket vivo = entrega no `ReplyInbox`, ticket morto = `410 Gone`.
+  resultado direto (`relay/v2-direct`). Exige API key ativa e um ticket vivo;
+  ticket morto = `410 Gone`.
 - **`POST /v1/remote-stream-result`** - callback do head remoto para cada lote
-  oportunista. O ticket é consumido por um `mpsc` limitado a 16 lotes; quando a
+  oportunista. Exige API key ativa e um ticket vivo. O ticket é consumido por
+  um `mpsc` limitado a 16 lotes; quando a
   fila está cheia, o handler espera e aplica contrapressão. Ticket cancelado ou
   lote terminal encerra o stream; ticket desconhecido responde `410 Gone`.
   Além de `accepted`, `done`, tempos e `node_timings`, o lote pode trazer
@@ -148,11 +157,14 @@ haver chave.
 ### OpenAI (`/v1/*`)
 
 Camada de protocolo pura sobre `gateway::generate_stream_with_stops`.
-Todas as rotas `/v1` exigem uma credencial ativa: `Authorization: Bearer
+Todas as rotas `/v1` exigem uma API key ativa: `Authorization: Bearer
 <chave>` ou `x-api-key: <chave>`. Os headers são candidatos independentes:
 quando os dois chegam, uma credencial válida autentica mesmo que a outra esteja
 inválida; dois inválidos continuam HTTP 403. A `connection_key` identifica o
-operador e uma API key ativa preserva seu `Caller` no log de auditoria.
+canal nó-a-nó, mas nunca autentica inferência. Uma API key ativa preserva seu
+`Caller` no log de auditoria, e uma chave desconhecida localmente é validada no
+principal pelo canal interno autenticado; timeout, erro ou resposta inválida
+falham fechados antes do dispatch.
 Esse mapeamento segue a [autenticação da API Claude](https://platform.claude.com/docs/en/manage-claude/authentication): `ANTHROPIC_API_KEY` usa `x-api-key` e um token Bearer usa `Authorization`.
 `render_prompt` achata a conversa em um único texto e **rotula todo turno,
 inclusive o primeiro** - é o que faz o prompt de um turno ser prefixo exato do
@@ -557,7 +569,8 @@ incluído em logs de erro.
 
 ## 3. Autenticação (`auth.rs`)
 
-Duas credenciais, dois extractors:
+Há uma credencial de operador, uma credencial de inferência e um extractor
+privado para sincronização entre nós:
 
 - **`ConnectionAuth`** - lê só `authorization` (prefixo `Bearer` opcional) e
   compara com `connection_key`. É a credencial de operador: cobre `/admin/*`,
@@ -565,36 +578,46 @@ Duas credenciais, dois extractors:
   401 `missing Authorization header`; chave errada = 403.
 - **`ApiKeyAuth(pub Caller)`** - aceita `authorization` **ou** `x-api-key`
   (o cliente escolhe conforme a env var que tem: `OPENAI_API_KEY` manda
-  `Bearer`, `ANTHROPIC_API_KEY` manda `x-api-key`). A chave de conexão conta
-  como operador (`Caller::operator()`); senão vale uma API key mintada em
-  `/admin/api-keys`, com `id`, `label` e `node_id`. O `Caller` construído aqui é
-  o único lugar que vê a credencial e alimenta a auditoria com essa identidade;
-  o segredo nunca é salvo nem devolvido pela rota de auditoria.
+  `Bearer`, `ANTHROPIC_API_KEY` manda `x-api-key`). Só uma API key ativa
+  mintada em `/admin/api-keys` autentica inferência, com `id`, `label` e
+  `node_id`. O `Caller` construído aqui é o único lugar que vê a credencial e
+  alimenta a auditoria com essa identidade; o segredo nunca é salvo nem
+  devolvido pela rota de auditoria.
+- **`InternalNodeAuth`** - exige a `connection_key` compartilhada mais o
+  marcador `x-pom-internal-node: 1`; cobre somente a sincronização autenticada
+  de API keys no principal e nunca é aceito nas rotas de inferência.
 
 `POST /admin/regenerate-key` troca a `connection_key` (SHA256 de um UUID);
 mintar chaves **acumula** em vez de substituir - um token por nó/harness, e o
 log atribui cada geração a quem pagou por ela.
 
-**Rotas sem auth**: `/api/generate`, `/peers`, `/health` (o `/api/generate`
-loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
+**Rotas sem auth**: `/peers`, `/health`, `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
-  `peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), `/v1/relay-result` e
-`/v1/remote-stream-result` (abaixo). `GET /api/ui/requests` e
+  `peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`). `GET /api/ui/requests` e
 `/api/ui/requests/stats` e `/api/ui/cluster-logs` são exceções porque podem
 conter conteúdo sensível e
 exigem `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
-`ApiKeyAuth`.
+`ApiKeyAuth`. Uma chave desconhecida localmente consulta o principal pelo canal
+interno autenticado; cada tentativa tem timeout de 2 s e há no máximo três
+tentativas com backoff. Não há cache negativo: timeout, erro ou resposta
+inválida recusam o pedido. Uma chave remota válida é armazenada no `pom.db` e
+fica disponível nas próximas requisições até a revogação.
 
 `POST /api/ui/chat/telemetry` fica fora da exceção de leitura: ele exige
 `ConnectionAuth` porque repassa relatórios internos de RTT entre peers.
 
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
-router e também exige credencial em `/v1/prefill`, `/v1/step`, `/v1/step-stream`,
+router e exige uma API key ativa em `/v1/prefill`, `/v1/step`, `/v1/step-stream`,
 `/v1/link`, `/v1/session/release`, `/v1/session/rollback`, `/v1/session/slot` e
-`/v1/tp/reduce`: aceita a `connection_key` compartilhada ou uma API key ativa.
-Nas chamadas internas
-entre peers, o nó envia a `connection_key` e, quando ela não existe, a primeira
-API key ativa. `/health` continua público para sondas de readiness.
+`/v1/tp/reduce`; a `connection_key` compartilhada é recusada. Nas chamadas
+internas entre peers, o nó envia a API key ativa da sessão. A `connection_key`
+fica restrita ao canal de sincronização administrativa com o marcador interno.
+`/health` continua público para sondas de readiness.
+
+O identificador de sessão de inferência mantém a API key exata em memória por
+10 minutos para callbacks e encaminhamentos. Ele não é uma credencial isolada:
+sem o bearer API key correspondente, o header `x-pom-inference-session` é
+ignorado.
 
 `/v1/link` é a ligação persistente entre andares da pipeline: **um** POST cujo
 corpo de ida é um fluxo de quadros `frame/v1-batch` e cujo corpo de volta é
@@ -611,15 +634,16 @@ um degrau depois de o anterior falhar por **transporte**: canal persistente
 pinado. Uma recusa HTTP do peer é final em qualquer degrau e não é repetida por
 outra via.
 
-### `relay-result` e `remote-stream-result` sem auth são por desenho
+### `relay-result` e `remote-stream-result` usam API key e ticket
 
-A rota não tem `ConnectionAuth` porque o hop que responde é um **peer de
-inferência**, que nunca teve a chave do operador. A credencial é o **ticket**:
-um UUID v4 sorteado por quadro, conhecido só pela própria cadeia, removido do
-`ReplyInbox` no `Drop` em qualquer caminho de saída. Uma resposta atrasada leva
-`410` e nunca pode cair no token seguinte. O callback remoto mantém essa mesma
-regra, mas entrega vários lotes ao `StreamTicket` limitado em vez de resolver
-um canal oneshot.
+Essas rotas não usam `ConnectionAuth`, porque o hop que responde é um **peer de
+inferência**. O remetente carrega a API key da sessão, recuperada pelo
+`x-pom-inference-session`, e o gateway ainda exige o **ticket**: um UUID v4
+sorteado por quadro, conhecido só pela própria cadeia, removido do `ReplyInbox`
+no `Drop` em qualquer caminho de saída. Uma resposta atrasada leva `410` e
+nunca pode cair no token seguinte. O callback remoto mantém essa mesma regra,
+mas entrega vários lotes ao `StreamTicket` limitado em vez de resolver um canal
+oneshot.
 
 ## 4. `x_pom.source` - a prova de execução distribuída
 
@@ -670,7 +694,3 @@ nó de verdade sem sair anunciando, o equivalente em produção é `--no-discove
   /api/ui/models` devolve os caminhos locais completos dos modelos, e
   `/api/ui/cluster` a tabela de peers, para qualquer cliente da rede sem
   credencial. Aceitável em LAN confiável, exposto fora dela não.
-- **DEFEITO ANOTADO (documentado, não um bug): `/api/generate`, `/peers`,
-  `/health` e `/handshake` não têm auth** - `/api/generate` loga o chamador como
-  anônimo, e o `/handshake` leva a chave no corpo. Coerente com a regra da casa
-  ("LAN confiável"), mas na internet qualquer nó pode gerar texto no cluster.

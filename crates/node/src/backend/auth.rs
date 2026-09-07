@@ -113,18 +113,16 @@ pub const ADMIN_ACCESS_TOKEN_HEADER: &str = "x-pom-access-token";
 /// é uma credencial: só vale junto com uma `connection_key` válida e nunca é
 /// enviada pelo cliente da interface.
 pub const INTERNAL_NODE_REQUEST_HEADER: &str = "x-pom-internal-node";
+/// Opaque session identifier used to select the already authenticated API key
+/// while a request is forwarded between inference peers. It is not itself a
+/// credential and is never accepted by the inference middleware.
+pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 
-/// Escolhe a credencial que um nó usa nas chamadas internas de inferência.
-///
-/// A `connection_key` continua sendo a credencial canônica e compartilhada do
-/// cluster. Quando ela não está disponível, uma API key ativa é a única outra
-/// credencial que a porta de inferência aceita, então ela pode ser usada para
-/// manter os peers autenticados em instalações configuradas dessa forma.
+/// Escolhe uma API key ativa que um nó usa nas chamadas internas de inferência.
+/// O canal de controle entre nós continua usando a `connection_key` em
+/// extratores separados, e nunca cai para ela neste caminho.
 /// Nunca retorna uma chave revogada nem uma string vazia.
 pub fn inference_token(config: &Config) -> Option<String> {
-    if !config.connection_key.is_empty() {
-        return Some(config.connection_key.clone());
-    }
     config
         .api_keys
         .iter()
@@ -134,13 +132,12 @@ pub fn inference_token(config: &Config) -> Option<String> {
 
 /// Valida o token que pode atravessar a porta de inferência.
 ///
-/// A chave de conexão é compartilhada por todos os nós do cluster. As API
-/// keys são a alternativa para clientes que já chegam autenticados pela
-/// superfície OpenAI/Anthropic. Não aceitar string vazia evita que um nó em
+/// A chave de conexão é compartilhada por todos os nós do cluster, mas não é
+/// uma credencial de inferência. Não aceitar string vazia evita que um nó em
 /// modo setup trate uma requisição sem credencial como autenticada.
 pub fn is_valid_inference_token(config: &Config, token: &str) -> bool {
-    (!config.connection_key.is_empty() && token == config.connection_key)
-        || config
+    !token.is_empty()
+        && config
             .api_keys
             .iter()
             .any(|key| key.active && token == key.key)
@@ -159,6 +156,43 @@ pub fn api_key_identity(key: &crate::config::ApiKey) -> String {
 }
 
 pub struct ConnectionAuth;
+
+/// Authenticator for node-to-node control calls. The marker separates these
+/// calls from browser traffic, while the shared connection key remains the
+/// actual trust credential. It is never accepted by inference middleware.
+pub struct InternalNodeAuth;
+
+#[async_trait]
+impl<S> FromRequestParts<S> for InternalNodeAuth
+where
+    S: Send + Sync,
+    AuthState: axum::extract::FromRef<S>,
+{
+    type Rejection = AuthRejection;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let State(config): State<AuthState> = State::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AuthRejection::MissingHeader)?;
+        let supplied = parts
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(authorization_token)
+            .ok_or(AuthRejection::MissingHeader)?;
+        let is_internal = parts
+            .headers
+            .get(INTERNAL_NODE_REQUEST_HEADER)
+            .and_then(|value| value.to_str().ok())
+            == Some("1");
+        let expected = config.read().await.connection_key.clone();
+        if is_internal && constant_time_token_eq(&expected, supplied) {
+            Ok(InternalNodeAuth)
+        } else {
+            Err(AuthRejection::InvalidKey)
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum AuthRejection {
@@ -217,7 +251,7 @@ impl IntoResponse for AuthRejection {
             AuthRejection::MissingHeader => {
                 (StatusCode::UNAUTHORIZED, "missing Authorization header")
             }
-            AuthRejection::InvalidKey => (StatusCode::FORBIDDEN, "invalid connection key"),
+            AuthRejection::InvalidKey => (StatusCode::FORBIDDEN, "invalid inference API key"),
         };
         (status, Json(json!({ "error": msg }))).into_response()
     }
@@ -449,11 +483,26 @@ where
 ///
 /// It carries *who* it was, because the request log has no other chance to find
 /// out: by the time a generation finishes, the header is long gone.
-pub struct ApiKeyAuth(pub crate::reqlog::Caller);
+pub struct ApiKeyAuth {
+    caller: crate::reqlog::Caller,
+    token: String,
+}
 
 impl ApiKeyAuth {
     pub fn into_caller(self) -> crate::reqlog::Caller {
-        self.0
+        self.caller
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    #[cfg(test)]
+    pub fn for_test(caller: crate::reqlog::Caller) -> Self {
+        Self {
+            caller,
+            token: "test-api-key".into(),
+        }
     }
 }
 
@@ -461,19 +510,19 @@ impl ApiKeyAuth {
 impl<S> FromRequestParts<S> for ApiKeyAuth
 where
     S: Send + Sync,
-    AuthState: axum::extract::FromRef<S>,
     Arc<crate::db::PomDb>: axum::extract::FromRef<S>,
+    crate::gateway::GatewayState: axum::extract::FromRef<S>,
 {
     type Rejection = AuthRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let State(config): State<AuthState> = State::from_request_parts(parts, state)
-            .await
-            .map_err(|_| AuthRejection::MissingHeader)?;
         let State(database): State<Arc<crate::db::PomDb>> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
-
+        let State(gateway): State<crate::gateway::GatewayState> =
+            State::from_request_parts(parts, state)
+                .await
+                .map_err(|_| AuthRejection::MissingHeader)?;
         // `Authorization: Bearer <key>` (OpenAI/`ANTHROPIC_AUTH_TOKEN` style)
         // or `x-api-key: <key>` (Anthropic Messages API style, what
         // `ANTHROPIC_API_KEY` sends). Consider both independently because a
@@ -483,24 +532,60 @@ where
             return Err(AuthRejection::MissingHeader);
         }
 
-        let cfg = config.read().await;
         for token in candidates {
-            // The connection key is this cluster's operator credential; it
-            // also opens the OpenAI/Anthropic routes, so the built-in test
-            // panel and any operator can call them without first minting an
-            // API key.
-            if !cfg.connection_key.is_empty() && token == cfg.connection_key {
-                return Ok(ApiKeyAuth(crate::reqlog::Caller::operator()));
-            }
             // SQLite is authoritative here rather than the startup snapshot:
             // a key minted by another process becomes usable immediately, and
             // a revocation made there takes effect without a restart.
             if let Some(key) = database.api_key_for_token(token).ok().flatten() {
-                return Ok(ApiKeyAuth(crate::reqlog::Caller {
-                    key_id: api_key_identity(&key),
-                    key_label: key.label,
-                    key_node_id: (!key.node_id.is_empty()).then_some(key.node_id),
-                }));
+                let blocked = gateway.auth.read().await.blocked_nodes.iter().any(|node| {
+                    let origin = if key.origin_node_id.is_empty() {
+                        &key.node_id
+                    } else {
+                        &key.origin_node_id
+                    };
+                    node == origin
+                });
+                if blocked {
+                    continue;
+                }
+                return Ok(ApiKeyAuth {
+                    caller: crate::reqlog::Caller {
+                        key_id: api_key_identity(&key),
+                        key_label: key.label,
+                        key_node_id: (!key.node_id.is_empty()).then_some(key.node_id),
+                    },
+                    token: token.into(),
+                });
+            }
+            // Unknown inference bearers are looked up only through the
+            // authenticated node-to-node admin channel. The bearer itself is
+            // never used to authorize this lookup.
+            if let Ok(Some(key)) = crate::admin::validate_api_key_remote(&gateway, token).await {
+                if key.active && key.key == token && database.insert_api_key(&key).is_ok() {
+                    let blocked = gateway.auth.read().await.blocked_nodes.iter().any(|node| {
+                        let origin = if key.origin_node_id.is_empty() {
+                            &key.node_id
+                        } else {
+                            &key.origin_node_id
+                        };
+                        node == origin
+                    });
+                    if blocked {
+                        continue;
+                    }
+                    let mut cfg = gateway.auth.write().await;
+                    cfg.api_keys
+                        .retain(|existing| existing.id != key.id && existing.key != key.key);
+                    cfg.api_keys.push(key.clone());
+                    return Ok(ApiKeyAuth {
+                        caller: crate::reqlog::Caller {
+                            key_id: api_key_identity(&key),
+                            key_label: key.label,
+                            key_node_id: (!key.node_id.is_empty()).then_some(key.node_id),
+                        },
+                        token: token.into(),
+                    });
+                }
             }
         }
         Err(AuthRejection::InvalidKey)
@@ -771,6 +856,7 @@ mod tests {
             key: "sk-secret".into(),
             label: "financeiro".into(),
             node_id: "node-a".into(),
+            origin_node_id: "node-a".into(),
             active: true,
             created_at: String::new(),
         };
@@ -790,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn inference_accepts_connection_key_or_active_api_key_only() {
+    fn inference_accepts_only_an_active_api_key() {
         let cfg = crate::config::Config {
             gpus: None,
             thermal: Default::default(),
@@ -811,6 +897,7 @@ mod tests {
                     key: "sk-active".into(),
                     label: "test".into(),
                     node_id: String::new(),
+                    origin_node_id: String::new(),
                     active: true,
                     created_at: String::new(),
                 },
@@ -819,6 +906,7 @@ mod tests {
                     key: "sk-revoked".into(),
                     label: "revoked".into(),
                     node_id: String::new(),
+                    origin_node_id: String::new(),
                     active: false,
                     created_at: String::new(),
                 },
@@ -837,14 +925,14 @@ mod tests {
             slot_auto_ttl_secs: None,
         };
 
-        assert!(is_valid_inference_token(&cfg, "cluster-secret"));
+        assert!(!is_valid_inference_token(&cfg, "cluster-secret"));
         assert!(is_valid_inference_token(&cfg, "sk-active"));
         assert!(!is_valid_inference_token(&cfg, "sk-revoked"));
         assert!(!is_valid_inference_token(&cfg, "wrong"));
     }
 
     #[test]
-    fn internal_inference_token_prefers_connection_key_and_falls_back_to_active_api_key() {
+    fn internal_inference_token_uses_only_an_active_api_key() {
         let mut cfg = crate::config::Config {
             gpus: None,
             thermal: Default::default(),
@@ -864,6 +952,7 @@ mod tests {
                 key: "sk-active".into(),
                 label: "test".into(),
                 node_id: String::new(),
+                origin_node_id: String::new(),
                 active: true,
                 created_at: String::new(),
             }],
@@ -881,7 +970,7 @@ mod tests {
             slot_auto_ttl_secs: None,
         };
 
-        assert_eq!(inference_token(&cfg).as_deref(), Some("cluster-secret"));
+        assert_eq!(inference_token(&cfg).as_deref(), Some("sk-active"));
 
         cfg.connection_key.clear();
         assert_eq!(inference_token(&cfg).as_deref(), Some("sk-active"));
@@ -895,6 +984,7 @@ mod tests {
             key: "api-secret".into(),
             label: "claude-code".into(),
             node_id: "eu".into(),
+            origin_node_id: "eu".into(),
             active: true,
             created_at: String::new(),
         };

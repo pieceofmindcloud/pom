@@ -84,6 +84,7 @@ pub struct PeerClients {
     per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
     reply_routes: Arc<RwLock<HashMap<String, ReplyRouteState>>>,
     auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
+    inference_tokens: Arc<RwLock<HashMap<String, (Instant, String)>>>,
 }
 
 #[derive(Default)]
@@ -142,6 +143,7 @@ impl PeerClients {
             per_peer: Arc::new(RwLock::new(HashMap::new())),
             reply_routes: Arc::new(RwLock::new(HashMap::new())),
             auth: Arc::new(RwLock::new(None)),
+            inference_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -154,13 +156,54 @@ impl PeerClients {
         }
     }
 
-    /// Credencial que os nós usam entre si na porta de inferência. A chave de
-    /// conexão é preferida; uma API key ativa é o fallback aceito pelo mesmo
-    /// middleware quando a instalação não tem connection_key.
+    /// Return an active API key for callers that do not have a session id.
+    /// The connection key is never returned here.
     pub async fn inference_token(&self) -> Option<String> {
         let auth = self.auth.read().ok()?.clone()?;
         let config = auth.read().await;
         crate::auth::inference_token(&config)
+    }
+
+    pub fn remember_inference_token(&self, session_id: &str, token: &str) {
+        if session_id.is_empty() || token.is_empty() {
+            return;
+        }
+        if let Ok(mut tokens) = self.inference_tokens.write() {
+            let now = Instant::now();
+            tokens.retain(|_, (expires, _)| *expires > now);
+            tokens.insert(
+                session_id.to_string(),
+                (now + Duration::from_secs(600), token.to_string()),
+            );
+        }
+    }
+
+    pub fn inference_token_for_session(&self, session_id: &str) -> Option<String> {
+        let mut tokens = self.inference_tokens.write().ok()?;
+        let now = Instant::now();
+        tokens.retain(|_, (expires, _)| *expires > now);
+        tokens.get(session_id).map(|(_, token)| token.clone())
+    }
+
+    pub async fn authorize_inference_request_for_session(
+        &self,
+        request: reqwest::RequestBuilder,
+        session_id: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let token = match session_id.and_then(|id| self.inference_token_for_session(id)) {
+            Some(token) => Some(token),
+            None => self.inference_token().await,
+        };
+        let request = match session_id {
+            Some(id) if !id.is_empty() => request.header(crate::auth::INFERENCE_SESSION_HEADER, id),
+            _ => request,
+        };
+        match token {
+            Some(token) => {
+                request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            }
+            None => request,
+        }
     }
 
     pub async fn authorize_inference_request(

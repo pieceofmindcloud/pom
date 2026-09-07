@@ -367,16 +367,20 @@ pub(super) async fn handle_link(
     headers: axum::http::HeaderMap,
     body: axum::body::Body,
 ) -> Response {
-    let token = inference_credential_from_headers(&headers);
+    let tokens = inference_credential_candidates(&headers);
     crate::link::serve(body, move |path, bytes| {
         let state = state.clone();
-        let token = token.clone();
+        let tokens = tokens.clone();
         async move {
             if let Some((config, database)) = &state.auth {
-                let Some(token) = token else {
-                    return Err(anyhow::anyhow!("quadro de canal sem credencial"));
-                };
-                if !inference_credential_is_valid(config, database.as_ref(), &token).await {
+                let mut valid = false;
+                for token in &tokens {
+                    if inference_credential_is_valid(config, database.as_ref(), token).await {
+                        valid = true;
+                        break;
+                    }
+                }
+                if !valid {
                     return Err(anyhow::anyhow!("credencial de inferência inválida"));
                 }
             }
@@ -758,7 +762,10 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
     (batch, error, terminal)
 }
 
-pub(super) async fn remote_stream_emitter(reply_to: Value, receiver: mpsc::Receiver<RemoteStreamItem>) {
+pub(super) async fn remote_stream_emitter(
+    reply_to: Value,
+    receiver: mpsc::Receiver<RemoteStreamItem>,
+) {
     emit_remote_stream_batches(reply_to, receiver, |reply_to, batch| async move {
         crate::direct::deliver_stream_batch(http_client(), &reply_to, batch).await
     })

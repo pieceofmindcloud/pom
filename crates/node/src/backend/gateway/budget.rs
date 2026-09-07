@@ -428,6 +428,9 @@ pub enum GenEvent {
 /// different list of generation parameters.
 pub(crate) struct GenerationInput {
     pub(crate) state: GatewayState,
+    /// Validated API key propagated to every inference hop. It never enters
+    /// request details, audit records or logs.
+    pub(crate) inference_token: String,
     pub(crate) model: String,
     pub(crate) prompt: String,
     pub(crate) chat_template: bool,
@@ -633,7 +636,10 @@ pub(super) async fn send_text_with_stop(
     }
 }
 
-pub(super) async fn flush_stop_matcher(tx: &mpsc::Sender<GenEvent>, matcher: &mut StopMatcher) -> bool {
+pub(super) async fn flush_stop_matcher(
+    tx: &mpsc::Sender<GenEvent>,
+    matcher: &mut StopMatcher,
+) -> bool {
     let tail = matcher.finish();
     tail.is_empty() || tx.send(GenEvent::Token(tail)).await.is_ok()
 }
@@ -902,6 +908,10 @@ pub(super) fn sliced_mtp_round_continues(
     }
 }
 
-pub(super) fn gateway_rollback_needed(remote_stream_mode: bool, accept_count: u32, batch_width: u32) -> bool {
+pub(super) fn gateway_rollback_needed(
+    remote_stream_mode: bool,
+    accept_count: u32,
+    batch_width: u32,
+) -> bool {
     !remote_stream_mode && accept_count < batch_width
 }

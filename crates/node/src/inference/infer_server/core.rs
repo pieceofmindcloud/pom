@@ -50,7 +50,10 @@ impl MoeTimings {
         }
     }
 
-    pub(super) fn record_telemetry(&mut self, telemetry: &crate::moe::runtime::MoeExecutorTelemetry) {
+    pub(super) fn record_telemetry(
+        &mut self,
+        telemetry: &crate::moe::runtime::MoeExecutorTelemetry,
+    ) {
         self.record_executor(telemetry.executor);
         for dtype in &telemetry.dtypes {
             if !self.dtypes.contains(dtype) {
@@ -173,7 +176,10 @@ impl NodeTimings {
         self.moe.record_executor(executor);
     }
 
-    pub(super) fn record_moe_telemetry(&mut self, telemetry: crate::moe::runtime::MoeExecutorTelemetry) {
+    pub(super) fn record_moe_telemetry(
+        &mut self,
+        telemetry: crate::moe::runtime::MoeExecutorTelemetry,
+    ) {
         self.moe.record_telemetry(&telemetry);
     }
 
@@ -653,7 +659,10 @@ impl crate::relay::InProcessInference for InferenceAppState {
     }
 }
 
-pub(super) fn spawn_scheduler(state: SharedState, cfg: crate::scheduler::SchedulerConfig) -> SchedulerHandle {
+pub(super) fn spawn_scheduler(
+    state: SharedState,
+    cfg: crate::scheduler::SchedulerConfig,
+) -> SchedulerHandle {
     let limit = cfg.max_queue_requests;
     let (tx, rx) = mpsc::channel(limit);
     let admission = Arc::new(Semaphore::new(limit));
@@ -1019,11 +1028,8 @@ mod tests {
 
     #[test]
     fn health_dense_nao_sinaliza_executor_moe() {
-        let (requested, executor, dtypes, reason) = moe_health_summary(
-            crate::executor::InferencePath::DenseLlamaCpp,
-            None,
-            None,
-        );
+        let (requested, executor, dtypes, reason) =
+            moe_health_summary(crate::executor::InferencePath::DenseLlamaCpp, None, None);
 
         assert!(!requested);
         assert_eq!(executor, "not-requested");
@@ -1340,6 +1346,7 @@ mod tests {
             0,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
             None,
             None,
             None,

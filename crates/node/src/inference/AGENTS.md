@@ -25,10 +25,12 @@ o modelo acima do limite com estado `thermal`, preserva a configuração para
 retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
 abaixo do limite de religar durante o cooldown. `stop` limpa essa recuperação
 para respeitar uma desimplantação manual.
-As rotas de inferência revalidam API keys no `pom.db` compartilhado a cada
-requisição; assim uma revogação feita por outro processo não fica válida até o
-próximo reinício. A `connection_key` continua sendo a credencial interna
-compartilhada.
+As rotas de inferência revalidam somente API keys no `pom.db` compartilhado a
+cada requisição; assim uma revogação feita por outro processo não fica válida
+até o próximo reinício. Uma API key desconhecida localmente é validada no
+principal por uma chamada autenticada com `connection_key` e marcador interno,
+com timeout/retries limitados e falha fechada. A `connection_key` nunca é
+credencial de inferência.
 O listener HTTP de inferência é dual-stack, ou cai para IPv4 quando a máquina
 não oferece IPv6, independentemente da exposição da interface administrativa:
 ele é a reserva quando o túnel libp2p falha.
@@ -965,9 +967,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   é o loopback que aparece sozinho, do fallback de `self_dial_host` ou da
   enumeração de interfaces.
 - `handle_relay_result` - handler de `RELAY_RESULT_PATH` (`/v1/relay-result`);
-  a autenticação é o próprio ticket (UUID v4 por quadro, só a própria cadeia
-  conhece); resultado sem ticket vivo é `410 Gone`. A rota é registrada **sem**
-  auth de chave por desenho: o hop que responde nunca teve a chave do operador.
+  exige API key ativa no bearer e o próprio ticket (UUID v4 por quadro, só a
+  própria cadeia conhece); resultado sem ticket vivo é `410 Gone`.
 - `handle_remote_stream_result` - recebe `/v1/remote-stream-result` e aguarda o
   mpsc limitado antes de responder; lote tardio ou ticket cancelado recebe
   `410 Gone`.
@@ -1173,7 +1174,7 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 - **Chamado por**: `backend/gateway.rs` (monta `DirectReply` com `ReplyInbox` +
   `self_reply_urls`, registra `/v1/relay-result` e
-  `/v1/remote-stream-result` sem auth de chave, passa
+  `/v1/remote-stream-result` com a API key da sessão e o ticket, passa
   `direct.as_ref()` a `prefill::run`/`step`; `step_speculative` vai sem
   direct), `backend/webui.rs` (rollback/release fan-out), `main.rs`
   (`NodeRuntime::apply` no arranque, inclusive com `lastslice::take`),

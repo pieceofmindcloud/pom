@@ -137,6 +137,7 @@ export function Dashboard() {
   const cluster = useCluster();
   const node = useNode();
   const invalidateAll = useInvalidate();
+  const isAdmin = node.data?.profile === "admin";
 
   const c = cluster.data;
   // Duas listas: quem serve o modelo ativo, na ordem do pipeline, e o resto da
@@ -218,15 +219,19 @@ export function Dashboard() {
         <ClusterStat label={t("dashboard.inFlight")} value={num(inFlight)} detail={node.data ? t("dashboard.thisNode", { count: num(node.data.load) }) : t("dashboard.requestsNow")} tone={inFlight > 0 ? "amber" : "neutral"} />
       </div>
       <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-          <Plus className="h-3.5 w-3.5" />
-          {t("deploy.addNode")}
-        </Button>
-        {/* Ao lado de "Adicionar nó" porque são o mesmo nível de decisão: uma
-            soma uma máquina à pipeline, a outra desfaz a pipeline inteira. Só
-            aparece quando há uma no ar - um botão que só sabe recusar é ruído. */}
-        {undeployTargets.length > 0 && (
-          <UndeployPipeline group={group} targets={undeployTargets} />
+        {isAdmin && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+              <Plus className="h-3.5 w-3.5" />
+              {t("deploy.addNode")}
+            </Button>
+            {/* Ao lado de "Adicionar nó" porque são o mesmo nível de decisão: uma
+                soma uma máquina à pipeline, a outra desfaz a pipeline inteira. Só
+                aparece quando há uma no ar - um botão que só sabe recusar é ruído. */}
+            {undeployTargets.length > 0 && (
+              <UndeployPipeline group={group} targets={undeployTargets} />
+            )}
+          </>
         )}
         <ViewSwitch view={view} onChange={setView} />
       </div>
@@ -277,14 +282,16 @@ export function Dashboard() {
         graph above is now the primary operational view. */}
     <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
 
-    <AddNodeDialog
-      open={adding}
-      group={group}
-      peers={c.peers.map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
-      slices={addSlices}
-      existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
-      onClose={() => setAdding(false)}
-      onDone={() => invalidateAll()}
-    />
+    {isAdmin && (
+      <AddNodeDialog
+        open={adding}
+        group={group}
+        peers={c.peers.map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
+        slices={addSlices}
+        existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
+        onClose={() => setAdding(false)}
+        onDone={() => invalidateAll()}
+      />
+    )}
   </div>;
 }

@@ -190,6 +190,14 @@ export function localizeServerText(locale: Locale, text: string, fallbackKey = "
     escrevendo: "Writing",
     verificando: "Verifying",
     "verificando espaço": "Checking disk space",
+    "somente o administrador pode adicionar uma máquina à implantação": formatMessage(
+      locale,
+      "deploy.adminOnlyAdd",
+    ),
+    "somente o administrador pode desimplantar a implantação": formatMessage(
+      locale,
+      "undeploy.adminOnly",
+    ),
   };
   if (known[text]) return known[text];
   const portuguese = /[ãõç]|\b(não|nenhuma|nenhum|camadas|fatias|memória|modelo|máquina|servidor|falhou|pronto|erro)\b/i;

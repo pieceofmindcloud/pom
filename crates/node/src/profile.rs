@@ -39,6 +39,7 @@ pub(crate) enum ProfileAction {
     ViewNetworkPeers,
     SelfPromoteToNode,
     PromoteNodeToAdmin,
+    ManageDeployment,
 }
 
 /// Signed command sent by an administrator node to the node being promoted.
@@ -53,10 +54,7 @@ pub(crate) struct PromoteNodeToAdminCommand {
 }
 
 fn promotion_message(actor_node_id: &str, target_node_id: &str) -> Vec<u8> {
-    format!(
-        "pom/profile/promote-node-to-admin/v1\n{actor_node_id}\n{target_node_id}"
-    )
-    .into_bytes()
+    format!("pom/profile/promote-node-to-admin/v1\n{actor_node_id}\n{target_node_id}").into_bytes()
 }
 
 pub(crate) fn signed_promotion_command(
@@ -75,7 +73,9 @@ pub(crate) fn signed_promotion_command(
 
 pub(crate) fn verifies_promotion_command(command: &PromoteNodeToAdminCommand) -> bool {
     let Ok(pubkey_bytes) = <[u8; 32]>::try_from(
-        hex::decode(&command.actor_pubkey).unwrap_or_default().as_slice(),
+        hex::decode(&command.actor_pubkey)
+            .unwrap_or_default()
+            .as_slice(),
     ) else {
         return false;
     };
@@ -90,7 +90,12 @@ pub(crate) fn verifies_promotion_command(command: &PromoteNodeToAdminCommand) ->
     };
     let expected_node_id = hex::encode(Sha256::digest(pubkey.as_bytes()));
     expected_node_id == command.actor_node_id
-        && pubkey.verify(&promotion_message(&command.actor_node_id, &command.target_node_id), &signature).is_ok()
+        && pubkey
+            .verify(
+                &promotion_message(&command.actor_node_id, &command.target_node_id),
+                &signature,
+            )
+            .is_ok()
 }
 
 impl NodeProfile {
@@ -109,6 +114,7 @@ impl NodeProfile {
             }
             ProfileAction::SelfPromoteToNode => matches!(self, Self::Infer),
             ProfileAction::PromoteNodeToAdmin => matches!(self, Self::Admin),
+            ProfileAction::ManageDeployment => matches!(self, Self::Admin),
         }
     }
 }
@@ -116,9 +122,6 @@ impl NodeProfile {
 /// Whether a target is in the only state that the administrator promotion can
 /// change. Keeping the target check beside the actor policy makes the command
 /// reusable by every backend route that exposes profile capabilities.
-pub(crate) const fn can_promote_node_to_admin(
-    actor: NodeProfile,
-    target: NodeProfile,
-) -> bool {
+pub(crate) const fn can_promote_node_to_admin(actor: NodeProfile, target: NodeProfile) -> bool {
     matches!(actor, NodeProfile::Admin) && matches!(target, NodeProfile::Node)
 }

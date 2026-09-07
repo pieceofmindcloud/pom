@@ -15,7 +15,11 @@ import { LocaleProvider } from "../i18n/provider";
 import { fakeCluster, fakeSlicePeer } from "../test/fixtures";
 import { keys } from "../lib/queries";
 
-function mount(cluster = fakeCluster([], "qwen35"), rttMeasurements?: { from_node_id: string; to_node_id: string; rtt_ms: number; transport: string }[]) {
+function mount(
+  cluster = fakeCluster([], "qwen35"),
+  profile: "admin" | "node" = "admin",
+  rttMeasurements?: { from_node_id: string; to_node_id: string; rtt_ms: number; transport: string }[],
+) {
   // active_model is set, but there are no peers: the estendida view shows
   // "Nenhuma maquina na rede" in its panel.
   if (cluster.peers.length === 0) {
@@ -33,7 +37,7 @@ function mount(cluster = fakeCluster([], "qwen35"), rttMeasurements?: { from_nod
   }
   client.setQueryData(keys.node, {
     node_id: "no-0", short_id: "no-0", hostname: "no-0",
-    role: "peer" as const, connection_key: "",
+    role: "peer" as const, profile, connection_key: "",
     p2p_port: 42777, gateway_port: 8080, inference_port: 8181,
     config: null,
     status: { state: "disabled" as const, detail: "", pid: 0, restarts: 0,
@@ -92,7 +96,7 @@ describe("Dashboard", () => {
       to_start_layer: 16,
     }];
 
-    mount(cluster, [{
+    mount(cluster, "admin", [{
       from_node_id: "a",
       to_node_id: "b",
       rtt_ms: 7.4,
@@ -128,5 +132,32 @@ describe("Dashboard", () => {
     await waitFor(() =>
       expect(screen.getByText("1 máquina desta cobertura não pôde ser lida")).toBeTruthy(),
     );
+  });
+
+  it("esconde adicionar e desimplantar para um nó comum", async () => {
+    const cluster = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+    ], "qwen35");
+
+    mount(cluster, "node");
+
+    await waitFor(() => expect(screen.getByText("Fluxo")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Adicionar" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Desimplantar" })).toBeNull();
+  });
+
+  it("mostra adicionar e desimplantar para o administrador", async () => {
+    const cluster = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+    ], "qwen35");
+
+    mount(cluster, "admin");
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Adicionar" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Desimplantar" })).toBeTruthy();
+    });
   });
 });

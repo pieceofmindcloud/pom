@@ -64,6 +64,11 @@ disponível e a rede fica sempre abaixo dela. Documentação e Configurações
 ficam no rodapé junto das bandeiras. Administrador e node continuam com o menu
 de navegação por telas.
 
+No Dashboard, os controles de adicionar máquina e desimplantar só aparecem para
+`profile: "admin"`; a API repete o gate e localiza a recusa em inglês. O botão
+de remover a própria máquina segue sendo uma ação separada disponível aos outros
+perfis.
+
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)
 - `/admin-ui/chat` -> Chat compacto para o painel nativo da barra de status do macOS; mantém somente a tela de chat, com layout `h-full min-h-0 overflow-hidden`, e o botão de janela maior só aparece quando o WebKit nativo fornece a ponte `pomOpenWindow`.

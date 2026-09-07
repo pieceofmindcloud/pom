@@ -425,7 +425,11 @@ que se abrem. Os discos são **um medidor por partição montada** (`disks` do
 separados, aparecia como um volume só - e quem decide onde cabe um GGUF de
 40 GB não via o disco onde ele caberia. Um nó que ainda não publique a lista
 recai no volume do projeto. Ao lado de
-"Adicionar nó" há `UndeployPipeline` quando há modelo no ar. `PipelineRail`
+"Adicionar nó" há `UndeployPipeline` quando há modelo no ar, mas os dois
+controles só são montados quando `/api/ui/node` informa o perfil `admin`. O
+servidor também recusa `POST /api/ui/deploy/node` e `POST /api/ui/undeploy` para
+os perfis `node` e `infer`, com a mensagem localizada pela UI. O botão de
+remover uma única máquina no card continua independente dessa regra. `PipelineRail`
 ainda exporta `pipelinePeers`/`trackOf` usados pelo Dashboard e DeployModel.
 
 Numa máquina servindo, o card traz também **"Como o modelo foi carregado"**

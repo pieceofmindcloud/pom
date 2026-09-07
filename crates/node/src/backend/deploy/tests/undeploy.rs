@@ -2,11 +2,20 @@
 #[cfg(test)]
 mod undeploy_tests {
     use super::*;
-    use crate::config::Role;
     use crate::gateway::testkit::{body_of, state_with};
+    use crate::gateway::GatewayState;
+    use crate::profile::NodeProfile;
     use axum::routing::post as axum_post;
+    use axum::{body::Body, http::Request};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use tower::ServiceExt;
+
+    async fn admin_state(peers: Vec<PeerInfo>) -> GatewayState {
+        let state = state_with("eu", peers).await;
+        state.auth.write().await.profile = NodeProfile::Admin;
+        state
+    }
 
     /// Um peer servindo `qwen35` na faixa dada.
     fn peer(node_id: &str, host: &str, gateway_port: u16, range: (u32, u32)) -> PeerInfo {
@@ -57,8 +66,7 @@ mod undeploy_tests {
         a.deploy_id = "d-aaaaaaaa".into();
         b.deploy_id = "d-bbbbbbbb".into();
 
-        let state = state_with("eu", vec![a, b]).await;
-        state.auth.write().await.role = Role::Principal;
+        let state = admin_state(vec![a, b]).await;
 
         let resp = undeploy_endpoint(
             ConnectionAuth,
@@ -93,8 +101,7 @@ mod undeploy_tests {
         let mut a = peer("no-a", "maquina-a", porta, (0, 31));
         a.deploy_id = "d-aaaaaaaa".into();
 
-        let state = state_with("eu", vec![a]).await;
-        state.auth.write().await.role = Role::Principal;
+        let state = admin_state(vec![a]).await;
 
         let resp = undeploy_endpoint(
             ConnectionAuth,
@@ -117,13 +124,10 @@ mod undeploy_tests {
         let (ok_port, ok_hits) = fake_machine(axum::http::StatusCode::OK).await;
         let (bad_port, bad_hits) =
             fake_machine(axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
-        let state = state_with(
-            "eu",
-            vec![
-                peer("no-a", "ksia", ok_port, (0, 15)),
-                peer("no-b", "macbook", bad_port, (16, 31)),
-            ],
-        )
+        let state = admin_state(vec![
+            peer("no-a", "ksia", ok_port, (0, 15)),
+            peer("no-b", "macbook", bad_port, (16, 31)),
+        ])
         .await;
 
         let resp = undeploy_endpoint(
@@ -171,13 +175,10 @@ mod undeploy_tests {
             let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             l.local_addr().unwrap().port()
         };
-        let state = state_with(
-            "eu",
-            vec![
-                peer("no-a", "ksia", ok_port, (0, 15)),
-                peer("no-b", "sumida", dead, (16, 31)),
-            ],
-        )
+        let state = admin_state(vec![
+            peer("no-a", "ksia", ok_port, (0, 15)),
+            peer("no-b", "sumida", dead, (16, 31)),
+        ])
         .await;
 
         let body = body_of(
@@ -204,7 +205,7 @@ mod undeploy_tests {
     /// devolver um relatório vazio que se lê como sucesso.
     #[tokio::test]
     async fn undeploying_nothing_is_a_refusal_not_an_empty_report() {
-        let state = state_with("eu", vec![]).await;
+        let state = admin_state(vec![]).await;
         let resp = undeploy_endpoint(
             ConnectionAuth,
             State(state),
@@ -233,14 +234,88 @@ mod undeploy_tests {
         assert!(resolve_group("", &[]).is_err());
     }
 
-    /// **Documenta a porta aberta de propósito.** Nesta primeira versão qualquer
-    /// nó desimplanta; quando a restrição "somente o nó principal" entrar em
-    /// `undeploy_authority`, é este teste que tem que mudar junto - e é isso que
-    /// torna o fechamento uma decisão, e não um efeito colateral.
-    #[test]
-    fn any_node_may_undeploy_for_now() {
-        assert!(undeploy_authority(&Role::Node).is_ok());
-        assert!(undeploy_authority(&Role::Principal).is_ok());
+    #[tokio::test]
+    async fn non_admin_with_valid_connection_key_cannot_manage_deployment() {
+        let app = routes().with_state(state_with("eu", vec![]).await);
+        let requests = [
+            (
+                "/api/ui/deploy/node",
+                r#"{"group":"qwen35","target_node_id":"no-2","start_layer":0,"end_layer":15}"#,
+                "somente o administrador pode adicionar uma máquina à implantação",
+            ),
+            (
+                "/api/ui/undeploy",
+                r#"{"group":"qwen35"}"#,
+                "somente o administrador pode desimplantar a implantação",
+            ),
+        ];
+
+        for (path, payload, expected_error) in requests {
+            let request = Request::post(path)
+                .header("authorization", "Bearer chave")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::FORBIDDEN,
+                "{path}"
+            );
+            assert_eq!(body_of(response).await["error"], expected_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_with_valid_connection_key_passes_both_authority_gates() {
+        let mut state = state_with("eu", vec![]).await;
+        state.auth.write().await.profile = NodeProfile::Admin;
+        let app = routes().with_state(state);
+
+        let add_request = Request::post("/api/ui/deploy/node")
+            .header("authorization", "Bearer chave")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"group":"qwen35","target_node_id":"no-2","start_layer":15,"end_layer":0}"#,
+            ))
+            .unwrap();
+        let add_response = app.clone().oneshot(add_request).await.unwrap();
+        assert_eq!(add_response.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_of(add_response).await["error"],
+            "faixa de camadas invertida"
+        );
+
+        let undeploy_request = Request::post("/api/ui/undeploy")
+            .header("authorization", "Bearer chave")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"group":"qwen35"}"#))
+            .unwrap();
+        let undeploy_response = app.oneshot(undeploy_request).await.unwrap();
+        assert_eq!(
+            undeploy_response.status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+        assert!(body_of(undeploy_response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("nenhuma"));
+    }
+
+    #[tokio::test]
+    async fn a_node_profile_can_still_remove_its_own_machine() {
+        let state = state_with("eu", vec![peer("eu", "eu", 0, (0, 31))]).await;
+        let response = remove_node_endpoint(
+            ConnectionAuth,
+            State(state),
+            Json(RemoveNodeRequest {
+                group: "qwen35".into(),
+                target_node_id: "eu".into(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(body_of(response).await["removed"], true);
     }
 }
-

@@ -103,17 +103,20 @@ Per-file list:
   feeds `RemoveNode` the ranges of the *other* pipeline peers. Empty state is
   `c.peers.length === 0` (was `peers.length`) with `dashboard.noMachines`
   ("Nenhuma máquina na rede"). Fetches `POST /api/ui/deploy/plan` to feed the
-  "add a machine" dialog. Uses
+  "add a machine" dialog. The add trigger, dialog and `UndeployPipeline` are
+  rendered only when `/api/ui/node` reports `profile: "admin"`; the per-machine
+  `RemoveNode` action remains in the cards for every profile. Uses
   `../components/{LayerRibbon,PipelineRail,PeerDetailCard,UndeployPipeline,AddNodeDialog,ModelNetworkCanvas,ui}`,
   `../lib/api`, `../lib/networkPeers`, `../lib/queries`, `../lib/types`
   (`PeerView`, `DeployPlan`). The per-machine actions that used to live here
   moved to `PeerDetailCard`: update-and-restart (`UpdateNode`, dev-only when the
   peer advertises `dev_update`), `RemoveNode` (out of the model, only when
   serving a slice) and `LeaveNode` (out of the whole network, always). Next to
-  "Adicionar nó" there is a `UndeployPipeline` button when a model is live -
-  `undeployTargets` is the list the confirmation shows (peers on `group` with
-  `total_layers > 0`, sorted by start layer); the node re-scans the cluster
-  before acting, so the list is just the preview. The flow canvas receives the
+  "Adicionar nó" there is a `UndeployPipeline` button for an administrator
+  when a model is live - `undeployTargets` is the list the confirmation shows
+  (peers on `group` with `total_layers > 0`, sorted by start layer); the node
+  re-scans the cluster before acting, so the list is just the preview. The flow
+  canvas receives the
   directional RTT measurements for its adjacent routing edges from
   `useNetworkRtt`, with the same badge presentation used by deployment.
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a

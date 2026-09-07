@@ -330,6 +330,7 @@ deploy.addNode,Add,Adicionar
 deploy.addNodeMachine,Machine,Máquina
 deploy.addNodeSlice,Slice,Fatia
 deploy.addNodeTitle,Add a machine to this model,Somar uma máquina a este modelo
+deploy.adminOnlyAdd,Only the administrator can add a machine to a deployment.,Somente o administrador pode adicionar uma máquina à implantação.
 deploy.advancedDetail,"Each request accepts up to {prompt} prompt tokens, in chunks of {chunk}. More is rejected before reaching llama.cpp.","Cada requisição aceita até {prompt} tokens de prompt, em pedaços de {chunk}. Passar disso é recusado antes de chegar ao llama.cpp."
 deploy.allRanges,"All ranges available in the cluster, including ones from different slicing runs. Select the ones to launch and choose each destination.","Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
 deploy.alreadyHas, · already has it, · já tem
@@ -1386,6 +1387,7 @@ transfers.sendFile,Send a file,Enviar um arquivo
 transfers.sendingTo,sending to {host},enviando para {host}
 transfers.subtitle,"A 10 GB shard takes minutes over a real link, so every transfer resumes and verifies MD5 before using the final file name.","Uma fatia de 10 GB leva minutos no enlace real, então tudo aqui retoma de onde parou e confere o MD5 antes de o arquivo tomar o nome final."
 transfers.title,Transfers,Transferências
+undeploy.adminOnly,Only the administrator can undeploy a deployment.,Somente o administrador pode desimplantar uma implantação.
 undeploy.allReleased,"{count, plural, =1 {1 machine released its memory.} other {{count} machines released their memory.}}","{count, plural, =1 {1 máquina liberou a memória.} other {{count} máquinas liberaram a memória.}}"
 undeploy.button,Undeploy,Desimplantar
 undeploy.confirm,Undeploy everywhere,Desimplantar em todas

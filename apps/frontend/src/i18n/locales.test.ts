@@ -87,4 +87,15 @@ describe("localizeServerText", () => {
       "checking the file at the source",
     );
   });
+
+  it("traduz as recusas de autoridade da implantação", () => {
+    expect(localizeServerText(
+      "en",
+      "somente o administrador pode adicionar uma máquina à implantação",
+    )).toBe("Only the administrator can add a machine to a deployment.");
+    expect(localizeServerText(
+      "en",
+      "somente o administrador pode desimplantar a implantação",
+    )).toBe("Only the administrator can undeploy a deployment.");
+  });
 });

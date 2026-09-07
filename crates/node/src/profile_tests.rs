@@ -29,3 +29,10 @@ fn only_admin_can_promote_a_node_to_admin() {
     ));
     assert!(!NodeProfile::Infer.allows(ProfileAction::PromoteNodeToAdmin));
 }
+
+#[test]
+fn only_admin_can_manage_deployments() {
+    assert!(NodeProfile::Admin.allows(ProfileAction::ManageDeployment));
+    assert!(!NodeProfile::Node.allows(ProfileAction::ManageDeployment));
+    assert!(!NodeProfile::Infer.allows(ProfileAction::ManageDeployment));
+}

@@ -426,6 +426,15 @@ mas não publica modelo para os clientes de inferência. `?local=true` responde
 somente o registro local e não faz fan-out; `/v1/models` usa a lista viva do
 gateway, não esse catálogo persistido.
 
+`POST /api/ui/deploy/node` (somar uma máquina a uma implantação) e
+`POST /api/ui/undeploy` (tirar a implantação inteira do ar) exigem, além da
+`ConnectionAuth`, que o `profile` persistido deste nó seja `admin`. A recusa é
+403 e o JSON traz `error` com a ação nomeada: somente o administrador pode
+adicionar uma máquina ou desimplantar a implantação. A interface esconde os
+dois controles para os perfis `node` e `infer`, mas o servidor mantém a
+autoridade. `POST /api/ui/deploy/node/remove` é diferente: libera uma única
+máquina pelo botão do próprio card e continua disponível para qualquer perfil.
+
 As rotas remotas `/api/ui/model-provider/search`, `/details`, `/storage` e
 `/downloads` expõem o catálogo e os jobs do `ModelProvider` sem repassar
 comandos ou tokens do provider. `/storage` informa as pastas de modelos

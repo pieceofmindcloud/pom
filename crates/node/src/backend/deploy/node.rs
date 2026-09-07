@@ -1,4 +1,5 @@
 use super::*;
+use crate::profile::{NodeProfile, ProfileAction};
 // ── Somar ou tirar uma maquina de um modelo ja no ar ─────────────────────────
 //
 // Os dois caminhos tocam **uma** maquina. `deploy_endpoint` reimplanta o
@@ -24,11 +25,24 @@ pub struct AddNodeRequest {
     #[serde(default)]
     pub params: RuntimeParams,
 }
-
 #[derive(Debug, Deserialize)]
 pub struct RemoveNodeRequest {
     pub group: String,
     pub target_node_id: String,
+}
+
+const ADD_NODE_ADMIN_ONLY: &str =
+    "somente o administrador pode adicionar uma máquina à implantação";
+const UNDEPLOY_ADMIN_ONLY: &str = "somente o administrador pode desimplantar a implantação";
+
+pub(super) fn deployment_authority(
+    profile: NodeProfile,
+    refusal: &'static str,
+) -> Result<(), String> {
+    profile
+        .allows(ProfileAction::ManageDeployment)
+        .then_some(())
+        .ok_or_else(|| refusal.to_string())
 }
 
 /// Faixas que este grupo tem no ar agora, uma por peer que o esta servindo.
@@ -47,6 +61,15 @@ pub(super) async fn add_node_endpoint(
     State(state): State<GatewayState>,
     Json(req): Json<AddNodeRequest>,
 ) -> Response {
+    let profile = state.auth.read().await.profile;
+    if let Err(e) = deployment_authority(profile, ADD_NODE_ADMIN_ONLY) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            Json(json!({ "error": e })),
+        )
+            .into_response();
+    }
+
     if req.start_layer > req.end_layer {
         return bad(json!({ "error": "faixa de camadas invertida" }));
     }
@@ -225,31 +248,9 @@ pub(super) async fn remove_node_endpoint(
 // Apagar fatias é o que a tela de Modelos faz, com o seu próprio pedido de
 // confirmação, e é uma decisão diferente desta.
 
-/// Quem pode tirar a pipeline inteira do ar.
-///
-/// **Primeira versão: qualquer nó da rede pode.** É deliberado, e é onde a
-/// restrição "somente o NÓ PRINCIPAL desimplanta" entra quando chegar a hora:
-/// aqui dentro, em nenhum outro lugar. `undeploy_endpoint` já chama esta função
-/// antes de tocar em qualquer máquina, então fechar o portão é trocar o corpo
-/// desta função por
-///
-/// ```ignore
-/// if role != Role::Principal {
-///     return Err("somente o nó principal desimplanta a pipeline".into());
-/// }
-/// ```
-///
-/// e atualizar `any_node_may_undeploy_for_now`, o teste que hoje documenta a
-/// porta aberta — de propósito, para que fechá-la seja uma edição consciente e
-/// não um efeito colateral.
-///
-/// Note que o portão é do **papel deste nó**, o que recebeu o clique, e não do
-/// papel de quem foi chamado: as chamadas para os peers usam `/api/ui/unload`,
-/// que é a mesma rota do botão de descarregar uma máquina só e continua valendo
-/// para qualquer nó.
-pub(super) fn undeploy_authority(_role: &crate::config::Role) -> Result<(), String> {
-    Ok(())
-}
+/// O perfil do nó que recebeu o pedido decide se a pipeline inteira pode sair
+/// do ar. O descarregamento encaminhado aos peers continua sendo a operação
+/// local de cada máquina e não passa por este portão.
 
 #[derive(Debug, Deserialize)]
 pub struct UndeployRequest {
@@ -294,8 +295,8 @@ pub(super) async fn undeploy_endpoint(
     Json(req): Json<UndeployRequest>,
 ) -> Response {
     {
-        let role = state.auth.read().await.role.clone();
-        if let Err(e) = undeploy_authority(&role) {
+        let profile = state.auth.read().await.profile;
+        if let Err(e) = deployment_authority(profile, UNDEPLOY_ADMIN_ONLY) {
             return (
                 axum::http::StatusCode::FORBIDDEN,
                 Json(json!({ "error": e })),
@@ -629,4 +630,3 @@ pub(super) async fn wait_for_transfers(
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
-

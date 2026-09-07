@@ -13,6 +13,7 @@ import { Route } from "lucide-react";
 import { api } from "../lib/api";
 import { Confirm } from "./Confirm";
 import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 export interface AddNodePeer {
   node_id: string;
@@ -45,7 +46,7 @@ export function AddNodeDialog({
   onClose: () => void;
   onDone?: (overlapping: number[]) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [nodeId, setNodeId] = useState(peers[0]?.node_id ?? "");
   const [sliceKey, setSliceKey] = useState(() => keyOf(slices[0]));
   const [busy, setBusy] = useState(false);
@@ -100,7 +101,7 @@ export function AddNodeDialog({
       onDone?.(r.overlapping_layers ?? []);
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(localizeServerText(locale, e instanceof Error ? e.message : String(e)));
     } finally {
       setBusy(false);
     }

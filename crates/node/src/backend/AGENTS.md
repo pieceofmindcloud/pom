@@ -604,8 +604,11 @@ dual-stack.
   `released: false` with the reason in `error`, never counted as success.
   Nothing touches disk - slices stay, only memory returns, through the peers'
   own `/api/ui/unload` (same route as the single-machine button; the local
-  machine uses `runtime.stop()`). `undeploy_authority(role)` gates who may
-  undeploy; a decisão sobre a abertura atual do gate está em `TODO.md`, item 12.
+  machine uses `runtime.stop()`). `deployment_authority(profile, refusal)`
+  checks `ProfileAction::ManageDeployment`: only the `admin` profile may add a
+  machine through `/api/ui/deploy/node` or undeploy the whole pipeline. The
+  `/api/ui/deploy/node/remove` route has no such gate because it is the
+  per-machine self-removal operation and remains available to every profile.
 - `transfer.rs` - `CHUNK=1MB`, `DISK_HEADROOM_MB=512`, `GGUF_MAGIC=b"GGUF"`;
   `/api/transfer/send` receives `{to_node_id, filename}`, never a path.
   Routes: `GET /api/transfer/manifest`, `GET /api/transfer/download`,
@@ -760,11 +763,6 @@ dual-stack.
   the frontend bundle in `apps/frontend/dist` hits `/api/ui/*`; harnesses hit
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
   gateway HTTP for transfers, deploy forwarding, and cancel notices.
-
-## Pendências
-
-- O gate de desimplante continua aberto a qualquer papel autenticado; ver
-  `TODO.md`, item 12. A rota exige `ConnectionAuth`, portanto não é anônima.
 
 ## Maintaining this file
 

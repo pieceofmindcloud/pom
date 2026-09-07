@@ -61,7 +61,8 @@ seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa, além da prévia analítica de capacidade sem chamada ao fit nativo.
 `web-ui.md` descreve também a escolha de exposição administrativa, o token
-humano separado da `connection_key` e a orientação de TLS em Preferências. A
+humano separado da `connection_key`, a autoridade do perfil `admin` sobre
+adicionar máquina e desimplantar e a orientação de TLS em Preferências. A
 fronteira é de rota no gateway: a pipeline continua dual-stack para o fallback
 HTTP do túnel libp2p. O guia descreve como essa validação aparece na tela Implantar, como o mapa
 apresenta hops e RTTs direcionais e como o perfil Inference reduz a vista sem

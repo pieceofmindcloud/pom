@@ -243,6 +243,9 @@ Per-file list:
   cluster). Overlap is the point — it creates a parallel route — so it is
   flagged, not blocked. Exports `rangeOverlap` (shared layers between a chosen
   range and existing ones). Slices come from `Dashboard`'s `deploy/plan`.
+  `Dashboard` mounts this dialog and its trigger only for the `admin` profile;
+  the server repeats that authorization and returns a clear localized refusal
+  for other profiles.
   Re-seeding the two selects happens on the *open* transition only (`wasOpen`
   ref): `Dashboard` rebuilds `peers`/`slices` on every cluster poll, so an
   effect keyed on those props threw the operator's choice away mid-edit. A
@@ -285,7 +288,10 @@ Per-file list:
   machine by machine - a peer that did not confirm still holds its memory, and
   the report shows `released: false` with the reason instead of a rounded-up
   "pronto!". Nothing is deleted from disk (`undeploy_endpoint` in `deploy.rs`).
-  Renders both a `Confirm` and a result `Modal` (no cancel).
+  `Dashboard` renders it only for the `admin` profile, while the backend is the
+  final authority and reports the refusal through `localizeServerText`.
+  Renders both a `Confirm` and a result `Modal` (no cancel). `RemoveNode` stays
+  separate and keeps the per-machine button available to every profile.
 - `ErrorBoundary.tsx` — Class boundary placed around the routed page in
   `App.tsx` (the chrome survives a broken screen). Clears on `resetKey` change
   (the route path); `fallback` lets the chrome collapse to a line; retry button

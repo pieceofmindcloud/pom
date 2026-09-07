@@ -18,7 +18,7 @@ Per-file list:
   tela que ainda não faz sentido. Usa `setupWizardTypes.ts` para
   o estado central e `setupWizardMocks.ts` para hardware, nós, modelos,
   capabilities, redes públicas e saúde simulados; os seis caminhos terminam
-  no mesmo resumo e não fazem chamadas ao backend. O `Setup.tsx` continua
+  no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22. O `Setup.tsx` continua
   sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
@@ -390,9 +390,8 @@ Key logic carriers:
   node builds its answer its own way, and comparing position by position made a
   plan that described exactly these rows look like a different plan. The
   explanation panels hang off `answered` (the node has replied about *these*
-  rows), never off `validated` - gating the reason on the match is what left the
-  screen silent at the exact moment it had something to say, which is the defect
-  the captain reported on 2026-08-16. `whyNot` puts the one-line reason next to
+  rows), never off `validated`, so every planner answer can explain the disabled
+  button. `whyNot` puts the one-line reason next to
   the disabled button, including the two states with no panel at all (nothing
   selected, answer still in flight). Regression test: `DeployModel.test.tsx`.
 - `DeployModel.deploy` (DeployModel.tsx:602) — posts the current rows/settings

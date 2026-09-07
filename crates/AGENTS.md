@@ -63,14 +63,9 @@ content so far; `types` is a placeholder awaiting migration.
 - `routing-contract` is the seam a future private/closed routing provider would
   implement against; `routing-base` is the open one.
 
-## Defeitos anotados
+## Pendências
 
-- `routing-base::plan` (its only real logic) is **not called anywhere** - node's
-  planner `crates/node/src/routing/pipeline.rs::plan_pipeline` builds a
-  `RoutingRequest` from the contract types for validation but does its own greedy
-  planning with load scoring. `routing-base` is currently dead code kept alive
-  only by its own unit tests.
-- The doc in this file and the plan doc describe `node` depending on `config` and
-  `types`; the code does not. The `config` crate is no longer in the workspace.
-  Not a bug, but the workspace graph diverges from the stated architecture until
-  the extraction lands.
+- O planner open-core ainda não está ligado ao caminho de produção; ver `TODO.md`,
+  item 5.
+- A extração de `config` e tipos compartilhados ainda não corresponde ao grafo
+  atual; ver `TODO.md`, item 6.

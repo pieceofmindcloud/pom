@@ -2,7 +2,7 @@
 
 Transportes de descoberta e endereçamento do nó. Dois mundos no mesmo diretório:
 o UDP nativo (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`) e o
-libp2p/pkarr para a internet (`discovery.rs`, `pkarr_node.rs`, `bitswap.rs`).
+libp2p/pkarr para a internet (`discovery.rs`, `pkarr_node.rs`).
 `main.rs` monta `Network` e `Discovery`; `gateway.rs` e `routing/pipeline.rs`
 consomem `PeerInfo` e `RouteTable`. A regra da casa: a decisão de endereço
 pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `RouteTable`).
@@ -25,16 +25,13 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
   mesmo túnel Noise.
-- `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
-  (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
-  atende requisição (ver Defeitos).
 - `cluster_logs.rs` - captura limitada do `tracing` e transporte request/response
   separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão e só o
   principal ingere e persiste lotes.
 - `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
   campo anunciado só dispara a leitura da política no principal.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
-  (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência e o
+  (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e o
   protocolo de logs do cluster. Põe peers
   no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
   antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
@@ -160,8 +157,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   Kademlia; Identify grava listen_addrs e, para relays conectados, escuta no
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
-  que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT/
-  Bitswap só logam. O request/response de logs usa um behaviour próprio,
+  que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
+  só logam. O request/response de logs usa um behaviour próprio,
   responde apenas no nó principal e nunca retransmite por outro peer.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
@@ -249,12 +246,6 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `detect_local_ip` - IP de saída por socket UDP conectado a 8.8.8.8:80 (nada é
   enviado).
 
-`bitswap.rs`:
-- `BitswapCodec` - enquadramento `[4 bytes BE len][JSON]` sobre o
-  request/response do libp2p.
-- `bitswap_behaviour` - behaviour request/response para `BSWP_PROTOCOL`
-  (`/pom/bitswap/1.0.0`).
-
 ## Ligações
 
 - **Chamado por**: `main.rs` (constrói `Network` + `Discovery`, resolve
@@ -265,28 +256,12 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (consome `PeerInfo`/`alive_peers`).
 - **Chama**: `network.rs` ← `identity.rs` (via main), `addrs.rs`
   (`self_addr_candidates`), `route.rs` (`Network.routes`); `discovery.rs` →
-  `network.rs::insert_peer` e `bitswap.rs`.
+  `network.rs::insert_peer`.
 
-## Defeitos anotados
+## Pendências
 
-- **bitswap é protocolo órfão**: `bitswap_behaviour` está no swarm e os eventos
-  só são logados em `debug!` (`discovery.rs::handle_event`) - nenhuma requisição
-  é atendida, nenhum bloco é servido. A transferência real vai por HTTP Range
-  (`backend/transfer.rs`). O protocolo existe mas ninguém implementa o lado
-  servidor.
-
-- **O `receive_loop` não tem isolamento de pânico**: ele aguarda
-  `handle_message` em linha, então um pânico ali mata a task e o nó **para de
-  receber UDP para sempre**, enquanto HTTP, gossip e TUI seguem saudáveis - a
-  única pista é o socket com a fila de recepção cheia. Aconteceu de verdade em
-  2026-08-16 (`&node_id[..12]` num id de dois caracteres, corrigido com
-  `short()`), e derrubou os dois nós do captain que ficam na porta 42777 da LAN.
-  O guarda contra o próximo pânico não existe.
-- **A suíte de testes transmite na LAN de verdade**: `broadcast_local` manda
-  para `255.255.255.255:42777` qualquer que seja a porta do nó, e há teste que
-  chama `announce` num nó não destacado. Rodar `cargo test` ao lado de um
-  cluster vivo injeta mensagens de teste nele - foi assim que o id `"eu"` chegou
-  ao nó do captain.
+- O loop UDP ainda precisa isolar pânicos por mensagem; ver `TODO.md`, item 19.
+- Os testes UDP ainda podem transmitir na LAN real; ver `TODO.md`, item 20.
 
 ## Maintaining this file
 

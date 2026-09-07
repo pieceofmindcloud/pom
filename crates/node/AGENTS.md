@@ -39,14 +39,16 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 - O build nativo também exige o fork local de `llama.cpp`: em um worktree novo,
   preparar `<worktree>/llama.cpp` com um checkout que contenha `ggml` antes de
   rodar `cargo build -p node`. O procedimento completo está em
-  `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
+  `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local";
+  a pendência operacional está em `TODO.md`, item 27.
 - Durante o build, `build/mtp_arch.rs` lê o fork local em modo somente leitura:
   descobre as verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em
   `src/models`, associa a verificação ao `build_arch_graph`, cruza a classe com
   `llama-model.cpp` e resolve o nome GGUF em `llama-arch.cpp`. Ele gera
   `OUT_DIR/mtp_graph_architectures.rs`; fork ausente, extração vazia, menor que
   treze entradas ou mapeamento inconsistente interrompe o build.
-  As regras do extrator rodam também em `tests/mtp_arch.rs`.
+  As regras do extrator rodam também em `tests/mtp_arch.rs`; a dependência
+  operacional do fork e da extração está em `TODO.md`, item 10.
 - Com a feature `cuda`, `build.rs` compila os kernels MoE com `CUDACXX`; em uma
   validação da ksia, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`
   envolve o `nvcc`. O procedimento e o target separado estão em
@@ -95,8 +97,8 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    setado). Resolução do perfil, nesta ordem: `ModelProfile::find` (nome do
    arquivo, depois nome cru) → Ollama `/api/tags` (perfil por tamanho real,
    `from_ollama_model`) → `guess_from_name`.
-7. Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`
-   (relativa ao cwd - ver Defeitos).
+7. Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`, ambas
+   resolvidas contra `config::project_root()`.
 8. Bootstrap = config + `--bootstrap`, ambos passando por
    `config::normalize_peer_addr`. `--advertise-addr` vence a config.
 9. `Network::new` recebe a política TLS inicial antes de `start` (receive,
@@ -170,7 +172,8 @@ evoluir este contrato explicitamente.
 
 ## Ligações
 
-- **Depende de**: `routing-contract` (crate irmão), `config` do workspace.
+- **Depende de**: `routing-contract`, `llama-engine` e `brand` (crates irmãos);
+  `config` é um módulo interno de `node`.
 - **Chamado por**: ninguém (é o binário). Os scripts Python
   (`old/python-inference/`) são legado - o servidor de inferência e o splitter
   são Rust, em-processo.

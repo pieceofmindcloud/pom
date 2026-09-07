@@ -12,9 +12,9 @@ the Dashboard details tab and in the window the Flow canvas opens. Test files
 present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`, `LeaveNode.test.tsx`,
 `UndeployPipeline.test.tsx`, `ModelNetworkCanvas.test.tsx`,
 `PeerDetailCard.test.tsx`, `ProfileSwitcher.test.tsx`. Fake peers for these tests come from
-`../test/fixtures.ts` and must have the *full* shape the node serves - a
-partial `node` (e.g. one without `status`) slips past one component's `?.` and
-crashes the next.
+`../test/fixtures.ts` and must have the *full* shape the node serves. A partial
+`node` can slip past one component's `?.` and crash the next; the maintenance
+pendência está em `TODO.md`, item 23.
 
 - `setup-wizard/` - Componentes visuais reutilizáveis do wizard de primeiro
   acesso: layout com progresso e ações, cards de intenção, hardware, nó,

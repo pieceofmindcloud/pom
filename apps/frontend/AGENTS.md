@@ -112,9 +112,10 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
   Rust `auth.rs`; the human access token is never persisted by the browser.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 
-## Defeitos anotados
+## Pendências
 
-- No root-level defects found in this pass. Known issues live in the subfolders: see `## Defeitos anotados` in `src/lib/AGENTS.md` (hardcoded pt-BR strings in `deleteModel.ts`/`toast.tsx`, unguarded `localStorage` writes in `networkLayout.ts`, dead `TransferState` export).
+As pendências de produto e de fixtures desta árvore estão consolidadas em
+`TODO.md`, itens 22 e 23.
 
 ## Maintaining this file
 

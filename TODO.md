@@ -1,80 +1,241 @@
 # TODO - defeitos anotados nos AGENTS.md
 
-Levantamento de 2026-08-15, extraído das seções `## Defeitos anotados` de todos
-os `AGENTS.md` do repositório. Última limpeza: 2026-08-17.
+Lista de trabalho consolidada em 2026-09-07 a partir da auditoria das anotações
+dos `AGENTS.md`, na revisão `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
+A evidência completa de cada item está no relatório da auditoria que acompanha
+esta tarefa. A lista atual mantém a numeração da auditoria: 18 defeitos ainda
+existentes e 1 item não verificável nesta máquina.
 
-Cada item traz o arquivo onde o defeito está anotado, a evidência no código e o
-critério de pronto.
+## Regra de manutenção
 
-**Regra de manutenção:** ao corrigir um item, remova a anotação do
-`AGENTS.md` correspondente **e** o item daqui, no mesmo commit. Um defeito
-corrigido que continua anotado é pior que um defeito não anotado.
+Ao corrigir um item numerado atual, remova a anotação do `AGENTS.md`
+correspondente e o item daqui no mesmo commit. Um defeito corrigido que
+continua anotado é pior que um defeito não anotado. As notas em
+`## Histórico preservado`, `## Recusados` e `## Dívida de documentação` são
+contexto e não devem voltar a ser propostas como defeitos novos.
 
-## Estado
+## Alta
 
-Dos 29 itens triados pelo captain em 2026-08-15, **23 foram corrigidos e saíram
-desta lista**. Ficam os 4 adiados e os 2 recusados (registrados abaixo só para
-não voltarem a ser propostos).
+- [ ] **11 - Handshake não prova posse da chave privada**
+  **Fonte:** `crates/node/src/backend/session.rs:24-101`.
+  **Prática:** o handshake valida que `node_id` é o SHA256 da `pubkey`, mas não
+  exige um desafio assinado pela chave privada correspondente.
+  **Afetados:** confiança entre peers, especialmente quando a connection key
+  vaza.
+  **Esforço:** médio/alto, com nonce assinado, armazenamento do desafio e
+  mudança coordenada do protocolo.
+  **Decisão do captain:** decidir se o handshake deve exigir desafio assinado;
+  não corrigir sem essa decisão.
 
-## Adiados - reconhecidos, fora da rodada atual
+- [ ] **12 - Qualquer papel pode desimplantar a pipeline**
+  **Fonte:** `crates/node/src/backend/deploy.rs:6714-6716`.
+  **Prática:** `undeploy_authority` retorna sucesso para qualquer papel
+  autenticado, permitindo derrubar todas as fatias da implantação; a rota
+  continua protegida por `ConnectionAuth`.
+  **Afetados:** disponibilidade e controle operacional em clusters com papéis
+  separados.
+  **Esforço:** baixo para o gate, médio para revisar autorização, testes e UI.
+  **Decisão do captain:** decidir se o desimplante deve continuar aberto a
+  qualquer papel autenticado; não corrigir sem essa decisão.
 
-- [ ] **`undeploy_authority` permite qualquer papel derrubar a pipeline inteira**
-  `crates/node/src/backend/deploy.rs:1794` · anotado em `crates/node/src/backend/AGENTS.md`
-  Retorna `Ok(())` para todo papel. Está aberto de propósito e o teste
-  `any_node_may_undeploy_for_now` (`deploy.rs:2242`) documenta a porta aberta, então fechá-la é
-  uma edição consciente: trocar o corpo da função pela checagem Principal-only que o doc
-  comment já descreve, e atualizar o teste. A rota ainda exige a connection key
-  (`ConnectionAuth`), então é aberta ao operador, não anônima.
-  **Decisão do captain antes de mexer:** fechar agora para Principal-only, ou manter aberto.
+- [ ] **13 - Rollback não é repassado ao TP**
+  **Fonte:** `crates/node/src/inference/infer_server.rs:3092-3108,3951-3984`;
+  fan-out em `crates/node/src/backend/gateway.rs:2733-2797`.
+  **Prática:** `/v1/session/rollback` trata o rank local, mas não replica o
+  descarte do sufixo rejeitado aos workers; com especulação TP ligada, os KV
+  podem ficar divergentes.
+  **Afetados:** implantações tensor-parallel que ativem speculative decoding.
+  **Esforço:** médio, incluindo headers, fan-out do rank 0 e testes com dois
+  ranks.
 
-- [ ] **`routing-base::plan` não é chamado em lugar nenhum**
-  anotado em `crates/AGENTS.md`, `crates/routing-base/AGENTS.md` e `docs/subsystems/build-execucao.md`
-  O planejador do `node` (`crates/node/src/routing/pipeline.rs::plan_pipeline`) monta um
-  `RoutingRequest` a partir dos tipos do contrato para validar, mas faz seu próprio
-  planejamento guloso com pontuação de carga. `routing-base` é código morto, vivo apenas pelos
-  próprios testes de unidade, e os dois planejadores podem divergir sem nenhum teste comparando.
-  **Depende de:** a decisão de open-core aberta com o captain (licença e fronteira de entrega do Pro).
+- [ ] **19 - Pânico pode matar o loop UDP**
+  **Fonte:** `crates/node/src/network/network.rs:1742-1755`.
+  **Prática:** `receive_loop` aguarda `handle_message` em linha, sem isolamento
+  de pânico; um pânico futuro encerra a task e o processo pode continuar
+  parecendo saudável enquanto deixa de receber anúncios.
+  **Afetados:** descoberta e atualização de rotas em todos os nós.
+  **Esforço:** baixo/médio, isolando cada mensagem ou usando `catch_unwind` em
+  futures e adicionando teste de falha.
 
-- [ ] **`crates/types` é um marcador vazio**
-  anotado em `crates/types/AGENTS.md`
-  O único "tipo" é `WorkspaceMarker`. Tipos de domínio de verdade que o `node` ainda detém
-  (`PeerInfo`, `NodeConfig`) não foram movidos.
-  **Depende de:** a mesma decisão de arquitetura modular.
+- [ ] **20 - Testes UDP transmitem na LAN real**
+  **Fonte:** `crates/node/src/network/network.rs:1075-1082,1368-1393`.
+  **Prática:** `broadcast_local` envia para `255.255.255.255:42777`, e testes
+  que anunciam um nó não destacado podem alterar um cluster vivo na mesma LAN.
+  **Afetados:** desenvolvedores e CI que executam a suíte junto de um cluster.
+  **Esforço:** baixo/médio, com sockets isolados, porta injetável e testkit sem
+  broadcast global.
 
-- [x] **`bitswap` é protocolo órfão** — resolvido saindo do swarm.
-  O behaviour e o arquivo `network/bitswap.rs` foram removidos. O papel que ele
-  ia cumprir (endereçamento por conteúdo) é do `.pom` + `GET /api/transfer/*?sha=`,
-  sobre o mesmo HTTP Range que já carregava as fatias.
+- [ ] **27 - Fork `llama.cpp` ausente quebra clone limpo**
+  **Fonte:** `vendor/llama-cpp-sys-2/llama.cpp`; `vendor/llama-cpp-sys-2/build.rs:403-410`;
+  `crates/llama-engine/build/mtp_arch.rs:25-47`.
+  **Prática:** o symlink versionado aponta para a árvore ignorada do fork; sem
+  esse checkout local, o build falha antes de compilar Rust.
+  **Afetados:** CI, worktrees novos, releases e colaboradores sem o preparo
+  manual do fork.
+  **Esforço:** médio, automatizando o preparo ou fornecendo uma dependência
+  reproduzível.
+
+## Média
+
+- [ ] **5 - Planner open-core não está ligado ao node**
+  **Fonte:** `crates/routing-base/src/lib.rs:12-62`;
+  `crates/node/src/routing/pipeline.rs:262-283,379-410`.
+  **Prática:** `routing-base::plan` é completo e testado, mas o node usa outro
+  planner guloso com pontuação de carga; os dois podem evoluir sem teste de
+  equivalência.
+  **Afetados:** consumidores do provider aberto e mantenedores dos dois
+  planners.
+  **Esforço:** médio para equivalência; alto para trocar o caminho de produção
+  com compatibilidade e telemetria.
+
+- [ ] **10 - Build depende de extração completa do fork**
+  **Fonte:** `crates/llama-engine/build/mtp_arch.rs:25-47,104-114,178-186`.
+  **Prática:** o build falha quando o fork não existe ou a extração de
+  arquiteturas MTP é vazia, ambígua ou fica abaixo do piso de segurança.
+  **Afetados:** onboarding, CI e releases sem o checkout correto.
+  **Esforço:** médio para tornar a preparação reproduzível; alto para eliminar
+  a dependência local.
+
+- [ ] **15 - Limite de restart não persiste entre processos**
+  **Fonte:** `crates/node/src/inference/runtime.rs:20-25,1116-1120,1207-1227`.
+  **Prática:** `MAX_RESTARTS=10` vive no supervisor do processo; se OOM ou outra
+  falha mata o processo inteiro, o contador desaparece.
+  **Afetados:** operadores de máquinas no limite de memória e ambientes com
+  política automática de restart.
+  **Esforço:** médio, persistindo falha sem recriar o laço infinito que a
+  anotação `Pending`/`NeverLoaded` já evita.
+
+- [ ] **16 - Modos de falha do relay não têm E2E**
+  **Fonte:** `crates/node/src/inference/direct.rs`;
+  `crates/node/src/inference/AGENTS.md:1011-1013`.
+  **Prática:** hop intermediário morto, cauda morta, resposta direta perdida e
+  timeout têm código e testes unitários, mas não um cenário de quatro peers
+  que reproduza a topologia completa.
+  **Afetados:** confiabilidade do pipeline distribuído.
+  **Esforço:** alto, com harness multi-peer determinístico, falhas injetáveis e
+  isolamento da rede real.
+
+- [ ] **22 - Wizard de primeiro acesso ainda é protótipo**
+  **Fonte:** `apps/frontend/src/components/setup-wizard/WizardScreens.tsx:24-45`;
+  `apps/frontend/src/routes/setupWizardMocks.ts:11-80`.
+  **Prática:** `/setup` navega por hardware, nós, modelos e redes simulados;
+  não configura o nó, cria permissões, descobre peers nem baixa modelos.
+  **Afetados:** usuários que esperam um fluxo real de primeira configuração.
+  **Esforço:** alto, envolvendo backend, permissões, descoberta, downloads e
+  estados de erro.
+
+- [ ] **24 - Contrato ainda usa fim inclusivo**
+  **Fonte:** `crates/routing-contract/src/lib.rs:16-24,65-73,81-91,131-167`.
+  **Prática:** o wire v1 valida e percorre `end_layer` inclusivo; a versão futura
+  com fim exclusivo só aparece como intenção, sem conversão ou implementação.
+  **Afetados:** evolução do protocolo e interoperabilidade futura.
+  **Esforço:** médio quando necessário, incluindo versão, validação,
+  serialização e testes de compatibilidade.
+
+- [ ] **26 - Build manual pode perder o commit do binário**
+  **Fonte:** `scripts/build-docker.sh:6-17`; `crates/node/build.rs:69-92`;
+  `Dockerfile:48-53`.
+  **Prática:** um `docker compose build` manual sem `POM_BUILD_COMMIT` pode
+  produzir o carimbo `desconhecido`.
+  **Afetados:** builds manuais e pipelines que não exportam a variável;
+  diagnóstico do binário fica degradado.
+  **Esforço:** baixo, com validação no Dockerfile ou exigência explícita da
+  variável, preservando builds locais sem Docker.
+
+## Baixa
+
+- [ ] **6 - Grafo do workspace diverge da documentação**
+  **Fonte:** `Cargo.toml` do workspace; `crates/node/Cargo.toml:49`;
+  `crates/AGENTS.md`.
+  **Prática:** `node` depende de `routing-contract`, `llama-engine` e `brand`,
+  não de `config`, `types` ou `routing-base`; planos de extração e análise de
+  recompilação baseados no grafo antigo ficam errados.
+  **Afetados:** mantenedores e futuros consumidores da arquitetura open-core.
+  **Esforço:** baixo para corrigir documentação; médio/alto para concluir a
+  extração real.
+
+- [ ] **14 - Pool de contextos não está integrado**
+  **Fonte:** `crates/llama-engine/src/llm.rs:3200-3214`.
+  **Prática:** `LlmEngine::pool` existe e tem testes de orçamento, mas o
+  servidor atual carrega um contexto por `load` e não usa a API.
+  **Afetados:** quem espera decodes concorrentes no mesmo modelo.
+  **Esforço:** médio/alto, com política de slots, memória, isolamento e
+  telemetria.
+
+- [ ] **18 - Diagnóstico MoE é ignorado por padrão**
+  **Fonte:** `crates/llama-engine/src/llm.rs:958-960`.
+  **Prática:** o teste só executa quando `POM_MOE_ROUTE_DIAGNOSTICS=1`; uma
+  regressão pode passar despercebida na suíte normal.
+  **Afetados:** diagnóstico e manutenção do caminho MoE.
+  **Esforço:** baixo/médio, separando a asserção determinística da parte de
+  logging e documentando o custo.
+
+- [ ] **23 - Fixtures parciais podem quebrar testes**
+  **Fonte:** `apps/frontend/src/test/fixtures.ts:1-8`;
+  `apps/frontend/src/components/PeerDetailCard.tsx:339,686-695`.
+  **Prática:** uma leitura usa `n?.status`, mas outra pressupõe o objeto
+  completo; uma fixture parcial pode passar num componente e quebrar o
+  seguinte. A fixture oficial já fornece a forma integral.
+  **Afetados:** manutenção de novos testes e diagnósticos falsos durante o
+  desenvolvimento.
+  **Esforço:** baixo, com construtores tipados obrigatórios ou validação de
+  fixture.
+
+- [ ] **25 - Crate público de tipos ainda é placeholder**
+  **Fonte:** `crates/types/src/lib.rs:1-12`.
+  **Prática:** `types` só expõe `WorkspaceMarker`; `PeerInfo` e `NodeConfig`
+  continuam dentro de `node`.
+  **Afetados:** fronteira open-core e consumidores que esperam tipos públicos.
+  **Esforço:** médio, extraindo tipos sem criar ciclos e atualizando
+  consumidores.
+
+## Não verificável nesta máquina
+
+- [ ] **17 - Prova diferencial CUDA de MoE sem ambiente de execução**
+  **Fonte:** `crates/node/src/inference/AGENTS.md:359-375`;
+  `crates/llama-engine/src/llm.rs:6268-6273`.
+  **Prática:** a prova exige um GGUF real, `--features cuda`, uma GPU CUDA e o
+  executor externo; esses recursos não estavam disponíveis na auditoria.
+  **Afetados:** validação numérica do caminho MoE CUDA.
+  **Esforço:** alto, em uma máquina com GPU compatível e o GGUF real.
+
+## Histórico preservado
+
+O TODO anterior veio do levantamento de 2026-08-15, teve última limpeza em
+2026-08-17 e registrava 29 itens triados pelo captain, dos quais 23 haviam
+saído, 4 estavam adiados e 2 recusados. Essa contagem é histórica e não é
+substituída pela classificação da auditoria de 2026-09-07.
+
+O item antigo de bitswap fica registrado como resolvido: o arquivo e o
+behaviour saíram do swarm, e a transferência por conteúdo passou a usar o
+`.pom` e `GET /api/transfer/*?sha=` sobre HTTP Range. Na auditoria nova, ele é
+o item 21, anotação obsoleta.
+
+As notas antigas sobre alternância do endereço observado e sobre o timeout de
+75 s do `connect` também ficam preservadas como histórico fora da auditoria
+nova. A revisão atual já descreve a preferência pelo endereço local e o
+cliente de peer limita a abertura TCP a 2 s; elas não são contadas como itens
+atuais desta lista.
 
 ## Recusados - decisão tomada, não voltar a propor
 
-- **O par do `docker-compose`** (`docker-compose.yml` montando fixtures que
+- O par do `docker-compose` (`docker-compose.yml` montando fixtures que
   `scripts/gen-node-configs.py` não escreve, e o `.dockerignore` cortando
-  `pom.json`). **Não é defeito**: são dois ambientes de gente diferente -
-  o gerador serve a máquina do captain, o compose serve a do salem - e os dois
+  `pom.json`). **Não é defeito:** são dois ambientes de gente diferente - o
+  gerador serve a máquina do captain, o compose serve a do salem - e os dois
   esquemas de nome não precisam se encontrar. Registrado em `scripts/AGENTS.md`.
 
 ## Dívida de documentação em aberto
 
-- O grafo do workspace diverge da arquitetura declarada - a documentação descreve o `node`
-  dependendo de `config` e `types`, e o código não. Não é defeito de comportamento; se resolve
-  junto com a extração dos crates. Anotado em `crates/AGENTS.md`.
-- O contrato diz que `end_layer` é inclusivo; uma versão futura de fio com "fim exclusivo" está
-  sinalizada em comentário mas não implementada. Anotado em `crates/routing-contract/AGENTS.md`.
+- O grafo do workspace diverge da arquitetura declarada. A pendência está
+  consolidada no item 6; a decisão maior sobre a extração dos crates continua
+  registrada aqui para não se perder.
+- O contrato usa `end_layer` inclusivo. A evolução futura para fim exclusivo
+  está consolidada no item 24 e exige nova versão do wire.
 
-## Defeitos anotados depois desta triagem
+## Itens da triagem anterior incorporados
 
-Estes não fizeram parte da rodada de 2026-08-15 e continuam anotados em
-`crates/node/src/network/AGENTS.md`:
-
-- [ ] **O `receive_loop` não tem isolamento de pânico** - um pânico em
-  `handle_message` mata a task e o nó para de receber UDP para sempre, enquanto
-  HTTP, gossip e TUI seguem saudáveis. Aconteceu de verdade em 2026-08-16.
-- [ ] **A suíte de testes transmite na LAN de verdade** - `broadcast_local` manda
-  para `255.255.255.255:42777` qualquer que seja a porta do nó. Rodar
-  `cargo test` ao lado de um cluster vivo injeta mensagens de teste nele.
-- [ ] **O endereço observado troca a cada `identify`** e não há preferência entre
-  eles; num Mac com vários IPv6 de privacidade o `Announce` alterna. Quem precisa
-  de endereço estável fixa em `--advertise-addr`.
-- [ ] **Um hop inalcançável custa o timeout de `connect` do SO antes do túnel** -
-  75 s medidos no macOS. É decisão de produto sobre o prazo do HTTP direto.
+Os itens pós-triagem sobre pânico no `receive_loop` e broadcast UDP são agora
+os itens 19 e 20. Os adiados `routing-base::plan`, `undeploy_authority` e
+`crates/types` são agora os itens 5, 12 e 25, respectivamente, com a evidência
+atualizada. Nenhum desses contextos foi descartado.

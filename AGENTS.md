@@ -219,6 +219,9 @@ quebra o produto inteiro.
 - **Testes de rota usam `gateway::testkit`**, nunca UDP de verdade - a suíte
   transmite na LAN e pode injetar mensagens num cluster vivo. → `api-http.md`
 
+As pendências de engenharia que acompanham estas invariantes ficam em
+`TODO.md`; este arquivo não duplica a lista de trabalho.
+
 ## Manutenção deste arquivo
 
 Ele deve caber numa leitura. Conhecimento novo entra no `AGENTS.md` da pasta ou

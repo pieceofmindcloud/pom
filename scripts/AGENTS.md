@@ -7,11 +7,13 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `POM_BUILD_COMMIT`, roda `npm run build` em `apps/frontend` e
-  `docker compose build`. O commit nao pode ser lido dentro da imagem builder
+  exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,
+  o `Dockerfile:45-46` roda `npm run build` em `apps/frontend`; o script não
+  executa o build da UI diretamente. O commit nao pode ser lido dentro da imagem builder
   (`.dockerignore` corta `.git/` e a imagem nao tem `git`); sem a variavel o
-  `crates/node/build.rs` carimba "desconhecido" em todo container. Construa a
-  imagem por este script, nunca `docker compose build` na mao.
+  `crates/node/build.rs` carimba "desconhecido" em todo container; ver
+  `TODO.md`, item 26. Construa a imagem por este script, nunca `docker compose build`
+  na mao.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =

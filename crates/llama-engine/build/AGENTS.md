@@ -15,6 +15,9 @@ runtime.
   menor que treze entradas, um piso de segurança contra extração parcial. O fork
   nunca é alterado.
 
+O acoplamento operacional dessa extração ao fork e ao piso de arquiteturas está
+registrado em `TODO.md`, item 10.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

@@ -11,7 +11,8 @@ por segurança de VRAM; `POM_CUDA_GRAPHS=1` é uma opção de build para habilit
 repositório, e a pasta que ele aponta (`/llama.cpp/`) está no `.gitignore`. Ou
 seja: num clone novo - um worktree recém-criado, ou o checkout que a CI faz - o
 symlink aponta para o vazio e o `build.rs` morre com
-`Failed to obtain entry ... NotFound` antes de compilar qualquer coisa.
+`Failed to obtain entry ... NotFound` antes de compilar qualquer coisa; ver
+`TODO.md`, item 27.
 
 O `build.rs` lê `<CARGO_MANIFEST_DIR>/llama.cpp` (linha ~409), então clonar o
 fork **por cima do symlink** resolve em qualquer sistema:

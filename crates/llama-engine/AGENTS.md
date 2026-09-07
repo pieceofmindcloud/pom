@@ -63,13 +63,6 @@ vive nele), `inference/executor.rs`, `models/splitter.rs` (usa `gguf` e, nos
 testes, `llama_engine::llama_cpp_sys_2`), e todo o resto do pipeline
 (`infer_server.rs`, `prefill.rs`, `direct.rs`, `runtime.rs`, ...).
 
-## Defeitos anotados
-
-- `llm::pool_tests::fit_mode_caps_compute_microbatch_without_changing_prompt_batch`
-  falha em `cargo test -p llama-engine --lib`: espera o microlote em 128 e
-  recebe 512. Verificado numa árvore limpa de `origin/feat/implantar3`, sem
-  relação com o monitor de carga; é do caminho do fit/MoE, que está em obra.
-
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

@@ -585,7 +585,7 @@ dual-stack.
   Nothing touches disk - slices stay, only memory returns, through the peers'
   own `/api/ui/unload` (same route as the single-machine button; the local
   machine uses `runtime.stop()`). `undeploy_authority(role)` gates who may
-  undeploy - today it lets every role through (see Defeitos anotados).
+  undeploy; a decisão sobre a abertura atual do gate está em `TODO.md`, item 12.
 - `transfer.rs` - `CHUNK=1MB`, `DISK_HEADROOM_MB=512`, `GGUF_MAGIC=b"GGUF"`;
   `/api/transfer/send` receives `{to_node_id, filename}`, never a path.
   Routes: `GET /api/transfer/manifest`, `GET /api/transfer/download`,
@@ -738,21 +738,12 @@ dual-stack.
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
   gateway HTTP for transfers, deploy forwarding, and cancel notices.
 
-## Defeitos anotados
+## Pendências
 
-- **The handshake binds `node_id` to `pubkey`, but does not prove possession of
-  the private key** (`session::node_id_matches_pubkey`). `node_id` must be
-  `SHA256(pubkey)` and the key must be a well-formed ed25519 point, so a caller
-  holding the connection key can no longer claim another machine's `node_id`
-  (which is the `blocked_nodes` key). A possession proof would need a signed
-  challenge, i.e. a protocol change; open for decision.
-- **`undeploy_authority` lets any role undeploy the whole pipeline**
-  (`deploy.rs:1794` returns `Ok(())` for every role). Deliberate for now - the
-  test `any_node_may_undeploy_for_now` (`deploy.rs:2242`) documents the open
-  gate on purpose, so closing it is a conscious edit: replace the function
-  body (the doc comment spells out the Principal-only check) and update the
-  test. The route still needs the connection key (`ConnectionAuth`), so the
-  port is operator-gated, not anonymous.
+- A autenticação do handshake ainda não prova posse da chave privada; ver
+  `TODO.md`, item 11.
+- O gate de desimplante continua aberto a qualquer papel autenticado; ver
+  `TODO.md`, item 12. A rota exige `ConnectionAuth`, portanto não é anônima.
 
 ## Maintaining this file
 

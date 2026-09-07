@@ -358,23 +358,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   fixa a convenção `block_q6_K` do GGML (`ql[128]`, `qh[64]`, `scales[16]`,
   `d[2]` no fim do bloco), e as provas de oito experts com hidden 2048 cobrem
   o `gate_up` K-quant e o caminho heterogêneo sem aceitar saída não finita.
-  A prova diferencial CUDA do Ornith ainda depende de um GGUF completo fora do
-  worktree. O comando preparado, sem execução local ou remota nesta etapa, é:
-  `POM_MOE_NUMERIC_MODEL=/caminho/absoluto/Ornith-1.5-35B-Q4_K_M.gguf`
-  `POM_MOE_NUMERIC_GPU_LAYERS=99 CUDAARCHS=120`
-  `CUDACXX=/usr/local/cuda-12/bin/nvcc CCACHE=ccache RUSTC_WRAPPER=ccache`
-  `CARGO_TARGET_DIR=/data/ftk-cuda-target cargo test -p node --features cuda --bin pom`
-  `inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer`
-  `-- --ignored --nocapture`. O caminho do GGUF é um placeholder explícito,
-  porque o arquivo real não está neste worktree e a ksia não foi consultada.
-  A prova E2E isolada é:
-  `POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf POM_MOE_NUMERIC_GPU_LAYERS=99`
-  `cargo test -p node --features cuda --bin pom`
-  `inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer`
-  `-- --ignored --nocapture`. Ela compara quatro tokens na camada 1 entre o
-  bloco nativo e o callback externo, exige executor `cuda`, ausência de NaN e
-  `abs <= 5e-2 + 2e-2 * max(abs(native), 1)` por elemento; `MOE_NUMERIC_PROOF`
-  publica `max_abs` e `max_relative`.
+  A prova diferencial CUDA do MoE exige GGUF completo e GPU CUDA reais, portanto
+  fica fora da validação local; ver `TODO.md`, item 17.
   `bandwidth.rs` e `coexecution.rs` são compilados no caminho CUDA ou nos
   testes; transformam medições concorrentes CPU/transferência em uma fração
   determinística dos misses, dividem por expert, executam as duas lanes em
@@ -424,7 +409,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   preserva essa ordem; não deve transpor a rota novamente. O teste ignorado
   `llm::moe_route_tests::callback_entry_emite_warn_padrao_e_target_moe_no_mesmo_sink`
   executa o callback real com o mesmo `EnvFilter` do processo e deve ser rodado
-  com `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`.
+  com `POM_MOE_ROUTE_DIAGNOSTICS=1 RUST_LOG=info`; a cobertura opt-in está em
+  `TODO.md`, item 18.
   O runtime registra sempre a entrada da camada 0 em
   `moe.layer_input_diagnostic`, com contagem/primeiro índice não finito, faixa
   finita, amostras de hidden e rota, antes de escolher CPU ou CUDA. Isso separa
@@ -614,10 +600,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   altere o decode global enquanto a coletiva ainda espera todos os ranks. Os
   filhos internos de um batch pulam o lock por meio de `BATCH_CHILD_HEADER`.
 
-  **DEFEITO ANOTADO: `/v1/session/rollback` não é repassado às réplicas.**
-  Ele só é usado pela decodificação especulativa, que está desligada nas configs
-  de TP hoje; ligar especulação num grupo TP deixaria o KV do worker à frente do
-  rank 0 depois de um rascunho recusado.
+  `/v1/session/rollback` ainda não é repassado às réplicas TP; a pendência está
+  em `TODO.md`, item 13. Ele só é usado pela decodificação especulativa, hoje
+  desligada nas configurações de TP.
 
   Falha da coletiva **não pode ser silenciosa**: ela não degrada a resposta, ela
   a torna falsa. `note_failure`/`take_failure` levam o motivo até o decode, que
@@ -760,15 +745,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   aplicado, as camadas efetivas e `n_ubatch_effective` - e, em `placement` e
   `context_memory`, onde as camadas e o KV realmente foram parar. O `n_batch` público
   continua sendo o limite do pedaço de prompt, mas `fit_memory=true` limita o
-  microbatch interno a 128 tokens para reduzir os temporários CUDA que só são
+  microbatch interno a 512 tokens para reduzir os temporários CUDA que só são
   reservados no primeiro grafo real; sem fit, o microbatch acompanha `n_batch`.
+  Esse microlote efetivo governa o buffer de cálculo tanto do contexto principal
+  quanto do contexto MTP, então 512 custa bastante mais VRAM que 128.
   `llm::apply_context_batch_params` é a fonte única dessa política e também é
   usada pelo contexto MTP, que mantém o `n_batch` público mas não herda um
   microlote de 4096 por engano.
   `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre como o
   total é repartido entre contextos de uma sessão) ainda **não tem chamador**:
   o servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no
-  `pool` é a marca disso. `LlmEngine::load_with_cache` usa o
+  `pool` é a marca disso; ver `TODO.md`, item 14. `LlmEngine::load_with_cache` usa o
   `ModelCache` do runtime para criar apenas um contexto novo quando a
   identidade da fatia e do carregamento de pesos não mudou; parâmetros de KV,
   contexto, sessões, lote e sampling não forçam releitura do GGUF. O flag
@@ -810,12 +797,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   vence de forma determinística. `accumulate_capture` junta um disparo por
   **microlote**: o llama.cpp parte o lote em pedaços de `n_ubatch` e chama a
   captura uma vez por pedaço, então substituir em vez de acumular guardava só o
-  último - com `fit_memory=true` (padrão, `n_ubatch` limitado a 128), um chunk de
-  512 tokens perdia 3/4 e o peer seguinte recusava com "got 655360 floats,
-  expected 2621440". Todo caminho de decode chama `reset_capture_slot` antes,
-  senão a sobra de uma requisição entraria concatenada na próxima. A ordem
-  depende do `split_simple` - ver Defeitos anotados, e `kv_unified=true` mantém
-  essa ordem para o transporte do residual.
+  último. Todo caminho de decode chama `reset_capture_slot` antes, senão a sobra
+  de uma requisição entraria concatenada na próxima. A ordem é a de
+  `split_simple`, que `kv_unified=true` mantém para o transporte do residual.
 - `profile_backend_sync_enabled` - perfil do backend síncrono, `POM_PROFILE_SYNC`
   (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
   `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os
@@ -1015,9 +999,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   perdido trunca no primeiro), inclusive com reuso de prefixo.
 - Herda da investigação de 2026-08-14 (`labsse.rs`), que provou a assimetria e
   refutou a hipótese do SSE por contrafactual.
-- **Sem cobertura de teste**: os quatro modos de falha (hop do meio morto,
-  cauda morta, resposta direta perdida, prazo estourado) têm desenho e código
-  em `direct.rs`, não teste de ponta a ponta.
+- Os quatro modos de falha do relay ainda não têm cenário E2E; ver `TODO.md`,
+  item 16.
 
 `runtime.rs`:
 - `NodeConfig` - tudo que define a fatia servida: model_path/label,
@@ -1059,7 +1042,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   captura: custa 7,8-8,2 ms/token contra 0,14-0,67 ms sem ele (medido
   2026-08-12); sem o callback, `hidden_state` recusa com "residual capture
   did not fire".
-- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`. O contador é por processo:
+- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`. O contador é por processo
+  (ver `TODO.md`, item 15):
   se a fatia não cabe na memória, o processo morre antes de carregar e o
   `MAX_RESTARTS` morre junto - quem segura esse caso é a anotação (um processo
   que desiste em `MAX_RESTARTS` apaga a anotação, e a `NeverLoaded` não
@@ -1193,16 +1177,6 @@ unidade mas **não** tem número medido de ponta a ponta.
 - **Externo**: nenhum processo externo. O modelo carrega em-processo via
   `llm.rs` (llama-cpp-sys-2). `old/python-inference/inference_server.py` e
   `split_model.py` são legado, não são mais invocados.
-
-O que estava anotado aqui - "a captura do residual assume a ordem do
-`split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o
-cache de prefixo passou a exigir duas sequências de KV por sessão: os dois
-pontos que criam contexto agora ligam `kv_unified` incondicionalmente
-(`llm::kv_seq_budget`), e com `kv_unified` o cache tem um stream só
-(`n_stream = kv_unified ? 1 : n_seq_max`) qualquer que seja `max_sessions`. O
-llama.cpp continua, portanto, usando `split_simple`, que é a ordem de linhas que
-`BatchLayout` espera. Desligar `kv_unified` reintroduz o defeito em silêncio -
-está dito no doc de `accumulate_capture`.
 
 ## Manutenção deste arquivo
 

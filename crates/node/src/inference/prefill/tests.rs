@@ -1,0 +1,836 @@
+#[cfg(test)]
+use super::*;
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lote_oportunista_drena_o_que_ja_existe_sem_esperar() {
+        let (sender, mut receiver) = mpsc::channel(REMOTE_STREAM_BATCH_LIMIT);
+        for item in 0..REMOTE_STREAM_BATCH_LIMIT {
+            sender.send(item).await.expect("item enfileirado");
+        }
+        let batch =
+            drain_opportunistic_batch(receiver.recv().await.expect("primeiro item"), &mut receiver);
+        assert_eq!(batch, (0..REMOTE_STREAM_BATCH_LIMIT).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn lote_oportunista_envia_um_item_quando_nao_ha_outro_pronto() {
+        let (_sender, mut receiver) = mpsc::channel::<u32>(REMOTE_STREAM_BATCH_LIMIT);
+        let batch = drain_opportunistic_batch(7, &mut receiver);
+        assert_eq!(batch, vec![7]);
+    }
+
+    #[tokio::test]
+    async fn cancelamento_acorda_chamada_em_voo() {
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+
+        let error = cancelable(&cancellation, async {
+            std::future::pending::<Result<(), anyhow::Error>>().await
+        })
+        .await
+        .unwrap_err();
+        assert!(is_cancelled(&error));
+    }
+
+    #[test]
+    fn chat_head_frame_delivers_prompt_with_template_mode() {
+        let meta = head_prefill_meta(
+            "session",
+            0,
+            512,
+            true,
+            Some("Oi, teste"),
+            true,
+            false,
+            None,
+        );
+        assert_eq!(meta["prompt"], "Oi, teste");
+        assert_eq!(meta["chat_template"], true);
+    }
+
+    #[test]
+    fn missing_absolute_prefill_position_is_an_error_not_a_chunk_index() {
+        let error = required_prefill_position(&json!({"start_pos": 42}), "next_pos", 1)
+            .expect_err("a continuation without next_pos must not invent position 512");
+
+        assert!(error.to_string().contains("next_pos"));
+        assert!(error.to_string().contains("chunk 1"));
+    }
+
+    fn route_item(
+        item_id: &str,
+        model: &str,
+        deployment_id: &str,
+        phase: Phase,
+        config_key: &str,
+        next_hop_id: &str,
+    ) -> BatchRouteItem {
+        BatchRouteItem {
+            item_id: item_id.into(),
+            session_id: format!("session-{item_id}"),
+            model: model.into(),
+            deployment_id: deployment_id.into(),
+            phase,
+            config_key: config_key.into(),
+            next_hop_id: next_hop_id.into(),
+        }
+    }
+
+    #[test]
+    fn batch_route_groups_only_items_with_the_same_hop_contract() {
+        let groups = BatchRoute::group([
+            route_item("a", "qwen", "deploy-1", Phase::Decode, "ctx-1", "peer-a"),
+            route_item("b", "qwen", "deploy-1", Phase::Decode, "ctx-1", "peer-a"),
+            route_item("c", "qwen", "deploy-1", Phase::Decode, "ctx-1", "peer-b"),
+            route_item("d", "qwen", "deploy-2", Phase::Decode, "ctx-1", "peer-a"),
+            route_item("e", "qwen", "deploy-1", Phase::Prefill, "ctx-1", "peer-a"),
+            route_item("f", "qwen", "deploy-1", Phase::Decode, "ctx-2", "peer-a"),
+        ]);
+
+        assert_eq!(groups.len(), 5);
+        assert_eq!(
+            groups[0]
+                .items
+                .iter()
+                .map(|item| item.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(groups[0].next_hop_id, "peer-a");
+        assert_eq!(groups[1].items[0].item_id, "c");
+        assert_eq!(groups[2].items[0].item_id, "d");
+        assert_eq!(groups[3].items[0].item_id, "e");
+        assert_eq!(groups[4].items[0].item_id, "f");
+    }
+
+    #[test]
+    fn batch_route_preserves_session_identity_inside_the_group() {
+        let item = route_item(
+            "request-1",
+            "qwen",
+            "deploy-1",
+            Phase::Decode,
+            "ctx",
+            "peer-a",
+        );
+        let session_id = item.session_id.clone();
+        let groups = BatchRoute::group([item]);
+        assert_eq!(groups[0].items[0].session_id, session_id);
+    }
+
+    // O número de pedaços não é calculado em lugar nenhum: `run` avança até o
+    // peer da cabeça dizer que não há mais (`more_chunks`), que é o único que
+    // sabe quantos tokens o prompt virou. A aritmética que existia aqui, e os
+    // testes dela, não tinham chamador na produção.
+
+    #[test]
+    fn hop_trace_separates_peer_compute_from_transport_time() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            18,
+            7,
+            1_024,
+            2_048,
+            1,
+            2,
+            3,
+            4,
+            TlsHop::default(),
+            &json!({"decode_ms": 5}),
+        );
+
+        assert_eq!(trace.hops[0].prefill.processing_ms, 7);
+        assert_eq!(trace.hops[0].prefill.network_ms, 11);
+        assert_eq!(trace.hops[0].prefill.bytes_sent, 1_024);
+        assert_eq!(trace.hops[0].prefill.bytes_received, 2_048);
+    }
+
+    #[test]
+    fn hop_trace_does_not_claim_a_dtype_when_no_hidden_state_crossed() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+
+        trace.record_hidden_state(0, Phase::Decode, 0, 0, Some(WireDtype::F8));
+
+        assert_eq!(trace.hops[0].decode.hidden_state_dtype, None);
+        assert_eq!(trace.hops[0].decode.hidden_state_bytes_sent, 0);
+        assert_eq!(trace.hops[0].decode.hidden_state_bytes_received, 0);
+    }
+
+    /// A espera pelo mutex do motor tem que chegar a telemetria com nome.
+    ///
+    /// Numa medicao de 2026-08-14 ela era 194 ms por token - 63% do tempo da
+    /// requisicao - e aparecia na tela apenas como "nao atribuido", porque
+    /// caia no vao entre a entrada do handler e o primeiro medidor. Um numero
+    /// grande sem nome e pior que um numero grande: manda procurar no lugar
+    /// errado.
+    #[test]
+    fn the_wait_for_the_engine_lock_reaches_the_trace() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Decode,
+            250,
+            240,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({"decode_ms": 34, "lock_wait_ms": 194}),
+        );
+
+        assert_eq!(trace.hops[0].decode.node_lock_wait_ms, 194.0);
+        assert_eq!(trace.hops[0].decode.node_decode_ms, 34.0);
+    }
+
+    #[test]
+    fn hop_trace_preserva_fracao_dos_tempos_do_no() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 2,
+                "processing_ms": 1,
+                "bytes_sent": 1,
+                "bytes_received": 2,
+                "node_timings": {
+                    "decode_ms": 0.999,
+                    "backend_completion_ms": 0.999,
+                },
+            }),
+        );
+
+        let phase = &trace.hops[0].decode;
+        assert!((phase.node_decode_ms as f64 - 0.999).abs() < 1e-12);
+        assert!((phase.node_backend_completion_ms as f64 - 0.999).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hop_trace_publica_o_motor_real_e_nao_inventa_o_de_peer_antigo() {
+        let mut moe = RequestTrace::new("qwen", &[("moe", 0, 15)]);
+        moe.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "moe",
+            }),
+        );
+        assert_eq!(
+            moe.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::Moe
+        );
+        assert_eq!(
+            moe.hops[0].decode.selected_path.as_deref(),
+            Some("moe/q4_0")
+        );
+
+        let mut delegated = RequestTrace::new("qwen", &[("delegated", 0, 15)]);
+        delegated.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "llama.cpp",
+            }),
+        );
+        assert_eq!(
+            delegated.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::LlamaCpp
+        );
+        assert!(delegated.hops[0].decode.engine_mismatch);
+
+        let mut old = RequestTrace::new("qwen", &[("old", 0, 15)]);
+        old.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+        assert_eq!(
+            old.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
+        assert!(!old.hops[0].decode.engine_mismatch);
+    }
+
+    #[test]
+    fn hop_trace_propaga_executor_moe_dtype_e_motivo_por_fase() {
+        let mut trace = RequestTrace::new("qwen", &[("moe", 0, 39)]);
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 10,
+                "processing_ms": 9,
+                "bytes_sent": 1,
+                "bytes_received": 2,
+                "node_timings": {
+                    "selected_path": "moe/q4_0",
+                    "executed_engine": "moe",
+                    "moe_executor": "cpu-reference",
+                    "moe_executors": ["cpu-reference"],
+                    "moe_executor_dtypes": [21, 22, 23],
+                    "moe_executor_reason": "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado"
+                }
+            }),
+        );
+
+        let phase = &trace.hops[0].decode;
+        assert_eq!(phase.moe_executor.as_deref(), Some("cpu-reference"));
+        assert_eq!(phase.moe_executors, vec!["cpu-reference"]);
+        assert_eq!(phase.moe_executor_dtypes, vec![21, 22, 23]);
+        assert_eq!(
+            phase.moe_executor_reason.as_deref(),
+            Some("dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado")
+        );
+    }
+
+    #[test]
+    fn hop_trace_fica_desconhecido_se_as_chamadas_do_mesmo_hop_divergirem() {
+        let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
+        for (path, engine) in [("moe/q4_0", "llama.cpp"), ("moe/q4_0", "moe")] {
+            trace.record_hop(
+                0,
+                Phase::Prefill,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                TlsHop::default(),
+                &json!({
+                    "selected_path": path,
+                    "executed_engine": engine,
+                }),
+            );
+        }
+        assert_eq!(
+            trace.hops[0].prefill.executed_engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
+        assert!(trace.hops[0].prefill.mixed_execution);
+        assert!(!trace.hops[0].prefill.engine_mismatch);
+    }
+
+    /// Ring mode reconstructs a trace from a bubbled `hop_timings` array
+    /// entry (`record_hop_from_json`) instead of from a live HTTP response
+    /// (`record_hop`) — the two have to agree exactly, or ring and hub mode
+    /// would report different numbers for the identical request.
+    #[test]
+    fn record_hop_from_json_matches_record_hop() {
+        let node = json!({"decode_ms": 10, "residual_ms": 2});
+
+        let mut direct = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        direct.record_hop(
+            0,
+            Phase::Decode,
+            70,
+            13,
+            100,
+            200,
+            1,
+            2,
+            3,
+            4,
+            TlsHop::default(),
+            &node,
+        );
+
+        let mut from_json = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        from_json.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 70,
+                "processing_ms": 13,
+                "bytes_sent": 100,
+                "bytes_received": 200,
+                "client_encode_ms": 1,
+                "response_headers_ms": 2,
+                "response_body_ms": 3,
+                "client_decode_ms": 4,
+                "node_timings": node,
+            }),
+        );
+
+        assert_eq!(direct.hops[0], from_json.hops[0]);
+        assert_eq!(direct.total_bytes_sent, from_json.total_bytes_sent);
+        assert_eq!(direct.total_bytes_received, from_json.total_bytes_received);
+    }
+
+    /// A missing `hop_timings` entry (index past the plan's step count) must
+    /// be a no-op, same as `record_hop` already is — a malformed or short
+    /// bubble must not panic on `self.hops[hop]`.
+    #[test]
+    fn record_hop_from_json_on_an_unknown_index_is_a_no_op() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop_from_json(5, Phase::Decode, &json!({"round_trip_ms": 70}));
+        assert_eq!(trace.total_bytes_sent, 0);
+    }
+
+    #[test]
+    fn merged_token_traces_keep_per_call_timings_and_percentiles() {
+        let mut request = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        let mut token = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        token.record_hop(
+            0,
+            Phase::Decode,
+            30,
+            20,
+            100,
+            200,
+            2,
+            25,
+            1,
+            1,
+            TlsHop::default(),
+            &json!({"decode_ms": 11, "residual_ms": 4, "top_p_ms": 3, "backend_completion_ms": 9}),
+        );
+
+        request.merge(&token);
+
+        let hop = &request.hops[0];
+        assert_eq!(hop.decode.calls, 1);
+        assert_eq!(hop.decode.client_encode_ms, 2);
+        assert_eq!(hop.decode.node_decode_ms, 11.0);
+        assert_eq!(hop.decode.node_residual_ms, 4.0);
+        assert_eq!(hop.decode.node_top_p_ms, 3.0);
+        assert_eq!(hop.decode.node_backend_completion_ms, 9.0);
+        assert_eq!(hop.decode.node_p50_ms, 11.0);
+        assert_eq!(hop.decode.node_p95_ms, 11.0);
+        // A decode-only trace must leave prefill untouched.
+        assert_eq!(hop.prefill.calls, 0);
+        assert_eq!(hop.prefill.node_decode_ms, 0.0);
+    }
+
+    #[test]
+    fn hop_trace_keeps_prefill_and_decode_transport_independent() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            10,
+            6,
+            100,
+            200,
+            1,
+            8,
+            1,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+        trace.record_hop(
+            0,
+            Phase::Decode,
+            20,
+            9,
+            10,
+            20,
+            1,
+            18,
+            1,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+
+        assert_eq!(trace.hops[0].prefill.network_ms, 4);
+        assert_eq!(trace.hops[0].decode.network_ms, 11);
+    }
+
+    #[test]
+    fn hop_trace_keeps_the_observed_round_trip_for_execution_summary() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            18,
+            7,
+            100,
+            200,
+            1,
+            8,
+            1,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+
+        assert_eq!(trace.hops[0].prefill.round_trip_ms, 18);
+    }
+
+    #[test]
+    fn transport_telemetry_is_aggregated_instead_of_serializing_every_call() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        for (transport, fallback, round_trip_ms) in [
+            (crate::relay::InferenceTransport::Local, false, 10),
+            (crate::relay::InferenceTransport::Local, false, 20),
+            (crate::relay::InferenceTransport::Https, true, 30),
+            (crate::relay::InferenceTransport::Https, false, 40),
+            (crate::relay::InferenceTransport::Libp2pTunnel, false, 50),
+        ] {
+            trace.record_transport(
+                0,
+                Phase::Decode,
+                TransportTrace {
+                    transport,
+                    fallback,
+                    round_trip_ms,
+                    bytes_sent: 100,
+                    bytes_received: 200,
+                },
+            );
+        }
+
+        for _ in 0..4_999 {
+            trace.record_transport(
+                0,
+                Phase::Decode,
+                TransportTrace {
+                    transport: crate::relay::InferenceTransport::Local,
+                    fallback: false,
+                    round_trip_ms: 10,
+                    bytes_sent: 1818,
+                    bytes_received: 192,
+                },
+            );
+        }
+
+        let value = serde_json::to_value(&trace).unwrap();
+        let phase = &value["hops"][0]["decode"];
+        assert!(phase.get("transport_calls").is_none());
+        assert_eq!(phase["transport_summary"]["fallback_calls"], 1);
+        assert_eq!(
+            phase["transport_summary"]["transports"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(phase["transport_summary"]["transports"][0]["calls"], 5_001);
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["bytes_sent"],
+            9_088_382
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["bytes_received"],
+            960_208
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_min_ms"],
+            10
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_median_ms"],
+            10
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_p95_ms"],
+            10
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_max_ms"],
+            20
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][1]["fallback_calls"],
+            1
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][1]["rtt_median_ms"],
+            40
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][1]["rtt_p95_ms"],
+            40
+        );
+        assert_eq!(
+            phase["transport_summary"]["transport_switches"],
+            serde_json::json!([
+                {"from": "local", "to": "https", "calls": 1},
+                {"from": "https", "to": "libp2p-tunnel", "calls": 1},
+                {"from": "libp2p-tunnel", "to": "local", "calls": 1},
+            ])
+        );
+        assert!(serde_json::to_string(&trace).unwrap().len() < 4_000);
+    }
+
+    #[test]
+    fn percentil_de_decode_mantem_amostras_com_teto() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        for value in 0..(TELEMETRY_SAMPLE_LIMIT * 4) {
+            trace.record_hop(
+                0,
+                Phase::Decode,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                TlsHop::default(),
+                &json!({"decode_ms": value as f64}),
+            );
+        }
+
+        assert_eq!(
+            trace.hops[0].decode.node_samples_ms.len(),
+            TELEMETRY_SAMPLE_LIMIT
+        );
+        assert!(trace.hops[0].decode.node_p50_ms > 0.0);
+        assert!(trace.hops[0].decode.node_p95_ms > trace.hops[0].decode.node_p50_ms);
+    }
+
+    // ── As duas formas legítimas de resposta a uma rodada especulativa ──────
+    //
+    // Ler só a primeira era o defeito de 2026-08-15: a cabeça que recusa
+    // rascunhar responde na segunda, e o gateway matava a geração no primeiro
+    // token. A prova ponta a ponta está em `spec_lab.rs`.
+
+    fn trace_vazio() -> RequestTrace {
+        RequestTrace::new("qwen", &[("no1", 0, 15)])
+    }
+
+    #[test]
+    fn uma_resposta_de_um_token_e_uma_rodada_de_um_token() {
+        let passo = speculative_step_from_meta(
+            &json!({"done": false, "token_id": 42, "text": "x"}),
+            trace_vazio(),
+        )
+        .expect("a resposta de um token é legítima, não erro");
+
+        assert_eq!(passo.accepted, vec![(42u32, "x".to_string())]);
+        assert_eq!(passo.accept_count, 1);
+        assert_eq!(
+            passo.batch_width, 1,
+            "sem rascunho nada foi decodificado além do token semeado"
+        );
+        assert!(!passo.done);
+        assert!(!passo.speculated, "esta rodada não especulou");
+        assert!(!passo.speculation_active);
+    }
+
+    /// Sem isto a geração ignoraria o EOS e só pararia no teto de tokens.
+    #[test]
+    fn o_fim_da_resposta_de_um_token_e_respeitado() {
+        let passo = speculative_step_from_meta(
+            &json!({"done": true, "token_id": 7, "text": ""}),
+            trace_vazio(),
+        )
+        .expect("legítima");
+        assert!(passo.done);
+    }
+
+    #[test]
+    fn uma_rodada_verificada_continua_sendo_lida_como_especulativa() {
+        let passo = speculative_step_from_meta(
+            &json!({
+                "done": false,
+                "accepted": [{"token_id": 1, "text": "a"}, {"token_id": 2, "text": "b"}],
+                "accept_count": 2,
+                "batch_width": 4,
+            }),
+            trace_vazio(),
+        )
+        .expect("legítima");
+
+        assert_eq!(passo.accepted.len(), 2);
+        assert_eq!(passo.accept_count, 2);
+        assert_eq!(passo.batch_width, 4);
+        assert!(passo.speculated);
+        assert!(passo.speculation_active);
+    }
+
+    #[test]
+    fn callback_remoto_reporta_estado_da_especulacao_explicitamente() {
+        let passo = speculative_step_from_meta(
+            &json!({
+                "done": false,
+                "accepted": [{"token_id": 4, "text": "A"}],
+                "speculated": false,
+                "speculation_active": true,
+                "next_draft": [5, 6],
+            }),
+            trace_vazio(),
+        )
+        .expect("callback remoto válido");
+
+        assert!(!passo.speculated);
+        assert!(passo.speculation_active);
+        assert_eq!(passo.next_draft, Some(vec![5, 6]));
+        assert!(passo.speculation_disabled_reason.is_none());
+    }
+
+    #[test]
+    fn callback_remoto_reporta_a_razao_de_desativacao() {
+        let passo = speculative_step_from_meta(
+            &json!({
+                "done": false,
+                "token_id": 4,
+                "text": "A",
+                "speculated": false,
+                "speculation_active": false,
+                "speculation_disabled_reason": "hybrid_tail_no_rollback",
+            }),
+            trace_vazio(),
+        )
+        .expect("callback remoto válido");
+
+        assert!(!passo.speculated);
+        assert!(!passo.speculation_active);
+        assert_eq!(
+            passo.speculation_disabled_reason.as_deref(),
+            Some("hybrid_tail_no_rollback")
+        );
+    }
+
+    /// Uma resposta que não é nem uma coisa nem outra continua sendo erro:
+    /// seguir em silêncio com token nenhum seria pior que a falha.
+    #[test]
+    fn uma_resposta_sem_token_nenhum_continua_sendo_erro() {
+        assert!(speculative_step_from_meta(&json!({"done": false}), trace_vazio()).is_err());
+    }
+
+    #[test]
+    fn a_trace_keeps_its_issue_budget() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        for attempt in 1..=33 {
+            trace.record_issue(TraceIssue::new(
+                Some(0),
+                "no1",
+                Phase::Prefill,
+                TraceIssueKind::Transport,
+                attempt,
+                "offline",
+            ));
+        }
+        assert_eq!(trace.issues.len(), 32);
+        assert_eq!(trace.dropped_issues, 1);
+    }
+
+    #[tokio::test]
+    async fn limite_de_pedacos_em_voo_e_respeitado() {
+        let window = PrefillOverlapWindow::new(2);
+        assert_eq!(PrefillOverlapWindow::new(0).max_inflight_chunks(), 1);
+        assert_eq!(PrefillOverlapWindow::new(99).max_inflight_chunks(), 8);
+        let first = window.acquire().await.unwrap();
+        let second = window.acquire().await.unwrap();
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), window.acquire())
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), window.acquire())
+                .await
+                .is_ok()
+        );
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn orcamento_de_bytes_segura_um_pedaco_novo_ate_o_anterior_soltar() {
+        let window = PrefillOverlapWindow::new(8);
+        let budget = PrefillOverlapWindow::INFLIGHT_BYTE_BUDGET;
+
+        // Metade do orçamento cada: os dois passam, o terceiro espera.
+        let a = window.reserve_bytes(budget / 2).await;
+        let b = window.reserve_bytes(budget / 2).await;
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                window.reserve_bytes(budget / 2),
+            )
+            .await
+            .is_err(),
+            "sem folga no orçamento, o próximo pedaço espera"
+        );
+        drop(a);
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                window.reserve_bytes(budget / 2),
+            )
+            .await
+            .is_ok(),
+            "liberado um pedaço, o orçamento acomoda o próximo"
+        );
+        drop(b);
+
+        // Um pedaço sozinho maior que o orçamento é limitado a ele e não trava.
+        let huge = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            window.reserve_bytes(budget.saturating_mul(4)),
+        )
+        .await;
+        assert!(
+            huge.is_ok(),
+            "um pedaço gigante passa segurando a janela inteira"
+        );
+    }
+
+    #[test]
+    fn trace_distingue_prefixo_candidato_de_tokens_realmente_reaproveitados() {
+        let mut trace = RequestTrace::new("qwen", &[("head", 0, 15)]);
+        trace.record_prefix_decision(
+            &json!({
+                "reuse_prefix": false,
+                "cached_tokens": 0,
+                "prefix_match_tokens": 2,
+            }),
+            false,
+        );
+        trace.finish_prompt(5, 0);
+
+        assert_eq!(trace.prefix_match_tokens, 2);
+        assert_eq!(trace.cached_tokens, 0);
+        assert_eq!(trace.prompt_tokens_transmitted, 5);
+    }
+}

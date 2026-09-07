@@ -90,7 +90,7 @@ mod pkarr_node;
 mod plan;
 #[path = "models/pom.rs"]
 mod pom;
-#[path = "inference/prefill.rs"]
+#[path = "inference/prefill/mod.rs"]
 mod prefill;
 #[path = "inference/prefix_cache.rs"]
 mod prefix_cache;

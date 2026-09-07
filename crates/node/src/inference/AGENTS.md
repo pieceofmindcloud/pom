@@ -217,7 +217,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do
   `llama-cpp-sys-2` (o `wrapper.h` dele só inclui `llama.h`). Compilada pelo
   `crates/node/build.rs`.
-- `prefill.rs` - `run_with_options` (hub) / `run_ring` (anel) / `run_direct`
+- `prefill/` - suporte e telemetria, pipelines de prefill, steps/especulação e
+  testes: `run_with_options` (hub) / `run_ring` (anel) / `run_direct`
   (direto), `step_speculative`, as duas formas de resposta da especulação, traço
   de fases por requisição. `Cancellation` cancela a operação do gateway quando o
   consumidor desaparece, antes do próximo chunk ou hop e também durante a
@@ -614,7 +615,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
   `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN na borda,
-  sempre devolvendo f32 ao motor; `prefill.rs`/`relay.rs` propagam o dtype
+  sempre devolvendo f32 ao motor; `prefill/`/`relay.rs` propagam o dtype
   escolhido e registram bytes enviados, recebidos e formato efetivo por hop.
 
 ## Funções-chave
@@ -725,7 +726,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Recusar é resposta legítima, não erro: a cabeça omite `draft` no quadro e a
   cauda responde no formato antigo de um token (ver
   `step_blocking::incoming_draft` e a seção de duas formas de resposta em
-  `prefill.rs`). A cauda aplica separadamente o gate
+  `prefill/`). A cauda aplica separadamente o gate
   `kv_can_shift=false` para não produzir o próximo draft em modelos
   híbridos/recorrentes.
 
@@ -829,7 +830,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   ranges por `item_id`; a posição global de logits nunca é inferida pelo índice
   da sessão. Mistura de token e hidden state fica em lanes distintas.
 
-`prefill.rs`:
+`prefill/`:
 - `run_with_options`/`step` - dispatch em três níveis: `run_direct`/`step_direct`
   quando `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
   `supports_relay_chain()`, senão o pipeline hub. `run_with_options` recebe

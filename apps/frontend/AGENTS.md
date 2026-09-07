@@ -75,9 +75,10 @@ aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
   `Setup` do primeiro arranque (`isWizard` no `App.tsx` devolve antes do shell)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
-  filtros, abas de requisições/estatísticas, tabela densa, scroll infinito e
-  inspetor com Markdown renderizado, expansão para leitura e redação de
-  credenciais
+  filtros, tabela densa, scroll infinito e inspetor com Markdown renderizado,
+  expansão para leitura e redação de credenciais; `/estatisticas` -> Statistics,
+  tela separada dos agregados da auditoria. `/logs/estatisticas` redireciona
+  para a rota nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences,
   including administrative exposure and gateway port plus the moved TLS choice;

@@ -37,6 +37,14 @@ describe("navigation structure", () => {
     expect(logs?.children).toBeUndefined();
   });
 
+  it("gives statistics its own top-level destination after logs", () => {
+    const labels = NAV.map((section) => section.labelKey);
+    expect(labels.indexOf("nav.statistics")).toBeGreaterThan(labels.indexOf("nav.logs"));
+    expect(NAV.find((section) => section.labelKey === "nav.statistics")).toMatchObject({
+      to: "/estatisticas",
+    });
+  });
+
   it("places Preferences under Settings", () => {
     const settings = NAV.find((section) => section.labelKey === "nav.settings");
 
@@ -59,6 +67,7 @@ describe("navForProfile", () => {
     expect(labels).not.toContain("nav.deployments");
     // Logs é uma tela restrita ao administrador.
     expect(labels).not.toContain("nav.logs");
+    expect(labels).not.toContain("nav.statistics");
   });
 
   it("preserva no nó tudo que ninguém restringiu", () => {

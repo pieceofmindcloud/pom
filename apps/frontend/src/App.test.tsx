@@ -49,6 +49,7 @@ vi.mock("./components/Logo", () => ({
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
 vi.mock("./routes/Logs", () => ({ Logs: () => <div>tela-logs</div> }));
+vi.mock("./routes/Statistics", () => ({ Statistics: () => <div>tela-estatisticas</div> }));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
@@ -84,6 +85,7 @@ describe("guarda de perfil por rota", () => {
     ["/implantar", "tela-implantar"],
     ["/implantacoes", "tela-implantacoes"],
     ["/logs", "tela-logs"],
+    ["/estatisticas", "tela-estatisticas"],
   ] as const;
 
   for (const [path, marker] of fechadas) {

@@ -30,6 +30,7 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/implantar": ["admin"],
   "/implantacoes": ["admin"],
   "/logs": ["admin"],
+  "/estatisticas": ["admin"],
 };
 
 /**

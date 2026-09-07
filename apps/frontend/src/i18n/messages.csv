@@ -781,6 +781,7 @@ nav.settings,Settings,Configurações
 nav.setupWizard,Setup wizard,Wizard de configuração
 nav.shards,Shards,Fatias
 nav.sliceModels,Slice models,Fatiar modelos
+nav.statistics,Statistics,Estatísticas
 nav.transfers,Transfers,Transferências
 network.addrEffective,Currently advertising,Anunciando agora
 network.addrHint,"Leave empty to auto-detect (a peer-observed public address, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado via libp2p, senão o endereço de rede local desta máquina)."
@@ -1280,8 +1281,10 @@ tokenLogs.statsByToken,Requests by API token,Requisições por API token
 tokenLogs.statsEmpty,No statistics yet,Ainda não há estatísticas
 tokenLogs.statsEmptyDetail,Statistics appear after the network records a request.,As estatísticas aparecem depois que a rede registra uma requisição.
 tokenLogs.statsPeerConsumption,Consumption by peer,Consumo por peer
+tokenLogs.statsSubtitle,Aggregated request usage across the network.,Consumo agregado de requisições na rede.
 tokenLogs.statsTab,STATISTICS,ESTATÍSTICAS
 tokenLogs.statsTerminalStates,Terminal states,Estados terminais
+tokenLogs.statsTitle,Statistics,Estatísticas
 tokenLogs.statsTokensSubtitle,Input and output tokens recorded by the audit trail.,Fichas de entrada e saída registradas na auditoria.
 tokenLogs.status,Status,Estado
 tokenLogs.statusAbandoned,client left,cliente saiu

@@ -40,7 +40,7 @@ import { useI18n } from "../i18n/provider";
 const PAGE_SIZE = 50;
 const CHART_COLORS = ["#8b7dff", "#58d5c5", "#f3b85f", "#e783a4", "#7eb4ff"];
 
-type Filters = {
+export type Filters = {
   node_id?: string;
   api_key?: string;
   prompt?: string;
@@ -164,7 +164,7 @@ function bytesText(value: number) {
   return `${num(value / (1024 * 1024), 1)} MB`;
 }
 
-function StatsView({ filters, name }: { filters: Filters; name: (id: string) => string }) {
+export function StatsView({ filters, name }: { filters: Filters; name: (id: string) => string }) {
   const { t } = useI18n();
   const stats = useRequestStats(filters, true);
   const data = stats.data;
@@ -478,7 +478,6 @@ export function Logs() {
   const { t } = useI18n();
   const cluster = useCluster();
   const name = useNodeNames();
-  const [tab, setTab] = useState<"requests" | "stats">("requests");
   const [selected, setSelected] = useState<RequestLogEntry | null>(null);
   const [draft, setDraft] = useState({ node: "", apiKey: "", prompt: "", from: "", to: "" });
   const [filters, setFilters] = useState<Filters>({});
@@ -495,14 +494,6 @@ export function Logs() {
           <div className="min-w-0">
             <h1 className="font-display text-lg font-semibold tracking-tight text-fg">{t("tokenLogs.title")}</h1>
             <p className="mt-0.5 truncate text-[0.7rem] text-muted">{t("tokenLogs.subtitle")}</p>
-          </div>
-          <div role="tablist" aria-label={t("tokenLogs.screenTabs")} className="flex shrink-0 gap-1 rounded-lg bg-ink p-1">
-            <button type="button" role="tab" aria-selected={tab === "requests"} className={tab === "requests" ? "rounded-md bg-raised px-2.5 py-1.5 text-[0.68rem] font-semibold text-fg" : "rounded-md px-2.5 py-1.5 text-[0.68rem] font-semibold text-faint hover:text-fg"} onClick={() => { setTab("requests"); setSelected(null); }}>
-              {t("tokenLogs.requestsTab")}
-            </button>
-            <button type="button" role="tab" aria-selected={tab === "stats"} className={tab === "stats" ? "rounded-md bg-raised px-2.5 py-1.5 text-[0.68rem] font-semibold text-fg" : "rounded-md px-2.5 py-1.5 text-[0.68rem] font-semibold text-faint hover:text-fg"} onClick={() => { setTab("stats"); setSelected(null); }}>
-              {t("tokenLogs.statsTab")}
-            </button>
           </div>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-line px-3 py-2 sm:px-4">
@@ -532,7 +523,7 @@ export function Logs() {
           <Button size="sm" variant="primary" icon={<Search className="h-3.5 w-3.5" />} onClick={search}>{t("tokenLogs.search")}</Button>
         </div>
       </header>
-      {tab === "stats" ? <StatsView filters={filters} name={name} /> : <RequestsView filters={filters} name={name} selected={selected} setSelected={setSelected} />}
+      <RequestsView filters={filters} name={name} selected={selected} setSelected={setSelected} />
     </div>
   );
 }

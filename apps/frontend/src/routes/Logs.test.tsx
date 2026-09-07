@@ -29,6 +29,7 @@ vi.mock("../lib/queries", () => ({
 }));
 
 import { Logs } from "./Logs";
+import { Statistics } from "./Statistics";
 
 const result = {
   entries: [
@@ -379,7 +380,7 @@ describe("Logs", () => {
     expect(screen.queryByText(/JSON pode ser selecionado/)).toBeNull();
   });
 
-  it("loads the server-aggregated statistics tab", () => {
+  it("keeps server-aggregated statistics on their own screen", () => {
     mocks.useRequestLog.mockReturnValue({
       data: result,
       isError: false,
@@ -411,11 +412,9 @@ describe("Logs", () => {
 
     render(
       <LocaleProvider initialLocale="pt-BR">
-        <Logs />
+        <Statistics />
       </LocaleProvider>,
     );
-
-    fireEvent.click(screen.getByRole("tab", { name: "ESTATÍSTICAS" }));
 
     expect(screen.getByText("Consumo por dia")).toBeTruthy();
     expect(screen.getByText("Requisições por API token")).toBeTruthy();

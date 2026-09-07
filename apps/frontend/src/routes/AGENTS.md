@@ -273,9 +273,10 @@ Per-file list:
   `rdma-perfis-escopo-backend`. `ConnectionKeys`: the cluster operator key -
   `POST /admin/regenerate-key`.
 - `Logs.tsx` - tela autenticada de auditoria em largura total. A barra aplica
-  filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a aba de
+  filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a tela de
   requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
-  A aba de estatísticas lê `GET /api/ui/requests/stats`. Clicar em qualquer
+  `Statistics.tsx` usa a mesma fonte agregada em `GET /api/ui/requests/stats`
+  como tela própria. Clicar em qualquer
   ponto não interativo da linha abre o inspetor e mantém a linha selecionada
   destacada com acento visível, inclusive enquanto o mouse está em outra linha;
   a lupa continua disponível. O cabeçalho do inspetor repete as métricas da

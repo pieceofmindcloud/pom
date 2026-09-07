@@ -164,6 +164,7 @@ a versão anterior tinha um `mock-server.mjs` e ele foi removido.
 | Transferências | `GET /api/ui/jobs`, rotas de `src/transfer.rs` |
 | Enviar um arquivo | transferência por concessão (`grant`) |
 | Logs por token e por nó | `GET /api/ui/requests` |
+| Estatísticas | `GET /api/ui/requests` |
 | Logs ao vivo | `GET /api/ui/requests` em polling |
 | Rede (bloquear nó) | `GET /admin/nodes`, `POST /admin/nodes/:id/block`/`unblock` |
 | API keys | `GET`/`POST /admin/api-keys`, `DELETE /admin/api-keys/:key` |
@@ -236,7 +237,7 @@ Todas em `src/webui.rs`, no estilo do arquivo, mais um módulo novo.
 | `POST /api/ui/unload` | Descarrega da memória o modelo do nó. |
 | `POST /api/ui/leave` | Sai da rede: para de anunciar e esquece os peers. |
 | `POST /api/ui/rejoin` | Volta para a rede. |
-| `GET /api/ui/requests` | O registro de requisições, por token e por nó, que alimenta as duas telas de Logs. |
+| `GET /api/ui/requests` | O registro de requisições, por token e por nó, que alimenta Logs e Estatísticas. |
 | `POST /api/ui/release` | O nó devolve a memória da fatia que serve e continua na rede; se houver peer ocioso com a fatia no disco, ela é passada adiante. Nunca é recusada. |
 | `GET /api/ui/release/candidate` | Quem assumiria a fatia, para a confirmação na tela avisar de verdade quando a faixa vai ficar descoberta. |
 | `POST /api/ui/deploy/plan` | Só leitura: quem serviria qual faixa de um conjunto de fatias pronto, e o que teria de ser copiado antes. |

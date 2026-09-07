@@ -96,7 +96,9 @@ Per-file list:
   mesma tabela (`../lib/access.ts`) que o guarda de rota do `App.tsx` consulta -
   uma seção com filhas só some quando **nenhuma** filha sobra. Ele copia a seção
   antes de filtrar; reescrever `NAV` deixaria o outro perfil com o menu podado.
-  Testes em `nav.test.ts`.
+  Estatísticas é uma entrada de primeiro nível depois de Logs, mantendo a
+  sequência operacional de consultar eventos antes de seus agregados. Testes em
+  `nav.test.ts`.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated

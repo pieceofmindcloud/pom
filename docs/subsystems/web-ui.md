@@ -111,8 +111,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   não confundir com a auditoria de requisições em `/logs`
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
-  requisições paginadas por scroll infinito, estatísticas agregadas e inspetor
-  JSON
+  requisições paginadas por scroll infinito e inspetor JSON
+- `/estatisticas` -> Statistics, tela própria dos agregados da auditoria;
+  `/logs/estatisticas` redireciona para a rota nova
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/setup` -> `SetupWizard`, protótipo navegável do primeiro acesso, **em tela
   inteira**: sem Sidebar e sem Topbar, como o `Setup` do bootstrap. O
@@ -177,7 +178,7 @@ O perfil é o que separa essas vistas.
 
 `src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
 ausente é livre para `admin` e `node`. Hoje `/implantar`, `/implantacoes` e
-`/logs` são só do administrador. Para `inference`, `canAccessRoute` permite
+`/logs` e `/estatisticas` são só do administrador. Para `inference`, `canAccessRoute` permite
 somente `/chat`, `/documentacao` e `/config/keys/api`. No Chat, a telemetria da
 execução e seus resumos também ficam ocultos. A chave casa **segmento inteiro**, então
 `/logs` não cobre `/logs-antigos`.
@@ -185,7 +186,7 @@ execução e seus resumos também ficam ocultos. A chave casa **segmento inteiro
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
 barra compacta aplica filtros por identidade não secreta da API key, texto do
 prompt, nó e período, lista primeiro as entradas mais recentes em páginas e
-carrega a próxima quando o sentinela entra na viewport. A aba de estatísticas
+carrega a próxima quando o sentinela entra na viewport. A tela de estatísticas
 consulta `GET /api/ui/requests/stats`, que agrega no servidor por token, nó,
 dia, modelo e peer, além de tokens de entrada/saída, inferência, TTFT, cache de
 prefixo e estados terminais. Clicar em qualquer área não interativa da linha
@@ -196,8 +197,8 @@ prefixo e estados terminais. Clicar em qualquer área não interativa da linha
   leitura, sem barra de edição, HTML, imagens ou links com protocolo inseguro.
   O conteúdo exibido é limitado a 64 KiB para preservar a responsividade. A
   preferência global entre Markdown renderizado e JSON cru fica em `localStorage`
-  e é restaurada em visitas futuras. A tablist tem somente as quatro abas;
-  cópia da aba ativa e toggle de formato ficam no cabeçalho junto ao fechamento.
+  e é restaurada em visitas futuras. A tela de Estatísticas usa a mesma fonte
+  agregada, mas não é uma aba dentro de Logs.
   Cada área Markdown também tem um botão icon-only de expansão no canto
   superior direito; a leitura abre em uma janela grande, acompanha o toggle
   global e mantém a mesma sanitização e censura de credenciais.

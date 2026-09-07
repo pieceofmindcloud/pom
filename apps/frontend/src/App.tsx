@@ -137,6 +137,7 @@ export const routeLoaders = {
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
+  statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
@@ -165,6 +166,7 @@ const Chat = lazyRoute(routeLoaders.chat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
+const Statistics = lazyRoute(routeLoaders.statistics);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const Preferences = lazyRoute(routeLoaders.preferences);
@@ -342,6 +344,8 @@ export default function App() {
                       <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                       <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
                       <Route path="/logs" element={<Page><Logs /></Page>} />
+                      <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
+                      <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
                       <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                       <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                       <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />

@@ -1,6 +1,7 @@
 import {
   BookOpen,
   Boxes,
+  ChartNoAxesColumn,
   FolderTree,
   Gauge,
   History,
@@ -80,6 +81,7 @@ export const NAV: NavSection[] = [
     icon: ListTree,
     to: "/logs",
   },
+  { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/estatisticas" },
   // The repo's own documentation, not a screen that reads the cluster: the
   // folder AGENTS.md files and subsystem READMEs embedded at build time.
   { labelKey: "nav.documentation", icon: BookOpen, to: "/documentacao" },

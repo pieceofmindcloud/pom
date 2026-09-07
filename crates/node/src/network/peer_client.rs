@@ -86,12 +86,33 @@ pub struct PeerClients {
     auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
 }
 
+#[derive(Default)]
 struct ReplyRouteState {
     preferred: Option<String>,
+    /// Falhas **seguidas** por endereço, zeradas por qualquer sucesso.
+    streak: HashMap<String, u32>,
+    /// Quando o endereço acumulou [`ROUTE_FAILURE_STREAK`] falhas seguidas.
     failed: HashMap<String, Instant>,
 }
 
-const REPLY_ROUTE_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+/// Quanto tempo um endereço fica no **fim** da ordem depois de acumular
+/// falhas seguidas. Não é exclusão - ver [`PeerClients::route_order`].
+///
+/// É o mesmo prazo da quarentena do canal persistente
+/// (`link::OPEN_FAILURE_COOLDOWN`, que aponta para cá): os dois governam a
+/// mesma decisão - se vale a pena voltar a pagar este endereço - e dois prazos
+/// diferentes para a mesma decisão só produzem a aparência de recuperação.
+pub(crate) const ROUTE_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// Quantas falhas **seguidas** um endereço precisa acumular antes de ir para o
+/// fim da ordem.
+///
+/// O teto de uma tentativa não é critério de quarentena. Uma entrega que
+/// estourou o teto pode estar só lenta - gateway ocupado, handshake TLS frio,
+/// lote grande, WAN - e uma amostra só não distingue "devagar" de "morto". Um
+/// endereço realmente morto acumula as três em poucos milissegundos, porque o
+/// `CONNECT_TIMEOUT` corta antes.
+const ROUTE_FAILURE_STREAK: u32 = 3;
 
 /// Um endereço anunciado que engole SYN não pode entregar o controle do
 /// processo ao timeout do sistema operacional. O timeout total da requisição
@@ -252,54 +273,89 @@ impl PeerClients {
         v
     }
 
-    /// Ordena endereços de retorno, mantendo a rota que já respondeu e
-    /// removendo endereços que falharam recentemente.
+    /// Ordena endereços de retorno: primeiro a rota que já respondeu, depois
+    /// as demais, e por último as que vêm falhando - da que falhou há mais
+    /// tempo para a mais recente.
     ///
     /// A rota é usada uma vez por lote de decode. Sem esta memória,
     /// um IPv4/IPv6 que aceita o SYN mas nunca responde é tentado de novo em
     /// cada lote e o custo do timeout vira custo por ficha.
-    pub(crate) fn route_order(
-        &self,
-        key: &str,
-        candidates: &[String],
-    ) -> Vec<String> {
+    ///
+    /// **Nunca devolve lista vazia para uma lista de candidatos não vazia.**
+    /// A memória de falhas reordena, não exclui. Excluir era o defeito: com
+    /// todos os candidatos em quarentena o chamador não tentava endereço
+    /// nenhum, e sem tentativa não há erro para reportar - só o prazo do
+    /// gateway a vencer (600 s) e um aviso com o motivo vazio. O que decide se
+    /// um endereço serve é a tentativa real; esta função só escolhe a ordem em
+    /// que ela é paga.
+    pub(crate) fn route_order(&self, key: &str, candidates: &[String]) -> Vec<String> {
         let Ok(mut routes) = self.reply_routes.write() else {
             return candidates.to_vec();
         };
-        let state = routes.entry(key.to_string()).or_insert_with(|| ReplyRouteState {
-            preferred: None,
-            failed: HashMap::new(),
-        });
+        let state = routes.entry(key.to_string()).or_default();
         let now = Instant::now();
-        state
+        let known = |url: &String| candidates.iter().any(|candidate| candidate == url);
+        let expired: Vec<String> = state
             .failed
-            .retain(|url, failed_at| candidates.iter().any(|candidate| candidate == url)
-                && now.duration_since(*failed_at) < REPLY_ROUTE_FAILURE_COOLDOWN);
+            .iter()
+            .filter(|(url, failed_at)| {
+                known(url) && now.duration_since(**failed_at) >= ROUTE_FAILURE_COOLDOWN
+            })
+            .map(|(url, _)| url.clone())
+            .collect();
+        state.failed.retain(|url, failed_at| {
+            known(url) && now.duration_since(*failed_at) < ROUTE_FAILURE_COOLDOWN
+        });
+        for url in expired {
+            state.streak.remove(&url);
+        }
+        state.streak.retain(|url, _| known(url));
 
         let mut ordered = Vec::with_capacity(candidates.len());
-        if let Some(preferred) = state.preferred.as_ref().filter(|url| {
-            candidates.iter().any(|candidate| candidate == *url)
-                && !state.failed.contains_key(*url)
-        }) {
+        if let Some(preferred) = state
+            .preferred
+            .as_ref()
+            .filter(|url| known(url) && !state.failed.contains_key(*url))
+        {
             ordered.push(preferred.clone());
         }
         for candidate in candidates {
-            if !ordered.iter().any(|url| url == candidate)
-                && !state.failed.contains_key(candidate)
+            if !ordered.iter().any(|url| url == candidate) && !state.failed.contains_key(candidate)
             {
                 ordered.push(candidate.clone());
             }
         }
+        let mut quarantined: Vec<String> = Vec::new();
+        for candidate in candidates {
+            if !ordered.iter().any(|url| url == candidate)
+                && !quarantined.iter().any(|url| url == candidate)
+            {
+                quarantined.push(candidate.clone());
+            }
+        }
+        // Quem falhou há mais tempo teve mais tempo para voltar, então é o
+        // primeiro da fila dos degradados.
+        quarantined.sort_by_key(|url| state.failed.get(url).copied());
+        ordered.extend(quarantined);
         ordered
     }
 
+    /// Regista uma falha neste endereço.
+    ///
+    /// A primeira falha só tira o endereço da preferência - ele continua na
+    /// ordem, à frente de quem já vinha falhando. Só [`ROUTE_FAILURE_STREAK`]
+    /// falhas seguidas o mandam para o fim.
     pub(crate) fn remember_route_failure(&self, key: &str, url: &str) {
         if let Ok(mut routes) = self.reply_routes.write() {
-            let state = routes.entry(key.to_string()).or_insert_with(|| ReplyRouteState {
-                preferred: None,
-                failed: HashMap::new(),
-            });
-            state.failed.insert(url.to_string(), Instant::now());
+            let state = routes.entry(key.to_string()).or_default();
+            let streak = {
+                let counter = state.streak.entry(url.to_string()).or_insert(0);
+                *counter = counter.saturating_add(1);
+                *counter
+            };
+            if streak >= ROUTE_FAILURE_STREAK {
+                state.failed.insert(url.to_string(), Instant::now());
+            }
             if state.preferred.as_deref() == Some(url) {
                 state.preferred = None;
             }
@@ -308,13 +364,26 @@ impl PeerClients {
 
     pub(crate) fn remember_route_success(&self, key: &str, url: &str) {
         if let Ok(mut routes) = self.reply_routes.write() {
-            let state = routes.entry(key.to_string()).or_insert_with(|| ReplyRouteState {
-                preferred: None,
-                failed: HashMap::new(),
-            });
+            let state = routes.entry(key.to_string()).or_default();
+            state.streak.remove(url);
             state.failed.remove(url);
             state.preferred = Some(url.to_string());
         }
+    }
+
+    /// Quantas falhas seguidas este endereço acumulou. Existe para a bancada
+    /// provar a escada "demove, depois degrada" sem esperar 300 s.
+    #[cfg(test)]
+    pub(crate) fn route_failure_streak(&self, key: &str, url: &str) -> u32 {
+        self.reply_routes
+            .read()
+            .ok()
+            .and_then(|routes| {
+                routes
+                    .get(key)
+                    .and_then(|state| state.streak.get(url).copied())
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -335,6 +404,127 @@ mod tests {
     fn esquema_da_url_segue_a_flag() {
         assert_eq!(scheme(true), "https");
         assert_eq!(scheme(false), "http");
+    }
+
+    /// O defeito que pendurava a requisição por 600 s: com todos os candidatos
+    /// em quarentena a ordem saía vazia, o `for` do chamador não executava e
+    /// ninguém tentava endereço nenhum. Sem tentativa não há erro para
+    /// reportar - só o prazo do gateway a vencer.
+    #[test]
+    fn candidatos_todos_em_quarentena_ainda_produzem_tentativas() {
+        let c = PeerClients::new(Duration::from_secs(600));
+        let candidates = vec!["http://a".to_string(), "http://b".to_string()];
+        for url in &candidates {
+            for _ in 0..ROUTE_FAILURE_STREAK {
+                c.remember_route_failure("reply:peer", url);
+            }
+        }
+        let ordered = c.route_order("reply:peer", &candidates);
+        assert_eq!(
+            ordered.len(),
+            candidates.len(),
+            "a memória de falhas reordena, não exclui: {ordered:?}"
+        );
+        for candidate in &candidates {
+            assert!(
+                ordered.contains(candidate),
+                "{candidate} sumiu de {ordered:?}"
+            );
+        }
+    }
+
+    /// Quem falhou há mais tempo teve mais tempo para voltar, e por isso é o
+    /// primeiro dos degradados.
+    #[test]
+    fn entre_degradados_o_mais_antigo_vem_primeiro() {
+        let c = PeerClients::new(Duration::from_secs(600));
+        let candidates = vec!["http://a".to_string(), "http://b".to_string()];
+        for _ in 0..ROUTE_FAILURE_STREAK {
+            c.remember_route_failure("reply:peer", "http://a");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        for _ in 0..ROUTE_FAILURE_STREAK {
+            c.remember_route_failure("reply:peer", "http://b");
+        }
+        assert_eq!(
+            c.route_order("reply:peer", &candidates),
+            vec!["http://a".to_string(), "http://b".to_string()]
+        );
+    }
+
+    /// Uma entrega apenas lenta não é uma rota morta: o teto de uma tentativa
+    /// não pode ser o critério de quarentena. A primeira falha só tira o
+    /// endereço da preferência.
+    #[test]
+    fn uma_falha_isolada_nao_degrada_a_rota() {
+        let c = PeerClients::new(Duration::from_secs(600));
+        let candidates = vec!["http://lento".to_string(), "http://outro".to_string()];
+        c.remember_route_success("reply:peer", "http://lento");
+        c.remember_route_failure("reply:peer", "http://lento");
+        assert_eq!(c.route_failure_streak("reply:peer", "http://lento"), 1);
+        // Perdeu a preferência, mas continua à frente de quem nunca respondeu?
+        // Não: perder a preferência é ir para a ordem natural dos candidatos.
+        assert_eq!(
+            c.route_order("reply:peer", &candidates),
+            vec!["http://lento".to_string(), "http://outro".to_string()],
+            "uma falha só não manda o endereço para o fim"
+        );
+
+        c.remember_route_failure("reply:peer", "http://lento");
+        c.remember_route_failure("reply:peer", "http://lento");
+        assert_eq!(
+            c.route_order("reply:peer", &candidates),
+            vec!["http://outro".to_string(), "http://lento".to_string()],
+            "três falhas seguidas mandam para o fim"
+        );
+
+        // E um sucesso zera a conta: a rota volta a ser a preferida.
+        c.remember_route_success("reply:peer", "http://lento");
+        assert_eq!(c.route_failure_streak("reply:peer", "http://lento"), 0);
+        assert_eq!(
+            c.route_order("reply:peer", &candidates),
+            vec!["http://lento".to_string(), "http://outro".to_string()]
+        );
+    }
+
+    /// A rota que respondeu vem primeiro, e é isso - não a quarentena - que
+    /// impede o caminho quente de voltar a pagar um endereço morto.
+    #[test]
+    fn a_rota_que_respondeu_vem_primeiro() {
+        let c = PeerClients::new(Duration::from_secs(600));
+        let candidates = vec!["http://morto".to_string(), "http://vivo".to_string()];
+        c.remember_route_failure("reply:peer", "http://morto");
+        c.remember_route_success("reply:peer", "http://vivo");
+        assert_eq!(
+            c.route_order("reply:peer", &candidates),
+            vec!["http://vivo".to_string(), "http://morto".to_string()]
+        );
+    }
+
+    /// Candidato repetido não vira tentativa repetida.
+    #[test]
+    fn candidato_repetido_aparece_uma_vez() {
+        let c = PeerClients::new(Duration::from_secs(600));
+        let candidates = vec!["http://a".to_string(), "http://a".to_string()];
+        assert_eq!(
+            c.route_order("reply:peer", &candidates),
+            vec!["http://a".to_string()]
+        );
+        for _ in 0..ROUTE_FAILURE_STREAK {
+            c.remember_route_failure("reply:peer", "http://a");
+        }
+        assert_eq!(
+            c.route_order("reply:peer", &candidates),
+            vec!["http://a".to_string()]
+        );
+    }
+
+    /// Sem candidato nenhum não há o que ordenar - e o chamador precisa dizer
+    /// isso com todas as letras em vez de um motivo vazio.
+    #[test]
+    fn sem_candidatos_a_ordem_e_vazia() {
+        let c = PeerClients::new(Duration::from_secs(600));
+        assert!(c.route_order("reply:peer", &[]).is_empty());
     }
 
     #[test]

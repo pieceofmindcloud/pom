@@ -46,7 +46,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
   quem colcheta IPv6, além da preferência e da quarentena temporária de rotas
-  que falharam. O cliente destinado a outro nó marca requests de controle com
+  que falharam. `route_order` apenas reordena os candidatos: mesmo quando
+  todos estão em quarentena, devolve a lista para que a tentativa real decida.
+  O cliente destinado a outro nó marca requests de controle com
   `x-pom-internal-node` e limita a abertura TCP a 2 s; o cliente `plain()` para
   Ollama e loopback não envia essa marca.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,

@@ -2075,36 +2075,22 @@ fn erase_slot(dir: &std::path::Path, name: &str) -> Result<bool> {
     Ok(removed)
 }
 
-/// Lê os sidecars de todos os snapshots num diretório. Um `.json` corrompido é
-/// registrado e pulado, não derruba a listagem.
-fn list_slots(dir: &std::path::Path) -> Vec<(String, SlotSidecar)> {
-    let mut out = Vec::new();
+/// Conta sidecars sem abrir o conteúdo. /health é consultado a cada
+/// requisição de geração e não pode segurar o mutex do motor enquanto lê e
+/// interpreta cada JSON.
+fn count_slot_entries(dir: &std::path::Path) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
+        return 0;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        // O índice do cache de prefixo do gateway mora no mesmo diretório e
-        // não é um sidecar de snapshot.
-        if name == "prefix-auto-index" {
-            continue;
-        }
-        match std::fs::read(&path)
-            .map_err(anyhow::Error::from)
-            .and_then(|raw| serde_json::from_slice::<SlotSidecar>(&raw).map_err(anyhow::Error::from))
-        {
-            Ok(sidecar) => out.push((name.to_string(), sidecar)),
-            Err(error) => warn!("sidecar de snapshot {} ilegível: {error}", path.display()),
-        }
-    }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+    entries
+        .flatten()
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("json")
+                && path.file_stem().and_then(|s| s.to_str()) != Some("prefix-auto-index")
+        })
+        .count()
 }
 
 /// Resultado de `InferState::restore_slot`, ecoado na resposta da rota para o
@@ -2135,6 +2121,26 @@ mod slot_name_tests {
                 "esperava recusar {bad:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod slot_count_tests {
+    use super::count_slot_entries;
+
+    #[test]
+    fn slot_count_usa_somente_entradas_do_diretorio() {
+        let dir = std::env::temp_dir().join(format!("pom-slot-count-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).expect("diretório temporário");
+        std::fs::write(dir.join("quebrado.json"), b"conteudo que nao e json")
+            .expect("sidecar corrompido");
+        std::fs::write(dir.join("prefix-auto-index.json"), b"indice").expect("índice automático");
+        std::fs::write(dir.join("nao-e-slot.txt"), b"outro arquivo").expect("arquivo extra");
+
+        let count = count_slot_entries(&dir);
+        std::fs::remove_dir_all(&dir).expect("limpeza do diretório temporário");
+
+        assert_eq!(count, 1);
     }
 }
 
@@ -3488,6 +3494,11 @@ fn context_per_session(n_ctx_total: u32, max_sessions: u32) -> u32 {
 async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     let scheduler = app.scheduler;
     let state = app.state;
+    let slot_dir = match lock_inference_state(&state) {
+        Ok(s) => s.slot_dir.clone(),
+        Err(error) => return err500(error),
+    };
+    let slot_count = slot_dir.as_deref().map(count_slot_entries).unwrap_or(0);
     let s = match lock_inference_state(&state) {
         Ok(s) => s,
         Err(error) => return err500(error),
@@ -3591,13 +3602,10 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
         "mtp_allocation": s.engine.mtp_allocation(),
         "mtp_unavailable_reason": s.engine.mtp_unavailable_reason(),
         // Snapshots de KV cache (`--slot-save-path`): ligado quando há um
-        // diretório configurado. `slot_count` são os `.json` legíveis nele.
+        // diretório configurado. `slot_count` conta sidecars sem abrir o
+        // JSON, para não segurar o lock do motor em leitura de disco.
         "slot_persist_enabled": s.slot_dir.is_some(),
-        "slot_count": s
-            .slot_dir
-            .as_deref()
-            .map(|dir| list_slots(dir).len())
-            .unwrap_or(0),
+        "slot_count": slot_count,
     }))
     .into_response()
 }
@@ -6656,13 +6664,25 @@ async fn remote_stream_emitter(reply_to: Value, receiver: mpsc::Receiver<RemoteS
     .await;
 }
 
+/// Um lote terminal que só carrega o erro. Não tem token: serve para o
+/// gateway parar de esperar e nomear a causa.
+fn remote_stream_error_batch(error: Value) -> Value {
+    json!({
+        "accepted": [],
+        "done": false,
+        "processing_ms": 0,
+        "node_timings": {},
+        "error": error,
+    })
+}
+
 async fn emit_remote_stream_batches<F, Fut>(
     reply_to: Value,
     mut receiver: mpsc::Receiver<RemoteStreamItem>,
     mut deliver: F,
 ) where
     F: FnMut(Value, Value) -> Fut,
-    Fut: Future<Output = bool>,
+    Fut: Future<Output = crate::direct::Delivery>,
 {
     while let Some(first) = receiver.recv().await {
         let items = crate::prefill::drain_opportunistic_batch(first, &mut receiver);
@@ -6672,31 +6692,38 @@ async fn emit_remote_stream_batches<F, Fut>(
             .and_then(Value::as_array)
             .is_some_and(|tokens| !tokens.is_empty());
         if !has_tokens && error.is_some() {
-            let error_batch = json!({
-                "accepted": [],
-                "done": false,
-                "processing_ms": 0,
-                "node_timings": {},
-                "error": error,
-            });
-            let _ = deliver(reply_to.clone(), error_batch).await;
+            let _ = deliver(reply_to.clone(), remote_stream_error_batch(json!(error))).await;
             return;
         }
-        if !deliver(reply_to.clone(), batch).await {
-            return;
+        match deliver(reply_to.clone(), batch).await {
+            crate::direct::Delivery::Accepted => {}
+            // O gateway já desistiu deste stream: não há a quem reportar.
+            crate::direct::Delivery::GatewayGone => return,
+            // Sem isto o emissor sumia em silêncio e o gateway só percebia
+            // quando o `DIRECT_REPLY_DEADLINE` vencia - dez minutos de espera
+            // por uma falha que este lado já conhecia. O aviso é um lote
+            // terminal pequeno, e vai pela mesma escada de endereços, que
+            // agora sempre tem pelo menos uma tentativa a pagar.
+            crate::direct::Delivery::Failed => {
+                warn!(
+                    "lote do stream remoto não chegou ao gateway; encerrando o stream com erro \
+                     explícito em vez de deixar o prazo vencer"
+                );
+                let _ = deliver(
+                    reply_to.clone(),
+                    remote_stream_error_batch(json!(
+                        "o lote de decode não chegou ao gateway por nenhum endereço de retorno"
+                    )),
+                )
+                .await;
+                return;
+            }
         }
         // Preserve tokens that were already generated before an error. The
         // error is terminal, but it must not make the gateway discard the
         // prefix carried by the same opportunistic batch.
         if let Some(error) = error {
-            let error_batch = json!({
-                "accepted": [],
-                "done": false,
-                "processing_ms": 0,
-                "node_timings": {},
-                "error": error,
-            });
-            let _ = deliver(reply_to.clone(), error_batch).await;
+            let _ = deliver(reply_to.clone(), remote_stream_error_batch(json!(error))).await;
         }
         if terminal {
             return;
@@ -6852,7 +6879,13 @@ mod remote_stream_tests {
             items_rx,
             move |_reply_to, batch| {
                 let deliveries_tx = deliveries_tx.clone();
-                async move { deliveries_tx.send(batch).await.is_ok() }
+                async move {
+                    if deliveries_tx.send(batch).await.is_ok() {
+                        crate::direct::Delivery::Accepted
+                    } else {
+                        crate::direct::Delivery::Failed
+                    }
+                }
             },
         )
         .await;
@@ -6865,6 +6898,58 @@ mod remote_stream_tests {
         assert!(
             deliveries_rx.try_recv().is_err(),
             "oito tokens e o rascunho, um callback"
+        );
+    }
+
+    #[tokio::test]
+    async fn falha_de_entrega_do_stream_chega_em_lote_de_erro() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let (items_tx, items_rx) = mpsc::channel(4);
+        items_tx
+            .send(token(7, "token antes da falha", true))
+            .await
+            .expect("token enfileirado");
+        drop(items_tx);
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (deliveries_tx, mut deliveries_rx) = mpsc::channel(4);
+        let started = Instant::now();
+        emit_remote_stream_batches(json!({"ticket": "stream-falha"}), items_rx, {
+            let attempts = attempts.clone();
+            move |_reply_to, batch| {
+                let attempts = attempts.clone();
+                let deliveries_tx = deliveries_tx.clone();
+                async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        crate::direct::Delivery::Failed
+                    } else {
+                        deliveries_tx
+                            .send(batch)
+                            .await
+                            .map(|_| crate::direct::Delivery::Accepted)
+                            .unwrap_or(crate::direct::Delivery::Failed)
+                    }
+                }
+            }
+        })
+        .await;
+
+        let error_batch = deliveries_rx
+            .recv()
+            .await
+            .expect("a falha deve chegar como lote terminal");
+        assert_eq!(
+            error_batch["error"],
+            json!("o lote de decode não chegou ao gateway por nenhum endereço de retorno")
+        );
+        assert!(error_batch["accepted"].as_array().unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a falha do stream não pode esperar o deadline: {:?}",
+            started.elapsed()
         );
     }
 }

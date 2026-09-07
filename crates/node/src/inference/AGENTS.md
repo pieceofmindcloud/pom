@@ -61,14 +61,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   (`transport/link-v1`, `POST /v1/link`): um corpo de ida em fluxo e um corpo
   de volta em fluxo carregando quadros `frame/v1-batch` sucessivos, em vez de
   uma requisição por ativação. A abertura tem teto de 2 s e testa os candidatos
-  de endereço com memória de falha; a quarentena de 30 s evita reabrir o mesmo
+  de endereço com memória de falha; a quarentena de 5 min acompanha a memória
+  das rotas e evita reabrir o mesmo
   destino depois de uma falha. Os quadros vão num envelope
   `[tamanho][status][batch_id][corpo]`; o `batch_id` - o mesmo do
   `BatchCoordinator` - correlaciona ida e volta e é o que permite várias
   sessões no mesmo canal. Um canal por aresta (`node_id` + URL), aberto sob
-  trava para duas travessias concorrentes compartilharem a ligação. Falha de
-  transporte degrada para a escada de sempre; o destino que não abriu fica 30 s
-  em quarentena. Recusa HTTP do peer é final e não é repetida por outra via.
+  guarda por aresta para duas travessias da mesma aresta compartilharem a
+  abertura. A abertura ocorre fora da trava global do mapa. Falha de transporte
+  degrada para a escada de sempre; o destino que não abriu fica 5 min em
+  quarentena. Recusa HTTP do peer é final e não é repetida por outra via.
   O receptor reconfere a credencial **a cada quadro**
   (`inference_credential_is_valid`), porque uma conexão longa autenticada só na
   abertura manteria válida por horas uma chave revogada por outro processo.
@@ -705,7 +707,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   KV não confirmado da especulação; sessão desconhecida é no-op (não erro);
   o gateway fan-out para todos os hops.
 - `handle_slot` + `InferState::{save_slot,restore_slot,check_slot_compatible}` /
-  `erase_slot`/`list_slots` - snapshot de KV em disco (`--slot-save-path`).
+  `erase_slot`/`count_slot_entries` - snapshot de KV em disco
+  (`--slot-save-path`). O health conta sidecars pela estrutura do diretório,
+  fora do lock do motor, e só abre o JSON quando precisa salvar ou restaurar.
   `save_slot` grava **`prompt_seq` truncado em `prompt_len`**, nunca `gen_seq`,
   mais o sidecar `<name>.json` (identidade do modelo e da fatia).
   `restore_slot` confere o sidecar antes de tocar no motor, `alloc_seq` uma
@@ -971,20 +975,22 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   (caso normal), o ack da cabeça (só interessa quando falha, ou quando um peer
   antigo borbulhou a resposta inteira - `token_id` presente vale como
   resultado), e o prazo `DIRECT_REPLY_DEADLINE=600 s` (hop morreu depois de
-  aceitar).
+  aceitar). Se o resultado chega antes do ack, ele não espera telemetria
+  atrasada.
 - `deliver_result` - a cauda (ou o hop que falhou) tenta cada URL de `reply_to`
-  em ordem de preferência, com memória de falha por 5 min e
-  `DELIVERY_TIMEOUT=500 ms` por tentativa; `410` para de tentar (o inbox já não
-  existe). Uma URL que engole SYN é paga uma vez, a alternativa assume e os
-  lotes seguintes não repetem a espera.
+  em ordem de preferência, com memória de três falhas seguidas e quarentena
+  por 5 min. Candidatos intermediários têm `DELIVERY_TIMEOUT=500 ms`; o último
+  recebe 30 s para separar lentidão de morte. `410` para de tentar, porque o
+  inbox já não existe. Uma URL que engole SYN é paga uma vez, a alternativa
+  assume e os lotes seguintes não repetem a espera.
 - `deliver_failure` - entrega um `RelayFailure` no lugar do resultado para o
   gateway nomear o nó morto em vez de esperar o prazo inteiro.
 - `hop_entry`/`accumulate` - cada hop descreve a si mesmo na ida: a lista viaja
   cabeça→cauda e a cauda a entrega junto do resultado.
 - `record_transport`/`deliver_transport` - o chamador entrega uma evidência
-  separada por travessia, com transporte, RTT e bytes. O inbox aguarda essas
-  evidências por uma janela curta depois do resultado e marca a trace como
-  incompleta quando alguma não chega.
+  separada por travessia, com transporte, RTT e bytes. O inbox anexa as
+  evidências já recebidas ao resultado e marca a trace como incompleta quando
+  alguma chega depois ou não chega; telemetria não segura a resposta.
 
 `direct_lab.rs`:
 - A "lei": **o custo por token não depende de onde está a cabeça da pipeline.**
@@ -1003,9 +1009,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   entrada (meio) custa no máximo uma perna a mais que a cabeça; e o anel
   borbulhado com a cabeça remota paga 4 pernas (o caso que doía, a queda de 25
   para 14 tok/s do captain), provando que é correção e não o comportamento de
-  sempre. Assere ainda que cada quadro é entregue direto exatamente uma vez
-  (prefill e decode) e que o prompt de mais de um pedaço atravessa inteiro (um
-  `prompt_progress` perdido trunca no primeiro).
+  sempre. Assere ainda que cada quadro de resultado é entregue direto
+  exatamente uma vez e que os recibos de transporte não entram nessa contagem.
+  O prompt de mais de um pedaço atravessa inteiro (um `prompt_progress`
+  perdido trunca no primeiro), inclusive com reuso de prefixo.
 - Herda da investigação de 2026-08-14 (`labsse.rs`), que provou a assimetria e
   refutou a hipótese do SSE por contrafactual.
 - **Sem cobertura de teste**: os quatro modos de falha (hop do meio morto,

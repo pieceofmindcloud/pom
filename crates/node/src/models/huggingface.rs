@@ -303,19 +303,6 @@ impl HuggingFaceProvider {
         )
     }
 
-    #[cfg(test)]
-    fn with_http_parts_for_test(
-        endpoint: &str,
-        token: Option<&str>,
-        storage: Arc<dyn ModelStorage>,
-    ) -> Self {
-        Self::from_parts(
-            endpoint,
-            Arc::new(StaticHfTokenSource(token.map(str::to_string))),
-            storage,
-        )
-    }
-
     fn url(&self, segments: &[String]) -> Result<Url, HfError> {
         let mut url = Url::parse(&self.endpoint).map_err(|error| HfError::HfInvalidResponse {
             message: format!("endpoint do Hugging Face inválido: {error}"),

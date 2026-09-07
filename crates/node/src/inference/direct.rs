@@ -63,17 +63,30 @@ pub const REMOTE_STREAM_RESULT_PATH: &str = "/v1/remote-stream-result";
 /// isso não está lento, está morto, e a sessão precisa ser liberada.
 pub const DIRECT_REPLY_DEADLINE: Duration = Duration::from_secs(600);
 
-/// Tempo máximo para a telemetria das travessias chegar depois do resultado.
-/// É deliberadamente curto e independente do prazo da inferência: faltar uma
-/// amostra não pode prender um pedido por dez minutos.
-const DIRECT_TRACE_GRACE: Duration = Duration::from_secs(2);
-
-/// Tentativas de entrega do resultado direto, por URL candidata.
+/// Teto de uma tentativa de entrega quando **ainda há outro endereço** para
+/// tentar. Curto de propósito: um endereço que aceita o SYN e nunca responde
+/// não pode custar o prazo inteiro antes de o seguinte ser pago.
 #[cfg(not(test))]
 const DELIVERY_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// Na bancada o teto precisa ficar acima de uma travessia legítima do
+/// laboratório (`direct_lab::LINK_MS`, 50 ms), senão o próprio teste declara
+/// morta uma entrega que só é lenta.
 #[cfg(test)]
-const DELIVERY_TIMEOUT: Duration = Duration::from_millis(50);
+const DELIVERY_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// Teto da **última** tentativa. Depois dela não há terceira via: o gateway
+/// espera o [`DIRECT_REPLY_DEADLINE`] inteiro e a sessão morre calada.
+///
+/// Desistir aos 500 ms de uma entrega apenas lenta - portal ocupado, TLS frio,
+/// lote grande, WAN - troca dezenas de segundos de espera por dez minutos de
+/// silêncio. O último endereço tem o teto que o caminho por requisição sempre
+/// usou; a rapidez de trocar de candidato vale enquanto há candidato.
+#[cfg(not(test))]
+const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_millis(600);
 
 // ── Inbox ─────────────────────────────────────────────────────────────────────
 
@@ -95,8 +108,6 @@ struct ReplyState {
     sender: oneshot::Sender<Value>,
     expected_transport: usize,
     transport: Vec<Option<Value>>,
-    pending_result: Option<Value>,
-    transport_trace_expired: bool,
 }
 
 /// Bounded on purpose: a slow gateway must apply backpressure to the remote
@@ -122,10 +133,9 @@ impl ReplyInbox {
     /// Abre um ticket que também espera uma evidência por travessia.
     ///
     /// A resposta direta chega por um POST separado dos acks. O resultado é
-    /// retido por uma janela curta para que a telemetria não seja publicada
-    /// antes da última travessia, mas o prazo é finito: uma falha de medição
-    /// aparece como `transport_trace_complete=false`, nunca como um pedido
-    /// pendurado indefinidamente.
+    /// publicado assim que chega. Recibos já recebidos são anexados; os que
+    /// chegam depois deixam a amostra explicitamente incompleta, sem colocar
+    /// telemetria no caminho crítico da geração.
     pub fn register_with_expected_transport(&self, expected_transport: usize) -> Ticket {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
@@ -135,8 +145,6 @@ impl ReplyInbox {
                 sender: tx,
                 expected_transport,
                 transport: vec![None; expected_transport],
-                pending_result: None,
-                transport_trace_expired: false,
             },
         );
         Ticket {
@@ -166,30 +174,9 @@ impl ReplyInbox {
     /// gateway já desistiu, e quem entregou precisa saber que chegou tarde.
     pub fn deliver(&self, ticket: &str, meta: Value) -> bool {
         let mut state = self.0.lock().unwrap();
-        let Some(entry) = state.replies.get_mut(ticket) else {
+        let Some(entry) = state.replies.remove(ticket) else {
             return false;
         };
-        if entry.expected_transport > 0
-            && !entry.transport_trace_expired
-            && entry.transport.iter().any(Option::is_none)
-        {
-            let schedule_expiry = entry.pending_result.is_none();
-            entry.pending_result = Some(meta);
-            drop(state);
-            if schedule_expiry {
-                let inbox = self.clone();
-                let expiry_id = ticket.to_owned();
-                tokio::spawn(async move {
-                    tokio::time::sleep(DIRECT_TRACE_GRACE).await;
-                    inbox.expire_transport_trace(&expiry_id);
-                });
-            }
-            return true;
-        }
-        let entry = state
-            .replies
-            .remove(ticket)
-            .expect("ticket ainda está no inbox");
         let meta = complete_transport_trace(&entry, meta);
         meta_sender_send(meta, entry.sender)
     }
@@ -205,45 +192,7 @@ impl ReplyInbox {
             return false;
         }
         entry.transport[hop_index] = Some(meta);
-        let ready = entry.pending_result.is_some()
-            && (entry.transport_trace_expired || entry.transport.iter().all(Option::is_some));
-        if !ready {
-            return true;
-        }
-        let entry = state
-            .replies
-            .remove(ticket)
-            .expect("ticket ainda está no inbox");
-        let meta = entry
-            .pending_result
-            .clone()
-            .map(|meta| complete_transport_trace(&entry, meta));
-        match meta {
-            Some(meta) => meta_sender_send(meta, entry.sender),
-            None => false,
-        }
-    }
-
-    fn expire_transport_trace(&self, ticket: &str) {
-        let mut state = self.0.lock().unwrap();
-        let Some(entry) = state.replies.get_mut(ticket) else {
-            return;
-        };
-        entry.transport_trace_expired = true;
-        if entry.pending_result.is_none() {
-            return;
-        }
-        let entry = state
-            .replies
-            .remove(ticket)
-            .expect("ticket ainda está no inbox");
-        if let Some(meta) = entry
-            .pending_result
-            .clone()
-            .map(|meta| complete_transport_trace(&entry, meta))
-        {
-            let _ = meta_sender_send(meta, entry.sender);
-        }
+        true
     }
 
     fn cancel(&self, ticket: &str) {
@@ -549,8 +498,8 @@ pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Res
 }
 
 /// Espera o resultado e executa uma ação síncrona quando o ack da cabeça
-/// chega. O ack é observado mesmo se o POST final vencer a corrida, para que
-/// a travessia cabeça→primeiro hop não desapareça da telemetria.
+/// chega. Se o resultado chegar primeiro, ele é liberado sem esperar a
+/// telemetria atrasada.
 pub async fn await_result_with_ack<F, C>(
     ack: F,
     ticket: &mut Ticket,
@@ -570,13 +519,7 @@ where
         tokio::select! {
             biased;
             got = &mut ticket.rx => {
-                let result = got.map_err(|_| anyhow!("resultado direto perdido antes de chegar"))?;
-                if !acked {
-                    if let Ok(Ok(frame)) = tokio::time::timeout(DIRECT_TRACE_GRACE, &mut ack).await {
-                        on_ack(&frame);
-                    }
-                }
-                return Ok(result);
+                return got.map_err(|_| anyhow!("resultado direto perdido antes de chegar"));
             }
             sent = &mut ack, if !acked => {
                 acked = true;
@@ -610,6 +553,28 @@ pub fn result_failure(meta: &Value) -> Option<crate::relay::RelayFailure> {
 
 // ── Lado de quem entrega (cauda, ou hop que falhou) ───────────────────────────
 
+/// O que aconteceu com uma entrega ao gateway.
+///
+/// Existe porque "não entregou" tem dois significados opostos para quem
+/// emite um stream: o gateway já ter desistido (não há a quem reportar) e
+/// nenhum endereço ter aceitado (é preciso reportar, ou o gateway espera o
+/// [`DIRECT_REPLY_DEADLINE`] inteiro por uma falha que este lado já conhece).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// O gateway recebeu.
+    Accepted,
+    /// O gateway respondeu `410`: já desistiu deste quadro.
+    GatewayGone,
+    /// Nenhum endereço de retorno aceitou a entrega.
+    Failed,
+}
+
+impl Delivery {
+    pub fn accepted(self) -> bool {
+        matches!(self, Delivery::Accepted)
+    }
+}
+
 /// Entrega um resultado ao gateway, tentando cada URL de `reply_to` em ordem.
 ///
 /// Uma máquina pode ser alcançável por vários endereços e nenhum deles é
@@ -621,7 +586,9 @@ pub async fn deliver_result(
     reply_to: &Value,
     meta: Value,
 ) -> bool {
-    deliver_meta_at(http, reply_to, RELAY_RESULT_PATH, meta).await
+    deliver_meta_at(http, reply_to, RELAY_RESULT_PATH, meta)
+        .await
+        .accepted()
 }
 
 /// Delivers one remote decode batch to the stream inbox. The HTTP response is
@@ -631,7 +598,7 @@ pub async fn deliver_stream_batch(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
     meta: Value,
-) -> bool {
+) -> Delivery {
     deliver_meta_at(http, reply_to, REMOTE_STREAM_RESULT_PATH, meta).await
 }
 
@@ -645,7 +612,9 @@ pub async fn deliver_transport(
 ) -> bool {
     let mut meta = transport_receipt(hop_index, sent);
     meta["transport_update"] = json!(true);
-    deliver_meta_at(http, reply_to, RELAY_RESULT_PATH, meta).await
+    deliver_meta_at(http, reply_to, RELAY_RESULT_PATH, meta)
+        .await
+        .accepted()
 }
 
 async fn deliver_meta_at(
@@ -653,10 +622,10 @@ async fn deliver_meta_at(
     reply_to: &Value,
     path: &str,
     mut meta: Value,
-) -> bool {
+) -> Delivery {
     let Some(ticket) = reply_to.get("ticket").and_then(|v| v.as_str()) else {
         warn!("reply_to sem ticket — resultado direto descartado");
-        return false;
+        return Delivery::Failed;
     };
     meta["ticket"] = json!(ticket);
 
@@ -664,7 +633,7 @@ async fn deliver_meta_at(
         Ok(bytes) => bytes,
         Err(e) => {
             warn!("resultado direto não pôde ser codificado: {e}");
-            return false;
+            return Delivery::Failed;
         }
     };
 
@@ -691,31 +660,41 @@ async fn deliver_meta_at(
             Ok(c) => c,
             Err(e) => {
                 warn!("sem cliente para entregar o resultado a {id}: {e}");
-                return false;
+                return Delivery::Failed;
             }
         },
         None => http.plain(),
     };
+    let ordered = http.route_order(&route_key, &urls);
+    let last_index = ordered.len().saturating_sub(1);
     let mut last = String::new();
-    for url in http.route_order(&route_key, &urls) {
+    for (index, url) in ordered.into_iter().enumerate() {
         let target = format!("{url}{path}");
+        // O último candidato ganha o teto longo: não há terceira via depois
+        // dele, e desistir de uma entrega só lenta custa o prazo inteiro do
+        // gateway. Ver `LAST_DELIVERY_TIMEOUT`.
+        let ceiling = if index == last_index {
+            LAST_DELIVERY_TIMEOUT
+        } else {
+            DELIVERY_TIMEOUT
+        };
         match cliente
             .post(&target)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(body.clone())
-            .timeout(DELIVERY_TIMEOUT)
+            .timeout(ceiling)
             .send()
             .await
         {
             Ok(r) if r.status().is_success() => {
                 http.remember_route_success(&route_key, &url);
-                return true;
+                return Delivery::Accepted;
             }
             // `410` é resposta, não falha de rota: o gateway desistiu deste
             // quadro. Tentar o próximo endereço só acharia o mesmo inbox.
             Ok(r) if r.status() == StatusCode::GONE => {
                 debug!("gateway já havia desistido do quadro entregue em {target}");
-                return false;
+                return Delivery::GatewayGone;
             }
             Ok(r) => last = format!("{target} respondeu {}", r.status()),
             Err(e) => {
@@ -724,8 +703,15 @@ async fn deliver_meta_at(
             }
         }
     }
+    // Motivo vazio era a assinatura do defeito da lista de candidatos vazia.
+    // Hoje `route_order` nunca esvazia a lista, então só sobra o caso de o
+    // `reply_to` não trazer endereço nenhum - e isso se diz com todas as
+    // letras, não com um parêntese vazio.
+    if last.is_empty() {
+        last = "o reply_to não trouxe endereço de retorno".to_string();
+    }
     warn!("resultado direto não chegou ao gateway ({last})");
-    false
+    Delivery::Failed
 }
 
 /// Entrega uma falha no lugar do resultado, para que o gateway nomeie o nó que
@@ -875,16 +861,119 @@ mod tests {
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(600));
         let started = Instant::now();
 
-        assert!(deliver_stream_batch(&http, &reply_to, json!({"index": 1})).await);
-        assert!(deliver_stream_batch(&http, &reply_to, json!({"index": 2})).await);
+        assert!(deliver_stream_batch(&http, &reply_to, json!({"index": 1}))
+            .await
+            .accepted());
+        assert!(deliver_stream_batch(&http, &reply_to, json!({"index": 2}))
+            .await
+            .accepted());
 
         assert_eq!(blackhole_hits.load(Ordering::SeqCst), 1);
         assert_eq!(healthy_hits.load(Ordering::SeqCst), 2);
+        // O que se prova é que o buraco negro não foi pago duas vezes: quem o
+        // evita é a preferência pela rota que respondeu, não a quarentena.
+        // O orçamento é o teto de uma tentativa, não um número mágico.
         assert!(
-            started.elapsed() < Duration::from_millis(250),
+            started.elapsed() < DELIVERY_TIMEOUT * 2,
             "a rota morta voltou a ser paga: {:?}",
             started.elapsed()
         );
+    }
+
+    /// O defeito de 600 s, provado no caminho real de entrega: depois de o
+    /// único endereço de retorno acumular falhas suficientes para a
+    /// quarentena, a entrega seguinte **tem** de continuar sendo tentada. Com
+    /// a lista de candidatos esvaziada, o `for` não executava, o aviso saía
+    /// com o motivo vazio e o gateway esperava o `DIRECT_REPLY_DEADLINE`.
+    #[tokio::test]
+    async fn um_endereco_em_quarentena_continua_sendo_tentado() {
+        use axum::{body::Bytes, routing::post, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_task = hits.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            REMOTE_STREAM_RESULT_PATH,
+            post(move |_body: Bytes| {
+                let hits = hits_task.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::OK, "ok")
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let url = format!("http://{addr}");
+        let reply_to = json!({
+            "ticket": "quarentena-ticket",
+            "node_id": "gateway-quarentena",
+            "urls": [url.clone()],
+        });
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+
+        // Põe o único endereço em quarentena por fora, como se três entregas
+        // seguidas tivessem estourado o teto.
+        let route_key = "reply:gateway-quarentena";
+        for _ in 0..4 {
+            http.remember_route_failure(route_key, &url);
+        }
+
+        assert_eq!(
+            deliver_stream_batch(&http, &reply_to, json!({"index": 1})).await,
+            Delivery::Accepted,
+            "com o único endereço em quarentena a entrega ainda tem de ser paga"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// Uma entrega que demora, mas termina com sucesso, não é prova de que a
+    /// rota morreu. O último candidato recebe o teto longo e o sucesso zera
+    /// qualquer memória de falhas anterior.
+    #[tokio::test]
+    async fn uma_entrega_lenta_mas_viva_nao_e_marcada_morta() {
+        use axum::{body::Bytes, routing::post, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_task = hits.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            REMOTE_STREAM_RESULT_PATH,
+            post(move |_body: Bytes| {
+                let hits = hits_task.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::OK, "ok")
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let url = format!("http://{addr}");
+        let reply_to = json!({
+            "ticket": "slow-live-ticket",
+            "node_id": "gateway-slow-live",
+            "urls": [url.clone()],
+        });
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let route_key = "reply:gateway-slow-live";
+
+        assert_eq!(
+            deliver_stream_batch(&http, &reply_to, json!({"index": 1})).await,
+            Delivery::Accepted,
+            "uma entrega lenta ainda deve chegar ao gateway"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(http.route_failure_streak(route_key, &url), 0);
     }
 
     #[tokio::test]
@@ -901,17 +990,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_result_waits_for_each_transport_receipt_and_marks_the_hop() {
+    async fn a_result_does_not_wait_for_late_transport_receipts() {
         let inbox = ReplyInbox::new();
         let mut ticket = inbox.register_with_expected_transport(2);
         let id = ticket.id().to_string();
 
         assert!(inbox.deliver(&id, json!({"token_id": 7})));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), &mut ticket.rx)
-                .await
-                .is_err()
-        );
+        let got = (&mut ticket.rx).await.expect("resultado");
+        assert_eq!(got["transport_trace_complete"], false);
+        assert!(got["transport_traversals"].as_array().unwrap().is_empty());
+        assert!(!inbox.record_transport(
+            &id,
+            1,
+            json!({"hop_index": 1, "transport": "https", "round_trip_ms": 23})
+        ));
+        assert!(!inbox.record_transport(
+            &id,
+            0,
+            json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_result_includes_transport_receipts_that_arrived_first() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_with_expected_transport(2);
+        let id = ticket.id().to_string();
+
         assert!(inbox.record_transport(
             &id,
             1,
@@ -922,6 +1027,7 @@ mod tests {
             0,
             json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
         ));
+        assert!(inbox.deliver(&id, json!({"token_id": 7})));
 
         let got = (&mut ticket.rx).await.expect("resultado");
         assert_eq!(got["transport_trace_complete"], true);

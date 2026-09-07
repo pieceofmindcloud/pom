@@ -417,13 +417,24 @@ struct GatewaySite {
     site: usize,
     tail_site: usize,
     deliveries: Arc<AtomicU64>,
+    prefill_deliveries: Arc<AtomicU64>,
 }
 
 async fn fake_relay_result(State(gw): State<GatewaySite>, body: Bytes) -> Response {
-    if gw.site != gw.tail_site {
+    let (meta, _) = wire::decode(&body).expect("resultado direto válido");
+    let is_transport_update = meta
+        .get("transport_update")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !is_transport_update && gw.site != gw.tail_site {
         tokio::time::sleep(Duration::from_millis(LINK_MS)).await;
     }
-    gw.deliveries.fetch_add(1, Ordering::Relaxed);
+    if !is_transport_update {
+        gw.deliveries.fetch_add(1, Ordering::Relaxed);
+        if meta.get("next_pos").is_some() {
+            gw.prefill_deliveries.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     crate::direct::handle_relay_result(&gw.inbox, body)
 }
 
@@ -466,6 +477,8 @@ fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> Pip
 struct Outcome {
     ms_per_token: f64,
     deliveries: u64,
+    prefill_deliveries: u64,
+    prefill_chunks: u32,
     head_starts: Vec<(u32, Option<u32>, u32)>,
 }
 
@@ -474,6 +487,7 @@ struct Outcome {
 async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: bool) -> Outcome {
     let gateway_site = entry;
     let deliveries = Arc::new(AtomicU64::new(0));
+    let prefill_deliveries = Arc::new(AtomicU64::new(0));
 
     let inbox = crate::direct::ReplyInbox::new();
     let gateway_url = spawn_gateway(GatewaySite {
@@ -481,6 +495,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         site: gateway_site,
         tail_site: n_hops - 1,
         deliveries: deliveries.clone(),
+        prefill_deliveries: prefill_deliveries.clone(),
     })
     .await;
 
@@ -543,7 +558,11 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     );
     assert_eq!(
         first.chunks,
-        PROMPT_TOKENS.div_ceil(CHUNK),
+        if reuse_prefix {
+            PROMPT_TOKENS.saturating_sub(1).div_ceil(CHUNK)
+        } else {
+            PROMPT_TOKENS.div_ceil(CHUNK)
+        },
         "o prompt tem que atravessar em todos os pedaços — um `prompt_progress` \
          perdido trunca no primeiro"
     );
@@ -572,6 +591,8 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     Outcome {
         ms_per_token: started.elapsed().as_millis() as f64 / (DECODE_TOKENS - 1) as f64,
         deliveries: deliveries.load(Ordering::Relaxed),
+        prefill_deliveries: prefill_deliveries.load(Ordering::Relaxed),
+        prefill_chunks: first.chunks,
         head_starts,
     }
 }
@@ -606,12 +627,12 @@ fn minimum_legs(n_hops: usize, entry: usize) -> f64 {
 /// cauda paga o dobro das travessias, que foi a queda de 25 para 14 tok/s
 /// medida no cluster do captain em 2026-08-14.
 ///
-/// Tolerância de 0,65 perna (≈33 ms com `LINK_MS` 50) absorve o custo de
+/// Tolerância de 0,45 perna (≈23 ms com `LINK_MS` 50) absorve o custo de
 /// quatro chamadas HTTP em loopback com tensores de 5120 posições; ela é bem
 /// menor que a perna inteira que separa um resultado certo de um errado.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
-    const TOLERANCE: f64 = 0.65;
+    const TOLERANCE: f64 = 0.45;
 
     for n_hops in 2..=4usize {
         let mut measured = Vec::new();
@@ -630,7 +651,7 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
             );
             assert_eq!(
                 outcome.deliveries,
-                DECODE_TOKENS as u64 - 1 + PROMPT_TOKENS.div_ceil(CHUNK) as u64,
+                DECODE_TOKENS as u64 - 1 + outcome.prefill_chunks as u64,
                 "cada quadro tem que ser entregue direto exatamente uma vez, \
                  no decode e no prefill"
             );
@@ -682,11 +703,21 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
 async fn direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso() {
     for reuse_prefix in [false, true] {
         let outcome = run_scenario(2, 1, true, reuse_prefix).await;
-        assert_eq!(outcome.deliveries, PROMPT_TOKENS.div_ceil(CHUNK) as u64);
+        assert_eq!(
+            outcome.deliveries,
+            DECODE_TOKENS as u64 - 1 + outcome.prefill_chunks as u64
+        );
+        assert_eq!(
+            outcome.prefill_deliveries, outcome.prefill_chunks as u64,
+            "cada chunk de prefill deve chegar ao gateway exatamente uma vez"
+        );
         let mut starts = outcome.head_starts;
         starts.sort_by_key(|(chunk, _, _)| *chunk);
-        let expected_next = if reuse_prefix { 3 } else { 2 };
-        assert_eq!(starts[0], (0, None, if reuse_prefix { 1 } else { 0 }));
-        assert_eq!(starts[1], (1, Some(expected_next), expected_next));
+        if reuse_prefix {
+            assert_eq!(starts, vec![(0, None, 1)]);
+        } else {
+            assert_eq!(starts[0], (0, None, 0));
+            assert_eq!(starts[1], (1, Some(2), 2));
+        }
     }
 }

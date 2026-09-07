@@ -79,9 +79,9 @@ const OUTBOUND_QUEUE: usize = 64;
 const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Quanto tempo um destino fica sem nova tentativa de abrir canal depois de
-/// uma falha de abertura. Sem isto, um peer alcançável só pelo túnel pagaria
-/// uma tentativa de conexão morta por ficha.
-const OPEN_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+/// uma falha de abertura. Deve acompanhar a memória de rotas: são a mesma
+/// decisão de não pagar novamente uma URL que falhou.
+const OPEN_FAILURE_COOLDOWN: Duration = crate::peer_client::ROUTE_FAILURE_COOLDOWN;
 
 /// Só vale para receber os cabeçalhos da abertura. Depois que o canal abre,
 /// o corpo continua vivo até `CHANNEL_LIFETIME`, sem transformar uma geração
@@ -320,6 +320,9 @@ impl Drop for PendingGuard {
 #[derive(Default)]
 struct Pool {
     channels: tokio::sync::Mutex<HashMap<String, Arc<Channel>>>,
+    /// Guarda somente a abertura de uma aresta. A rede nunca é aguardada com
+    /// o mapa de canais segurado; chaves diferentes podem abrir em paralelo.
+    opening: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     blocked: Mutex<HashMap<String, Instant>>,
     /// Aberturas por destino, não um total do processo: a bancada precisa
     /// provar que **aquela** aresta abriu uma ligação só, e um contador global
@@ -330,6 +333,16 @@ struct Pool {
 fn pool() -> &'static Pool {
     static POOL: OnceLock<Pool> = OnceLock::new();
     POOL.get_or_init(Pool::default)
+}
+
+fn opening_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let Ok(mut opening) = pool().opening.lock() else {
+        return Arc::new(tokio::sync::Mutex::new(()));
+    };
+    opening
+        .entry(key.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 fn target_key(node_id: &str, base_url: &str) -> String {
@@ -407,24 +420,33 @@ async fn channel_for(
         return Err(anyhow!("canal com {node_id} em quarentena após falha"));
     }
 
-    // A abertura acontece com o pool travado de propósito: duas travessias
-    // concorrentes na mesma aresta devem compartilhar um canal, não abrir dois.
-    let mut channels = pool().channels.lock().await;
-    if let Some(channel) = channels.get(&key) {
-        if channel.alive.load(Ordering::Relaxed) {
-            return Ok(channel.clone());
+    // O guarda é por aresta. Duas travessias da mesma aresta compartilham a
+    // abertura, mas uma tentativa lenta para outro destino não para este
+    // processo inteiro.
+    let opening = opening_lock(&key);
+    let _opening = opening.lock().await;
+    {
+        let channels = pool().channels.lock().await;
+        if let Some(channel) = channels.get(&key) {
+            if channel.alive.load(Ordering::Relaxed) {
+                return Ok(channel.clone());
+            }
         }
     }
+
+    if quarantined(&key) {
+        return Err(anyhow!("canal com {node_id} em quarentena após falha"));
+    }
+
     match open(clients, node_id, base_url).await {
         Ok(channel) => {
             if let Ok(mut opened) = pool().opened.lock() {
                 *opened.entry(key.clone()).or_default() += 1;
             }
-            channels.insert(key, channel.clone());
+            pool().channels.lock().await.insert(key, channel.clone());
             Ok(channel)
         }
         Err(error) => {
-            drop(channels);
             quarantine(&key);
             Err(error)
         }
@@ -446,10 +468,7 @@ async fn open(
         // a geração toda. Ver `CHANNEL_LIFETIME`.
         .timeout(CHANNEL_LIFETIME)
         .body(reqwest::Body::wrap_stream(rx.map(Ok::<_, std::io::Error>)));
-    let response = clients
-        .authorize_inference_request(request)
-        .await
-        .send();
+    let response = clients.authorize_inference_request(request).await.send();
     let response = tokio::time::timeout(LINK_OPEN_TIMEOUT, response)
         .await
         .map_err(|_| anyhow!("canal com {node_id} não abriu antes do timeout de conexão"))?
@@ -541,16 +560,7 @@ pub async fn send_batch(
     body: Bytes,
     peer_label: &str,
 ) -> Result<LinkResponse> {
-    send_batch_with_candidates(
-        clients,
-        node_id,
-        base_url,
-        &[],
-        batch_id,
-        body,
-        peer_label,
-    )
-    .await
+    send_batch_with_candidates(clients, node_id, base_url, &[], batch_id, body, peer_label).await
 }
 
 /// Abre o canal persistente pela primeira rota saudável anunciada. A abertura
@@ -969,6 +979,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn abertura_de_aresta_morta_nao_bloqueia_outra() {
+        use tokio::sync::Notify;
+
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let blackhole_addr = blackhole.local_addr().unwrap();
+        let accepted = Arc::new(Notify::new());
+        let accepted_task = accepted.clone();
+        tokio::spawn(async move {
+            let (stream, _) = blackhole.accept().await.expect("aceitou a abertura morta");
+            accepted_task.notify_one();
+            let _stream = stream;
+            std::future::pending::<()>().await;
+        });
+
+        let healthy = spawn_link_server(echo_after(Default::default())).await;
+        let dead = format!("http://{blackhole_addr}");
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        let dead_clients = clients.clone();
+        let dead_task = tokio::spawn(async move {
+            send_batch(
+                &dead_clients,
+                "aresta-morta",
+                &dead,
+                "dead",
+                Bytes::from(batch("/v1/step", "dead", "item-0")),
+                "aresta-morta",
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), accepted.notified())
+            .await
+            .expect("a abertura morta começou");
+
+        let started = Instant::now();
+        let healthy_result = tokio::time::timeout(
+            LINK_OPEN_TIMEOUT / 2,
+            send_batch(
+                &clients,
+                "aresta-saudavel",
+                &healthy,
+                "healthy",
+                Bytes::from(batch("/v1/step", "healthy", "item-0")),
+                "aresta-saudavel",
+            ),
+        )
+        .await
+        .expect("a abertura de outra aresta não pode esperar o blackhole")
+        .expect("a aresta saudável deve atravessar");
+
+        assert_eq!(
+            wire::peek_batch_header(&healthy_result.body)
+                .expect("resposta válida")
+                .batch_id,
+            "healthy"
+        );
+        println!(
+            "link_lab: aresta saudável respondeu enquanto a abertura morta estava em voo em {:?}",
+            started.elapsed()
+        );
+        assert!(
+            started.elapsed() < LINK_OPEN_TIMEOUT / 2,
+            "a aresta saudável ficou parada por {:?}",
+            started.elapsed()
+        );
+        assert!(dead_task.await.unwrap().is_err());
+        assert_eq!(channels_opened("aresta-saudavel", &healthy), 1);
+    }
+
+    #[tokio::test]
     async fn destino_inalcancavel_falha_rapido_e_fica_em_quarentena() {
         // Porta fechada: o canal não abre.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1039,10 +1119,7 @@ mod tests {
                 batch_id
             );
         }
-        assert_eq!(
-            blackhole_hits.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
+        assert_eq!(blackhole_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(channels_opened("blackhole-fallback", &healthy), 1);
         assert!(
             started.elapsed() < Duration::from_millis(250),

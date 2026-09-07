@@ -523,8 +523,9 @@ requisição por cima dela.
 inferência): um único `POST /v1/link` cujo corpo de ida é um fluxo de quadros
 binários e cujo corpo de volta é outro fluxo de quadros binários. A abertura
 testa os candidatos de endereço, tem teto de 2 s para os cabeçalhos e deixa a
-rota que falhou em memória por 5 min; a quarentena adicional de 30 s evita
-reabrir a mesma URL. Cada quadro, nas duas direções:
+rota que falhou em memória por 5 min. Um guarda por aresta serializa somente
+aberturas concorrentes do mesmo destino; a abertura acontece fora da trava
+global do mapa de canais. Cada quadro, nas duas direções:
 
 ```
 [4B BE tamanho do resto][2B BE status][2B BE tamanho do id][id][frame/v1-batch]
@@ -558,11 +559,12 @@ reabrir a mesma URL. Cada quadro, nas duas direções:
 **Degradação.** Falha de transporte no canal não mata a geração: a chamada volta
 pela escada de sempre (túnel libp2p, depois HTTPS por requisição) com
 `transport_fallback=true`, e o canal morto sai do pool. Um destino cuja abertura
-falhou fica 30 s em quarentena, para a tentativa de abrir não se pagar por ficha
-num cluster onde o endereço direto não serve (peer atrás de NAT alcançável só
-pelo túnel). O canal tem teto de vida de 12 h, porque o timeout do cliente HTTP
-vale para a requisição inteira e o corpo em fluxo conta para ele; vencido o
-teto, a chamada em voo degrada e a seguinte abre canal novo.
+falhou fica 5 min em quarentena, o mesmo prazo da memória de rotas, para a
+tentativa de abrir não se pagar por ficha num cluster onde o endereço direto não
+serve (peer atrás de NAT alcançável só pelo túnel). O canal tem teto de vida de
+12 h, porque o timeout do cliente HTTP vale para a requisição inteira e o corpo
+em fluxo conta para ele; vencido o teto, a chamada em voo degrada e a seguinte
+abre canal novo.
 
 **Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
 `Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,
@@ -669,9 +671,11 @@ A correção é estrutural e vale para IPv4 e IPv6:
    que falhou enquanto há candidato alternativo.
 3. O `PeerClients` limita a abertura TCP a **2 s**, sem reduzir o timeout de
    processamento de uma requisição longa. A entrega de resultado/callback tem
-   teto de **500 ms** por tentativa, e testa a próxima URL na mesma chamada.
+   teto de **500 ms** nos candidatos intermediários e **30 s** no último, e
+   testa a próxima URL na mesma chamada. Três falhas seguidas movem uma URL
+   para o fim da ordem por 5 min.
 4. O `transport/link-v1`, introduzido por **`d7b4e6e`**, ajuda depois de uma
-   abertura que falha, pois sua quarentena de 30 s evita reabrir a mesma URL.
+   abertura que falha, pois sua quarentena de 5 min evita reabrir a mesma URL.
    Antes desta correção ela só cobria a chave do canal, não os demais
    candidatos, e a abertura ainda podia ficar presa no timeout de conexão.
    Agora o canal testa as URLs anunciadas, limita a abertura e compartilha a
@@ -1309,9 +1313,11 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
   ack da cabeça (só interessa quando falha, ou quando um peer antigo borbulhou
   a resposta inteira - `token_id` presente vale como resultado), e o prazo
   `DIRECT_REPLY_DEADLINE = 600 s` (hop morreu depois de aceitar).
-- `deliver_result`: a cauda tenta cada URL de `reply_to` em ordem,
-  `DELIVERY_TIMEOUT = 30 s` por tentativa; `410` para de tentar (o inbox já não
-  existe); falhou em todas, o gateway fecha no prazo - não há terceira via.
+- `deliver_result`: a cauda tenta cada URL de `reply_to` em ordem; candidatos
+  intermediários têm `DELIVERY_TIMEOUT = 500 ms` e o último tem 30 s.
+  Três falhas seguidas movem a URL para o fim por 5 min. `410` para de tentar
+  (o inbox já não existe); falhou em todas, o gateway fecha no prazo - não há
+  terceira via.
   `deliver_failure` entrega um `RelayFailure` no lugar do resultado, para o
   gateway nomear o nó que morreu em vez de esperar o prazo inteiro.
 - `forward_direct`: o repasse corre em task própria (quem chamou já foi aceito),
@@ -1360,8 +1366,8 @@ descreve a si mesmo na ida e o chamador envia uma evidência separada da
 travessia. `transport_traversals` contém uma entrada por chamada, em ordem,
 com `transport` (`local`, `libp2p-tunnel` ou `https`), `transport_fallback`,
 tempo e bytes enviados e recebidos. O trace copia cada entrada para o hop e
-fase correspondentes, sem lançar o residual no primeiro hop. Se uma evidência
-não chegar em até 2 segundos depois do resultado, o pedido segue com
+fase correspondentes, sem lançar o residual no primeiro hop. O resultado não
+espera recibos atrasados: se uma evidência ainda não chegou, o pedido segue com
 `transport_trace_complete=false` e a UI deixa a ausência visível. Um hop local
 na mesma máquina pode ter zero de rede corretamente; isso não é uma atribuição
 ao primeiro hop.
@@ -1584,8 +1590,8 @@ que a pior entrada (o meio) custe no máximo uma perna a mais que a cabeça.
 A linha de base prova que é correção, não comportamento de sempre: o anel
 borbulhado com a cabeça remota paga 4 travessias (o caso que doía, a queda de
 25 para 14 tok/s). Assere ainda que cada quadro é entregue direto exatamente
-uma vez (prefill e decode) e que o prompt de mais de um pedaço atravessa
-inteiro.
+uma vez (prefill e decode), sem contar os recibos de transporte, e que o prompt
+de mais de um pedaço atravessa inteiro, inclusive com reuso de prefixo.
 
 - **Sem cobertura de teste**: os quatro modos de falha (hop do meio morto, cauda
   morta, resposta direta perdida, prazo estourado) têm desenho e código em
@@ -1776,7 +1782,7 @@ Chat.
   O resumo também informa `fallback_calls` total e `transport_switches` agrupadas
   por par origem/destino, para uma troca durante a execução não desaparecer no
   agregado. O caminho direto recebe os recibos por mensagens autenticadas pelo
-  ticket e espera no máximo 2 segundos depois do resultado;
+  ticket, mas a resposta não espera recibos atrasados;
   `transport_trace_complete=false` deixa a perda explícita. As amostras usadas
   para quantis são limitadas internamente, portanto a resposta de produção não
   cresce com o número de tokens.
@@ -1861,19 +1867,30 @@ medição do transporte usado para iniciar o stream.
 - **Sem cobertura E2E**: os quatro modos de falha do modo direto legado ainda
   não têm uma bancada ponta a ponta; o transporte remoto novo tem testes de
   unidade para lote, ordem, erro, terminação e contrapressão.
-- **Oito testes já vermelhos em `origin/feat/implantar3`** (verificados na
-  árvore limpa em 2026-09-03, portanto anteriores ao canal persistente).
-  Dentro deste subsistema: `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado`
-  (espera teto 2048, recebe 96), `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`,
-  `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso`
-  (espera 2 entregas, conta 14), e `llama-engine`
-  `llm::pool_tests::fit_mode_caps_compute_microbatch_without_changing_prompt_batch`
-  (espera 128, recebe 512 - a expectativa não acompanhou `FIT_MAX_UBATCH=512`).
-  Fora dele: `pipeline::ipv6_tests::f8_is_refused_when_any_pipeline_step_lacks_the_capability`
-  (o fixture dá a capability aos dois passos e ainda espera erro), três de
-  `deploy::whole_route_tests` e `webui::tests::merge_parts_joins_two_slices_into_a_whole`.
-  Anotados, não consertados de passagem: cada um é a expectativa de outro
-  subsistema, e mudá-la sem o dono é apagar a evidência do que quebrou.
+- **Resultado da revisão de 2026-09-04:** a medição de referência em
+  `origin/feat/implantar3` tinha 1022 verdes, oito vermelhos e levou 609,55 s.
+  Depois desta correção, a mesma medição levou 27,72 s, com 1049 verdes e
+  cinco vermelhos. Ficaram verdes
+  `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`,
+  `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso` e
+  `link_lab::canal_indisponivel_degrada_para_o_caminho_por_requisicao`.
+  Nos dois testes de `direct_lab`, a causa era a memória de rotas de
+  `84e7141`: a lista de candidatos ficava vazia e a entrega nunca era
+  tentada. A contagem de entregas agora separa resultados dos recibos de
+  transporte, e telemetria atrasada não segura o resultado.
+  O teste de `link_lab` também ficou verde com a escada que não desativa a
+  rota por requisição.
+- Continuam vermelhos, sem alteração de expectativa nesta tarefa:
+  `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` (espera teto 2048,
+  recebe 96), três de `deploy::whole_route_tests` (estado de catálogo/fatias)
+  e `webui::tests::merge_parts_joins_two_slices_into_a_whole` (metadado
+  `head_count_kv_by_layer`). São expectativas de outros subsistemas e ficam
+  anotados sem conserto de passagem.
+- A contagem acima repete a medição da revisão com
+  `--skip prefix_reuse_lab`. Sem esse filtro, a suíte também mantém vermelho
+  `prefix_reuse_lab::unknown_session_recovery_is_bounded` (o hub repete os três
+  chunks depois de perder a sessão); esse caso não fazia parte dos oito
+  achados medidos e não foi alterado aqui.
 - **Os testes de `webui` que repassam para uma máquina falsa são instáveis sob
   carga** (2026-09-03): cada rodada da suíte cheia derruba **um** deles, e nem
   sempre o mesmo - vistos `webui::leave_tests::leaving_for_a_peer_is_forwarded_to_that_peer`

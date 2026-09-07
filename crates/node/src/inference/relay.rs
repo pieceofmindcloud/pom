@@ -73,7 +73,7 @@ pub const CHUNK_ATTEMPTS: u32 = 3;
 const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[cfg(test)]
-const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(50);
+const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Transporte que realmente carregou um frame de inferência.
 ///
@@ -2395,7 +2395,7 @@ mod tests {
 
         assert_eq!(blackhole_hits.load(Ordering::SeqCst), 1);
         assert!(
-            started.elapsed() < Duration::from_millis(250),
+            started.elapsed() < DIRECT_FRAME_TIMEOUT * 2,
             "o endereço morto voltou a ser pago por quadro: {:?}",
             started.elapsed()
         );

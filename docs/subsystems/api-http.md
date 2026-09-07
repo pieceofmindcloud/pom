@@ -111,9 +111,19 @@ haver chave.
   `fit_memory_applied` -, lidos do contexto vivo e não do `EngineConfig`. Com
   `flash_attn: null` a ponte de diagnóstico não respondeu, e a interface diz
   que não sabe em vez de mostrar "desligado".
-- **`POST /handshake`** - corpo `{ node_id, pubkey, connection_key }`; 403
-  `invalid_key`, `identity_mismatch` (o `node_id` não é o `SHA256` da `pubkey`,
-  ou a chave é malformada) ou `blocked`; 200 com `approved` + `peer_id`.
+- **`POST /handshake`** - protocolo de desafio em duas mensagens. A primeira
+  requisição leva `{ node_id, pubkey, connection_key }` sem `nonce` nem
+  `signature`; ela é recusada com 403 `challenge_required` e devolve um nonce
+  hexadecimal aleatório de 32 bytes. A segunda repete os campos e acrescenta
+  `{ nonce, signature }`, onde `signature` é a assinatura Ed25519, em
+  hexadecimal, do nonce bruto pela chave privada correspondente à `pubkey`.
+  O nonce fica válido por 30 s e é consumido uma única vez. Só então o gateway
+  devolve 200 com `approved` + `peer_id`. `invalid_key`, `identity_mismatch`
+  (o `node_id` não é o `SHA256` da `pubkey`, ou a chave é malformada),
+  `blocked`, `missing_nonce`, `missing_signature`, `invalid_signature`,
+  `nonce_reused` e `nonce_expired` continuam sendo recusas 403. Um nó antigo,
+  que envia o corpo anterior e não sabe repetir com a assinatura, vê 403 e
+  nunca é admitido.
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Sem auth de chave por desenho (ver
   abaixo); ticket vivo = entrega no `ReplyInbox`, ticket morto = `410 Gone`.
@@ -648,12 +658,6 @@ nó de verdade sem sair anunciando, o equivalente em produção é `--no-discove
   ofertas reais vivem em `GET /api/transfer/offers` (`transfer.rs::list_offers`);
   a rota `/admin` existe mas é morta, então qualquer consumidor dela nunca vê
   uma oferta.
-- **Em aberto (decisão de protocolo): o handshake amarra `node_id` à `pubkey`,
-  mas não prova posse da chave privada.** `session::node_id_matches_pubkey`
-  exige `node_id == SHA256(pubkey)` e uma chave ed25519 bem formada, o que já
-  impede quem tem a chave de conexão de se passar por outra máquina (o
-  `node_id` é a chave de `blocked_nodes`). Provar posse exige desafio assinado,
-  ou seja, mudança de protocolo.
 - **DEFEITO ANOTADO (exposição): os GETs de leitura do `/api/ui` são abertos** -
   `node`, `models`, `cluster`, `cluster/models`, `peer/:node_id/runtime`,
   `paths` (GET), `jobs` e `jobs/:id` não têm `ConnectionAuth` (só os mutáveis exigem). `GET

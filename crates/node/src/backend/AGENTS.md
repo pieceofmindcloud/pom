@@ -306,7 +306,14 @@ dual-stack.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
   request e serve TLS ou texto claro na mesma porta. `TlsServer` (certificado, modo estrito, duração do
   último handshake). Ver `docs/subsystems/rede-p2p.md`, seção 5.
-- `session.rs` (111) - `POST /handshake` (connection key + blocked-nodes check).
+- `session.rs` - `POST /handshake` usa um desafio Ed25519 em duas etapas. Uma
+  requisição sem `nonce` e `signature` é recusada com HTTP 403
+  `challenge_required` e recebe um nonce hexadecimal aleatório de 32 bytes. O
+  verificador guarda esse nonce por 30 segundos e o consome antes de conferir a
+  assinatura enviada; somente a assinatura do nonce bruto pela chave cuja
+  `SHA256` é o `node_id` recebe `approved: true`. Um nó que usa o corpo antigo
+  vê a resposta 403 do desafio e nunca entra até falar o formato assinado novo.
+  Reuso, expiração, divergência de chave e assinatura ausente são recusados.
 
 ## Key functions and routes
 
@@ -708,8 +715,10 @@ dual-stack.
   rejects `..`, absolute and prefixed components. Cache: index.html no-cache,
   hashed assets immutable (1 year). Missing bundle -> 500 explaining the
   `npm run build` / `POM_UI_DIST` remedy.
-- `session.rs` - `handle_handshake` compares `connection_key` (403 invalid_key)
-  then `blocked_nodes` (403 blocked), else approves with `peer_id`.
+- `session.rs` - `handle_handshake` compara `connection_key` (403
+  `invalid_key`), amarra `node_id` à `pubkey`, consulta `blocked_nodes`, exige o
+  desafio Ed25519 de uso único e aprova com `peer_id`; as recusas do desafio
+  estão descritas na entrada do arquivo acima.
 
 ## Links to other folders
 
@@ -745,8 +754,6 @@ dual-stack.
 
 ## Pendências
 
-- A autenticação do handshake ainda não prova posse da chave privada; ver
-  `TODO.md`, item 11.
 - O gate de desimplante continua aberto a qualquer papel autenticado; ver
   `TODO.md`, item 12. A rota exige `ConnectionAuth`, portanto não é anônima.
 

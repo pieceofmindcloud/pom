@@ -3,7 +3,7 @@
 Lista de trabalho consolidada em 2026-09-07 a partir da auditoria das anotações
 dos `AGENTS.md`, na revisão `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
 A evidência completa de cada item está no relatório da auditoria que acompanha
-esta tarefa. A lista atual mantém a numeração da auditoria: 18 defeitos ainda
+esta tarefa. A lista atual mantém a numeração da auditoria: 17 defeitos ainda
 existentes e 1 item não verificável nesta máquina.
 
 ## Regra de manutenção
@@ -15,17 +15,6 @@ continua anotado é pior que um defeito não anotado. As notas em
 contexto e não devem voltar a ser propostas como defeitos novos.
 
 ## Alta
-
-- [ ] **11 - Handshake não prova posse da chave privada**
-  **Fonte:** `crates/node/src/backend/session.rs:24-101`.
-  **Prática:** o handshake valida que `node_id` é o SHA256 da `pubkey`, mas não
-  exige um desafio assinado pela chave privada correspondente.
-  **Afetados:** confiança entre peers, especialmente quando a connection key
-  vaza.
-  **Esforço:** médio/alto, com nonce assinado, armazenamento do desafio e
-  mudança coordenada do protocolo.
-  **Decisão do captain:** decidir se o handshake deve exigir desafio assinado;
-  não corrigir sem essa decisão.
 
 - [ ] **12 - Qualquer papel pode desimplantar a pipeline**
   **Fonte:** `crates/node/src/backend/deploy.rs:6714-6716`.

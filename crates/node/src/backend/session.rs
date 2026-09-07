@@ -1,12 +1,38 @@
 use crate::auth::AuthState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use ed25519_dalek::{Signature, VerifyingKey};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-#[derive(Debug, Deserialize)]
+const HANDSHAKE_NONCE_BYTES: usize = 32;
+const HANDSHAKE_CHALLENGE_TTL: Duration = Duration::from_secs(30);
+
+#[derive(Debug)]
+struct PendingChallenge {
+    verifier_id: usize,
+    node_id: String,
+    pubkey: [u8; 32],
+    expires_at: Instant,
+}
+
+static CHALLENGES: OnceLock<Mutex<HashMap<[u8; HANDSHAKE_NONCE_BYTES], PendingChallenge>>> =
+    OnceLock::new();
+
+fn challenges() -> &'static Mutex<HashMap<[u8; HANDSHAKE_NONCE_BYTES], PendingChallenge>> {
+    CHALLENGES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct HandshakeRequest {
     pub node_id: String,
     pub pubkey: String,
     pub connection_key: String,
+    pub nonce: Option<String>,
+    pub signature: Option<String>,
 }
 
 /// O corpo que o handshake devolve. Foi um `json!` solto por engano, e um
@@ -19,6 +45,8 @@ pub struct HandshakeResponse {
     pub peer_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 /// O `node_id` declarado é mesmo o que sai desta `pubkey`?
@@ -28,31 +56,115 @@ pub struct HandshakeResponse {
 /// campo `pubkey` era lido e jogado fora, e qualquer requisição com a chave de
 /// conexão podia declarar o `node_id` que quisesse - inclusive o de outra
 /// máquina, para se passar por ela. Amarrar os dois campos custa uma hash e
-/// fecha essa porta.
+/// fecha essa porta. O handshake também exige que o peer assine um nonce
+/// gerado pelo verificador; só a chave privada correspondente pode concluir a
+/// sessão.
 ///
-/// O que isto **não** prova é posse da chave privada: para isso o handshake
-/// precisaria de um desafio assinado, que é mudança de protocolo.
-fn node_id_matches_pubkey(node_id: &str, pubkey_hex: &str) -> bool {
-    use ed25519_dalek::VerifyingKey;
-    use sha2::{Digest, Sha256};
-
+fn pubkey_bytes(pubkey_hex: &str) -> Option<[u8; 32]> {
     let Ok(bytes) = hex::decode(pubkey_hex) else {
-        return false;
+        return None;
     };
     let Ok(bytes): Result<[u8; 32], _> = bytes.try_into() else {
-        return false;
+        return None;
     };
     // Uma chave ed25519 malformada não deriva identidade nenhuma.
-    if VerifyingKey::from_bytes(&bytes).is_err() {
+    VerifyingKey::from_bytes(&bytes).ok()?;
+    Some(bytes)
+}
+
+fn node_id_matches_pubkey(node_id: &str, pubkey_hex: &str) -> bool {
+    let Some(bytes) = pubkey_bytes(pubkey_hex) else {
         return false;
-    }
+    };
     hex::encode(Sha256::digest(bytes)).eq_ignore_ascii_case(node_id)
+}
+
+fn issue_challenge(verifier_id: usize, node_id: &str, pubkey: [u8; 32]) -> String {
+    let now = Instant::now();
+    let mut pending = challenges()
+        .lock()
+        .expect("handshake challenge lock poisoned");
+    pending.retain(|_, challenge| challenge.expires_at > now);
+
+    loop {
+        let mut nonce = [0u8; HANDSHAKE_NONCE_BYTES];
+        OsRng.fill_bytes(&mut nonce);
+        if pending.contains_key(&nonce) {
+            continue;
+        }
+        pending.insert(
+            nonce,
+            PendingChallenge {
+                verifier_id,
+                node_id: node_id.into(),
+                pubkey,
+                expires_at: now + HANDSHAKE_CHALLENGE_TTL,
+            },
+        );
+        return hex::encode(nonce);
+    }
+}
+
+fn take_challenge(
+    verifier_id: usize,
+    nonce_hex: &str,
+) -> Result<([u8; HANDSHAKE_NONCE_BYTES], PendingChallenge), &'static str> {
+    let Ok(bytes) = hex::decode(nonce_hex) else {
+        return Err("invalid_nonce");
+    };
+    let Ok(nonce): Result<[u8; HANDSHAKE_NONCE_BYTES], _> = bytes.try_into() else {
+        return Err("invalid_nonce");
+    };
+
+    let mut pending = challenges()
+        .lock()
+        .expect("handshake challenge lock poisoned");
+    let Some(challenge) = pending.remove(&nonce) else {
+        return Err("nonce_reused");
+    };
+    if challenge.expires_at <= Instant::now() {
+        return Err("nonce_expired");
+    }
+    if challenge.verifier_id != verifier_id {
+        return Err("challenge_mismatch");
+    }
+    Ok((nonce, challenge))
+}
+
+fn signature_matches(
+    pubkey: [u8; 32],
+    nonce: &[u8; HANDSHAKE_NONCE_BYTES],
+    signature_hex: &str,
+) -> bool {
+    let Ok(signature_bytes) = hex::decode(signature_hex) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(&signature_bytes) else {
+        return false;
+    };
+    let Ok(verifying_key) = VerifyingKey::from_bytes(&pubkey) else {
+        return false;
+    };
+    verifying_key.verify_strict(nonce, &signature).is_ok()
+}
+
+fn rejected(reason: &str) -> (StatusCode, Json<HandshakeResponse>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(HandshakeResponse {
+            approved: false,
+            peer_id: None,
+            reason: Some(reason.into()),
+            nonce: None,
+        }),
+    )
 }
 
 pub async fn handle_handshake(
     State(config): State<AuthState>,
     Json(req): Json<HandshakeRequest>,
 ) -> impl IntoResponse {
+    let verifier_id = std::sync::Arc::as_ptr(&config) as usize;
     let cfg = config.read().await;
 
     if req.connection_key != cfg.connection_key {
@@ -62,6 +174,7 @@ pub async fn handle_handshake(
                 approved: false,
                 peer_id: None,
                 reason: Some("invalid_key".into()),
+                nonce: None,
             }),
         );
     }
@@ -75,6 +188,7 @@ pub async fn handle_handshake(
                 approved: false,
                 peer_id: None,
                 reason: Some("identity_mismatch".into()),
+                nonce: None,
             }),
         );
     }
@@ -86,8 +200,42 @@ pub async fn handle_handshake(
                 approved: false,
                 peer_id: None,
                 reason: Some("blocked".into()),
+                nonce: None,
             }),
         );
+    }
+
+    match (req.nonce.as_deref(), req.signature.as_deref()) {
+        (None, None) => {
+            let pubkey = pubkey_bytes(&req.pubkey).expect("identity was validated above");
+            let nonce = issue_challenge(verifier_id, &req.node_id, pubkey);
+            return (
+                StatusCode::FORBIDDEN,
+                Json(HandshakeResponse {
+                    approved: false,
+                    peer_id: None,
+                    reason: Some("challenge_required".into()),
+                    nonce: Some(nonce),
+                }),
+            );
+        }
+        (None, Some(_)) => return rejected("missing_nonce"),
+        (Some(_), None) => return rejected("missing_signature"),
+        (Some(nonce_hex), Some(signature_hex)) => {
+            let (nonce, challenge) = match take_challenge(verifier_id, nonce_hex) {
+                Ok(challenge) => challenge,
+                Err(reason) => return rejected(reason),
+            };
+            if !challenge.node_id.eq_ignore_ascii_case(&req.node_id)
+                || challenge.pubkey
+                    != pubkey_bytes(&req.pubkey).expect("identity was validated above")
+            {
+                return rejected("challenge_mismatch");
+            }
+            if !signature_matches(challenge.pubkey, &nonce, signature_hex) {
+                return rejected("invalid_signature");
+            }
+        }
     }
 
     (
@@ -96,6 +244,7 @@ pub async fn handle_handshake(
             approved: true,
             peer_id: Some(req.node_id),
             reason: None,
+            nonce: None,
         }),
     )
 }
@@ -104,7 +253,9 @@ pub async fn handle_handshake(
 mod tests {
     use super::*;
     use crate::config::{Config, Role};
+    use ed25519_dalek::Signer;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
     use tokio::sync::RwLock;
 
     fn make_state(key: &str, blocked: Vec<String>) -> AuthState {
@@ -144,6 +295,33 @@ mod tests {
             node_id,
             pubkey,
             connection_key: key.into(),
+            nonce: None,
+            signature: None,
+        }
+    }
+
+    fn request_for(identity: &crate::identity::Identity, key: &str) -> HandshakeRequest {
+        HandshakeRequest {
+            node_id: identity.node_id.0.clone(),
+            pubkey: identity.public_key_hex(),
+            connection_key: key.into(),
+            nonce: None,
+            signature: None,
+        }
+    }
+
+    fn signed_request(
+        identity: &crate::identity::Identity,
+        key: &str,
+        nonce: &str,
+    ) -> HandshakeRequest {
+        let nonce_bytes = hex::decode(nonce).unwrap();
+        HandshakeRequest {
+            nonce: Some(nonce.into()),
+            signature: Some(hex::encode(
+                identity.signing_key.sign(&nonce_bytes).to_bytes(),
+            )),
+            ..request_for(identity, key)
         }
     }
 
@@ -179,6 +357,8 @@ mod tests {
                 node_id: outro_id,
                 pubkey,
                 connection_key: "secret".into(),
+                nonce: None,
+                signature: None,
             },
         )
         .await;
@@ -198,6 +378,8 @@ mod tests {
                 node_id,
                 pubkey: "pubkey1".into(),
                 connection_key: "secret".into(),
+                nonce: None,
+                signature: None,
             },
         )
         .await;
@@ -208,14 +390,121 @@ mod tests {
     #[tokio::test]
     async fn a_identidade_coerente_passa() {
         let state = make_state("secret", vec![]);
-        let req = make_request("secret");
-        let esperado = req.node_id.clone();
+        let identity = crate::identity::Identity::generate();
+        let challenge = request_for(&identity, "secret");
+        let (challenge_status, challenge_body) = responder(state.clone(), challenge).await;
+        assert_eq!(challenge_status, StatusCode::FORBIDDEN);
+        assert_eq!(challenge_body["reason"], "challenge_required");
+        let nonce = challenge_body["nonce"].as_str().unwrap();
+        let esperado = identity.node_id.0.clone();
 
-        let (status, body) = responder(state, req).await;
+        let (status, body) = responder(state, signed_request(&identity, "secret", nonce)).await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["approved"], true);
         assert_eq!(body["peer_id"], esperado);
+    }
+
+    #[tokio::test]
+    async fn assinatura_ausente_e_recusada() {
+        let state = make_state("secret", vec![]);
+        let identity = crate::identity::Identity::generate();
+        let body = serde_json::json!({
+            "node_id": identity.node_id.0.clone(),
+            "pubkey": identity.public_key_hex(),
+            "connection_key": "secret"
+        });
+        let app = axum::Router::new()
+            .route("/handshake", axum::routing::post(handle_handshake))
+            .with_state(state);
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let response = app
+            .oneshot(
+                Request::post("/handshake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "challenge_required");
+        assert!(body["nonce"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn assinatura_ausente_depois_do_nonce_e_recusada() {
+        let state = make_state("secret", vec![]);
+        let identity = crate::identity::Identity::generate();
+        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let nonce = challenge_body["nonce"].as_str().unwrap().to_string();
+        let mut req = request_for(&identity, "secret");
+        req.nonce = Some(nonce);
+
+        let (status, body) = responder(state, req).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "missing_signature");
+    }
+
+    #[tokio::test]
+    async fn assinatura_de_outra_chave_e_recusada() {
+        let state = make_state("secret", vec![]);
+        let identity = crate::identity::Identity::generate();
+        let other = crate::identity::Identity::generate();
+        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let nonce = challenge_body["nonce"].as_str().unwrap();
+
+        let mut req = signed_request(&other, "secret", nonce);
+        req.node_id = identity.node_id.0.clone();
+        req.pubkey = identity.public_key_hex();
+        let (status, body) = responder(state, req).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "invalid_signature");
+    }
+
+    #[tokio::test]
+    async fn nonce_so_pode_ser_usado_uma_vez() {
+        let state = make_state("secret", vec![]);
+        let identity = crate::identity::Identity::generate();
+        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let nonce = challenge_body["nonce"].as_str().unwrap().to_string();
+        let req = signed_request(&identity, "secret", &nonce);
+
+        let (first_status, _) = responder(state.clone(), req.clone()).await;
+        let (second_status, body) = responder(state, req).await;
+
+        assert_eq!(first_status, StatusCode::OK);
+        assert_eq!(second_status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "nonce_reused");
+    }
+
+    #[tokio::test]
+    async fn nonce_expirado_e_recusado() {
+        let state = make_state("secret", vec![]);
+        let identity = crate::identity::Identity::generate();
+        let (_, challenge_body) = responder(state.clone(), request_for(&identity, "secret")).await;
+        let nonce = challenge_body["nonce"].as_str().unwrap().to_string();
+        let nonce_bytes: [u8; 32] = hex::decode(&nonce).unwrap().try_into().unwrap();
+        challenges()
+            .lock()
+            .unwrap()
+            .get_mut(&nonce_bytes)
+            .unwrap()
+            .expires_at = Instant::now() - Duration::from_secs(1);
+
+        let (status, body) = responder(state, signed_request(&identity, "secret", &nonce)).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "nonce_expired");
     }
 
     #[tokio::test]

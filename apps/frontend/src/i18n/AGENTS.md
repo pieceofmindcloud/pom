@@ -6,36 +6,25 @@ them through `useI18n().t`. The same file also holds a module-level active
 locale used by non-React code (`api.ts`, `chatStore.ts`) and a shim that keeps
 the UI language contract while old node binaries still send Portuguese text.
 
-Two files carry all of it: a static message table and a small provider. Tests:
-`locales.test.ts` (resolution + formatting) and `provider.test.tsx` (jsdom).
+As traduções ficam em `messages.csv`, com as colunas `key,en,pt-BR`, uma linha
+por chave e as mensagens em ICU MessageFormat. `locales.ts` importa o CSV como
+texto bruto em build time e interpreta as mensagens sincronicamente com
+`intl-messageformat` 11.2.14. O provider continua separado. Testes:
+`locales.test.ts` (resolução + formatação), `locales.equivalence.test.ts`
+(dump de referência byte a byte) e `provider.test.tsx` (jsdom).
 
 ## Per-file
 
-- `locales.ts` - the `messages` dictionary (the exact key count is checked in
-  `locales.test.ts`, en block first, pt-BR block second) plus locale resolution
-  and formatting functions. The slice screen has messages for pipeline and
-  tensor-parallel modes, including grouped `1ofN` rank labels. Deploy metadata
-  refusals are rendered from the backend's selection-specific `blocked` reason;
-  the whole-model single-machine warning and cache update failure are paired
-  in both locales. Dashboard GPU temperature badges distinguish an unavailable
-  sensor from a machine with no GPU, and the Preferences thermal policy panel
-  has keys in both locale blocks. Deployment-wide hidden-state dtype controls and
-  the Chat telemetry label for bytes/dtype are also present in both locale blocks.
-  Slicing phase, byte-progress, disk-space, required intermediate-head cost and
-  single-range controls also have keys in both locale blocks.
-  The administrative access form also keeps a paired stable username label for
-  browser password-manager recognition.
-  Dashboard machine details also has paired labels for requested MTP status,
-  its measured VRAM/RAM location, its runtime unavailability reason and the
-  effective context reservation when multiple sessions put KV on a device. The
-  deployment form labels the opt-out for the RAM fallback in both locales.
-  The Deployments section has separate `nav.history` and `deployments.created`
-  labels in both locale blocks for the nested history menu and date column. The
-  `nav.deploymentLogs`, `deploymentLogs.*`, `deployments.viewLogs` and
-  `network.logs*` groups keep the cluster process-log console distinct from the
-  request audit in both locale blocks. Chat telemetry also keeps paired labels
-  for the current `/health` path snapshot, the path observed by the request
-  trace, mixed paths and their divergence.
+- `messages.csv` - fonte única das mensagens, ordenada por chave para diffs
+  estáveis. Textos simples permanecem literais; interpolação usa `{name}` e
+  lógica usa `plural`, `select` e seletores exatos ICU. Valores internos de
+  `select` são preparados apenas pelo carregador para preservar condicionais
+  de truthiness que existiam no código antigo.
+- `locales.ts` - parser CSV pequeno, carregamento síncrono do `?raw`, cache de
+  `IntlMessageFormat` e a API pública de locale. Não coloque traduções novas
+  aqui. O fallback continua sendo locale solicitado, depois inglês, depois a
+  própria chave. Todas as chaves e textos existentes, incluindo os grupos de
+  logs de deployment, preferências, telemetria e modelos remotos, ficam no CSV.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
@@ -53,11 +42,13 @@ Two files carry all of it: a static message table and a small provider. Tests:
   segredo da chave.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
-## How locales are structured
+## Como editar mensagens
 
-- `SUPPORTED_LOCALES = ["en", "pt-BR"]`, `Locale` is that literal union.
-- A `Message` is `(values, locale) => string`, not a template string: pluralization is computed with `Intl.PluralRules` (e.g. `cluster.peerCount` -> "1 node" / "2 nodes" / "1 nó" / "2 nós"). Values come in via `t("key", { count })`.
-- `messages` is `Record<Locale, Record<string, Message>>` with both locales side by side; keys are namespaced by screen (`topbar.*`, `nav.*`, `chat.*`, `deploy.knob.*`, ...). The destructive-action group `undeploy.*` (button, confirmation, per-machine report) and the per-machine exit `dashboard.leaveNode*` arrived together with the `LeaveNode`/`UndeployPipeline` components, plus the shared `common.close` used by the `Modal` footer. The panel rework in 5423852 added `dashboard.groupDeployed*` / `dashboard.groupOutside*` (the two details groups), `dashboard.noSlice*` and `dashboard.machineDetails` (the card and its window), `canvas.openDetails` (the double-click hint on the canvas card), and changed `dashboard.noMachines` from "Nenhuma máquina para detalhar" to "Nenhuma máquina na rede" because the tab now lists the whole network. The navigation keeps the model entries together, and `sidebar.collapse` / `sidebar.expand` label the persistent desktop menu toggle; `jobs.*` labels the embedded slicing progress panel. `profile.*` nomeia os perfis (`profile.admin`, `profile.node`, `profile.inference`) e o seletor de desenvolvimento da barra superior, e `forbidden.*` é a tela que o perfil ativo não abre - `forbidden.detail` recebe o perfil já traduzido em `{profile}`. O grupo `keys.inference*` descreve a vista reduzida e a troca da chave única do Inference. `deploy.knob.fit_memory_margin_mb` existe nos dois blocos de idioma porque é um ajuste numérico visível no formulário compartilhado. Os controles de detecção de ciclo e seus limites também existem nos dois blocos. `dashboard.rediscovering` / `dashboard.rediscoveringShort` / `pipeline.rediscovering` são o par de `dashboard.unreachable` / `pipeline.noResponse`: o primeiro grupo é trabalho em curso (o endereço do par morreu e o nó já foi perguntar o atual), o segundo é beco sem saída. `dashboard.coverageUnconfirmed` diz quantas máquinas da cobertura não puderam ser lidas, e existe porque a cobertura sai do gossip e não da leitura.
+- `SUPPORTED_LOCALES = ["en", "pt-BR"]`, e `Locale` continua sendo a união literal.
+- Cada chave deve existir nas duas colunas. Ao adicionar ou editar uma mensagem, altere diretamente a mesma linha no CSV e mantenha a chave ordenada.
+- Use a sintaxe ICU de `intl-messageformat`: `{count, plural, one {# node} other {# nodes}}` para plural, `{value}` para interpolação e `select` para escolhas textuais. Para mensagens condicionais, preserve os nomes dos valores que os componentes já passam.
+- O CSV entra no bundle por importação `?raw`; não use fetch, estado assíncrono ou carregamento por rota.
+- Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump gerado antes da migração.
 
 ## Key functions
 

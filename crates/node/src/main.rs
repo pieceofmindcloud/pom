@@ -64,6 +64,8 @@ mod link;
 #[cfg(test)]
 #[path = "inference/link_lab.rs"]
 mod link_lab;
+#[cfg(target_os = "macos")]
+mod macos_status;
 #[path = "models/memory.rs"]
 mod memory;
 #[path = "backend/messages.rs"]
@@ -350,8 +352,17 @@ struct Args {
     no_discovery: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// O nó é um serviço Tokio, e a thread principal é dele em toda plataforma
+/// menos uma.
+///
+/// No macOS a thread principal pertence ao AppKit: `NSApplication` só aceita
+/// ser conduzida a partir dela, e é ela que atende o item da barra de status.
+/// Por isso o serviço é movido para uma thread de fundo com o seu próprio
+/// runtime, e a principal fica no laço de eventos nativo. Nas outras
+/// plataformas nada disso existe e o runtime é construído aqui mesmo, de modo
+/// que quem corre o binário num servidor Linux não ganha dependência de
+/// interface gráfica.
+fn main() -> Result<()> {
     respawn::remember_argv(std::env::args().collect());
     let (log_capture, log_receiver) =
         cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
@@ -368,6 +379,45 @@ async fn main() -> Result<()> {
     tp::install_probe();
 
     let args = Args::parse();
+
+    #[cfg(target_os = "macos")]
+    let gateway_port = configured_gateway_port(&args);
+
+    let service = move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async_main(args, log_capture, log_receiver))
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        return macos_status::run(gateway_port, service);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    service()
+}
+
+fn gateway_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/admin-ui/chat")
+}
+
+fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
+    config_port.unwrap_or(cli_port)
+}
+
+#[cfg(target_os = "macos")]
+fn configured_gateway_port(args: &Args) -> u16 {
+    let persisted = config::Config::load().ok().map(|config| config.gateway_port);
+    select_gateway_port(persisted, args.gateway_port)
+}
+
+async fn async_main(
+    args: Args,
+    log_capture: Arc<cluster_logs::LogCapture>,
+    log_receiver: tokio::sync::mpsc::Receiver<cluster_logs::LogEntry>,
+) -> Result<()> {
 
     info!(
         "Project root: {} (config: {})",
@@ -1595,6 +1645,18 @@ async fn start_gateway_only(
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn menu_bar_chat_url_uses_loopback_and_gateway_port() {
+        assert_eq!(gateway_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
+        assert_eq!(gateway_url(8090), "http://127.0.0.1:8090/admin-ui/chat");
+    }
+
+    #[test]
+    fn persisted_gateway_port_wins_over_cli_fallback() {
+        assert_eq!(select_gateway_port(Some(9123), 8080), 9123);
+        assert_eq!(select_gateway_port(None, 8080), 8080);
+    }
 
     #[test]
     fn gateway_only_honors_the_default_relay_switch() {

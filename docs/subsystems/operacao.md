@@ -80,6 +80,27 @@ ssh root@<peer2> 'nvidia-smi --query-compute-apps=pid,used_memory --format=csv'
 inferência foi conjunta. Um hop só, ou `"source": "none"`, significa que o
 planejador não fechou a cobertura `0..total_layers`.
 
+## Bateria de rotas e forma da saída
+
+Para separar o efeito da forma da saída do efeito da origem de rede, rode
+`./scripts/bench-rotas.sh <rotulo>`. O script executa uma chamada de
+aquecimento por origem, depois três repetições em cada combinação de
+`mac-local`, `mac-ksia`, `ksia-local`, `salem-ksia` com os prompts
+`p-curto/p-longo` e `repetitivo/variado`. Ele omite `model` por padrão,
+então o gateway usa o modelo que a rede estiver servindo naquele momento. Use
+`POM_BENCH_MODEL=...` somente para uma comparação que exija um modelo
+explícito.
+
+O CSV tem uma linha por aquecimento, medição ou falha. `phase=warmup` fica
+fora das medianas; `status=unavailable` no aquecimento impede novas tentativas
+nessa origem e preserva o restante da matriz. `fichas_por_chamada` é
+calculada em cada linha como
+`trace.output_tokens / trace.hops[0].decode.calls`. Para `salem-ksia`,
+defina `SALEM_PASS` no ambiente no momento da execução; a senha não pertence
+ao script. Os prompts longos são preenchidos por texto determinístico e a
+tabela final mostra as medianas de `fichas/chamada`,
+`generation_tok/s`, `ttft_ms`, `node_p50_ms` e `total_ms`.
+
 `--n-gpu-layers` (padrão 0) decide quantas camadas vão para a VRAM; sem a
 feature de build correta (`metal`/`cuda`) o modelo roda todo em CPU. Para
 conferir o offload, veja a VRAM durante o carregamento - a TUI mostra

@@ -5,6 +5,14 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 
 ## scripts/
 
+- `bench-rotas.sh` - executa a bateria reproduzivel de medicao da geracao
+  distribuida: quatro origens, quatro prompts fixos, aquecimento por origem,
+  CSV com as telemetrias de timings/trace/decode/prefill e tabela de medianas.
+  Por padrao omite `model` no `/api/generate`, para o gateway usar o modelo
+  atualmente servido; `POM_BENCH_MODEL` e um override opcional. A origem
+  `salem-ksia` usa `SALEM_PASS` em tempo de execucao, nunca uma senha
+  gravada no repositorio. Veja o cabecalho do script para as colunas, URLs e
+  opcoes `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
   exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,

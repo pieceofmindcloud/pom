@@ -23,22 +23,30 @@ destino="${2:-$raiz/dist-release/POM.app}"
 nome=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "$raiz/brand.json")
 slug=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["slug"])' "$raiz/brand.json")
 icns="$raiz/$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["app_icons"]["macos"])' "$raiz/brand.json")"
-status_icon="$raiz/assets/brand/pom-mark.png"
-macos_locales="$raiz/assets/brand/macos"
+# A arte do item de barra e as traduções da tela nativa moram juntas.
+recursos_macos="$raiz/assets/brand/macos"
+status_icon="$recursos_macos/pom-status-template.png"
 
 [ -x "$bin" ] || { echo "binário não encontrado: $bin" >&2; exit 1; }
 [ -f "$icns" ] || { echo "ícone não encontrado: $icns" >&2; exit 1; }
-[ -f "$status_icon" ] || { echo "ícone da barra não encontrado: $status_icon" >&2; exit 1; }
+# Um item de barra sem arte cai para um rótulo de texto, o que é uma entrega
+# pior e silenciosa. `scripts/derive-macos-status-icon.py` gera esta arte.
+[ -f "$status_icon" ] || {
+    echo "ícone da barra não encontrado: $status_icon" >&2
+    echo "gere-o com: python3 scripts/derive-macos-status-icon.py" >&2
+    exit 1
+}
 
 rm -rf "$destino"
 mkdir -p "$destino/Contents/MacOS" "$destino/Contents/Resources"
 
 cp "$bin" "$destino/Contents/MacOS/$slug"
 cp "$icns" "$destino/Contents/Resources/$slug.icns"
-cp "$status_icon" "$destino/Contents/Resources/$slug-status.png"
-if [ -d "$macos_locales" ]; then
-    find "$macos_locales" -mindepth 1 -maxdepth 1 -type d -name '*.lproj' -exec cp -R {} "$destino/Contents/Resources/" \;
-fi
+# As três resoluções entram com o nome original: o lado nativo procura as
+# companheiras `@2x` e `@3x` ao lado da arte 1x que o Rust lhe indica.
+cp "$recursos_macos"/pom-status-template*.png "$destino/Contents/Resources/"
+find "$recursos_macos" -mindepth 1 -maxdepth 1 -type d -name '*.lproj' \
+    -exec cp -R {} "$destino/Contents/Resources/" \;
 
 versao=$(grep -m1 '^version' "$raiz/Cargo.toml" | sed 's/[^0-9.]//g')
 versao=${versao:-0.1.0}

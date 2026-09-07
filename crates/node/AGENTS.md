@@ -135,13 +135,16 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 14. Loop da TUI: limpa a tela a cada `--refresh`, imprime assignment, mapa de
     camadas, peers, health, aviso de buraco anterior.
 
-No macOS, `main` resolve a porta persistida do gateway antes de mover o serviço
-Tokio para a thread de fundo e entrega a thread principal ao item de status
-(`macos_status.rs` + `macos_status.m`). O item abre o `/admin-ui/chat` em um
-popover de 390 x 844 points e numa janela de 1080 x 760 points; os dois
-WebViews usam o data store padrão do WebKit e, portanto, o mesmo ciclo de
-chave do frontend. Fora do macOS o caminho de entrada continua sendo um CLI
-Tokio normal.
+No macOS, `main` resolve a porta persistida do gateway, move o serviço Tokio
+para uma thread de fundo e entrega a thread principal ao item de status
+(`macos_status.rs` + `macos_status.m`) - `NSApplication` só aceita ser
+conduzida da thread principal. O item abre o `/admin-ui/chat` num painel de
+390 x 844 points e numa janela de 1120 x 880 points; as medidas e o endereço
+saem do Rust pela ABI, não são duplicados no Objective-C. Os dois WebViews
+usam o data store padrão do WebKit e, portanto, a mesma sessão do frontend.
+Quando o serviço termina, ele derruba o laço de eventos, e é isso que mantém
+`--list-models` saindo sozinho. Fora do macOS o ponto de entrada continua um
+CLI Tokio normal, sem nenhuma dependência de interface gráfica.
 
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do

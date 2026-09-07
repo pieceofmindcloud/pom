@@ -32,20 +32,38 @@ partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
 
 ### Chat compacto da barra de menus do macOS
 
-O bundle macOS mantém o processo Rust como dono do gateway e adiciona um
+O bundle macOS mantém o processo Rust como dono do gateway e acrescenta um
 `NSStatusItem` em `crates/node/src/macos_status.m`. O clique abre o mesmo SPA
-em `/admin-ui/chat`, sem sidebar nem topbar, em um `WKWebView` de 390 x 844
-points, dimensão de smartphone. O botão `Janela maior` só aparece quando a
-ponte WebKit está disponível e pede ao processo nativo uma janela de 1080 x
-760 points. A versão no navegador comum continua sem esse botão.
+em `/admin-ui/chat`, sem sidebar nem topbar, num `WKWebView` de 390 x 844
+points - a tela lógica de um iPhone 14/15. Num ecrã que não comporte essa
+altura o painel encolhe para o que cabe; a largura de 390 é fixa. O botão
+`Janela maior` só aparece quando a ponte WebKit existe, e pede ao processo
+nativo uma janela redimensionável de 1120 x 880 points, maior que o painel nos
+dois eixos. No navegador comum esse botão não é renderizado.
 
-O Rust monta `http://127.0.0.1:<gateway_port>/admin-ui/chat`: a porta é a do
-`pom.json`, com o `--gateway-port` como fallback e 8080 como default. Os
-WebViews compartilham `WKWebsiteDataStore.defaultDataStore`; o frontend segue
-semeando `pom.connectionKey` por `/api/ui/node`, sem uma credencial paralela.
+Quem escolhe as medidas e o endereço é o Rust (`macos_status.rs`), que os
+entrega ao Objective-C no arranque: o lado nativo não conhece a configuração do
+nó, e duplicar os números nos dois lados seria convite a desencontro.
+
+O endereço é `http://127.0.0.1:<gateway_port>/admin-ui/chat`, com a porta do
+`pom.json`, o `--gateway-port` como fallback e 8080 como default - o painel
+nunca crava 8080. Os dois WebViews usam
+`WKWebsiteDataStore.defaultDataStore`, então partilham cookies com o próprio
+painel e entre si; a rota fica **depois** do portão de acesso em `App.tsx` e
+usa a mesma sessão com cookie `HttpOnly` do navegador, sem credencial paralela.
 Se o gateway não responde, o delegate nativo mostra uma página localizada de
-indisponibilidade com retry, em vez de deixar o painel vazio. Os textos dessa
-página ficam em `assets/brand/macos/{en,pt-BR}.lproj/Localizable.strings`.
+indisponibilidade com botão de repetir, em vez de deixar o painel vazio. Os
+textos dessa página ficam em
+`assets/brand/macos/{en,pt-BR}.lproj/Localizable.strings`.
+
+O ícone do item é uma **template image**: o AppKit descarta a cor e pinta o
+canal alfa com a cor da barra, o que resolve tema claro e escuro de uma só vez.
+Por isso ele não pode ser a marca como ela é - `pom-icon-src.png` é um quadrado
+azul opaco, e alfa 255 em toda parte viraria um retângulo preto sólido na
+barra. `scripts/derive-macos-status-icon.py` extrai o traço branco como alfa,
+descarta o wordmark (ilegível a 18 pontos) e grava
+`assets/brand/macos/pom-status-template{,@2x,@3x}.png`. As três entram como
+representações da mesma `NSImage` de 18 points.
 
 ### Temperatura da GPU
 

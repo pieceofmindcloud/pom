@@ -185,12 +185,21 @@ Nome, slug e caminho do `.icns` saem do `brand.json`; o Info.plist marca
 o bundle continua chamavel por linha de comando em
 `POM.app/Contents/MacOS/pom`. O workflow de release chama este script no alvo
 macOS e copia o `dist` da interface para `Contents/Resources/apps/frontend/`,
-que e onde `config::bundled_ui_dist()` a procura. O script também coloca
-`assets/brand/pom-mark.png` como `pom-status.png` e as localizações
-`assets/brand/macos/*.lproj` em `Contents/Resources`; `macos_status.m` usa o
-mark como imagem template no `NSStatusItem` para manter contraste nos dois
-temas. O mesmo bundle abre `/admin-ui/chat` no popover de 390 x 844 points e
-oferece a janela maior pelo WebKit padrão do macOS.
+que e onde `config::bundled_ui_dist()` a procura. O script também copia
+`assets/brand/macos/pom-status-template{,@2x,@3x}.png` e as localizações
+`assets/brand/macos/*.lproj` para `Contents/Resources`, e recusa montar o
+bundle se a arte do item de barra faltar - um item sem arte cai para um rótulo
+de texto, em silêncio. O mesmo bundle abre `/admin-ui/chat` no painel de
+390 x 844 points e oferece a janela maior pelo WebKit do sistema.
+
+## derive-macos-status-icon.py
+
+Deriva a arte do `NSStatusItem` a partir de `pom-icon-src.png`. A barra de
+menus usa **template images**, que só têm canal alfa: a marca do POM é um
+quadrado azul opaco e, usada como está, viraria um retângulo preto. O script
+converte o traço branco em alfa, descarta o wordmark (ilegível a 18 pontos) e
+grava 1x, 2x e 3x em `assets/brand/macos/`. Corra-o depois de mexer na marca;
+um teste em `macos_status.rs` falha se a arte sumir.
 
 ## derive-dark-logo.py
 

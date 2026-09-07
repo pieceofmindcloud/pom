@@ -16,10 +16,15 @@ static id POMStatusControllerInstance;
 static id POMApplicationDelegateInstance;
 static atomic_bool POMStopRequested = false;
 
-static const CGFloat POMPopoverWidth = 390.0;
-static const CGFloat POMPopoverHeight = 844.0;
-static const CGFloat POMWindowWidth = 1080.0;
-static const CGFloat POMWindowHeight = 760.0;
+static const CGFloat POMStatusIconPoints = 18.0;
+
+// Medidas do painel e da janela. Quem as escolhe é `macos_status.rs`, que as
+// entrega no arranque; aqui elas só têm um valor inicial para o caso de a
+// ponte ser chamada com zeros.
+static CGFloat POMPopoverWidth = 390.0;
+static CGFloat POMPopoverHeight = 844.0;
+static CGFloat POMWindowWidth = 1080.0;
+static CGFloat POMWindowHeight = 760.0;
 
 static NSString *POMLocalized(NSString *key, NSString *fallback) {
     return [[NSBundle mainBundle] localizedStringForKey:key value:fallback table:nil];
@@ -28,6 +33,7 @@ static NSString *POMLocalized(NSString *key, NSString *fallback) {
 static void POMOpenWindow(void);
 static void POMShowUnavailable(WKWebView *webView);
 static WKWebView *POMMakeWebView(NSRect frame);
+static NSImage *POMStatusImage(void);
 
 @interface POMNavigationDelegate : NSObject <WKNavigationDelegate>
 @end
@@ -42,18 +48,40 @@ static WKWebView *POMMakeWebView(NSRect frame);
 @interface POMApplicationDelegate : NSObject <NSApplicationDelegate>
 @end
 
+/// Altura do painel que cabe no ecrã onde a barra de menus está.
+///
+/// A medida pedida é a de um telemóvel, 844 pontos. Um MacBook Pro de 13"
+/// antigo tem 800 pontos de altura no total, e o painel sairia pela borda de
+/// baixo. Aqui ele encolhe para o que sobra abaixo da barra de menus, com uma
+/// folga para não encostar no fundo; num ecrã grande a medida pedida passa
+/// intacta.
+static CGFloat POMFittedPopoverHeight(void) {
+    NSScreen *screen = POMStatusItem.button.window.screen ?: NSScreen.mainScreen;
+    if (!screen) {
+        return POMPopoverHeight;
+    }
+    const CGFloat margin = 24.0;
+    CGFloat available = NSHeight(screen.visibleFrame) - margin;
+    return MAX(320.0, MIN(POMPopoverHeight, available));
+}
+
 static void POMOpenPopover(void) {
+    CGFloat height = POMFittedPopoverHeight();
+
     if (!POMPopover) {
         POMPopover = [[NSPopover alloc] init];
         POMPopover.behavior = NSPopoverBehaviorTransient;
         POMPopover.animates = YES;
-        POMPopover.contentSize = NSMakeSize(POMPopoverWidth, POMPopoverHeight);
 
         NSViewController *viewController = [[NSViewController alloc] init];
-        POMPopoverWebView = POMMakeWebView(NSMakeRect(0, 0, POMPopoverWidth, POMPopoverHeight));
+        POMPopoverWebView = POMMakeWebView(NSMakeRect(0, 0, POMPopoverWidth, height));
         viewController.view = POMPopoverWebView;
         POMPopover.contentViewController = viewController;
     }
+
+    // Recalculado a cada abertura: o portátil pode ter sido ligado a um
+    // monitor - ou desligado dele - desde a última vez.
+    POMPopover.contentSize = NSMakeSize(POMPopoverWidth, height);
 
     NSButton *button = POMStatusItem.button;
     [POMPopover showRelativeToRect:button.bounds
@@ -137,6 +165,44 @@ static void POMShowUnavailable(WKWebView *webView) {
     [webView loadHTMLString:POMUnavailableHTML() baseURL:[NSURL URLWithString:POMChatURL]];
 }
 
+/// Monta a imagem do item de barra com as três resoluções do template.
+///
+/// `POMIconPath` aponta para a arte 1x; as companheiras `@2x` e `@3x` ficam ao
+/// lado dela. Cada representação entra com `size` forçado a 18 x 18 **pontos**,
+/// e é isso que faz o AppKit tratá-las como a mesma imagem em escalas
+/// diferentes em vez de três imagens de tamanhos diferentes - sem isso, uma
+/// arte de 54 px seria desenhada como um glifo de 54 pontos.
+///
+/// A imagem é marcada como template: o AppKit descarta a cor e pinta o alfa
+/// com a cor da barra, o que resolve o tema claro e o escuro de uma só vez,
+/// inclusive quando o utilizador troca de tema com o app já aberto.
+static NSImage *POMStatusImage(void) {
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(POMStatusIconPoints,
+                                                              POMStatusIconPoints)];
+    NSString *directory = POMIconPath.stringByDeletingLastPathComponent;
+    NSString *name = POMIconPath.lastPathComponent.stringByDeletingPathExtension;
+    NSString *extension = POMIconPath.pathExtension;
+
+    BOOL any = NO;
+    for (NSString *suffix in @[ @"", @"@2x", @"@3x" ]) {
+        NSString *path = [directory stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@%@.%@", name, suffix, extension]];
+        NSImageRep *rep = [NSImageRep imageRepWithContentsOfFile:path];
+        if (!rep) {
+            continue;
+        }
+        rep.size = NSMakeSize(POMStatusIconPoints, POMStatusIconPoints);
+        [image addRepresentation:rep];
+        any = YES;
+    }
+
+    if (!any) {
+        return nil;
+    }
+    image.template = YES;
+    return image;
+}
+
 static WKWebView *POMMakeWebView(NSRect frame) {
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
@@ -200,13 +266,13 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
     POMStatusItem = [[NSStatusBar systemStatusBar]
         statusItemWithLength:NSVariableStatusItemLength];
-    NSImage *image = [[NSImage alloc] initWithContentsOfFile:POMIconPath];
+    NSImage *image = POMStatusImage();
     if (image) {
-        image.template = YES;
-        image.size = NSMakeSize(18, 18);
         POMStatusItem.button.image = image;
         POMStatusItem.button.imagePosition = NSImageOnly;
     } else {
+        // Sem arte legível, um título continua clicável. Melhor do que um item
+        // invisível que o utilizador não consegue encontrar na barra.
         POMStatusItem.button.title = @"POM";
     }
     POMStatusItem.button.toolTip = POMLocalized(@"status.itemTooltip", @"Open POM chat");
@@ -216,15 +282,30 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 @end
 
-void pom_macos_status_run(const char *url, const char *icon_path) {
+void pom_macos_status_run(const char *url,
+                          const char *icon_path,
+                          double popover_width,
+                          double popover_height,
+                          double window_width,
+                          double window_height) {
     @autoreleasepool {
-        // The service thread can finish before AppKit has entered its run
-        // loop, so preserve an early stop request across initialization.
+        // A thread do serviço pode terminar antes de o AppKit chegar ao laço
+        // de eventos - um `--list-models` termina em milissegundos. Guardar o
+        // pedido de paragem evita abrir um item de barra que ninguém veria e
+        // que já devia estar fechado.
         if (atomic_load(&POMStopRequested)) {
             return;
         }
         POMChatURL = [NSString stringWithUTF8String:url ?: ""];
         POMIconPath = [NSString stringWithUTF8String:icon_path ?: ""];
+        if (popover_width > 0 && popover_height > 0) {
+            POMPopoverWidth = (CGFloat)popover_width;
+            POMPopoverHeight = (CGFloat)popover_height;
+        }
+        if (window_width > 0 && window_height > 0) {
+            POMWindowWidth = (CGFloat)window_width;
+            POMWindowHeight = (CGFloat)window_height;
+        }
 
         [NSApplication sharedApplication];
         POMApplicationDelegateInstance = [[POMApplicationDelegate alloc] init];

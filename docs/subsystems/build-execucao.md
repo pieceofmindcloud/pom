@@ -142,7 +142,7 @@ os três saem do mesmo `brand.json` (`app_icons`):
 | Sistema | Arquivo | Como entra |
 |---|---|---|
 | Windows | `assets/brand/pom.ico` | recurso **dentro do `.exe`**, gravado por `crates/node/build.rs` (`embed_windows_icon`, via `winresource`). O `cfg(windows)` ali é do host: o release compila o alvo Windows num runner Windows. Cruzar de Linux sai sem ícone, em silêncio, em vez de quebrar o build. |
-| macOS | `assets/brand/pom.icns` + `assets/brand/pom-mark.png` | quem mostra o ícone é o bundle, não o binário: `scripts/make-macos-app.sh` monta `POM.app` em volta do executável já compilado (Info.plist, `LSUIElement`, ícone Finder em `Resources/` e `pom-status.png` para o `NSStatusItem`). O binário liga a ponte AppKit/WebKit somente nesse alvo; o release roda o script e leva o `.app` no pacote do macOS. |
+| macOS | `assets/brand/pom.icns` + `assets/brand/macos/pom-status-template{,@2x,@3x}.png` | quem mostra o ícone é o bundle, não o binário: `scripts/make-macos-app.sh` monta `POM.app` em volta do executável já compilado (Info.plist, `LSUIElement`, ícone do Finder em `Resources/` e a template image do `NSStatusItem`, gerada por `scripts/derive-macos-status-icon.py`). O binário liga a ponte AppKit/WebKit só nesse alvo - `cc` é build-dependency apenas para host macOS; o release roda o script e leva o `.app` no pacote do macOS. |
 | Linux | `assets/brand/linux/hicolor/**` + `pom.desktop` | árvore `hicolor` de 16 a 512 e a entrada `.desktop`, empacotadas em `share/` no tarball. Instalar é copiar para `~/.local/share/{icons,applications}`. |
 
 **O `.app` tem que achar a interface.** Dentro do bundle o binário fica em

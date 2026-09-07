@@ -229,6 +229,7 @@ export default function App() {
    */
   const allowed = canAccessRoute(location.pathname, profile);
   const isChat = allowed && location.pathname === "/chat";
+  const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
   // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
@@ -278,6 +279,27 @@ export default function App() {
   if (adminSurface.data === "local-only") return <AdminLocalOnly />;
   if (adminSurface.data === "requires-token" && !adminReady) {
     return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
+  }
+
+  /*
+   * O painel nativo da barra de status do macOS carrega esta rota dentro de um
+   * `WKWebView` estreito. Ela renderiza o mesmo Chat sem Sidebar nem Topbar,
+   * porque o chrome administrativo não cabe na largura de um telemóvel.
+   *
+   * Fica deliberadamente **depois** do portão de acesso acima: o painel usa a
+   * mesma sessão com cookie `HttpOnly` que o navegador, e não um caminho de
+   * credencial próprio.
+   */
+  if (isEmbeddedChat) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={<RouteFallback fullScreen />}>
+          <div className="h-full min-h-0 w-full overflow-hidden bg-ink">
+            <Chat />
+          </div>
+        </Suspense>
+      </ErrorBoundary>
+    );
   }
 
   if (isWizard) {

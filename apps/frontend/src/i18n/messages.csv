@@ -51,6 +51,8 @@ chat.new,New chat,Conversa nova
 chat.newShort,New,Nova
 chat.noModel,The network is not serving any model,A rede não está servindo nenhum modelo
 chat.noModelDetail,Assign a model to the nodes in Settings before testing.,Atribua um modelo aos nós em Configurações antes de testar.
+chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
+chat.openLargerWindowShort,Larger window,Janela maior
 chat.placeholder,Write to the network…,Escreva para a rede…
 chat.prefillSpeed,Prefill,Pré-processamento
 chat.promptTokensUnit,prompt tokens,tokens do prompt

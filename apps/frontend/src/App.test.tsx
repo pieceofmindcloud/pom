@@ -150,4 +150,13 @@ describe("guarda de perfil por rota", () => {
     expect(screen.queryByRole("navigation")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  it("abre o chat compacto pelo caminho usado pelo app da barra de menus", async () => {
+    open("/admin-ui/chat", "node");
+    const chat = await screen.findByText("tela-chat");
+    expect(chat).toBeTruthy();
+    expect(chat.parentElement?.className).toContain("h-full");
+    expect(chat.parentElement?.className).toContain("min-h-0");
+    expect(chat.parentElement?.className).toContain("overflow-hidden");
+  });
 });

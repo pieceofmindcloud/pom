@@ -39,6 +39,8 @@ vi.mock("./lib/queries", () => ({
 }));
 
 vi.mock("./components/Notifications", () => ({ Notifications: () => null }));
+vi.mock("./components/Sidebar", () => ({ Sidebar: () => <aside data-testid="admin-sidebar" /> }));
+vi.mock("./components/Topbar", () => ({ Topbar: () => <header data-testid="admin-topbar" /> }));
 vi.mock("./components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,
   LogoMark: () => <div aria-hidden="true" />,
@@ -158,5 +160,7 @@ describe("guarda de perfil por rota", () => {
     expect(chat.parentElement?.className).toContain("h-full");
     expect(chat.parentElement?.className).toContain("min-h-0");
     expect(chat.parentElement?.className).toContain("overflow-hidden");
+    expect(screen.queryByTestId("admin-sidebar")).toBeNull();
+    expect(screen.queryByTestId("admin-topbar")).toBeNull();
   });
 });

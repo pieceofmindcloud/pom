@@ -185,7 +185,12 @@ Nome, slug e caminho do `.icns` saem do `brand.json`; o Info.plist marca
 o bundle continua chamavel por linha de comando em
 `POM.app/Contents/MacOS/pom`. O workflow de release chama este script no alvo
 macOS e copia o `dist` da interface para `Contents/Resources/apps/frontend/`,
-que e onde `config::bundled_ui_dist()` a procura.
+que e onde `config::bundled_ui_dist()` a procura. O script também coloca
+`assets/brand/pom-mark.png` como `pom-status.png` e as localizações
+`assets/brand/macos/*.lproj` em `Contents/Resources`; `macos_status.m` usa o
+mark como imagem template no `NSStatusItem` para manter contraste nos dois
+temas. O mesmo bundle abre `/admin-ui/chat` no popover de 390 x 844 points e
+oferece a janela maior pelo WebKit padrão do macOS.
 
 ## derive-dark-logo.py
 

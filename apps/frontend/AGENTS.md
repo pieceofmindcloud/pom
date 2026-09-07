@@ -59,6 +59,7 @@ aceita pelo backend; a fronteira real ficou para `rdma-perfis-escopo-backend`.
 
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)
+- `/admin-ui/chat` -> Chat compacto para o painel nativo da barra de status do macOS; mantém somente a tela de chat, com layout `h-full min-h-0 overflow-hidden`, e o botão de janela maior só aparece quando o WebKit nativo fornece a ponte `pomOpenWindow`.
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels (busca,
   detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também
   mostra os jobs de fatiamento e suas barras de progresso

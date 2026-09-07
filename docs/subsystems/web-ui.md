@@ -30,6 +30,23 @@ partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
   (`npm run build` ou apontar `POM_UI_DIST`). `dist/` e `dist-release/`
   são artefatos locais ignorados pelo git.
 
+### Chat compacto da barra de menus do macOS
+
+O bundle macOS mantém o processo Rust como dono do gateway e adiciona um
+`NSStatusItem` em `crates/node/src/macos_status.m`. O clique abre o mesmo SPA
+em `/admin-ui/chat`, sem sidebar nem topbar, em um `WKWebView` de 390 x 844
+points, dimensão de smartphone. O botão `Janela maior` só aparece quando a
+ponte WebKit está disponível e pede ao processo nativo uma janela de 1080 x
+760 points. A versão no navegador comum continua sem esse botão.
+
+O Rust monta `http://127.0.0.1:<gateway_port>/admin-ui/chat`: a porta é a do
+`pom.json`, com o `--gateway-port` como fallback e 8080 como default. Os
+WebViews compartilham `WKWebsiteDataStore.defaultDataStore`; o frontend segue
+semeando `pom.connectionKey` por `/api/ui/node`, sem uma credencial paralela.
+Se o gateway não responde, o delegate nativo mostra uma página localizada de
+indisponibilidade com retry, em vez de deixar o painel vazio. Os textos dessa
+página ficam em `assets/brand/macos/{en,pt-BR}.lproj/Localizable.strings`.
+
 ### Temperatura da GPU
 
 Os dois cards mostram **uma linha por GPU**: o do Fluxo mostrava só a maior
@@ -93,7 +110,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
-  dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens)
+  dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens);
+  `/admin-ui/chat` é o alias compacto usado pelo app de barra do macOS e renderiza
+  o mesmo Chat sem o chrome administrativo
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
   `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
   fatiamento embutido

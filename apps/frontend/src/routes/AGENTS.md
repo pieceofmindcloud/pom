@@ -49,6 +49,11 @@ Per-file list:
   do servidor; o texto genérico de resposta vazia só é usado quando nenhum
   erro foi enviado. Erros longos quebram linha, continuam selecionáveis e têm
   um controle de cópia localizado.
+  A rota `/admin-ui/chat` reutiliza a mesma tela sem o shell administrativo para
+  caber no popover nativo de 390 x 844 pontos. `OpenNativeChatWindowButton` é
+  deliberadamente invisível no navegador comum e só publica `open` na ponte
+  WebKit `pomOpenWindow`, que abre a janela maior sem criar um fluxo paralelo de
+  autenticação.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

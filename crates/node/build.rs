@@ -16,8 +16,37 @@ fn main() {
         .expect("workspace root");
 
     emit_build_id(&root);
+    build_macos_status();
     embed_windows_icon(&root);
 }
+
+/// Compila a ponte Objective-C do item da barra de status, só no alvo macOS.
+///
+/// AppKit e WebKit entram pelos frameworks do sistema, não por uma dependência
+/// Rust nem por um runtime de navegador empacotado: o bundle continua fino e
+/// Linux e Windows não ganham nada disto.
+///
+/// O `cfg(macos)` de fora é do **host** e traz o `cc` como build-dependency,
+/// exatamente pelo motivo descrito em `embed_windows_icon`. O teste contra
+/// `CARGO_CFG_TARGET_OS` é do **alvo**, que é quem decide se a ponte tem que
+/// existir no binário. Os dois têm que valer: compilar um alvo macOS é coisa
+/// que só acontece num host macOS.
+#[cfg(target_os = "macos")]
+fn build_macos_status() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    println!("cargo:rerun-if-changed=src/macos_status.m");
+    cc::Build::new()
+        .file("src/macos_status.m")
+        .flag("-fobjc-arc")
+        .compile("pom_macos_status");
+    println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=WebKit");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn build_macos_status() {}
 
 /// Grava o ícone do aplicativo dentro do `.exe` (só no Windows).
 ///

@@ -210,7 +210,12 @@ mod tests {
                 "{p} devia ser tratado como rota de API"
             );
         }
-        for p in ["config/keys/api", "fatias/andamento", "chat"] {
+        for p in [
+            "config/keys/api",
+            "fatias/andamento",
+            "chat",
+            "admin-ui/chat",
+        ] {
             assert!(
                 !API_PREFIXES.iter().any(|pre| p.starts_with(pre)),
                 "{p} e uma rota de tela e devia cair no index.html"

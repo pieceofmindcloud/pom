@@ -12,8 +12,8 @@
 #
 # O bundle é um invólucro fino: o binário continua sendo o mesmo programa de
 # linha de comando, e `POM.app/Contents/MacOS/pom` pode ser chamado direto com
-# os mesmos argumentos. `LSUIElement` mantém o nó fora do Dock, porque abrir o
-# app não abre janela nenhuma - a interface é web, na porta do gateway.
+# os mesmos argumentos. `LSUIElement` mantém o nó fora do Dock; a interface
+# principal continua web, com acesso rápido pelo item nativo da barra de status.
 set -euo pipefail
 
 raiz="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,15 +23,22 @@ destino="${2:-$raiz/dist-release/POM.app}"
 nome=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "$raiz/brand.json")
 slug=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["slug"])' "$raiz/brand.json")
 icns="$raiz/$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["app_icons"]["macos"])' "$raiz/brand.json")"
+status_icon="$raiz/assets/brand/pom-mark.png"
+macos_locales="$raiz/assets/brand/macos"
 
 [ -x "$bin" ] || { echo "binário não encontrado: $bin" >&2; exit 1; }
 [ -f "$icns" ] || { echo "ícone não encontrado: $icns" >&2; exit 1; }
+[ -f "$status_icon" ] || { echo "ícone da barra não encontrado: $status_icon" >&2; exit 1; }
 
 rm -rf "$destino"
 mkdir -p "$destino/Contents/MacOS" "$destino/Contents/Resources"
 
 cp "$bin" "$destino/Contents/MacOS/$slug"
 cp "$icns" "$destino/Contents/Resources/$slug.icns"
+cp "$status_icon" "$destino/Contents/Resources/$slug-status.png"
+if [ -d "$macos_locales" ]; then
+    find "$macos_locales" -mindepth 1 -maxdepth 1 -type d -name '*.lproj' -exec cp -R {} "$destino/Contents/Resources/" \;
+fi
 
 versao=$(grep -m1 '^version' "$raiz/Cargo.toml" | sed 's/[^0-9.]//g')
 versao=${versao:-0.1.0}

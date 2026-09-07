@@ -39,8 +39,13 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   local ao host remoto, mede os cinco prompts da bateria e derruba somente o
   PID criado. A implementacao Python fica em `bench_llamacpp.py`; os testes
   puros de selecao, payload, SSE e medianas ficam em
-  `test_bench_llamacpp.py`. A CLI, o mapa de flags e as limitacoes estao no
-  relatorio operacional da tarefa.
+  `test_bench_llamacpp.py`. `n_ctx` e por sessao, portanto `-c` recebe
+  `n_ctx * max_sessions` e `-np` recebe `max_sessions`; `offload_kqv=true` usa
+  o default do llama.cpp e so `false` acrescenta `-nkvo`. Um binario preexistente
+  so e aceito quando o `CMakeCache.txt` prova o mesmo source com CUDA e
+  `LLAMA_BUILD_SERVER=ON`; caso contrario o build vai para fora da arvore.
+  A CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
+  tarefa.
 - `migrate_pom_db.py` - ferramenta descartável e explícita para copiar, uma
   única vez, implantações, auditoria, API keys, preferência térmica e token
   das fontes antigas para um `pom.db` já criado pelo binário. O arranque nunca

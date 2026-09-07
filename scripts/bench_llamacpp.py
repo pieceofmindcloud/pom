@@ -171,11 +171,10 @@ def select_deployment(
         if len(selected) > 1:
             raise ConfigError(f"deploy-id repetido no snapshot: {deploy_id}")
         candidate = selected[0]
-        wanted_model = model or _active_model(snapshot)
-        if wanted_model and not _same_model(wanted_model, candidate["label"]):
+        if model and not _same_model(model, candidate["label"]):
             raise ConfigError(
                 f"deployment {deploy_id} serve {candidate['label']!r}, "
-                f"mas --model pediu {wanted_model!r}"
+                f"mas --model pediu {model!r}"
             )
         return candidate
 
@@ -187,7 +186,10 @@ def select_deployment(
     candidates = [item for item in deployments if _same_model(wanted_model, item["label"])]
     if not candidates:
         raise ConfigError(f"nenhum deployment corresponde ao modelo {wanted_model!r}")
-    preferred = [item for item in candidates if item["serving"] or item["is_default"]]
+    serving = [item for item in candidates if item["serving"]]
+    if len(serving) == 1:
+        return serving[0]
+    preferred = [item for item in candidates if item["is_default"]]
     if len(preferred) == 1:
         return preferred[0]
     if len(candidates) == 1:
@@ -282,7 +284,8 @@ def build_bench_plan(
         "pom_config": core,
         "effective_n_ctx": effective_n_ctx,
         "llama_flags": {
-            "ctx_size": effective_n_ctx,
+            "ctx_size": effective_n_ctx * core["max_sessions"],
+            "ctx_per_session": effective_n_ctx,
             "batch_size": core["n_batch"],
             "gpu_layers": core["n_gpu_layers"],
             "parallel": core["max_sessions"],
@@ -348,15 +351,11 @@ def parse_sse_result(
     output_tokens = timing.get("predicted_n")
     if output_tokens is None and final_event:
         output_tokens = final_event.get("tokens_predicted")
-    response_text = ""
-    if final_event and isinstance(final_event.get("content"), str):
-        response_text = final_event["content"]
-    else:
-        response_text = "".join(
-            event.get("content", "")
-            for event in events
-            if isinstance(event.get("content"), str)
-        )
+    response_text = "".join(
+        event.get("content", "")
+        for event in events
+        if isinstance(event.get("content"), str)
+    )
     errors: list[str] = []
     if process_error:
         errors.append(process_error)
@@ -424,6 +423,20 @@ def summary_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def incomplete_prompts(rows: Iterable[dict[str, Any]], expected_repetitions: int) -> list[str]:
+    """Retorna prompts que nao completaram todas as repeticoes medidas."""
+
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if row.get("phase") == "measurement" and row.get("status") == "ok":
+            counts[str(row.get("prompt_id"))] += 1
+    return [
+        prompt_id
+        for prompt_id in PROMPT_IDS
+        if prompt_id in counts and counts[prompt_id] < expected_repetitions
+    ]
 
 
 def _build_long_context(kind: str) -> str:
@@ -607,6 +620,25 @@ def _remote_source_info(remote: Remote, source: str) -> dict[str, str]:
     return {"source": source, "commit": commit, "branch": branch}
 
 
+def _prebuilt_cache_is_compatible(cache_text: str, source: str) -> bool:
+    """Exige prova no CMakeCache de que o binario e CUDA/server deste fork."""
+
+    values: dict[str, str] = {}
+    for line in cache_text.splitlines():
+        if ":" not in line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.split(":", 1)[0]
+        values[key] = value.strip()
+    configured_source = values.get("CMAKE_HOME_DIRECTORY", "").rstrip("/")
+    expected_source = source.rstrip("/")
+    return (
+        configured_source == expected_source
+        and values.get("GGML_CUDA") == "ON"
+        and values.get("LLAMA_BUILD_SERVER") == "ON"
+    )
+
+
 def _resolve_server(
     remote: Remote,
     source: str,
@@ -616,8 +648,12 @@ def _resolve_server(
 ) -> tuple[str, dict[str, str]]:
     info = _remote_source_info(remote, source)
     candidate = f"{source.rstrip('/')}/build/bin/llama-server"
-    existing = remote.run(f"test -x {_shell_path(candidate)}")
-    if existing.returncode == 0:
+    cache_path = f"{source.rstrip('/')}/build/CMakeCache.txt"
+    existing = remote.run(
+        f"test -x {_shell_path(candidate)} && test -f {_shell_path(cache_path)} && "
+        f"cat {_shell_path(cache_path)}"
+    )
+    if existing.returncode == 0 and _prebuilt_cache_is_compatible(existing.stdout, source):
         return candidate, info | {"build": "prebuilt"}
 
     external_build = build_dir or f"/tmp/rdma-bench-llamacpp-{info['commit'][:12]}"
@@ -635,6 +671,14 @@ def _resolve_server(
         cmake_options.append(f"-DCMAKE_CUDA_ARCHITECTURES={cuda_architectures}")
     command = (
         "set -eu; "
+        "case "
+        + _shell_path(external_build)
+        + " in "
+        + _shell_path(source.rstrip("/"))
+        + "|"
+        + _shell_path(source.rstrip("/") + "/")
+        + "*"
+        + ") echo 'LLAMACPP_BUILD_DIR nao pode ficar dentro da arvore llama.cpp' >&2; exit 2;; esac; "
         + shlex.join(cmake_options)
         + "; cmake --build "
         + _shell_path(external_build)
@@ -680,8 +724,9 @@ def _start_server(
         str(flags["gpu_layers"]),
         "-np",
         str(flags["parallel"]),
-        "-kvo" if flags["kv_offload"] else "-nkvo",
     ]
+    if not flags["kv_offload"]:
+        command_args.append("-nkvo")
     command = (
         "nohup "
         + shlex.join(command_args)
@@ -959,21 +1004,46 @@ def _resolve_model_path(remote: Remote, root: str, label: str, override: str | N
     return matches[0]
 
 
-def _cleanup_server(remote: Remote, pid: int | None, log_path: str | None) -> None:
-    try:
-        if pid is not None:
-            remote.run(
+def _cleanup_server(remote: Remote, pid: int | None, log_path: str | None) -> bool:
+    """Encerra apenas o PID criado e retorna se o cleanup remoto foi confirmado."""
+
+    cleanup_ok = True
+    if pid is not None:
+        try:
+            result = remote.run(
                 "pid="
                 + str(pid)
-                + "; if kill -0 \"$pid\" 2>/dev/null; then kill -TERM \"$pid\" 2>/dev/null || true; "
+                + "; if kill -0 \"$pid\" 2>/dev/null; then "
+                + "command_name=$(ps -p \"$pid\" -o comm= 2>/dev/null || true); "
+                + "case \"$command_name\" in llama-server) ;; *) "
+                + "echo \"PID $pid nao e llama-server ($command_name)\" >&2; exit 42;; esac; "
+                + "kill -TERM \"$pid\" 2>/dev/null || true; "
                 + "for i in $(seq 1 15); do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done; "
                 + "kill -KILL \"$pid\" 2>/dev/null || true; fi",
                 timeout=30,
             )
-        if log_path:
-            remote.run(f"rm -f {_shell_path(log_path)}", timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        print("aviso: nao foi possivel confirmar cleanup remoto do llama-server", file=sys.stderr)
+            if result.returncode != 0:
+                cleanup_ok = False
+                print(
+                    f"aviso: cleanup do PID {pid} falhou: {(result.stderr or result.stdout).strip()}",
+                    file=sys.stderr,
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            cleanup_ok = False
+            print(f"aviso: cleanup remoto falhou: {exc}", file=sys.stderr)
+    if log_path and cleanup_ok:
+        try:
+            result = remote.run(f"rm -f {_shell_path(log_path)}", timeout=30)
+            if result.returncode != 0:
+                cleanup_ok = False
+                print(
+                    f"aviso: remocao do log remoto falhou: {(result.stderr or result.stdout).strip()}",
+                    file=sys.stderr,
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            cleanup_ok = False
+            print(f"aviso: remocao do log remoto falhou: {exc}", file=sys.stderr)
+    return cleanup_ok
 
 
 def _row(label: str, phase: str, prompt_id: str, repetition: int, result: dict[str, Any]) -> dict[str, Any]:
@@ -1123,6 +1193,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"aviso: {prompt_id} repeticao {repetition} falhou: {result.get('error')}",
                         file=sys.stderr,
                     )
+        incomplete = incomplete_prompts(rows, args.repeticoes)
+        measured_prompt_ids = {
+            str(row.get("prompt_id"))
+            for row in rows
+            if row.get("phase") == "measurement"
+        }
+        incomplete.extend(
+            prompt_id for prompt_id in PROMPT_IDS if prompt_id not in measured_prompt_ids
+        )
+        incomplete = list(dict.fromkeys(incomplete))
+        if incomplete:
+            raise RuntimeError(
+                "medicao incompleta; prompts sem todas as repeticoes validas: "
+                + ", ".join(incomplete)
+            )
         status = "ok"
         metadata["status"] = status
     except SafetyError as exc:
@@ -1144,7 +1229,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         if remote_log:
             server_log = _tail_log(remote, remote_log)
-        _cleanup_server(remote, server_pid, remote_log)
+        cleanup_ok = _cleanup_server(remote, server_pid, remote_log)
+        metadata["cleanup_ok"] = cleanup_ok
+        if not cleanup_ok:
+            cleanup_reason = "nao foi possivel confirmar o encerramento do llama-server remoto"
+            if reason:
+                reason += "; " + cleanup_reason
+            else:
+                reason = cleanup_reason
+            status = "cleanup_error"
+            return_code = 1
         if server_log:
             local_log_path.write_text(server_log + "\n", encoding="utf-8")
             metadata["server_log"] = str(local_log_path)

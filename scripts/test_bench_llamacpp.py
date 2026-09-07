@@ -5,8 +5,11 @@ import unittest
 from scripts.bench_llamacpp import (
     ConfigError,
     RemoteResult,
+    _cleanup_server,
+    _prebuilt_cache_is_compatible,
     _start_server,
     build_bench_plan,
+    incomplete_prompts,
     make_completion_payload,
     median,
     parse_sse_result,
@@ -76,6 +79,12 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertEqual(selected["deploy_id"], "d-1")
         self.assertEqual(selected["nodes"][0]["config"]["n_batch"], 512)
 
+    def test_serving_is_preferred_over_non_serving_default(self):
+        self.snapshot["/api/ui/deployments"]["deployments"][0]["is_default"] = False
+        self.snapshot["/api/ui/deployments"]["deployments"][1]["serving"] = False
+        self.snapshot["/api/ui/deployments"]["deployments"][1]["is_default"] = True
+        self.assertEqual(select_deployment(self.snapshot)["deploy_id"], "d-1")
+
     def test_ambiguous_model_requires_deploy_id(self):
         self.snapshot["/api/ui/deployments"]["deployments"][0]["serving"] = False
         self.snapshot["/api/ui/deployments"]["deployments"][0]["is_default"] = False
@@ -95,6 +104,12 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertEqual(plan["pom_config"]["n_ctx"], 250000)
         self.assertEqual(plan["effective_n_ctx"], 4096)
         self.assertEqual(plan["llama_flags"]["ctx_size"], 4096)
+
+    def test_context_total_preserves_n_ctx_per_session(self):
+        self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]["max_sessions"] = 2
+        plan = build_bench_plan(select_deployment(self.snapshot), n_ctx_override=4096)
+        self.assertEqual(plan["llama_flags"]["ctx_size"], 8192)
+        self.assertEqual(plan["llama_flags"]["ctx_per_session"], 4096)
 
     def test_completion_payload_maps_sampling_and_budget(self):
         payload = make_completion_payload(
@@ -133,8 +148,13 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertIn(" -b 512", command)
         self.assertIn(" -ngl 99", command)
         self.assertIn(" -np 1", command)
-        self.assertIn(" -kvo", command)
+        self.assertNotIn(" -kvo", command)
         self.assertNotIn("8080", command)
+
+    def test_explicit_deploy_id_does_not_depend_on_active_model(self):
+        self.snapshot["/api/ui/node"]["active_model"] = "outro.gguf"
+        selected = select_deployment(self.snapshot, deploy_id="d-1")
+        self.assertEqual(selected["deploy_id"], "d-1")
 
     def test_parse_stream_result_extracts_timings_and_first_token(self):
         lines = [
@@ -149,6 +169,14 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertEqual(result["ttft_ms"], 7.25)
         self.assertEqual(result["total_ms"], 41.5)
 
+    def test_parse_stream_result_uses_partial_text_when_final_content_is_empty(self):
+        lines = [
+            "data: {\"content\":\"Oi\",\"stop\":false}\n",
+            "data: {\"content\":\"\",\"stop\":true,\"timings\":{\"prompt_ms\":1,\"prompt_per_second\":1,\"predicted_ms\":1,\"predicted_per_second\":1,\"prompt_n\":1,\"predicted_n\":1}}\n",
+        ]
+        result = parse_sse_result(lines, first_token_ms=1, total_ms=2, http_status=200)
+        self.assertEqual(result["response_text"], "Oi")
+
     def test_summary_uses_median_and_excludes_warmup(self):
         rows = [
             {"phase": "warmup", "prompt_id": "p-curto-repetitivo", "status": "ok", "generation_tok_s": 999},
@@ -161,6 +189,25 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertEqual(summary[0]["generation_tok_s"], 20)
         self.assertEqual(summary[0]["prefill_ms"], 20)
         self.assertEqual(median([10, 30, 20]), 20)
+
+    def test_incomplete_measurements_are_not_publishable_as_success(self):
+        rows = [
+            {"phase": "measurement", "prompt_id": "p-curto-repetitivo", "status": "ok"},
+            {"phase": "measurement", "prompt_id": "p-curto-repetitivo", "status": "ok"},
+        ]
+        self.assertEqual(incomplete_prompts(rows, expected_repetitions=3), ["p-curto-repetitivo"])
+
+    def test_prebuilt_cache_must_prove_cuda_server_build(self):
+        cache = """\nCMAKE_HOME_DIRECTORY:INTERNAL=/data/fm-prefixo-src/llama.cpp\nGGML_CUDA:BOOL=ON\nLLAMA_BUILD_SERVER:BOOL=ON\n"""
+        self.assertTrue(_prebuilt_cache_is_compatible(cache, "/data/fm-prefixo-src/llama.cpp"))
+        self.assertFalse(_prebuilt_cache_is_compatible(cache.replace("GGML_CUDA:BOOL=ON", "GGML_CUDA:BOOL=OFF"), "/data/fm-prefixo-src/llama.cpp"))
+
+    def test_cleanup_reports_remote_failure(self):
+        class FailedRemote:
+            def run(self, command, timeout=None):
+                return RemoteResult(255, "", "ssh failed")
+
+        self.assertFalse(_cleanup_server(FailedRemote(), 4242, "/tmp/bench.log"))
 
 
 if __name__ == "__main__":

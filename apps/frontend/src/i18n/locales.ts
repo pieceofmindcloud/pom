@@ -150,7 +150,12 @@ export function formatMessage(locale: Locale, key: string, values: MessageValues
   const sourceLocale = messages[locale].has(key) ? locale : "en";
   const message = messages[sourceLocale].get(key);
   if (!message) return key;
-  return String(formatter(sourceLocale, key, message).format(valuesForIcu(values)));
+  try {
+    return String(formatter(sourceLocale, key, message).format(valuesForIcu(values)));
+  } catch (error) {
+    console.warn(`Could not format locale message "${key}"`, error);
+    return message;
+  }
 }
 
 /**

@@ -272,7 +272,7 @@ export function TokenKeys() {
         open={revoking !== null}
         title={t("keys.revokeTitle", { label: revoking?.label ?? "" })}
         description={t("keys.revokeDescription")}
-        confirmLabel={t("keys.revoke")}
+        confirmLabel={t("keys.revokeConfirm")}
         tone="danger"
         busy={busy}
         onConfirm={() => revoking && void revoke(revoking.key)}

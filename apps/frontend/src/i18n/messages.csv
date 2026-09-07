@@ -714,6 +714,7 @@ keys.purpose,Purpose,Para que serve
 keys.purposeHint,Appears on the Logs screen for every request.,Aparece na tela de Logs em todas as requisições.
 keys.refresh,Refresh,Atualizar
 keys.revoke,Revoke {label},Revogar {label}
+keys.revokeConfirm,Revoke,Revogar
 keys.revokeDescription,Anyone using this token receives 403 on the next call. It cannot be recovered.,Quem estiver usando este token recebe 403 na próxima chamada. Não há como recuperá-lo.
 keys.revokeFailed,The token was not revoked,O token não foi revogado
 keys.revokeTitle,Revoke token {label}?,Revogar o token {label}?

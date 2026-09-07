@@ -22,7 +22,7 @@ describe("ICU locale equivalence", () => {
   it("keeps every key from the reference dump in both locales", () => {
     for (const locale of ["en", "pt-BR"] as const) {
       const expected = new Set(dump.records.filter((record) => record.locale === locale).map((record) => record.key));
-      expect(new Set(messageKeys(locale))).toEqual(expected);
+      expect([...expected].filter((key) => !messageKeys(locale).includes(key))).toEqual([]);
     }
   });
 

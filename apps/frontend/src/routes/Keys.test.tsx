@@ -48,14 +48,14 @@ vi.mock("../lib/toast", () => ({
 
 import { TokenKeys } from "./Keys";
 
-function mount() {
+function mount(profile: "admin" | "inference" = "inference") {
   return render(
     <MemoryRouter
       initialEntries={["/config/keys/api"]}
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       <LocaleProvider initialLocale="pt-BR">
-        <ProfileProvider initialProfile="inference">
+        <ProfileProvider initialProfile={profile}>
           <TokenKeys />
         </ProfileProvider>
       </LocaleProvider>
@@ -96,5 +96,14 @@ describe("TokenKeys no perfil inference", () => {
       node_id: "inference-node",
     });
     expect(mocks.refetch).toHaveBeenCalled();
+  });
+
+  it("abre a confirmação de revogação sem exigir o label duas vezes", () => {
+    mount("admin");
+
+    fireEvent.click(screen.getByRole("button", { name: "Revogar Inferência" }));
+
+    expect(screen.getByRole("dialog", { name: "Revogar o token Inferência?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revogar", exact: true })).toBeTruthy();
   });
 });

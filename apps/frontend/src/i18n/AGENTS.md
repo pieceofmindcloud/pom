@@ -23,8 +23,10 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 - `locales.ts` - parser CSV pequeno, carregamento síncrono do `?raw`, cache de
   `IntlMessageFormat` e a API pública de locale. Não coloque traduções novas
   aqui. O fallback continua sendo locale solicitado, depois inglês, depois a
-  própria chave. Todas as chaves e textos existentes, incluindo os grupos de
-  logs de deployment, preferências, telemetria e modelos remotos, ficam no CSV.
+  própria chave. Erros de formatação ICU são avisados no console e devolvem o
+  padrão bruto, para que uma variável omitida não derrube a tela. Todas as
+  chaves e textos existentes, incluindo os grupos de logs de deployment,
+  preferências, telemetria e modelos remotos, ficam no CSV.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou

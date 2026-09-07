@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   formatMessage,
   localizeServerText,
@@ -52,6 +52,18 @@ describe("formatMessage", () => {
     expect(formatMessage("pt-BR", "remoteModels.title")).toBe(
       "Encontrar modelos no Hugging Face",
     );
+  });
+
+  it("returns a safe fallback instead of throwing when an ICU value is missing", () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(formatMessage("en", "keys.revoke")).toBe("Revoke {label}");
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Could not format locale message "keys.revoke"'),
+      expect.anything(),
+    );
+
+    warning.mockRestore();
   });
 });
 

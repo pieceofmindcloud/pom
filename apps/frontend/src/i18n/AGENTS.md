@@ -42,6 +42,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   O aviso
   sobre JSON selecionável foi removido; nenhuma mensagem dessa tela recebe o
   segredo da chave.
+- O grupo `deploymentLogs.*` cobre o console de processo: estado do auto-scroll,
+  cópia das últimas 500 linhas, retorno da cópia, filtro e estados de coleta.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## Como editar mensagens

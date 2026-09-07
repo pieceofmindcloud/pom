@@ -57,7 +57,7 @@ const KIND_TONE: Record<DeploymentKind, "iris" | "aqua" | "sky"> = {
   tensor_parallel: "sky",
 };
 
-function createdAtLabel(iso: string, locale: string) {
+function dateTimeLabel(iso: string, locale: string) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "-";
   return new Intl.DateTimeFormat(locale, {
@@ -312,7 +312,7 @@ function VersionList({
                 )}
                 <span className="text-xs text-muted">
                   <time dateTime={v.created_at}>
-                    {createdAtLabel(v.created_at, locale)}
+                    {dateTimeLabel(v.created_at, locale)}
                   </time>
                 </span>
                 <span className="text-xs text-faint">{versionSummary(v.params)}</span>
@@ -396,8 +396,8 @@ function Row({
           {t("deployments.nodeCount", { count: d.nodes.length })}
         </td>
         <td className="whitespace-nowrap px-5 py-3 text-muted">
-          <time dateTime={d.created_at}>
-            {createdAtLabel(d.created_at, locale)}
+          <time dateTime={d.activated_at}>
+            {dateTimeLabel(d.activated_at, locale)}
           </time>
         </td>
         <td className="px-5 py-3">
@@ -487,8 +487,8 @@ export function Deployments() {
    */
   const [inspected, setInspected] = useState<Inspected | null>(null);
   const rows = [...(data?.deployments ?? [])].sort((a, b) => {
-    const aTime = Date.parse(a.deployment.created_at);
-    const bTime = Date.parse(b.deployment.created_at);
+    const aTime = Date.parse(a.deployment.activated_at);
+    const bTime = Date.parse(b.deployment.activated_at);
     if (Number.isNaN(aTime) && Number.isNaN(bTime)) return 0;
     if (Number.isNaN(aTime)) return 1;
     if (Number.isNaN(bTime)) return -1;
@@ -538,7 +538,7 @@ export function Deployments() {
                     <th className="px-5 py-2">{t("deployments.model")}</th>
                     <th className="px-5 py-2">{t("deployments.kindLabel")}</th>
                     <th className="px-5 py-2">{t("deployments.machines")}</th>
-                    <th className="px-5 py-2">{t("deployments.created")}</th>
+                    <th className="px-5 py-2">{t("deployments.lastActivated")}</th>
                     <th className="px-5 py-2">{t("deployments.state")}</th>
                     <th className="px-5 py-2">{t("deployments.actions")}</th>
                   </tr>

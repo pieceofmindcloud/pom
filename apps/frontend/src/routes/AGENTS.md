@@ -244,7 +244,8 @@ Per-file list:
   o controle de reabertura permanece na coluna compacta existente.
 - `Deployments.tsx` - lista as implantações registradas no cluster via
   `useDeployments`, diferencia "no ar" de "padrão", ordena o histórico pela
-  criação mais recente e mostra a coluna "Criada". Tela cheia, como a de Logs:
+  última ativação (`deployment.activated_at`) e mostra a coluna "Última
+  ativação". Tela cheia, como a de Logs:
   cabeçalho fixo, tabela rolando por dentro e, quando há versão escolhida, um
   inspetor à direita (`lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]`).
   Clicar na linha de uma versão abre o `DeploymentInspector` em `readOnly` com
@@ -264,7 +265,10 @@ Per-file list:
 - `DeploymentLogs.tsx` - consola full-bleed do log de processo do cluster em
   `/implantacoes/logs`. Consulta os lotes persistidos do principal, atualiza a
   cada segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
-  `deploy_id`; não é a auditoria paginada de requisições em `Logs.tsx`.
+  `deploy_id`; mantém apenas o terminal em preto, acompanha o fim enquanto o
+  leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
+  botão de estado visível para reativá-lo e copia as últimas 500 linhas. Não é a
+  auditoria paginada de requisições em `Logs.tsx`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   No perfil `inference`, mostra só a chave ativa deste nó, esconde o seletor de

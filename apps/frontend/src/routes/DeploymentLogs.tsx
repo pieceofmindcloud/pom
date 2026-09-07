@@ -3,11 +3,11 @@
  * requisições e continua sendo uma tabela; esta tela só mostra as linhas que o
  * principal recebeu dos nós, na ordem persistida de chegada.
  */
-import { Terminal } from "lucide-react";
+import { ArrowDownToLine, Check, Copy, Terminal } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Badge,
-  Empty,
   ErrorState,
   PageHeader,
   Panel,
@@ -15,9 +15,20 @@ import {
   Select,
   Skeleton,
 } from "../components/ui";
+import { isNearBottom } from "../lib/chatScroll";
 import { clock } from "../lib/format";
 import { useClusterLogs, useDeployments } from "../lib/queries";
 import { useI18n } from "../i18n/provider";
+
+function logLineText(entry: {
+  node_id: string;
+  node_name: string;
+  origin_at: string;
+  level: string;
+  message: string;
+}) {
+  return `${entry.node_name || entry.node_id} [${entry.origin_at}] ${entry.level.toLowerCase()} ${entry.message}`;
+}
 
 export function DeploymentLogs() {
   const { t } = useI18n();
@@ -26,6 +37,50 @@ export function DeploymentLogs() {
   const logs = useClusterLogs(selectedDeployId);
   const deployments = useDeployments();
   const entries = logs.data?.entries ?? [];
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const wasAtBottom = useRef(true);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const latestSequence = entries[entries.length - 1]?.received_seq ?? null;
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || !autoScroll || !wasAtBottom.current || entries.length === 0) return;
+    terminal.scrollTo({ top: terminal.scrollHeight, behavior: "auto" });
+  }, [autoScroll, entries.length, latestSequence]);
+
+  function handleTerminalScroll() {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const atBottom = isNearBottom({
+      scrollTop: terminal.scrollTop,
+      clientHeight: terminal.clientHeight,
+      scrollHeight: terminal.scrollHeight,
+    });
+    wasAtBottom.current = atBottom;
+    if (!atBottom) setAutoScroll(false);
+  }
+
+  function toggleAutoScroll() {
+    const next = !autoScroll;
+    setAutoScroll(next);
+    if (next) {
+      wasAtBottom.current = true;
+      terminalRef.current?.scrollTo({
+        top: terminalRef.current.scrollHeight,
+        behavior: "auto",
+      });
+    }
+  }
+
+  async function copyLogs() {
+    try {
+      await navigator.clipboard.writeText(entries.slice(-500).map(logLineText).join("\n"));
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
 
   function selectDeployment(value: string) {
     const next = new URLSearchParams(searchParams);
@@ -35,7 +90,7 @@ export function DeploymentLogs() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#050505] px-4 py-5 sm:px-6 sm:py-6">
+    <div className="flex h-full min-h-0 flex-col bg-ink px-4 py-5 sm:px-6 sm:py-6">
       <PageHeader
         title={t("deploymentLogs.title")}
         subtitle={t("deploymentLogs.subtitle")}
@@ -58,9 +113,8 @@ export function DeploymentLogs() {
         }
       />
 
-      <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden border-white/10 bg-black shadow-[0_18px_60px_rgb(0_0_0/0.35)]">
+      <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden shadow-[0_18px_60px_rgb(0_0_0/0.12)]">
         <PanelHeader
-          className="border-white/10 bg-[#090909]"
           title={
             <span className="flex items-center gap-2 font-mono text-sm">
               <Terminal className="h-4 w-4 text-aqua" />
@@ -81,37 +135,101 @@ export function DeploymentLogs() {
           </div>
         )}
 
-        <div
-          data-testid="deployment-log-terminal"
-          className="min-h-0 flex-1 overflow-auto bg-black p-3 font-mono text-[0.76rem] leading-6 text-emerald-100 sm:p-4"
-          role="log"
-          aria-live="polite"
-        >
-          {logs.isLoading && <Skeleton className="h-24 bg-white/10" />}
-          {logs.isError && <ErrorState error={logs.error} onRetry={() => void logs.refetch()} />}
-          {!logs.isLoading && !logs.isError && entries.length === 0 && (
-            <Empty
-              icon={<Terminal className="h-5 w-5" />}
-              title={t("deploymentLogs.emptyTitle")}
+        {logs.isError && (
+          <div className="border-b border-line p-4">
+            <ErrorState error={logs.error} onRetry={() => void logs.refetch()} />
+          </div>
+        )}
+
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-black">
+          <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+            <button
+              type="button"
+              aria-label={
+                autoScroll
+                  ? t("deploymentLogs.disableAutoScroll")
+                  : t("deploymentLogs.enableAutoScroll")
+              }
+              aria-pressed={autoScroll}
+              title={
+                autoScroll
+                  ? t("deploymentLogs.disableAutoScroll")
+                  : t("deploymentLogs.enableAutoScroll")
+              }
+              onClick={toggleAutoScroll}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/20 bg-white/10 px-2.5 text-xs font-medium text-slate-200 transition-colors hover:border-white/35 hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/70"
             >
-              {t("deploymentLogs.emptyHint")}
-            </Empty>
-          )}
-          {entries.map((entry) => (
-            <div
-              key={entry.received_seq}
-              data-testid="deployment-log-line"
-              className="group whitespace-pre-wrap break-words rounded px-2 py-0.5 hover:bg-white/[0.045]"
-              title={entry.origin_at}
+              <ArrowDownToLine className="h-3.5 w-3.5" aria-hidden="true" />
+              {autoScroll
+                ? t("deploymentLogs.autoScrollOn")
+                : t("deploymentLogs.autoScrollOff")}
+            </button>
+            <button
+              type="button"
+              aria-label={t("deploymentLogs.copyLogs")}
+              title={t("deploymentLogs.copyLogs")}
+              onClick={() => void copyLogs()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/20 bg-white/10 px-2.5 text-xs font-medium text-slate-200 transition-colors hover:border-white/35 hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/70"
             >
-              <span className="mr-2 text-cyan-300">{entry.node_name || entry.node_id}</span>
-              <span className="mr-2 text-slate-500">[{clock(entry.origin_at)}]</span>
-              <span className="mr-2 text-slate-600">{entry.level.toLowerCase()}</span>
-              <span className="text-emerald-100">{entry.message}</span>
-            </div>
-          ))}
+              {copyState === "copied" ? (
+                <Check className="h-3.5 w-3.5 text-aqua" aria-hidden="true" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {copyState === "copied"
+                ? t("deploymentLogs.logsCopied")
+                : t("deploymentLogs.copyLogs")}
+            </button>
+          </div>
+
+          <div
+            ref={terminalRef}
+            data-testid="deployment-log-terminal"
+            onScroll={handleTerminalScroll}
+            className="h-full overflow-auto p-3 pt-14 font-mono text-[0.76rem] leading-6 text-emerald-100 sm:p-4 sm:pt-14"
+            role="log"
+            aria-live="polite"
+          >
+            {logs.isLoading && <Skeleton className="h-24 bg-white/10" />}
+            {!logs.isLoading && !logs.isError && entries.length === 0 && (
+              <div className="flex flex-col items-center justify-center px-6 py-14 text-center text-slate-200">
+                <div className="mb-3.5 flex h-11 w-11 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-slate-400">
+                  <Terminal className="h-5 w-5" aria-hidden="true" />
+                </div>
+                <p className="font-display text-[0.95rem] font-semibold text-slate-100">
+                  {t("deploymentLogs.emptyTitle")}
+                </p>
+                <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-slate-400">
+                  {t("deploymentLogs.emptyHint")}
+                </p>
+              </div>
+            )}
+            {entries.map((entry) => (
+              <div
+                key={entry.received_seq}
+                data-testid="deployment-log-line"
+                className="group whitespace-pre-wrap break-words rounded px-2 py-0.5 hover:bg-white/[0.045]"
+                title={entry.origin_at}
+              >
+                <span className="mr-2 text-cyan-300">{entry.node_name || entry.node_id}</span>
+                <span className="mr-2 text-slate-500">[{clock(entry.origin_at)}]</span>
+                <span className="mr-2 text-slate-600">{entry.level.toLowerCase()}</span>
+                <span className="text-emerald-100">{entry.message}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </Panel>
+      {copyState === "failed" && (
+        <p className="mt-2 text-right text-xs text-rose" role="status">
+          {t("deploymentLogs.copyFailed")}
+        </p>
+      )}
+      {copyState === "copied" && (
+        <p className="sr-only" role="status">
+          {t("deploymentLogs.logsCopied")}
+        </p>
+      )}
     </div>
   );
 }

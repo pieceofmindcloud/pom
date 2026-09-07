@@ -77,6 +77,7 @@ function row(
     kind?: "shards" | "whole";
     versions?: { version: number; n_ctx: number }[];
     activeVersion?: number;
+    activatedAt?: string;
   },
 ): DeploymentRow {
   const nodes = [
@@ -107,7 +108,7 @@ function row(
       model: { label: "qwen3:8b", total_layers: 32 },
       created_at: "2026-08-19T00:00:00Z",
       created_by: "coordenador",
-      activated_at: "2026-08-19T00:00:00Z",
+      activated_at: opts.activatedAt ?? "2026-08-19T00:00:00Z",
       nodes,
       versions,
       active_version: opts.activeVersion ?? versionSpecs[versionSpecs.length - 1].version,
@@ -171,18 +172,20 @@ describe("Deployments", () => {
     expect(screen.getByText("Modelo inteiro")).toBeTruthy();
   });
 
-  it("organiza o histórico do mais recente para o mais antigo", async () => {
+  it("organiza pela última ativação de versão, não pela criação", async () => {
     listDeployments.mockResolvedValue({
       node_id: "no-a",
       deployments: [
-        row("d-old", { serving: false, isDefault: false }),
-        {
-          ...row("d-new", { serving: true, isDefault: true }),
-          deployment: {
-            ...row("d-new", { serving: true, isDefault: true }).deployment,
-            created_at: "2026-08-29T12:00:00Z",
-          },
-        },
+        row("d-old", {
+          serving: false,
+          isDefault: false,
+          activatedAt: "2026-08-20T12:00:00Z",
+        }),
+        row("d-new", {
+          serving: true,
+          isDefault: true,
+          activatedAt: "2026-08-29T12:00:00Z",
+        }),
       ],
     });
 
@@ -197,7 +200,7 @@ describe("Deployments", () => {
     ]);
     expect(table.querySelectorAll("thead th")[1]?.textContent).toBe("Id");
     expect(cells[0].className).toContain("px-5");
-    expect(screen.getByText("Criada")).toBeTruthy();
+    expect(screen.getByText("Última ativação")).toBeTruthy();
   });
 
   it("reimplanta mandando o parâmetro mexido e preservando o resto", async () => {

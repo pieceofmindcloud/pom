@@ -38,7 +38,8 @@ dual-stack.
   `Caller`. `is_valid_inference_token` aplica a mesma regra na porta 8181: a
   `connection_key` compartilhada ou uma API key ativa lida de `pom.db`, para
   que criação e revogação entre processos tenham efeito sem reinício.
-- `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
+- `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
+  geração, snapshots/planejamento, HTTP e testes: `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), the bounded remote-token
@@ -243,7 +244,7 @@ dual-stack.
   `max_tokens` da requisição é `min(pedido, n_ctx restante)`, com
   `DEFAULT_MAX_TOKENS=512` só como padrão de quem não pede. O
   `max_new_tokens` da implantação **não** entra nessa conta: ele é o teto de
-  uma **perna** do laço de continuação (ver `gateway.rs` abaixo). A redução é
+  uma **perna** do laço de continuação (ver `gateway/` abaixo). A redução é
   registrada e devolvida em `x_pom.output_limits`
   (`requested`/`effective`/`deployment`/`context_available`/`leg`),
   e `x_pom.continuation_legs` diz quantas pernas a resposta costurou.
@@ -305,7 +306,7 @@ dual-stack.
 
 ## Key functions and routes
 
-- `gateway.rs` - `GatewayState` (network, ollama, default_model,
+- `gateway/` - `GatewayState` (network, ollama, default_model,
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
   reply_inbox); `FromRef<GatewayState> for AuthState`; `peers_visible_to_cluster`
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
@@ -378,7 +379,7 @@ dual-stack.
   touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
   `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
   JSON body (used by the transfer, deploy and webui tests).
-- `gateway.rs` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
+- `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
   número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
   de backend, escolha do operador, que a decisão do produto proíbe levantar.
   `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`. Esgotar a

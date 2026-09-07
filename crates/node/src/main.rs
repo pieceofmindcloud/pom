@@ -47,7 +47,7 @@ mod cluster_logs_policy;
 mod display;
 #[path = "inference/executor.rs"]
 mod executor;
-#[path = "backend/gateway.rs"]
+#[path = "backend/gateway/mod.rs"]
 mod gateway;
 #[path = "models/huggingface.rs"]
 mod huggingface;

@@ -15,6 +15,8 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/deploy/capacity-preview",
             post(capacity_preview_endpoint),
         )
+        .route("/api/ui/apply", post(apply))
+        .route("/api/ui/launch", post(launch))
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/unload", post(unload_model))
         .route("/api/ui/reconfigure", post(reconfigure))

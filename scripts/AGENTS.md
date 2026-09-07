@@ -39,15 +39,17 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   local ao host remoto, mede os cinco prompts da bateria e derruba somente o
   PID criado. A implementacao Python fica em `bench_llamacpp.py`; os testes
   puros de selecao, payload, SSE e medianas ficam em
-  `test_bench_llamacpp.py`. `n_ctx` e por sessao, portanto `-c` recebe
-  `n_ctx * max_sessions` e `-np` recebe `max_sessions`; `offload_kqv=true` usa
-  o default do llama.cpp e so `false` acrescenta `-nkvo`. Um binario preexistente
+  `test_bench_llamacpp.py`. A geometria equivalente ao POM usa `-c n_ctx`,
+  `-np (max_sessions * 2)` e `--kv-unified`, preservando a janela por sessao
+  sem multiplicar `n_ctx`; `offload_kqv=true` usa o default do llama.cpp e so
+  `false` acrescenta `-nkvo`. Um binario preexistente
   so e aceito quando o `CMakeCache.txt` prova o mesmo source com CUDA e
   `LLAMA_BUILD_SERVER=ON`; caso contrario o build vai para fora da arvore.
   Quando `mtp_enabled=true`, a configuracao vira `--spec-type draft-mtp`,
   `--spec-draft-n-max` e `--spec-draft-p-min`; o fork usa a cabeca `nextn` do
   proprio GGUF, sem modelo draft separado.
-  A CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
+  Os artefatos vao por padrao para `/Users/jairpereira/scripts/reports` e a
+  CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
   tarefa. Se o `nvcc` nao estiver no `PATH` remoto, o harness autodetecta
   `/usr/local/cuda/bin/nvcc`, `/usr/local/cuda-13.0/bin/nvcc` ou
   `/usr/local/cuda-12.9/bin/nvcc`; `--cuda-compiler` e

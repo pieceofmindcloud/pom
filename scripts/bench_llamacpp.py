@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import copy
 import json
 import os
 import secrets
@@ -94,6 +95,7 @@ SUMMARY_FIELDS = (
     "output_tokens",
     "tokens_cached",
 )
+DEFAULT_OUTPUT_DIR = "/Users/jairpereira/scripts/reports"
 
 
 def _as_label(value: Any) -> str:
@@ -200,6 +202,53 @@ def select_deployment(
     )
 
 
+def merge_runtime_node_config(
+    snapshot: dict[str, Any], deployment: dict[str, Any]
+) -> dict[str, Any]:
+    """Completa campos runtime ausentes com o config do nó ativo.
+
+    O snapshot do pom-bench mistura o registro de deployments com o estado
+    runtime de ``/api/ui/node``. Alguns campos do deployment podem ficar
+    nulos, embora o nó ativo os publique preenchidos. Só fazemos o merge
+    quando ``deploy_id`` coincide exatamente e nunca substituímos um valor
+    já presente no deployment.
+    """
+
+    node_endpoint = snapshot.get("/api/ui/node", {})
+    runtime_config = node_endpoint.get("config") if isinstance(node_endpoint, dict) else None
+    if not isinstance(runtime_config, dict):
+        return deployment
+    runtime_deploy_id = runtime_config.get("deploy_id")
+    if str(runtime_deploy_id or "") != str(deployment.get("deploy_id") or ""):
+        return deployment
+    nodes = deployment.get("nodes")
+    if not isinstance(nodes, list) or len(nodes) != 1 or not isinstance(nodes[0], dict):
+        return deployment
+    node_config = nodes[0].get("config")
+    if not isinstance(node_config, dict):
+        return deployment
+
+    merged = copy.deepcopy(deployment)
+    merged_config = merged["nodes"][0]["config"]
+    runtime_fields = (
+        "mtp_enabled",
+        "mtp_draft_tokens",
+        "mtp_min_probability",
+        "mtp_cpu_fallback_enabled",
+        "speculative_decoding_enabled",
+        "speculative_k",
+        "speculative_lookup_window",
+        "cache_type_k",
+        "cache_type_v",
+        "repeat_last_n",
+        "no_thinking",
+    )
+    for key in runtime_fields:
+        if merged_config.get(key) is None and runtime_config.get(key) is not None:
+            merged_config[key] = runtime_config[key]
+    return merged
+
+
 def _required(config: dict[str, Any], key: str, deploy_id: str) -> Any:
     value = config.get(key)
     if value is None:
@@ -271,6 +320,10 @@ def build_bench_plan(
             ),
             "speculative_k": config.get("speculative_k", 4),
             "speculative_lookup_window": config.get("speculative_lookup_window", 3),
+            "cache_type_k": config.get("cache_type_k"),
+            "cache_type_v": config.get("cache_type_v"),
+            "repeat_last_n": config.get("repeat_last_n"),
+            "no_thinking": bool(config.get("no_thinking", False)),
         }
     )
     if n_ctx_override is not None:
@@ -292,6 +345,13 @@ def build_bench_plan(
         raise ConfigError("config.speculative_lookup_window deve ser inteiro positivo")
     if not isinstance(core["mtp_min_probability"], (int, float)) or not 0 <= core["mtp_min_probability"] <= 1:
         raise ConfigError("config.mtp_min_probability deve estar entre 0 e 1")
+    if core["repeat_last_n"] is not None and (
+        not isinstance(core["repeat_last_n"], int) or core["repeat_last_n"] < 0
+    ):
+        raise ConfigError("config.repeat_last_n deve ser inteiro nao negativo")
+    for key in ("cache_type_k", "cache_type_v"):
+        if core[key] is not None and not isinstance(core[key], str):
+            raise ConfigError(f"config.{key} deve ser texto")
     mtp_enabled = core["mtp_enabled"]
     return {
         "deployment_id": deployment.get("deploy_id"),
@@ -306,11 +366,11 @@ def build_bench_plan(
         "pom_config": core,
         "effective_n_ctx": effective_n_ctx,
         "llama_flags": {
-            "ctx_size": effective_n_ctx * core["max_sessions"],
+            "ctx_size": effective_n_ctx,
             "ctx_per_session": effective_n_ctx,
             "batch_size": core["n_batch"],
             "gpu_layers": core["n_gpu_layers"],
-            "parallel": core["max_sessions"],
+            "parallel": core["max_sessions"] * 2,
             "kv_offload": bool(core["offload_kqv"]),
             "tensor_split": "automatic (sem --tensor-split)",
             "spec_type": "draft-mtp" if mtp_enabled else "none",
@@ -318,6 +378,12 @@ def build_bench_plan(
             "spec_draft_p_min": core["mtp_min_probability"] if mtp_enabled else 0.0,
             "mtp_cpu_fallback": core["mtp_cpu_fallback_enabled"],
             "speculation_source": "mtp" if mtp_enabled else "none",
+            "n_seq_max": core["max_sessions"] * 2,
+            "kv_unified": True,
+            "cache_type_k": core["cache_type_k"],
+            "cache_type_v": core["cache_type_v"],
+            "repeat_last_n": core["repeat_last_n"],
+            "reasoning": "off" if core["no_thinking"] else None,
         },
         "not_replicated": [
             "speculative_decoding_enabled/speculative_k/speculative_lookup_window "
@@ -332,7 +398,7 @@ def build_bench_plan(
 def make_completion_payload(
     prompt: str, max_tokens: int, sampling: dict[str, Any]
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "prompt": prompt,
         "n_predict": max_tokens,
         "temperature": sampling["temperature"],
@@ -341,6 +407,9 @@ def make_completion_payload(
         "repeat_penalty": sampling["repeat_penalty"],
         "stream": True,
     }
+    if sampling.get("repeat_last_n") is not None:
+        payload["repeat_last_n"] = sampling["repeat_last_n"]
+    return payload
 
 
 def parse_sse_result(
@@ -777,8 +846,16 @@ def _start_server(
         "-np",
         str(flags["parallel"]),
     ]
+    if flags["kv_unified"]:
+        command_args.append("--kv-unified")
     if not flags["kv_offload"]:
         command_args.append("-nkvo")
+    if flags["cache_type_k"] is not None:
+        command_args.extend(["--cache-type-k", str(flags["cache_type_k"])])
+    if flags["cache_type_v"] is not None:
+        command_args.extend(["--cache-type-v", str(flags["cache_type_v"])])
+    if flags["reasoning"] is not None:
+        command_args.extend(["--reasoning", str(flags["reasoning"])])
     if flags["spec_type"] != "none":
         command_args.extend(
             [
@@ -812,9 +889,15 @@ def _server_alive(remote: Remote, pid: int) -> bool:
 
 
 def _tail_log(remote: Remote, path: str, lines: int = 120) -> str:
+    """Preserva o arranque e o fim do log para auditar flags e timings."""
+
     try:
         result = remote.run(
-            f"tail -n {lines} {_shell_path(path)} 2>/dev/null || true", timeout=30
+            f"if test -f {_shell_path(path)}; then "
+            f"head -n {lines} {_shell_path(path)}; "
+            f"printf '\\n--- llama-server log tail ---\\n'; "
+            f"tail -n {lines} {_shell_path(path)}; fi",
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -982,6 +1065,39 @@ def _write_summary(
         handle.write("\nO CSV contem uma linha por warmup/chamada medida/erro. O cabeçalho identifica `backend=llama.cpp puro`; `ttft_ms` e o tempo observado ate o primeiro evento SSE de token, e `total_ms` e o tempo de parede da chamada SSH+curl local na ksia.\n")
 
 
+def _write_run_report(
+    path: Path,
+    plan: dict[str, Any],
+    metadata: dict[str, Any],
+    rows: list[dict[str, Any]],
+    status: str,
+    reason: str = "",
+) -> None:
+    summaries = summary_rows(rows)
+    flags = metadata.get("server_args") or plan.get("llama_flags", {})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("# llama.cpp puro - relatorio da corrida\n\n")
+        handle.write("Este relatorio mede somente o backend llama.cpp puro para comparacao com o POM do mesmo modelo.\n\n")
+        handle.write(f"- status: `{status}`\n")
+        handle.write(f"- modelo: `{plan.get('model_label')}`\n")
+        handle.write(f"- deployment: `{plan.get('deployment_id')}`\n")
+        handle.write(f"- n_ctx efetivo: `{plan.get('effective_n_ctx')}`\n")
+        handle.write(f"- geometria: `n_seq_max={flags.get('n_seq_max')}`, `kv_unified={flags.get('kv_unified')}`, `-c={flags.get('ctx_size')}`, `-np={flags.get('parallel')}`\n")
+        handle.write(f"- MTP/especulacao efetiva: `{flags.get('speculation_source', 'none')}`, tipo `{flags.get('spec_type', 'none')}`, n_max `{flags.get('spec_draft_n_max', 0)}`, p_min `{flags.get('spec_draft_p_min', 0.0)}`\n")
+        if flags.get("cache_type_k") or flags.get("cache_type_v"):
+            handle.write(f"- cache KV: K `{flags.get('cache_type_k')}`, V `{flags.get('cache_type_v')}`\n")
+        if reason:
+            handle.write(f"- motivo: {reason}\n")
+        handle.write("\n## Medianas por prompt\n\n")
+        handle.write("| backend | prompt_id | reps ok | generation_tok/s | prefill_ms | prefill_tok/s | ttft_ms | total_ms | prompt_tokens | output_tokens | tokens_cached |\n")
+        handle.write("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+        for row in summaries:
+            values = [row.get(field, "") if row.get(field) is not None else "-" for field in SUMMARY_FIELDS]
+            handle.write("| " + " | ".join(str(value) for value in values) + " |\n")
+        handle.write("\nO CSV e o summary.md com o mesmo timestamp ficam ao lado deste relatorio.\n")
+
+
 def _write_metadata(path: Path, metadata: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1023,10 +1139,15 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=int(env.get("LLAMACPP_MIN_FREE_MB", "14000")),
         help="VRAM livre minima por GPU antes do launch (padrao: 14000)",
     )
-    parser.add_argument("--output-dir", default=".")
+    parser.add_argument(
+        "--output-dir",
+        default=env.get("LLAMACPP_OUTPUT_DIR", DEFAULT_OUTPUT_DIR),
+        help="diretorio local dos artefatos (padrao: /Users/jairpereira/scripts/reports)",
+    )
     parser.add_argument("--csv")
     parser.add_argument("--summary")
     parser.add_argument("--metadata")
+    parser.add_argument("--report", help="relatorio markdown da corrida")
     parser.add_argument("--repeticoes", type=int, default=3)
     parser.add_argument("--max-tokens", type=int, default=200)
     parser.add_argument(
@@ -1130,7 +1251,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
         if not isinstance(snapshot, dict):
             raise ConfigError("config_json precisa conter um objeto JSON")
-        deployment = select_deployment(snapshot, args.model, args.deploy_id)
+        deployment = merge_runtime_node_config(
+            snapshot, select_deployment(snapshot, args.model, args.deploy_id)
+        )
         plan = build_bench_plan(deployment, args.n_ctx)
         plan["remote_host"] = args.remote_host
         plan["llama_source"] = args.llama_src
@@ -1159,6 +1282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     csv_path = Path(args.csv) if args.csv else output_dir / f"{now}-{slug}.llamacpp.csv"
     summary_path = Path(args.summary) if args.summary else output_dir / f"{now}-{slug}.llamacpp.summary.md"
     metadata_path = Path(args.metadata) if args.metadata else output_dir / f"{now}-{slug}.llamacpp.metadata.json"
+    report_path = Path(args.report) if args.report else output_dir / f"{now}-{slug}-llama.md"
     rows: list[dict[str, Any]] = []
     metadata: dict[str, Any] = {
         "backend": "llama.cpp puro",
@@ -1172,6 +1296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "csv": str(csv_path),
         "summary": str(summary_path),
         "metadata": str(metadata_path),
+        "report": str(report_path),
         "safety_policy": f"cada GPU precisa de pelo menos {args.min_free_mb} MiB livres antes do launch",
     }
     _write_csv(csv_path, rows)
@@ -1310,6 +1435,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         metadata["status"] = status
         _write_csv(csv_path, rows)
         _write_summary(summary_path, plan, metadata, rows, status, reason)
+        _write_run_report(report_path, plan, metadata, rows, status, reason)
         _write_metadata(metadata_path, metadata)
 
     print(f"backend=llama.cpp puro status={status}")
@@ -1317,6 +1443,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"csv={csv_path}")
     print(f"summary={summary_path}")
     print(f"metadata={metadata_path}")
+    print(f"report={report_path}")
     if server_log:
         print(f"server_log={local_log_path}")
     if status == "ok":

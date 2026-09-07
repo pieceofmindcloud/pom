@@ -31,6 +31,8 @@ O levantamento de reuso da fase de UI está em
 O relatório de entrega da fase de UI está em
 `rdma-hf-provider-ui-relatorio.md` e descreve o painel de status, os modelos
 gated e a licença antes do download.
+- `bench-llamacpp-qwen36-unified.md` - registro versionado da rodada de
+  comparação do llama.cpp puro com cache unificado, MTP e a geometria do POM.
 - `subsystems/freetoken-moe.md` - método, medições e invariantes do goal que
   adiciona o caminho MoE próprio ao lado do caminho denso, incluindo o marco
   dos quatro modelos da ksia, a salvaguarda por dtype, o diagnóstico de reserva

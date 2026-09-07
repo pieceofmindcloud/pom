@@ -6,6 +6,8 @@ from scripts.bench_llamacpp import (
     ConfigError,
     RemoteResult,
     _cleanup_server,
+    merge_runtime_node_config,
+    _parse_args,
     _prebuilt_cache_is_compatible,
     _resolve_server,
     _start_server,
@@ -80,6 +82,29 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertEqual(selected["deploy_id"], "d-1")
         self.assertEqual(selected["nodes"][0]["config"]["n_batch"], 512)
 
+    def test_runtime_node_config_fills_missing_cache_fields_for_matching_deployment(self):
+        deployment = select_deployment(self.snapshot)
+        self.snapshot["/api/ui/node"]["config"] = {
+            "deploy_id": "d-1",
+            "cache_type_k": "q4_0",
+            "cache_type_v": "q4_0",
+            "repeat_last_n": 64,
+        }
+        merged = merge_runtime_node_config(self.snapshot, deployment)
+        config = merged["nodes"][0]["config"]
+        self.assertEqual(config["cache_type_k"], "q4_0")
+        self.assertEqual(config["cache_type_v"], "q4_0")
+        self.assertEqual(config["repeat_last_n"], 64)
+
+    def test_runtime_node_config_does_not_cross_deployment_boundary(self):
+        deployment = select_deployment(self.snapshot)
+        self.snapshot["/api/ui/node"]["config"] = {
+            "deploy_id": "other-deployment",
+            "cache_type_k": "q4_0",
+        }
+        merged = merge_runtime_node_config(self.snapshot, deployment)
+        self.assertIsNone(merged["nodes"][0]["config"].get("cache_type_k"))
+
     def test_serving_is_preferred_over_non_serving_default(self):
         self.snapshot["/api/ui/deployments"]["deployments"][0]["is_default"] = False
         self.snapshot["/api/ui/deployments"]["deployments"][1]["serving"] = False
@@ -109,8 +134,15 @@ class BenchLlamaCppTests(unittest.TestCase):
     def test_context_total_preserves_n_ctx_per_session(self):
         self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]["max_sessions"] = 2
         plan = build_bench_plan(select_deployment(self.snapshot), n_ctx_override=4096)
-        self.assertEqual(plan["llama_flags"]["ctx_size"], 8192)
+        self.assertEqual(plan["llama_flags"]["ctx_size"], 4096)
         self.assertEqual(plan["llama_flags"]["ctx_per_session"], 4096)
+        self.assertEqual(plan["llama_flags"]["parallel"], 4)
+        self.assertEqual(plan["llama_flags"]["n_seq_max"], 4)
+        self.assertTrue(plan["llama_flags"]["kv_unified"])
+
+    def test_default_output_is_captain_report_directory(self):
+        args = _parse_args(["snapshot.config.json"])
+        self.assertEqual(args.output_dir, "/Users/jairpereira/scripts/reports")
 
     def test_plan_maps_pom_mtp_to_llama_server_draft_mtp_flags(self):
         config = self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]
@@ -123,6 +155,10 @@ class BenchLlamaCppTests(unittest.TestCase):
                 "speculative_decoding_enabled": True,
                 "speculative_k": 4,
                 "speculative_lookup_window": 3,
+                "cache_type_k": "q4_0",
+                "cache_type_v": "q4_0",
+                "repeat_last_n": 64,
+                "no_thinking": True,
             }
         )
         plan = build_bench_plan(select_deployment(self.snapshot))
@@ -132,6 +168,10 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertEqual(plan["llama_flags"]["spec_draft_p_min"], 0.75)
         self.assertTrue(plan["llama_flags"]["mtp_cpu_fallback"])
         self.assertEqual(plan["llama_flags"]["speculation_source"], "mtp")
+        self.assertEqual(plan["llama_flags"]["cache_type_k"], "q4_0")
+        self.assertEqual(plan["llama_flags"]["cache_type_v"], "q4_0")
+        self.assertEqual(plan["llama_flags"]["repeat_last_n"], 64)
+        self.assertEqual(plan["llama_flags"]["reasoning"], "off")
 
     def test_server_command_enables_mtp_with_same_draft_limits(self):
         config = self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]
@@ -183,6 +223,20 @@ class BenchLlamaCppTests(unittest.TestCase):
             },
         )
 
+    def test_completion_payload_copies_conditional_repeat_window(self):
+        payload = make_completion_payload(
+            "prompt",
+            8,
+            {
+                "temperature": 0.7,
+                "top_k": 40,
+                "top_p": 0.9,
+                "repeat_penalty": 1.15,
+                "repeat_last_n": 64,
+            },
+        )
+        self.assertEqual(payload["repeat_last_n"], 64)
+
     def test_server_command_maps_effective_flags_without_touching_port_8080(self):
         class StubRemote:
             def __init__(self):
@@ -202,9 +256,41 @@ class BenchLlamaCppTests(unittest.TestCase):
         self.assertIn(" -c 4096", command)
         self.assertIn(" -b 512", command)
         self.assertIn(" -ngl 99", command)
-        self.assertIn(" -np 1", command)
+        self.assertIn(" -np 2", command)
+        self.assertIn(" -c 4096", command)
+        self.assertIn("--kv-unified", command)
         self.assertNotIn(" -kvo", command)
         self.assertNotIn("8080", command)
+
+    def test_server_omits_mtp_when_deployment_has_no_mtp(self):
+        config = self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]
+        config.update({"mtp_enabled": False, "speculative_decoding_enabled": True})
+
+        class StubRemote:
+            def __init__(self):
+                self.commands = []
+
+            def run(self, command, timeout=None):
+                self.commands.append(command)
+                return RemoteResult(0, "4242\n", "")
+
+        remote = StubRemote()
+        _start_server(
+            remote,
+            "/tmp/llama-server",
+            "/data/model.gguf",
+            build_bench_plan(select_deployment(self.snapshot)),
+            8090,
+            "/tmp/bench.log",
+        )
+        self.assertNotIn("--spec-type", remote.commands[0])
+
+    def test_server_omits_speculation_when_deployment_disables_it(self):
+        config = self.snapshot["/api/ui/deployments"]["deployments"][0]["deployment"]["nodes"][0]["config"]
+        config.update({"mtp_enabled": False, "speculative_decoding_enabled": False})
+        plan = build_bench_plan(select_deployment(self.snapshot))
+        self.assertEqual(plan["llama_flags"]["spec_type"], "none")
+        self.assertEqual(plan["pom_config"]["speculative_decoding_enabled"], False)
 
     def test_explicit_deploy_id_does_not_depend_on_active_model(self):
         self.snapshot["/api/ui/node"]["active_model"] = "outro.gguf"

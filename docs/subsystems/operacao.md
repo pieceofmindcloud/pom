@@ -293,10 +293,14 @@ O resultado é um CSV com uma linha por warmup, medição ou erro, mais um
 `ttft_ms` é o tempo observado até o primeiro evento SSE e `total_ms` é o tempo
 de parede da chamada local na ksia. Consulte `scripts/bench-llamacpp.sh --help`
 para os overrides de `n_ctx`, caminhos remotos e política de VRAM.
+Sem `--output-dir`, CSV, resumo, metadata e relatório Markdown são gravados em
+`/Users/jairpereira/scripts/reports`; `--report` permite fixar o caminho do
+relatório individual.
 
-No runtime POM, `n_ctx` é a janela de cada sessão. Por isso o harness passa
-`-c n_ctx * max_sessions` e `-np max_sessions`; `offload_kqv=true` fica no
-default do llama.cpp e somente `false` passa `-nkvo`. Um `llama-server`
+No runtime POM, `n_ctx` é a janela de cada sessão e o orçamento de sequências é
+`2 * max_sessions`. Por isso o harness passa `-c n_ctx`, `-np 2 * max_sessions`
+e `--kv-unified`; a capacidade não é multiplicada por sessão. `offload_kqv=true`
+fica no default do llama.cpp e somente `false` passa `-nkvo`. Um `llama-server`
 preexistente só é reutilizado quando o `CMakeCache.txt` confirma a árvore do
 fork com CUDA e `LLAMA_BUILD_SERVER=ON`; builds necessários usam diretório
 externo para não alterar a árvore fonte.

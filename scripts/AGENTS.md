@@ -33,6 +33,14 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   tambem em configs existentes, preservando os outros campos.
 - `test_gen_node_configs.py` - testes unitarios do override de
   `advertise_addr`, incluindo a preservacao dos demais campos da config.
+- `bench-llamacpp.sh` - CLI do benchmark do llama.cpp puro na ksia. Recebe o
+  snapshot `.config.json` do pom-bench, seleciona uma implantacao `whole`,
+  verifica VRAM livre, sobe o `llama-server` do fork remoto do POM em uma porta
+  local ao host remoto, mede os cinco prompts da bateria e derruba somente o
+  PID criado. A implementacao Python fica em `bench_llamacpp.py`; os testes
+  puros de selecao, payload, SSE e medianas ficam em
+  `test_bench_llamacpp.py`. A CLI, o mapa de flags e as limitacoes estao no
+  relatorio operacional da tarefa.
 - `migrate_pom_db.py` - ferramenta descartável e explícita para copiar, uma
   única vez, implantações, auditoria, API keys, preferência térmica e token
   das fontes antigas para um `pom.db` já criado pelo binário. O arranque nunca

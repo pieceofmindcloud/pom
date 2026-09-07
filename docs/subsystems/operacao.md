@@ -262,3 +262,30 @@ de arquivos (`tmpfs`, `devfs`, `overlay`…) e sem repetir ponto de montagem. É
 `-k`, e não `-m`: o `-P` fixa blocos de 512 bytes no macOS e ignora o `-m`, o
 que faria todo volume aparecer 2048 vezes maior. Windows não tem `df` e
 continua reportando só o volume do projeto.
+
+## Comparar POM com llama.cpp puro
+
+O benchmark operacional está em `scripts/bench-llamacpp.sh`. Ele recebe o
+snapshot `*.config.json` do `pom-bench`, seleciona por padrão o deployment
+`serving`/`is_default` do modelo ativo e só aceita `kind=whole`, pois o
+`llama-server` simples não reproduz o RPC de `shards` ou `tensor_parallel`.
+Antes de iniciar qualquer processo na ksia consulta `nvidia-smi` e exige, por
+padrão, 14.000 MiB livres em cada GPU; quando o POM ocupa a memória, termina
+com `status=blocked_vram` sem tocar no processo do POM. O servidor usa a porta
+dedicada 8090 em `127.0.0.1`, e o cleanup é limitado ao PID que o harness
+criou.
+
+Uso mínimo, a partir da raiz do repositório:
+
+```bash
+scripts/bench-llamacpp.sh ~/scripts/reports/<data>-<modelo>.config.json \
+  --deploy-id <deploy-id> --output-dir ./bench-llamacpp-results
+```
+
+O resultado é um CSV com uma linha por warmup, medição ou erro, mais um
+`summary.md` com medianas dos cinco prompts de `bench-rotas.sh`. O campo
+`generation_tok_s` vem de `timings.predicted_per_second`; `prefill_ms` e
+`prefill_tok_s` vêm de `timings.prompt_ms` e `timings.prompt_per_second`;
+`ttft_ms` é o tempo observado até o primeiro evento SSE e `total_ms` é o tempo
+de parede da chamada local na ksia. Consulte `scripts/bench-llamacpp.sh --help`
+para os overrides de `n_ctx`, caminhos remotos e política de VRAM.

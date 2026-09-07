@@ -7,6 +7,7 @@ from scripts.bench_llamacpp import (
     RemoteResult,
     _cleanup_server,
     _prebuilt_cache_is_compatible,
+    _resolve_server,
     _start_server,
     build_bench_plan,
     incomplete_prompts,
@@ -201,6 +202,33 @@ class BenchLlamaCppTests(unittest.TestCase):
         cache = """\nCMAKE_HOME_DIRECTORY:INTERNAL=/data/fm-prefixo-src/llama.cpp\nGGML_CUDA:BOOL=ON\nLLAMA_BUILD_SERVER:BOOL=ON\n"""
         self.assertTrue(_prebuilt_cache_is_compatible(cache, "/data/fm-prefixo-src/llama.cpp"))
         self.assertFalse(_prebuilt_cache_is_compatible(cache.replace("GGML_CUDA:BOOL=ON", "GGML_CUDA:BOOL=OFF"), "/data/fm-prefixo-src/llama.cpp"))
+
+    def test_cuda_compiler_path_is_passed_to_external_build(self):
+        class StubRemote:
+            def __init__(self):
+                self.commands = []
+
+            def run(self, command, timeout=None):
+                self.commands.append(command)
+                if len(self.commands) == 1:
+                    return RemoteResult(
+                        0,
+                        "origin git@github.com:pereirajair/llama.cpp.git (fetch)\n"
+                        "COMMIT=abc123\nBRANCH=\n",
+                        "",
+                    )
+                if len(self.commands) == 2:
+                    return RemoteResult(1, "", "")
+                if len(self.commands) == 3:
+                    return RemoteResult(0, "/usr/local/cuda-13.0/bin/nvcc\n", "")
+                return RemoteResult(0, "", "")
+
+        remote = StubRemote()
+        _resolve_server(remote, "/data/fm-prefixo-src/llama.cpp", None, 2, "120")
+        self.assertIn(
+            "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc",
+            remote.commands[-1],
+        )
 
     def test_cleanup_reports_remote_failure(self):
         class FailedRemote:

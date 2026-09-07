@@ -45,7 +45,10 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   so e aceito quando o `CMakeCache.txt` prova o mesmo source com CUDA e
   `LLAMA_BUILD_SERVER=ON`; caso contrario o build vai para fora da arvore.
   A CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
-  tarefa.
+  tarefa. Se o `nvcc` nao estiver no `PATH` remoto, o harness autodetecta
+  `/usr/local/cuda/bin/nvcc`, `/usr/local/cuda-13.0/bin/nvcc` ou
+  `/usr/local/cuda-12.9/bin/nvcc`; `--cuda-compiler` e
+  `LLAMACPP_CUDA_COMPILER` permitem fixar outro caminho.
 - `migrate_pom_db.py` - ferramenta descartável e explícita para copiar, uma
   única vez, implantações, auditoria, API keys, preferência térmica e token
   das fontes antigas para um `pom.db` já criado pelo binário. O arranque nunca

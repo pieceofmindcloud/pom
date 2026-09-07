@@ -639,12 +639,34 @@ def _prebuilt_cache_is_compatible(cache_text: str, source: str) -> bool:
     )
 
 
+def _resolve_cuda_compiler(remote: Remote, override: str | None) -> str:
+    if override:
+        result = remote.run(f"test -x {_shell_path(override)}")
+        if result.returncode != 0:
+            raise RuntimeError(f"CUDA compiler nao e executavel na ksia: {override}")
+        return override
+    result = remote.run(
+        "for candidate in /usr/local/cuda/bin/nvcc /usr/local/cuda-13.0/bin/nvcc "
+        "/usr/local/cuda-12.9/bin/nvcc; do "
+        "if test -x \"$candidate\"; then printf '%s\\n' \"$candidate\"; exit 0; fi; "
+        "done; command -v nvcc"
+    )
+    compiler = next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
+    if result.returncode != 0 or not compiler:
+        raise RuntimeError(
+            "CMake nao encontrou nvcc na ksia; use --cuda-compiler PATH ou "
+            "LLAMACPP_CUDA_COMPILER"
+        )
+    return compiler
+
+
 def _resolve_server(
     remote: Remote,
     source: str,
     build_dir: str | None,
     build_jobs: int,
     cuda_architectures: str | None,
+    cuda_compiler: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     info = _remote_source_info(remote, source)
     candidate = f"{source.rstrip('/')}/build/bin/llama-server"
@@ -657,6 +679,7 @@ def _resolve_server(
         return candidate, info | {"build": "prebuilt"}
 
     external_build = build_dir or f"/tmp/rdma-bench-llamacpp-{info['commit'][:12]}"
+    compiler = _resolve_cuda_compiler(remote, cuda_compiler)
     cmake_options = [
         "cmake",
         "-S",
@@ -666,6 +689,7 @@ def _resolve_server(
         "-DGGML_CUDA=ON",
         "-DLLAMA_BUILD_SERVER=ON",
         "-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_CUDA_COMPILER={compiler}",
     ]
     if cuda_architectures:
         cmake_options.append(f"-DCMAKE_CUDA_ARCHITECTURES={cuda_architectures}")
@@ -696,6 +720,7 @@ def _resolve_server(
     return f"{external_build}/bin/llama-server", info | {
         "build": "compiled",
         "build_dir": external_build,
+        "cuda_compiler": compiler,
     }
 
 
@@ -953,6 +978,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--build-dir", default=env.get("LLAMACPP_BUILD_DIR"))
     parser.add_argument("--build-jobs", type=int, default=int(env.get("LLAMACPP_BUILD_JOBS", "2")))
     parser.add_argument("--cuda-architectures", default=env.get("LLAMACPP_CUDA_ARCHITECTURES"))
+    parser.add_argument("--cuda-compiler", default=env.get("LLAMACPP_CUDA_COMPILER"))
     parser.add_argument(
         "--min-free-mb",
         type=int,
@@ -1132,6 +1158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.build_dir,
             args.build_jobs,
             args.cuda_architectures,
+            args.cuda_compiler,
         )
         model_path = _resolve_model_path(remote, args.model_root, plan["model_label"], args.model_path)
         metadata["llama_source"] = source_info | build_info

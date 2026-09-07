@@ -275,6 +275,10 @@ com `status=blocked_vram` sem tocar no processo do POM. O servidor usa a porta
 dedicada 8090 em `127.0.0.1`, e o cleanup é limitado ao PID que o harness
 criou.
 
+Quando a compilação CUDA é necessária, o harness passa explicitamente o
+`nvcc` ao CMake. Ele tenta primeiro os caminhos padrão da instalação CUDA na
+ksia; `--cuda-compiler` ou `LLAMACPP_CUDA_COMPILER` fixa um caminho alternativo.
+
 Uso mínimo, a partir da raiz do repositório:
 
 ```bash

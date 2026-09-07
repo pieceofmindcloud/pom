@@ -53,7 +53,7 @@ mod gateway;
 mod huggingface;
 #[path = "network/identity.rs"]
 mod identity;
-#[path = "inference/infer_server.rs"]
+#[path = "inference/infer_server/mod.rs"]
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;

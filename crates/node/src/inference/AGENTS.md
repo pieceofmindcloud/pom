@@ -10,7 +10,7 @@
 > continuam válidas como referência do que cada um faz.
 
 A porta de inferência (8181) e tudo que roda nela: o axum server
-(`infer_server.rs`), o wrapper FFI do llama.cpp (`llm.rs`), a execução do
+(`infer_server/`), o wrapper FFI do llama.cpp (`llm.rs`), a execução do
 prefill/step nos modos - hub, anel borbulhado (`relay/v1-chain`) e
 resposta direta (`relay/v2-direct`, `direct.rs`) - mais o transporte remoto
 por lotes oportunistas (`/v1/step-stream`) - a "lei" que mede o modo
@@ -80,7 +80,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   contador, para o número sair dos bytes que passaram no soquete e não de
   estimativa. Compara a mesma cadeia com e sem `transport/link-v1` e guarda a
   comparação (não o tempo absoluto, que depende da máquina).
-- `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
+- `infer_server/` - módulo axum dividido por base/scheduler,
+  prefixo/sessões, servidor HTTP, prefill, step/stream, encaminhamento direto
+  e step blocking: `/v1/prefill`, `/v1/step`,
   `/v1/step-stream`, `/v1/link`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/v1/session/slot` (save/restore/erase de um snapshot de KV em disco, como o
@@ -617,7 +619,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 
 ## Funções-chave
 
-`infer_server.rs`:
+`infer_server/`:
 - `InferenceServer::new` + rotas - monta o router axum sobre o `LlmEngine` e o
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
 - `Session` - **duas sequências de KV por sessão**: `prompt_seq`, onde o

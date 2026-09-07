@@ -20,9 +20,16 @@ surface. `/api/ui/**` and `/admin/**` plus the static UI surface pass through
 the same boundary: localhost mode checks the real peer address, network mode
 checks a server-side `HttpOnly` session minted from `X-POM-Access-Token`, and
   the `connection_key` remains a separate node-to-node credential. `/api/generate`
-  and `/v1/**` accept only active inference API keys; `/health`, `/peers`,
-  `/handshake` and the inference listener remain
+and `/v1/**` accept only active inference API keys; `/health`, `/peers`,
+`/handshake` and the inference listener remain
 dual-stack.
+
+The `webui` route registry is organized under `webui/routes/`: `common.rs`
+contains routes shared by every profile, `infer.rs` contains inference-profile
+actions, `node.rs` contains local node/model operations, and `admin.rs`
+contains administrative and lifecycle routes. `routes/mod.rs` is the only
+composition point. This organization is for legibility; the gateway's central
+profile policy remains the effective authorization boundary.
 
 ## Files
 

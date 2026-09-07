@@ -49,6 +49,13 @@ a condição de a cabeça rascunhar na decodificação especulativa.
   mount. O fallback de API continua 404 JSON, e miss com extensão vira
   "asset não encontrado".
 
+O registro das rotas de controle da UI fica organizado em
+`crates/node/src/backend/webui/routes/`: `common.rs` para rotas genéricas,
+`infer.rs` para ações do perfil de inferência, `node.rs` para operações da
+máquina e modelos, e `admin.rs` para administração e ciclo de vida. `mod.rs`
+faz a composição; a autorização por perfil continua no middleware central do
+gateway, portanto a organização dos arquivos não é uma barreira de segurança.
+
 ### Fronteira de exposição
 
 O modo de exposição em Configurações / Preferências vale somente para a

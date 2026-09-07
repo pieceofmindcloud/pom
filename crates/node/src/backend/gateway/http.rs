@@ -33,10 +33,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .merge(crate::openai::routes())
         .merge(crate::messages::routes())
         .merge(crate::webui::routes())
-        .merge(crate::model_provider_backend::routes())
-        .merge(crate::deploy::routes())
         .merge(crate::transfer::routes())
-        .merge(crate::devupdate::router())
         .merge(admin)
         // Genuinely last: this one ends in a `/*path` catch-all that hands
         // unknown paths to the client router, so anything registered after it

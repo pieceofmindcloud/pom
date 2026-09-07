@@ -28,7 +28,6 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
         .route("/admin/slots", get(list_slots))
         .route("/admin/slots/:name", post(slot_action))
         .merge(internal_routes())
-        .route("/api/ui/chat-key", post(chat_key))
 }
 
 #[cfg(test)]
@@ -842,7 +841,7 @@ async fn generate_api_key(
     (StatusCode::CREATED, Json(key)).into_response()
 }
 
-async fn chat_key(
+pub(crate) async fn chat_key(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
 ) -> impl IntoResponse {

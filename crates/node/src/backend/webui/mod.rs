@@ -17,18 +17,18 @@ use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;
 use crate::network::PeerInfo;
-use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
+use crate::plan::{self, DEFAULT_RESERVE_PCT, PeerBudget};
 use crate::runtime::{NodeConfig, RuntimeStatus};
 use crate::sysmon::{self, SystemLoad};
 use crate::thermal::ThermalPolicy;
 use anyhow::Context;
 use axum::{
+    Json, Router,
     body::Body,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -138,26 +138,26 @@ pub(crate) fn conditional_json_with_version<T: Serialize>(
     json_response_with_etag(headers, bytes, etag, &version.to_string())
 }
 
-
-#[path = "routes.rs"] mod routes_impl;
-#[path = "catalog.rs"] mod catalog_cache;
+#[path = "catalog.rs"]
+mod catalog_cache;
 mod cluster;
-mod params;
 mod jobs;
 mod jobs_apply;
-mod slicing;
 mod lifecycle;
+mod params;
+mod routes;
 mod setup;
+mod slicing;
 
-pub use routes_impl::*;
 pub use catalog_cache::*;
 pub use cluster::*;
-pub use params::*;
 pub use jobs::*;
 pub use jobs_apply::*;
-pub use slicing::*;
 pub use lifecycle::*;
+pub use params::*;
+pub use routes::*;
 pub use setup::*;
+pub use slicing::*;
 
 include!("tests/early.rs");
 include!("tests/core_a.rs");

@@ -20,10 +20,6 @@ on:
 permissions:
   contents: write
 
-env:
-  LLAMA_REPO: https://github.com/pereirajair/llama.cpp.git
-  LLAMA_REF: pom-tensor-parallel
-
 jobs:
   # Um job só. Em runner hospedado a interface era compilada à parte, num runner
   # Linux, porque o minuto de macOS custava 10x; aqui não há multiplicador, e
@@ -34,17 +30,6 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, macbook]
     steps:
       - uses: actions/checkout@v4
-
-      # O `vendor/llama-cpp-sys-2/llama.cpp` versionado é um symlink para a raiz
-      # do repositório, e a pasta que ele aponta está no `.gitignore`: num
-      # checkout limpo ele aponta para o vazio e o build morre no `build.rs` do
-      # llama-cpp-sys-2. Clonar por cima dele, no caminho que o `build.rs`
-      # realmente lê (`<manifest_dir>/llama.cpp`), resolve.
-      - name: Fork do llama.cpp
-        run: |
-          rm -rf vendor/llama-cpp-sys-2/llama.cpp
-          git clone --depth 1 --branch "$LLAMA_REF" \
-            "$LLAMA_REPO" vendor/llama-cpp-sys-2/llama.cpp
 
       - uses: dtolnay/rust-toolchain@stable
 

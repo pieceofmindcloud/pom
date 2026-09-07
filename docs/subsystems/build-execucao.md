@@ -308,6 +308,9 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_BUILD_FEATURES` | Features com que a máquina compila no devupdate (`cuda`/`metal`); sem ela a ksia perde a GPU no primeiro clique. |
 | `POM_CUDA_GRAPHS` | `=1`, `true`, `yes` ou `on` habilita CUDA Graphs no build CUDA. O padrão é desligado para reduzir o risco de OOM no lançamento do grafo. É uma opção de compilação, então exige reconstruir o binário. |
 | `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
+| `LLAMA_SOURCE` | Checkout local de `llama.cpp` já preparado; precisa conter `ggml` e evita copiar o fork para o worktree. |
+| `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remoto e branch usados pela preparação automática quando o fork está ausente. Os padrões são o fork público e `pom-tensor-parallel`. |
+| `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` para impedir o download automático e receber somente a mensagem com o procedimento manual. |
 | `VITE_API_TARGET` | Alvo do proxy do dev server da UI (padrão `http://127.0.0.1:8080`). |
 
 ## Release pelo GitHub Actions
@@ -330,41 +333,41 @@ apaga o pacote de macOS que já estava lá.
 
 `vendor/llama-cpp-sys-2/llama.cpp` é um **symlink versionado** para a raiz do
 repositório, e a pasta que ele aponta (`/llama.cpp/`) está no `.gitignore`. Num
-checkout limpo - que é exatamente o que a CI faz - o symlink aponta para o
-vazio, e o build morre no `build.rs` do `llama-cpp-sys-2` com
-`Failed to obtain entry ... NotFound`, antes de compilar qualquer coisa do
-projeto. Por isso cada workflow tem um passo que clona o fork
-(`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, público) **por cima do
-symlink**, no caminho que o `build.rs` de fato lê (`<manifest_dir>/llama.cpp`).
+checkout limpo, o próprio `build.rs` do `llama-cpp-sys-2` detecta o symlink
+quebrado e clona automaticamente o fork público
+`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, antes de caminhar pelos
+arquivos nativos. Assim CI, releases e `cargo build` local seguem o mesmo
+caminho, sem fixar um commit do fork.
+
 Essa branch também carrega a correção local do `common_fit_params`: a memória
 livre é capturada antes do contexto seco, pois os buffers de estado recorrente
 são reais mesmo com `no_alloc=true`. O projeto não versiona o conteúdo apontado
 pelo symlink, então atualizar o fork é parte da atualização da dependência.
 
-Clonar nesse caminho, e não na raiz, é o que faz o Windows funcionar: lá o
-checkout não cria symlink nenhum - materializa um arquivo de texto com o caminho
-dentro -, então repor a pasta na raiz não adiantaria.
+No Windows o checkout pode materializar o symlink como um arquivo de texto. O
+`build.rs` reconhece essa forma e instala o clone diretamente no caminho que o
+Cargo lê (`<manifest_dir>/llama.cpp`). Se o clone não puder ser baixado, o erro
+lista o comando completo para a preparação manual, em vez de deixar o
+`NotFound` cru do `walkdir`.
 
 ### Preparar um worktree local
 
 O symlink versionado em `vendor/llama-cpp-sys-2/llama.cpp` resolve para
-`<worktree>/llama.cpp`, mas o conteúdo da raiz é ignorado pelo git. Portanto,
-um worktree novo precisa receber uma cópia ou um symlink para um checkout local
-do fork antes do primeiro build. O preparo não toca no checkout primário:
+`<worktree>/llama.cpp`, mas o conteúdo da raiz é ignorado pelo git. O primeiro
+`cargo build -p node` já dispara o preparo automático. Para reutilizar um
+checkout local do fork sem copiá-lo para o worktree, informe `LLAMA_SOURCE`:
 
 ```bash
 LLAMA_SOURCE=/caminho/para/llama.cpp
 test -d "$LLAMA_SOURCE/ggml"
-ln -s "$LLAMA_SOURCE" llama.cpp
-test -d vendor/llama-cpp-sys-2/llama.cpp/ggml
 cargo build -p node
 ```
 
 Se `llama.cpp` já existir na raiz do worktree, confirme que ele é o checkout
-do fork e que contém `ggml`; não substitua uma pasta de pesos por engano. Em
-ambientes de CI ou Windows, clone diretamente sobre
-`vendor/llama-cpp-sys-2/llama.cpp`, como descrito acima, porque esses ambientes
-não preservam o symlink da raiz.
+do fork e que contém `ggml`; um diretório existente sem `ggml` não é sobrescrito
+automaticamente. `POM_LLAMA_CPP_REPOSITORY` e `POM_LLAMA_CPP_REF` podem apontar
+o preparo automático para outro remoto ou branch durante testes, sem tornar
+essa referência uma dependência fixa do projeto.
 
 ### A interface tem que ir no pacote
 

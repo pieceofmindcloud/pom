@@ -1,6 +1,6 @@
 use std::env;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr as _;
 
@@ -15,6 +15,204 @@ fn cuda_graphs_enabled(value: Option<&str>) -> bool {
             "1" | "true" | "yes" | "on"
         )
     })
+}
+
+const DEFAULT_LLAMA_CPP_REPOSITORY: &str = "https://github.com/pereirajair/llama.cpp.git";
+const DEFAULT_LLAMA_CPP_REF: &str = "pom-tensor-parallel";
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+fn clone_destination(manifest_dir: &Path, source: &Path, symlink_target: Option<&Path>) -> PathBuf {
+    let Some(target) = symlink_target else {
+        return source.to_path_buf();
+    };
+    let base = source.parent().unwrap_or(manifest_dir);
+    normalize_path(&base.join(target))
+}
+
+fn missing_llama_source_error(source: &Path) -> String {
+    format!(
+        "fork do llama.cpp não está disponível em {}.\n\n\
+         O build tentou preparar automaticamente a branch `pom-tensor-parallel` de\n\
+         https://github.com/pereirajair/llama.cpp.git, mas não encontrou um checkout\n\
+         com `ggml`. Verifique a rede e o Git, ou prepare manualmente com:\n\
+         rm -f {}\n\
+         git clone --depth 1 --branch pom-tensor-parallel https://github.com/pereirajair/llama.cpp.git {}\n\n\
+         Se você já tem um checkout local, use `LLAMA_SOURCE=/caminho/para/llama.cpp`\n\
+         ao executar o build. O diretório informado precisa conter `ggml`.\n\
+         Consulte docs/subsystems/build-execucao.md, seção `Preparar um worktree local`.",
+        source.display(),
+        source.display(),
+        source.display(),
+    )
+}
+
+fn source_symlink_target(source: &Path) -> Result<Option<PathBuf>, String> {
+    let metadata = match std::fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "não foi possível inspecionar {}: {error}",
+                source.display()
+            ));
+        }
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    std::fs::read_link(source).map(Some).map_err(|error| {
+        format!(
+            "não foi possível ler o symlink {}: {error}",
+            source.display()
+        )
+    })
+}
+
+fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
+    let source = manifest_dir.join("llama.cpp");
+    if source.join("ggml").is_dir() {
+        return Ok(source);
+    }
+
+    if let Ok(metadata) = std::fs::metadata(&source) {
+        if metadata.is_dir() {
+            return Err(format!(
+                "o checkout de llama.cpp em {} está incompleto: falta o diretório `ggml`.\n\
+                 Remova o checkout incompleto ou aponte `LLAMA_SOURCE` para um checkout\n\
+                 do fork `pereirajair/llama.cpp` que contenha `ggml`.",
+                source.display(),
+            ));
+        }
+    }
+
+    if let Ok(local_source) = env::var("LLAMA_SOURCE") {
+        let local_source = PathBuf::from(local_source);
+        if local_source.join("ggml").is_dir() {
+            return Ok(local_source);
+        }
+        return Err(format!(
+            "LLAMA_SOURCE aponta para um checkout inválido: {}.\n\
+             O diretório precisa existir e conter `ggml`.",
+            local_source.display(),
+        ));
+    }
+
+    let symlink_target = source_symlink_target(&source)?;
+    let destination = clone_destination(manifest_dir, &source, symlink_target.as_deref());
+    if destination.exists() && !destination.join("ggml").is_dir() {
+        return Err(format!(
+            "o caminho de llama.cpp em {} está incompleto: falta o diretório `ggml`.\n\
+             Não será sobrescrito automaticamente. Remova esse checkout ou use\n\
+             `LLAMA_SOURCE=/caminho/para/llama.cpp` com um checkout válido.",
+            destination.display(),
+        ));
+    }
+    let repository = env::var("POM_LLAMA_CPP_REPOSITORY")
+        .unwrap_or_else(|_| DEFAULT_LLAMA_CPP_REPOSITORY.to_owned());
+    let reference =
+        env::var("POM_LLAMA_CPP_REF").unwrap_or_else(|_| DEFAULT_LLAMA_CPP_REF.to_owned());
+
+    println!("cargo:rerun-if-env-changed=LLAMA_SOURCE");
+    println!("cargo:rerun-if-env-changed=POM_LLAMA_CPP_REPOSITORY");
+    println!("cargo:rerun-if-env-changed=POM_LLAMA_CPP_REF");
+    println!("cargo:rerun-if-env-changed=POM_LLAMA_CPP_AUTOCLONE");
+
+    if env::var("POM_LLAMA_CPP_AUTOCLONE").as_deref() == Ok("0") {
+        return Err(missing_llama_source_error(&source));
+    }
+
+    let parent = destination.parent().ok_or_else(|| {
+        format!(
+            "não foi possível determinar onde preparar o fork: {}",
+            destination.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "não foi possível criar o diretório de preparo {}: {error}",
+            parent.display()
+        )
+    })?;
+
+    let temporary = parent.join(format!(".llama.cpp.clone-{}", std::process::id()));
+    if temporary.exists() {
+        return Err(format!(
+            "já existe um preparo temporário do fork em {}. Remova-o após confirmar que\
+             nenhum outro build está rodando e tente novamente.",
+            temporary.display(),
+        ));
+    }
+
+    println!("cargo:warning=llama.cpp ausente; preparando branch `{reference}` de {repository}");
+    let clone_status = Command::new("git")
+        .arg("clone")
+        .arg("--depth")
+        .arg("1")
+        .arg("--branch")
+        .arg(&reference)
+        .arg(&repository)
+        .arg(&temporary)
+        .output()
+        .map_err(|error| {
+            format!(
+                "não foi possível executar Git para preparar o fork: {error}.\n\n{}",
+                missing_llama_source_error(&source)
+            )
+        })?;
+    if !clone_status.status.success() {
+        let details = String::from_utf8_lossy(&clone_status.stderr);
+        let _ = std::fs::remove_dir_all(&temporary);
+        return Err(format!(
+            "não foi possível baixar o fork do llama.cpp (git clone saiu com {}).\n\
+             Git informou: {}\n\n{}",
+            clone_status.status,
+            details.trim(),
+            missing_llama_source_error(&source),
+        ));
+    }
+
+    if !temporary.join("ggml").is_dir() {
+        let _ = std::fs::remove_dir_all(&temporary);
+        return Err(format!(
+            "o fork baixado não contém o diretório `ggml`; a referência `{reference}`\
+             não parece ser um checkout compatível.\n\n{}",
+            missing_llama_source_error(&source),
+        ));
+    }
+
+    if symlink_target.is_none() && source.exists() {
+        std::fs::remove_file(&source).map_err(|error| {
+            format!(
+                "não foi possível substituir o arquivo de symlink {}: {error}",
+                source.display()
+            )
+        })?;
+    }
+    std::fs::rename(&temporary, &destination).map_err(|error| {
+        let _ = std::fs::remove_dir_all(&temporary);
+        format!(
+            "não foi possível instalar o fork preparado em {}: {error}.\n\n{}",
+            destination.display(),
+            missing_llama_source_error(&source),
+        )
+    })?;
+
+    Ok(source)
 }
 
 enum WindowsVariant {
@@ -406,7 +604,8 @@ fn main() {
 
     let target_dir = get_cargo_target_dir().unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
-    let llama_src = Path::new(&manifest_dir).join("llama.cpp");
+    let llama_src =
+        ensure_llama_source(Path::new(&manifest_dir)).unwrap_or_else(|error| panic!("{error}"));
     let build_shared_libs = cfg!(feature = "dynamic-link");
 
     let build_shared_libs = std::env::var("LLAMA_BUILD_SHARED_LIBS")
@@ -1457,7 +1656,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::cuda_graphs_enabled;
+    use super::{clone_destination, cuda_graphs_enabled, missing_llama_source_error};
+    use std::path::Path;
 
     #[test]
     fn cuda_graphs_are_opt_in() {
@@ -1466,5 +1666,26 @@ mod tests {
         assert!(!cuda_graphs_enabled(Some("off")));
         assert!(cuda_graphs_enabled(Some("1")));
         assert!(cuda_graphs_enabled(Some(" On ")));
+    }
+
+    #[test]
+    fn broken_symlink_clones_into_its_target() {
+        let manifest_dir = Path::new("/worktree/vendor/llama-cpp-sys-2");
+        let source = manifest_dir.join("llama.cpp");
+
+        assert_eq!(
+            clone_destination(manifest_dir, &source, Some(Path::new("../../llama.cpp"))),
+            Path::new("/worktree/llama.cpp")
+        );
+    }
+
+    #[test]
+    fn missing_fork_error_explains_recovery() {
+        let error = missing_llama_source_error(Path::new("vendor/llama-cpp-sys-2/llama.cpp"));
+
+        assert!(error.contains("fork do llama.cpp não está disponível"));
+        assert!(error.contains("git clone --depth 1 --branch pom-tensor-parallel"));
+        assert!(error.contains("LLAMA_SOURCE=/caminho/para/llama.cpp"));
+        assert!(error.contains("vendor/llama-cpp-sys-2/llama.cpp"));
     }
 }

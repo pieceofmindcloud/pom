@@ -25,12 +25,6 @@ on:
 permissions:
   contents: write
 
-env:
-  # O fork que substitui o llama.cpp da crates.io (ver `[patch.crates-io]` no
-  # Cargo.toml da raiz). Um lugar só para trocar de branch.
-  LLAMA_REPO: https://github.com/pereirajair/llama.cpp.git
-  LLAMA_REF: pom-tensor-parallel
-
 jobs:
   # Um job só: em runner self-hosted não há multiplicador de minuto, então
   # separar a interface em outro job só acrescentaria uma ida e volta de
@@ -51,18 +45,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      # O `vendor/llama-cpp-sys-2/llama.cpp` versionado é um symlink para a raiz
-      # do repositório, e a pasta que ele aponta está no `.gitignore`: num
-      # checkout limpo ele aponta para o vazio e o build morre no `build.rs` do
-      # llama-cpp-sys-2. Clonar **por cima do symlink**, no caminho que o
-      # `build.rs` realmente lê (`<manifest_dir>/llama.cpp`), resolve aqui e
-      # também no Windows, onde o checkout nem cria symlink.
-      - name: Fork do llama.cpp
-        run: |
-          rm -rf vendor/llama-cpp-sys-2/llama.cpp
-          git clone --depth 1 --branch "$LLAMA_REF" \
-            "$LLAMA_REPO" vendor/llama-cpp-sys-2/llama.cpp
 
       - uses: dtolnay/rust-toolchain@stable
 

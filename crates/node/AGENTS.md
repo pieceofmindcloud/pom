@@ -36,19 +36,21 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   um passo separado.
 - Lido em `main.rs:1` (`BUILD_COMMIT`) e exposto em `/api/ui/node` - é como se
   descobre um peer com binário velho sem shell na máquina.
-- O build nativo também exige o fork local de `llama.cpp`: em um worktree novo,
-  preparar `<worktree>/llama.cpp` com um checkout que contenha `ggml` antes de
-  rodar `cargo build -p node`. O procedimento completo está em
-  `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local";
-  a pendência operacional está em `TODO.md`, item 27.
-- Durante o build, `build/mtp_arch.rs` lê o fork local em modo somente leitura:
+- O build nativo prepara automaticamente o fork de `llama.cpp` em um worktree
+  novo, clonando a branch `pom-tensor-parallel` quando o symlink versionado
+  aponta para uma árvore ausente. `LLAMA_SOURCE` permite reutilizar um checkout
+  local que contenha `ggml`; falhas de preparo exibem o comando de recuperação.
+  O procedimento completo está em `docs/subsystems/build-execucao.md`, seção
+  "Preparar um worktree local".
+- Durante o build, `crates/llama-engine/build/mtp_arch.rs` lê o fork local em modo
+  somente leitura:
   descobre as verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em
   `src/models`, associa a verificação ao `build_arch_graph`, cruza a classe com
   `llama-model.cpp` e resolve o nome GGUF em `llama-arch.cpp`. Ele gera
   `OUT_DIR/mtp_graph_architectures.rs`; fork ausente, extração vazia, menor que
   treze entradas ou mapeamento inconsistente interrompe o build.
-  As regras do extrator rodam também em `tests/mtp_arch.rs`; a dependência
-  operacional do fork e da extração está em `TODO.md`, item 10.
+  As regras do extrator têm testes unitários no próprio arquivo; a dependência
+  operacional da extração está em `TODO.md`, item 10.
 - Com a feature `cuda`, `build.rs` compila os kernels MoE com `CUDACXX`; em uma
   validação da ksia, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`
   envolve o `nvcc`. O procedimento e o target separado estão em

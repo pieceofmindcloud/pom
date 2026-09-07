@@ -78,26 +78,21 @@ cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 
 ## Preparo do build
 
-O build depende do fork do `llama.cpp` em `/llama.cpp`, ignorado pelo Git
-(ver `.gitignore`), alcançado por `vendor/llama-cpp-sys-2/llama.cpp`.
-Antes de compilar, confira e atualize o checkout na branch
-`pom-tensor-parallel`, pois o lado Rust acompanha a API desse fork:
-
-```bash
-git -C /llama.cpp remote -v
-git -C /llama.cpp switch pom-tensor-parallel
-git -C /llama.cpp pull --ff-only origin pom-tensor-parallel
-git -C /llama.cpp log -1 --oneline
-```
+O build depende do fork do `llama.cpp` na branch `pom-tensor-parallel`,
+ignorado pelo Git (ver `.gitignore`) e alcançado por
+`vendor/llama-cpp-sys-2/llama.cpp`. O `build.rs` prepara automaticamente um
+clone raso quando o checkout está ausente. Para reutilizar uma cópia existente,
+use `LLAMA_SOURCE=/caminho/para/llama.cpp cargo build`; o diretório precisa
+conter `ggml`. O erro de preparo informa o comando manual completo quando o
+download não puder ocorrer. O lado Rust acompanha a API dessa branch, mas o
+projeto não fixa um commit do fork.
 
 Se faltarem `llama_moe_ffn_descriptor`, `llama_set_moe_ffn_callback` ou campos
 `moe_external_executor*` em `llama_model_params`, o checkout do fork está
-desatualizado - não é defeito preexistente do projeto. Em uma cópia nova, se o
-symlink estiver ausente, recrie-o com:
-
-```bash
-ln -s ../../llama.cpp vendor/llama-cpp-sys-2/llama.cpp
-```
+desatualizado - não é defeito preexistente do projeto. Em uma cópia nova, o
+primeiro `cargo build` prepara o conteúdo ignorado; não crie um symlink
+adicional nem altere arquivos dentro de um checkout existente do fork. Ver
+`docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
 
 **Compilar com `--features cuda` sem `CUDAARCHS` é quase sempre desperdício**:
 o llama.cpp gera cada objeto CUDA para dez arquiteturas de GPU. Meça o custo e

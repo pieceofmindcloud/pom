@@ -56,16 +56,6 @@ contexto e não devem voltar a ser propostas como defeitos novos.
   **Esforço:** baixo/médio, com sockets isolados, porta injetável e testkit sem
   broadcast global.
 
-- [ ] **27 - Fork `llama.cpp` ausente quebra clone limpo**
-  **Fonte:** `vendor/llama-cpp-sys-2/llama.cpp`; `vendor/llama-cpp-sys-2/build.rs:403-410`;
-  `crates/llama-engine/build/mtp_arch.rs:25-47`.
-  **Prática:** o symlink versionado aponta para a árvore ignorada do fork; sem
-  esse checkout local, o build falha antes de compilar Rust.
-  **Afetados:** CI, worktrees novos, releases e colaboradores sem o preparo
-  manual do fork.
-  **Esforço:** médio, automatizando o preparo ou fornecendo uma dependência
-  reproduzível.
-
 ## Média
 
 - [ ] **5 - Planner open-core não está ligado ao node**

@@ -210,6 +210,20 @@ pub(super) async fn require_admin_for_surface(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_owned();
+    let profile = state.auth.read().await.profile;
+    let scope = crate::webui::route_scope(&path);
+    let profile_access = crate::webui::profile_can_access(profile, scope);
+    if !profile_access {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "perfil sem autorização para esta rota",
+                "path": path,
+                "profile": profile.to_string(),
+            })),
+        )
+            .into_response();
+    }
     if !is_admin_surface_path(&path) {
         return next.run(request).await;
     }

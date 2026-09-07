@@ -56,6 +56,25 @@ máquina e modelos, e `admin.rs` para administração e ciclo de vida. `mod.rs`
 faz a composição; a autorização por perfil continua no middleware central do
 gateway, portanto a organização dos arquivos não é uma barreira de segurança.
 
+O mesmo `webui/routes/mod.rs` mantém a tabela de dados `ROUTE_RULES`, que é a
+fonte do escopo aplicado pelo gateway:
+
+- `admin-only`: administração, logs, desenvolvimento e ciclo de vida;
+- `node+admin`: modelos, preparação de máquina, fatiamento, provider e
+  transferência;
+- `infer+node+admin`: geração, API `/v1`, histórico do chat e auto-promoção
+  de infer para nó;
+- `common/identity internal`: catálogo próprio, vistas compartilhadas,
+  telemetria e protocolo nó-a-nó.
+
+O middleware lê o `profile` persistido no `pom.json` e recusa um perfil fora do
+escopo com HTTP 403 e JSON nomeando rota e perfil. O marcador interno nunca
+substitui essa decisão de perfil. Nas rotas `common/identity internal`, as
+chamadas entre nós ainda exigem a `connection_key` correta e o marcador interno
+validado pelo handler, nunca o marcador sozinho. `/api/setup/key`, `/api/setup/save` e as rotas da porta 8181
+(`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
+`/v1/tp/reduce`, `/health`) ficam explicitamente fora do escopo desta política.
+
 ### Fronteira de exposição
 
 O modo de exposição em Configurações / Preferências vale somente para a

@@ -24,6 +24,15 @@ and `/v1/**` accept only active inference API keys; `/health`, `/peers`,
 `/handshake` and the inference listener remain
 dual-stack.
 
+Before that exposure check, `gateway::require_admin_for_surface` consults the
+single `webui/routes/mod.rs` data table with the persisted `Config.profile`.
+A profile mismatch returns HTTP 403 with a JSON error, path and profile before
+the handler runs; an internal marker never overrides that profile decision. A
+node-to-node request on a `CommonOrInternal` route still needs the shared
+connection key and its internal marker, validated by the handler. Setup and the
+separate inference listener are marked out of scope in the table and are not
+silently treated as gateway routes.
+
 The `webui` route registry is organized under `webui/routes/`: `common.rs`
 contains routes shared by every profile, `infer.rs` contains inference-profile
 actions, `node.rs` contains local node/model operations, and `admin.rs`
@@ -96,7 +105,7 @@ profile policy remains the effective authorization boundary.
   empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
   arquivos locais emprestam o nome a cada iteração.
 - `webui/` - the `/api/ui/*` control API behind the dashboard, split into
-  `mod.rs`, `routes.rs`, `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
+  `mod.rs`, `routes/` (common, infer, node and admin), `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
   `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs` and test fragments:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process

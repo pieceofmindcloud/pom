@@ -86,6 +86,7 @@ mod tests {
     #[tokio::test]
     async fn local_admin_boundary_does_not_restrict_pipeline_routes() {
         let state = testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
             .route("/assets/app.js", get(|| async { "javascript" }))
@@ -148,6 +149,7 @@ mod tests {
     #[tokio::test]
     async fn exposed_admin_boundary_requires_and_accepts_the_human_token() {
         let state = testkit::state_with("cluster-secret", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
@@ -184,8 +186,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn infer_and_node_profiles_cannot_reach_admin_routes_with_connection_key() {
+        for profile in [
+            crate::profile::NodeProfile::Infer,
+            crate::profile::NodeProfile::Node,
+        ] {
+            let state = testkit::state_with("connection-secret", vec![]).await;
+            {
+                let mut auth = state.auth.write().await;
+                auth.connection_key = "connection-secret".into();
+                auth.profile = profile;
+            }
+            let app = Router::new()
+                .merge(crate::admin::admin_routes())
+                .merge(crate::webui::routes())
+                .with_state(state.clone())
+                .layer(middleware::from_fn_with_state(
+                    state,
+                    require_admin_for_surface,
+                ));
+            let mut request = Request::builder()
+                .uri("/admin/api-keys")
+                .header("authorization", "Bearer connection-secret")
+                .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+                .header("x-pom-profile", "admin")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "perfil={profile}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "perfil sem autorização para esta rota");
+        }
+    }
+
+    #[tokio::test]
+    async fn each_profile_reaches_its_scope_and_gets_an_explicit_refusal() {
+        let cases = [
+            (
+                crate::profile::NodeProfile::Infer,
+                "/api/ui/network/promote",
+                "/api/ui/models",
+            ),
+            (
+                crate::profile::NodeProfile::Node,
+                "/api/ui/models",
+                "/api/ui/access",
+            ),
+            (
+                crate::profile::NodeProfile::Admin,
+                "/api/ui/access",
+                "/api/setup/save",
+            ),
+        ];
+
+        for (profile, allowed_path, refused_path) in cases {
+            let state = testkit::state_with("profile-test", vec![]).await;
+            state.auth.write().await.profile = profile;
+            let app = Router::new()
+                .route(allowed_path, get(|| async { StatusCode::OK }))
+                .route(refused_path, get(|| async { StatusCode::OK }))
+                .with_state(state.clone())
+                .layer(middleware::from_fn_with_state(
+                    state,
+                    require_admin_for_surface,
+                ));
+
+            let mut allowed_request = Request::get(allowed_path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            allowed_request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+            let allowed = app.clone().oneshot(allowed_request).await.unwrap();
+            assert_eq!(allowed.status(), StatusCode::OK, "perfil={profile}");
+
+            let mut refused_request = Request::get(refused_path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            refused_request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+            let refused = app.oneshot(refused_request).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN, "perfil={profile}");
+            let body = axum::body::to_bytes(refused.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "perfil sem autorização para esta rota");
+            assert_eq!(body["path"], refused_path);
+            assert_eq!(body["profile"], profile.to_string());
+        }
+    }
+
+    #[tokio::test]
     async fn a_valid_admin_token_mints_a_server_session_used_on_the_next_request() {
         let state = testkit::state_with("cluster-secret", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
@@ -242,6 +345,7 @@ mod tests {
     #[tokio::test]
     async fn regenerating_the_token_or_returning_to_local_mode_rejects_the_old_session() {
         let state = testkit::state_with("cluster-secret", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;

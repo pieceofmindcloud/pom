@@ -7,7 +7,19 @@
  * nobody has asked. The trade is stated in `apps/frontend/README.md`: sessions do not
  * follow you to another browser, and clearing site data clears them.
  */
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { getActiveLocale } from "../i18n/locales";
 import type { GenerationTimings, RequestTrace } from "./chatStream";
 import { storageKey } from "./brand";
@@ -144,4 +156,88 @@ export function useChatSessions() {
   const clear = useCallback(() => persist([]), [persist]);
 
   return { sessions, upsert, remove, clear };
+}
+
+export interface ChatSessionController {
+  sessions: ChatSession[];
+  session: ChatSession;
+  setSession: Dispatch<SetStateAction<ChatSession>>;
+  upsert: (session: ChatSession) => void;
+  selectSession: (session: ChatSession) => void;
+  startNew: (model: string | null) => void;
+  deleteSession: (id: string, model: string | null) => void;
+  registerBeforeChange: (handler: (kind: "select" | "new" | "delete") => void) => () => void;
+}
+
+const ChatSessionContext = createContext<ChatSessionController | null>(null);
+
+/**
+ * One active conversation is shared by the Chat screen and the infer menu.
+ * Keeping it above both siblings prevents the sidebar from becoming a visual
+ * copy of the history that cannot actually change the chat.
+ */
+export function ChatSessionProvider({ children }: { children: ReactNode }) {
+  const { sessions, upsert, remove } = useChatSessions();
+  const [session, setSession] = useState<ChatSession>(
+    () => sessions[0] ?? emptySession(null),
+  );
+  const beforeChange = useRef<((kind: "select" | "new" | "delete") => void) | null>(null);
+  const activeSessionId = useRef(session.id);
+  activeSessionId.current = session.id;
+
+  const registerBeforeChange = useCallback((handler: (kind: "select" | "new" | "delete") => void) => {
+    beforeChange.current = handler;
+    return () => {
+      if (beforeChange.current === handler) beforeChange.current = null;
+    };
+  }, []);
+
+  const selectSession = useCallback((next: ChatSession) => {
+    beforeChange.current?.("select");
+    setSession(next);
+  }, []);
+
+  const startNew = useCallback((model: string | null) => {
+    beforeChange.current?.("new");
+    setSession(emptySession(model));
+  }, []);
+
+  const deleteSession = useCallback((id: string, model: string | null) => {
+    remove(id);
+    if (activeSessionId.current === id) {
+      beforeChange.current?.("delete");
+      setSession(emptySession(model));
+    }
+  }, [remove]);
+
+  const value = useMemo<ChatSessionController>(() => ({
+    sessions,
+    session,
+    setSession,
+    upsert,
+    selectSession,
+    startNew,
+    deleteSession,
+    registerBeforeChange,
+  }), [
+    sessions,
+    upsert,
+    session,
+    selectSession,
+    startNew,
+    deleteSession,
+    registerBeforeChange,
+  ]);
+
+  return createElement(ChatSessionContext.Provider, { value }, children);
+}
+
+export function useChatSessionController(): ChatSessionController {
+  const value = useContext(ChatSessionContext);
+  if (!value) throw new Error("useChatSessionController must be used inside ChatSessionProvider");
+  return value;
+}
+
+export function useOptionalChatSessionController() {
+  return useContext(ChatSessionContext);
 }

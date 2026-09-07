@@ -28,6 +28,8 @@ export interface NavLeaf {
   labelKey: string;
   to: string;
   icon?: LucideIcon;
+  /** Promotes this child to a standalone main-menu item for a profile. */
+  promoteProfiles?: readonly Profile[];
   /** Matches child routes too — used by the sidebar to mark a section open. */
   end?: boolean;
 }
@@ -38,6 +40,18 @@ export interface NavSection {
   /** A section either navigates somewhere itself, or holds children. */
   to?: string;
   children?: NavLeaf[];
+  /** Profiles for which this destination is rendered in the utility footer. */
+  footerProfiles?: readonly Profile[];
+  /** Footer target for a section whose normal destination is a child route. */
+  footerTo?: string;
+  /** Profiles that get the conversation panel instead of a normal Chat link. */
+  chatPanelProfiles?: readonly Profile[];
+}
+
+export interface NavFooterItem {
+  labelKey: string;
+  to: string;
+  icon: LucideIcon;
 }
 
 /**
@@ -46,7 +60,7 @@ export interface NavSection {
  */
 export const NAV: NavSection[] = [
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
-  { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat" },
+  { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["infer"] },
   {
     labelKey: "nav.models",
     icon: Boxes,
@@ -84,12 +98,19 @@ export const NAV: NavSection[] = [
   { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/estatisticas" },
   // The repo's own documentation, not a screen that reads the cluster: the
   // folder AGENTS.md files and subsystem READMEs embedded at build time.
-  { labelKey: "nav.documentation", icon: BookOpen, to: "/documentacao" },
+  {
+    labelKey: "nav.documentation",
+    icon: BookOpen,
+    to: "/documentacao",
+    footerProfiles: ["infer"],
+  },
   {
     labelKey: "nav.settings",
     icon: Settings,
+    footerProfiles: ["infer"],
+    footerTo: "/config/keys/api",
     children: [
-      { labelKey: "nav.network", to: "/config/rede", icon: Network },
+      { labelKey: "nav.network", to: "/config/rede", icon: Network, promoteProfiles: ["infer"] },
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
       { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },
@@ -113,6 +134,15 @@ export const NAV: NavSection[] = [
 export function navForProfile(profile: Profile): NavSection[] {
   const visible: NavSection[] = [];
   for (const section of NAV) {
+    if (section.chatPanelProfiles?.includes(profile)) continue;
+    if (section.footerProfiles?.includes(profile)) {
+      for (const child of section.children ?? []) {
+        if (!child.promoteProfiles?.includes(profile)) continue;
+        if (!canAccessRoute(child.to, profile)) continue;
+        visible.push({ labelKey: child.labelKey, icon: child.icon ?? section.icon, to: child.to });
+      }
+      continue;
+    }
     if (section.to) {
       if (canAccessRoute(section.to, profile)) visible.push(section);
       continue;
@@ -123,4 +153,14 @@ export function navForProfile(profile: Profile): NavSection[] {
     if (children.length > 0) visible.push({ ...section, children });
   }
   return visible;
+}
+
+/** Destinations kept beside the language and theme controls for a profile. */
+export function navFooterForProfile(profile: Profile): NavFooterItem[] {
+  return NAV.flatMap((section) => {
+    if (!section.footerProfiles?.includes(profile)) return [];
+    const to = section.footerTo ?? section.to;
+    if (!to || !canAccessRoute(to, profile)) return [];
+    return [{ labelKey: section.labelKey, to, icon: section.icon }];
+  });
 }

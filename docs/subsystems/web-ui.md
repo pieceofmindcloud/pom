@@ -165,6 +165,16 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   (`/config/pastas` continua como alias)
 - `*` -> NotFound
 
+No perfil `infer`, a Sidebar deixa de ser uma lista de telas: `ChatSessionList`
+ocupa o menu principal com `Conversa nova` e as conversas salvas. O botão novo
+fica fora da área rolável, a lista usa `min-h-0` + `overflow-y-auto` e a sessão
+ativa recebe destaque e `aria-pressed`; assim muitas conversas não escondem a
+rede nem fazem o menu crescer além da janela. A rede é o único destino principal
+adicional. Documentação e Configurações (a chave API permitida ao infer) são
+projeções de rodapé junto das bandeiras. `ChatSessionProvider` mantém a seleção
+da Sidebar e o Chat na mesma sessão. Administrador e node continuam recebendo a
+projeção normal de `NAV`.
+
 ### Wizard de primeiro acesso
 
 `routes/SetupWizard.tsx` mantém uma máquina de estados local, com histórico para
@@ -296,6 +306,11 @@ traz o idioma em **bandeiras** (`brand.flags`, do `brand.json`) em vez de
 é idioma para leitor de tela -, o `build_commit` do nó (só o hash, em mono, com
 a explicação no tooltip) e o tema claro/escuro. O PipelineRail ainda é renderizado oculto
 no Dashboard (`hidden`, para uma superfície futura).
+
+No `infer`, o rodapé coloca Documentação e Configurações ao lado das bandeiras;
+o item principal de rede continua na coluna do histórico para preservar o acesso
+à auto-promoção. Essas posições são metadados de `NAV`, não uma segunda lista de
+rotas.
 
 ## Arquitetura do frontend
 
@@ -498,6 +513,12 @@ apresentar uma visão incompleta como se fosse o fluxo integral.
 harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
 cap 50 sessões, sincronizado entre abas), não do nó. Três coisas a conversa
 guarda além das falas:
+
+`ChatSessionProvider` compartilha a sessão ativa e as ações entre o Chat e a
+Sidebar. No `infer`, a Sidebar usa `ChatSessionList` como menu principal: a
+lista de histórico tem rolagem interna limitada ao espaço disponível, destaca
+a conversa ativa e deixa `Conversa nova` fixa acima dela. Trocar ou apagar uma
+sessão aborta uma geração em andamento antes de mudar a tela.
 
 - **A telemetria da execução chega fechada** (`components/ExecutionTelemetry.tsx`): a tabela
   de fases e as seções densas de rede e ambiente ficam embaixo da resposta;

@@ -37,6 +37,7 @@ chat.delete,Delete {title},Apagar {title}
 chat.emptyResponse,The network replied without any tokens. Check the Dashboard to make sure layer coverage is complete.,A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.
 chat.errorCopied,Copied,Copiado
 chat.generationSpeed,Generation,Geração
+chat.history,Conversation history,Histórico de conversas
 chat.incomplete,incomplete coverage,cobertura incompleta
 chat.interrupted,Interrupted.,Interrompido.
 chat.keyRejected,The connection key was rejected,A chave de conexão foi recusada

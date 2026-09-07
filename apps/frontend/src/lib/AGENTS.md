@@ -19,7 +19,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   além do status autenticado do provider remoto.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
-- `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
+- `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
+  synced; keeps the initial model mark and private request content for telemetry
+  analysis. `ChatSessionProvider` shares the active session and selection/new/
+  delete actions between `Chat` and the infer Sidebar; direct Chat consumers get
+  an isolated provider wrapper.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
@@ -212,6 +216,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### chatStore.ts
 - `useChatSessions()` - `localStorage` list (`codai.chat.sessions`) capped at `MAX_SESSIONS` 50, kept in sync across tabs via the `storage` event; returns `{sessions, upsert, remove, clear}`.
+- `ChatSessionProvider` / `useChatSessionController()` - one active session
+  and the store actions shared by the Chat screen and `Sidebar`. The controller
+  invokes the registered pre-change hook before a menu selection, new session or
+  deletion so a live stream is aborted and the Chat clears transient state.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
@@ -254,7 +262,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   a chave mais específica vence.
 - `canAccessRoute(path, profile)` - para o `infer`, permite somente a vista de
   conversa, documentação, API keys e rede local. É apresentação, não escopo de credencial; a fronteira
-  real ficou para `rdma-perfis-escopo-backend`.
+  real ficou para `rdma-perfis-escopo-backend`. `components/nav.ts` usa o mesmo
+  resultado para manter a rede no menu principal do infer e mover documentação
+  e API keys para o rodapé.
 
 ### theme.tsx
 - `ThemeProvider` / `useTheme` - reads the theme from `document.documentElement.dataset.theme` (index.html stamped it pre-paint), writes `data-theme` + `localStorage` `codai.theme`. Dark is the default; the system preference does not override.

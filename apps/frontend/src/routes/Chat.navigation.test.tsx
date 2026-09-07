@@ -18,7 +18,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
-import { ProfileProvider } from "../lib/profile";
+import { ProfileProvider, type Profile } from "../lib/profile";
 import { ThemeProvider } from "../lib/theme";
 import { ToastProvider } from "../lib/toast";
 import type { RequestTrace } from "../lib/chatStream";
@@ -99,10 +99,10 @@ vi.mock("./Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 
 import App from "../App";
 
-function mount() {
+function mount(profile: Profile = "admin") {
   return render(
     <LocaleProvider initialLocale="pt-BR">
-      <ProfileProvider>
+      <ProfileProvider initialProfile={profile}>
         <ThemeProvider>
           <ToastProvider>
             <MemoryRouter
@@ -146,5 +146,14 @@ describe("navegação depois do chat", () => {
 
     await waitFor(() => expect(screen.getByText("tela-painel")).toBeTruthy());
     expect(loop.tripped).toBe(false);
+  });
+
+  it("não duplica o histórico quando o infer já o tem no menu principal", async () => {
+    mount("infer");
+
+    await screen.findByPlaceholderText("Escreva para a rede…");
+    expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Rede" })).toBeTruthy();
   });
 });

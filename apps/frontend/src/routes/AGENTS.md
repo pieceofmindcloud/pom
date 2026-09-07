@@ -22,7 +22,8 @@ Per-file list:
   sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
-  exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage),
+  exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
+  and the shared active-session controller) and `../components/ChatSessionList`,
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
   (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,

@@ -19,11 +19,11 @@ import {
   Pencil,
   Plus,
   Square,
-  Trash2,
   TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
+import { ChatSessionList } from "../components/ChatSessionList";
 import { ExecutionTelemetry, TimingSummary, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { Badge, Button, Empty } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
@@ -39,15 +39,16 @@ import {
   buildTelemetryAnalysisPrompt,
 } from "../lib/telemetryAnalysis";
 import {
-  emptySession,
+  ChatSessionProvider,
   newId,
   titleFrom,
   turnsOnly,
-  useChatSessions,
+  useChatSessionController,
+  useOptionalChatSessionController,
   type ChatMessage,
   type ChatSession,
 } from "../lib/chatStore";
-import { ms, num, since } from "../lib/format";
+import { ms, num } from "../lib/format";
 import type { RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
@@ -362,76 +363,21 @@ function ModelPicker({
   );
 }
 
-function SessionList({
-  sessions,
-  activeId,
-  onPick,
-  onNew,
-  onDelete,
-}: {
-  sessions: ChatSession[];
-  activeId: string;
-  onPick: (s: ChatSession) => void;
-  onNew: () => void;
-  onDelete: (id: string) => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <aside className="hidden w-[248px] shrink-0 flex-col border-r border-line bg-surface md:flex">
-      <div className="p-3">
-        <Button
-          variant="primary"
-          className="w-full"
-          icon={<Plus className="h-4 w-4" />}
-          onClick={onNew}
-        >
-          {t("chat.new")}
-        </Button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-        {sessions.length === 0 ? (
-          <p className="px-3 py-6 text-center text-xs leading-relaxed text-faint">
-            {t("chat.localOnly")}
-          </p>
-        ) : (
-          sessions.map((s) => (
-            <div
-              key={s.id}
-              className={clsx(
-                "group relative mb-0.5 rounded-lg transition-colors duration-150",
-                s.id === activeId ? "bg-iris/12 ring-1 ring-inset ring-iris/25" : "hover:bg-line/40",
-              )}
-            >
-              <button
-                onClick={() => onPick(s)}
-                className="block w-full px-3 py-2 pr-8 text-left"
-              >
-                <span className="block truncate text-[0.82rem] text-fg">{s.title}</span>
-                <span className="block text-[0.68rem] text-faint">
-                  {since(s.updatedAt)} · {s.messages.length}{" "}
-                  {t("chat.message", { count: s.messages.length })}
-                </span>
-              </button>
-              <button
-                onClick={() => onDelete(s.id)}
-                aria-label={t("chat.delete", { title: s.title })}
-                className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-1.5 text-faint transition-colors hover:text-rose group-hover:block"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))
-        )}
-      </div>
-    </aside>
-  );
-}
-
-export function Chat() {
+function ChatScreen() {
   const { t, locale } = useI18n();
   const { profile } = useProfile();
   const showTelemetry = profile !== "infer";
-  const { sessions, upsert, remove } = useChatSessions();
+  const historyLivesInMainMenu = profile === "infer";
+  const {
+    sessions,
+    session,
+    setSession,
+    upsert,
+    selectSession,
+    startNew: startNewSession,
+    deleteSession: removeSession,
+    registerBeforeChange,
+  } = useChatSessionController();
   const models = useServableModels();
   const cluster = useCluster();
   const node = useNode();
@@ -445,7 +391,6 @@ export function Chat() {
     [cluster.data?.model_inventory, models.data],
   );
 
-  const [session, setSession] = useState<ChatSession>(() => sessions[0] ?? emptySession(null));
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [telemetryCapture, setTelemetryCapture] = useState<{
@@ -455,9 +400,19 @@ export function Chat() {
   } | null>(null);
   const [telemetrySnapshots, setTelemetrySnapshots] = useState<Record<string, ExecutionTelemetryEnvironment>>({});
   const abort = useRef<AbortController | null>(null);
+  const deletedSessions = useRef(new Set<string>());
   const thread = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(
+    () => registerBeforeChange((kind) => {
+      abort.current?.abort();
+      setTelemetryCapture(null);
+      if (kind === "new") setDraft("");
+    }),
+    [registerBeforeChange],
+  );
 
   const telemetryNodeIds = useMemo(
     () => Array.from(new Set(telemetryCapture?.trace.hops.map((hop) => hop.node_id) ?? [])).sort(),
@@ -656,7 +611,7 @@ export function Chat() {
     } finally {
       setStreaming(false);
       abort.current = null;
-      upsert(live);
+      if (!deletedSessions.current.delete(live.id)) upsert(live);
     }
   }
 
@@ -707,25 +662,21 @@ export function Chat() {
     if (updated.messages.length > 0) upsert(updated);
   }
 
-  function startNew() {
-    abort.current?.abort();
-    setSession(emptySession(model || null));
-    setDraft("");
-    setTelemetryCapture(null);
-  }
-
-  function deleteSession(id: string) {
-    remove(id);
+  function deleteChatSession(id: string) {
+    if (id === session.id) deletedSessions.current.add(id);
     setTelemetrySnapshots((previous) => {
       if (!(id in previous)) return previous;
       const next = { ...previous };
       delete next[id];
       return next;
     });
-    if (id === session.id) {
-      setSession(emptySession(model || null));
-      setTelemetryCapture(null);
-    }
+    removeSession(id, model || null);
+  }
+
+  function startNewChat() {
+    setDraft("");
+    setTelemetryCapture(null);
+    startNewSession(model || null);
   }
 
   const noModel = available.length === 0 && !cluster.data?.active_model;
@@ -734,17 +685,15 @@ export function Chat() {
 
   return (
     <div className="flex h-full min-h-0">
-      <SessionList
-        sessions={sessions}
-        activeId={session.id}
-        onPick={(s) => {
-          abort.current?.abort();
-          setSession(s);
-          setTelemetryCapture(null);
-        }}
-        onNew={startNew}
-        onDelete={deleteSession}
-      />
+      {!historyLivesInMainMenu && (
+        <ChatSessionList
+          sessions={sessions}
+          activeId={session.id}
+          onPick={selectSession}
+          onNew={startNewChat}
+          onDelete={deleteChatSession}
+        />
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 sm:px-6">
@@ -761,15 +710,17 @@ export function Chat() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <OpenNativeChatWindowButton />
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={<Plus className="h-3.5 w-3.5" />}
-              onClick={startNew}
-              className="md:hidden"
-            >
-              {t("chat.newShort")}
-            </Button>
+            {!historyLivesInMainMenu && (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Plus className="h-3.5 w-3.5" />}
+                onClick={startNewChat}
+                className="md:hidden"
+              >
+                {t("chat.newShort")}
+              </Button>
+            )}
           </div>
         </div>
 
@@ -878,5 +829,17 @@ export function Chat() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Direct consumers such as focused route tests still get an isolated chat. */
+export function Chat() {
+  const controller = useOptionalChatSessionController();
+  return controller ? (
+    <ChatScreen />
+  ) : (
+    <ChatSessionProvider>
+      <ChatScreen />
+    </ChatSessionProvider>
   );
 }

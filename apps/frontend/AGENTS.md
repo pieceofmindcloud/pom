@@ -58,6 +58,11 @@ API key e a tela de rede local para auto-promoção. O valor vem de `/api/ui/nod
 é propriedade persistida do nó e aparece na toolbar. Isso não substitui a
 autorização do backend: o servidor também limita a resposta da rede e as
 promoções.
+Na Sidebar desse perfil, o histórico e `Conversa nova` são o menu principal;
+as sessões compartilham estado com o Chat, a lista rola dentro do espaço
+disponível e a rede fica sempre abaixo dela. Documentação e Configurações
+ficam no rodapé junto das bandeiras. Administrador e node continuam com o menu
+de navegação por telas.
 
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)
@@ -102,7 +107,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, tipos compartilhados e o contrato de métricas de TTFT, prefill, geração e total. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
 - `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
-- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog). `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
+- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog). `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.

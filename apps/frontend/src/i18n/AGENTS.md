@@ -89,6 +89,10 @@ O Chat também traduz o rótulo de erro vindo dentro do stream, o controle para
 copiar a mensagem e o estado de cópia. O texto do servidor é preservado sem
 passar pelo fallback de idioma, para que o diagnóstico real não seja perdido.
 
+The `chat.history` message names the bounded conversation list used by the
+`infer` Sidebar. It remains in both CSV columns even though it is primarily an
+accessible label, so the menu has no language-specific copy in the component.
+
 The slice locale group also covers multipart part lists, summed-size loading
 state and explicit incomplete-set errors in both languages.
 

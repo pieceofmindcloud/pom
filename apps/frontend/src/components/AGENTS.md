@@ -84,6 +84,10 @@ Per-file list:
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`.
+- `ChatSessionList.tsx` - shared conversation history list. The Chat screen
+  uses the wide variant; the `infer` Sidebar uses the compact variant. The
+  list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
+  delete action and localized new-conversation button.
 - `nav.ts` — `NAV`: the menu as data — a seção Implantações usa `Rocket` (era
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e a consola de
   processo usa `Terminal` logo abaixo de Histórico; o submenu não
@@ -97,8 +101,10 @@ Per-file list:
   uma seção com filhas só some quando **nenhuma** filha sobra. Ele copia a seção
   antes de filtrar; reescrever `NAV` deixaria o outro perfil com o menu podado.
   Estatísticas é uma entrada de primeiro nível depois de Logs, mantendo a
-  sequência operacional de consultar eventos antes de seus agregados. Testes em
-  `nav.test.ts`.
+  sequência operacional de consultar eventos antes de seus agregados. A mesma
+  tabela marca as entradas que vão para o rodapé do `infer` e promove a rede
+  para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
+  projeções. Testes em `nav.test.ts`.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated
@@ -122,7 +128,10 @@ Per-file list:
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
   keeps the TLS policy link beside those flags: icon-only, with different icon
   and tone for encrypted versus cleartext and the meaning in
-  `aria-label`/`title`.
+  `aria-label`/`title`. Para `infer`, o rodapé também renderiza documentação e
+  API keys, enquanto a coluna principal é substituída por `ChatSessionList` e
+  o link da rede. O histórico mantém o botão de nova conversa e a rede fora da
+  área rolável, para uma lista longa não empurrar nenhuma ação para fora.
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
   per job with state, named phase, byte heartbeat, rate/ETA when available and

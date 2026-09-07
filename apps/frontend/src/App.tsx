@@ -8,6 +8,7 @@ import {
   setAdminAccessToken,
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
+import { ChatSessionProvider } from "./lib/chatStore";
 import { useAdminSurface } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
@@ -313,84 +314,86 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full overflow-hidden">
-      {/*
-        The chrome gets its own boundaries. The routed page below is the part
-        that is expected to fail, but a toolbar that throws used to blank the
-        whole window — including the menu that gets the operator out of it.
-      */}
-      <ErrorBoundary fallback={null}>
-        <Sidebar />
-      </ErrorBoundary>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <ErrorBoundary
-          fallback={
-            <div className="border-b border-line px-4 py-3 text-xs text-faint">
-              {t("app.topbarFailed")}
-            </div>
-          }
-        >
-          <Topbar />
+    <ChatSessionProvider>
+      <div className="flex h-full min-h-0 w-full overflow-hidden">
+        {/*
+          The chrome gets its own boundaries. The routed page below is the part
+          that is expected to fail, but a toolbar that throws used to blank the
+          whole window - including the menu that gets the operator out of it.
+        */}
+        <ErrorBoundary fallback={null}>
+          <Sidebar />
         </ErrorBoundary>
-        <main
-          className={
-            isChat || isFullBleed
-              ? "min-h-0 flex-1 overflow-hidden"
-              : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
-          }
-        >
-          <ErrorBoundary resetKey={location.pathname}>
-            <Suspense fallback={<RouteFallback />}>
-              {!allowed && location.pathname === "/" ? (
-                /*
-                 * O `/` é o Painel, que o `infer` não abre. Mandá-lo para a
-                 * recusa faria a interface abrir num beco: a tela inicial do
-                 * perfil é quem responde por ele.
-                 */
-                <Navigate to={homeRoute(profile)} replace />
-              ) : !allowed ? (
-                <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
-                  <Page>
-                    <Forbidden />
-                  </Page>
-                </div>
-              ) : isChat ? (
-                <Chat />
-              ) : (
-                <div className={isFullBleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
-                  <AnimatePresence mode="wait">
-                    <Routes location={location} key={location.pathname}>
-                      <Route path="/" element={<Page><Dashboard /></Page>} />
-                      <Route path="/modelos" element={<Page><WholeModels /></Page>} />
-                      <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
-                      <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
-                      <Route path="/fatias" element={<Page><Shards /></Page>} />
-                      <Route path="/implantar" element={<Page><DeployModel /></Page>} />
-                      <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
-                      <Route path="/implantacoes/logs" element={<Page><DeploymentLogs /></Page>} />
-                      {/* Keep the former deploy URL working for old bookmarks. */}
-                      <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
-                      <Route path="/transferencias" element={<Page><Transfers /></Page>} />
-                      <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
-                      <Route path="/logs" element={<Page><Logs /></Page>} />
-                      <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
-                      <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
-                      <Route path="/documentacao" element={<Page><Documentation /></Page>} />
-                      <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
-                      <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
-                      <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
-                      <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
-                      <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
-                      <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
-                      <Route path="*" element={<Page><NotFound /></Page>} />
-                    </Routes>
-                  </AnimatePresence>
-                </div>
-              )}
-            </Suspense>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <ErrorBoundary
+            fallback={
+              <div className="border-b border-line px-4 py-3 text-xs text-faint">
+                {t("app.topbarFailed")}
+              </div>
+            }
+          >
+            <Topbar />
           </ErrorBoundary>
-        </main>
+          <main
+            className={
+              isChat || isFullBleed
+                ? "min-h-0 flex-1 overflow-hidden"
+                : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+            }
+          >
+            <ErrorBoundary resetKey={location.pathname}>
+              <Suspense fallback={<RouteFallback />}>
+                {!allowed && location.pathname === "/" ? (
+                  /*
+                   * O `/` é o Painel, que o `infer` não abre. Mandá-lo para a
+                   * recusa faria a interface abrir num beco: a tela inicial do
+                   * perfil é quem responde por ele.
+                   */
+                  <Navigate to={homeRoute(profile)} replace />
+                ) : !allowed ? (
+                  <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+                    <Page>
+                      <Forbidden />
+                    </Page>
+                  </div>
+                ) : isChat ? (
+                  <Chat />
+                ) : (
+                  <div className={isFullBleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
+                    <AnimatePresence mode="wait">
+                      <Routes location={location} key={location.pathname}>
+                        <Route path="/" element={<Page><Dashboard /></Page>} />
+                        <Route path="/modelos" element={<Page><WholeModels /></Page>} />
+                        <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
+                        <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
+                        <Route path="/fatias" element={<Page><Shards /></Page>} />
+                        <Route path="/implantar" element={<Page><DeployModel /></Page>} />
+                        <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
+                        <Route path="/implantacoes/logs" element={<Page><DeploymentLogs /></Page>} />
+                        {/* Keep the former deploy URL working for old bookmarks. */}
+                        <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
+                        <Route path="/transferencias" element={<Page><Transfers /></Page>} />
+                        <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
+                        <Route path="/logs" element={<Page><Logs /></Page>} />
+                        <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
+                        <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
+                        <Route path="/documentacao" element={<Page><Documentation /></Page>} />
+                        <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
+                        <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
+                        <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
+                        <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
+                        <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
+                        <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
+                        <Route path="*" element={<Page><NotFound /></Page>} />
+                      </Routes>
+                    </AnimatePresence>
+                  </div>
+                )}
+              </Suspense>
+            </ErrorBoundary>
+          </main>
+        </div>
       </div>
-    </div>
+    </ChatSessionProvider>
   );
 }

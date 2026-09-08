@@ -41,6 +41,14 @@ mutation where authority changes. Setup and the separate inference listener
 are marked out of scope in the table and are not silently treated as gateway
 routes.
 
+`POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
+somente o endereço anunciado deste processo e não recebe alvo nem repassa a
+chamada. As rotas administrativas com parâmetro de nó usam a sintaxe `:id`
+do Axum 0.7. A webapp serve a SPA por um fallback do router, então um handler
+concreto de POST ou DELETE vence e um caminho mutável desconhecido, depois da
+autorização, devolve 404, não o 405 produzido por um wildcard registrado apenas
+para GET. Perfis sem escopo continuam recusados antes do fallback.
+
 Two decisions the table cannot express, because they depend on the body rather
 than the path, live in their handlers: `POST /api/ui/leave` (leaving is
 abdication and belongs to every profile, but forwarding the request to
@@ -753,12 +761,12 @@ profile policy remains the effective authorization boundary.
   startup via `dev_auto_accept`, the receiver's own variable) is OFF unless the
   receiver sets it; a sender cannot ask for it.
 - `admin.rs` - `admin_routes()`: `GET /admin/nodes`, `POST
-  /admin/nodes/{id}/block`, `POST /admin/nodes/{id}/unblock`, `DELETE
-  /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST /admin/api-keys`,
-  `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers` (same offers as
+  /admin/nodes/:id/block`, `POST /admin/nodes/:id/unblock`, `DELETE
+  /admin/nodes/:id`, `POST /admin/regenerate-key`, `GET+POST /admin/api-keys`,
+  `DELETE /admin/api-keys/:key`, `GET /admin/transfer-offers` (same offers as
   `transfer.rs::list_offers`), `GET /admin/slots` (local `/health` view of KV
   snapshots plus `prefix_auto_cache` index stats when Phase 3 is on),
-  `POST /admin/slots/{name}?action=save|restore|erase` (orchestrates
+  `POST /admin/slots/:name?action=save|restore|erase` (orchestrates
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
@@ -766,7 +774,7 @@ profile policy remains the effective authorization boundary.
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
   `POST /admin/authority/resign`, `POST
-  /admin/authority/secondaries/{id}/demote`, and the profile transition routes
+  /admin/authority/secondaries/:id/demote`, and the profile transition routes
   `/api/ui/network/request-node` and `/api/ui/network/relinquish-node`.
   Internal profile mutations carry signed authority commands; a promotion
   delivers and validates the complete trust document at the target.

@@ -72,6 +72,9 @@ do MTP no `/health` e a tarefa de observabilidade recomendada para distingui-las
 em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
 2026-09-04, a reaplicação da rota morta por lote e a memória de falha que a
 corrige.
+`api-http.md` registra também que o endereço anunciado é uma mutação local
+disponível a todo perfil e que o fallback da interface não intercepta métodos
+de rotas administrativas concretas.
 
 O armazenamento local unificado está especificado em
 `superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no

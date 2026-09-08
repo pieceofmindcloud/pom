@@ -175,7 +175,8 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
-    // Operações locais do nó e do modelo.
+    // Operações locais do nó e do modelo. O endereço anunciado é a descrição
+    // desta própria máquina, por isso também é permitido ao perfil `infer`.
     RouteRule {
         prefix: "/api/ui/models",
         method: None,
@@ -199,7 +200,7 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/advertise-addr",
         method: None,
-        scope: RouteScope::NodeAdmin,
+        scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
         prefix: "/api/ui/plan",
@@ -449,6 +450,10 @@ mod policy_tests {
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
         assert_eq!(scope_of("/api/ui/model-provider/status"), RouteScope::NodeAdmin);
+        assert_eq!(
+            scope_of("/api/ui/network/advertise-addr"),
+            RouteScope::InferNodeAdmin
+        );
         assert_eq!(
             scope_of("/api/ui/network/admin-authority"),
             RouteScope::CommonOrInternal

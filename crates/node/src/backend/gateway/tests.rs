@@ -269,26 +269,36 @@ mod tests {
                     state,
                     require_admin_for_surface,
                 ));
-            // Bloquear uma máquina continua administrativo mesmo depois de a
-            // leitura do mesmo prefixo (`GET /admin/nodes`) abrir para `node`.
-            let mut request = Request::builder()
-                .method("POST")
-                .uri("/admin/nodes/outra/block")
-                .header("authorization", "Bearer connection-secret")
-                .header("x-pom-profile", "admin")
-                .body(axum::body::Body::empty())
-                .unwrap();
-            request
-                .extensions_mut()
-                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+            // Bloquear ou promover uma máquina continua administrativo mesmo
+            // depois de a leitura do mesmo prefixo (`GET /admin/nodes`) abrir
+            // para `node`.
+            for path in [
+                "/admin/nodes/outra/block",
+                "/admin/nodes/outra/promote-admin",
+            ] {
+                let mut request = Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("authorization", "Bearer connection-secret")
+                    .header("x-pom-profile", "admin")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                request
+                    .extensions_mut()
+                    .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
 
-            let response = app.oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::FORBIDDEN, "perfil={profile}");
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"], "perfil sem autorização para esta rota");
+                let response = app.clone().oneshot(request).await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::FORBIDDEN,
+                    "perfil={profile}, path={path}"
+                );
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["error"], "perfil sem autorização para esta rota");
+            }
         }
     }
 
@@ -442,6 +452,12 @@ mod tests {
             // Sair da rede é abdicar do próprio posto.
             ("POST", "/api/ui/leave", &[Infer, Node, Admin]),
             ("POST", "/api/ui/rejoin", &[Infer, Node, Admin]),
+            // Corrigir o endereço anunciado descreve esta própria máquina.
+            (
+                "POST",
+                "/api/ui/network/advertise-addr",
+                &[Infer, Node, Admin],
+            ),
             // O que não foi tocado continua onde estava.
             ("GET", "/api/ui/deployments", &[Admin]),
             ("GET", "/api/ui/models", &[Node, Admin]),
@@ -463,6 +479,125 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Reproduz a chamada do navegador no caso que falhava ao vivo: o `infer`
+    /// atravessa o middleware, grava apenas a própria configuração e o próximo
+    /// anúncio já carrega o endereço novo.
+    #[tokio::test]
+    async fn an_infer_node_can_save_its_own_address_and_announce_it_next() {
+        let state = testkit::state_with("infer-node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Infer;
+        }
+        struct ConfigPathGuard {
+            previous: Option<std::ffi::OsString>,
+            path: std::path::PathBuf,
+        }
+        impl Drop for ConfigPathGuard {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("POM_CONFIG", previous),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+                std::fs::remove_file(&self.path).ok();
+            }
+        }
+        let config_path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pom-test-advertise-{}.json", std::process::id()));
+        std::fs::remove_file(&config_path).ok();
+        let _config_path_guard = ConfigPathGuard {
+            previous: std::env::var_os("POM_CONFIG"),
+            path: config_path.clone(),
+        };
+        std::env::set_var("POM_CONFIG", &config_path);
+        let expected_address = format!("203.0.113.9:{}", state.network.bind_addr.port());
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+
+        let mut request = Request::post("/api/ui/network/advertise-addr")
+            .header("authorization", "Bearer connection-secret")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"advertise_addr":"203.0.113.9"}"#,
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "body={}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            state.auth.read().await.advertise_addr.as_deref(),
+            Some(expected_address.as_str())
+        );
+
+        let wire = state.network.gossip_announce_bytes(None).unwrap();
+        let announce: crate::network::P2PMessage = serde_json::from_slice(&wire).unwrap();
+        match announce {
+            crate::network::P2PMessage::Announce {
+                addr,
+                addr_candidates,
+                ..
+            } => {
+                assert_eq!(addr, expected_address);
+                assert!(
+                    addr_candidates.contains(&expected_address),
+                    "candidatos={addr_candidates:?}"
+                );
+            }
+            other => panic!("esperava Announce, veio {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_authenticated_unknown_admin_mutation_reaches_the_404_fallback() {
+        let state = testkit::state_with("admin-node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Admin;
+        }
+        let app = Router::new()
+            .merge(crate::admin::admin_routes())
+            .merge(crate::webui::routes())
+            .merge(crate::webapp::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut request = Request::post("/admin/not-a-real-route")
+            .header("authorization", "Bearer connection-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     /// Sair é abdicar; mandar **outra** máquina sair é ato de administrador.

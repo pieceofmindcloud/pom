@@ -21,18 +21,21 @@ use uuid::Uuid;
 pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
     Router::new()
         .route("/admin/nodes", get(list_nodes))
-        .route("/admin/nodes/{id}/block", post(block_node))
-        .route("/admin/nodes/{id}/unblock", post(unblock_node))
-        .route("/admin/nodes/{id}/promote-admin", post(promote_node_to_admin))
+        .route("/admin/nodes/:id/block", post(block_node))
+        .route("/admin/nodes/:id/unblock", post(unblock_node))
+        .route(
+            "/admin/nodes/:id/promote-admin",
+            post(promote_node_to_admin),
+        )
         .route("/admin/authority/resign", post(resign_authority))
         .route(
-            "/admin/authority/secondaries/{id}/demote",
+            "/admin/authority/secondaries/:id/demote",
             post(demote_secondary),
         )
         .route("/api/ui/network/admin-authority", get(admin_authority_view))
         .route("/api/ui/network/request-node", post(request_node_promotion))
         .route("/api/ui/network/relinquish-node", post(relinquish_node))
-        .route("/admin/nodes/{id}", delete(remove_node))
+        .route("/admin/nodes/:id", delete(remove_node))
         .route("/admin/regenerate-key", post(regenerate_key))
         .route("/admin/api-keys", get(list_api_keys).post(generate_api_key))
         .route("/admin/api-keys/:key", delete(revoke_api_key))
@@ -2171,8 +2174,11 @@ mod tests {
         listener: tokio::net::TcpListener,
         state: crate::gateway::GatewayState,
     ) -> std::net::SocketAddr {
-    let address = listener.local_addr().unwrap();
-        let app = Router::new().merge(admin_routes()).with_state(state);
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .merge(admin_routes())
+            .merge(crate::webapp::routes())
+            .with_state(state);
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("gateway do laboratório");
         });

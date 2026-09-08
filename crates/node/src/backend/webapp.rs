@@ -21,7 +21,7 @@ use axum::{
     extract::Path as AxumPath,
     http::{header, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{any, get},
     Router,
 };
 
@@ -43,8 +43,8 @@ where
         .route("/", get(root))
         .route("/admin-ui", get(index))
         .route("/admin-ui/", get(index))
-        .route("/admin-ui/*path", get(asset))
-        .route("/*path", get(asset))
+        .route("/admin-ui/*path", any(asset))
+        .fallback(fallback)
 }
 
 async fn root() -> Redirect {
@@ -58,7 +58,11 @@ async fn index() -> Response {
         .unwrap_or_else(|| missing_bundle(&base))
 }
 
-async fn asset(AxumPath(path): AxumPath<String>, uri: Uri) -> Response {
+async fn asset(AxumPath(path): AxumPath<String>, uri: Uri, method: axum::http::Method) -> Response {
+    if method != axum::http::Method::GET {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let base = crate::config::ui_dist_dir();
     let trimmed = path
         .strip_prefix("admin-ui/")
@@ -94,6 +98,14 @@ async fn asset(AxumPath(path): AxumPath<String>, uri: Uri) -> Response {
     serve(&base, "index.html")
         .await
         .unwrap_or_else(|| missing_bundle(&base))
+}
+
+/// Serve the SPA only after no concrete API or UI route matched. Keeping this
+/// as a router fallback is important: a GET-only wildcard otherwise claims the
+/// path of every unknown POST/DELETE and turns a missing route into 405.
+async fn fallback(method: axum::http::Method, uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/').to_string();
+    asset(AxumPath(path), uri, method).await
 }
 
 /// Join a request path onto the bundle directory without ever leaving it.
@@ -158,6 +170,8 @@ fn missing_bundle(base: &Path) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{body::Body, http::Request, routing::post};
+    use tower::ServiceExt;
 
     /// `..` must never walk the resolved path outside the bundle directory,
     /// no matter how it is spelled in the request.
@@ -231,5 +245,66 @@ mod tests {
             response.headers().get(header::LOCATION).unwrap(),
             "/admin-ui/"
         );
+    }
+
+    #[tokio::test]
+    async fn a_specific_admin_post_beats_the_get_only_spa_fallback() {
+        let app = Router::new()
+            .route(
+                "/admin/nodes/:id/promote-admin",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .merge(routes::<()>());
+
+        let response = app
+            .oneshot(
+                Request::post("/admin/nodes/peer/promote-admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn the_registered_admin_promotion_route_reaches_its_handler() {
+        let state = crate::gateway::testkit::state_with("node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+        }
+        let app = Router::new()
+            .merge(crate::admin::admin_routes())
+            .merge(routes())
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::post("/admin/nodes/peer/promote-admin")
+                    .header("authorization", "Bearer connection-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_mutation_is_not_found_not_method_not_allowed() {
+        for request in [
+            Request::post("/admin/nodes/unknown/promote-admin")
+                .body(Body::empty())
+                .unwrap(),
+            Request::delete("/admin/nodes/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        ] {
+            let response = routes::<()>().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
     }
 }

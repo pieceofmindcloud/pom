@@ -70,8 +70,9 @@ fonte do escopo aplicado pelo gateway:
   o que a tela Rede mostra;
 - `infer+node+admin`: geração, API `/v1`, histórico do chat, pedido de entrada
   de infer para nó, as API keys (`/admin/api-keys`, a credencial de quem atende
-  `/v1`, e todo perfil atende) e sair/voltar à rede (`/api/ui/leave`,
-  `/api/ui/rejoin`);
+  `/v1`, e todo perfil atende), corrigir o endereço anunciado desta própria
+  máquina (`POST /api/ui/network/advertise-addr`) e sair/voltar à rede
+  (`/api/ui/leave`, `/api/ui/rejoin`);
 - `common/identity internal`: catálogo próprio, vistas compartilhadas,
   telemetria e protocolo nó-a-nó.
 
@@ -80,6 +81,18 @@ prefixo mais longo, e no empate a que nomeia o método. É o que deixa
 `GET /admin/nodes` aberto ao `node` enquanto bloquear, desbloquear, remover e
 promover uma máquina - POST e DELETE sob o mesmo prefixo - continuam
 `admin-only`. Sem método declarado, a regra vale para todos.
+
+O endereço anunciado é uma descrição do próprio processo: a rota não recebe
+`node_id` e não repassa chamadas a outro peer. Por isso o `infer` pode corrigi-lo
+sem obter autoridade administrativa. Os endpoints de administração que recebem
+um nó alvo continuam reservados pela regra do alvo e usam a sintaxe `:id` do
+Axum 0.7.
+
+O fallback da interface é aplicado somente depois de as rotas concretas serem
+tentadas e depois da autorização da superfície. Assim, um POST ou DELETE
+desconhecido de um chamador já autorizado devolve 404, e não 405 por casar um
+wildcard registrado apenas para GET; perfis sem escopo continuam recusados
+antes do fallback.
 
 Uma decisão que a tabela **não** exprime, porque depende do corpo e não do
 caminho, fica no handler: `POST /api/ui/leave` sem `node_id`, ou com o próprio,
@@ -104,8 +117,8 @@ handler, nunca o marcador sozinho. `/api/setup/key`, `/api/setup/save` e as rota
 A tela de autoridade usa `GET /api/ui/network/admin-authority` para o contrato
 de apresentação do principal, admins secundários, cadeia de promoções e
 elegibilidade da sucessão. As mutações isoladas da tela são
-`POST /admin/nodes/{id}/promote-admin`, `POST /admin/authority/resign` e
-`POST /admin/authority/secondaries/{id}/demote`; o principal é a única origem
+`POST /admin/nodes/:id/promote-admin`, `POST /admin/authority/resign` e
+`POST /admin/authority/secondaries/:id/demote`; o principal é a única origem
 autorizada para promover, resignar e despromover. O pedido de infer para node é
 `POST /api/ui/network/request-node` e a descida voluntária de node para infer é
 `POST /api/ui/network/relinquish-node`. Os estados das ofertas de autoridade
@@ -126,11 +139,11 @@ secundárias, despromoções, sucessão e registros persistidos de replay. O
 sem acesso às rotas `admin-only` e emite um diagnóstico no arranque.
 
 `GET /api/ui/network/admin-authority` expõe somente a vista de apresentação. O
-principal promove com `POST /admin/nodes/{id}/promote-admin`; a entrega leva a
+principal promove com `POST /admin/nodes/:id/promote-admin`; a entrega leva a
 cadeia completa assinada ao alvo. `POST /admin/authority/resign` abre uma oferta
 assinada para o último secundário ativo, e `POST
 /api/transfer/offers/{id}/accept` só conclui quando o sucessor apresenta a
-aceitação assinada. `POST /admin/authority/secondaries/{id}/demote` é exclusivo
+aceitação assinada. `POST /admin/authority/secondaries/:id/demote` é exclusivo
 do principal. O caminho de infer para node é um pedido assinado autorizado por
 qualquer admin, e node para infer é uma decisão local com aviso.
 
@@ -516,14 +529,14 @@ ele chega à geração; se o modelo servido sabe usá-lo é medição em cluster
 ### `/admin/*`
 
 `GET /admin/nodes` (inclui nós bloqueados mas desconectados, para o painel não
-ficar vazio), `POST /admin/nodes/{id}/block`, `POST /admin/nodes/{id}/unblock`,
-`POST /admin/nodes/{id}/promote-admin`, `POST /admin/authority/resign`,
-`POST /admin/authority/secondaries/{id}/demote`, `DELETE /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST
+ficar vazio), `POST /admin/nodes/:id/block`, `POST /admin/nodes/:id/unblock`,
+`POST /admin/nodes/:id/promote-admin`, `POST /admin/authority/resign`,
+`POST /admin/authority/secondaries/:id/demote`, `DELETE /admin/nodes/:id`, `POST /admin/regenerate-key`, `GET+POST
 /admin/api-keys`, `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers`
 (stub, ver Defeitos). `list_nodes` adiciona entradas para bloqueados fora da
 rede.
 
-`POST /admin/nodes/{id}/promote-admin` só é aceito pelo nó cuja autoridade
+`POST /admin/nodes/:id/promote-admin` só é aceito pelo nó cuja autoridade
 efetiva no arquivo separado é `Primary`. O principal assina uma concessão
 `secondary` pela identidade Ed25519; o alvo aceita a mudança somente após
 validar a âncora manual e a cadeia completa, enquanto ainda é `node`.
@@ -532,7 +545,7 @@ resignação é uma oferta assinada ao último secundário ativo e só a aceita�
 assinada pela chave desse sucessor muda o principal. Um secundário não pode
 promover nem despromover outro.
 
-`DELETE /admin/api-keys/{key}` desativa a chave no `pom.db` sem apagar a linha e
+`DELETE /admin/api-keys/:key` desativa a chave no `pom.db` sem apagar a linha e
 acrescenta uma revogação com o `node_id` do operador autenticado e o horário.
 Uma segunda tentativa é idempotente e não cria outro evento; a chave nunca
 volta a autenticar.
@@ -544,7 +557,7 @@ volta a autenticar.
 `prefix_auto_cache: {enabled, index_entries, index_bytes}` quando o cache de
 prefixo persistente (`slot_persist_prefix_cache`) está ligado neste gateway.
 
-`POST /admin/slots/{name}?action=save|restore|erase` orquestra um snapshot pela
+`POST /admin/slots/:name?action=save|restore|erase` orquestra um snapshot pela
 implantação inteira. Corpo: `{model, session_id?, dest_session_id?}` (`model` é o
 rótulo ou o `deploy_id`). O gateway resolve o pipeline com o mesmo planejador da
 geração e chama `POST /v1/session/slot` em cada hop; cada peer grava/lê a fatia

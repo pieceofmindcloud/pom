@@ -35,9 +35,9 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .merge(crate::webui::routes())
         .merge(crate::transfer::routes())
         .merge(admin)
-        // Genuinely last: this one ends in a `/*path` catch-all that hands
-        // unknown paths to the client router, so anything registered after it
-        // would never be reached.
+        // Genuinely last: this mounts the SPA fallback after all concrete API
+        // routes, so an unknown mutating path cannot turn a real handler into
+        // a method-not-allowed response.
         .merge(crate::webapp::routes())
         .with_state(state.clone())
         // JSON responses and the static UI bundle compress well; the default

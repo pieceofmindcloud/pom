@@ -126,7 +126,11 @@ Hoje:
 - `gateway_candidates()` devolve uma URL por endereço conhecido, com `addr`
   primeiro (fato conhecido: é de onde os pacotes chegaram) e os candidatos
   anunciados depois; `gateway_url()` é só o primeiro dela. Mesma disciplina de
-  `pipeline::resolve_step_url`.
+  `pipeline::resolve_step_url`. O plano de controle de promoção usa a lista
+  inteira nas duas direções: o primeiro destino que falhar no transporte cede
+  lugar ao próximo, enquanto uma resposta HTTP permanece uma recusa do peer.
+  O anúncio futuro deve atualizar essa lista; o endereço guardado não é uma
+  âncora permanente.
 - A leitura do cluster (`/api/ui/cluster`) percorre esses candidatos e alimenta
   a **mesma** memória de falha do caminho de inferência: `mark_failure` em erro
   de transporte ou timeout, `mark_success` em resposta boa. Resposta inválida ou

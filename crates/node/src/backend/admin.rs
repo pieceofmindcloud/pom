@@ -46,6 +46,10 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
 const SYNC_TIMEOUT: Duration = Duration::from_millis(50);
 #[cfg(not(test))]
 const SYNC_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const PROMOTION_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const PROMOTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,6 +103,46 @@ fn gateway_urls(peer: &crate::network::PeerInfo) -> Vec<String> {
         }
     }
     urls
+}
+
+/// Envia uma chamada de controle para cada endereço anunciado pelo peer até
+/// que um deles responda. Um endereço que deixou de existir não pode impedir
+/// a promoção quando o mesmo anúncio ainda traz um candidato vivo.
+async fn post_internal_json<T: Serialize>(
+    state: &crate::gateway::GatewayState,
+    peer: &crate::network::PeerInfo,
+    path: &str,
+    body: &T,
+    timeout: Duration,
+) -> anyhow::Result<reqwest::Response> {
+    let urls = gateway_urls(peer);
+    if urls.is_empty() {
+        anyhow::bail!("o peer não anuncia porta de gateway");
+    }
+    let client = state.peer_http.for_peer(&peer.node_id)?;
+    let connection_key = state.auth.read().await.connection_key.clone();
+    if connection_key.is_empty() {
+        anyhow::bail!("node-to-node trust is not configured");
+    }
+
+    let mut last_error = "nenhum endereço de gateway respondeu".to_string();
+    for base in &urls {
+        match client
+            .post(format!("{base}{path}"))
+            .timeout(timeout)
+            .bearer_auth(&connection_key)
+            .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+            .json(body)
+            .send()
+            .await
+        {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last_error = format!("{base}: {error}");
+            }
+        }
+    }
+    anyhow::bail!(last_error)
 }
 
 async fn sync_json<T: Serialize>(
@@ -553,30 +597,14 @@ async fn request_node_promotion(
         )
             .into_response();
     };
-    let Some(base) = peer.gateway_url() else {
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o admin não anuncia porta de gateway" })),
-        )
-            .into_response();
-    };
-    let client = match state.peer_http.for_peer(&peer.node_id) {
-        Ok(client) => client,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("não foi possível alcançar o admin: {error}") })),
-            )
-                .into_response()
-        }
-    };
-    match client
-        .post(format!("{base}/api/internal/profile/authorize-node"))
-        .bearer_auth(state.auth.read().await.connection_key.clone())
-        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-        .json(&request)
-        .send()
-        .await
+    match post_internal_json(
+        &state,
+        &peer,
+        "/api/internal/profile/authorize-node",
+        &request,
+        PROMOTION_REQUEST_TIMEOUT,
+    )
+    .await
     {
         Ok(response) => {
             let status = response.status();
@@ -640,30 +668,14 @@ async fn internal_authorize_node(
                 .into_response()
         }
     };
-    let Some(base) = peer.gateway_url() else {
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o nó solicitante não anuncia porta de gateway" })),
-        )
-            .into_response();
-    };
-    let client = match state.peer_http.for_peer(&peer.node_id) {
-        Ok(client) => client,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("não foi possível alcançar o nó solicitante: {error}") })),
-            )
-                .into_response()
-        }
-    };
-    match client
-        .post(format!("{base}/api/internal/profile/accept-node"))
-        .bearer_auth(state.auth.read().await.connection_key.clone())
-        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-        .json(&command)
-        .send()
-        .await
+    match post_internal_json(
+        &state,
+        &peer,
+        "/api/internal/profile/accept-node",
+        &command,
+        SYNC_TIMEOUT,
+    )
+    .await
     {
         Ok(response) => {
             let status = response.status();
@@ -2058,5 +2070,207 @@ mod tests {
             result,
             Err(crate::auth::AuthRejection::InvalidKey)
         ));
+    }
+
+    struct EnvironmentValue {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvironmentValue {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvironmentValue {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    async fn promotion_state_pair(
+        admin_port: u16,
+        infer_port: u16,
+        stale_infer_host: &str,
+    ) -> (crate::gateway::GatewayState, crate::gateway::GatewayState) {
+        let admin_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let infer_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let admin_principal = AuthorityPrincipal::from_signing_key(
+            "admin",
+            "peer-admin",
+            &admin_key,
+        );
+        let infer_principal = AuthorityPrincipal::from_signing_key(
+            "infer",
+            "peer-infer",
+            &infer_key,
+        );
+        let admin_trust =
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "promotion-lab",
+                admin_principal.clone(),
+                &admin_key,
+            )
+            .expect("admin ancorado no laboratório");
+        let infer_trust = crate::admin_trust::AdminTrust::in_memory(admin_trust.document())
+            .expect("âncora transportada para o infer");
+
+        let admin_peer = {
+            let mut peer = crate::gateway::testkit::peer("admin", "admin", admin_port);
+            peer.profile = NodeProfile::Admin;
+            peer.authority_pubkey = admin_principal.pubkey.clone();
+            peer.libp2p_peer_id = Some(admin_principal.peer_id.clone());
+            peer
+        };
+        let infer_peer = {
+            let mut peer = crate::gateway::testkit::peer("infer", "infer", infer_port);
+            peer.profile = NodeProfile::Infer;
+            peer.authority_pubkey = infer_principal.pubkey.clone();
+            peer.libp2p_peer_id = Some(infer_principal.peer_id.clone());
+            peer.addr = format!("{stale_infer_host}:42777");
+            peer.addr_candidates = vec!["127.0.0.1:42777".into()];
+            peer
+        };
+
+        let mut admin = crate::gateway::testkit::state_with("admin", vec![infer_peer]).await;
+        let mut infer = crate::gateway::testkit::state_with("infer", vec![admin_peer]).await;
+
+        {
+            let mut auth = admin.auth.write().await;
+            auth.profile = NodeProfile::Admin;
+            auth.connection_key = "shared-connection".into();
+        }
+        admin.network.set_profile(NodeProfile::Admin);
+        admin.admin_trust = std::sync::Arc::new(admin_trust);
+        admin.authority_signing_key = std::sync::Arc::new(admin_key.clone());
+        admin.authority_principal = admin_principal.clone();
+        admin.gateway_port = admin_port;
+
+        {
+            let mut auth = infer.auth.write().await;
+            auth.profile = NodeProfile::Infer;
+            auth.connection_key = "shared-connection".into();
+        }
+        infer.network.set_profile(NodeProfile::Infer);
+        infer.admin_trust = std::sync::Arc::new(infer_trust);
+        infer.authority_signing_key = std::sync::Arc::new(infer_key.clone());
+        infer.authority_principal = infer_principal.clone();
+        infer.gateway_port = infer_port;
+
+        (admin, infer)
+    }
+
+    async fn spawn_admin_router(
+        listener: tokio::net::TcpListener,
+        state: crate::gateway::GatewayState,
+    ) -> std::net::SocketAddr {
+    let address = listener.local_addr().unwrap();
+        let app = Router::new().merge(admin_routes()).with_state(state);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("gateway do laboratório");
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn infer_promotion_reaches_admin_and_returns_over_a_live_candidate() {
+        let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock().unwrap();
+        crate::peer_client::set_tls_ativo(false);
+        let config_path = std::env::temp_dir().join(format!(
+            "pom-promotion-lab-{}-{}.json",
+            std::process::id(),
+            Uuid::new_v4().simple()
+        ));
+        let _config = EnvironmentValue::set("POM_CONFIG", &config_path);
+        std::fs::write(&config_path, "{}").expect("configuração de teste");
+
+        let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener admin");
+        let admin_port = admin_listener.local_addr().unwrap().port();
+        let infer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener infer");
+        let infer_port = infer_listener.local_addr().unwrap().port();
+
+        let (admin, infer) =
+            promotion_state_pair(admin_port, infer_port, "[2001:db8::dead]").await;
+        {
+            let mut peers = infer.network.peers.write().await;
+            let admin_peer = peers.get_mut("admin").expect("admin no infer");
+            admin_peer.addr = "[2001:db8::dead]:42777".into();
+            admin_peer.addr_candidates = vec!["127.0.0.1:42777".into()];
+        }
+        assert_eq!(admin.admin_trust.document().replay.len(), 0);
+        assert_eq!(infer.admin_trust.document().replay.len(), 0);
+        let admin_address = spawn_admin_router(admin_listener, admin.clone()).await;
+        let infer_address = spawn_admin_router(infer_listener, infer.clone()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://{infer_address}/api/ui/network/request-node"
+            ))
+            .bearer_auth("shared-connection")
+            .send()
+            .await
+            .expect("pedido do infer");
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(
+            admin.admin_trust.document().replay.len(),
+            2,
+            "a ida chegou ao admin: status={status}, body={body}, infer_replay={}, infer_profile={:?}",
+            infer.admin_trust.document().replay.len(),
+            infer.auth.read().await.profile,
+        );
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "o admin deve receber a ida e voltar pelo candidato vivo; admin={admin_address}, body={body}"
+        );
+        assert_eq!(infer.auth.read().await.profile, NodeProfile::Node);
+        assert_eq!(infer.network.profile(), NodeProfile::Node);
+        assert_eq!(crate::config::Config::load().unwrap().profile, NodeProfile::Node);
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[tokio::test]
+    async fn infer_receives_an_explicit_admin_refusal() {
+        let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock().unwrap();
+        crate::peer_client::set_tls_ativo(false);
+        let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener admin");
+        let admin_port = admin_listener.local_addr().unwrap().port();
+        let infer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener infer");
+        let infer_port = infer_listener.local_addr().unwrap().port();
+        let (admin, infer) = promotion_state_pair(admin_port, infer_port, "127.0.0.2").await;
+        admin.auth.write().await.profile = NodeProfile::Node;
+        spawn_admin_router(admin_listener, admin).await;
+        let infer_address = spawn_admin_router(infer_listener, infer).await;
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://{infer_address}/api/ui/network/request-node"
+            ))
+            .bearer_auth("shared-connection")
+            .send()
+            .await
+            .expect("pedido do infer");
+        let status = response.status();
+        let body = response.text().await.unwrap();
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("o emissor não é um admin vigente"), "{body}");
     }
 }

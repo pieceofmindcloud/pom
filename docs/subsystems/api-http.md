@@ -115,6 +115,18 @@ aceitação assinada. `POST /admin/authority/secondaries/{id}/demote` é exclusi
 do principal. O caminho de infer para node é um pedido assinado autorizado por
 qualquer admin, e node para infer é uma decisão local com aviso.
 
+O pedido de promoção é uma transação nó-a-nó em duas pernas. O `infer` envia a
+solicitação assinada a `/api/internal/profile/authorize-node`; o admin autoriza
+pela cadeia Ed25519 e envia o comando assinado a
+`/api/internal/profile/accept-node`. Cada perna tenta os
+`PeerInfo::gateway_candidates()` na ordem anunciada, então `gateway_url()` é
+apenas a primeira tentativa e não a verdade permanente do peer. Resposta HTTP
+é preservada como recusa explícita; somente falha de transporte leva ao próximo
+endereço. O prazo da ida é maior que o de uma tentativa da volta, pois a
+resposta do admin precisa conter a segunda chamada. A mesma mutação assinada
+não é reenviada automaticamente depois de um timeout, evitando que a proteção
+contra replay a rejeite como se fosse um novo pedido.
+
 Os quadros de inferência não recebem assinatura administrativa por quadro; o
 peer é autenticado pelo transporte libp2p e o controle permanece separado.
 

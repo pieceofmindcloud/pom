@@ -352,7 +352,16 @@ profile policy remains the effective authorization boundary.
   absoluto para um modelo em laço.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
-- `admin.rs` (185) - operator control plane: nodes, block/unblock, keys.
+- `admin.rs` - control plane do operador: nós, bloqueio, chaves e autoridade.
+  O pedido `infer -> node` assina a solicitação no nó requerente, procura um
+  admin vigente e envia `/api/internal/profile/authorize-node`; o admin assina
+  o comando e o envia a `/api/internal/profile/accept-node`. As duas pernas
+  percorrem `PeerInfo::gateway_candidates()` até obter resposta, tratando o
+  primeiro endereço anunciado como cache que pode expirar. A ida usa um prazo
+  maior que uma tentativa de retorno, porque o admin também precisa executar a
+  segunda perna; retries automáticos da mesma mutação assinada são evitados para
+  não transformar timeout em falso replay administrativo. O testkit de admin
+  sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
 - `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
   writes on a dedicated bounded thread, executadas pelo `PomDb` compartilhado;
   `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,

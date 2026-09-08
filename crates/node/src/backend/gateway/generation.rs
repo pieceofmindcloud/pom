@@ -14,6 +14,9 @@ fn record_gateway_span(
     started_at_ms: u64,
     name: &'static str,
 ) {
+    if !crate::telemetry::Profile::current().collects_spans() {
+        return;
+    }
     spans.push(crate::prefill::TraceSpan::new(
         name,
         "gateway",
@@ -520,11 +523,26 @@ pub(super) async fn generate_stream_inner(
         let first_token_at = Instant::now();
         let mut next_token = first.token_id;
         let mut trace = first.trace;
+        trace.first_token.gateway_stream_at_ms = Some(wall_clock_ms());
+        if crate::telemetry::Profile::current().collects_spans() {
+            if let Some(return_ms) = trace.first_token.node_to_gateway_ms {
+                let end_offset_ms = request_started.elapsed().as_millis() as u64;
+                gateway_spans.push(crate::prefill::TraceSpan::new(
+                    "first_token_return",
+                    "gateway",
+                    None,
+                    wall_clock_ms().saturating_sub(return_ms),
+                    end_offset_ms.saturating_sub(return_ms),
+                    return_ms,
+                    None,
+                ));
+            }
+        }
         trace.set_accounted_spans(gateway_spans.clone());
-        trace.request_state = if reuse_prefix {
-            crate::prefill::RequestState::Warm
-        } else {
-            crate::prefill::RequestState::Cold
+        trace.request_state = match trace.prefix_reuse_status.as_deref() {
+            Some("full" | "disk") => crate::prefill::RequestState::Warm,
+            Some(_) => crate::prefill::RequestState::Cold,
+            None => crate::prefill::RequestState::Unknown,
         };
         trace.server_ttft_ms = Some(
             first_token_at

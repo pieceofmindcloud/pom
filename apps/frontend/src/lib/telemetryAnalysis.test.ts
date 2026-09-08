@@ -168,4 +168,29 @@ describe("telemetryAnalysis", () => {
     expect(result.tpObserved).toBe(false);
     expect(result.evidence).toContain("not recorded");
   });
+
+  it("uses server-accounted outside-node time when the trace provides it", () => {
+    const result = analyzeTelemetry(
+      {
+        ...trace(phase({ processing_ms: 1_000, node_decode_ms: 900 })),
+        outside_node_total_ms: 1_955,
+        outside_node_accounted_ms: 125,
+        outside_node_unaccounted_ms: 1_830,
+      },
+      {
+        ttft_ms: 2_050,
+        prefill_ms: 128,
+        prefill_tokens: 122,
+        prefill_tokens_per_sec: 953,
+        generation_ms: 1_005,
+        generation_tokens: 119,
+        generation_tokens_per_sec: 109.7,
+        total_ms: 3_134,
+        total_tokens_per_sec: 38,
+      },
+    );
+
+    expect(result.kind).toBe("outside-node");
+    expect(result.evidence).toContain("unaccounted 1830 ms");
+  });
 });

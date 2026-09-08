@@ -475,7 +475,10 @@ profile policy remains the effective authorization boundary.
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
   /`Failed`; `GenSummary` also carries `GenerationTimings` aggregated over the
   full pipeline: TTFT, prompt-token prefill speed, output-token generation
-  speed from the first token, and end-to-end total. The historical
+  speed from the first token, and end-to-end total. The summary trace carries
+  the same `trace_id` used by the audit, local gateway spans, separate
+  outside-node total/accounted/unaccounted values, cold/warm state, connection
+  reuse counts and first-token boundaries. The historical
   `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends

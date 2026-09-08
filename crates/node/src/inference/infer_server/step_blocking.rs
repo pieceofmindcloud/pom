@@ -230,6 +230,9 @@ pub(crate) fn step_blocking(
             for i in 0..n_tokens {
                 let logits = s.engine.logits_ith(i as i32);
                 let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
+                if i == 0 {
+                    super::core::mark_first_token_produced(&mut timings, decode_started);
+                }
                 recent.push(id);
                 let is_stop = s.engine.is_generation_stop(&recent[..recent.len() - 1], id);
                 pieces.push(if is_stop {
@@ -377,6 +380,7 @@ pub(crate) fn step_blocking(
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
         let mut text = if done {

@@ -1,7 +1,6 @@
 #[cfg(test)]
 use super::*;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -23,19 +22,31 @@ mod tests {
     fn trace_mantem_unknown_separado_e_nunca_fica_negativo() {
         let mut trace = RequestTrace::new("model", &[]);
         trace.set_outside_node_total_ms(20);
-        trace.set_accounted_spans(vec![TraceSpan::for_test(
-            "dispatch",
-            "gateway",
-            0,
-            7,
-            None,
-        )]);
+        trace.set_accounted_spans(vec![TraceSpan::for_test("dispatch", "gateway", 0, 7, None)]);
         assert_eq!(trace.outside_node_total_ms, Some(20));
         assert_eq!(trace.outside_node_accounted_ms, Some(7));
         assert_eq!(trace.outside_node_unaccounted_ms, Some(13));
 
         trace.set_outside_node_total_ms(3);
         assert_eq!(trace.outside_node_unaccounted_ms, Some(0));
+    }
+
+    #[test]
+    fn trace_off_nao_emite_spans_nem_atribuicao() {
+        let mut trace = RequestTrace::new("qwen", &[]);
+        trace.profile = crate::telemetry::Profile::Off;
+        trace.record_span(TraceSpan::for_test("validation", "gateway", 0, 4, None));
+        trace.set_accounted_spans(vec![TraceSpan::for_test(
+            "validation",
+            "gateway",
+            0,
+            4,
+            None,
+        )]);
+
+        assert!(trace.spans.is_empty());
+        assert_eq!(trace.outside_node_accounted_ms, None);
+        assert_eq!(trace.outside_node_unaccounted_ms, None);
     }
 
     #[tokio::test]
@@ -204,6 +215,8 @@ mod tests {
             &json!({
                 "first_token_produced_ms": 6.5,
                 "first_token_serialized_ms": 7.0,
+                "first_token_produced_at_ms": 1_700_000_000_006_u64,
+                "first_token_serialized_at_ms": 1_700_000_000_007_u64,
             }),
         );
 
@@ -211,6 +224,37 @@ mod tests {
         assert_eq!(trace.first_token.engine_ttft_ms, Some(7));
         assert_eq!(trace.first_token.node_serialized_ms, Some(7));
         assert_eq!(trace.first_token.node_to_gateway_ms, Some(7));
+        assert_eq!(
+            trace.first_token.engine_produced_at_ms,
+            Some(1_700_000_000_006)
+        );
+        assert_eq!(
+            trace.first_token.node_serialized_at_ms,
+            Some(1_700_000_000_007)
+        );
+    }
+
+    #[test]
+    fn trace_nao_inventa_primeiro_token_em_hop_sem_marca() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            18,
+            7,
+            1_024,
+            2_048,
+            1,
+            2,
+            3,
+            4,
+            TlsHop::default(),
+            &json!({ "decode_ms": 5 }),
+        );
+
+        assert_eq!(trace.engine_ttft_ms, None);
+        assert_eq!(trace.first_token, FirstTokenTrace::default());
     }
 
     #[test]

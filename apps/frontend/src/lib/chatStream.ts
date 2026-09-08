@@ -9,9 +9,66 @@ export interface StreamMetrics {
   duration_ms?: number;
   timings?: GenerationTimings;
   trace?: RequestTrace;
+  source?: string;
+}
+
+export type RequestState = "cold" | "warm" | "unknown";
+
+export interface TraceSpan {
+  name: string;
+  span_id: string;
+  parent_span_id?: string | null;
+  host: string;
+  /** Wall-clock value for correlation only. Never subtract across hosts. */
+  started_at_ms: number;
+  /** Monotonic offset from the local request start. */
+  start_offset_ms: number;
+  duration_ms: number;
+  parallel_group?: string | null;
+}
+
+export interface FirstTokenTrace {
+  engine_produced_at_ms?: number | null;
+  node_serialized_at_ms?: number | null;
+  node_sent_at_ms?: number | null;
+  coordinator_received_at_ms?: number | null;
+  gateway_stream_at_ms?: number | null;
+  client_received_at_ms?: number | null;
+  engine_ttft_ms?: number | null;
+  node_serialized_ms?: number | null;
+  node_to_gateway_ms?: number | null;
+  gateway_to_client_ms?: number | null;
+}
+
+export interface StreamingTrace {
+  time_to_first_chunk_ms?: number | null;
+  time_to_first_token_ms?: number | null;
+  stream_duration_ms?: number | null;
+  time_last_token_to_response_end_ms?: number | null;
+  chunks: number;
+  bytes: number;
+  tokens_per_chunk?: number | null;
 }
 
 export interface RequestTrace {
+  trace_id?: string;
+  profile?: "off" | "basic" | "trace";
+  request_state?: RequestState;
+  spans?: TraceSpan[];
+  outside_node_total_ms?: number | null;
+  outside_node_accounted_ms?: number | null;
+  outside_node_unaccounted_ms?: number | null;
+  first_token?: FirstTokenTrace;
+  streaming?: StreamingTrace;
+  server_ttft_ms?: number | null;
+  engine_ttft_ms?: number | null;
+  client_ttft_ms?: number | null;
+  decode_calls?: number;
+  generated_tokens?: number;
+  tokens_per_decode_call?: number | null;
+  connection_new_calls?: number;
+  connection_reused_calls?: number;
+  connection_unknown_calls?: number;
   model: string;
   input_tokens: number;
   /** Tokens do prompt que o pipeline não reprocessou porque já estavam no KV
@@ -34,6 +91,63 @@ export interface RequestTrace {
   prefill_max_inflight_chunks?: number;
   prefill_overlapped_chunks?: number;
   prefill_pipeline_depth_max?: number;
+}
+
+export interface ClientStreamObservation {
+  requestStartedAt: number;
+  firstChunkAt?: number;
+  firstTokenAt?: number;
+  lastTokenAt?: number;
+  responseEndedAt: number;
+  /** Browser wall clock for cross-host log correlation only. */
+  clientReceivedAtMs?: number;
+  chunks: number;
+  bytes: number;
+}
+
+function elapsedMs(start: number | undefined, end: number | undefined) {
+  return start == null || end == null ? null : Math.max(0, Math.round(end - start));
+}
+
+/** Adds browser-local delivery observations to a server trace. */
+export function withClientStreamTiming(
+  metrics: StreamMetrics,
+  observation: ClientStreamObservation,
+): StreamMetrics {
+  const clientTtft = elapsedMs(observation.requestStartedAt, observation.firstTokenAt);
+  const firstChunk = elapsedMs(observation.requestStartedAt, observation.firstChunkAt);
+  const streamDuration = observation.firstChunkAt == null
+    ? null
+    : Math.max(0, Math.round(observation.responseEndedAt - observation.firstChunkAt));
+  const lastTokenToEnd = elapsedMs(observation.lastTokenAt, observation.responseEndedAt);
+  const tokenCount = metrics.trace?.generated_tokens ?? metrics.trace?.output_tokens;
+  const tokensPerChunk = observation.chunks > 0 && tokenCount != null && Number.isFinite(tokenCount)
+    ? tokenCount / observation.chunks
+    : null;
+  const trace = metrics.trace
+    ? {
+        ...metrics.trace,
+        client_ttft_ms: clientTtft,
+        first_token: {
+          ...(metrics.trace.first_token ?? {}),
+          client_received_at_ms: observation.clientReceivedAtMs ?? null,
+        },
+        streaming: {
+          ...(metrics.trace.streaming ?? {}),
+          time_to_first_chunk_ms: firstChunk,
+          time_to_first_token_ms: clientTtft,
+          stream_duration_ms: streamDuration,
+          time_last_token_to_response_end_ms: lastTokenToEnd,
+          chunks: observation.chunks,
+          bytes: observation.bytes,
+          tokens_per_chunk: tokensPerChunk,
+        },
+      }
+    : undefined;
+  const timings = metrics.timings
+    ? { ...metrics.timings, client_ttft_ms: clientTtft }
+    : undefined;
+  return { ...metrics, trace, timings };
 }
 
 export interface TransportSummaryEntry {
@@ -235,6 +349,7 @@ export interface ChatStreamState {
   durationMs?: number;
   timings?: GenerationTimings;
   trace?: RequestTrace;
+  source?: string;
   error?: string;
 }
 
@@ -306,5 +421,6 @@ export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetr
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
   if (metrics?.timings) state = { ...state, timings: metrics.timings };
   if (metrics?.trace) state = { ...state, trace: metrics.trace };
+  if (metrics?.source != null) state = { ...state, source: metrics.source };
   return state;
 }

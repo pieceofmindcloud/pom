@@ -253,11 +253,15 @@ pub(super) async fn handle_prefill(
         Ok(v) => v,
         Err(e) => return err500(e),
     };
-    if local_meta.get("token_id").and_then(|value| value.as_u64()).is_some() {
-        reply.timings.first_token_produced_us = processing_started.elapsed().as_micros() as u64;
+    if local_meta
+        .get("token_id")
+        .and_then(|value| value.as_u64())
+        .is_some()
+    {
+        reply.timings.first_token_serialized_us = processing_started.elapsed().as_micros() as u64;
+        reply.timings.first_token_serialized_at_ms = super::core::wall_clock_ms();
     }
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
-    reply.timings.first_token_serialized_us = processing_started.elapsed().as_micros() as u64;
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
     preserve_batch_identity(&meta, &mut local_meta);
@@ -478,7 +482,10 @@ pub(crate) fn reuse_prefix_for_forward(
         .unwrap_or(requested)
 }
 
-pub(super) fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool) -> bool {
+pub(super) fn is_final_chunk_for_forward(
+    local_meta: &Value,
+    received_is_final_chunk: bool,
+) -> bool {
     if owns_tokens(local_meta) {
         !local_meta
             .get("more_chunks")
@@ -570,7 +577,7 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
 /// that identity from the scheduler reply, so dropping these fields makes the
 /// coordinator unable to match the response to its waiting request.
 pub(crate) fn preserve_batch_identity(request_meta: &Value, response_meta: &mut Value) {
-    for field in ["item_id", "batch_id"] {
+    for field in ["item_id", "batch_id", "trace_id"] {
         if let Some(value) = request_meta.get(field) {
             response_meta[field] = value.clone();
         }
@@ -583,7 +590,11 @@ pub(crate) fn preserve_batch_identity(request_meta: &Value, response_meta: &mut 
 /// do pedaço em `prompt_chunk_tokens`; esta guarda cobre um head cujo `n_batch`
 /// é menor que o do nó que planejou, e o item isolado que o scheduler deixa
 /// passar. O erro nomeia os knobs a ajustar.
-pub(super) fn guard_chunk_fits_batch(engine: &LlmEngine, n_tokens: usize, chunk_index: u32) -> Result<()> {
+pub(super) fn guard_chunk_fits_batch(
+    engine: &LlmEngine,
+    n_tokens: usize,
+    chunk_index: u32,
+) -> Result<()> {
     let n_batch = engine.n_batch();
     if n_tokens as u64 > n_batch as u64 {
         bail!(
@@ -884,6 +895,7 @@ pub(super) fn prefill_blocking(
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
         let mut text = if done {
@@ -1300,6 +1312,7 @@ pub(super) fn prefill_batch_blocking(
         return replies;
     }
 
+    let decode_started = Instant::now();
     let decode_result = match &prepared[0].1.input {
         PreparedPrefillInput::Tokens(_) => {
             let entries: Vec<crate::llm::TokenBatchEntry> = prepared
@@ -1425,6 +1438,7 @@ pub(super) fn prefill_batch_blocking(
                 let logits = s.engine.logits_ith(logits_index as i32);
                 let (next_id, sampling_timing) =
                     sample_token_profiled(logits, &recent, &s.sampling);
+                super::core::mark_first_token_produced(&mut timings, decode_started);
                 let piece = s.engine.token_to_piece_bytes(next_id, false);
                 let mut text = s
                     .sessions
@@ -1701,6 +1715,7 @@ pub(super) fn step_batch_blocking(
         return replies;
     }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
+    let decode_started = Instant::now();
     let decode_result = match &prepared[0].1.input {
         PreparedStepInput::Tokens { .. } => {
             let entries: Vec<crate::llm::TokenBatchEntry> = prepared
@@ -1790,6 +1805,7 @@ pub(super) fn step_batch_blocking(
                 let logits = s.engine.logits_ith(logits_index as i32);
                 let (next_id, sampling_timing) =
                     sample_token_profiled(logits, &recent, &s.sampling);
+                super::core::mark_first_token_produced(&mut timings, decode_started);
                 let token_text_started = Instant::now();
                 let piece = s.engine.token_to_piece_bytes(next_id, false);
                 let mut text = s

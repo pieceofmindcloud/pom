@@ -38,6 +38,8 @@ import {
   emptyChatStream,
   finishChatStream,
   streamErrorMessage,
+  type StreamMetrics,
+  withClientStreamTiming,
 } from "../lib/chatStream";
 import {
   buildTelemetryAnalysisPrompt,
@@ -663,6 +665,14 @@ function ChatScreen() {
 
     try {
       let streamed = emptyChatStream();
+      const requestStartedAt = performance.now();
+      let firstChunkAt: number | undefined;
+      let firstTokenAt: number | undefined;
+      let lastTokenAt: number | undefined;
+      let clientReceivedAtMs: number | undefined;
+      let streamChunks = 0;
+      let streamBytes = 0;
+      let finalMetrics: StreamMetrics | undefined;
       for await (const data of streamSse(
         "/v1/chat/completions",
         {
@@ -682,6 +692,10 @@ function ChatScreen() {
         controller.signal,
       )) {
         if (data === "[DONE]") break;
+        const receivedAt = performance.now();
+        firstChunkAt ??= receivedAt;
+        streamChunks += 1;
+        streamBytes += new TextEncoder().encode(data).byteLength;
         try {
           const chunk = JSON.parse(data);
           const streamError = streamErrorMessage(chunk);
@@ -691,29 +705,54 @@ function ChatScreen() {
             continue;
           }
           const delta = chunk?.choices?.[0]?.delta?.content;
+          const toolDelta = chunk?.choices?.[0]?.delta?.tool_calls;
+          const reasoningDelta = chunk?.choices?.[0]?.delta?.reasoning_content;
+          const hasToken = (typeof delta === "string" && delta.length > 0)
+            || (typeof reasoningDelta === "string" && reasoningDelta.length > 0)
+            || (Array.isArray(toolDelta) && toolDelta.length > 0);
+          if (hasToken) {
+            firstTokenAt ??= receivedAt;
+            clientReceivedAtMs ??= Date.now();
+            lastTokenAt = receivedAt;
+          }
           if (typeof delta === "string" && delta) {
             streamed = consumeChatDelta(streamed, delta);
             patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
           }
           const metrics = chunk?.x_pom;
           if (metrics && typeof metrics === "object") {
-            streamed = finishChatStream(streamed, metrics);
-            patchReply({
-              content: streamed.content,
-              reasoning: streamed.reasoning || undefined,
-              tokensPerSecond: streamed.tokensPerSecond,
-              tokensGenerated: streamed.tokensGenerated,
-              durationMs: streamed.durationMs,
-              timings: streamed.timings,
-              trace: streamed.trace,
-              source: typeof metrics.source === "string" ? metrics.source : undefined,
-            });
+            finalMetrics = metrics;
           }
         } catch {
           /* a keep-alive or a partial frame — nothing to render */
         }
       }
-      streamed = finishChatStream(streamed);
+      const responseEndedAt = performance.now();
+      if (finalMetrics) {
+        const measuredMetrics = withClientStreamTiming(finalMetrics, {
+          requestStartedAt,
+          firstChunkAt,
+          firstTokenAt,
+          lastTokenAt,
+          responseEndedAt,
+          clientReceivedAtMs,
+          chunks: streamChunks,
+          bytes: streamBytes,
+        });
+        streamed = finishChatStream(streamed, measuredMetrics);
+        patchReply({
+          content: streamed.content,
+          reasoning: streamed.reasoning || undefined,
+          tokensPerSecond: streamed.tokensPerSecond,
+          tokensGenerated: streamed.tokensGenerated,
+          durationMs: streamed.durationMs,
+          timings: streamed.timings,
+          trace: streamed.trace,
+          source: typeof finalMetrics.source === "string" ? finalMetrics.source : undefined,
+        });
+      } else {
+        streamed = finishChatStream(streamed);
+      }
       patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
       if (showTelemetry && streamed.trace) {
         setTelemetryCapture({ messageId: reply.id, trace: streamed.trace, cluster: cluster.data ?? null });

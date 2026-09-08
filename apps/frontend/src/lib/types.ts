@@ -1002,6 +1002,12 @@ export interface ApiKey {
 /** Request-level performance, aggregated over the whole inference pipeline. */
 export interface GenerationTimings {
   ttft_ms: number;
+  /** Gateway TTFT from request ingress to protocol emission. */
+  server_ttft_ms?: number | null;
+  /** First-token timing measured by the inference peer. */
+  engine_ttft_ms?: number | null;
+  /** Browser TTFT measured with performance.now(). */
+  client_ttft_ms?: number | null;
   prefill_ms: number;
   prefill_tokens: number;
   prefill_tokens_per_sec: number | null;

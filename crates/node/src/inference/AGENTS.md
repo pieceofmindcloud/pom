@@ -262,7 +262,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   contrato aninhado e ignora a janela. A telemetria
   também registra `prefix_match_tokens`, `prefix_reuse_status`,
   `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
-  travessia.
+  travessia. `RequestTrace` acrescenta o `trace_id`, spans locais do gateway,
+  atribuição de `outside_node`, estado cold/warm, conexões novas/reutilizadas,
+  marcos do primeiro token e contadores de decode; o perfil `off|basic|trace`
+  controla apenas o detalhamento novo e não substitui `POM_PROFILE_SYNC`.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de

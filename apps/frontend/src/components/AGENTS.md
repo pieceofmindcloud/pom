@@ -87,7 +87,9 @@ Per-file list:
   CPU ou indisponibilidade. O cartão distingue o caminho selecionado no
   snapshot atual de `/health` do caminho observado no trace desta requisição;
   cada fase também mostra seu `selected_path`, e uma divergência entre os dois
-  escopos é sinalizada.
+  escopos é sinalizada. A timeline também mostra spans medidos, a decomposição
+  de `outside_node`, TTFT do servidor/motor/cliente, primeiro token, stream,
+  conexões e tokens por chamada; fronteiras ausentes permanecem não medidas.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

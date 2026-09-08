@@ -51,7 +51,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   O cliente destinado a outro nó marca requests de controle com
   `x-pom-internal-node`, usa a `connection_key` nas rotas internas de
   inferência e limita a abertura TCP a 2 s; o cliente `plain()` para Ollama e
-  loopback não envia essa marca.
+  loopback não envia essa marca. `for_peer_with_state` informa ao trace se o
+  cliente TLS foi criado ou reutilizado; transporte local, túnel e cliente
+  sem TLS permanecem explicitamente desconhecidos.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o

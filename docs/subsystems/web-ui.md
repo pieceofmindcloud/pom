@@ -635,6 +635,11 @@ navegador.
   de entrada quando o turno reaproveitou o prefixo do turno anterior
   (`trace.cached_tokens`); é o que o pipeline **executou**, não o que o cache
   escolheu, e some quando não houve reuso - ver `inferencia.md`, seção 3.1.
+  A mesma seção mostra o `trace_id`, perfil, estado cold/warm, timeline dos
+  spans locais, `outside_node_total_ms`, `outside_node_accounted_ms` e
+  `outside_node_unaccounted_ms`. O gargalo principal é destacado somente
+  entre medidas presentes; tempo que não chegou a uma fronteira permanece
+  explicitamente como não atribuído.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
@@ -647,8 +652,13 @@ navegador.
 entre pedaços; `finishChatStream` grava o resumo de TTFT, velocidade de
 pré-processamento do prompt, velocidade de geração da saída e total ponta a
 ponta, além do trace por hop. O Chat mostra essas quatro linhas no resumo da
-resposta e deixa explícito quando uma taxa não é mensurável, como no reuso total
-do prefixo ou numa resposta de um token.
+resposta, além de `server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`, e deixa
+explícito quando uma taxa não é mensurável, como no reuso total do prefixo ou
+numa resposta de um token. Durante o SSE, o navegador mede primeiro chunk,
+primeiro token, duração, fim do último token, chunks e bytes com
+`performance.now()`; o `Date.now()` anexado ao recebimento serve apenas para
+correlação com os wall timestamps dos peers. Nenhum relógio de máquinas
+diferentes é subtraído.
 Se `/v1/chat/completions` enviar um frame SSE com o envelope de erro OpenAI,
 `streamErrorMessage` preserva a mensagem real mesmo quando já há texto na
 resposta; ela aparece em um bloco que quebra linhas, permite seleção e oferece

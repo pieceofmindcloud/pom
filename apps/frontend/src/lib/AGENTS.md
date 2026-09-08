@@ -24,7 +24,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   analysis. `ChatSessionProvider` shares the active session and selection/new/
   delete actions between `Chat` and the infer Sidebar; direct Chat consumers get
   an isolated provider wrapper.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
   processamento medido no nó antes de nomear o gargalo. Derives the observed
@@ -111,7 +111,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   cycle detector settings in `RuntimeParams` control the gateway's bounded
   repetition safety stop and can be disabled explicitly. The total output
   capacity comes from live runtime context and `/v1/models`, not from a second deployment field. `PhaseTrace` carries the effective dtype and
-  hidden-state bytes per hop.
+  hidden-state bytes per hop. `RequestTrace` carries the server trace id, local
+  spans, outside-node accounting, first-token boundaries, connection reuse
+  counts and stream measurements when the backend publishes them.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

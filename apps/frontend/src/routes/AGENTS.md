@@ -430,8 +430,9 @@ Key logic carriers:
 - `Chat.send` (Chat.tsx:469) — the streaming loop: snapshots turns before the
   placeholder reply, streams deltas into `consumeChatDelta` (keeps
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
-  aborts via `AbortController`, persists the session on finish. The only screen
-  that talks to the OpenAI-compatible surface.
+  measures browser-local first chunk/token and delivery timing, aborts via
+  `AbortController`, persists the session on finish. The only screen that
+  talks to the OpenAI-compatible surface.
 - `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
   closed-by-default telemetry card shared by Chat and Logs: per-hop
   prefill/decode phases, selected

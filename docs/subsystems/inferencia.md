@@ -116,6 +116,37 @@ ele só aparece quando bytes de estado oculto cruzaram o hop. Por isso fica
 ausente, em vez de afirmar f8 ou f16, no caso de um plano de modelo inteiro de
 um único nó, que não transmite estado oculto.
 
+### Trace ponta a ponta e tempos fora do nó
+
+`RequestTrace.trace_id` é o mesmo identificador da auditoria da requisição e
+segue no metadata do prefill e do step entre gateway e peers. Um nó não
+subtrai relógios de outro: cada processo mede intervalos com `Instant`, e os
+campos `*_at_ms` usam wall clock apenas para correlação visual. O gateway
+registra spans locais de validação, orquestração, seleção da pipeline,
+resolução de rota, aquisição de sessão e retorno do primeiro token. A união
+dos intervalos do gateway, e não a soma ingênua de spans possivelmente
+paralelos, forma `outside_node_accounted_ms`.
+
+`outside_node_total_ms` mantém a medida de compatibilidade do tempo total menos
+o processamento agregado dos peers. `outside_node_unaccounted_ms` é o restante
+não explicado pelos spans locais e nunca é deixado negativo. Se o perfil for
+`off`, os spans detalhados e o cálculo de atribuição não são emitidos; o
+`POM_PROFILE_SYNC` continua sendo uma política independente do trace.
+
+O trace também carrega `server_ttft_ms`, `engine_ttft_ms`, contagem de chamadas
+de decode, tokens por chamada, estado cold/warm e chamadas com conexão nova,
+reutilizada ou desconhecida. No peer, `NodeTimings` registra o primeiro token
+produzido e serializado com duração monotônica e um wall timestamp local. O
+cliente web acrescenta a recepção no navegador com `performance.now()` e
+`Date.now()` somente para correlação. `streaming` separa primeiro chunk,
+primeiro token, duração, fim do último token, quantidade de chunks e bytes.
+Campos que a arquitetura não mede permanecem ausentes e aparecem como não
+atribuídos na UI.
+
+O contrato e o plano incremental estão em
+`docs/superpowers/specs/2026-09-08-inferencia-trace-outside-node-design.md` e
+`docs/superpowers/plans/2026-09-08-inferencia-trace-outside-node.md`.
+
 ### Cache KV e fallback de VRAM
 
 `n_gpu_layers` continua controlando onde ficam os pesos. O contexto tenta

@@ -9,7 +9,7 @@ import {
   executionRttMs,
 } from "../lib/telemetryAnalysis";
 import { bytes, ms, num } from "../lib/format";
-import { isPhasedHop, type GenerationTimings, type LegacyHopTrace, type PhasedHopTrace, type PhaseTrace, type RequestTrace } from "../lib/chatStream";
+import { isPhasedHop, type GenerationTimings, type LegacyHopTrace, type PhasedHopTrace, type PhaseTrace, type RequestTrace, type TraceSpan } from "../lib/chatStream";
 import type { ChatTelemetryNetwork, ClusterView, ExecutionEngine, PeerRuntime } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -32,6 +32,7 @@ function metricRate(
 
 export function TimingSummary({ timings }: { timings: GenerationTimings }) {
   const { t } = useI18n();
+  const timing = (value: number | null | undefined) => value == null ? t("chat.telemetry.notMeasured") : ms(value);
   return (
     <div className="mt-2 grid max-w-[38rem] grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[0.68rem]">
       <span className="text-faint">{t("chat.generationSpeed")}</span>
@@ -40,6 +41,12 @@ export function TimingSummary({ timings }: { timings: GenerationTimings }) {
       <span className="font-mono text-muted">{metricRate(timings.prefill_tokens_per_sec, t)} · {timings.prefill_tokens} {t("chat.promptTokensUnit")}</span>
       <span className="text-faint">{t("chat.ttft")}</span>
       <span className="font-mono text-muted">{ms(timings.ttft_ms)}</span>
+      <span className="text-faint">{t("chat.telemetry.serverTtft")}</span>
+      <span className="font-mono text-muted">{timing(timings.server_ttft_ms)}</span>
+      <span className="text-faint">{t("chat.telemetry.engineTtft")}</span>
+      <span className="font-mono text-muted">{timing(timings.engine_ttft_ms)}</span>
+      <span className="text-faint">{t("chat.telemetry.clientTtft")}</span>
+      <span className="font-mono text-muted">{timing(timings.client_ttft_ms)}</span>
       <span className="text-faint">{t("chat.totalTime")}</span>
       <span className="font-mono text-muted">{ms(timings.total_ms)} · {num(timings.total_tokens_per_sec, 1)} {t("chat.tokensPerSecondUnit")}</span>
     </div>
@@ -453,6 +460,142 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
   </>;
 }
 
+function spanLabel(t: ReturnType<typeof useI18n>["t"], span: TraceSpan) {
+  const labels: Record<string, string> = {
+    validation: "chat.telemetry.spanValidation",
+    orchestration: "chat.telemetry.spanOrchestration",
+    pipeline_selection: "chat.telemetry.spanPipelineSelection",
+    route_resolution: "chat.telemetry.spanRouteResolution",
+    session_acquire: "chat.telemetry.spanSessionAcquire",
+    first_token_return: "chat.telemetry.spanFirstTokenReturn",
+  };
+  const key = labels[span.name];
+  return key ? t(key) : t("chat.telemetry.spanUnknown", { name: span.name });
+}
+
+function measurementLabel(
+  t: ReturnType<typeof useI18n>["t"],
+  value: number | null | undefined,
+) {
+  return value == null ? t("chat.telemetry.notMeasured") : ms(value);
+}
+
+function countLabel(
+  t: ReturnType<typeof useI18n>["t"],
+  value: number | null | undefined,
+) {
+  return value == null ? t("chat.telemetry.notMeasured") : num(value, 2);
+}
+
+function ExecutionTimeline({ trace }: { trace: RequestTrace }) {
+  const { t } = useI18n();
+  const spans = [...(trace.spans ?? [])].sort((a, b) => a.start_offset_ms - b.start_offset_ms);
+  const maxEnd = Math.max(1, ...spans.map((span) => span.start_offset_ms + span.duration_ms));
+  const longest = spans.reduce<TraceSpan | undefined>(
+    (current, span) => !current || span.duration_ms > current.duration_ms ? span : current,
+    undefined,
+  );
+  const unknown = trace.outside_node_unaccounted_ms;
+  const principal = unknown != null && (!longest || unknown > longest.duration_ms)
+    ? t("chat.telemetry.unaccounted")
+    : longest
+      ? spanLabel(t, longest)
+      : t("chat.telemetry.notMeasured");
+  const firstToken = trace.first_token;
+  const streaming = trace.streaming;
+
+  return (
+    <section className="mt-3 rounded-lg border border-line/70 bg-surface/30 px-3 py-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-medium text-fg">{t("chat.telemetry.timelineTitle")}</h3>
+        <span className="font-mono text-[0.64rem] text-faint">
+          {trace.trace_id ? `trace ${trace.trace_id}` : t("chat.telemetry.traceMissing")}
+          {trace.profile ? ` · ${trace.profile}` : ""}
+          {trace.request_state ? ` · ${trace.request_state}` : ""}
+        </span>
+      </div>
+      <div className="mt-2 grid gap-1.5 sm:grid-cols-4">
+        <div className="rounded-md border border-line/50 px-2.5 py-1.5">
+          <p className="text-[0.62rem] uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.outsideTotal")}</p>
+          <p className="font-mono text-fg">{measurementLabel(t, trace.outside_node_total_ms)}</p>
+        </div>
+        <div className="rounded-md border border-line/50 px-2.5 py-1.5">
+          <p className="text-[0.62rem] uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.outsideAccounted")}</p>
+          <p className="font-mono text-fg">{measurementLabel(t, trace.outside_node_accounted_ms)}</p>
+        </div>
+        <div className="rounded-md border border-line/50 px-2.5 py-1.5">
+          <p className="text-[0.62rem] uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.outsideUnaccounted")}</p>
+          <p className="font-mono text-fg">{measurementLabel(t, trace.outside_node_unaccounted_ms)}</p>
+        </div>
+        <div className="rounded-md border border-aqua/25 bg-aqua/[0.04] px-2.5 py-1.5">
+          <p className="text-[0.62rem] uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.principalBottleneck")}</p>
+          <p className="truncate font-mono text-aqua">{principal}</p>
+        </div>
+      </div>
+      {spans.length === 0 ? (
+        <p className="mt-2 text-[0.68rem] text-muted">{t("chat.telemetry.timelineUnavailable")}</p>
+      ) : (
+        <div className="mt-3 grid gap-1.5">
+          {spans.map((span) => (
+            <div key={span.span_id} className="grid min-w-0 grid-cols-[7.5rem_minmax(0,1fr)_4.5rem] items-center gap-2 text-[0.66rem]">
+              <span className="truncate text-muted">{spanLabel(t, span)}</span>
+              <div className="relative h-5 min-w-0 rounded bg-surface/70">
+                <div
+                  className="absolute inset-y-0 rounded bg-iris/65"
+                  style={{
+                    left: `${(span.start_offset_ms / maxEnd) * 100}%`,
+                    width: `${Math.max(1, (span.duration_ms / maxEnd) * 100)}%`,
+                  }}
+                  title={`${spanLabel(t, span)}: ${ms(span.duration_ms)}`}
+                />
+              </div>
+              <span className="text-right font-mono text-faint">{ms(span.duration_ms)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 grid gap-1 text-[0.66rem] text-faint sm:grid-cols-2">
+        <p>{t("chat.telemetry.firstTokenEngine", { value: measurementLabel(t, firstToken?.engine_ttft_ms ?? trace.engine_ttft_ms) })}</p>
+        <p>{t("chat.telemetry.firstTokenNode", { value: measurementLabel(t, firstToken?.node_serialized_ms) })}</p>
+        <p>{t("chat.telemetry.firstTokenTransport", { value: measurementLabel(t, firstToken?.node_to_gateway_ms) })}</p>
+        <p>{t("chat.telemetry.firstTokenClient", { value: measurementLabel(t, trace.client_ttft_ms) })}</p>
+      </div>
+      <div className="mt-1 grid gap-1 text-[0.66rem] text-faint sm:grid-cols-2">
+        <p>{t("chat.telemetry.streamingSummary", {
+          chunks: streaming ? streaming.chunks : t("chat.telemetry.notMeasured"),
+          firstChunk: measurementLabel(t, streaming?.time_to_first_chunk_ms),
+          duration: measurementLabel(t, streaming?.stream_duration_ms),
+          lastToken: measurementLabel(t, streaming?.time_last_token_to_response_end_ms),
+          bytes: streaming ? bytes(streaming.bytes) : t("chat.telemetry.notMeasured"),
+          tokensPerChunk: countLabel(t, streaming?.tokens_per_chunk),
+        })}</p>
+        <p>{t("chat.telemetry.decodeSummary", { calls: trace.decode_calls == null ? t("chat.telemetry.notMeasured") : trace.decode_calls, tokens: trace.generated_tokens == null ? t("chat.telemetry.notMeasured") : trace.generated_tokens, perCall: countLabel(t, trace.tokens_per_decode_call) })}</p>
+      </div>
+      {(trace.connection_new_calls != null || trace.connection_reused_calls != null) && (
+        <p className="mt-1 text-[0.66rem] text-faint">
+          {t("chat.telemetry.connectionSummary", {
+            fresh: trace.connection_new_calls ?? 0,
+            reused: trace.connection_reused_calls ?? 0,
+            unknown: trace.connection_unknown_calls ?? 0,
+          })}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function hasDetailedTrace(trace: RequestTrace) {
+  return trace.trace_id != null
+    || trace.spans != null
+    || trace.outside_node_total_ms != null
+    || trace.outside_node_accounted_ms != null
+    || trace.outside_node_unaccounted_ms != null
+    || trace.first_token != null
+    || trace.streaming != null
+    || trace.decode_calls != null
+    || trace.connection_new_calls != null;
+}
+
 /** The shared visual telemetry card used by Chat and the request inspector. */
 export function ExecutionTelemetry({
   trace,
@@ -485,6 +628,7 @@ export function ExecutionTelemetry({
     <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}{trace.prefix_match_tokens != null ? <span>{t("chat.telemetry.prefixCandidate", { count: trace.prefix_match_tokens })}</span> : null}{trace.prompt_tokens_transmitted != null ? <span>{t("chat.telemetry.tokensTransmitted", { count: trace.prompt_tokens_transmitted })}</span> : null}{trace.prefix_reuse_status ? <span>{t("chat.telemetry.prefixStatus", { status: trace.prefix_reuse_status })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
     {timings && <TimingSummary timings={timings} />}
+    {hasDetailedTrace(trace) && <ExecutionTimeline trace={trace} />}
     {trace.prefill_overlap_enabled && <p className="mt-1 font-mono text-[0.68rem] text-faint">{t("chat.telemetry.overlap", { chunks: trace.prefill_overlapped_chunks ?? 0, depth: trace.prefill_pipeline_depth_max ?? 1, limit: trace.prefill_max_inflight_chunks ?? 8 })}</p>}
     {trace.transport_trace_complete === false && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>

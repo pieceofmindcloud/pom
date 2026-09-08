@@ -9,6 +9,14 @@ use super::*;
 /// per-chunk overhead well under the transfer time it covers.
 pub const DEFAULT_CHUNK_TOKENS: u32 = 512;
 
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
 /// Maximum number of generated tokens the remote emitter drains from its
 /// queue in one callback. This is a cap, not a target: a token is sent as soon
 /// as the emitter is free, and no timer fills the gap.
@@ -551,8 +559,11 @@ pub struct PhaseTrace {
     /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
     pub tls_handshake_ms: u64,
     /// Contagem do estado do pool reqwest observado nesta fase.
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_new_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_reused_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_unknown_calls: u32,
     /// Distribuição limitada das chamadas que cruzaram este hop.
     ///
@@ -624,10 +635,7 @@ pub struct PhaseTrace {
 }
 
 impl PhaseTrace {
-    pub(super) fn record_connection_state(
-        &mut self,
-        state: crate::peer_client::ConnectionState,
-    ) {
+    pub(super) fn record_connection_state(&mut self, state: crate::peer_client::ConnectionState) {
         match state {
             crate::peer_client::ConnectionState::New => self.connection_new_calls += 1,
             crate::peer_client::ConnectionState::Reused => self.connection_reused_calls += 1,
@@ -1054,6 +1062,21 @@ pub struct FirstTokenTrace {
     pub gateway_to_client_ms: Option<u64>,
 }
 
+impl FirstTokenTrace {
+    fn is_empty(&self) -> bool {
+        self.engine_produced_at_ms.is_none()
+            && self.node_serialized_at_ms.is_none()
+            && self.node_sent_at_ms.is_none()
+            && self.coordinator_received_at_ms.is_none()
+            && self.gateway_stream_at_ms.is_none()
+            && self.client_received_at_ms.is_none()
+            && self.engine_ttft_ms.is_none()
+            && self.node_serialized_ms.is_none()
+            && self.node_to_gateway_ms.is_none()
+            && self.gateway_to_client_ms.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct StreamingTrace {
     pub time_to_first_chunk_ms: Option<u64>,
@@ -1063,6 +1086,18 @@ pub struct StreamingTrace {
     pub chunks: u64,
     pub bytes: u64,
     pub tokens_per_chunk: Option<f64>,
+}
+
+impl StreamingTrace {
+    fn is_empty(&self) -> bool {
+        self.time_to_first_chunk_ms.is_none()
+            && self.time_to_first_token_ms.is_none()
+            && self.stream_duration_ms.is_none()
+            && self.time_last_token_to_response_end_ms.is_none()
+            && self.chunks == 0
+            && self.bytes == 0
+            && self.tokens_per_chunk.is_none()
+    }
 }
 
 /// União dos intervalos observados em um host. Abrange spans inclusivos e
@@ -1102,20 +1137,35 @@ pub struct RequestTrace {
     pub trace_id: String,
     pub profile: crate::telemetry::Profile,
     pub request_state: RequestState,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<TraceSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub outside_node_total_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub outside_node_accounted_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub outside_node_unaccounted_ms: Option<u64>,
+    #[serde(skip_serializing_if = "FirstTokenTrace::is_empty")]
     pub first_token: FirstTokenTrace,
+    #[serde(skip_serializing_if = "StreamingTrace::is_empty")]
     pub streaming: StreamingTrace,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub server_ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub engine_ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "is_zero_u64")]
     pub decode_calls: u64,
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub generated_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_per_decode_call: Option<f64>,
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_new_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_reused_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub connection_unknown_calls: u32,
     pub model: String,
     pub input_tokens: u32,
@@ -1287,11 +1337,7 @@ impl TraceIssue {
 
 impl RequestTrace {
     pub fn new(model: impl Into<String>, steps: &[(&str, u32, u32)]) -> Self {
-        Self::new_with_trace_id(
-            uuid::Uuid::new_v4().simple().to_string(),
-            model,
-            steps,
-        )
+        Self::new_with_trace_id(uuid::Uuid::new_v4().simple().to_string(), model, steps)
     }
 
     pub fn new_with_trace_id(
@@ -1387,8 +1433,8 @@ impl RequestTrace {
 
     pub fn set_generated_tokens(&mut self, tokens: u32) {
         self.generated_tokens = tokens;
-        self.tokens_per_decode_call = (self.decode_calls > 0)
-            .then(|| tokens as f64 / self.decode_calls as f64);
+        self.tokens_per_decode_call =
+            (self.decode_calls > 0).then(|| tokens as f64 / self.decode_calls as f64);
     }
 
     pub fn node_processing_ms(&self) -> u64 {
@@ -1445,18 +1491,10 @@ impl RequestTrace {
     }
 
     pub fn from_plan(model: &str, plan: &PipelinePlan) -> Self {
-        Self::from_plan_with_trace_id(
-            &uuid::Uuid::new_v4().simple().to_string(),
-            model,
-            plan,
-        )
+        Self::from_plan_with_trace_id(&uuid::Uuid::new_v4().simple().to_string(), model, plan)
     }
 
-    pub fn from_plan_with_trace_id(
-        trace_id: &str,
-        model: &str,
-        plan: &PipelinePlan,
-    ) -> Self {
+    pub fn from_plan_with_trace_id(trace_id: &str, model: &str, plan: &PipelinePlan) -> Self {
         let steps: Vec<_> = plan
             .steps
             .iter()
@@ -1488,6 +1526,14 @@ impl RequestTrace {
             .get("first_token_serialized_ms")
             .and_then(|value| value.as_f64())
             .filter(|value| *value > 0.0);
+        let first_token_produced_at_ms = node
+            .get("first_token_produced_at_ms")
+            .and_then(|value| value.as_u64())
+            .filter(|value| *value > 0);
+        let first_token_serialized_at_ms = node
+            .get("first_token_serialized_at_ms")
+            .and_then(|value| value.as_u64())
+            .filter(|value| *value > 0);
         let Some(entry) = self.hops.get_mut(hop) else {
             return;
         };
@@ -1512,7 +1558,11 @@ impl RequestTrace {
             self.tokens_per_decode_call = (self.decode_calls > 0)
                 .then(|| self.generated_tokens as f64 / self.decode_calls as f64);
         }
-        if self.engine_ttft_ms.is_none() {
+        let has_first_token_marker = first_token_produced_ms.is_some()
+            || first_token_serialized_ms.is_some()
+            || first_token_produced_at_ms.is_some()
+            || first_token_serialized_at_ms.is_some();
+        if self.engine_ttft_ms.is_none() && has_first_token_marker {
             self.engine_ttft_ms = first_token_produced_ms.map(|value| value.round() as u64);
             self.first_token.engine_ttft_ms = self.engine_ttft_ms;
             self.first_token.node_serialized_ms =
@@ -1522,6 +1572,8 @@ impl RequestTrace {
                     .saturating_sub(processing_ms)
                     .saturating_sub(client_decode_ms),
             );
+            self.first_token.engine_produced_at_ms = first_token_produced_at_ms;
+            self.first_token.node_serialized_at_ms = first_token_serialized_at_ms;
         }
         self.record_mtp_counts(node);
         self.total_bytes_sent += bytes_sent;
@@ -1630,15 +1682,17 @@ impl RequestTrace {
             get("hidden_state_bytes_received"),
             dtype,
         );
-        let connection_state = match entry
+        if let Some(connection_state) = entry
             .get("connection_state")
             .and_then(|value| value.as_str())
         {
-            Some("new") => crate::peer_client::ConnectionState::New,
-            Some("reused") => crate::peer_client::ConnectionState::Reused,
-            _ => crate::peer_client::ConnectionState::Unknown,
-        };
-        self.record_connection_state(hop, phase, connection_state);
+            let state = match connection_state {
+                "new" => crate::peer_client::ConnectionState::New,
+                "reused" => crate::peer_client::ConnectionState::Reused,
+                _ => crate::peer_client::ConnectionState::Unknown,
+            };
+            self.record_connection_state(hop, phase, state);
+        }
         if entry.get("transport").is_some() {
             self.record_transport(hop, phase, TransportTrace::from_json(entry));
         }

@@ -857,8 +857,13 @@ começando com `pipeline:` e com **dois** hops é a prova.
 `x_pom.timings` é extensão própria, tanto no último chunk do SSE quanto nas
 respostas não-streaming. O formato compatível com OpenAI continua intacto:
 clientes que ignoram `x_pom` continuam lendo `usage`, `choices` e os demais
-campos padrão. `x_pom.trace` carrega o mesmo `RequestTrace`, incluindo os quatro
-campos de aceitação MTP por requisição. A auditoria em
+campos padrão. `x_pom.trace` carrega o mesmo `RequestTrace`, incluindo os
+spans locais, `trace_id`, estado cold/warm, `outside_node_total_ms`,
+`outside_node_accounted_ms`, `outside_node_unaccounted_ms`, contadores de
+conexão, marcos do primeiro token, métricas de streaming e os quatro campos
+de aceitação MTP por requisição. `x_pom.timings` separa TTFT legado,
+`server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`; campo ausente significa
+que a fronteira não foi medida, não zero. A auditoria em
 `GET /api/ui/requests` preserva esse mesmo objeto em `telemetry`, ao lado de
 `timings` de geração.
 

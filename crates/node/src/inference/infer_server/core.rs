@@ -136,6 +136,11 @@ pub(super) struct NodeTimings {
     /// Boundary just before the peer hands the token-bearing response to its
     /// HTTP or tunnel adapter.
     pub(super) first_token_serialized_us: u64,
+    /// Wall-clock correlation point for the first token. Durations still use
+    /// the monotonic values above; this field is never used for arithmetic.
+    pub(super) first_token_produced_at_ms: u64,
+    /// Wall-clock correlation point immediately before serialization.
+    pub(super) first_token_serialized_at_ms: u64,
     pub(super) selected_path: crate::executor::InferencePath,
     pub(super) executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub(super) moe: MoeTimings,
@@ -145,6 +150,22 @@ pub(super) struct NodeTimings {
     pub(super) mtp_draft_tokens_proposed: u64,
     pub(super) mtp_draft_tokens_accepted: u64,
     pub(super) mtp_draft_tokens_rejected: u64,
+}
+
+pub(super) fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Marks the local engine boundary once, using the monotonic clock for the
+/// duration and wall clock only for cross-host log correlation.
+pub(super) fn mark_first_token_produced(timings: &mut NodeTimings, started: Instant) {
+    if timings.first_token_produced_us == 0 {
+        timings.first_token_produced_us = started.elapsed().as_micros() as u64;
+        timings.first_token_produced_at_ms = wall_clock_ms();
+    }
 }
 
 impl NodeTimings {
@@ -251,6 +272,8 @@ impl NodeTimings {
             "encode_ms": ms(self.encode_us),
             "first_token_produced_ms": ms(self.first_token_produced_us),
             "first_token_serialized_ms": ms(self.first_token_serialized_us),
+            "first_token_produced_at_ms": self.first_token_produced_at_ms,
+            "first_token_serialized_at_ms": self.first_token_serialized_at_ms,
             "moe_forward_ms": ms(self.moe.forward_us),
             "moe_executor": self.moe_executor(),
             "moe_executors": self
@@ -962,6 +985,7 @@ mod tests {
         let request = json!({
             "item_id": "request-item",
             "batch_id": "request-batch",
+            "trace_id": "trace-request",
         });
         let mut response = json!({"done": true});
 
@@ -969,6 +993,7 @@ mod tests {
 
         assert_eq!(response["item_id"], "request-item");
         assert_eq!(response["batch_id"], "request-batch");
+        assert_eq!(response["trace_id"], "trace-request");
     }
 
     #[test]
@@ -978,6 +1003,8 @@ mod tests {
             backend_completion_us: 999,
             residual_us: 1_234,
             sampling_us: 1,
+            first_token_produced_at_ms: 1_700_000_000_006,
+            first_token_serialized_at_ms: 1_700_000_000_007,
             ..Default::default()
         };
 
@@ -987,7 +1014,25 @@ mod tests {
         assert_eq!(json["backend_completion_ms"].as_f64(), Some(0.999));
         assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
         assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
+        assert_eq!(json["first_token_produced_at_ms"], 1_700_000_000_006_u64);
+        assert_eq!(json["first_token_serialized_at_ms"], 1_700_000_000_007_u64);
         assert_ne!(json["backend_completion_ms"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn primeiro_token_produzido_e_marcado_uma_so_vez() {
+        let mut timings = NodeTimings::default();
+        let started = Instant::now() - std::time::Duration::from_millis(1);
+
+        mark_first_token_produced(&mut timings, started);
+        let produced_us = timings.first_token_produced_us;
+        let produced_at_ms = timings.first_token_produced_at_ms;
+        mark_first_token_produced(&mut timings, Instant::now());
+
+        assert!(produced_us > 0);
+        assert!(produced_at_ms > 0);
+        assert_eq!(timings.first_token_produced_us, produced_us);
+        assert_eq!(timings.first_token_produced_at_ms, produced_at_ms);
     }
 
     #[test]

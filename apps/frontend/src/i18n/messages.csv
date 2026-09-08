@@ -170,13 +170,16 @@ chat.telemetry.backendRow,backend: decode call {enqueue} ms · completion {compl
 chat.telemetry.bytesHeader,bytes,bytes
 chat.telemetry.calls,calls,chamadas
 chat.telemetry.capacity,Capacity,Capacidade
+chat.telemetry.clientTtft,Client TTFT,TTFT do cliente
 chat.telemetry.configIntent,Configured intent,Intenção configurada
 chat.telemetry.configOff,off,desligado
 chat.telemetry.configOn,on,ligado
+chat.telemetry.connectionSummary,connections: {fresh} new · {reused} reused · {unknown} unknown,conexões: {fresh} novas · {reused} reutilizadas · {unknown} desconhecidas
 chat.telemetry.cpu,CPU: {count} cores,CPU: {count} núcleos
 chat.telemetry.cpuBackedLayers,CPU-backed layers: {count},Camadas com peso em CPU: {count}
 chat.telemetry.currentPath,current state: selected path: {value},estado atual: caminho selecionado: {value}
 chat.telemetry.decode,decode,decode
+chat.telemetry.decodeSummary,decode calls: {calls} · tokens: {tokens} · tokens/call: {perCall},chamadas de decode: {calls} · tokens: {tokens} · tokens/chamada: {perCall}
 chat.telemetry.effectivePlacement,Effective layer placement,Colocação efetiva das camadas
 chat.telemetry.engine,engine: {value},motor: {value}
 chat.telemetry.engineHeader,engine,motor
@@ -184,11 +187,16 @@ chat.telemetry.engineLlamaCpp,llama.cpp,llama.cpp
 chat.telemetry.engineMismatch,path/engine mismatch,divergência caminho/motor
 chat.telemetry.engineMixed,mixed,misto
 chat.telemetry.engineMoe,MoE engine,motor MoE
+chat.telemetry.engineTtft,Engine TTFT,TTFT do motor
 chat.telemetry.engineUnknown,unknown,desconhecido
 chat.telemetry.engineWait,engine wait {ms} ms,espera do motor {ms} ms
 chat.telemetry.environmentPathMismatch,Current state differs from this execution: current {current}; observed {observed}.,O estado atual diverge desta execução: atual {current}; observado {observed}.
 chat.telemetry.environmentScopeExplain,Environment values are a current /health snapshot; the execution path is recorded by each hop.,Os valores do ambiente são um snapshot atual de /health; o caminho desta execução é registrado por cada hop.
 chat.telemetry.environmentTitle,Pipeline machines,Máquinas do pipeline
+chat.telemetry.firstTokenClient,first token at client: {value},primeiro token no cliente: {value}
+chat.telemetry.firstTokenEngine,first token from engine: {value},primeiro token no motor: {value}
+chat.telemetry.firstTokenNode,node serialization: {value},serialização no nó: {value}
+chat.telemetry.firstTokenTransport,node to gateway: {value},nó até gateway: {value}
 chat.telemetry.fitMemory,Fit memory: {value},Ajuste à memória: {value}
 chat.telemetry.footnote,"""Gateway"" is the work of the gateway alone (encode + decode the frame). ""Backend"" is the node''s llama_decode; the detail line also shows completion measured by llama_synchronize, which includes already-queued output transfers - not pure kernel time. ""Residual"" is the hidden-state read that forces GPU to CPU. ""Transport"" is the round trip outside the node handler, not pure packet latency. ""Engine wait"" is time spent waiting on the llama_context mutex, which is unsafe for concurrent use: two requests on the same node decode one at a time, and this is the queue. Wait larger than backend means busy node, not slow node. POM_PROFILE_SYNC is shown per machine in the environment section.","""Gateway"" é só o trabalho do gateway (codificar + decodificar o frame). ""Backend"" é o llama_decode do nó; a linha detalhada mostra também a conclusão medida por llama_synchronize, que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. ""Residual"" é a leitura do estado oculto que força GPU -> CPU. ""Transporte"" é a ida e volta fora do handler do nó, não latência de pacote pura. ""Espera do motor"" é o tempo parado no mutex do llama_context, que não é seguro para uso concorrente: duas requisições no mesmo nó decodificam uma de cada vez, e esta é a fila. Espera maior que o backend significa nó ocupado, não nó lento. POM_PROFILE_SYNC aparece por máquina na seção de ambiente."
 chat.telemetry.gatewayHeader,gateway,gateway
@@ -215,8 +223,12 @@ chat.telemetry.noEdges,"This execution used one peer, so there are no inter-peer
 chat.telemetry.noMeasurement,not measured,não medido
 chat.telemetry.nodeRow,node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · engine wait {engineWait} ms · setup {setup} ms · frame out {frameOut} ms,nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · espera do motor {engineWait} ms · setup {setup} ms · frame out {frameOut} ms
 chat.telemetry.notInformed,not informed,não informado
+chat.telemetry.notMeasured,not measured,não medido
 chat.telemetry.observedPath,this execution: selected path: {value},nesta execução: caminho selecionado: {value}
 chat.telemetry.offloadKqv,KV offload request: {value},Pedido de offload KV: {value}
+chat.telemetry.outsideAccounted,outside node accounted,fora do nó atribuído
+chat.telemetry.outsideTotal,outside node total,total fora do nó
+chat.telemetry.outsideUnaccounted,outside node unaccounted,fora do nó não atribuído
 chat.telemetry.overlap,"prefill pipeline: depth {depth}/{limit}, {chunks} chunk(s) overlapped","pipeline do prefill: profundidade {depth}/{limit}, {chunks} pedaço(s) sobrepostos"
 chat.telemetry.pathMixed,mixed paths,caminhos mistos
 chat.telemetry.pathNotReported,not reported,não informado
@@ -230,6 +242,7 @@ chat.telemetry.prefill,prefill,prefill
 chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
 chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
 chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
+chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
 chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
 chat.telemetry.profileSyncActive,active,ativo
 chat.telemetry.profileSyncOff,off,desligado
@@ -244,8 +257,19 @@ chat.telemetry.runtimeNotLoaded,Effective state unavailable: {reason},Estado efe
 chat.telemetry.samplingHeader,sampling,sampling
 chat.telemetry.samplingRow,sampling: access {access} ms · clone {clone} ms · penalty {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · selection {selection} ms · text {text} ms,sampling: acesso {access} ms · clone {clone} ms · penalidade {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · seleção {selection} ms · texto {text} ms
 chat.telemetry.selectedPath,selected path: {value},caminho selecionado: {value}
+chat.telemetry.serverTtft,Server TTFT,TTFT do servidor
 chat.telemetry.sessions,Sessions: {count},Sessões: {count}
 chat.telemetry.snapshotMissing,The environment snapshot was not captured for this execution.,O snapshot do ambiente não foi capturado nesta execução.
+chat.telemetry.spanFirstTokenReturn,first-token return,retorno do primeiro token
+chat.telemetry.spanOrchestration,orchestration,orquestração
+chat.telemetry.spanPipelineSelection,pipeline selection,seleção da pipeline
+chat.telemetry.spanRouteResolution,route resolution,resolução da rota
+chat.telemetry.spanSessionAcquire,session acquire,aquisição da sessão
+chat.telemetry.spanUnknown,{name},{name}
+chat.telemetry.spanValidation,validation,validação
+chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk: {firstChunk} · duration: {duration} · last token to end: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk: {firstChunk} · duração: {duration} · último token até fim: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
+chat.telemetry.timelineTitle,Execution timeline,Linha do tempo da execução
+chat.telemetry.timelineUnavailable,Detailed spans are not available for this trace. The missing time remains unaccounted.,Spans detalhados indisponíveis para este trace. O tempo ausente continua não atribuído.
 chat.telemetry.title,Execution telemetry,Telemetria da execução
 chat.telemetry.tlsIdle,channel: no calls in this phase,canal: nenhuma chamada nesta fase
 chat.telemetry.tlsOff,channel: in the clear,canal: texto claro
@@ -265,6 +289,7 @@ chat.telemetry.tpReduces,reduces / expected,reduções / esperado
 chat.telemetry.tpTitle,Tensor parallelism collectives,Coletivas do tensor parallelism
 chat.telemetry.tpTunnel,tunnel {calls} · fallback {fallback},túnel {calls} · fallback {fallback}
 chat.telemetry.tpWait,TP wait,espera TP
+chat.telemetry.traceMissing,trace not reported,trace não informado
 chat.telemetry.transportFallbackTotal,fallback total {calls},fallback total {calls}
 chat.telemetry.transportHeader,transport,transporte
 chat.telemetry.transportMissing,transport traversal: not measured,travessia de transporte: não medida
@@ -272,6 +297,7 @@ chat.telemetry.transportSummary,{transport}: {calls} calls · sent {sent} · rec
 chat.telemetry.transportSwitch,transport switch {from} -> {to} ({calls}),troca de transporte {from} -> {to} ({calls})
 chat.telemetry.transportTraceIncomplete,Transport trace incomplete: the result arrived before every traversal receipt.,Telemetria de transporte incompleta: o resultado chegou antes de todas as travessias.
 chat.telemetry.transportValue,transport: {value},transporte: {value}
+chat.telemetry.unaccounted,unaccounted,não atribuído
 chat.telemetry.unattributed,unattributed {ms} ms,não atribuído {ms} ms
 chat.telemetry.unknownLayers,Unclassified layers: {count},Camadas não classificadas: {count}
 chat.thinking,Thinking,Pensamento

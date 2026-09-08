@@ -116,7 +116,11 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
   const pipelineNetwork = total(rows, (phase) => phase.network_ms + phase.node_residual_ms);
   const lockWait = total(rows, (phase) => phase.node_lock_wait_ms);
   const processing = total(rows, (phase) => phase.processing_ms);
-  const outsideNode = timings == null ? 0 : Math.max(0, timings.total_ms - processing);
+  const outsideNode = trace.outside_node_unaccounted_ms
+    ?? (timings == null ? 0 : Math.max(0, timings.total_ms - processing));
+  const outsideEvidence = trace.outside_node_unaccounted_ms == null
+    ? `outside ${formatMs(outsideNode)}`
+    : `unaccounted ${formatMs(outsideNode)}`;
 
   if (timings != null && outsideNode >= Math.max(100, processing * 0.35)) {
     return {
@@ -125,7 +129,7 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
       titleKey: "chat.telemetry.analysis.outsideNodeTitle",
       detailKey: "chat.telemetry.analysis.outsideNodeDetail",
       nextStepKey: "chat.telemetry.analysis.outsideNodeNextStep",
-      evidence: `total ${formatMs(timings.total_ms)} / node processing ${formatMs(processing)} / outside ${formatMs(outsideNode)}`,
+      evidence: `total ${formatMs(timings.total_ms)} / node processing ${formatMs(processing)} / ${outsideEvidence}`,
       tpObserved: tpRows.length > 0,
     };
   }

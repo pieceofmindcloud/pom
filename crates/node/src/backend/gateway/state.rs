@@ -114,10 +114,14 @@ pub struct GatewayState {
     pub database: Arc<crate::db::PomDb>,
     /// HTTP port this node serves the API and UI on.
     pub gateway_port: u16,
-    /// Setup-level configuration (role, connection key, bootstrap nodes).
+    /// Setup-level configuration (profile, connection key, bootstrap nodes).
     pub auth: AuthState,
-    /// Long-lived identity used to sign administrator-only profile commands.
-    pub admin_signing_key: Arc<ed25519_dalek::SigningKey>,
+    /// Durable anchor and grant chain for administrator capabilities. It is
+    /// deliberately separate from `Config.profile`.
+    pub admin_trust: Arc<crate::admin_trust::AdminTrust>,
+    /// The libp2p identity is the only signing authority for this node.
+    pub authority_signing_key: Arc<ed25519_dalek::SigningKey>,
+    pub authority_principal: crate::admin_trust::AuthorityPrincipal,
     /// In-memory browser sessions. It is intentionally not persisted beside
     /// the configuration and is bound to the current admin access token.
     pub(crate) admin_sessions: crate::auth::AdminSessionState,
@@ -218,7 +222,14 @@ pub(super) async fn require_admin_for_surface(
     let request = Request::from_parts(parts, body);
     let profile = state.auth.read().await.profile;
     let scope = crate::webui::route_scope(&path);
-    let profile_access = crate::webui::profile_can_access(profile, scope);
+    let local_admin_authority = state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+        .is_some();
+    let profile_access = crate::webui::profile_can_access(profile, scope)
+        && (scope != crate::webui::RouteScope::AdminOnly
+            || profile != crate::profile::NodeProfile::Admin
+            || local_admin_authority);
     if !profile_access && !internal_node_request {
         return (
             StatusCode::FORBIDDEN,
@@ -453,6 +464,7 @@ impl GatewayState {
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
+                authority_pubkey: self.network.authority_pubkey(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
                 model: local.as_ref().map(|l| l.model.clone()).unwrap_or_default(),
@@ -492,7 +504,7 @@ impl GatewayState {
                     caps
                 },
                 gateway_port: Some(self.gateway_port),
-                role: self.network.role_label(),
+                profile: self.network.profile(),
                 hostname: self.network.hostname.clone(),
                 capabilities: local
                     .as_ref()

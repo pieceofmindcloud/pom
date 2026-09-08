@@ -1092,7 +1092,39 @@ async fn list_offers(
     headers: HeaderMap,
     State(state): State<GatewayState>,
 ) -> Response {
-    let offers = state.transfers.offers.read().await.clone();
+    let slice_offers = state.transfers.offers.read().await.clone();
+    let mut offers = slice_offers
+        .into_iter()
+        .map(|offer| serde_json::to_value(offer).expect("oferta de fatia serializável"))
+        .collect::<Vec<_>>();
+    if let Some(offer) = state.admin_trust.pending_transfer() {
+        if offer.successor == state.authority_principal {
+            let peers = state.network.alive_peers().await;
+            let from_host = peers
+                .iter()
+                .find(|peer| peer.node_id == offer.issuer.node_id)
+                .map(|peer| peer.hostname.clone())
+                .filter(|hostname| !hostname.is_empty())
+                .unwrap_or_else(|| offer.issuer.node_id.clone());
+            let target_host = state
+                .auth
+                .read()
+                .await
+                .node_name
+                .clone()
+                .unwrap_or_else(|| state.network.node_id.clone());
+            offers.push(json!({
+                "kind": "principal_transfer",
+                "id": offer.offer_id,
+                "from_node_id": offer.issuer.node_id,
+                "from_host": from_host,
+                "target_node_id": offer.successor.node_id,
+                "target_host": target_host,
+                "status": "pending",
+                "issued_at": offer.command_id,
+            }));
+        }
+    }
     crate::webui::conditional_json(&headers, &json!({ "offers": offers }))
 }
 
@@ -1272,6 +1304,19 @@ async fn reject_offer(
     State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
+    if state
+        .admin_trust
+        .pending_transfer()
+        .is_some_and(|offer| offer.offer_id == id && offer.successor == state.authority_principal)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "a transferência de principal só termina com aceitação assinada ou com uma nova época"
+            })),
+        )
+            .into_response();
+    }
     let recusada = {
         let mut offers = state.transfers.offers.write().await;
         offers
@@ -1290,6 +1335,13 @@ async fn accept_offer(
     State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
+    if state
+        .admin_trust
+        .pending_transfer()
+        .is_some_and(|offer| offer.offer_id == id && offer.successor == state.authority_principal)
+    {
+        return crate::admin::accept_authority_transfer(&state, &id).await;
+    }
     let offer = {
         let mut offers = state.transfers.offers.write().await;
         match offers.iter().position(|o| o.id == id) {

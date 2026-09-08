@@ -12,7 +12,7 @@
 
 use crate::auth::{AuthState, ConnectionAuth};
 use crate::catalog::{self, Catalog};
-use crate::config::{AdminExposure, KvCacheType, Role};
+use crate::config::{AdminExposure, KvCacheType};
 use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;

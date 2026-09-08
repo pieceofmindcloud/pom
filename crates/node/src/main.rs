@@ -16,6 +16,8 @@ use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "backend/capabilities.rs"]
 mod capabilities;
+#[path = "admin_trust.rs"]
+mod admin_trust;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "network/cluster_logs.rs"]
@@ -449,7 +451,7 @@ async fn async_main(
         .unwrap_or_else(crate::thermal::ThermalPolicy::default);
     app_config.huggingface_token = database.huggingface_token()?;
     config::validate_gateway_port(app_config.gateway_port)?;
-    info!("Role: {}", app_config.role);
+    info!("Profile: {}", app_config.profile);
 
     // Antes de qualquer coisa que possa carregar modelo: os backends do ggml
     // enumeram os dispositivos ao serem registrados, e depois disso a lista está
@@ -689,7 +691,7 @@ async fn async_main(
         ollama_port,
         inference_port,
         gateway_port,
-        role: app_config.role.to_string(),
+        profile: app_config.profile,
         node_display_name,
         advertise_addr,
         tls_required: app_config.tls_required,
@@ -701,6 +703,24 @@ async fn async_main(
         no_discovery: args.no_discovery,
     })
     .await?;
+    let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
+    let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+        node_id.clone(),
+        stack.libp2p_peer_id.clone(),
+        &stack.authority_signing_key,
+    );
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
+    if app_config.profile == crate::profile::NodeProfile::Admin
+        && admin_trust
+            .effective_authority(&authority_principal, app_config.profile)
+            .is_none()
+    {
+        warn!(
+            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node até a âncora manual e a cadeia serem instaladas"
+        );
+    }
     let net = stack.net;
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
@@ -884,7 +904,9 @@ async fn async_main(
             database: database.clone(),
             gateway_port,
             auth: auth_config,
-            admin_signing_key: Arc::new(identity.signing_key.clone()),
+            admin_trust: admin_trust.clone(),
+            authority_signing_key: authority_signing_key.clone(),
+            authority_principal: authority_principal.clone(),
             admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
@@ -1165,14 +1187,13 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
 }
 
 async fn start_setup_mode(gateway_port: u16) -> Result<()> {
-    use crate::config::{Config, Role};
+    use crate::config::Config;
     use crate::webui;
     use axum::{routing::get, Router};
     use std::net::SocketAddr;
 
     config::validate_gateway_port(gateway_port)?;
     let config = Arc::new(RwLock::new(Config {
-        role: Role::Principal,
         profile: crate::profile::NodeProfile::Admin,
         tls_required: false,
         cluster_logs_enabled: false,
@@ -1257,7 +1278,7 @@ struct P2pStackArgs {
     ollama_port: Option<u16>,
     inference_port: Option<u16>,
     gateway_port: u16,
-    role: String,
+    profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
     /// Política inicial, aplicada antes da task de sondagem da `Network`.
@@ -1285,6 +1306,8 @@ struct P2pStackArgs {
 /// pkarr dial/publish — none of which belong inside this shared helper).
 struct P2pStack {
     net: Arc<Network>,
+    authority_signing_key: ed25519_dalek::SigningKey,
+    libp2p_peer_id: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
     pkarr_node: Option<pkarr_node::PkarrNode>,
@@ -1313,7 +1336,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     infer_tunnel::set_local_node_id(args.node_id.clone());
     let cluster_logs = args.cluster_logs.clone();
     cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
-    cluster_logs.set_principal(args.role.eq_ignore_ascii_case("principal"));
+    cluster_logs.set_principal(args.profile == crate::profile::NodeProfile::Admin);
     cluster_logs.set_enabled(args.cluster_logs_enabled);
 
     let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
@@ -1330,13 +1353,15 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     // `Network` needs to advertise the resulting PeerId in its own
     // `Announce`, and it's built (then wrapped in `Arc`, no longer mutable
     // in place) a few lines below — so the keypair has to exist before that.
-    let libp2p_keypair = pkarr_node
+    let authority_signing_key = pkarr_node
         .as_ref()
-        .and_then(|pn| {
-            let mut seed = pn.secret_key_bytes();
-            libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..]).ok()
-        })
-        .unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
+        .map(|pn| ed25519_dalek::SigningKey::from_bytes(&pn.secret_key_bytes()))
+        .unwrap_or_else(|| {
+            ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)
+        });
+    let mut authority_seed = authority_signing_key.to_bytes();
+    let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut authority_seed[..])
+        .expect("a chave Ed25519 da autoridade deve ser uma identidade libp2p válida");
     let libp2p_peer_id = libp2p_keypair.public().to_peer_id().to_string();
 
     // Resolved *here*, not by the caller — needs the `pkarr_node` this
@@ -1383,8 +1408,11 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
             Some(args.gateway_port),
         )
         .await?
-        .with_identity(args.role, args.node_display_name)
+        .with_identity(args.profile, args.node_display_name)
         .with_advertise_addr(args.advertise_addr)
+        .with_authority_pubkey(hex::encode(
+            authority_signing_key.verifying_key().as_bytes(),
+        ))
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
     );
     net.set_tls(args.tls_required);
@@ -1456,6 +1484,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
 
     Ok(P2pStack {
         net,
+        authority_signing_key,
+        libp2p_peer_id,
         cluster_logs,
         tunnel_tx,
         pkarr_node,
@@ -1508,7 +1538,7 @@ async fn start_gateway_only(
         ollama_port,
         inference_port: Some(app_config.inference_port_or_default()),
         gateway_port,
-        role: app_config.role.to_string(),
+        profile: app_config.profile,
         node_display_name,
         advertise_addr,
         tls_required: app_config.tls_required,
@@ -1522,6 +1552,24 @@ async fn start_gateway_only(
         no_discovery,
     })
     .await?;
+    let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
+    let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+        node_id.clone(),
+        stack.libp2p_peer_id.clone(),
+        &stack.authority_signing_key,
+    );
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
+    if app_config.profile == crate::profile::NodeProfile::Admin
+        && admin_trust
+            .effective_authority(&authority_principal, app_config.profile)
+            .is_none()
+    {
+        warn!(
+            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node até a âncora manual e a cadeia serem instaladas"
+        );
+    }
     let net = stack.net;
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
@@ -1596,7 +1644,9 @@ async fn start_gateway_only(
         database,
         gateway_port,
         auth: auth_state,
-        admin_signing_key: Arc::new(identity.signing_key.clone()),
+        admin_trust,
+        authority_signing_key,
+        authority_principal,
         admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
         transfers: Default::default(),
         reply_inbox: crate::direct::ReplyInbox::new(),

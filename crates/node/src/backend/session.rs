@@ -252,7 +252,7 @@ pub async fn handle_handshake(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Role};
+    use crate::config::Config;
     use ed25519_dalek::Signer;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -264,7 +264,6 @@ mod tests {
             thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
-            role: Role::Principal,
             profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
             cluster_logs_enabled: false,

@@ -213,7 +213,7 @@ mod tls_settings_tests {
     #[tokio::test]
     async fn no_comum_nao_pode_ligar_tls() {
         let state = state_with("eu", vec![]).await;
-        state.auth.write().await.role = crate::config::Role::Node;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Node;
 
         let resp = save_tls(
             ConnectionAuth,
@@ -238,7 +238,7 @@ mod tls_settings_tests {
         // `peer_client::POLITICA_GLOBAL`.
         let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let state = state_with("eu", vec![]).await;
-        state.auth.write().await.role = crate::config::Role::Principal;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
 
         let resp = save_tls(
             ConnectionAuth,
@@ -274,12 +274,12 @@ mod tls_settings_tests {
     #[tokio::test]
     async fn node_info_conta_estado_e_autoridade() {
         let state = state_with("eu", vec![]).await;
-        state.auth.write().await.role = crate::config::Role::Node;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Node;
         let info = node_info(State(state.clone())).await;
         assert!(!info.0.tls_required);
         assert!(!info.0.tls_authority, "nó comum não decide");
 
-        state.auth.write().await.role = crate::config::Role::Principal;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         state.auth.write().await.tls_required = true;
         let info = node_info(State(state)).await;
         assert!(info.0.tls_required);
@@ -312,7 +312,7 @@ mod cluster_logs_settings_tests {
     #[tokio::test]
     async fn principal_liga_e_desliga_logs_sem_reinicio() {
         let state = state_with("eu", vec![]).await;
-        state.auth.write().await.role = crate::config::Role::Principal;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
 
         let response = save_cluster_logs(
             ConnectionAuth,
@@ -409,4 +409,3 @@ mod advertise_addr_tests {
         assert_eq!(state.auth.read().await.advertise_addr, None);
     }
 }
-

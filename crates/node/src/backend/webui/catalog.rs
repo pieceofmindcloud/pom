@@ -13,8 +13,8 @@ pub struct NodeInfo {
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
     pub dev_update: bool,
     pub profile: crate::profile::NodeProfile,
-    pub role: String,
-    pub connection_key: String,
+    pub authority_level: Option<crate::admin_trust::AdminLevel>,
+    pub authority_fingerprint: Option<String>,
     pub p2p_port: u16,
     /// Endereços UDP anunciados pelo nó, necessários para o plano reconstruir
     /// as multiaddresses TCP do túnel no processo que executar o hop.
@@ -67,8 +67,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         .unwrap_or_default();
     let (
         profile,
-        role,
-        conn_key,
+        authority_level,
+        authority_fingerprint,
         advertise_addr,
         tls_required,
         tls_authority,
@@ -81,12 +81,29 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         let cfg = state.auth.read().await;
         (
             cfg.profile,
-            cfg.role.to_string(),
-            cfg.connection_key.clone(),
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, cfg.profile)
+                .map(|authority| match authority {
+                    crate::admin_trust::EffectiveAuthority::Primary => {
+                        crate::admin_trust::AdminLevel::Primary
+                    }
+                    crate::admin_trust::EffectiveAuthority::Secondary => {
+                        crate::admin_trust::AdminLevel::Secondary
+                    }
+                }),
+            (cfg.profile == crate::profile::NodeProfile::Admin)
+                .then(|| crate::admin_trust::fingerprint_of(&state.authority_principal.pubkey)),
             cfg.advertise_addr.clone(),
             cfg.tls_required,
-            cfg.role == crate::config::Role::Principal,
-            cfg.role == crate::config::Role::Principal,
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, cfg.profile)
+                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, cfg.profile)
+                == Some(crate::admin_trust::EffectiveAuthority::Primary),
             cfg.thermal,
             cfg.admin_exposure,
             cfg.admin_access_token
@@ -106,8 +123,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         build_commit: crate::BUILD_COMMIT.to_string(),
         dev_update: crate::devupdate::enabled(),
         profile,
-        role,
-        connection_key: conn_key,
+        authority_level,
+        authority_fingerprint,
         p2p_port: state.network.bind_addr.port(),
         addr_candidates: state.network.self_addr_candidates(),
         libp2p_peer_id: state.network.libp2p_peer_id.clone(),
@@ -170,7 +187,7 @@ pub(super) async fn cluster_logs(
     State(state): State<GatewayState>,
     Query(query): Query<ClusterLogsQuery>,
 ) -> Response {
-    if state.auth.read().await.role != crate::config::Role::Principal {
+    if !local_is_primary(&state).await {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "os logs do cluster só estão disponíveis no nó principal." })),
@@ -194,6 +211,14 @@ pub(super) async fn cluster_logs(
 pub(super) fn mask_access_token(token: &str) -> String {
     let suffix = token.get(token.len().saturating_sub(4)..).unwrap_or("");
     format!("••••••••{suffix}")
+}
+
+async fn local_is_primary(state: &GatewayState) -> bool {
+    let profile = state.auth.read().await.profile;
+    state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+        == Some(crate::admin_trust::EffectiveAuthority::Primary)
 }
 
 #[derive(Debug, Serialize)]
@@ -1007,7 +1032,7 @@ pub(super) async fn save_tls(
 ) -> Response {
     // A autoridade é verificada **aqui**, no servidor. Esconder o interruptor
     // na tela de um nó comum é conveniência; isto é o controle.
-    if state.auth.read().await.role != crate::config::Role::Principal {
+    if !local_is_primary(&state).await {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "só o nó principal decide o TLS do cluster." })),
@@ -1059,7 +1084,7 @@ pub(super) async fn save_cluster_logs(
     State(state): State<GatewayState>,
     Json(req): Json<SaveClusterLogsRequest>,
 ) -> Response {
-    if state.auth.read().await.role != crate::config::Role::Principal {
+    if !local_is_primary(&state).await {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "só o nó principal decide os logs do cluster." })),

@@ -58,17 +58,10 @@ pub async fn save_setup(
                 .into_response();
         }
     };
-    let role = if profile == crate::profile::NodeProfile::Admin {
-        Role::Principal
-    } else {
-        Role::Node
-    };
-
     let mut cfg = config.write().await;
-    cfg.role = role.clone();
     cfg.profile = profile;
 
-    if role == Role::Node {
+    if profile != crate::profile::NodeProfile::Admin {
         if !req.connection_key.is_empty() {
             cfg.connection_key = req.connection_key.clone();
         }

@@ -304,14 +304,14 @@ impl Discovery {
             .with_behaviour(|key, relay_client| {
                 let gossipsub_cfg = gossipsub::ConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(1))
-                    .validation_mode(gossipsub::ValidationMode::Anonymous)
+                    .validation_mode(gossipsub::ValidationMode::Strict)
                     // Without this, gossipsub silently stops carrying
                     // announces. See `announce_message_id`.
                     .message_id_fn(announce_message_id)
                     .build()
                     .expect("gossipsub config");
                 let gossipsub = gossipsub::Behaviour::new(
-                    gossipsub::MessageAuthenticity::Anonymous,
+                    gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossipsub_cfg,
                 )
                 .expect("gossipsub init");
@@ -531,10 +531,15 @@ async fn handle_event(
             message,
             ..
         })) => {
+            let Some(source) = message.source else {
+                warn!("libp2p: descartei Announce sem peer de origem assinado");
+                return;
+            };
             if let Ok(P2PMessage::Announce {
                 node_id,
                 deploy_id,
                 pubkey,
+                authority_pubkey,
                 addr,
                 addr_candidates,
                 model,
@@ -547,7 +552,7 @@ async fn handle_event(
                 inference_port,
                 inference_frame_capabilities,
                 gateway_port,
-                role,
+                profile,
                 tls,
                 hostname,
                 capabilities,
@@ -559,6 +564,13 @@ async fn handle_event(
                 cluster_logs_enabled,
             }) = serde_json::from_slice(&message.data)
             {
+                if libp2p_peer_id.as_deref() != Some(source.to_string().as_str()) {
+                    warn!(
+                        "libp2p: descartei Announce de {} com PeerId declarado divergente",
+                        source
+                    );
+                    return;
+                }
                 let dial_for_tunnel = libp2p_peer_id
                     .as_deref()
                     .and_then(|s| s.parse::<PeerId>().ok())
@@ -580,6 +592,7 @@ async fn handle_event(
                         deploy_id,
                         node_id: node_id.clone(),
                         pubkey,
+                        authority_pubkey,
                         // O caminho do gossipsub nao tem endereco de origem para
                         // reescrever, e o anunciado costuma ser o literal
                         // `0.0.0.0`. Com candidatos ha o que usar: o primeiro
@@ -597,7 +610,7 @@ async fn handle_event(
                         inference_port,
                         inference_frame_capabilities,
                         gateway_port,
-                        role: role.clone(),
+                        profile,
                         tls,
                         hostname,
                         capabilities,
@@ -613,7 +626,7 @@ async fn handle_event(
 
                 network.trigger_cluster_logs_probe(
                     &node_id,
-                    &role,
+                    profile,
                     cluster_logs_enabled,
                     tls,
                 );

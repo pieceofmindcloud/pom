@@ -145,10 +145,14 @@ struct NetworkInit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum P2PMessage {
-    /// Node announces itself and its layer assignment
+        /// Node announces itself and its layer assignment
     Announce {
         node_id: String,
         pubkey: String,
+        /// Public key of the libp2p identity that signed the gossip message.
+        /// It is authority material, not the legacy node identity key.
+        #[serde(default)]
+        authority_pubkey: String,
         addr: String,
         /// Todos os enderecos deste no. `serde(default)` mantem um no antigo
         /// parseavel: sem candidatos, o `addr` unico continua valendo.
@@ -179,7 +183,7 @@ pub enum P2PMessage {
         #[serde(default)]
         gateway_port: Option<u16>,
         #[serde(default)]
-        role: String,
+        profile: crate::profile::NodeProfile,
         /// Se este nó fala TLS com os peers.
         ///
         /// **Gatilho, não valor**: quem recebe não grava isto. Ver
@@ -232,6 +236,8 @@ pub enum P2PMessage {
 pub struct PeerInfo {
     pub node_id: String,
     pub pubkey: String,
+    #[serde(default)]
+    pub authority_pubkey: String,
     pub addr: String,
     /// Todos os enderecos em que este peer pode ser encontrado.
     ///
@@ -265,7 +271,7 @@ pub struct PeerInfo {
     #[serde(default)]
     pub gateway_port: Option<u16>,
     #[serde(default)]
-    pub role: String,
+    pub profile: crate::profile::NodeProfile,
     /// Ver `P2PMessage::Announce::tls`: gatilho para a catraca, nunca valor.
     #[serde(default)]
     pub tls: bool,
@@ -557,6 +563,8 @@ impl PeerInfo {
 pub struct Network {
     pub node_id: String,
     pub pubkey: String,
+    /// Ed25519 public key of the libp2p identity used by gossipsub.
+    pub authority_pubkey: Arc<std::sync::RwLock<String>>,
     pub bind_addr: SocketAddr,
     /// Destino do anúncio local. Em produção é o broadcast IPv4 global; o
     /// testkit injeta um destino loopback para nunca alcançar a LAN.
@@ -571,7 +579,7 @@ pub struct Network {
     pub gateway_port: Option<u16>,
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
-    pub role: Arc<std::sync::RwLock<String>>,
+    pub profile: Arc<std::sync::RwLock<crate::profile::NodeProfile>>,
     pub hostname: String,
     /// Address peers should keep for this node, already `host:port`.
     ///
@@ -1018,6 +1026,7 @@ impl Network {
         Self {
             node_id,
             pubkey,
+            authority_pubkey: Arc::new(std::sync::RwLock::new(String::new())),
             bind_addr,
             broadcast_addr,
             peers: Arc::new(RwLock::new(HashMap::new())),
@@ -1025,7 +1034,7 @@ impl Network {
             ollama_port: init.ollama_port,
             inference_port: init.inference_port,
             gateway_port: init.gateway_port,
-            role: Arc::new(std::sync::RwLock::new(String::new())),
+            profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Node)),
             hostname: String::new(),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
@@ -1051,19 +1060,35 @@ impl Network {
     }
 
     /// Label this node carries in its announces.
-    pub fn with_identity(mut self, role: String, hostname: String) -> Self {
-        *self.role.write().expect("role lock") = role;
+    pub fn with_identity(
+        mut self,
+        profile: crate::profile::NodeProfile,
+        hostname: String,
+    ) -> Self {
+        *self.profile.write().expect("profile lock") = profile;
         self.hostname = hostname;
         self
     }
 
-    /// Change the role announced by this process after a profile promotion.
-    pub fn set_role(&self, role: impl Into<String>) {
-        *self.role.write().expect("role lock") = role.into();
+    pub fn with_authority_pubkey(mut self, pubkey: String) -> Self {
+        *self.authority_pubkey.write().expect("authority key lock") = pubkey;
+        self
     }
 
-    pub fn role_label(&self) -> String {
-        self.role.read().expect("role lock").clone()
+    pub fn authority_pubkey(&self) -> String {
+        self.authority_pubkey
+            .read()
+            .expect("authority key lock")
+            .clone()
+    }
+
+    /// Change the profile announced by this process after a local mutation.
+    pub fn set_profile(&self, profile: crate::profile::NodeProfile) {
+        *self.profile.write().expect("profile lock") = profile;
+    }
+
+    pub fn profile(&self) -> crate::profile::NodeProfile {
+        *self.profile.read().expect("profile lock")
     }
 
     /// Record the libp2p `PeerId` this node's swarm ended up with, so
@@ -1278,6 +1303,7 @@ impl Network {
         P2PMessage::Announce {
             node_id: self.node_id.clone(),
             pubkey: self.pubkey.clone(),
+            authority_pubkey: self.authority_pubkey(),
             addr: self.announce_addr(),
             addr_candidates: self.self_addr_candidates(),
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
@@ -1325,7 +1351,7 @@ impl Network {
                 caps
             },
             gateway_port: self.gateway_port,
-            role: self.role_label(),
+            profile: self.profile(),
             tls: self.tls_enabled(),
             hostname: self.hostname.clone(),
             capabilities: assignment
@@ -1493,7 +1519,7 @@ impl Network {
     pub fn trigger_cluster_logs_probe(
         &self,
         node_id: &str,
-        role: &str,
+        profile: crate::profile::NodeProfile,
         announced: bool,
         tls: bool,
     ) {
@@ -1501,7 +1527,7 @@ impl Network {
             crate::cluster_logs_policy::on_announce(
                 self.cluster_logs_enabled(),
                 announced,
-                role.eq_ignore_ascii_case("principal"),
+                profile == crate::profile::NodeProfile::Admin,
                 node_id,
             )
         {
@@ -1519,7 +1545,9 @@ impl Network {
         let peers = self.peers.read().await;
         peers
             .values()
-            .filter(|peer| peer.is_alive() && peer.role.eq_ignore_ascii_case("principal"))
+            .filter(|peer| {
+                peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin
+            })
             .find_map(|peer| {
                 let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
                 let mut addresses = peer.addr_candidates.clone();
@@ -1973,6 +2001,7 @@ impl Network {
             P2PMessage::Announce {
                 node_id,
                 pubkey,
+                authority_pubkey,
                 deploy_id,
                 addr,
                 addr_candidates,
@@ -1986,7 +2015,7 @@ impl Network {
                 inference_port,
                 inference_frame_capabilities,
                 gateway_port,
-                role,
+                profile,
                 tls,
                 hostname,
                 capabilities,
@@ -2015,6 +2044,7 @@ impl Network {
                     deploy_id,
                     node_id: node_id.clone(),
                     pubkey,
+                    authority_pubkey,
                     addr: peer_addr.clone(),
                     addr_candidates,
                     model: model.clone(),
@@ -2027,7 +2057,7 @@ impl Network {
                     inference_port,
                     inference_frame_capabilities,
                     gateway_port,
-                    role,
+                    profile,
                     tls,
                     hostname,
                     capabilities,
@@ -2074,7 +2104,7 @@ impl Network {
                     crate::tls_policy::on_announce(
                         self.tls_enabled(),
                         tls,
-                        peer.role.eq_ignore_ascii_case("principal"),
+                        peer.profile == crate::profile::NodeProfile::Admin,
                         &peer.node_id,
                     )
                 {
@@ -2094,7 +2124,7 @@ impl Network {
 
                 self.trigger_cluster_logs_probe(
                     &peer.node_id,
-                    &peer.role,
+                    peer.profile,
                     cluster_logs_enabled,
                     tls,
                 );
@@ -2343,7 +2373,7 @@ mod tests {
         let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
             .await
             .unwrap()
-            .with_identity("Principal".into(), "macbook".into());
+            .with_identity(crate::profile::NodeProfile::Admin, "macbook".into());
 
         let asgn = LayerAssignment {
             deploy_id: String::new(),
@@ -2381,7 +2411,7 @@ mod tests {
             ] {
                 assert!(caps.iter().any(|c| c == cap), "faltou {cap} em {caps:?}");
             }
-            assert_eq!(gossip["role"], "Principal");
+            assert_eq!(gossip["profile"], "admin");
             // Os dois anúncios (UDP e gossipsub) têm que carregar a flag: se só
             // um carregasse, a virada chegaria por um caminho e não pelo outro,
             // e o cluster ficaria meio cifrado sem ninguém notar.
@@ -2761,6 +2791,7 @@ mod tests {
             tls: false,
             node_id: "n".into(),
             pubkey: "p".into(),
+            authority_pubkey: String::new(),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -2773,7 +2804,7 @@ mod tests {
             inference_port: Some(8181),
             gateway_port: Some(8090),
             inference_frame_capabilities: Vec::new(),
-            role: String::new(),
+            profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -2803,6 +2834,7 @@ mod tests {
             tls: false,
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
+            authority_pubkey: String::new(),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -2815,7 +2847,7 @@ mod tests {
             inference_port: Some(8181),
             gateway_port: Some(8090),
             inference_frame_capabilities: Vec::new(),
-            role: "Principal".into(),
+            profile: crate::profile::NodeProfile::Admin,
             hostname: "ksia".into(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -2889,6 +2921,7 @@ mod tests {
             tls: false,
             node_id: "n1".into(),
             pubkey: "p".into(),
+            authority_pubkey: String::new(),
             addr: "192.168.1.9:42777".into(),
             addr_candidates: candidatos.into_iter().map(String::from).collect(),
             model: "qwen35".into(),
@@ -2901,7 +2934,7 @@ mod tests {
             inference_port: Some(8181),
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(8080),
-            role: "node".into(),
+            profile: crate::profile::NodeProfile::Node,
             hostname: "h".into(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -3279,6 +3312,7 @@ mod tests {
             tls: false,
             node_id: node_id.into(),
             pubkey: "p".into(),
+            authority_pubkey: String::new(),
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -3291,7 +3325,7 @@ mod tests {
             inference_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: None,
-            role: String::new(),
+            profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,

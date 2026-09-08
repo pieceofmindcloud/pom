@@ -11,20 +11,17 @@ fn config_filename() -> String {
     crate::brand::config_filename()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    Principal,
-    Node,
+/// Arquivo separado que guarda a âncora e a cadeia de concessões de admin.
+/// Nunca é derivado de `Config.profile`: editar `pom.json` não pode criar
+/// autoridade.
+pub fn admin_trust_filename() -> String {
+    format!(".{}-admin-trust.json", crate::brand::slug())
 }
 
-impl std::fmt::Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Role::Principal => write!(f, "Principal"),
-            Role::Node => write!(f, "Nó"),
-        }
-    }
+pub fn admin_trust_path() -> PathBuf {
+    crate::brand::env("ADMIN_TRUST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| project_root().join(admin_trust_filename()))
 }
 
 /// Superfície administrativa do gateway. As rotas da pipeline não usam esta
@@ -76,9 +73,9 @@ pub struct ApiKey {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub role: Role,
-    /// Product profile owned by this node. Unlike `role`, it is not selected
-    /// by the browser and is intentionally required in the new schema.
+    /// Product profile owned by this node. It is not selected by the browser
+    /// and is intentionally required in the new schema. Administrative
+    /// capability comes only from the separate signed grant chain.
     pub profile: crate::profile::NodeProfile,
     #[serde(default)]
     pub connection_key: String,
@@ -208,7 +205,6 @@ pub struct Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
-            .field("role", &self.role)
             .field("profile", &self.profile)
             .field(
                 "connection_key",
@@ -647,7 +643,6 @@ mod tests {
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
-            role: Role::Principal,
             profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
             cluster_logs_enabled: false,
@@ -673,7 +668,7 @@ mod tests {
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.role, Role::Principal);
+        assert_eq!(parsed.profile, crate::profile::NodeProfile::Admin);
         assert_eq!(parsed.connection_key, "test-key");
     }
 
@@ -682,7 +677,7 @@ mod tests {
     #[test]
     fn removed_output_capacity_field_is_rejected_explicitly() {
         let legacy_field = ["max", "output", "tokens"].join("_");
-        let mut value = serde_json::json!({"role": "principal", "profile": "admin", "connection_key": "k"});
+        let mut value = serde_json::json!({"profile": "admin", "connection_key": "k"});
         value
             .as_object_mut()
             .unwrap()
@@ -697,7 +692,7 @@ mod tests {
         // Keep this fixture in the test source. `pom.json` is runtime state and
         // intentionally ignored by Git, so a compile must never depend on it.
         let cfg: Config = serde_json::from_str(
-            r#"{"role":"principal","profile":"admin","connection_key":"reference-test","gateway_port":8080,"p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#,
+            r#"{"profile":"admin","connection_key":"reference-test","gateway_port":8080,"p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#,
         )
         .unwrap();
         let value = serde_json::to_value(cfg).unwrap();
@@ -714,7 +709,6 @@ mod tests {
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
-            role: Role::Node,
             profile: crate::profile::NodeProfile::Node,
             tls_required: false,
             cluster_logs_enabled: false,
@@ -740,21 +734,21 @@ mod tests {
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.role, Role::Node);
+        assert_eq!(parsed.profile, crate::profile::NodeProfile::Node);
     }
 
     /// A config without the official profile is not a supported schema. The
     /// operator recreates it through setup instead of silently guessing.
     #[test]
     fn a_config_without_profile_requires_reinitialization() {
-        let old = r#"{"role":"principal","connection_key":"k","gateway_port":8080,
+        let old = r#"{"connection_key":"k","gateway_port":8080,
                       "p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#;
         assert!(serde_json::from_str::<Config>(old).is_err());
     }
 
     #[test]
     fn thermal_policy_is_configurable_and_survives_roundtrip() {
-        let mut cfg: Config = serde_json::from_str(r#"{"role":"node","profile":"node"}"#).unwrap();
+        let mut cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
         cfg.thermal = crate::thermal::ThermalPolicy {
             limit_c: 82.0,
             hysteresis_c: 7.0,
@@ -771,7 +765,7 @@ mod tests {
     #[test]
     fn cache_types_are_persisted_as_installation_settings() {
         let cfg: Config =
-            serde_json::from_str(r#"{"role":"node","profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
+            serde_json::from_str(r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
                 .unwrap();
         let json = serde_json::to_value(cfg).unwrap();
 
@@ -782,19 +776,19 @@ mod tests {
     #[test]
     fn invalid_cache_type_is_rejected() {
         let result: Result<Config, _> =
-            serde_json::from_str(r#"{"role":"node","profile":"node","cache_type_k":"not-a-type"}"#);
+            serde_json::from_str(r#"{"profile":"node","cache_type_k":"not-a-type"}"#);
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cache_type_defaults_to_f16_and_preserves_iq4_nl_spelling() {
-        let defaulted: Config = serde_json::from_str(r#"{"role":"node","profile":"node"}"#).unwrap();
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
         assert_eq!(defaulted.cache_type_k, KvCacheType::F16);
         assert_eq!(defaulted.cache_type_v, KvCacheType::F16);
 
         let typed: Config =
-            serde_json::from_str(r#"{"role":"node","profile":"node","cache_type_k":"iq4_nl"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"node","cache_type_k":"iq4_nl"}"#).unwrap();
         assert_eq!(typed.cache_type_k, KvCacheType::Iq4Nl);
         assert_eq!(typed.cache_type_k.as_str(), "iq4_nl");
     }
@@ -810,7 +804,6 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let mut cfg = Config {
-            role: Role::Node,
             profile: crate::profile::NodeProfile::Node,
             connection_key: String::new(),
             gateway_port: 8080,
@@ -865,7 +858,7 @@ mod tests {
     #[test]
     fn an_explicit_empty_list_is_not_the_default_list() {
         let cfg: Config = serde_json::from_str(
-            r#"{"role":"node","profile":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
+            r#"{"profile":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
         )
         .unwrap();
         assert!(!cfg.model_dirs_are_default());
@@ -880,7 +873,7 @@ mod tests {
     /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
     #[test]
     fn config_antiga_parseia_sem_tls_required() {
-        let cfg: Config = serde_json::from_str(r#"{"role":"node","profile":"node","connection_key":"k"}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
     }
 
@@ -894,7 +887,7 @@ mod tests {
     #[test]
     fn tls_required_sobrevive_ao_roundtrip() {
         let cfg: Config =
-            serde_json::from_str(r#"{"role":"principal","profile":"admin","tls_required":true}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"admin","tls_required":true}"#).unwrap();
         assert!(cfg.tls_required);
         let texto = serde_json::to_string(&cfg).unwrap();
         let volta: Config = serde_json::from_str(&texto).unwrap();
@@ -903,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
-        let cfg: Config = serde_json::from_str(r#"{"role":"node","profile":"node","shard_dir":"   "}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
     }
 
@@ -914,7 +907,6 @@ mod tests {
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
-            role: Role::Principal,
             profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
             cluster_logs_enabled: false,

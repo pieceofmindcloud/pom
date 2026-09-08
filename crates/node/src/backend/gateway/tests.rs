@@ -344,6 +344,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_admin_profile_without_a_trust_grant_has_no_admin_capability() {
+        let mut state = testkit::state_with("connection-secret", vec![]).await;
+        state.admin_trust = Arc::new(crate::admin_trust::AdminTrust::empty());
+        {
+            let mut auth = state.auth.write().await;
+            auth.profile = crate::profile::NodeProfile::Admin;
+            auth.connection_key = "connection-secret".into();
+        }
+        let app = Router::new()
+            .route("/admin/authority", get(|| async { StatusCode::OK }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut request = Request::get("/admin/authority")
+            .header("authorization", "Bearer connection-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn each_profile_reaches_its_scope_and_gets_an_explicit_refusal() {
         let cases = [
             (
@@ -1440,6 +1469,7 @@ mod peer_visibility_tests {
             tls: false,
             node_id: id.into(),
             pubkey: String::new(),
+            authority_pubkey: String::new(),
             addr: "127.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -1452,7 +1482,7 @@ mod peer_visibility_tests {
             inference_port: Some(8181),
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(8090),
-            role: String::new(),
+            profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -1539,7 +1569,7 @@ mod peer_visibility_tests {
 #[cfg(test)]
 pub(crate) mod testkit {
     use super::*;
-    use crate::config::{Config, Role};
+    use crate::config::Config;
     use tokio::sync::RwLock;
 
     /// Um peer alcançável no `gateway_port` dado, na loopback.
@@ -1549,6 +1579,7 @@ pub(crate) mod testkit {
             tls: false,
             node_id: node_id.into(),
             pubkey: "pk".into(),
+            authority_pubkey: String::new(),
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -1561,7 +1592,7 @@ pub(crate) mod testkit {
             inference_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(gateway_port),
-            role: String::new(),
+            profile: crate::profile::NodeProfile::Node,
             hostname: hostname.into(),
             capabilities: Vec::new(),
             connection_verified: true,
@@ -1594,7 +1625,7 @@ pub(crate) mod testkit {
             Network::testkit(node_id.into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera")
-                .with_identity(String::new(), hostname.into()),
+                .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
         );
         {
             let mut table = net.peers.write().await;
@@ -1613,6 +1644,18 @@ pub(crate) mod testkit {
             crate::cluster_logs::LogCapture::new(crate::cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
         let cluster_logs =
             crate::cluster_logs::ClusterLogs::new(capture, receiver, database.clone());
+        let authority_signing_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            node_id,
+            "peer-eu",
+            &authority_signing_key,
+        );
+        let admin_trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "test-cluster",
+            authority_principal.clone(),
+            &authority_signing_key,
+        )
+        .expect("concessão raiz de teste");
         GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),
@@ -1634,7 +1677,6 @@ pub(crate) mod testkit {
                 thermal: Default::default(),
                 cache_type_k: crate::config::KvCacheType::F16,
                 cache_type_v: crate::config::KvCacheType::F16,
-                role: Role::Node,
                 profile: crate::profile::NodeProfile::Node,
                 tls_required: false,
                 cluster_logs_enabled: false,
@@ -1658,7 +1700,9 @@ pub(crate) mod testkit {
                 shard_dir: None,
                 shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
             })),
-            admin_signing_key: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
+            admin_trust: Arc::new(admin_trust),
+            authority_signing_key: Arc::new(authority_signing_key),
+            authority_principal,
             admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),

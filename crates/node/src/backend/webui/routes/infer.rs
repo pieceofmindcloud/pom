@@ -1,6 +1,6 @@
 use super::super::*;
 
-/// Rotas disponíveis para inferência: pedidos de entrada e chat da UI.
+/// Rotas disponíveis para inferência e pedido de entrada no processamento.
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route(

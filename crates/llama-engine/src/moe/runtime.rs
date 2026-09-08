@@ -746,7 +746,11 @@ fn make_external_executor_plan(
         ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => cuda_compiled,
         ExpertFormat::Q4_0 => cuda_compiled,
         ExpertFormat::Nvfp4 => cuda_compiled && !nvfp4_cpu_requested,
-        ExpertFormat::Q2K | ExpertFormat::Q3K | ExpertFormat::Q4K | ExpertFormat::Q6K => {
+        ExpertFormat::Q2K
+        | ExpertFormat::Q3K
+        | ExpertFormat::Q4K
+        | ExpertFormat::Q5K
+        | ExpertFormat::Q6K => {
             cuda_compiled
                 && single_dtype
                 && KQuantFormat::from_dtype(dtypes[0]).is_ok_and(|format| format.cuda_supported())
@@ -2436,11 +2440,14 @@ mod tests {
     }
 
     #[test]
-    fn q2k_e_q3k_entram_na_ponte_cuda_heterogenea() {
+    fn q2k_q3k_e_q5k_entram_na_ponte_cuda_heterogenea() {
         assert!(KQuantFormat::Q2K.cuda_supported());
         assert!(KQuantFormat::Q3K.cuda_supported());
+        assert!(KQuantFormat::Q5K.cuda_supported());
+        assert!(!KQuantFormat::Q8K.cuda_supported());
         assert!(cuda_heterogeneous_dtype_supported(10));
         assert!(cuda_heterogeneous_dtype_supported(11));
+        assert!(cuda_heterogeneous_dtype_supported(13));
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
             vec![10, 11, 21, 22, 23],
@@ -2451,11 +2458,30 @@ mod tests {
         assert!(plan.enabled());
         assert!(plan.reason.is_none());
 
-        for (format, dtype) in [(ExpertFormat::Q2K, 10), (ExpertFormat::Q3K, 11)] {
+        for (format, dtype) in [
+            (ExpertFormat::Q2K, 10),
+            (ExpertFormat::Q3K, 11),
+            (ExpertFormat::Q5K, 13),
+        ] {
             let plan = make_external_executor_plan(format, vec![dtype], 2, true, false);
             assert!(plan.enabled(), "{format:?}");
             assert!(plan.reason.is_none(), "{format:?}: {:?}", plan.reason);
         }
+    }
+
+    /// Forma medida do `Ornith-1.5-35B-A3B-Q5_K_S`: os experts misturam Q4_0 e
+    /// Q5_K por papel, e um único dtype sem ponte derrubava a rota inteira para
+    /// o `CPUReference`. Confere o dtype concreto, nunca o nome do ficheiro.
+    #[test]
+    fn q4_0_misturado_com_q5k_permanece_na_ponte_cuda() {
+        assert!(cuda_heterogeneous_dtype_supported(2));
+        assert!(cuda_heterogeneous_dtype_supported(13));
+        let plan =
+            make_external_executor_plan(ExpertFormat::Heterogeneous, vec![2, 13], 40, true, false);
+        assert!(plan.enabled());
+        assert_eq!(plan.layers.len(), 40);
+        assert!(plan.layers.iter().all(|layer| *layer == 1));
+        assert!(plan.reason.is_none(), "{:?}", plan.reason);
     }
 
     #[test]

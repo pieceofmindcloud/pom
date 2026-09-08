@@ -195,10 +195,15 @@ impl KQuantFormat {
         }
     }
 
-    /// A ponte CUDA é dirigida pelo dtype, não pelo modelo. Q2_K, Q3_K, Q4_K
-    /// e Q6_K têm decodificação coberta pelos kernels residentes.
+    /// A ponte CUDA é dirigida pelo dtype, não pelo modelo. Q2_K, Q3_K, Q4_K,
+    /// Q5_K e Q6_K têm decodificação coberta pelos kernels residentes. Q8_K
+    /// fica de fora porque só aparece como formato de ativação, nunca de peso
+    /// de expert num GGUF servido.
     pub fn cuda_supported(self) -> bool {
-        matches!(self, Self::Q2K | Self::Q3K | Self::Q4K | Self::Q6K)
+        matches!(
+            self,
+            Self::Q2K | Self::Q3K | Self::Q4K | Self::Q5K | Self::Q6K
+        )
     }
 }
 

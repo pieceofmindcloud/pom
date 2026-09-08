@@ -170,6 +170,7 @@ pub fn cuda_tensor_row_bytes(dtype: u32, columns: usize) -> Option<usize> {
         10 => (256, 84),
         11 => (256, 110),
         12 => (256, 144),
+        13 => (256, 176),
         14 => (256, 210),
         18 => (256, 98),
         21 => (256, 110),
@@ -199,7 +200,7 @@ pub fn cuda_tensor_bank_expected_bytes(
 
 #[cfg(feature = "cuda")]
 pub fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
-    matches!(dtype, 2 | 10 | 11 | 12 | 14 | 18 | 21 | 22 | 23 | 39)
+    matches!(dtype, 2 | 10 | 11 | 12 | 13 | 14 | 18 | 21 | 22 | 23 | 39)
 }
 
 #[derive(Clone, Copy)]
@@ -1332,9 +1333,11 @@ mod tests {
     }
 
     #[test]
-    fn geometria_cuda_heterogenea_cobre_q4_0_q2k_e_q3k() {
+    fn geometria_cuda_heterogenea_cobre_q4_0_q5k_q2k_e_q3k() {
         assert_eq!(cuda_tensor_row_bytes(2, 2_048), Some(1_152));
         assert_eq!(cuda_tensor_expected_bytes(2, 256, 2_048), Some(294_912));
+        assert_eq!(cuda_tensor_row_bytes(13, 2_048), Some(1_408));
+        assert_eq!(cuda_tensor_expected_bytes(13, 256, 2_048), Some(360_448));
         assert_eq!(cuda_tensor_row_bytes(10, 2_048), Some(672));
         assert_eq!(cuda_tensor_row_bytes(11, 2_048), Some(880));
         assert_eq!(cuda_tensor_expected_bytes(10, 256, 2_048), Some(172_032));

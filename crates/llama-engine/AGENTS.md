@@ -31,8 +31,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
   fallback CPU do router executa os experts selecionados em workers escopados
   e agrega os vetores na ordem original para manter o resultado determinístico;
-  Q4_0 também usa a ponte CUDA heterogênea quando `cuda` está disponível, e
-  um fallback CPU efetivo fica registrado na telemetria e no log de inicialização.
+  Q4_0 e Q5_K também usam a ponte CUDA heterogênea quando `cuda` está
+  disponível, e um fallback CPU efetivo fica registrado na telemetria e no log
+  de inicialização.
   A cobertura CUDA por dtype e os números da ksia ficam em
   `docs/subsystems/freetoken-moe.md`.
 - `collective.rs` - `reduce_sum` + `ReduceBarrier` do tensor parallelism

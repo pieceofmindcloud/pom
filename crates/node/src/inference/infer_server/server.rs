@@ -640,6 +640,19 @@ pub async fn run(
 
     if let Some(runtime) = moe.as_ref() {
         let telemetry = runtime.executor_telemetry();
+        // O `offloaded N/N layers to GPU` do llama.cpp conta só os tensores que
+        // ele próprio aloca. Com `moe_external_executor` os pesos de expert nem
+        // chegam a ser alocados lá (ver `EngineConfig::moe_external_executor`),
+        // por isso aquele total é verdadeiro e ao mesmo tempo enganador: num
+        // modelo de 35 B os buffers de modelo em GPU somam ~1,6 GB e o operador
+        // conclui, com razão, que "o modelo está todo na RAM". Dizer aqui de
+        // quem são os experts é o que impede essa leitura errada.
+        tracing::info!(
+            model = %cfg.model_label,
+            moe_executor = telemetry.executor.as_str(),
+            "os pesos de expert estão fora da conta `offloaded N/N layers` do llama.cpp: \
+             quem os aloja é o executor MoE do POM, não o llama.cpp"
+        );
         if telemetry.executor == crate::moe::runtime::MoeExecutorKind::CpuReference {
             tracing::warn!(
                 model = %cfg.model_label,
@@ -647,7 +660,9 @@ pub async fn run(
                 moe_executor = telemetry.executor.as_str(),
                 dtypes = ?telemetry.dtypes,
                 reason = ?telemetry.reason,
-                "MoE está usando CPUReference; n_gpu_layers não coloca os experts na GPU"
+                "MoE está usando CPUReference: os pesos de expert ficam mapeados na RAM e \
+                 n_gpu_layers não os leva para a GPU. Basta UM dtype sem ponte CUDA para \
+                 derrubar a rota inteira; confira a lista `dtypes`, não o nome do ficheiro"
             );
         } else {
             tracing::info!(

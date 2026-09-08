@@ -1841,6 +1841,7 @@ mod tests {
             KQuantFormat::Q2K => 84,
             KQuantFormat::Q3K => 110,
             KQuantFormat::Q4K => 144,
+            KQuantFormat::Q5K => 176,
             KQuantFormat::Q6K => 210,
             _ => panic!("fixture CUDA K-quant não suportada"),
         };
@@ -1859,6 +1860,19 @@ mod tests {
                     block[128..192].fill(0xaa);
                     block[192..208].fill(1);
                     block[208..210].copy_from_slice(&0x3c00u16.to_le_bytes());
+                } else if matches!(format, KQuantFormat::Q5K) {
+                    // block_q5_K: d[2], dmin[2], scales[12], qh[32], ql[128].
+                    block[..2].copy_from_slice(&0x3c00u16.to_le_bytes());
+                    block[2..4].copy_from_slice(&0x3800u16.to_le_bytes());
+                    for (index, value) in block[4..16].iter_mut().enumerate() {
+                        *value = (index as u8).wrapping_mul(19).wrapping_add(3);
+                    }
+                    for (index, value) in block[16..48].iter_mut().enumerate() {
+                        *value = (index as u8).wrapping_mul(23).wrapping_add(11);
+                    }
+                    for (index, value) in block[48..176].iter_mut().enumerate() {
+                        *value = (index as u8).wrapping_mul(31).wrapping_add(5);
+                    }
                 } else if matches!(format, KQuantFormat::Q2K) {
                     for (index, value) in block[..16].iter_mut().enumerate() {
                         *value = (index as u8).wrapping_mul(7).wrapping_add(3);
@@ -1947,10 +1961,7 @@ mod tests {
             measured_device_cache(4_000_000).unwrap(),
         );
         let lease = executor
-            .resident_admit(
-                ExpertKey::new("cuda-q4-0-test", 0, 0, "q4_0"),
-                &payload,
-            )
+            .resident_admit(ExpertKey::new("cuda-q4-0-test", 0, 0, "q4_0"), &payload)
             .unwrap();
         let gate_up_bytes = 2 * intermediate * (hidden / 32 * 18);
         let descriptor = CudaHeterogeneousExpert {
@@ -2212,7 +2223,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_k_quants_preserva_q2k_q3k_q4k_e_q6k_do_decoder_cpu() {
+    fn executor_cuda_k_quants_preserva_q2k_q3k_q4k_q5k_e_q6k_do_decoder_cpu() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -2222,6 +2233,7 @@ mod tests {
             KQuantFormat::Q2K,
             KQuantFormat::Q3K,
             KQuantFormat::Q4K,
+            KQuantFormat::Q5K,
             KQuantFormat::Q6K,
         ] {
             let payload = k_payload(format, hidden, intermediate);

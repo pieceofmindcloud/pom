@@ -971,6 +971,8 @@ pub(super) async fn merge_parts(
             "modelo junto já existe, reaproveitando: {}",
             caminho.display()
         );
+        crate::gguf::read_layout(&caminho)
+            .with_context(|| format!("validar GGUF juntado existente {}", caminho.display()))?;
         return Ok(caminho.to_string_lossy().into_owned());
     }
     // O nome da pasta vem do manifesto do modelo original associado às partes.
@@ -1014,14 +1016,24 @@ pub(super) async fn merge_parts(
                 let id = progress_job.clone();
                 tokio::spawn(async move { set_job_progress(&id, pct).await });
             })?;
+            crate::gguf::read_layout(&temp)
+                .with_context(|| format!("validar GGUF juntado {}", temp.display()))?;
             let dst = crate::pom::part_path(&destino_dir, &escrito.sha256)?;
             // Um destino já ocupado é outra junção que terminou primeiro. Com
             // endereço de conteúdo os dois arquivos são byte a byte o mesmo,
             // então ficar com o que já está pronto é o certo - e no Windows o
             // rename nem substituiria.
             if dst.exists() {
-                let _ = std::fs::remove_file(&temp);
-                return Ok((dst, escrito.bytes));
+                if crate::gguf::read_layout(&dst).is_ok() {
+                    let _ = std::fs::remove_file(&temp);
+                    return Ok((dst, escrito.bytes));
+                }
+                info!(
+                    "arquivo no endereço de conteúdo não é um GGUF válido, substituindo: {}",
+                    dst.display()
+                );
+                std::fs::remove_file(&dst)
+                    .with_context(|| format!("remover saída inválida {}", dst.display()))?;
             }
             std::fs::rename(&temp, &dst)
                 .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
@@ -1082,6 +1094,17 @@ pub(super) async fn merge_parts(
         Vec::new(),
     );
     manifesto.parts.push(parte);
+    let destino = crate::pom::locate_source_dir(&shard_dir, &manifesto.pom_id)
+        .unwrap_or_else(|| crate::pom::dir_for(&shard_dir, &manifesto));
+    let existing = crate::pom::part_path(&destino, &sha)?;
+    if existing.is_file() && crate::gguf::read_layout(&existing).is_err() {
+        info!(
+            "parte existente no endereço de conteúdo não é um GGUF válido, substituindo: {}",
+            existing.display()
+        );
+        std::fs::remove_file(&existing)
+            .with_context(|| format!("remover parte inválida {}", existing.display()))?;
+    }
     let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
     let final_path = crate::pom::part_path(&pasta, &sha)?;
 
@@ -1092,4 +1115,3 @@ pub(super) async fn merge_parts(
     );
     Ok(final_path.to_string_lossy().into_owned())
 }
-

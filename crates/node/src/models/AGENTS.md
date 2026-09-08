@@ -91,6 +91,10 @@ transferência.
   o valor somente na faixa final. A estimativa de tamanho inclui a repetição
   e o plano expõe o custo adicional. A estimativa TP soma a
   replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
+  Na fusão, arrays escalares sob o namespace da arquitetura são reconstruídos
+  pela cobertura de cada fatia, em vez de copiar a primeira; qualquer cauda de
+  camadas especiais é preservada uma vez. O resultado é validado por
+  `gguf::read_layout` antes de o backend o nomear por conteúdo.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.

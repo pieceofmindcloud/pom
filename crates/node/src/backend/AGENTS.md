@@ -617,8 +617,8 @@ profile policy remains the effective authorization boundary.
   seleção que ainda não tem suas faixas resolvidas; em TP ele verifica cada
   rank selecionado. Enriquecimento de outro modelo, peer silencioso ou campo
   ausente em peer antigo não bloqueia. `merge_parts`
-  (arquivo temporário com sufixo único, rename
-  at the end; reuses an already-complete output, preserves the source
+  (arquivo temporário com sufixo único, `read_layout` validado antes do rename
+  e de `finalize_run`; reuses an already-complete output, preserves the source
   `pom_id`, and invalidates the catalog),
   `run_apply`/`run_slice`/`release_slice`, and `get_setup_key`/`save_setup`
   which are deliberately NOT registered here - the setup mode router in

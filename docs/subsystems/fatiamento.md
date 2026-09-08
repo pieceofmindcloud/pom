@@ -357,6 +357,10 @@ de reparo que fabrique outro arquivo recusado pelo loader.
    são copiados intactos antes da comparação de comprimento. A regra `>=`
    permanece para vetores da arquitetura com cauda extra, como
    `compress_ratios`; a seleção é por posição, sem repetir um passo periódico.
+   Na operação inversa, `merge` concatena os valores cobertos de cada array
+   escalar por camada na ordem das fatias e preserva uma eventual cauda de
+   camadas especiais uma única vez. Arrays broadcast, arrays globais e arrays
+   de rope continuam sendo herdados da primeira fatia.
 7. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
 8. Ordena os payloads por parte e offset físico, escreve com `ALIGN` de 32 bytes

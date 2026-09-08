@@ -732,6 +732,102 @@ mod tests {
             .block_on(f)
     }
 
+    fn test_u32(bytes: &[u8], pos: &mut usize) -> Option<u32> {
+        let end = pos.checked_add(4)?;
+        let value = u32::from_le_bytes(bytes.get(*pos..end)?.try_into().ok()?);
+        *pos = end;
+        Some(value)
+    }
+
+    fn test_u64(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+        let end = pos.checked_add(8)?;
+        let value = u64::from_le_bytes(bytes.get(*pos..end)?.try_into().ok()?);
+        *pos = end;
+        Some(value)
+    }
+
+    fn test_string(bytes: &[u8], pos: &mut usize) -> Option<String> {
+        let len = usize::try_from(test_u64(bytes, pos)?).ok()?;
+        let end = pos.checked_add(len)?;
+        let value = std::str::from_utf8(bytes.get(*pos..end)?).ok()?.to_owned();
+        *pos = end;
+        Some(value)
+    }
+
+    fn skip_test_value(bytes: &[u8], pos: &mut usize, value_type: u32) -> Option<()> {
+        let scalar_size = match value_type {
+            0 | 1 | 7 => Some(1),
+            2 | 3 => Some(2),
+            4 | 5 | 6 => Some(4),
+            10..=12 => Some(8),
+            _ => None,
+        };
+        if let Some(size) = scalar_size {
+            *pos = pos.checked_add(size)?;
+            return bytes.get(..*pos).map(|_| ());
+        }
+        match value_type {
+            8 => {
+                let len = usize::try_from(test_u64(bytes, pos)?).ok()?;
+                *pos = pos.checked_add(len)?;
+                bytes.get(..*pos).map(|_| ())
+            }
+            9 => {
+                let element_type = test_u32(bytes, pos)?;
+                let count = usize::try_from(test_u64(bytes, pos)?).ok()?;
+                for _ in 0..count {
+                    skip_test_value(bytes, pos, element_type)?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    fn test_array(bytes: &[u8], wanted: &str) -> Option<(u32, Vec<u8>)> {
+        let mut pos = 0;
+        if test_u32(bytes, &mut pos)? != 0x4655_4747 {
+            return None;
+        }
+        test_u32(bytes, &mut pos)?;
+        test_u64(bytes, &mut pos)?;
+        let kv_count = usize::try_from(test_u64(bytes, &mut pos)?).ok()?;
+        for _ in 0..kv_count {
+            let key = test_string(bytes, &mut pos)?;
+            let value_type = test_u32(bytes, &mut pos)?;
+            if key == wanted && value_type == 9 {
+                let element_type = test_u32(bytes, &mut pos)?;
+                let count = usize::try_from(test_u64(bytes, &mut pos)?).ok()?;
+                let width = match element_type {
+                    0 | 1 | 7 => 1,
+                    2 | 3 => 2,
+                    4 | 5 | 6 => 4,
+                    10..=12 => 8,
+                    _ => return None,
+                };
+                let end = pos.checked_add(count.checked_mul(width)?)?;
+                return Some((element_type, bytes.get(pos..end)?.to_vec()));
+            }
+            skip_test_value(bytes, &mut pos, value_type)?;
+        }
+        None
+    }
+
+    fn test_u32_array(bytes: &[u8], wanted: &str) -> Option<Vec<u32>> {
+        let (element_type, payload) = test_array(bytes, wanted)?;
+        (element_type == 4 && payload.len() % 4 == 0).then(|| {
+            payload
+                .chunks_exact(4)
+                .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                .collect()
+        })
+    }
+
+    fn test_bool_array(bytes: &[u8], wanted: &str) -> Option<Vec<bool>> {
+        let (element_type, payload) = test_array(bytes, wanted)?;
+        (element_type == 7).then(|| payload.into_iter().map(|value| value != 0).collect())
+    }
+
     /// `merge_parts` with two real mini-GGUF slices: the execution path the
     /// planner's merged steps feed into, exercised with files instead of mocks.
     #[test]
@@ -741,10 +837,13 @@ mod tests {
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
             let source_sha256 = "d".repeat(64);
+            let source = root.join("source.gguf");
+            std::fs::write(&source, crate::splitter::test_gguf_bytes(32)).unwrap();
             let write_part = |dir: &std::path::Path, start: u32, end: u32| {
                 std::fs::create_dir_all(dir).unwrap();
                 let tmp = dir.join("tmp");
-                std::fs::write(&tmp, crate::splitter::test_gguf_bytes(16)).unwrap();
+                crate::splitter::split(&source, &tmp, start, end, start == 0, end == 31, |_| {})
+                    .unwrap();
                 let (sha256, bytes) = crate::pom::hash_file(&tmp).unwrap();
                 let path = crate::pom::part_path(dir, &sha256).unwrap();
                 std::fs::rename(&tmp, &path).unwrap();
@@ -809,10 +908,21 @@ mod tests {
                 32,
                 "as duas fatias juntas cobrem o modelo"
             );
+            let merged_bytes = std::fs::read(out_path).unwrap();
+            assert_eq!(
+                test_u32_array(&merged_bytes, "llama.attention.head_count_kv_by_layer"),
+                Some((0..32).collect()),
+                "a metadata de cabeças KV precisa cobrir as duas fatias"
+            );
+            assert_eq!(
+                test_bool_array(&merged_bytes, "llama.attention.sliding_window_pattern"),
+                Some((0..32).map(|layer| layer % 2 == 0).collect()),
+                "a janela deslizante precisa cobrir as duas fatias"
+            );
             assert!(out_path.metadata().unwrap().len() > a.metadata().unwrap().len());
 
-            // Reuse: a second apply with the same range must not rebuild it —
-            // a marker written over the output proves the file was left alone.
+            // A stale file under a content address must not be published as a
+            // merged model. The second apply repairs it from the real slices.
             let marker = vec![0xAAu8; 2048];
             std::fs::write(out_path, &marker).unwrap();
             let again = merge_parts(root.clone(), &req, &parts, "job-merge-2")
@@ -820,10 +930,11 @@ mod tests {
                 .unwrap();
             assert_eq!(again, out);
             assert_eq!(
-                std::fs::read(out_path).unwrap(),
-                marker,
-                "o modelo junto existente foi reaproveitado, não reescrito"
+                std::fs::read(out_path).unwrap() == marker,
+                false,
+                "um arquivo inválido no endereço de conteúdo não pode ser reaproveitado"
             );
+            crate::gguf::read_layout(out_path).unwrap();
 
             std::fs::remove_dir_all(&root).ok();
         });
@@ -873,4 +984,3 @@ mod tests {
         });
     }
 }
-

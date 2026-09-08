@@ -609,8 +609,9 @@ precisa saber:
 
 `run_apply` decide o caminho:
 
-- `merge` -> `merge_parts` (temp com sufixo único + rename no fim; reaproveita
-  arquivo já completo e invalida o catálogo).
+- `merge` -> `merge_parts` (temp com sufixo único; reconstrói a metadata por
+  camada, valida o GGUF final com `read_layout` antes do rename e de
+  `finalize_run`, reaproveita arquivo já completo e invalida o catálogo).
 - `skip_split` ou `(is_first && is_last && peer_count <= 1)` -> serve o arquivo
   como está (a fatia já existe em disco).
 - senão -> `extract_shard` (fatiamento local, job "fatiando", progresso por

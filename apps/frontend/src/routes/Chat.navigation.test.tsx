@@ -66,6 +66,11 @@ vi.mock("../lib/api", async (importOriginal) => {
  */
 const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
 
+const chatScenario = vi.hoisted(() => ({
+  cluster: null as unknown,
+  capabilities: null as unknown,
+}));
+
 /**
  * `usePeerRuntimes` devolve um array novo a cada chamada de propósito: é o que
  * `useQueries` faz de verdade, e é a instabilidade que o defeito explorava. Um
@@ -75,7 +80,8 @@ const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
 vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
-  useCluster: () => ({ data: null }),
+  useCluster: () => ({ data: chatScenario.cluster }),
+  useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
   useServableModels: () => ({ data: [{ id: "qwen" }] }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
@@ -124,6 +130,8 @@ afterEach(() => {
   window.localStorage.clear();
   loop.renders = 0;
   loop.tripped = false;
+  chatScenario.cluster = null;
+  chatScenario.capabilities = null;
 });
 
 describe("navegação depois do chat", () => {
@@ -200,15 +208,54 @@ describe("navegação depois do chat", () => {
     expect(await screen.findByText("aceite imagens ou ficheiros de texto")).toBeTruthy();
   });
 
-  it("recusa imagem largada quando o modelo não tem visão", async () => {
-    mount();
+  it.each(["admin", "node", "infer"] as const)(
+    "recusa imagem largada quando o modelo não tem visão no perfil %s",
+    async (profile) => {
+      mount(profile);
 
-    const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
-    const file = new File(["fake"], "foto.png", { type: "image/png" });
-    fireEvent.drop(dropTarget, {
-      dataTransfer: { types: ["Files"], files: [file] },
-    });
+      const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
+      const file = new File(["fake"], "foto.png", { type: "image/png" });
+      fireEvent.drop(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [file] },
+      });
 
-    expect(await screen.findByText("este modelo não tem visão")).toBeTruthy();
-  });
+      expect(await screen.findByText("este modelo não tem visão")).toBeTruthy();
+    },
+  );
+
+  it.each(["node", "infer"] as const)(
+    "mantém visão e cobertura servida no perfil %s quando a rede agregada confirma o modelo",
+    async (profile) => {
+      chatScenario.cluster = {
+        active_model: "qwen",
+        complete: false,
+        model_inventory: [],
+        peers: [],
+      };
+      chatScenario.capabilities = { vision: "supported", coverage: "complete" };
+
+      mount(profile);
+
+      expect(await screen.findByRole("button", { name: "Anexar imagem" })).toBeTruthy();
+      expect(screen.queryByText("cobertura incompleta")).toBeNull();
+    },
+  );
+
+  it("mostra indisponível quando a leitura agregada é recusada, sem inventar cobertura vazia",
+    async () => {
+      chatScenario.cluster = {
+        active_model: "qwen",
+        complete: false,
+        model_inventory: [],
+        peers: [],
+      };
+      chatScenario.capabilities = { vision: "unavailable", coverage: "unavailable" };
+
+      mount("infer");
+
+      expect(await screen.findByText("cobertura indisponível")).toBeTruthy();
+      expect(screen.queryByText("cobertura incompleta")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Anexar imagem" })).toBeNull();
+    },
+  );
 });

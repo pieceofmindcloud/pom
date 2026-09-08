@@ -26,8 +26,9 @@ Per-file list:
   and the shared active-session controller) and `../components/ChatSessionList`,
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
-  (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,
-  `useServableModels`, `useInferenceHeads`), `../components/Markdown`,
+  (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatCapabilities`,
+  `useChatTelemetryNetwork`, `useServableModels`, `useInferenceHeads`),
+  `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
   connection key by `api`. When the stream finishes, it captures the cluster
   snapshot, directional RTT for each adjacent execution pair and each peer's
@@ -487,7 +488,11 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `mmproj_path`, e envia a escolha para a implantação. `Chat.tsx` esconde o
 seletor de imagem sem visão, aceita arquivos de texto sempre, suporta botão e
 arrastar e largar com retorno visual e redimensiona imagens antes de enviá-las
-ao endpoint OpenAI. Cada anexo tem miniatura e remoção própria.
+ao endpoint OpenAI. A visão e a cobertura do Chat vêm de
+`GET /api/ui/chat/capabilities`, uma leitura agregada da implantação que também
+funciona nos perfis `node` e `infer`; recusa ou falha fica como indisponível,
+nunca como modelo vazio ou cobertura zero. Cada anexo tem miniatura e remoção
+própria.
 
 ## Maintaining this file
 

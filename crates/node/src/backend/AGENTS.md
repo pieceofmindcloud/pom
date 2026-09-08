@@ -581,7 +581,8 @@ profile policy remains the effective authorization boundary.
   `model-metadata` (POST, lê e publica somente o cabeçalho do modelo selecionado
   enquanto o restante do catálogo ainda está em background),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
-  `models/delete` (POST), `cluster` (GET), `cluster/models`
+  `models/delete` (POST), `cluster` (GET), `chat/capabilities` (GET, modelo
+  ativo, visão e cobertura do Chat), `cluster/models`
   (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
   `model-layer-options` (POST, cortes reais do GGUF) e `slice-ranges` (POST,
   materialização local de faixas escolhidas a partir de um modelo inteiro),
@@ -887,6 +888,12 @@ profile policy remains the effective authorization boundary.
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
 projetor e a mensagem para o usuário precisam permanecer alinhadas.
+O Chat consulta `GET /api/ui/chat/capabilities`, uma rota comum que agrega o
+modelo ativo, a cobertura e o `mmproj_path` da cabeça da implantação sem expor
+topologia ao perfil `infer`. A resposta usa `supported`, `unsupported` ou
+`unavailable` para visão e cobertura completa, incompleta ou indisponível;
+recusa de autorização nunca é convertida em vazio. Visão é propriedade do
+modelo servido, não privilégio do perfil.
 
 ## Maintaining this file
 

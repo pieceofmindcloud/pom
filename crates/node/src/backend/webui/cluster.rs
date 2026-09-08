@@ -607,6 +607,189 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     conditional_json_with_version(&headers, &snapshot.body, &snapshot.etag, snapshot.version)
 }
 
+/// The Chat needs only aggregate facts about the active pipeline. It must not
+/// read `/api/ui/cluster`: infer is intentionally local-only there, and a
+/// denied or reduced topology must never become an empty model or incomplete
+/// coverage in the composer.
+pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl IntoResponse {
+    let active_model = state.active_model().await;
+    let peers = state.all_peers().await;
+    let local_id = state.network.node_id.clone();
+    let local_config = state.runtime.config().await;
+    let matching: Vec<_> = peers
+        .iter()
+        .filter(|peer| {
+            peer.is_alive()
+                && ((peer.node_id == local_id
+                    && local_config.as_ref().is_some_and(|config| {
+                        config.start_layer == 0
+                            && config.model_label == active_model
+                    }))
+                    || peer.model == active_model
+                    || peer
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability.model_id == active_model))
+        })
+        .collect();
+
+    let total_layers = matching
+        .iter()
+        .flat_map(|peer| {
+            peer.capabilities
+                .iter()
+                .filter(|capability| capability.model_id == active_model)
+                .filter_map(|capability| capability.total_layers)
+                .chain((peer.total_layers > 0).then_some(peer.total_layers))
+        })
+        .max()
+        .unwrap_or_else(|| {
+            matching
+                .iter()
+                .map(|peer| peer.end_layer.saturating_add(1))
+                .max()
+                .unwrap_or(0)
+        });
+    let total_layers = local_config
+        .as_ref()
+        .filter(|config| config.model_label == active_model)
+        .map(|config| config.total_layers)
+        .into_iter()
+        .chain(std::iter::once(total_layers))
+        .max()
+        .unwrap_or(0);
+    let mut coverage = vec![false; total_layers as usize];
+    for peer in &matching {
+        let ranges = peer
+            .capabilities
+            .iter()
+            .filter(|capability| capability.model_id == active_model)
+            .map(|capability| (capability.start_layer, capability.end_layer));
+        let ranges = if peer.capabilities.is_empty() && peer.model == active_model {
+            Box::new(std::iter::once((peer.start_layer, peer.end_layer)))
+                as Box<dyn Iterator<Item = (u32, u32)>>
+        } else {
+            Box::new(ranges)
+        };
+        for (start, end) in ranges {
+            for layer in start..=end.min(total_layers.saturating_sub(1)) {
+                if let Some(slot) = coverage.get_mut(layer as usize) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+    if let Some(config) = local_config
+        .as_ref()
+        .filter(|config| config.model_label == active_model && config.start_layer == 0)
+    {
+        for layer in config.start_layer..=config.end_layer.min(total_layers.saturating_sub(1)) {
+            if let Some(slot) = coverage.get_mut(layer as usize) {
+                *slot = true;
+            }
+        }
+    }
+    let coverage_state = if total_layers == 0 || matching.is_empty() {
+        "unavailable"
+    } else if coverage.iter().all(|covered| *covered) {
+        "complete"
+    } else {
+        "incomplete"
+    };
+
+    let head_candidates: Vec<_> = matching
+        .iter()
+        .filter(|peer| peer.start_layer == 0)
+        .collect();
+    let connection_key = state.auth.read().await.connection_key.clone();
+    let mut vision_supported = false;
+    let mut vision_unknown = false;
+    let mut vision_candidate = false;
+
+    for peer in head_candidates {
+        vision_candidate = true;
+        let config = if peer.node_id == local_id {
+            local_config.as_ref().map(|config| {
+                json!({
+                    "start_layer": config.start_layer,
+                    "model_label": config.model_label,
+                    "mmproj_path": config.mmproj_path,
+                })
+            })
+        } else {
+            let Ok(http) = state.peer_http.for_peer(&peer.node_id) else {
+                vision_unknown = true;
+                continue;
+            };
+            let candidates = state
+                .network
+                .routes
+                .usable(&peer.node_id, &peer.gateway_candidates());
+            let mut result = None;
+            for base in candidates {
+                let response = tokio::time::timeout(
+                    PEER_TIMEOUT,
+                    http.get(format!("{base}/api/ui/node"))
+                        .bearer_auth(connection_key.clone())
+                        .send(),
+                )
+                .await;
+                if let Ok(Ok(response)) = response {
+                    if response.status().is_success() {
+                        if let Ok(value) = response.json::<serde_json::Value>().await {
+                            result = Some(value);
+                            break;
+                        }
+                    }
+                }
+            }
+            result
+        };
+
+        let Some(config) = config else {
+            vision_unknown = true;
+            continue;
+        };
+        let serves_head = config
+            .get("start_layer")
+            .and_then(serde_json::Value::as_u64)
+            == Some(0)
+            && (config
+                .get("model_label")
+                .and_then(serde_json::Value::as_str)
+                == Some(active_model.as_str())
+                || config
+                    .get("active_model")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(active_model.as_str()));
+        if !serves_head {
+            vision_unknown = true;
+            continue;
+        }
+        if config
+            .get("mmproj_path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|path| !path.is_empty())
+        {
+            vision_supported = true;
+        }
+    }
+
+    let vision_state = if vision_supported {
+        "supported"
+    } else if !vision_candidate || vision_unknown {
+        "unavailable"
+    } else {
+        "unsupported"
+    };
+
+    Json(json!({
+        "active_model": active_model,
+        "vision": vision_state,
+        "coverage": coverage_state,
+    }))
+}
+
 /// Como uma máquina carregou o modelo: o `/health` do servidor de inferência
 /// dela, cru.
 ///

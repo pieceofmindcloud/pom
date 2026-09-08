@@ -238,7 +238,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s.
+- `useCluster()` 5s with conditional GET, `useChatCapabilities()` 5s from
+  `/api/ui/chat/capabilities` (vision and coverage aggregated for the active
+  model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
+  60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
+  while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
+  waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key,
+  prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key,
+  prompt, from, to}, enabled)` 30s while the statistics tab is open,
+  `useServableModels()` 30s. A refusal or transport failure in the capability
+  read becomes the explicit `unavailable` state, never an empty capability.
 - `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer

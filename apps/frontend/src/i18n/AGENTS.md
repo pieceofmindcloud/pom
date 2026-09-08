@@ -90,6 +90,10 @@ fit-memory and KV offload are separate from the per-peer `POM_PROFILE_SYNC`
 state labels. The footnote explains the measurements but does not claim a fixed
 environment value.
 
+`chat.coverageUnavailable` names the explicit unknown state returned when the
+Chat capability read is refused or cannot be completed. It must not be replaced
+with the incomplete or empty-coverage message.
+
 Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
 velocidade de pré-processamento do prompt, velocidade de geração da saída,
 tempo total, tokens/s e o rótulo explícito de taxa não mensurável usado para

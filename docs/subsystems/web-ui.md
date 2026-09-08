@@ -603,9 +603,11 @@ harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
 cap 50 sessões, sincronizado entre abas), não do nó. Três coisas a conversa
 guarda além das falas:
 
-- A caixa de imagem só aparece quando o estado do nó ou do cluster informa
-  `NodeConfig.mmproj_path` na cabeça ativa; sem projetor, a tentativa é recusada com
-  `este modelo não tem visão`. Imagens são redimensionadas no navegador para
+- A caixa de imagem lê `GET /api/ui/chat/capabilities`, que agrega a cabeça
+  ativa e a cobertura sem reutilizar a topologia que o perfil `infer` não pode
+  consultar. Ela aparece quando `vision` é `supported`; `unsupported` mantém o
+  modelo sem visão e `unavailable` informa que a leitura foi recusada ou não
+  pôde terminar, sem inventar um modelo vazio. Imagens são redimensionadas no navegador para
   no máximo 2048 px no lado maior, preservando a proporção, antes de virar
   base64 no pedido. O mesmo campo aceita arrastar e largar e mostra um alvo
   visual durante a passagem do ficheiro.

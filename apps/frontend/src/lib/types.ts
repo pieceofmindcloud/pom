@@ -455,6 +455,13 @@ export interface ClusterView {
   node: NodeInfo | null;
 }
 
+/** Aggregate facts the Chat may read from every profile without topology access. */
+export interface ChatCapabilities {
+  active_model: string;
+  vision: "supported" | "unsupported" | "unavailable";
+  coverage: "complete" | "incomplete" | "unavailable";
+}
+
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
 
 export interface MultipartPart {

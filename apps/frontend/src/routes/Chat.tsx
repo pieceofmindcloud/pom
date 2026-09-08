@@ -58,6 +58,7 @@ import { ms, num } from "../lib/format";
 import type { RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
+  useChatCapabilities,
   useCluster,
   useNode,
   usePeerRuntimes,
@@ -406,15 +407,17 @@ function ChatScreen() {
   } = useChatSessionController();
   const models = useServableModels();
   const cluster = useCluster();
+  const chatCapabilities = useChatCapabilities();
   const node = useNode();
   const toast = useToast();
 
   const available = useMemo(
     () => chatModelOptions([
       ...(models.data ?? []).map((m) => m.id),
+      ...(node.data?.active_model ? [node.data.active_model] : []),
       ...(cluster.data?.model_inventory.filter((entry) => entry.complete).map((entry) => entry.model_id) ?? []),
     ]),
-    [cluster.data?.model_inventory, models.data],
+    [cluster.data?.model_inventory, models.data, node.data?.active_model],
   );
 
   const [draft, setDraft] = useState("");
@@ -499,7 +502,9 @@ function ChatScreen() {
   }, [telemetryCapture, telemetryEnvironment]);
 
   // A session with no model yet takes whatever the network is serving.
-  const model = session.model && available.includes(session.model) ? session.model : available[0] ?? cluster.data?.active_model ?? "";
+  const model = session.model && available.includes(session.model)
+    ? session.model
+    : available[0] ?? node.data?.active_model ?? cluster.data?.active_model ?? "";
   const headQuery = useInferenceHeads(model, profile === "infer");
 
   useEffect(() => {
@@ -516,7 +521,7 @@ function ChatScreen() {
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, []);
 
-  const visionAvailable = Boolean(node.data?.config?.mmproj_path || cluster.data?.mmproj_path);
+  const visionAvailable = chatCapabilities.data?.vision === "supported";
 
   async function addFiles(files: FileList | File[]) {
     const added: ChatAttachment[] = [];
@@ -804,7 +809,7 @@ function ChatScreen() {
     startNewSession(model || null);
   }
 
-  const noModel = available.length === 0 && !cluster.data?.active_model;
+  const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
   const firstTraceModel = session.messages.find((message) => message.trace?.model)?.trace?.model;
   const modelAtStart = session.modelAtStart ?? firstTraceModel ?? session.model ?? model;
 
@@ -829,8 +834,11 @@ function ChatScreen() {
               title={session.messages.length ? session.title : t("chat.title")}
               onRename={rename}
             />
-            {cluster.data && !cluster.data.complete && (
+            {chatCapabilities.data?.coverage === "incomplete" && (
               <Badge tone="amber">{t("chat.incomplete")}</Badge>
+            )}
+            {chatCapabilities.data?.coverage === "unavailable" && (
+              <Badge tone="amber">{t("chat.coverageUnavailable")}</Badge>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">

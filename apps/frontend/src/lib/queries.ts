@@ -24,6 +24,7 @@ import {
 import { modelDownloadJobs } from "./modelProvider";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
+  ChatCapabilities,
   AdminNode,
   AdminAccessInfo,
   AdminAccessStatus,
@@ -69,6 +70,7 @@ export const keys = {
   adminSurface: ["admin-surface"] as const,
   adminAccessInfo: ["admin-access-info"] as const,
   cluster: ["cluster"] as const,
+  chatCapabilities: ["chat-capabilities"] as const,
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
   paths: ["paths"] as const,
@@ -221,6 +223,30 @@ export function useCluster() {
     queryKey: keys.cluster,
     queryFn: () => api.getConditional<ClusterView>("/api/ui/cluster", { auth: false }),
     refetchInterval: 5000,
+  });
+}
+
+const unavailableChatCapabilities: ChatCapabilities = {
+  active_model: "",
+  vision: "unavailable",
+  coverage: "unavailable",
+};
+
+/**
+ * A refusal is not an empty cluster. The endpoint deliberately returns only
+ * aggregate Chat facts, but an older node or a policy boundary can still deny
+ * it. Keep that uncertainty explicit so the composer never invents a missing
+ * model or missing vision support.
+ */
+export function useChatCapabilities() {
+  return useQuery({
+    queryKey: keys.chatCapabilities,
+    queryFn: () =>
+      api
+        .getConditional<ChatCapabilities>("/api/ui/chat/capabilities", { auth: false })
+        .catch(() => unavailableChatCapabilities),
+    refetchInterval: 5000,
+    staleTime: 2000,
   });
 }
 

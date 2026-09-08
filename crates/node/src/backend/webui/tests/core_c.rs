@@ -263,6 +263,30 @@ mod profile_network_tests {
     }
 
     #[tokio::test]
+    async fn chat_capabilities_keep_full_coverage_without_exposing_infer_topology() {
+        let mut tail = peer("outro", "salem", 1);
+        tail.model = "qwen".into();
+        tail.start_layer = 16;
+        tail.end_layer = 31;
+        tail.total_layers = 32;
+        let state = state_with("eu", vec![tail]).await;
+        let mut config = crate::gateway::testkit::spec_config();
+        config.model_label = "qwen".into();
+        config.end_layer = 15;
+        config.total_layers = 32;
+        config.mmproj_path = Some("/models/mmproj-qwen.gguf".into());
+        state.runtime.seed_config_for_test(config).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+
+        let body = body_of(chat_capabilities(State(state.clone())).await.into_response()).await;
+        assert_eq!(body["vision"], "supported");
+        assert_eq!(body["coverage"], "complete");
+
+        let cluster_body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
+        assert_eq!(cluster_body["peers"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn infer_head_response_selects_the_fastest_fresh_candidate() {
         let mut slow = peer("slow", "salem", 8091);
         slow.model = "qwen35".into();

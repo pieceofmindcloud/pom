@@ -318,7 +318,21 @@ void pom_macos_status_stop(void) {
     atomic_store(&POMStopRequested, true);
     dispatch_async(dispatch_get_main_queue(), ^{
         if (NSApp) {
-            [NSApp terminate:nil];
+            // Stop the AppKit event loop without terminating the process. The
+            // Rust service thread owns the real exit status; `terminate:` can
+            // end the application directly and discard an async_main error
+            // before macos_status.rs joins the thread.
+            [NSApp stop:nil];
+            NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                               location:NSZeroPoint
+                                          modifierFlags:0
+                                              timestamp:0
+                                           windowNumber:0
+                                                context:nil
+                                                subtype:0
+                                                  data1:0
+                                                  data2:0];
+            [NSApp postEvent:wake atStart:YES];
         }
     });
 }

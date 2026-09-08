@@ -45,6 +45,11 @@ Quem escolhe as medidas e o endereço é o Rust (`macos_status.rs`), que os
 entrega ao Objective-C no arranque: o lado nativo não conhece a configuração do
 nó, e duplicar os números nos dois lados seria convite a desencontro.
 
+Quando o serviço Rust termina, a ponte para e acorda o loop do AppKit sem
+encerrar o processo. Assim `macos_status.rs` consegue esperar a thread de
+serviço e devolver ao shell a mensagem e o código de saída de uma configuração
+inválida, em vez de sair silenciosamente com status 0.
+
 O endereço é `http://127.0.0.1:<gateway_port>/admin-ui/chat`, com a porta do
 `pom.json`, o `--gateway-port` como fallback e 8080 como default - o painel
 nunca crava 8080. Os dois WebViews usam

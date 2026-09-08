@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn infer_and_node_profiles_cannot_reach_admin_routes_with_connection_key() {
+    async fn non_admin_profiles_cannot_reach_admin_routes_without_internal_authority() {
         for profile in [
             crate::profile::NodeProfile::Infer,
             crate::profile::NodeProfile::Node,
@@ -272,7 +272,6 @@ mod tests {
             let mut request = Request::builder()
                 .uri("/admin/api-keys")
                 .header("authorization", "Bearer connection-secret")
-                .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
                 .header("x-pom-profile", "admin")
                 .body(axum::body::Body::empty())
                 .unwrap();
@@ -287,6 +286,60 @@ mod tests {
                 .unwrap();
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(body["error"], "perfil sem autorização para esta rota");
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_node_to_node_admin_routes_ignore_receiver_profile() {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Node;
+            auth.admin_exposure = crate::config::AdminExposure::Network;
+        }
+        let app = Router::new()
+            .route(
+                "/api/ui/deployments",
+                get(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/ui/stop-inference",
+                get(|| async { StatusCode::OK }),
+            )
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        for path in ["/api/ui/deployments", "/api/ui/stop-inference"] {
+            let mut browser_request = Request::get(path)
+                .header("authorization", "Bearer connection-secret")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            browser_request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            assert_eq!(
+                app.clone().oneshot(browser_request).await.unwrap().status(),
+                StatusCode::FORBIDDEN,
+                "browser request must not inherit node authority for {path}"
+            );
+
+            let mut internal_request = Request::get(path)
+                .header("authorization", "Bearer connection-secret")
+                .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            internal_request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            assert_eq!(
+                app.clone().oneshot(internal_request).await.unwrap().status(),
+                StatusCode::OK,
+                "authenticated node request must reach {path}"
+            );
         }
     }
 

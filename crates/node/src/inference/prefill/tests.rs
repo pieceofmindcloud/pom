@@ -312,6 +312,53 @@ mod tests {
         assert!(no_mtp["mtp_acceptance_rate"].is_null());
     }
 
+    /// O resumo dizia "não medido" enquanto a tabela por salto mostrava as
+    /// chamadas: o laço de continuação funde uma perna na outra, e a fusão
+    /// carregava `PhaseTrace::calls` mas não o contador solto do resumo.
+    #[test]
+    fn trace_deriva_chamadas_de_decode_dos_saltos_depois_da_fusao() {
+        fn perna(chamadas: u32) -> RequestTrace {
+            let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15), ("no2", 16, 31)]);
+            for _ in 0..chamadas {
+                for hop in 0..2 {
+                    trace.record_hop(
+                        hop,
+                        Phase::Decode,
+                        1,
+                        1,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        TlsHop::default(),
+                        &json!({}),
+                    );
+                }
+            }
+            trace
+        }
+
+        let mut trace = perna(40);
+        trace.merge(&perna(24));
+        trace.set_generated_tokens(119);
+
+        // Máximo entre os saltos, não a soma: uma rodada de decode toca os dois
+        // saltos, e somar dobraria as chamadas num pipeline de dois nós.
+        assert_eq!(trace.decode_calls, 64);
+        assert_eq!(trace.hops[0].decode.calls, 64);
+        assert_eq!(
+            trace.tokens_per_decode_call,
+            Some(119.0 / 64.0),
+            "o resumo tem que trazer o rendimento por chamada, não `None`"
+        );
+
+        let serializado = serde_json::to_value(&trace).unwrap();
+        assert_eq!(serializado["decode_calls"], 64);
+        assert_eq!(serializado["generated_tokens"], 119);
+    }
+
     #[test]
     fn trace_funde_pernas_mtp_com_taxa_ponderada() {
         let mut first = RequestTrace::new("qwen", &[("no1", 0, 15)]);

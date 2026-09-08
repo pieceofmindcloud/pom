@@ -1942,15 +1942,37 @@ mod peer_visibility_tests {
         let mut stalled = peer("stalled");
         stalled.inference_port = Some(stalled_port);
 
+        let health = super::AdmissionHealth::default();
+        let clientes = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
         let reachable = ready_for_pipeline(
-            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
-            vec![healthy, stalled],
+            &clientes,
+            &health,
+            vec![healthy.clone(), stalled.clone()],
             Duration::from_millis(25),
         )
         .await;
 
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
+
+        // A defesa tem que continuar de pé na requisição seguinte: o peer que
+        // reprovou fica fora, agora sem custar sequer a sonda.
+        let inicio = std::time::Instant::now();
+        let reachable = ready_for_pipeline(
+            &clientes,
+            &health,
+            vec![healthy, stalled],
+            Duration::from_millis(25),
+        )
+        .await;
+        let em_quarentena = inicio.elapsed();
+
+        assert_eq!(reachable.len(), 1);
+        assert_eq!(reachable[0].node_id, "healthy");
+        assert!(
+            em_quarentena < Duration::from_millis(25),
+            "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
+        );
     }
 
     #[tokio::test]
@@ -2124,6 +2146,7 @@ pub(crate) mod testkit {
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),
+            admission_health: Default::default(),
             runtime: NodeRuntime::new(net, assignment),
             cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(database.clone()),

@@ -5,7 +5,56 @@ pub const DEFAULT_MAX_TOKENS: u32 = 512;
 /// A peer that cannot answer its inference health endpoint is not eligible for
 /// a new pipeline. UDP discovery is deliberately lightweight and may still
 /// hear an isolated or old node, so it is not sufficient proof of a usable hop.
-pub(super) const PIPELINE_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Este é o teto **da sonda de admissão**, curto de propósito.
+///
+/// Um peer vivo na LAN responde `/health` em poucos milissegundos - as próprias
+/// chamadas de decode da inferência medem 12-18 ms de ida e volta. Quem não
+/// respondeu em 300 ms não é "lento": ou engoliu o SYN, ou está desligado, e nos
+/// dois casos ele não vai servir esta requisição. Antes deste teto quem mandava
+/// era o `peer_client::CONNECT_TIMEOUT` de 2 s, e como `join_all` só termina com
+/// o mais lento, **um** anunciante inalcançável custava 2,005 s a toda
+/// inferência do cluster - medido em produção, constante entre motores, tamanhos
+/// de prompt e frio/quente.
+pub(super) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// Quanto tempo um peer que falhou a sonda fica fora sem ser sondado de novo.
+///
+/// A defesa não enfraquece: o peer em quarentena é **excluído** do plano, que é
+/// exatamente o que a sonda queria. O que a quarentena remove é o custo de
+/// redescobrir a cada requisição que o morto continua morto. A volta é
+/// automática - passado o prazo, a próxima requisição paga uma sonda e o peer
+/// reentra se responder -, então nenhum estado precisa ser limpo à mão.
+pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// Quem falhou a sonda de admissão, e até quando fica fora.
+///
+/// Só guarda o negativo. O peer saudável continua sendo sondado a cada
+/// requisição - a frescura da admissão é o ponto da sonda e custa milissegundos.
+#[derive(Default)]
+pub struct AdmissionHealth {
+    quarantine: tokio::sync::RwLock<std::collections::HashMap<String, Instant>>,
+}
+
+impl AdmissionHealth {
+    async fn quarantined(&self, node_id: &str) -> bool {
+        self.quarantine
+            .read()
+            .await
+            .get(node_id)
+            .is_some_and(|until| *until > Instant::now())
+    }
+
+    async fn note_failure(&self, node_id: &str) {
+        self.quarantine
+            .write()
+            .await
+            .insert(node_id.to_string(), Instant::now() + ADMISSION_FAILURE_COOLDOWN);
+    }
+
+    async fn note_success(&self, node_id: &str) {
+        self.quarantine.write().await.remove(node_id);
+    }
+}
 
 /// Characters per token, used only to size up a prompt before sending it.
 /// Deliberately pessimistic — the real tokenizer lives in the first peer's
@@ -102,6 +151,9 @@ pub struct GatewayState {
     /// dos peers. Para destino que não é peer (loopback, Ollama) use
     /// `peer_http.plain()`, que diz o que está fazendo.
     pub peer_http: Arc<crate::peer_client::PeerClients>,
+    /// Quem reprovou a sonda de admissão do pipeline, e até quando fica fora.
+    /// Ver `AdmissionHealth` e `ready_for_pipeline`.
+    pub admission_health: Arc<AdmissionHealth>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
     /// Cycle policy used before a deployment exists. A loaded deployment's
@@ -353,6 +405,7 @@ pub(super) fn peers_visible_to_cluster(peers: Vec<PeerInfo>, blocked: &[String])
 /// layer count or leave a request waiting for a hop that no longer serves HTTP.
 pub(super) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
+    health: &AdmissionHealth,
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
@@ -368,10 +421,21 @@ pub(super) async fn ready_for_pipeline(
             let Ok(cliente) = cliente else {
                 return None;
             };
+            // Quem falhou há pouco não volta a ser sondado a preço inteiro: ele
+            // continua fora do plano, e a requisição não paga por isso.
+            if health.quarantined(&peer.node_id).await {
+                return None;
+            }
             let url = format!("{base}/health");
             match tokio::time::timeout(timeout, cliente.get(url).send()).await {
-                Ok(Ok(response)) if response.status().is_success() => Some(peer),
-                _ => None,
+                Ok(Ok(response)) if response.status().is_success() => {
+                    health.note_success(&peer.node_id).await;
+                    Some(peer)
+                }
+                _ => {
+                    health.note_failure(&peer.node_id).await;
+                    None
+                }
             }
         }
     }))

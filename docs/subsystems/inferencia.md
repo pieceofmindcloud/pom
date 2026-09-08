@@ -133,6 +133,30 @@ não explicado pelos spans locais e nunca é deixado negativo. Se o perfil for
 `off`, os spans detalhados e o cálculo de atribuição não são emitidos; o
 `POM_PROFILE_SYNC` continua sendo uma política independente do trace.
 
+`decode_calls` e `tokens_per_decode_call` são **derivados dos saltos**
+(`RequestTrace::refresh_decode_counters`), não de um contador solto: o laço de
+continuação funde o traço de cada perna no traço base, e a fusão carrega
+`PhaseTrace::calls` mas não carregava o contador do resumo - por isso o resumo
+dizia "não medido" enquanto a tabela por salto mostrava 111 chamadas na mesma
+execução. É o **máximo** entre os saltos, não a soma: uma rodada de decode toca
+cada salto uma vez, e somar dividiria o rendimento por chamada - a taxa de
+aceitação da especulação - pelo tamanho do pipeline.
+
+#### Sonda de admissão do pipeline
+
+`ready_for_pipeline` continua confirmando, por requisição, que cada peer
+anunciado responde `/health` antes de entrar no plano - a defesa contra um
+anunciante UDP velho. O que mudou é o preço. O prazo é o
+`ADMISSION_PROBE_TIMEOUT` de 300 ms, não o `CONNECT_TIMEOUT` de 2 s do cliente
+geral, e quem reprova entra em quarentena por `ADMISSION_FAILURE_COOLDOWN`
+(`AdmissionHealth`, em `gateway/state.rs`), ficando fora do plano sem voltar a
+ser sondado. Antes disso, como `join_all` só termina com o mais lento, **um**
+peer inalcançável custava 2,005 s a toda inferência do cluster - constante entre
+motores, tamanhos de prompt e frio/quente. Medido com um anunciante que engole
+SYN: 2005 ms antes, 301 ms na primeira requisição e 0 ms nas seguintes. A volta
+é automática: passado o prazo, a próxima requisição paga uma sonda e o peer
+reentra se responder.
+
 O trace também carrega `server_ttft_ms`, `engine_ttft_ms`, contagem de chamadas
 de decode, tokens por chamada, estado cold/warm e chamadas com conexão nova,
 reutilizada ou desconhecida. No peer, `NodeTimings` registra o primeiro token

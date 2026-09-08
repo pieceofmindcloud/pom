@@ -1070,6 +1070,7 @@ async fn async_main(
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
             peer_http: peer_clients.clone(),
+            admission_health: Default::default(),
             runtime: node_runtime.clone(),
             cycle_config: crate::cycle::CycleConfig {
                 enabled: !args.no_cycle_detection,
@@ -1814,6 +1815,7 @@ async fn start_gateway_only(
         // cache de prefixo persistente precisa do índice aqui também.
         prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
         peer_http: peer_clients.clone(),
+        admission_health: Default::default(),
         runtime: node_runtime.clone(),
         cycle_config: crate::cycle::CycleConfig {
             enabled: cycle_detection_enabled,

@@ -111,8 +111,9 @@ pub(super) async fn generate_stream_inner(
     let orchestration_wall = wall_clock_ms();
     let peers = ready_for_pipeline(
         &state.peer_http,
+        &state.admission_health,
         state.all_peers().await,
-        PIPELINE_HEALTH_TIMEOUT,
+        ADMISSION_PROBE_TIMEOUT,
     )
     .await;
     record_gateway_span(

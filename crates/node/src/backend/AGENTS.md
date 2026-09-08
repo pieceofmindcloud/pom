@@ -440,7 +440,10 @@ profile policy remains the effective authorization boundary.
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
   reply_inbox); `FromRef<GatewayState> for AuthState`; `peers_visible_to_cluster`
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
-  `inference_url()/health` (10s timeout) before planning; `all_peers` appends
+  `inference_url()/health` before planning, with the `ADMISSION_PROBE_TIMEOUT`
+  of 300ms and an `AdmissionHealth` quarantine for whoever fails - a single
+  unreachable announcer used to cost every inference 2,005ms, the
+  `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest; `all_peers` appends
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
   `inference/frame-v1-batch`, `transport/link-v1`, `relay/v1-chain` and

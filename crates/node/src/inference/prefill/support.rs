@@ -1433,8 +1433,30 @@ impl RequestTrace {
 
     pub fn set_generated_tokens(&mut self, tokens: u32) {
         self.generated_tokens = tokens;
-        self.tokens_per_decode_call =
-            (self.decode_calls > 0).then(|| tokens as f64 / self.decode_calls as f64);
+        self.refresh_decode_counters();
+    }
+
+    /// `decode_calls` é **derivado dos saltos**, não um contador próprio.
+    ///
+    /// O laço de continuação do gateway funde o traço de cada perna no traço
+    /// base (`merge`), e a fusão sempre soube juntar `PhaseTrace::calls` mas
+    /// nunca carregou um contador solto: o resumo dizia "não medido" enquanto a
+    /// tabela por salto mostrava 111 chamadas na mesma execução. Derivar remove
+    /// a chance de as duas divergirem outra vez.
+    ///
+    /// É o **máximo** entre os saltos, não a soma: uma rodada de decode toca
+    /// cada salto uma vez, então somar multiplicaria as rodadas pelo tamanho do
+    /// pipeline e `tokens_per_decode_call` - o rendimento da especulação -
+    /// cairia por esse mesmo fator.
+    pub(super) fn refresh_decode_counters(&mut self) {
+        self.decode_calls = self
+            .hops
+            .iter()
+            .map(|hop| hop.decode.calls as u64)
+            .max()
+            .unwrap_or(0);
+        self.tokens_per_decode_call = (self.decode_calls > 0)
+            .then(|| self.generated_tokens as f64 / self.decode_calls as f64);
     }
 
     pub fn node_processing_ms(&self) -> u64 {
@@ -1554,9 +1576,7 @@ impl RequestTrace {
             node,
         );
         if phase == Phase::Decode {
-            self.decode_calls = self.decode_calls.saturating_add(1);
-            self.tokens_per_decode_call = (self.decode_calls > 0)
-                .then(|| self.generated_tokens as f64 / self.decode_calls as f64);
+            self.refresh_decode_counters();
         }
         let has_first_token_marker = first_token_produced_ms.is_some()
             || first_token_serialized_ms.is_some()
@@ -1783,6 +1803,7 @@ impl RequestTrace {
             current.prefill.merge(&next.prefill);
             current.decode.merge(&next.decode);
         }
+        self.refresh_decode_counters();
     }
 }
 

@@ -16,11 +16,13 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`
 `node` can slip past one component's `?.` and crash the next; the maintenance
 pendência está em `TODO.md`, item 23.
 
-- `InferenceHeadChoice.tsx` - aviso compacto do Chat infer: exibe a cabeça
-  escolhida, as alternativas layer-zero, RTT fresco ou vencido, carga em voo e
-  os estados sem candidata e pipeline incompleto. A carga desconhecida vira
-  "indisponível", nunca zero. O componente não apresenta peers fora desse
-  recorte.
+- `InferenceHeadChoice.tsx` - no Chat infer, não mostra nada quando existe uma
+  única cabeça disponível; com duas ou mais, usa o mesmo combo nativo do seletor
+  de modelo para inspecionar as candidatas layer-zero. As opções carregam nome,
+  id, RTT e frescura, carga em voo, faixa, capacidade e a marca da escolhida; o
+  critério, fallback e pipeline incompleto ficam nas opções desativadas do menu.
+  Carga desconhecida aparece como "indisponível", nunca zero. Sem candidata,
+  mantém um aviso claro. O componente não apresenta peers fora desse recorte.
 
 - `setup-wizard/` - Componentes visuais reutilizáveis do wizard de primeiro
   acesso: layout com progresso e ações, cards de intenção, hardware, nó,

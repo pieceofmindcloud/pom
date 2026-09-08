@@ -101,8 +101,8 @@ describe("InferenceHeadChoice", () => {
       ),
     });
 
-    expect(screen.getByText("carga em voo indisponível")).toBeTruthy();
-    expect(screen.queryByText("0 em voo")).toBeNull();
+    expect(screen.getByRole("option", { name: /salem.*carga em voo indisponível/i })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /0 em voo/i })).toBeNull();
   });
 
   it("identifica o fallback quando ainda não há RTT fresco", () => {

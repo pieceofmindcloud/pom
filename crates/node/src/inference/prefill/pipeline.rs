@@ -16,10 +16,10 @@ pub async fn run_with_options(
     cancellation: &Cancellation,
     reuse_prefix: bool,
     max_inflight_chunks: usize,
-    // `Some` quando o gateway está retomando um prefill que falhou no meio: o
-    // laço parte de `from_chunk`/`start_pos` em vez do pedaço 0, e os peers
-    // refazem o próprio KV pela reentrada de pedaço. Só hub e resposta direta
-    // sabem retomar; o anel ignora e roda do início.
+    // `Some` descreve um ponto de retomada que o chamador conhece como seguro.
+    // O gateway não o usa para uma resposta de transporte ambígua: nesses
+    // casos ele recria a sessão a frio desde o pedaço 0. Só hub e resposta
+    // direta sabem retomar; o anel ignora e roda do início.
     resume: Option<PrefillResumable>,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
@@ -74,8 +74,8 @@ pub async fn run_with_options(
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && n_peers > 1;
     trace.prefill_max_inflight_chunks = window as u32;
-    // Retomada: o laço parte deste pedaço/posição em vez do zero, e os totais
-    // do pedaço 0 (que não será revisto) vêm do ponto de retomada.
+    // Retomada explícita: o laço parte deste pedaço/posição em vez do zero, e
+    // os totais do pedaço 0 (que não será revisto) vêm do ponto informado.
     let first_chunk = resume.map(|r| r.from_chunk).unwrap_or(0);
     let first_start_pos = resume.map(|r| r.start_pos);
     let resume_cached_tokens = resume.map(|r| r.cached_tokens).unwrap_or(0);
@@ -151,8 +151,10 @@ pub async fn run_with_options(
                     return Err(e)
                 }
                 Err(e) => {
-                    // Os pedaços 0..idx já foram aceitos pela cabeça; retomar
-                    // de `idx` em vez de refazer o prompt.
+                    // Os pedaços 0..idx já foram aceitos pela cabeça. Este
+                    // ponto só é reutilizado quando o chamador garante que a
+                    // retomada é segura; a recuperação de transporte usa o
+                    // prefill frio do gateway.
                     return Err(e.context(PrefillResumable {
                         from_chunk: idx,
                         start_pos: start_pos.unwrap_or(0),
@@ -288,16 +290,17 @@ pub async fn run_with_options(
                     let (meta, _tensor, downstream_trace) = match r {
                         Ok(v) => v,
                         // Sessão perdida no peer: o KV para retomar não existe
-                        // mais, então vai direto para o retry frio do gateway.
+                        // mais, então vai direto para a reconstrução fria.
                         Err(e)
                             if is_cancelled(&e)
                                 || crate::relay::is_unknown_session_error(&e) =>
                         {
                             return Err(e)
                         }
-                        // Pedaços anteriores já foram aceitos pela cadeia: em vez
-                        // de refazer o prompt inteiro, marca de onde retomar - os
-                        // peers refazem o próprio KV a partir de `start_pos`.
+                        // Pedaços anteriores já foram aceitos pela cadeia. Um
+                        // chamador que tenha provado a retomada pode marcar o
+                        // ponto; a recuperação normal de transporte reconstrói
+                        // o prompt inteiro para não pedir remoção parcial.
                         Err(e) if ci > 0 => {
                             return Err(e.context(PrefillResumable {
                                 from_chunk: ci,
@@ -484,7 +487,7 @@ pub(super) async fn run_ring(
                 None,
                 dtype,
                 dtype.frame_encoding(),
-                crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+                crate::relay::CHUNK_ATTEMPTS, // uma resposta perdida exige rebuild frio
                 &head.node_id,
                 |_issue| {},
             ),

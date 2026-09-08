@@ -330,7 +330,7 @@ pub(super) async fn handle_prefill(
             residual,
             shape,
             wire_dtype,
-            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+            crate::relay::CHUNK_ATTEMPTS, // uma resposta perdida exige rebuild frio
             reply_to,
             Some(direct_forward_order),
             prefill_sequence_id,
@@ -398,7 +398,7 @@ pub(super) async fn handle_prefill(
         },
         (&residual, shape),
         wire_dtype,
-        crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+        crate::relay::CHUNK_ATTEMPTS, // uma resposta perdida exige rebuild frio
         local_meta["processing_ms"].clone(),
         local_meta["node_timings"].clone(),
     )

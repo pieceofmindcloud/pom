@@ -420,6 +420,21 @@ fn choose_announce_addr(
     observed_addr.unwrap_or_else(|| format!("0.0.0.0:{port}"))
 }
 
+fn announce_addresses(
+    pinned: Option<String>,
+    observed: Option<String>,
+    local: Vec<crate::addrs::LocalAddr>,
+    port: u16,
+) -> (String, Vec<String>) {
+    let addr = choose_announce_addr(pinned.clone(), observed.clone(), local.clone(), port);
+    let candidates =
+        local_candidates_by_preference(pinned.as_deref().map(ip_host), observed.as_deref(), local)
+            .into_iter()
+            .map(|ip| host_port(&ip, port))
+            .collect();
+    (addr, candidates)
+}
+
 impl PeerInfo {
     pub fn layer_range(&self) -> String {
         format!("{}-{}", self.start_layer, self.end_layer)
@@ -471,6 +486,25 @@ impl PeerInfo {
             .or_else(|| is_valid_destination(&self.addr).then_some(self.addr.as_str()))
     }
 
+    /// Todos os destinos UDP conhecidos, sem transformar o primeiro endereço
+    /// anunciado em verdade permanente. A ordem mantém os candidatos
+    /// anunciados e usa `addr` como fallback para peers antigos ou para um
+    /// snapshot em que ele já foi atualizado.
+    pub fn dialable_addrs(&self) -> Vec<String> {
+        let mut addresses = Vec::with_capacity(self.addr_candidates.len() + 1);
+        for address in self
+            .addr_candidates
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(self.addr.as_str()))
+        {
+            if is_valid_destination(address) && !addresses.iter().any(|known| known == address) {
+                addresses.push(address.to_string());
+            }
+        }
+        addresses
+    }
+
     /// URLs do servidor de inferencia, uma por candidato.
     ///
     /// Cai no `addr` unico quando o peer nao anunciou candidatos, que e o caso
@@ -479,22 +513,27 @@ impl PeerInfo {
         let Some(porta) = self.inference_port else {
             return Vec::new();
         };
-        let base: Vec<&String> = if self.addr_candidates.is_empty() {
-            vec![&self.addr]
-        } else {
-            self.addr_candidates.iter().collect()
-        };
-        base.iter()
-            .filter(|a| is_valid_destination(a))
-            .map(|a| {
-                format!(
-                    "{}://{}:{}",
-                    crate::peer_client::peer_scheme(),
-                    ip_host(a),
-                    porta
-                )
-            })
-            .collect()
+        let base = self
+            .addr_candidates
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(self.addr.as_str()));
+        let mut urls = Vec::with_capacity(self.addr_candidates.len() + 1);
+        for address in base {
+            if !is_valid_destination(address) {
+                continue;
+            }
+            let url = format!(
+                "{}://{}:{}",
+                crate::peer_client::peer_scheme(),
+                ip_host(address),
+                porta
+            );
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
     }
 
     /// Full inference server URL for pipeline calls (None if not running).
@@ -672,6 +711,9 @@ pub struct Network {
     /// Política local de captura de logs. O valor do anúncio é gatilho, nunca
     /// é adotado diretamente.
     cluster_logs_enabled: Arc<AtomicBool>,
+    /// Evita repetir no gossip um aviso permanente, como o broadcast global
+    /// indisponível dentro de um container.
+    broadcast_warning_logged: AtomicBool,
     /// This node's own address, as reported by a peer's libp2p `identify`
     /// response (`info.observed_addr` — the address *that peer* saw us
     /// connecting from). `host:port`, same shape as `advertise_addr`. Set
@@ -1054,6 +1096,7 @@ impl Network {
             tls_probe: std::sync::RwLock::new(None),
             cluster_logs_probe: std::sync::RwLock::new(None),
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
+            broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
         }
@@ -1257,12 +1300,24 @@ impl Network {
                 "non-routable destination",
             ));
         }
-        let resolved = tokio::net::lookup_host(addr)
-            .await?
-            .next()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no address"))?;
-        self.socket.send_to(data, self.normalize(resolved)).await?;
-        Ok(())
+        let resolved = loop {
+            match tokio::net::lookup_host(addr).await {
+                Ok(mut addresses) => {
+                    break addresses.next().ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidInput, "no address")
+                    })?
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        loop {
+            match self.socket.send_to(data, self.normalize(resolved)).await {
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Send a message to a specific address
@@ -1275,6 +1330,27 @@ impl Network {
         Ok(())
     }
 
+    /// Envia para os endereços conhecidos até um envio ser aceito pelo socket.
+    /// O endereço anunciado é cache, então uma rotação de IPv6 não pode
+    /// impedir o anúncio aos demais caminhos vivos.
+    async fn send_to_candidates(&self, msg: &P2PMessage, addresses: &[String]) -> Result<()> {
+        let data = serde_json::to_vec(msg)?;
+        let mut last_error = None;
+        for address in addresses {
+            match self.send_bytes(&data, address).await {
+                Ok(()) => {
+                    debug!("Sent {:?} to {}", std::mem::discriminant(msg), address);
+                    return Ok(());
+                }
+                Err(error) => last_error = Some((address, error)),
+            }
+        }
+        if let Some((address, error)) = last_error {
+            warn!("Failed to send to {}: {}", address, error);
+        }
+        Ok(())
+    }
+
     /// Broadcast to the configured discovery destination.
     pub async fn broadcast_local(&self, msg: &P2PMessage) -> Result<()> {
         let data = serde_json::to_vec(msg)?;
@@ -1282,7 +1358,9 @@ impl Network {
             .send_bytes(&data, &self.broadcast_addr.to_string())
             .await
         {
-            debug!("LAN broadcast failed: {e}");
+            if !self.broadcast_warning_logged.swap(true, Ordering::Relaxed) {
+                debug!("LAN broadcast failed: {e}");
+            }
         }
         Ok(())
     }
@@ -1300,12 +1378,26 @@ impl Network {
     /// havia assignment, então um peer que chegasse pela internet via um nó
     /// diferente do que a LAN via.
     fn self_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
+        // A enumeração é deliberadamente feita aqui, em cada anúncio. O
+        // gossip anuncia a cada 5 s; a operação é apenas leitura local de
+        // interfaces, não uma sonda de rede. O mesmo snapshot alimenta `addr`
+        // e `addr_candidates`, evitando publicar duas fotografias diferentes
+        // se o IPv6 temporário rodar durante a montagem.
+        let local = crate::addrs::local_addrs();
+        let pinned = self
+            .advertise_addr
+            .read()
+            .expect("advertise_addr lock")
+            .clone();
+        let observed = self.observed_addr();
+        let (addr, addr_candidates) =
+            announce_addresses(pinned, observed, local, self.bind_addr.port());
         P2PMessage::Announce {
             node_id: self.node_id.clone(),
             pubkey: self.pubkey.clone(),
             authority_pubkey: self.authority_pubkey(),
-            addr: self.announce_addr(),
-            addr_candidates: self.self_addr_candidates(),
+            addr,
+            addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
             deploy_id: assignment.map(|a| a.deploy_id.clone()).unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
@@ -1550,11 +1642,7 @@ impl Network {
             })
             .find_map(|peer| {
                 let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
-                let mut addresses = peer.addr_candidates.clone();
-                if addresses.is_empty() {
-                    addresses.push(peer.addr.clone());
-                }
-                Some((peer_id, addresses))
+                Some((peer_id, peer.dialable_addrs()))
             })
     }
 
@@ -1589,9 +1677,8 @@ impl Network {
         let peers = self.peers.read().await;
         for peer in peers.values() {
             if peer.is_alive() {
-                if let Some(addr) = peer.dialable_addr() {
-                    self.send_to(&msg, addr).await?;
-                }
+                let addresses = peer.dialable_addrs();
+                self.send_to_candidates(&msg, &addresses).await?;
             }
         }
 
@@ -1645,15 +1732,15 @@ impl Network {
 
         // Ordem estável (por node_id) para que o rodízio avance de fato em vez
         // de sortear os mesmos peers a cada volta.
-        let mut targets: Vec<String> = {
+        let mut targets: Vec<Vec<String>> = {
             let peers = self.peers.read().await;
             let mut v: Vec<(&String, &PeerInfo)> = peers
                 .iter()
-                .filter(|(_, p)| p.is_alive() && p.dialable_addr().is_some())
+                .filter(|(_, p)| p.is_alive() && !p.dialable_addrs().is_empty())
                 .collect();
             v.sort_by(|a, b| a.0.cmp(b.0));
             v.into_iter()
-                .filter_map(|(_, p)| p.dialable_addr().map(str::to_string))
+                .map(|(_, p)| p.dialable_addrs())
                 .collect()
         };
         if targets.is_empty() {
@@ -1666,8 +1753,8 @@ impl Network {
         targets.rotate_left(start);
         targets.truncate(SWEEP_FANOUT.min(len));
 
-        for addr in &targets {
-            self.send_to(&msg, addr).await?;
+        for addresses in &targets {
+            self.send_to_candidates(&msg, addresses).await?;
         }
         Ok(targets.len())
     }
@@ -1746,16 +1833,17 @@ impl Network {
         for bootstrap in &self.bootstrap_nodes {
             let _ = self.send_to(&pergunta, bootstrap).await;
         }
-        let vizinhos: Vec<String> = {
+        let vizinhos: Vec<Vec<String>> = {
             let peers = self.peers.read().await;
             peers
                 .values()
                 .filter(|p| p.node_id != node_id && p.is_alive())
-                .filter_map(|p| p.dialable_addr().map(str::to_string))
+                .map(PeerInfo::dialable_addrs)
+                .filter(|addresses| !addresses.is_empty())
                 .collect()
         };
-        for vizinho in &vizinhos {
-            let _ = self.send_to(&pergunta, vizinho).await;
+        for addresses in &vizinhos {
+            let _ = self.send_to_candidates(&pergunta, addresses).await;
         }
         true
     }
@@ -1973,6 +2061,7 @@ impl Network {
                         }
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => warn!("UDP recv error: {}", e),
             }
         }
@@ -2129,10 +2218,11 @@ impl Network {
                     tls,
                 );
 
-                // O endereco de onde o pacote veio e o unico comprovadamente
-                // funcional, mas nao invalida os outros: por isso entra no
-                // conjunto em vez de substitui-lo.
-                peer.merge_observed(&peer_addr);
+                // O endereço de onde o pacote veio é o único comprovadamente
+                // funcional neste instante. O anúncio pode ter sido montado
+                // antes de uma rotação de IPv6 temporário, então guardar só o
+                // `addr` anunciado conserva justamente o cadáver que falhou.
+                peer.merge_observed(&src.to_string());
 
                 let address_changed = {
                     let peers = self.peers.read().await;
@@ -2627,6 +2717,39 @@ mod tests {
         );
     }
 
+    /// A troca de endereço local entre dois anúncios deve aparecer no anúncio
+    /// seguinte sem reiniciar o processo. O teste usa duas fotografias de
+    /// interface para não depender do estado IPv6 desta máquina.
+    #[test]
+    fn a_new_local_address_is_used_by_the_next_announce() {
+        let first = announce_addresses(
+            None,
+            None,
+            vec![crate::addrs::LocalAddr {
+                ip: "2001:db8::1".into(),
+                interface: None,
+                deprecated: false,
+                temporary: true,
+            }],
+            42777,
+        );
+        let second = announce_addresses(
+            None,
+            None,
+            vec![crate::addrs::LocalAddr {
+                ip: "2001:db8::2".into(),
+                interface: None,
+                deprecated: false,
+                temporary: true,
+            }],
+            42777,
+        );
+
+        assert_ne!(first.0, second.0);
+        assert_eq!(second.0, "[2001:db8::2]:42777");
+        assert!(second.1.contains(&"[2001:db8::2]:42777".to_string()));
+    }
+
     /// A NAT'd node with nothing pinned has, until now, only its own private
     /// LAN interfaces to offer — useless to a remote peer over gossipsub,
     /// where there is no packet source to rewrite `addr` with the way the
@@ -3038,6 +3161,71 @@ mod tests {
         );
     }
 
+    /// O endereço efetivo que chega no socket é evidência de alcance atual.
+    /// Não basta guardar apenas o `addr` que o peer escolheu no anúncio, pois
+    /// IPv6 temporário pode trocar entre a montagem do anúncio e a entrega.
+    #[tokio::test]
+    async fn an_announce_keeps_the_address_seen_on_the_wire_as_a_candidate() {
+        let net = Network::new(
+            "local".into(),
+            "pubkey".into(),
+            0,
+            vec![],
+            None,
+            Some(8181),
+            None,
+        )
+        .await
+        .unwrap();
+        let assignment = Arc::new(RwLock::new(None));
+        let stale = "[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:42777";
+        let current = "[2804:d55:5579:1000:2d50:fe2c:c06c:fc07]:42777";
+
+        net.handle_message(
+            P2PMessage::Announce {
+                node_id: "peer".into(),
+                pubkey: "peer-key".into(),
+                authority_pubkey: String::new(),
+                addr: stale.into(),
+                addr_candidates: vec![stale.into()],
+                model: "qwen".into(),
+                deploy_id: String::new(),
+                start_layer: 28,
+                end_layer: 31,
+                total_layers: 32,
+                memory_mb: 0.0,
+                timestamp: Utc::now(),
+                ollama_port: None,
+                inference_port: Some(8181),
+                inference_frame_capabilities: Vec::new(),
+                gateway_port: Some(8080),
+                profile: crate::profile::NodeProfile::Node,
+                tls: false,
+                hostname: "salem".into(),
+                capabilities: Vec::new(),
+                disk_total_mb: 0,
+                disk_free_mb: 0,
+                libp2p_peer_id: None,
+                tp: None,
+                runtime_capacity: None,
+                cluster_logs_enabled: false,
+            },
+            current.parse().unwrap(),
+            &assignment,
+        )
+        .await;
+
+        let peers = net.peers.read().await;
+        let peer = peers.get("peer").expect("o anúncio deve criar o peer");
+        assert!(
+            peer.addr_candidates
+                .iter()
+                .any(|candidate| candidate == current),
+            "o endereço observado no socket foi perdido: {:?}",
+            peer.addr_candidates
+        );
+    }
+
     /// `gateway_url()` era so `peer.addr`, entao o plano de controle tinha um
     /// endereco e nenhum plano B. `inference_url()` ja preferia candidatos ha
     /// tempo; o gateway nunca aprendeu.
@@ -3144,7 +3332,10 @@ mod tests {
         assert_eq!(peer.dialable_addr(), Some("[2804:d55::1]:42778"));
         assert_eq!(
             peer.inference_candidates(),
-            vec!["http://[2804:d55::1]:8181".to_string()]
+            vec![
+                "http://[2804:d55::1]:8181".to_string(),
+                "http://192.168.1.9:8181".to_string(),
+            ]
         );
     }
 

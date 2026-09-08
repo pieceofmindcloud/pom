@@ -561,11 +561,7 @@ pub async fn plan_pipeline_with_rtt(
             exec_end: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
-            libp2p_addr_candidates: if chosen.addr_candidates.is_empty() {
-                vec![chosen.addr.clone()]
-            } else {
-                chosen.addr_candidates.clone()
-            },
+            libp2p_addr_candidates: chosen.dialable_addrs(),
         });
 
         pos = chosen.end_layer + 1;

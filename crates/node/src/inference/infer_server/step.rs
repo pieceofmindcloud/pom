@@ -1127,8 +1127,9 @@ pub(super) fn step_forward_meta(
 /// needs (`is_last`/`scale`/`next_hops`, added here): just `session_id` for
 /// `/v1/step`, plus `chunk_index`/`chunk_size`/`is_final_chunk` for
 /// `/v1/prefill`. `attempts` follows the same rule `send_chunk`/`step_ring`
-/// already do at the gateway: `CHUNK_ATTEMPTS` for a prefill chunk (retry-safe,
-/// KV-rollback protected), `1` for a decode step (not).
+/// already do at the gateway: `CHUNK_ATTEMPTS` for a prefill chunk (one
+/// attempt, because a lost response makes KV state ambiguous), `1` for a
+/// decode step (which has no retry).
 ///
 /// Split out from `handle_step`/`handle_prefill` (both call this with the
 /// same `hops`/tensor shape, differing only in `path` and `base_meta`) so

@@ -735,16 +735,15 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   `min(prefill_chunk_tokens, n_batch)` (`prompt_chunk_of`), porque um pedaço é
   decodificado como um batch no peer e maior que `n_batch` abortaria o llama.cpp
   igual o prompt inteiro abortava.
-- **Retentativa idempotente**: um pedaço perdido custa um pedaço, não a
-  requisição. `relay::CHUNK_ATTEMPTS = 3` com backoff de 400 ms × tentativa. O
-  peer receptor confere a posição absoluta do pedaço antes de refazer, então
-  um reenvio nunca pode ser contado duas vezes. `start_pos` vem da fronteira
-  que o peer anterior confirmou; para o pedaço 0 sem posição explícita, a
-  própria sessão fornece `n_past`. Para qualquer pedaço posterior, a ausência
-  de `start_pos` é erro de protocolo, nunca `chunk_index * chunk_size`.
-  Se a sessão já passou da posição, o peer tenta a remoção necessária para a
-  retentativa; se o motor recusa ou ainda não chegou lá, nomeia a divergência e
-  o gateway pode repetir o prefill inteiro a frio.
+- **Falha de transporte no prefill**: cada pedaço recebe uma única tentativa
+  (`relay::CHUNK_ATTEMPTS = 1`). Quando a resposta se perde, não há como saber
+  se o peer gravou o chunk antes da desconexão; repetir cegamente poderia pedir
+  remoção parcial de KV no meio de um modelo recorrente. Se os chunks anteriores
+  já foram aceitos, o gateway reconstrói a sessão inteira a frio, começando no
+  chunk 0. Se essa reconstrução falhar, a geração termina limpa e libera as
+  sessões alcançadas. `start_pos` continua sendo a fronteira absoluta usada no
+  fluxo normal; ausência nos chunks posteriores é erro de protocolo, nunca
+  `chunk_index * chunk_size`.
 - **Step não retenta**: decode não tem proteção de rollback de KV, então o
   `step` sempre vai com `attempts = 1`. Prefill e decode não compartilham a
   constante para ela não derivar.
@@ -785,13 +784,14 @@ hop a hop em ordem. O ACK da cabeça carrega o `next_pos` absoluto dentro de
 sem esperar o resultado do anterior. A posição nunca é inferida pela ordem de
 conclusão ou chegada.
 
-**Retomada.** Se um pedaço `k > 0` falha depois de a cadeia já ter aceitado os
-anteriores, o erro carrega um `PrefillResumable { from_chunk, start_pos, ... }`
-e o gateway repete o prefill **a partir de `k`** em vez de reenviar o prompt
-inteiro: cada peer refaz o próprio KV pela reentrada de pedaço que
-`prefill_blocking` já trata (`kv_remove` da cauda; motor recorrente que recusa
-cai no retry frio total, que continua sendo a segunda recuperação). Sessão
-perdida no peer não é retomável - vai direto para o retry frio.
+**Retomada.** Um erro depois de um pedaço `k > 0` carrega
+`PrefillResumable { from_chunk, start_pos, ... }` como diagnóstico do ponto
+onde uma retomada poderia ser segura se o estado remoto fosse conhecido. Uma
+resposta de transporte perdida não dá essa certeza: o gateway não reentra em
+`k`, porque isso poderia pedir `kv_remove` no meio do KV. Ele faz uma única
+reconstrução fria desde o pedaço 0, que reseta a sessão inteira em todos os
+hops. Sessão perdida no peer segue a mesma reconstrução; se ela falhar, a
+sessão termina limpa e o gateway libera os hops alcançados.
 
 O modo anel permanece serializado pelo contrato de resposta aninhada, para não
 abrir uma segunda requisição na mesma sessão sem a confirmação da anterior; ele
@@ -868,15 +868,15 @@ resposta errada em motores recorrentes ou híbridos que recusam remoção parcia
 `session-lost-cold`.
 
 Se um peer perder a sessão durante o prefill - por coleta de ociosidade,
-reinício do processo ou remoção explícita -, ele devolve "sessão desconhecida".
-O gateway reconhece essa recusa e repete a rodada inteira do zero uma única vez,
-mesmo quando o pedido não usava prefixo: o estado anterior daquele peer não
-existe mais, então repetir apenas o chunk recusado poderia produzir uma resposta
-silenciosamente errada. O custo é refazer também os chunks já aceitos e o KV em
-todos os hops. Se a segunda rodada falhar, o erro final informa que o sistema
-tentou reconstruir o contexto e que o pedido não foi executado; ele não expõe ao
-cliente a instrução interna de enviar `reset=true`. Reusar é otimização, nunca
-motivo para a requisição falhar.
+reinício do processo, remoção explícita ou resposta de transporte perdida -, o
+gateway não repete um chunk posterior. Ele reconhece que o estado remoto pode
+estar em qualquer posição e repete a rodada inteira do zero uma única vez,
+mesmo quando o pedido não usava prefixo. O custo é refazer também os chunks já
+aceitos e o KV em todos os hops. Se a reconstrução falhar, o erro final informa
+que o sistema tentou reconstruir o contexto e que o pedido não foi executado;
+antes dele, `release_sessions` percorre todas as URLs de cada hop e faz a
+liberação em modo best effort. Reusar é otimização, nunca motivo para a
+requisição falhar.
 
 O prompt que o cache reconhece vem do **array de mensagens**
 (`openai::conversation_cache_key`), não do texto renderizado, e `render_prompt`

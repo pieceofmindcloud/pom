@@ -62,12 +62,14 @@ pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
     *local_inference_slot().write().await = local.map(|local| (u64::MAX, local));
 }
 
-/// Attempts per prefill chunk before giving up on it — safe to retry because
-/// the receiving peer rewinds its KV cache to the chunk's position first
-/// (`infer_server.rs`'s rollback/order check). A decode step has no such
-/// protection, so callers relaying a step must pass `1` instead — see each
-/// call site's own comment for which applies.
-pub const CHUNK_ATTEMPTS: u32 = 3;
+/// Tentativa de prefill por chamada antes de devolver a falha ao gateway.
+///
+/// Uma falha de transporte não informa se o peer já gravou o chunk antes de
+/// perder a resposta. Reenviar cegamente pode pedir `kv_remove` no meio de um
+/// cache recorrente. A recuperação segura acontece no gateway, que recria a
+/// sessão inteira a partir do chunk 0. Decode também passa `1`, mas por uma
+/// razão independente: ele nunca tem rollback automático.
+pub const CHUNK_ATTEMPTS: u32 = 1;
 
 #[cfg(not(test))]
 const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_secs(600);
@@ -613,7 +615,7 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 /// this project has always used. An explicit HTTP error response is never
 /// retried — it's the peer's considered refusal, not a hiccup. `attempts=1`
 /// means exactly one try, no retry at all (the decode/`/v1/step` path has
-/// never retried, since — unlike prefill chunks — a step has no KV-rollback
+/// never retried, since, unlike prefill chunks, a step has no KV-rollback
 /// idempotency protection against being redecoded).
 fn encode_frame_body(
     meta: &Value,

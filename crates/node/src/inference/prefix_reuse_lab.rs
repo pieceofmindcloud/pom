@@ -102,6 +102,16 @@ struct Engine {
     /// limite de uma tentativa.
     unknown_session_at_chunk: Option<u32>,
     unknown_session_failures_remaining: usize,
+    /// Falha HTTP transitória controlada para simular a ligação cortada depois
+    /// de a cabeça aceitar um pedaço, mas antes de o hop seguinte o aceitar.
+    transport_failure_at_chunk: Option<u32>,
+    transport_failures_remaining: usize,
+}
+
+#[derive(Clone, Copy)]
+enum FaultKind {
+    UnknownSession,
+    Transport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,6 +428,20 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let chunk_index = inc.meta["chunk_index"].as_u64().unwrap_or(0) as u32;
     let chunk_size = inc.meta["chunk_size"].as_u64().unwrap_or(512) as u32;
     let reuse_pedido = inc.meta["reuse_prefix"].as_bool().unwrap_or(false);
+
+    {
+        let mut engine = hop.engine.lock().unwrap();
+        if engine.transport_failure_at_chunk == Some(chunk_index)
+            && engine.transport_failures_remaining > 0
+        {
+            engine.transport_failures_remaining -= 1;
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ligação de prefill cortada durante o pedaço",
+            )
+                .into_response();
+        }
+    }
 
     let Ingerido {
         n_tokens,
@@ -756,6 +780,43 @@ async fn conversa_com_hops_fault(
     hop_count: usize,
     fault: Option<(usize, u32, usize)>,
 ) -> Medida {
+    conversa_com_hops_fault_kind(
+        transporte,
+        turnos,
+        esperar_o_fim,
+        hop_count,
+        fault,
+        FaultKind::UnknownSession,
+    )
+    .await
+}
+
+async fn conversa_com_hops_transport_fault(
+    transporte: Transporte,
+    turnos: usize,
+    esperar_o_fim: bool,
+    hop_count: usize,
+    fault: Option<(usize, u32, usize)>,
+) -> Medida {
+    conversa_com_hops_fault_kind(
+        transporte,
+        turnos,
+        esperar_o_fim,
+        hop_count,
+        fault,
+        FaultKind::Transport,
+    )
+    .await
+}
+
+async fn conversa_com_hops_fault_kind(
+    transporte: Transporte,
+    turnos: usize,
+    esperar_o_fim: bool,
+    hop_count: usize,
+    fault: Option<(usize, u32, usize)>,
+    fault_kind: FaultKind,
+) -> Medida {
     assert!(hop_count >= 1);
     let motores: Vec<Arc<Mutex<Engine>>> = (0..hop_count)
         .map(|_| Arc::new(Mutex::new(Engine::default())))
@@ -774,8 +835,16 @@ async fn conversa_com_hops_fault(
     if let Some((hop_index, chunk_index, failures)) = fault {
         assert!(hop_index < hop_count);
         let mut engine = motores[hop_index].lock().unwrap();
-        engine.unknown_session_at_chunk = Some(chunk_index);
-        engine.unknown_session_failures_remaining = failures;
+        match fault_kind {
+            FaultKind::UnknownSession => {
+                engine.unknown_session_at_chunk = Some(chunk_index);
+                engine.unknown_session_failures_remaining = failures;
+            }
+            FaultKind::Transport => {
+                engine.transport_failure_at_chunk = Some(chunk_index);
+                engine.transport_failures_remaining = failures;
+            }
+        }
     }
 
     let caps = transporte.caps();
@@ -796,6 +865,12 @@ async fn conversa_com_hops_fault(
             p.end_layer = i as u32;
             p.total_layers = hop_count as u32;
             p.inference_frame_capabilities = caps.clone();
+            if matches!(fault_kind, FaultKind::Transport) {
+                // Mantém o endereço anunciado antigo na frente e deixa o
+                // `addr` atual como fallback. O cenário prova tanto a
+                // recuperação do prefill quanto o release pela rota viva.
+                p.addr_candidates = vec!["127.0.0.1:1".into()];
+            }
             p
         })
         .collect();
@@ -1179,6 +1254,41 @@ async fn unknown_session_recovery_is_bounded() {
                 4,
                 "{transporte:?} repetiu mais que uma vez o passo que falhou no hop {i}: {:?}",
                 engine.frames
+            );
+        }
+    }
+}
+
+/// Se a ligação cai depois de a cabeça aceitar o chunk, um motor recorrente
+/// não pode receber a repetição parcial: ele não sabe remover o meio do KV.
+/// A recuperação deve falhar sem pedir essa remoção e liberar as sessões que
+/// ficaram nos hops alcançados.
+#[tokio::test]
+async fn mid_prefill_transport_failure_does_not_corrupt_recurrent_session() {
+    for transporte in Transporte::todos() {
+        let medida = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            conversa_com_hops_transport_fault(transporte, 1, true, 2, Some((1, 1, 2))),
+        )
+        .await
+        .expect("a falha de transporte não pode deixar a sessão pendurada");
+        let turno = &medida.turnos[0];
+        assert!(
+            turno.falhou.is_some(),
+            "{transporte:?} devia devolver a falha persistente ao cliente"
+        );
+
+        for (i, hop) in medida.hops.iter().enumerate() {
+            let engine = hop.lock().unwrap();
+            assert!(
+                engine.remocoes_parciais.is_empty(),
+                "{transporte:?} pediu remoção parcial no hop {i}: {:?}",
+                engine.remocoes_parciais
+            );
+            assert!(
+                engine.sessions.is_empty(),
+                "{transporte:?} deixou a sessão no hop {i}: {:?}",
+                engine.sessions.keys().collect::<Vec<_>>()
             );
         }
     }

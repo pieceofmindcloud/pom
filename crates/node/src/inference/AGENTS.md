@@ -250,9 +250,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o permit de cada limite viaja com o pedaço. A janela cancela as futures em
   voo no erro ou no cancelamento e preserva a ordem do resultado. Um pedaço
   `k>0` que falha depois de a cadeia aceitar os anteriores anexa um
-  `PrefillResumable` ao erro, e o gateway retoma do pedaço `k` em vez de
-  reenviar o prompt (sessão perdida vai para o retry frio). O modo anel
-  continua serializado pelo contrato aninhado e ignora a janela. A telemetria
+  `PrefillResumable` ao erro para diagnóstico, mas o gateway não repete esse
+  ponto depois de uma falha de transporte: a resposta perdida não prova se o
+  peer já gravou o chunk, e a reentrada poderia pedir remoção parcial de KV.
+  A recuperação segura recria a sessão inteira a frio, uma vez; se ela falhar,
+  o cleanup libera os hops alcançados. O modo anel continua serializado pelo
+  contrato aninhado e ignora a janela. A telemetria
   também registra `prefix_match_tokens`, `prefix_reuse_status`,
   `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
   travessia.
@@ -294,6 +297,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Também simula um hop que perde a sessão no meio do prefill: o gateway repete
   o prefill completo a frio uma única vez, para reconstruir o KV desde o prompt,
   e a bateria verifica que uma segunda perda termina com erro limitado e útil.
+  O cenário de corte no meio de um prefill confirma também que nenhum hop
+  recebe remoção parcial e que as sessões remanescentes são liberadas.
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
@@ -850,7 +855,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `run_with_options`/`step` - dispatch em três níveis: `run_direct`/`step_direct`
   quando `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
   `supports_relay_chain()`, senão o pipeline hub. `run_with_options` recebe
-  `max_inflight_chunks` e um `resume: Option<PrefillResumable>` (retomada).
+  `max_inflight_chunks` e um `resume: Option<PrefillResumable>` para uma
+  retomada que o chamador tenha provado segura; a recuperação de transporte
+  usa reconstrução fria.
 - hub e `run_direct` - pipeline em ordem, não par travado: `head_pump`
   (despacho serial à cabeça, lê `next_pos` do ACK) e um `drain` com
   `FuturesOrdered` que leva cada estado oculto pelos hops restantes, até `W`
@@ -948,7 +955,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `extract_relay_failure` - usado por `forward_direct` para nomear o hop que
   falhou na entrega do erro direto.
 - `RelayFailure{failed_node_id, kind, message}`/`HttpRefusal`/`SendIssue` - o
-  gateway responde 502 atribuindo o hop que falhou; `CHUNK_ATTEMPTS=3`.
+  gateway responde 502 atribuindo o hop que falhou. `CHUNK_ATTEMPTS=1` no
+  prefill: uma resposta perdida deixa ambíguo se o chunk já foi aplicado, então
+  o gateway reconstrói a sessão inteira em vez de repetir parcialmente.
 
 `direct.rs`:
 - `ReplyInbox`/`Ticket` - mapa ticket→canal oneshot que vive no `GatewayState`

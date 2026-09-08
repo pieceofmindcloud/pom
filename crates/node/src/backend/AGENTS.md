@@ -436,10 +436,10 @@ profile policy remains the effective authorization boundary.
   prefill in hub and direct paths runs as an ordered pipeline of configurable
   depth (`prefill_max_inflight_chunks`, effective 1..8, default 8, also
   `--prefill-max-inflight-chunks`), bounded also by a 512 MiB hidden-state byte
-  budget; a chunk that fails past chunk 0 is resumed from that chunk rather than
-  re-sending the whole prompt, while the ring stays serialized by its nested
-  response contract; the request trace reports pipeline depth, prefix reuse and
-  transport per traversal;
+  budget; a chunk that fails after earlier chunks were accepted is rebuilt from
+  chunk 0 because the lost response makes partial KV removal unsafe, while the
+  ring stays serialized by its nested response contract; the request trace
+  reports pipeline depth, prefix reuse and transport per traversal;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
   the tail produces `next_draft` and the remote head installs it in the next
   internal `step` metadata before continuing its owned loop. The existing
@@ -461,8 +461,10 @@ profile policy remains the effective authorization boundary.
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
   the next turn the instant the stream closes and used to arrive in the middle
-  of it; token events still go out live. A prefill that fails with the prefix
-  enabled is retried once from scratch - reusing is an optimisation, never a
+  of it; token events still go out live. `release_sessions` tries every
+  `inference_candidates` route, remembers which route worked, and remains best
+  effort so a stale address cannot prevent cleanup. A prefill that fails with
+  the prefix enabled is retried once from scratch - reusing is an optimisation, never a
   reason for the request to fail. A peer that reports an unknown session also
   triggers that same single cold retry, even when the original request did not
   use prefix reuse, because a later chunk cannot be reconstructed from hidden

@@ -79,10 +79,11 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 ### Tratamento de `Announce` no recebimento
 
 - Um `addr` começando em `0.0.0.0` é reescrito com o endereço de origem do
-  pacote (o "sentinel" de quem anuncia sem endereço). O endereço observado é
-  **acrescentado** a `addr_candidates` via `merge_observed`, nunca substitui: é
-  o único candidato que enxerga NAT, mas um caminho que já funcionou não
-  invalida os outros.
+  pacote (o "sentinel" de quem anuncia sem endereço). O endereço efetivo de
+  origem é sempre **acrescentado** a `addr_candidates` via `merge_observed`,
+  mesmo quando o anúncio trouxe outro `addr`: ele é o caminho comprovadamente
+  alcançável neste instante, enquanto o endereço anunciado continua sendo
+  apenas cache.
 - `PeerRequest` responde com um `Announce` imediato (mesmo sem assignment) e com
   o `PeerList` de peers vivos, fatiado para caber em `MAX_DATAGRAM_PAYLOAD`
   (1200 B, o piso que o IPv6 garante; `PeerList` cresce ~530 B por peer).
@@ -105,8 +106,11 @@ tem de aguentar isso sem configuração: o endereço que um par anunciou ontem p
 não existir em máquina nenhuma hoje. Fixar `--advertise-addr` **não** é a
 resposta - é um remendo por máquina para um defeito que é de todas.
 
-Quem anuncia já lida com a rotação: `filter_candidates` descarta `deprecated` e
-põe estável antes de temporário. Quem **guarda** é que não lidava:
+Quem anuncia já lida com a rotação: `self_announce` enumera as interfaces uma
+vez por anúncio e `filter_candidates` descarta `deprecated` e põe estável antes
+de temporário. Essa enumeração é uma leitura local, sem sonda de rede; acontece
+no gossip a cada 5 s e também em anúncios imediatos. Quem **guarda** é que não
+lidava:
 
 - `PeerInfo::gateway_url()` era só `peer.addr`, um endereço e nenhum plano B,
   enquanto `inference_url()` já preferia `addr_candidates`. Todo o plano de
@@ -131,6 +135,11 @@ Hoje:
   lugar ao próximo, enquanto uma resposta HTTP permanece uma recusa do peer.
   O anúncio futuro deve atualizar essa lista; o endereço guardado não é uma
   âncora permanente.
+- O caminho de inferência (`inference_candidates`) e a descoberta UDP
+  (`dialable_addrs`) também preservam todos os endereços válidos. O transporte
+  ordena os candidatos pela memória de falha, tenta o próximo quando o anterior
+  falha e deixa a falha expirar; DNS dinâmico é resolvido de novo em cada
+  tentativa, então uma mudança de hostname não exige reinício.
 - A leitura do cluster (`/api/ui/cluster`) percorre esses candidatos e alimenta
   a **mesma** memória de falha do caminho de inferência: `mark_failure` em erro
   de transporte ou timeout, `mark_success` em resposta boa. Resposta inválida ou
@@ -196,9 +205,11 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
 - Porta `0` nunca é anunciada nem usada como destino: pins explícitos,
   endereços observados e candidatos de peers com essa porta são descartados.
   Um peer sem nenhum candidato discável não entra na tabela de destinos.
-- `Announce.addr` usa `announce_addr()`: o fixado, o primeiro endereço público
-  local com a porta de descoberta, o observado por `identify`, ou o literal
-  `0.0.0.0:<porta>`.
+- `self_announce` monta `Announce.addr` e `addr_candidates` a partir da mesma
+  fotografia das interfaces: o fixado, o primeiro endereço público local com
+  a porta de descoberta, o observado por `identify`, ou o literal
+  `0.0.0.0:<porta>`. A fotografia é renovada em cada anúncio, sem sondagem de
+  rede cara; no gossip, a frequência efetiva é 5 s.
 - O literal curinga continua podendo aparecer no `Announce` como sentinel de
   escuta quando o nó ainda não tem endereço anunciável. Antes de qualquer uso
   como destino, `network::is_valid_destination` exige porta diferente de zero e

@@ -86,12 +86,15 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
   de rotas e RTT (30 s, sonda lenta não segura o gossip). A política TLS inicial
   é aplicada antes de `start`; a task sonda `/health` na porta de inferência de
-  cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel. O
+  cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel. Cada
+  `self_announce` enumera as interfaces uma vez por anúncio, portanto a
+  troca de IPv6 temporário entra no gossip seguinte sem sondagem de rede. O
   tratamento de cada datagrama é protegido por `catch_unwind`, com contexto no
   aviso e limite de frequência para não inundar o log se o pânico se repetir.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
-  origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
-  `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. O `PeerList` também
+  origem e chama `merge_observed` com o endereço efetivo do socket), PeerRequest
+  (responde Announce imediato + `PeerList` fatiado), PeerList, Heartbeat,
+  LocalDiscover. O `PeerList` também
   atualiza um peer já conhecido quando o snapshot é mais novo, preservando o
   estado local de verificação e os candidatos de endereço **que este nó ainda
   não provou mortos**; snapshots antigos são
@@ -109,6 +112,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `Network::cleanup_dead_peers` - além de remover o peer expirado, chama
   `RouteTable::forget` nele, para que um nó que volta com o mesmo endereço não
   nasça desacreditado.
+- `PeerInfo::dialable_addrs` - todos os endereços UDP válidos, com deduplicação,
+  para que descoberta e reencontro tentem os candidatos antes de desistir.
 - `PeerInfo::gateway_candidates` / `gateway_url` - uma URL de gateway por
   endereço conhecido, com `addr` primeiro (fato conhecido: é de onde os pacotes
   do peer chegaram) e os candidatos anunciados depois; `gateway_url` é só a
@@ -130,11 +135,14 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `detach`/`rejoin` - tirar/voltar o nó da rede sem derrubar a UI/API
   (`--no-discovery`); rejoin refaz bootstrap + announce.
 - `self_announce` - monta o Announce; anuncia zero camadas quando não há
-  assignment, para que nó configurado pela UI ainda seja visível. O endereço
-  segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
-  atual das interfaces com estável antes de temporário, endereço observado por
-  `identify`, demais interfaces locais e o sentinela `0.0.0.0`. Bridges e pares
-  virtuais de container não entram nos candidatos automáticos. Quando o
+  assignment, para que nó configurado pela UI ainda seja visível. Relê as
+  interfaces uma vez a cada anúncio, a cada 5 s no gossip e também em anúncios
+  imediatos; é uma leitura local de `ifconfig`/`ip`, sem sonda de rede. O mesmo
+  snapshot alimenta `addr` e `addr_candidates`. O endereço segue a mesma ordem
+  em UDP e gossip: fixação explícita, endereço público atual das interfaces com
+  estável antes de temporário, endereço observado por `identify`, demais
+  interfaces locais e o sentinela `0.0.0.0`. Bridges e pares virtuais de
+  container não entram nos candidatos automáticos. Quando o
   servidor de inferência está carregado, o anúncio também inclui
   `inference/remote-token-stream-v1`, que permite ao gateway remoto pedir o
   laço de decode com callbacks em lotes limitados. O mesmo anúncio leva

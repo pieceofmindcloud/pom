@@ -65,11 +65,11 @@ pub fn is_cancelled(error: &anyhow::Error) -> bool {
 }
 
 /// Um pedaço do prefill falhou **depois** de a cadeia já ter aceitado pedaços
-/// anteriores. Viaja anexado ao erro (`anyhow` context) e diz de onde o prefill
-/// pode ser retomado sem reenviar o prompt inteiro: cada peer refaz o próprio
-/// KV a partir de `start_pos` pela reentrada de pedaço que `prefill_blocking`
-/// já trata (`kv_remove` da cauda; motor recorrente que recusa cai no retry
-/// frio total). Só é emitido para `from_chunk > 0`.
+/// anteriores. Viaja anexado ao erro (`anyhow` context) como diagnóstico do
+/// ponto onde uma retomada seria possível apenas se o estado remoto fosse
+/// conhecido. Uma resposta de transporte perdida não prova isso, portanto o
+/// gateway faz reconstrução fria em vez de usar este ponto cegamente. Só é
+/// emitido para `from_chunk > 0`.
 #[derive(Debug, Clone, Copy)]
 pub struct PrefillResumable {
     pub from_chunk: u32,
@@ -191,9 +191,10 @@ impl PrefillOverlapWindow {
 
 /// Attempts per chunk before the request is given up on. Lives in `relay.rs`
 /// (`crate::relay::CHUNK_ATTEMPTS`) since a ring-mode relaying hop needs the
-/// same number for its own outbound prefill calls — a prefill chunk is
-/// retry-safe (the KV-rollback idempotency in `infer_server.rs`), a decode
-/// step is not, so the two must not share one constant that later drifts.
+/// same number for its own outbound prefill calls. A prefill chunk gets one
+/// attempt because a lost response leaves its KV application ambiguous; a
+/// decode step is also not retried, so the two must not share one constant that
+/// later drifts.
 /// What the last peer produced once the whole prompt is in.
 #[derive(Debug, Clone)]
 pub struct PrefillOutcome {

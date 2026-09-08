@@ -10,7 +10,9 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `pipeline.rs` - `LoadTracker`/`LoadGuard` (contagem RAII de requisições em
   voo por peer), `PipelineStep`/`PipelinePlan`/`PipelineEdge`, `plan_pipeline`
   (greedy) e `resolve_step_url` (endereço por hop, por sessão). Cada
-  `PipelineStep` preserva também os candidatos UDP do hop para o túnel libp2p.
+  `PipelineStep` preserva os candidatos HTTP e UDP do hop; os transportes
+  tentam a lista com memória de falha expirável em vez de tratar `addr` como
+  verdade permanente.
 
 ## Funções-chave
 
@@ -70,7 +72,8 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   candidato), 2) `inference_url` (endereço observado, o único comprovado antes
   da primeira sonda), 3) primeiro candidato. Fixa a escolha por sessão - o KV
   cache do outro lado é por sessão, e trocar de endereço no meio é pior que a
-  rota lenta.
+  rota lenta. A abertura usa `PipelineStep.inference_candidates` como fallback
+  quando o endereço escolhido falha antes de a sessão começar.
 - `routing_request_from_peers` - traduz `PeerInfo` para o `RoutingRequest` do
   `routing-contract` (rota futura de planejador; produção ainda usa
   `plan_pipeline` até cobertura de equivalência).

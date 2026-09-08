@@ -300,7 +300,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `overlay_head_authoritative_fields`, `prompt_progress_for_forward`).
   Também simula um hop que perde a sessão no meio do prefill: o gateway repete
   o prefill completo a frio uma única vez, para reconstruir o KV desde o prompt,
-  e a bateria verifica que uma segunda perda termina com erro limitado e útil.
+  e a bateria verifica que uma segunda perda termina com erro limitado e útil,
+  contando no máximo duas tentativas frias no chunk 0, sem usar o total de
+  frames como proxy da limpeza durante a janela sobreposta.
   O cenário de corte no meio de um prefill confirma também que nenhum hop
   recebe remoção parcial e que as sessões remanescentes são liberadas.
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
@@ -535,14 +537,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   valor até o próximo runtime pronto.
   Os testes de `runtime.rs` usam `Network::testkit`, com socket e destino UDP
   presos à loopback, para que anúncios de readiness nunca alcancem a LAN.
-- `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
+- `spec_lab.rs` (614, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção. O fixture não
   anuncia batching, pois o endpoint falso atende frames unitários. Os cenários
   também conferem que a resposta real do gateway traz `GenerationTimings`
   agregados, inclusive no limite de um token; a política de
   `kv_can_shift=false` e o estado do stream remoto ficam cobertos nos testes
-  de `infer_server`/`prefill`.
+  de `infer_server`/`prefill`. A fixture do orçamento desliga o detector de
+  ciclos para que sua sequência periódica não encerre a geração antes do teto
+  e a comparação continue isolando `n_batch` do orçamento total.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
   lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o

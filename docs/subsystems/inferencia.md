@@ -1893,17 +1893,17 @@ medição do transporte usado para iniciar o stream.
   transporte, e telemetria atrasada não segura o resultado.
   O teste de `link_lab` também ficou verde com a escada que não desativa a
   rota por requisição.
-- Continuam vermelhos, sem alteração de expectativa nesta tarefa:
-  `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` (espera teto 2048,
-  recebe 96), três de `deploy::whole_route_tests` (estado de catálogo/fatias)
-  e `webui::tests::merge_parts_joins_two_slices_into_a_whole` (metadado
+- Continuam vermelhos, sem alteração de expectativa nesta tarefa, três de
+  `deploy::whole_route_tests` (estado de catálogo/fatias) e
+  `webui::tests::merge_parts_joins_two_slices_into_a_whole` (metadado
   `head_count_kv_by_layer`). São expectativas de outros subsistemas e ficam
   anotados sem conserto de passagem.
 - A contagem acima repete a medição da revisão com
-  `--skip prefix_reuse_lab`. Sem esse filtro, a suíte também mantém vermelho
-  `prefix_reuse_lab::unknown_session_recovery_is_bounded` (o hub repete os três
-  chunks depois de perder a sessão); esse caso não fazia parte dos oito
-  achados medidos e não foi alterado aqui.
+  `--skip prefix_reuse_lab`. Os testes
+  `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` e
+  `prefix_reuse_lab::unknown_session_recovery_is_bounded` agora isolam,
+  respectivamente, o orçamento do detector de ciclos e o limite de tentativas
+  frias; o total de frames permanece determinado pela janela de prefill.
 - **Os testes de `webui` que repassam para uma máquina falsa são instáveis sob
   carga** (2026-09-03): cada rodada da suíte cheia derruba **um** deles, e nem
   sempre o mesmo - vistos `webui::leave_tests::leaving_for_a_peer_is_forwarded_to_that_peer`

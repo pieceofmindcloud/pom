@@ -188,6 +188,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   returned by the node planner, not display-only estimates.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
+- `AdminAuthorityView` and the authority offer types describe the principal,
+  secondary admins, promotion chain, resignation eligibility and notification
+  states. `adminAuthority.ts` keeps mutations behind a contract and does not
+  encode key, signature or grant-storage decisions.
 
 ### queries.ts
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
@@ -212,6 +216,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   is a question waiting on a human, not a progress bar. With the sender no
   longer hashing the file before offering, the active cadence keeps that
   question responsive without charging an idle tab the same rate.
+- `useAdminAuthority()` reads the authority presentation contract every 8s;
+  `useOffers()` normalizes legacy slice offers and also carries principal
+  transfer, infer-to-node approval and node-to-infer notice states for the
+  activity bell.
 - `invalidateAfterAction(qc)` / `useInvalidate()` - after a mutation, refetch node, cluster, jobs, admin-nodes and models at once.
 
 ### chatStore.ts

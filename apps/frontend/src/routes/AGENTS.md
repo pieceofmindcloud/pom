@@ -306,9 +306,17 @@ Per-file list:
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
   O perfil `infer` também abre `/config/rede`, mas o backend devolve somente a
-  própria máquina e oferece `POST /api/ui/network/promote`; não carrega peers
-  nem inventário remoto. O administrador pode promover um nó via
+  própria máquina e oferece `POST /api/ui/network/request-node`; o pedido
+  aparece no sino para aprovação de qualquer admin. Um `node` pode descer para
+  infer por `POST /api/ui/network/relinquish-node`: novas inferências saem do
+  encaminhamento, as atuais drenam e só então a fatia é liberada. O
+  administrador principal pode promover um nó via
   `POST /admin/nodes/:id/promote-admin`.
+- `AdminAuthority.tsx` - Admin authority screen backed by
+  `GET /api/ui/network/admin-authority`. It shows the principal, secondary
+  administrators, promotion chain and resignation eligibility. Its mutations
+  are isolated in `lib/adminAuthority.ts`; pending principal-transfer and
+  infer-to-node offers are answered by `Notifications`.
 - `Preferences.tsx` - Local settings screen under Configurações: owns the
   administrative exposure mode and gateway port, displays the generated access
   token only in network mode, and saves them to `pom.json` through

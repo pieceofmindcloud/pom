@@ -3,13 +3,14 @@
  * and whether this machine is even taking part.
  */
 import {
+  ArrowDownToLine,
+  ArrowUp,
   Ban,
   LogIn,
   LogOut,
   Network,
   Radio,
   Save,
-  ShieldCheck,
   ShieldOff,
   Undo2,
 } from "lucide-react";
@@ -33,6 +34,7 @@ import {
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
+import { adminAuthorityApi } from "../lib/adminAuthority";
 import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
@@ -50,12 +52,11 @@ export function NetworkSettings() {
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [promotionPending, setPromotionPending] = useState<{
-    id: string;
-    hostname: string;
-  } | null>(null);
-  const [promoting, setPromoting] = useState<string | null>(null);
-  const [promotingSelf, setPromotingSelf] = useState(false);
+  const [nodeRequestBusy, setNodeRequestBusy] = useState(false);
+  const [nodeRequestState, setNodeRequestState] = useState<"none" | "pending" | "rejected">("none");
+  const [nodeRequestLoaded, setNodeRequestLoaded] = useState(false);
+  const [relinquishConfirm, setRelinquishConfirm] = useState(false);
+  const [relinquishing, setRelinquishing] = useState(false);
 
   const [advertiseAddr, setAdvertiseAddr] = useState("");
   const [addrSaving, setAddrSaving] = useState(false);
@@ -67,6 +68,12 @@ export function NetworkSettings() {
     setAdvertiseAddr(node.data.advertise_addr ?? "");
     setAddrLoaded(true);
   }, [node.data, addrLoaded]);
+
+  useEffect(() => {
+    if (nodeRequestLoaded || !node.data) return;
+    setNodeRequestState(node.data.node_promotion_request ?? "none");
+    setNodeRequestLoaded(true);
+  }, [node.data, nodeRequestLoaded]);
 
   async function saveAdvertiseAddr() {
     setAddrSaving(true);
@@ -118,30 +125,31 @@ export function NetworkSettings() {
     }
   }
 
-  async function promoteSelf() {
-    setPromotingSelf(true);
+  async function requestNodePromotion() {
+    setNodeRequestBusy(true);
     try {
-      await api.post("/api/ui/network/promote");
-      toast.success(t("network.promoted"), t("network.promotedDetail"));
+      await adminAuthorityApi.requestNodePromotion();
+      setNodeRequestState("pending");
+      toast.success(t("network.requestNodeSent"), t("network.requestNodePending"));
       invalidate();
     } catch (e) {
-      toast.fromError(t("network.promotionFailed"), e);
+      toast.fromError(t("network.requestNodeFailed"), e);
     } finally {
-      setPromotingSelf(false);
+      setNodeRequestBusy(false);
     }
   }
 
-  async function promoteNode(id: string) {
-    setPromoting(id);
+  async function relinquishNode() {
+    setRelinquishing(true);
     try {
-      await api.post(`/admin/nodes/${id}/promote-admin`);
-      toast.success(t("network.nodePromoted"), t("network.nodePromotedDetail"));
-      void nodes.refetch();
+      await adminAuthorityApi.relinquishNode();
+      toast.success(t("network.relinquishNodeStarted"));
+      invalidate();
     } catch (e) {
-      toast.fromError(t("network.promotionFailed"), e);
+      toast.fromError(t("network.relinquishNodeFailed"), e);
     } finally {
-      setPromoting(null);
-      setPromotionPending(null);
+      setRelinquishing(false);
+      setRelinquishConfirm(false);
     }
   }
 
@@ -202,15 +210,44 @@ export function NetworkSettings() {
             <PanelHeader
               eyebrow={t("network.profile")}
               title={t("profile.infer")}
-              subtitle={t("network.inferPromotionDetail")}
+              subtitle={t("network.inferRequestDetail")}
+              actions={
+                nodeRequestState === "pending" ? (
+                  <Badge tone="amber">{t("network.requestNodePending")}</Badge>
+                ) : (
+                  <Button
+                    variant="primary"
+                    loading={nodeRequestBusy}
+                    icon={<ArrowUp className="h-3.5 w-3.5" />}
+                    onClick={() => void requestNodePromotion()}
+                  >
+                    {t("network.requestNode")}
+                  </Button>
+                )
+              }
+            />
+            {nodeRequestState === "rejected" && (
+              <p className="border-t border-line px-5 py-3 text-sm text-rose">
+                {t("network.requestNodeRejected")}
+              </p>
+            )}
+          </Panel>
+        )}
+
+        {node.data?.profile === "node" && (
+          <Panel>
+            <PanelHeader
+              eyebrow={t("network.profile")}
+              title={t("network.relinquishNode")}
+              subtitle={t("network.relinquishNodeDescription")}
               actions={
                 <Button
-                  variant="primary"
-                  loading={promotingSelf}
-                  icon={<ShieldCheck className="h-3.5 w-3.5" />}
-                  onClick={() => void promoteSelf()}
+                  variant="danger"
+                  loading={relinquishing}
+                  icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
+                  onClick={() => setRelinquishConfirm(true)}
                 >
-                  {t("network.promoteSelf")}
+                  {t("network.relinquishNode")}
                 </Button>
               }
             />
@@ -306,24 +343,6 @@ export function NetworkSettings() {
                     </span>
                     {!n.is_self && (
                       <>
-                        {node.data?.profile === "admin" &&
-                          n.role?.toLowerCase() !== "principal" &&
-                          !n.blocked && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              loading={promoting === n.node_id}
-                              icon={<ShieldCheck className="h-3.5 w-3.5" />}
-                              onClick={() =>
-                                setPromotionPending({
-                                  id: n.node_id,
-                                  hostname: n.hostname || n.short_id,
-                                })
-                              }
-                            >
-                              {t("network.promoteAdmin")}
-                            </Button>
-                          )}
                         <Button
                           size="sm"
                           variant={n.blocked ? "outline" : "danger"}
@@ -369,15 +388,14 @@ export function NetworkSettings() {
         onCancel={() => setPending(null)}
       />
       <Confirm
-        open={promotionPending !== null}
-        title={t("network.promoteAdminTitle", {
-          hostname: promotionPending?.hostname ?? "",
-        })}
-        description={t("network.promoteAdminDescription")}
-        confirmLabel={t("network.promoteAdmin")}
-        busy={promoting !== null}
-        onConfirm={() => promotionPending && void promoteNode(promotionPending.id)}
-        onCancel={() => setPromotionPending(null)}
+        open={relinquishConfirm}
+        title={t("network.relinquishNodeTitle")}
+        description={t("network.relinquishNodeDescription")}
+        confirmLabel={t("network.relinquishNode")}
+        tone="danger"
+        busy={relinquishing}
+        onConfirm={() => void relinquishNode()}
+        onCancel={() => setRelinquishConfirm(false)}
       />
     </>
   );

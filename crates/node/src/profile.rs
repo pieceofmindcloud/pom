@@ -37,7 +37,6 @@ pub(crate) enum NetworkVisibility {
 pub(crate) enum ProfileAction {
     ViewNetwork,
     ViewNetworkPeers,
-    SelfPromoteToNode,
     PromoteNodeToAdmin,
     ManageDeployment,
 }
@@ -112,7 +111,6 @@ impl NodeProfile {
             ProfileAction::ViewNetworkPeers => {
                 matches!(self.network_visibility(), NetworkVisibility::Cluster)
             }
-            ProfileAction::SelfPromoteToNode => matches!(self, Self::Infer),
             ProfileAction::PromoteNodeToAdmin => matches!(self, Self::Admin),
             ProfileAction::ManageDeployment => matches!(self, Self::Admin),
         }

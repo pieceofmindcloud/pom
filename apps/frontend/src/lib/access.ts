@@ -31,11 +31,13 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/implantacoes": ["admin"],
   "/logs": ["admin"],
   "/estatisticas": ["admin"],
+  "/config/administracao": ["admin", "node"],
 };
 
 /**
  * Vista local do infer. A rota de rede permanece visível para que o nó possa
- * se auto-promover, mas o backend retorna somente dados desta máquina.
+ * pedir entrada no processamento, mas o backend retorna somente dados desta
+ * máquina.
  */
 const INFER_ROUTES = ["/chat", "/documentacao", "/config/keys/api", "/config/rede"] as const;
 

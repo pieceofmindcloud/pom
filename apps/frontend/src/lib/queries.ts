@@ -25,6 +25,7 @@ import type {
   AdminNode,
   AdminAccessInfo,
   AdminAccessStatus,
+  AdminAuthorityView,
   ApiKey,
   CacheTypesResponse,
   CatalogResponse,
@@ -33,13 +34,13 @@ import type {
   ClusterLogResponse,
   Job,
   NodeInfo,
+  NetworkOffer,
   PathsResponse,
   PeerCatalog,
   PeerRuntime,
   RequestLogResponse,
   RequestStats,
   TransferJob,
-  TransferOffer,
 } from "./types";
 
 /**
@@ -71,6 +72,7 @@ export const keys = {
   jobs: ["jobs"] as const,
   transfers: ["transfers"] as const,
   offers: ["offers"] as const,
+  adminAuthority: ["admin-authority"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
@@ -385,10 +387,24 @@ export function useOffers() {
     queryKey: keys.offers,
     queryFn: () =>
       optional(
-        api.getConditional<{ offers: TransferOffer[] }>("/api/transfer/offers"),
+        api.getConditional<{ offers: NetworkOffer[] }>("/api/transfer/offers"),
         { offers: [] },
-      ),
+      ).then((response) => ({
+        offers: response.offers.map((offer) =>
+          offer.kind ? offer : { ...offer, kind: "slice" as const },
+        ),
+      })),
     refetchInterval: (query) => offersPollInterval(query.state.data),
+  });
+}
+
+/** Authority state is presentation data; mechanism details stay server-side. */
+export function useAdminAuthority(enabled = true) {
+  return useQuery({
+    queryKey: keys.adminAuthority,
+    queryFn: () => api.get<AdminAuthorityView>("/api/ui/network/admin-authority"),
+    enabled,
+    refetchInterval: 8000,
   });
 }
 
@@ -555,6 +571,8 @@ export function invalidateAfterAction(qc: QueryClient) {
     keys.node,
     keys.cluster,
     keys.jobs,
+    keys.offers,
+    keys.adminAuthority,
     keys.adminNodes,
     keys.models,
     keys.remoteModelProviderStatus,

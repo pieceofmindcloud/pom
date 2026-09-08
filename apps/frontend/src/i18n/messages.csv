@@ -8,6 +8,61 @@ accessGate.title,Access token required,Token de acesso necessário
 accessGate.unavailable,The node did not publish its administrative access policy. The interface stays locked until it can verify that policy.,O nó não publicou a política de acesso administrativo. A interface permanece fechada até conseguir verificá-la.
 accessGate.unavailableTitle,Interface unavailable,Interface indisponível
 accessGate.username,Account,Conta
+adminAuthority.actionFailed,The authority action was refused.,A ação de autoridade foi recusada.
+adminAuthority.actionsSubtitle,Only the principal can change the administrator chain.,Somente o principal pode alterar a cadeia de administradores.
+adminAuthority.actionsTitle,Administrator actions,Ações de administrador
+adminAuthority.active,active,ativo
+adminAuthority.chainEmpty,No secondary promotions yet,Nenhuma promoção de secundário ainda
+adminAuthority.chainNote,The sequence is the network record of who promoted whom.,A sequência é o registro da rede de quem promoveu quem.
+adminAuthority.chainSubtitle,Every secondary admin is shown with the principal who promoted it.,Cada admin secundário aparece com o principal que o promoveu.
+adminAuthority.chainTitle,Promotion chain,Cadeia de promoções
+adminAuthority.chooseNode,Choose a node,Escolha um nó
+adminAuthority.demote,Demote,Despromover
+adminAuthority.demoteAction,Demote {hostname},Despromover {hostname}
+adminAuthority.demoteConfirmDescription,This node will stop being an administrator. It will not become the principal.,Este nó deixará de ser administrador. Ele não se tornará o principal.
+adminAuthority.demoteConfirmTitle,Demote {hostname}?,Despromover {hostname}?
+adminAuthority.demoted,Administrator demoted,Administrador despromovido
+adminAuthority.demotedDetail,The selected node is no longer an administrator.,O nó selecionado não é mais administrador.
+adminAuthority.eyebrow,Authority,Autoridade
+adminAuthority.finalAuthority,final authority,autoridade final
+adminAuthority.grantBy,Promoted by {hostname},Promovido por {hostname}
+adminAuthority.inactive,not active,inativo
+adminAuthority.noActiveSuccessor,No secondary administrator is active to receive the principal role.,Nenhum admin secundário está ativo para suceder o principal.
+adminAuthority.noPromotionCandidates,No active node can be promoted right now.,Nenhum nó ativo pode ser promovido agora.
+adminAuthority.noSecondary,No secondary administrators,Nenhum admin secundário
+adminAuthority.noSecondaryDetail,The principal is the only administrator in this network.,O principal é o único administrador nesta rede.
+adminAuthority.noSecondarySuccessor,There are no secondary administrators to receive the principal role.,Não há admins secundários para suceder o principal.
+adminAuthority.nodeReadOnly,Only administrators can change this authority chain.,Somente administradores podem alterar esta cadeia de autoridade.
+adminAuthority.pageFailed,The authority state could not be loaded.,Não foi possível carregar o estado da autoridade.
+adminAuthority.pageLoading,Loading authority state,Carregando o estado da autoridade
+adminAuthority.pageSubtitle,Review administrators and make the changes allowed for this node.,Revise os administradores e faça as mudanças permitidas para este nó.
+adminAuthority.pageTitle,Administrator authority,Autoridade dos administradores
+adminAuthority.pendingNoChange,"Nothing has changed yet. {hostname} remains the principal until the successor accepts.",Nada mudou ainda. {hostname} continua sendo o principal até o sucessor aceitar.
+adminAuthority.pendingSubtitle,The successor has not accepted the signed offer yet.,O sucessor ainda não aceitou a oferta assinada.
+adminAuthority.pendingTitle,Principal transfer pending,Transferência de principal pendente
+adminAuthority.pendingTo,Offer sent to {hostname},Oferta enviada para {hostname}
+adminAuthority.principal,principal,principal
+adminAuthority.principalCanChange,Only the principal can promote or demote administrators.,Somente o principal pode promover ou despromover administradores.
+adminAuthority.promote,Promote to administrator,Promover a administrador
+adminAuthority.promoteConfirmDescription,This node will become a secondary administrator. It will not be able to promote other administrators.,Este nó se tornará um admin secundário. Ele não poderá promover outros administradores.
+adminAuthority.promoteConfirmTitle,Promote {hostname}?,Promover {hostname}?
+adminAuthority.promoteSubtitle,"Choose an active node. Secondary administrators can manage the network, but cannot promote anyone.","Escolha um nó ativo. Admins secundários podem administrar a rede, mas não podem promover ninguém."
+adminAuthority.promoteTitle,Promote a node,Promover um nó
+adminAuthority.promotionTarget,Node to promote,Nó para promover
+adminAuthority.resign,Transfer principal role,Transferir papel de principal
+adminAuthority.resignConfirmDescription,"The offer will be sent to {hostname}. Nothing changes until that administrator accepts it.","A oferta será enviada para {hostname}. Nada muda até esse administrador aceitá-la."
+adminAuthority.resignConfirmTitle,Transfer the principal role to {hostname}?,Transferir o papel de principal para {hostname}?
+adminAuthority.resignRefused,The principal role cannot be transferred,Não é possível transferir o papel de principal
+adminAuthority.resignSubtitle,The successor is determined by the last node promoted by this principal.,O sucessor é determinado pelo último nó promovido por este principal.
+adminAuthority.resignTitle,Resign as principal,Resignar do papel de principal
+adminAuthority.resignationSent,Transfer offer sent,Oferta de transferência enviada
+adminAuthority.resignationSentDetail,The principal role is unchanged until the successor accepts.,O papel de principal não muda até o sucessor aceitar.
+adminAuthority.secondary,secondary,secundário
+adminAuthority.secondaryReadOnly,Only the principal administers the administrator chain.,Somente o principal administra a cadeia de administradores.
+adminAuthority.subtitle,"See the principal, secondary administrators, and the verified promotion chain.","Veja o principal, os admins secundários e a cadeia de promoções verificadas."
+adminAuthority.successorLabel,Successor,Sucessor
+adminAuthority.successorRule,This is the last node promoted by the principal. You cannot choose another one.,Este é o último nó promovido pelo principal. Não é possível escolher outro.
+adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
 canvas.fit,Fit to network,Ajustar à rede
@@ -771,6 +826,7 @@ models.sendAria,Send {name},Enviar {name}
 models.size,Size,Tamanho
 models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
+nav.administration,Administration,Administração
 nav.apiKeys,API keys,API keys
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
@@ -819,6 +875,7 @@ network.detached,Disconnected from network,Fora da rede
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."
 network.inferPromotionDetail,This node sees only itself on the network. Promote it when you want it to share its hardware.,Este nó enxerga somente a si mesmo na rede. Promova-o quando quiser que ele compartilhe o hardware.
+network.inferRequestDetail,This node can request access to the network. A principal or secondary administrator must approve the request from the notification bell.,Este nó pode pedir acesso à rede. O principal ou um admin secundário precisa aprovar o pedido pelo sino de notificações.
 network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}}","{count}{count, plural, =1 { nó conhecido} other { nós conhecidos}}"
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
@@ -855,6 +912,16 @@ network.promoted,Node profile enabled,Perfil node ativado
 network.promotedDetail,This machine now shares its hardware with the network.,Esta máquina agora compartilha o hardware com a rede.
 network.promotionFailed,The profile promotion was refused,A promoção de perfil foi recusada
 network.rejoin,Rejoin network,Voltar para a rede
+network.relinquishNode,Become an infer node,Virar um nó infer
+network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
+network.relinquishNodeFailed,The node could not leave the node role,O nó não conseguiu deixar o papel de node
+network.relinquishNodeStarted,This node is draining before becoming infer,Este nó está drenando antes de virar infer
+network.relinquishNodeTitle,Become an infer node?,Virar um nó infer?
+network.requestNode,Request to become a node,Pedir para virar node
+network.requestNodeFailed,The node request was not sent,O pedido para virar node não foi enviado
+network.requestNodePending,Request pending,Pedido pendente
+network.requestNodeRejected,The node request was rejected,O pedido para virar node foi recusado
+network.requestNodeSent,Request sent to the administrators,Pedido enviado aos administradores
 network.role,Role,Papel
 network.subtitle,Which machines this node sees and which it refuses to serve.,"Quem este nó enxerga, e quem ele se recusa a atender."
 network.thermalCooldownLabel,Cooldown (seconds),Tempo de resfriamento (segundos)
@@ -896,9 +963,23 @@ notifications.allTransfers,View all transfers,Ver todas as transferências
 notifications.downloadProgress,"{done} of {total} · {rate}{__truthy_remaining, select, false {} other { · {remaining} remaining}}","{done} de {total} · {rate}{__truthy_remaining, select, false {} other { · faltam {remaining}}}"
 notifications.empty,Nothing happening,Nada acontecendo
 notifications.emptyDetail,"Slicing and transfers appear here while running, even after reloading the page.","Fatiamentos e transferências aparecem aqui enquanto rodam, mesmo depois de recarregar a página."
+notifications.nodePromotionAccepted,Node request approved,Pedido de node aprovado
+notifications.nodePromotionAcceptedDetail,{host} is now a node after administrator approval.,{host} agora é node após a aprovação do administrador.
+notifications.nodePromotionDetail,{host} requests permission to become a node.,{host} pede permissão para virar node.
+notifications.nodePromotionRejected,Node request rejected,Pedido de node recusado
+notifications.nodePromotionRejectedDetail,{host} remains infer because the administrators rejected the request.,{host} continua infer porque os administradores recusaram o pedido.
+notifications.nodePromotionTitle,Node promotion request,Pedido para virar node
+notifications.nodeRelinquishDetail,"{host} is leaving the node role. New inference is routed elsewhere, current inference drains, and the slice is released afterward.","{host} está deixando o papel de node. A inferência nova vai para outro lugar, a atual drena e a fatia é liberada depois."
+notifications.nodeRelinquishTitle,Node leaving the network role,Nó deixando o papel de node
 notifications.offerFailed,The offer could not be answered,A oferta não pôde ser respondida
 notifications.offerRejected,Offer rejected,Oferta recusada
 notifications.offerTitle,{host} wants to send this · {size},{host} quer enviar isto · {size}
+notifications.principalTransferAccepted,Principal role accepted,Papel de principal aceito
+notifications.principalTransferAcceptedDetail,{host} accepted the principal role offer.,{host} aceitou a oferta do papel de principal.
+notifications.principalTransferDetail,"{host} offered you the principal role. Until you accept, {host} remains the principal.","{host} ofereceu a você o papel de principal. Até você aceitar, {host} continua sendo o principal."
+notifications.principalTransferRejected,Principal transfer rejected,Transferência de principal recusada
+notifications.principalTransferRejectedDetail,{host} rejected the principal role offer. The principal role did not change.,{host} recusou a oferta do papel de principal. O papel de principal não mudou.
+notifications.principalTransferTitle,Principal role offered,Papel de principal oferecido
 notifications.reject,Reject,Recusar
 notifications.started,started,começou
 notifications.state.cancelled,cancelled,cancelada
@@ -908,6 +989,7 @@ notifications.title,Activity,Atividade
 notifications.transferFrom,from {host},de {host}
 notifications.transferStarted,Transfer started,Transferência iniciada
 notifications.transferTo,to {host},para {host}
+notifications.viewAdministration,View administration,Ver administração
 paths.addFolder,Add another folder,Mais uma pasta
 paths.addMissing,"{count, plural, =1 {Add the missing folder} other {Add missing folders}}","{count, plural, =1 {Adicionar a que falta} other {Adicionar as que faltam}}"
 paths.autoDetect,automatic detection,detecção automática

@@ -15,6 +15,7 @@ import {
   Search,
   Send,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Terminal,
@@ -111,6 +112,7 @@ export const NAV: NavSection[] = [
     footerTo: "/config/keys/api",
     children: [
       { labelKey: "nav.network", to: "/config/rede", icon: Network, promoteProfiles: ["infer"] },
+      { labelKey: "nav.administration", to: "/config/administracao", icon: ShieldCheck },
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
       { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },

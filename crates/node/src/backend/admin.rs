@@ -697,8 +697,11 @@ async fn internal_promote_node_to_admin(
         )
             .into_response();
     }
+    // The promotion grants administrative capability, not succession. The
+    // principal role remains unique to the current principal until a signed
+    // transfer is accepted by its successor.
     cfg.profile = NodeProfile::Admin;
-    cfg.role = Role::Principal;
+    cfg.role = Role::Node;
     if let Err(error) = cfg.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -707,7 +710,7 @@ async fn internal_promote_node_to_admin(
             .into_response();
     }
     drop(cfg);
-    state.network.set_role("Principal");
+    state.network.set_role("Node");
     Json(json!({ "profile": "admin", "node_id": state.network.node_id })).into_response()
 }
 
@@ -1015,7 +1018,10 @@ mod tests {
 
     /// Builds the administrator peer exactly as the target sees it in gossip:
     /// announced as `principal` and carrying the pubkey that signed the command.
-    fn admin_peer(signing_key: &ed25519_dalek::SigningKey, gateway_port: u16) -> crate::network::PeerInfo {
+    fn admin_peer(
+        signing_key: &ed25519_dalek::SigningKey,
+        gateway_port: u16,
+    ) -> crate::network::PeerInfo {
         let node_id = crate::identity::NodeId::from_pubkey(&signing_key.verifying_key()).0;
         let mut peer = crate::gateway::testkit::peer(&node_id, "admin-box", gateway_port);
         peer.role = "principal".into();
@@ -1061,12 +1067,30 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let cfg = state.auth.read().await;
         assert_eq!(cfg.profile, NodeProfile::Admin);
-        assert_eq!(cfg.role, Role::Principal);
+        assert_eq!(cfg.role, Role::Node);
         // What gets persisted is asserted on the serialized config rather than
         // on the file: `Config::config_path()` is process-global, so pointing
         // it at a temp file here would capture the writes of every other test
         // saving concurrently in this same binary.
         assert_eq!(serde_json::to_value(&*cfg).unwrap()["profile"], "admin");
+    }
+
+    #[tokio::test]
+    async fn a_secondary_admin_cannot_promote_another_node() {
+        let state = crate::gateway::testkit::state_with(
+            "secondary",
+            vec![crate::gateway::testkit::peer("outro", "salem", 8081)],
+        )
+        .await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.profile = NodeProfile::Admin;
+            auth.role = Role::Node;
+        }
+        let response =
+            promote_node_to_admin(ConnectionAuth, State(state), Path("outro".to_string())).await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

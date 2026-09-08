@@ -137,6 +137,10 @@ Per-file list:
   per job with state, named phase, byte heartbeat, rate/ETA when available and
   output paths. Completed and failed history remains on the slicing screen so
   a failure cannot look like an eternal spinner; partial outputs are shown.
+- `AdminAuthorityPanel.tsx` - Readable authority roster for the principal,
+  secondary admins and promotion chain. It exposes promotion, demotion and
+  succession controls only when the presentation contract says this viewer is
+  the principal; refusal states remain explicit.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), o selo i18n do perfil persistido do nó, the bell (`Notifications`), and `NodeActions` - a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network
@@ -148,6 +152,10 @@ Per-file list:
   inside the popover. Offers can be accepted/rejected right there
   (`POST /api/transfer/offers/:id/accept|reject`). All state is read back from
   the node, so a reload in the middle of a transfer shows the same bar.
+  It also renders principal-transfer and infer-to-node offers from the same
+  `useOffers()` response. Node-to-infer changes are amber notices without
+  action buttons. Authority offers keep their pending state in the bell and
+  link to `/config/administracao` for the roster.
   Lista os **dois sentidos** — ícone de subida para `sending`, de descida para
   `receiving` — e também o **desfecho recente**: concluída, falhada e recusada
   ficam no sino por `RECENTLY_FINISHED_MS`. Antes ela mostrava só o que estava

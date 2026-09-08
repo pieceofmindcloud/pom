@@ -67,7 +67,7 @@ fonte do escopo aplicado pelo gateway:
 - `admin-only`: administração, logs, desenvolvimento e ciclo de vida;
 - `node+admin`: modelos, preparação de máquina, fatiamento, provider e
   transferência;
-- `infer+node+admin`: geração, API `/v1`, histórico do chat e auto-promoção
+- `infer+node+admin`: geração, API `/v1`, histórico do chat e pedido de entrada
   de infer para nó;
 - `common/identity internal`: catálogo próprio, vistas compartilhadas,
   telemetria e protocolo nó-a-nó.
@@ -79,6 +79,19 @@ chamadas entre nós ainda exigem a `connection_key` correta e o marcador interno
 validado pelo handler, nunca o marcador sozinho. `/api/setup/key`, `/api/setup/save` e as rotas da porta 8181
 (`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
 `/v1/tp/reduce`, `/health`) ficam explicitamente fora do escopo desta política.
+
+A tela de autoridade usa `GET /api/ui/network/admin-authority` para o contrato
+de apresentação do principal, admins secundários, cadeia de promoções e
+elegibilidade da sucessão. As mutações isoladas da tela são
+`POST /admin/nodes/{id}/promote-admin`, `POST /admin/authority/resign` e
+`POST /admin/authority/secondaries/{id}/demote`; o principal é a única origem
+autorizada para promover, resignar e despromover. O pedido de infer para node é
+`POST /api/ui/network/request-node` e a descida voluntária de node para infer é
+`POST /api/ui/network/relinquish-node`. Os estados das ofertas de autoridade
+compartilham `GET /api/transfer/offers` e suas respostas
+`POST /api/transfer/offers/{id}/accept|reject`, para que a interface use o
+mesmo sino das ofertas de fatia. Esses endpoints são contratos de apresentação
+e não definem chave, assinatura ou armazenamento de concessões.
 
 ### Fronteira de exposição
 

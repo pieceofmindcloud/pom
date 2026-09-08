@@ -103,7 +103,7 @@ describe("NetworkSettings", () => {
     expect(screen.queryByText("Criptografia entre nós")).toBeNull();
   });
 
-  it("mantém a rede acessível ao infer, sem listar peers, e oferece auto-promoção", async () => {
+  it("mantém a rede acessível ao infer, sem listar peers, e envia um pedido", async () => {
     queryMocks.node.data.profile = "infer";
     queryMocks.nodes.data = [{
       node_id: "outro",
@@ -124,11 +124,11 @@ describe("NetworkSettings", () => {
     );
 
     expect(screen.getAllByText("infer").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /promover a node/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /pedir para virar node/i })).toBeTruthy();
     expect(screen.queryByText("Nós conhecidos")).toBeNull();
     expect(screen.queryByText("salem")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /promover a node/i }));
-    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/promote"));
+    fireEvent.click(screen.getByRole("button", { name: /pedir para virar node/i }));
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/request-node"));
   });
 });

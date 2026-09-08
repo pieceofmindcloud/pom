@@ -1,8 +1,7 @@
 use crate::profile::{NetworkVisibility, NodeProfile, ProfileAction};
 
 #[test]
-fn infer_can_self_promote_and_view_only_its_local_network() {
-    assert!(NodeProfile::Infer.allows(ProfileAction::SelfPromoteToNode));
+fn infer_can_request_node_access_and_view_only_its_local_network() {
     assert!(NodeProfile::Infer.allows(ProfileAction::ViewNetwork));
     assert!(!NodeProfile::Infer.allows(ProfileAction::ViewNetworkPeers));
     assert_eq!(

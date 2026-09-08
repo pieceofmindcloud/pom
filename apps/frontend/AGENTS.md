@@ -54,10 +54,10 @@ remain local until the deploy preflight.
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, documentação,
-API key e a tela de rede local para auto-promoção. O valor vem de `/api/ui/node`,
-é propriedade persistida do nó e aparece na toolbar. Isso não substitui a
-autorização do backend: o servidor também limita a resposta da rede e as
-promoções.
+API key e a tela de rede local para pedir entrada no processamento. O valor vem
+de `/api/ui/node`, é propriedade persistida do nó e aparece na toolbar. Isso
+não substitui a autorização do backend: o servidor também limita a resposta da
+rede e as promoções.
 Na Sidebar desse perfil, o histórico e `Conversa nova` são o menu principal;
 as sessões compartilham estado com o Chat, a lista rola dentro do espaço
 disponível e a rede fica sempre abaixo dela. Documentação e Configurações
@@ -93,7 +93,10 @@ perfis.
   tela separada dos agregados da auditoria. `/logs/estatisticas` redireciona
   para a rota nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
-- `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences,
+- `/config/rede` -> NetworkSettings; `/config/administracao` -> AdminAuthority,
+  which shows the principal, secondary administrators and the promotion chain.
+  Only the principal gets promotion, demotion and resignation controls; pending
+  authority offers use the activity bell. `/config/preferencias` -> Preferences,
   including administrative exposure and gateway port plus the moved TLS choice;
   `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys;
   `/config/pastas` -> ModelPaths

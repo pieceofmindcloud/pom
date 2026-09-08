@@ -199,6 +199,8 @@ export interface NodeInfo {
   effective_address: string;
   /** Se o cluster fala TLS entre peers agora. `webui.rs` - `NodeInfo`. */
   tls_required: boolean;
+  /** Estado do pedido deste nó infer para participar como node. */
+  node_promotion_request?: "none" | "pending" | "rejected";
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
   /** Se este nó coleta e envia logs de processo do cluster. */
@@ -770,6 +772,11 @@ export interface TransferJob {
 }
 
 export interface TransferOffer {
+  /** Tipo explícito no contrato novo; ausente apenas quando o servidor ainda
+   * não anota ofertas de fatia, que continuam sendo o caso padrão. */
+  kind?: "slice";
+  /** Resultado terminal, quando o servidor mantém o desfecho no sino. */
+  status?: "pending" | "accepted" | "rejected" | "expired";
   id: string;
   from_node_id: string;
   from_host: string;
@@ -794,6 +801,50 @@ export interface TransferOffer {
    */
   pom?: OfferManifest | null;
 }
+
+/** Oferta do mesmo sino que transfere o papel de principal. */
+export interface AdminTransferOffer {
+  kind: "principal_transfer";
+  id: string;
+  from_node_id: string;
+  from_host: string;
+  target_node_id: string;
+  target_host: string;
+  status: "pending" | "accepted" | "rejected" | "expired";
+  issued_at: string;
+}
+
+/** Pedido de um nó infer para entrar no processamento da rede. */
+export interface NodePromotionOffer {
+  kind: "node_promotion";
+  id: string;
+  from_node_id: string;
+  from_host: string;
+  target_node_id: string;
+  target_host: string;
+  status: "pending" | "accepted" | "rejected";
+  issued_at: string;
+}
+
+/** Aviso informativo emitido quando outro nó desce para infer. */
+export interface NodeRelinquishNotice {
+  kind: "node_relinquish_notice";
+  id: string;
+  from_node_id: string;
+  from_host: string;
+  target_node_id: string;
+  target_host: string;
+  status: "notice";
+  issued_at: string;
+  active_model?: string | null;
+}
+
+/** Todos os pedidos que podem aparecer no sino de atividade. */
+export type NetworkOffer =
+  | TransferOffer
+  | AdminTransferOffer
+  | NodePromotionOffer
+  | NodeRelinquishNotice;
 
 /** `crate::pom::PomManifest`, na parte que a tela usa. */
 export interface OfferManifest {
@@ -820,6 +871,43 @@ export interface AdminNode {
   connected: boolean;
   blocked: boolean;
   verified: boolean;
+}
+
+export type AdminAuthorityViewer = "principal" | "secondary" | "node";
+
+export interface AdminAuthorityMember {
+  node_id: string;
+  short_id: string;
+  hostname: string;
+  active: boolean;
+}
+
+export interface AdminGrant {
+  sequence: number;
+  node_id: string;
+  node_hostname: string;
+  promoted_by_node_id: string;
+  promoted_by_hostname: string;
+}
+
+export type AdminResignationState =
+  | { kind: "eligible"; successor: AdminAuthorityMember }
+  | { kind: "no_secondary" }
+  | { kind: "no_active_secondary" };
+
+/** Contrato de apresentação. Não carrega a escolha de chave, assinatura ou armazenamento. */
+export interface AdminAuthorityView {
+  viewer: AdminAuthorityViewer;
+  principal: AdminAuthorityMember;
+  secondary: AdminAuthorityMember[];
+  grants: AdminGrant[];
+  resignation: AdminResignationState;
+  pending_transfer: AdminTransferOffer | null;
+  permissions: {
+    promote: boolean;
+    resign: boolean;
+    demote: boolean;
+  };
 }
 
 export interface ApiKey {

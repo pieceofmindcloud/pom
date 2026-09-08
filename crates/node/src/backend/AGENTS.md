@@ -113,7 +113,13 @@ profile policy remains the effective authorization boundary.
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
-  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
+  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). A
+  superfície de autoridade expõe o contrato de apresentação em
+  `/api/ui/network/admin-authority`; pedidos infer-to-node e descida
+  node-to-infer usam `/api/ui/network/request-node` e
+  `/api/ui/network/relinquish-node`. Ofertas de autoridade compartilham o feed
+  de ofertas para que o sino do browser não escolha o mecanismo de concessão ou
+  assinatura.
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
@@ -228,8 +234,9 @@ profile policy remains the effective authorization boundary.
 - `profile.rs` - `NodeProfile` is the durable product profile, separate from
   `Role`; it is the one source for network visibility and profile promotions.
   The web UI serializes it through `GET /api/ui/node`. Infer nodes can read a
-  local-only network view and self-promote; only a principal admin can send the
-  signed node-to-admin command.
+  local-only network view and request node access; only a principal admin can
+  send the signed node-to-admin command. A secondary admin keeps management
+  access but cannot promote another admin.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de

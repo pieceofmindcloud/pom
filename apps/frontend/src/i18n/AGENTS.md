@@ -20,6 +20,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   lógica usa `plural`, `select` e seletores exatos ICU. Valores internos de
   `select` são preparados apenas pelo carregador para preservar condicionais
   de truthiness que existiam no código antigo.
+- O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente
+  leitura de admins secundários e nós: roster, cadeia de promoções, sucessor,
+  recusas concretas, confirmações e resultado das ações. O grupo
+  `notifications.*` também nomeia ofertas de sucessão e de promoção
+  infer-to-node, além do aviso sem botões de descida para infer.
 - `locales.ts` - parser CSV pequeno, carregamento síncrono do `?raw`, cache de
   `IntlMessageFormat` e a API pública de locale. Não coloque traduções novas
   aqui. O fallback continua sendo locale solicitado, depois inglês, depois a

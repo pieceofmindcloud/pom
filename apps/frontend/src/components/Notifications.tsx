@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   Download,
   Inbox,
+  Info,
   Scissors,
   Upload,
   X,
@@ -33,7 +34,14 @@ import { useJobs, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
-import type { TransferJob } from "../lib/types";
+import type {
+  AdminTransferOffer,
+  NetworkOffer,
+  NodePromotionOffer,
+  NodeRelinquishNotice,
+  TransferJob,
+  TransferOffer,
+} from "../lib/types";
 import { Badge, Button, Empty, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
@@ -106,6 +114,22 @@ function Row({
   );
 }
 
+type AuthorityOffer = AdminTransferOffer | NodePromotionOffer | NodeRelinquishNotice;
+
+function isAuthorityOffer(offer: NetworkOffer): offer is AuthorityOffer {
+  return offer.kind === "principal_transfer"
+    || offer.kind === "node_promotion"
+    || offer.kind === "node_relinquish_notice";
+}
+
+function isSliceOffer(offer: NetworkOffer): offer is TransferOffer {
+  return !offer.kind || offer.kind === "slice";
+}
+
+function isPendingOffer(offer: NetworkOffer): boolean {
+  return !offer.status || offer.status === "pending";
+}
+
 export function Notifications() {
   const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
@@ -122,6 +146,8 @@ export function Notifications() {
   // notificação que faltava, nos dois sentidos.
   const moving = (transfers.data?.jobs ?? []).filter((transfer) => isWorthNotifying(transfer));
   const waiting = offers.data?.offers ?? [];
+  const sliceOffers = waiting.filter(isSliceOffer);
+  const authorityOffers = waiting.filter(isAuthorityOffer);
   const count = running.length + moving.length + waiting.length;
 
   useEffect(() => {
@@ -138,10 +164,23 @@ export function Notifications() {
     };
   }, [open]);
 
-  async function answerOffer(id: string, accept: boolean) {
+  async function answerOffer(offer: NetworkOffer, accept: boolean) {
     try {
-      await api.post(`/api/transfer/offers/${id}/${accept ? "accept" : "reject"}`);
-      toast.success(accept ? t("notifications.transferStarted") : t("notifications.offerRejected"));
+      await api.post(`/api/transfer/offers/${offer.id}/${accept ? "accept" : "reject"}`);
+      const kind = offer.kind ?? "slice";
+      toast.success(
+        accept
+          ? kind === "principal_transfer"
+            ? t("notifications.principalTransferAccepted")
+            : kind === "node_promotion"
+              ? t("notifications.nodePromotionAccepted")
+              : t("notifications.transferStarted")
+          : kind === "principal_transfer"
+            ? t("notifications.principalTransferRejected")
+            : kind === "node_promotion"
+              ? t("notifications.nodePromotionRejected")
+              : t("notifications.offerRejected"),
+      );
       void offers.refetch();
       void transfers.refetch();
     } catch (e) {
@@ -261,7 +300,7 @@ export function Notifications() {
                 );
               })}
 
-              {waiting.map((o) => (
+              {sliceOffers.map((o) => (
                 <Row
                   key={o.id}
                   icon={<Inbox className="h-3.5 w-3.5" />}
@@ -286,37 +325,110 @@ export function Notifications() {
                     size: bytes(o.size_bytes),
                   })}
                   footer={
-                    <>
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        icon={<Check className="h-3.5 w-3.5" />}
-                        onClick={() => answerOffer(o.id, true)}
-                      >
-                        {t("notifications.accept")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon={<X className="h-3.5 w-3.5" />}
-                        onClick={() => answerOffer(o.id, false)}
-                      >
-                        {t("notifications.reject")}
-                      </Button>
-                    </>
+                    isPendingOffer(o) ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          icon={<Check className="h-3.5 w-3.5" />}
+                          onClick={() => void answerOffer(o, true)}
+                        >
+                          {t("notifications.accept")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<X className="h-3.5 w-3.5" />}
+                          onClick={() => void answerOffer(o, false)}
+                        >
+                          {t("notifications.reject")}
+                        </Button>
+                      </>
+                    ) : undefined
                   }
                 />
               ))}
+
+              {authorityOffers.map((offer) => {
+                const pending = isPendingOffer(offer);
+                const isTransfer = offer.kind === "principal_transfer";
+                const isPromotion = offer.kind === "node_promotion";
+                return (
+                  <Row
+                    key={offer.id}
+                    icon={
+                      offer.kind === "node_relinquish_notice" ? (
+                        <Info className="h-3.5 w-3.5 text-amber" />
+                      ) : (
+                        <Inbox className="h-3.5 w-3.5" />
+                      )
+                    }
+                    title={
+                      isTransfer
+                        ? pending
+                          ? t("notifications.principalTransferTitle")
+                          : offer.status === "accepted"
+                            ? t("notifications.principalTransferAccepted")
+                            : t("notifications.principalTransferRejected")
+                        : isPromotion
+                          ? pending
+                            ? t("notifications.nodePromotionTitle")
+                            : offer.status === "accepted"
+                              ? t("notifications.nodePromotionAccepted")
+                              : t("notifications.nodePromotionRejected")
+                          : t("notifications.nodeRelinquishTitle")
+                    }
+                    detail={
+                      isTransfer
+                        ? pending
+                          ? t("notifications.principalTransferDetail", { host: offer.from_host })
+                          : offer.status === "accepted"
+                            ? t("notifications.principalTransferAcceptedDetail", { host: offer.from_host })
+                            : t("notifications.principalTransferRejectedDetail", { host: offer.from_host })
+                        : isPromotion
+                          ? pending
+                            ? t("notifications.nodePromotionDetail", { host: offer.from_host })
+                            : offer.status === "accepted"
+                              ? t("notifications.nodePromotionAcceptedDetail", { host: offer.from_host })
+                              : t("notifications.nodePromotionRejectedDetail", { host: offer.from_host })
+                          : t("notifications.nodeRelinquishDetail", { host: offer.from_host })
+                    }
+                    tone={offer.kind === "node_relinquish_notice" ? "amber" : "iris"}
+                    footer={
+                      pending && (isTransfer || isPromotion) ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            icon={<Check className="h-3.5 w-3.5" />}
+                            onClick={() => void answerOffer(offer, true)}
+                          >
+                            {t("notifications.accept")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<X className="h-3.5 w-3.5" />}
+                            onClick={() => void answerOffer(offer, false)}
+                          >
+                            {t("notifications.reject")}
+                          </Button>
+                        </>
+                      ) : undefined
+                    }
+                  />
+                );
+              })}
             </div>
 
             <button
               onClick={() => {
                 setOpen(false);
-                navigate("/transferencias");
+                navigate(authorityOffers.length > 0 ? "/config/administracao" : "/transferencias");
               }}
               className="w-full border-t border-line px-4 py-2.5 text-center text-[0.8rem] text-muted transition-colors hover:bg-line/40 hover:text-fg"
             >
-              {t("notifications.allTransfers")}
+              {t(authorityOffers.length > 0 ? "notifications.viewAdministration" : "notifications.allTransfers")}
             </button>
           </motion.div>
         )}

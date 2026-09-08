@@ -988,35 +988,6 @@ pub(super) async fn save_advertise_addr(
     .into_response()
 }
 
-/// An inference-only node may volunteer its own hardware. This is the sole
-/// profile promotion that the node can authorize locally.
-pub(super) async fn promote_self_to_node(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
-    let mut cfg = state.auth.write().await;
-    if !cfg
-        .profile
-        .allows(crate::profile::ProfileAction::SelfPromoteToNode)
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "somente um nó infer pode se auto-promover" })),
-        )
-            .into_response();
-    }
-    cfg.profile = crate::profile::NodeProfile::Node;
-    if let Err(error) = cfg.save() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível salvar o perfil: {error}") })),
-        )
-            .into_response();
-    }
-    drop(cfg);
-    Json(json!({ "profile": "node", "node_id": state.network.node_id })).into_response()
-}
-
 #[derive(Deserialize)]
 pub struct SaveTlsRequest {
     pub tls_required: bool,

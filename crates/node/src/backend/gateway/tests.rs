@@ -348,7 +348,7 @@ mod tests {
         let cases = [
             (
                 crate::profile::NodeProfile::Infer,
-                "/api/ui/network/promote",
+                "/api/ui/network/request-node",
                 "/api/ui/models",
             ),
             (

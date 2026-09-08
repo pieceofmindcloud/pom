@@ -220,7 +220,7 @@ credencial sem reiniciar o processo; a precedência segue a documentada em
 O nó anuncia um perfil persistido em `pom.json`: `admin`, `node` ou `infer`.
 O administrador opera o cluster; o nó cuida da própria máquina; o `infer` tem
 uma vista reduzida para conversar com os modelos, ler a documentação, cuidar
-da própria API key e abrir a rede local para auto-promoção.
+da própria API key e pedir entrada no processamento da rede.
 `GET /api/ui/node` é a fonte usada pelo browser e a toolbar mostra o rótulo
 pela i18n.
 
@@ -276,11 +276,30 @@ impõe a vista local do `infer`: `/api/ui/cluster` e `/api/ui/cluster/models`
 não fan-outam para peers, `/admin/nodes` responde 403 e detalhes de outra
 máquina respondem 403. Não existe troca de perfil na interface.
 
-Na tela `/config/rede`, um `infer` vê os dados da própria máquina e pode chamar
-`POST /api/ui/network/promote` para se tornar `node`. O administrador pode
-promover um nó com `POST /admin/nodes/{id}/promote-admin`; o gateway exige
-perfil/role administrativos, e o alvo exige uma assinatura do principal
-conhecido junto da `connection_key` de transporte.
+Na tela `/config/rede`, um `infer` vê os dados da própria máquina e envia
+`POST /api/ui/network/request-node`. O pedido aparece no sino de notificações
+dos admins, e qualquer admin principal ou secundário pode aprová-lo ou recusá-lo.
+O nó só muda de perfil depois da aprovação do servidor. O administrador
+principal pode promover um nó com `POST /admin/nodes/{id}/promote-admin`; o
+gateway exige perfil e role de principal, e o alvo exige uma assinatura do
+principal conhecido junto da `connection_key` de transporte.
+
+Na mesma tela, um `node` pode pedir a própria descida com
+`POST /api/ui/network/relinquish-node`. A confirmação avisa que novas
+inferências são desviadas primeiro, que as inferências em curso drenam sem corte
+e que só então o perfil muda e a fatia é liberada. Se não houver substituto
+capaz da mesma faixa, a UI avisa que a faixa ficará descoberta e as gerações
+que precisarem dela falharão claramente. O admin recebe no sino apenas um aviso
+sem botões.
+
+`/config/administracao` mostra o principal, os admins secundários, a cadeia de
+promoções e a elegibilidade do sucessor. Só o principal pode promover ou
+despromover. A resignação mostra o sucessor determinado pelo último promovido e
+recusa explicitamente os casos sem secundários ou sem secundário ativo. A
+oferta de transferência do papel de principal é respondida pelo sucessor no
+sino; até a aceitação, nada muda e o principal continua principal. A página e
+o sino consomem contratos de apresentação, sem carregar decisões de chave,
+assinatura ou armazenamento de concessões.
 
 A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
 cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em `aqua` quando a política
@@ -309,7 +328,7 @@ no Dashboard (`hidden`, para uma superfície futura).
 
 No `infer`, o rodapé coloca Documentação e Configurações ao lado das bandeiras;
 o item principal de rede continua na coluna do histórico para preservar o acesso
-à auto-promoção. Essas posições são metadados de `NAV`, não uma segunda lista de
+ao pedido de entrada no processamento. Essas posições são metadados de `NAV`, não uma segunda lista de
 rotas.
 
 ## Arquitetura do frontend

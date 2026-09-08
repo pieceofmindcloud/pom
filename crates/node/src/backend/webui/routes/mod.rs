@@ -120,8 +120,16 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
-        prefix: "/api/ui/network/promote",
+        prefix: "/api/ui/network/admin-authority",
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/request-node",
         scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/relinquish-node",
+        scope: RouteScope::NodeAdmin,
     },
     // Operações locais do nó e do modelo.
     RouteRule {
@@ -257,6 +265,10 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/dev/",
         scope: RouteScope::AdminOnly,
     },
+    RouteRule {
+        prefix: "/admin/authority",
+        scope: RouteScope::AdminOnly,
+    },
 ];
 
 fn is_under(path: &str, prefix: &str) -> bool {
@@ -328,8 +340,16 @@ mod policy_tests {
             RouteScope::NodeAdmin
         );
         assert_eq!(
-            route_scope("/api/ui/network/promote"),
+            route_scope("/api/ui/network/admin-authority"),
+            RouteScope::CommonOrInternal
+        );
+        assert_eq!(
+            route_scope("/api/ui/network/request-node"),
             RouteScope::InferNodeAdmin
+        );
+        assert_eq!(
+            route_scope("/api/ui/network/relinquish-node"),
+            RouteScope::NodeAdmin
         );
         assert_eq!(
             route_scope("/v1/chat/completions"),
@@ -378,7 +398,10 @@ mod policy_tests {
         assert!(profile_can_access(Node, route_scope("/api/ui/models")));
         assert!(!profile_can_access(Node, route_scope("/admin/api-keys")));
 
-        assert!(profile_can_access(Infer, route_scope("/api/ui/network/promote")));
+        assert!(profile_can_access(
+            Infer,
+            route_scope("/api/ui/network/request-node")
+        ));
         assert!(!profile_can_access(Infer, route_scope("/api/ui/models")));
     }
 }

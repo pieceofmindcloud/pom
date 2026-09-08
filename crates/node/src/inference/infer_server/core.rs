@@ -498,6 +498,10 @@ impl SchedulerHandle {
 pub(crate) struct InferenceAppState {
     pub(super) state: SharedState,
     pub(super) scheduler: SchedulerHandle,
+    /// Counts compute requests executing in this inference process. The
+    /// gateway shares this tracker so `/api/ui/node` reports the local fact.
+    pub(super) loads: Arc<crate::pipeline::LoadTracker>,
+    pub(super) load_node_id: String,
     /// TP exposes one global decode/barrier identity per process. Serialize
     /// complete inbound batches so a second request cannot replace that id
     /// while the first batch is waiting for its workers.
@@ -1350,6 +1354,8 @@ mod tests {
             None,
             Arc::new(ModelCache::new()),
             false,
+            Arc::new(crate::pipeline::LoadTracker::new()),
+            "test-node".to_owned(),
         )
         .await
         .expect_err("porta ocupada devia falhar");

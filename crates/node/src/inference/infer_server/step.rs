@@ -29,6 +29,7 @@ pub(crate) async fn handle_step(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    let _load_guard = app.loads.acquire(&app.load_node_id).await;
     // Só o cabeçalho é lido aqui: um quadro de um item - o caso normal de
     // todo salto interno - não pode pagar uma cópia do estado oculto inteiro
     // só para descobrir que não é um lote.
@@ -415,8 +416,11 @@ pub(crate) async fn handle_step_stream(
         return err400("transporte remoto por lotes sem sessão ou token inicial");
     }
 
+    let loads = app.loads.clone();
+    let load_node_id = app.load_node_id.clone();
     let (producer_tx, producer_rx) = mpsc::channel(16);
     tokio::spawn(async move {
+        let _load_guard = loads.acquire(&load_node_id).await;
         let producer = remote_stream_producer(app, meta, dtype, producer_tx);
         let emitter = remote_stream_emitter(reply_to, producer_rx);
         let _ = tokio::join!(producer, emitter);

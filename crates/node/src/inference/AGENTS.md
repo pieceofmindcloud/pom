@@ -115,6 +115,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   HTTP ou falha da requisição em lote, nunca um novo panic em `unwrap`. EOS
   fecha apenas o acumulador da resposta; a sessão permanece disponível para
   rewind até o release explícito ou a coleta por ociosidade.
+  Os handlers de prefill, step e step-stream seguram um `LoadGuard` no tracker
+  compartilhado com o gateway enquanto há computação em voo; por isso o
+  `/api/ui/node` da própria máquina pode publicar a carga real, inclusive
+  quando a requisição chegou diretamente à porta de inferência.
   `PhaseTrace` transporta também `node_moe_forward_ms`, que é o custo do
   forward externo fora de `llama_decode` e fecha a conta do backend. `cuda`
   só é publicado depois do forward NVFP4 real; `cpu-reference` inclui os

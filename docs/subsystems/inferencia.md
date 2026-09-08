@@ -10,6 +10,12 @@ descreve os modos de execução, o formato binário do estado oculto, o
 prefill em pedaços, a resposta direta, a decodificação especulativa e os
 limites.
 
+Os handlers de `/v1/prefill`, `/v1/step` e `/v1/step-stream` seguram um
+`LoadGuard` durante a computação. O tracker é compartilhado pelo gateway e pelo
+servidor de inferência local, então `GET /api/ui/node` mede também pedidos que
+chegam diretamente à porta de inferência; a ausência de requisições reporta
+zero, e falha de leitura permanece desconhecida na UI.
+
 ## Porta de inferência e exposição administrativa
 
 O servidor de inferência (`--inference-port`) mantém a escuta em IPv4 e IPv6,

@@ -522,6 +522,8 @@ pub async fn run(
     auth: Option<crate::auth::AuthState>,
     model_cache: Arc<ModelCache>,
     reuse_weights: bool,
+    loads: Arc<crate::pipeline::LoadTracker>,
+    load_node_id: String,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -667,6 +669,8 @@ pub async fn run(
         scheduler,
         tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
         direct_forward_order: DirectForwardOrder::default(),
+        loads,
+        load_node_id,
     };
     crate::relay::install_local_inference(generation, Arc::new(app_state.clone())).await;
 

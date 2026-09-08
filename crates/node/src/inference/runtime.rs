@@ -636,6 +636,10 @@ pub struct NodeRuntime {
     /// Dono do último conjunto de pesos carregado. O servidor de cada geração
     /// conserva sua própria referência até drenar as requisições em voo.
     model_cache: Arc<crate::llm::ModelCache>,
+    /// Contador compartilhado pelo gateway e pelo servidor de inferência local.
+    /// Sem a mesma instância, o painel só veria o zero do tracker do gateway
+    /// enquanto as requisições executavam na porta de inferência.
+    loads: Arc<crate::pipeline::LoadTracker>,
     /// Serializes apply, manual unload and thermal unload so an operator action
     /// cannot race a temperature transition.
     operation: Mutex<()>,
@@ -681,12 +685,19 @@ impl NodeRuntime {
             tls,
             auth,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
+            loads: Arc::new(crate::pipeline::LoadTracker::new()),
             operation: Mutex::new(()),
             thermal: Arc::new(Mutex::new(ThermalRuntime {
                 blocked: false,
                 recovery: None,
             })),
         })
+    }
+
+    /// Tracker compartilhado com o gateway desta máquina e com o servidor de
+    /// inferência da geração atual.
+    pub fn load_tracker(&self) -> Arc<crate::pipeline::LoadTracker> {
+        self.loads.clone()
     }
 
     pub async fn config(&self) -> Option<NodeConfig> {
@@ -1085,6 +1096,8 @@ impl NodeRuntime {
         let capacity_net = self.net.clone();
         let auth = self.auth.clone();
         let model_cache = self.model_cache.clone();
+        let loads = self.loads.clone();
+        let load_node_id = self.net.node_id.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
@@ -1159,6 +1172,8 @@ impl NodeRuntime {
                     auth.clone(),
                     model_cache.clone(),
                     reuse_weights,
+                    loads.clone(),
+                    load_node_id.clone(),
                 )
                 .await;
                 if *gen_rx.borrow() != generation {

@@ -157,7 +157,6 @@ use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
 use network::Network;
 use ollama::OllamaClient;
-use pipeline::LoadTracker;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
@@ -1065,7 +1064,7 @@ async fn async_main(
             ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
             default_model: profile.name.clone(),
             local_assignment: assignment_shared.clone(),
-            loads: Arc::new(LoadTracker::new()),
+            loads: node_runtime.load_tracker(),
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
             peer_http: peer_clients.clone(),
@@ -1688,8 +1687,6 @@ async fn start_gateway_only(
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
 ) -> Result<()> {
     use crate::gateway::{start_gateway, GatewayState};
-    use crate::pipeline::LoadTracker;
-
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
@@ -1808,7 +1805,7 @@ async fn start_gateway_only(
         ollama: Arc::new(OllamaClient::new(&ollama_url)),
         default_model: String::new(),
         local_assignment: assignment_shared.clone(),
-        loads: Arc::new(LoadTracker::new()),
+        loads: node_runtime.load_tracker(),
         prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
         // Nó implantado pela UI (sem `--model`): é este o caminho comum, e o
         // cache de prefixo persistente precisa do índice aqui também.

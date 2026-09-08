@@ -281,8 +281,9 @@ Na tela `/config/rede`, um `infer` vê os dados da própria máquina e envia
 dos admins, e qualquer admin principal ou secundário pode aprová-lo ou recusá-lo.
 O nó só muda de perfil depois da aprovação do servidor. O administrador
 principal pode promover um nó com `POST /admin/nodes/{id}/promote-admin`; o
-gateway exige perfil e role de principal, e o alvo exige uma assinatura do
-principal conhecido junto da `connection_key` de transporte.
+gateway exige autoridade efetiva de principal, e o alvo valida a concessão
+Ed25519 na cadeia de confiança. A `connection_key` continua sendo apenas a
+credencial de transporte entre nós.
 
 Na mesma tela, um `node` pode pedir a própria descida com
 `POST /api/ui/network/relinquish-node`. A confirmação avisa que novas

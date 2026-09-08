@@ -144,17 +144,6 @@ desconhecida e nunca é convertido em alarme pela proteção térmica.
   pela interface) e por `main.rs` no arranque.
 - **`sysmon`** em `main.rs` (hostname) e `webui.rs` (endpoints `/api/ui/*`).
 
-## Defeitos anotados
-
-- `impl Display for Role` (`config.rs`) devolve rótulos humanos fixos em pt-BR
-  (`Principal`, `Nó`), e é esse texto que sai no `role` de `/api/ui/node` e
-  aparece cru na tela de rede, ao lado do `profile`. Duas consequências: a
-  string visível não passa pela i18n (a tela em inglês mostra "Nó"), e o mesmo
-  campo `role` é um **token** (`principal`/`node`) em `/admin/nodes`, então os
-  dois endpoints falam línguas diferentes. O `profile` já nasce token e é
-  traduzido na tela (`t("profile.<perfil>")`); `role` deveria seguir o mesmo
-  caminho. Não corrigido aqui porque muda o contrato de `/api/ui/node`.
-
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

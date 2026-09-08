@@ -30,10 +30,11 @@ casa é que a decisão de endereço pertence a quem vai discar, não a quem anun
 
 Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 
-- **`Announce`** - auto-apresentação: `node_id`, `pubkey`, `addr`, `addr_candidates`,
+- **`Announce`** - auto-apresentação: `node_id`, `pubkey`, `authority_pubkey`,
+  `libp2p_peer_id`, `addr`, `addr_candidates`,
   `model`, `start_layer`, `end_layer`, `total_layers`, `memory_mb`, `timestamp`,
   `ollama_port`, `inference_port`, `inference_frame_capabilities`, `gateway_port`,
-  `role`, `hostname`, `capabilities` (catálogo completo de `ModelCapability`),
+  `profile`, `hostname`, `capabilities` (catálogo completo de `ModelCapability`),
   `disk_total_mb`, `disk_free_mb`, e `tp` (a `TpIdentity` de tensor parallelism:
   `{role, group_id, size, rank, rank0_url, members}`, `None` = nó sem TP - ver
   `network.rs`). `rank0_url` é a URL do primary onde os ranks fazem o
@@ -269,7 +270,8 @@ transitiva ou reaproveitada como se fosse a aresta real.
 ## 3. Caminho libp2p (internet)
 
 `Discovery` (`discovery.rs`) constrói o swarm (`DiscBehaviour`) com gossipsub
-(tópico `pom/announce/1.0.0`, heartbeat 1 s, autenticação anônima),
+(tópico `pom/announce/1.0.0`, heartbeat 1 s, autenticação assinada e validação
+estrita),
 Kademlia em modo `Server`, mDNS, identify, relay (cliente **e** servidor),
 DCuTR, AutoNAT e o behaviour de bitswap. Escuta em `/ip4/0.0.0.0/tcp/<udp+10000>`
 e em `/ip6/::`.
@@ -299,11 +301,11 @@ e em `/ip6/::`.
   respostas TP e eventos de conexão enquanto um prefill, decode ou redução TP
   está em andamento.
   O id de mensagem é `discovery::announce_message_id` (hash do tópico +
-  payload), e **isso não é detalhe**: a função padrão do libp2p é
-  `source + sequence`, as duas são `None` sob autenticação anônima, e o
-  resultado era o mesmo id constante para todo anúncio. Medido no cluster de
-  verdade em 2026-08-16, com a malha formada: zero mensagem aceita em 90 s e
-  todo publish depois do primeiro recusado. Ver o doc da função.
+  payload). Antes de inserir o peer, `handle_event` também exige que
+  `Announce.libp2p_peer_id` corresponda ao `source` autenticado do transporte.
+  Essa ligação prova quem transportou o anúncio, mas não é raiz da autoridade
+  administrativa: concessões e comandos continuam exigindo a chave Ed25519 e a
+  cadeia local.
 - **mDNS:** descoberta na LAN que alimenta o endereço da Kademlia e diala o peer.
 - **Identify:** grava `listen_addrs` do remoto na Kademlia e, para relays
   conectados, escuta no circuito (`P2pCircuit`) do relay.

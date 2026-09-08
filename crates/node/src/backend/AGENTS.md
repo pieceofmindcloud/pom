@@ -29,12 +29,13 @@ remains dual-stack. `/health`, `/peers` and `/handshake` remain dual-stack.
 
 Before that exposure check, `gateway::require_admin_for_surface` consults the
 single `webui/routes/mod.rs` data table with the persisted `Config.profile`.
-A profile mismatch returns HTTP 403 with a JSON error, path and profile before
-the handler runs; an internal marker never overrides that profile decision. A
-node-to-node request on a `CommonOrInternal` route still needs the shared
-connection key and its internal marker, validated by the handler. Setup and the
-separate inference listener are marked out of scope in the table and are not
-silently treated as gateway routes.
+A browser profile mismatch returns HTTP 403 with a JSON error, path and profile
+before the handler runs. A valid `InternalNodeAuth` is the explicit exception
+for node-to-node fan-out, so a receiver's local profile cannot reject a
+legitimate pipeline control call; the handler still verifies the signed admin
+mutation where authority changes. Setup and the separate inference listener
+are marked out of scope in the table and are not silently treated as gateway
+routes.
 
 The `webui` route registry is organized under `webui/routes/`: `common.rs`
 contains routes shared by every profile, `infer.rs` contains inference-profile
@@ -231,12 +232,16 @@ profile policy remains the effective authorization boundary.
   (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
   máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
-- `profile.rs` - `NodeProfile` is the durable product profile, separate from
-  `Role`; it is the one source for network visibility and profile promotions.
-  The web UI serializes it through `GET /api/ui/node`. Infer nodes can read a
-  local-only network view and request node access; only a principal admin can
-  send the signed node-to-admin command. A secondary admin keeps management
-  access but cannot promote another admin.
+- `profile.rs` - `NodeProfile` is the durable product profile and the one source
+  for network visibility and profile transitions. The web UI serializes it
+  through `GET /api/ui/node`. Infer nodes can read a local-only network view
+  and request node access; any active admin can authorize that signed request.
+  A secondary admin keeps management access but cannot promote another admin.
+- `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
+  the manually anchored root, one-level secondary grants, signed demotions,
+  transfer offer and acceptance state, monotonic replay records, and full-chain
+  reconciliation. A profile set to `admin` without a valid local chain remains
+  without administrative capability.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de
@@ -702,6 +707,12 @@ profile policy remains the effective authorization boundary.
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
+  The authority contract adds `GET /api/ui/network/admin-authority`,
+  `POST /admin/authority/resign`, `POST
+  /admin/authority/secondaries/{id}/demote`, and the profile transition routes
+  `/api/ui/network/request-node` and `/api/ui/network/relinquish-node`.
+  Internal profile mutations carry signed authority commands; a promotion
+  delivers and validates the complete trust document at the target.
 - `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=
   POM_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
   when closed. Routes `POST /api/ui/dev/update` (preflight: refuses non-main

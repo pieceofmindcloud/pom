@@ -148,8 +148,9 @@ mod webapp;
 #[path = "backend/webui/mod.rs"]
 mod webui;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::Parser;
+use clap::Subcommand;
 use discovery::Discovery;
 use gateway::{start_gateway, GatewayState};
 use memory::load_layer_memory;
@@ -163,6 +164,36 @@ use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Create or install the operator-anchored administrator trust file.
+    #[command(name = "admin-anchor")]
+    AdminAnchor {
+        /// Stable operator-chosen identifier for this cluster. Required when
+        /// creating the root locally, optional when importing a root document.
+        #[arg(long)]
+        cluster_id: Option<String>,
+
+        /// SHA-256 fingerprint printed by the first invocation. It is required
+        /// together with --confirm so the operator performs the manual check.
+        #[arg(long)]
+        fingerprint: Option<String>,
+
+        /// Existing signed trust document transported out of band from the
+        /// anchored primary to another node.
+        #[arg(long = "from", value_name = "FILE")]
+        from_file: Option<std::path::PathBuf>,
+
+        /// Confirm that the displayed fingerprint was checked by the operator.
+        #[arg(long)]
+        confirm: bool,
+
+        /// Replace an existing local trust file after the same explicit check.
+        #[arg(long)]
+        replace: bool,
+    },
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "pom",
@@ -172,6 +203,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
                   and coordinates with peers to cover the full model."
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Model to load — built-in name (e.g. gemma3, llama3) or any Ollama model name.
     /// Not required when using --list-models.
     #[arg(long, short = 'm')]
@@ -386,6 +420,9 @@ fn main() -> Result<()> {
     tp::install_probe();
 
     let args = Args::parse();
+    if let Some(command) = args.command.as_ref() {
+        return run_command(command);
+    }
 
     #[cfg(target_os = "macos")]
     let gateway_port = configured_gateway_port(&args);
@@ -404,6 +441,137 @@ fn main() -> Result<()> {
 
     #[cfg(not(target_os = "macos"))]
     service()
+}
+
+fn run_command(command: &Command) -> Result<()> {
+    match command {
+        Command::AdminAnchor {
+            cluster_id,
+            fingerprint,
+            from_file,
+            confirm,
+            replace,
+        } => anchor_admin(
+            cluster_id.as_deref(),
+            fingerprint.as_deref(),
+            from_file.as_deref(),
+            *confirm,
+            *replace,
+        ),
+    }
+}
+
+fn anchor_admin(
+    cluster_id: Option<&str>,
+    fingerprint: Option<&str>,
+    from_file: Option<&std::path::Path>,
+    confirm: bool,
+    replace: bool,
+) -> Result<()> {
+    let destination = config::admin_trust_path();
+    if destination.exists() && !replace {
+        bail!(
+            "a cadeia administrativa já existe em {}; use --replace somente para uma reancoragem manual explícita",
+            destination.display()
+        );
+    }
+
+    let (document, local_root) = if let Some(source) = from_file {
+        let source_store = crate::admin_trust::AdminTrust::load(source)
+            .with_context(|| format!("não foi possível ler a cadeia transportada em {}", source.display()))?;
+        let document = source_store.document();
+        if let Some(expected_cluster) = cluster_id {
+            if expected_cluster != document.anchor.cluster_id {
+                bail!(
+                    "o cluster da cadeia transportada é {}, não {}",
+                    document.anchor.cluster_id,
+                    expected_cluster
+                );
+            }
+        }
+        (document, false)
+    } else {
+        let cluster_id = cluster_id
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("--cluster-id é obrigatório ao criar a raiz local"))?;
+        let (_signing_key, principal) = local_authority_identity()?;
+        let anchor = crate::admin_trust::TrustAnchor::for_principal(
+            cluster_id.to_string(),
+            principal,
+        );
+        let root_principal = anchor.principal.clone();
+        let document = crate::admin_trust::AdminTrustDocument {
+            version: crate::admin_trust::TRUST_VERSION,
+            anchor,
+            authority_epoch: 0,
+            promotion_seq: 0,
+            primary: root_principal.clone(),
+            primary_history: vec![root_principal],
+            grants: Vec::new(),
+            demotions: Vec::new(),
+            pending_transfer: None,
+            completed_transfers: Vec::new(),
+            replay: Vec::new(),
+        };
+        (document, true)
+    };
+
+    let expected = crate::admin_trust::fingerprint_of(&document.anchor.principal.pubkey);
+    println!("impressão digital da autoridade: {expected}");
+    if fingerprint.map(str::trim) != Some(expected.as_str()) {
+        bail!(
+            "a impressão digital não foi confirmada; confira a linha acima e execute novamente com --fingerprint {expected} --confirm"
+        );
+    }
+    if !confirm {
+        bail!(
+            "a impressão digital precisa de confirmação explícita; execute novamente com --confirm"
+        );
+    }
+
+    if local_root {
+        let (signing_key, principal) = local_authority_identity()?;
+        let anchor = crate::admin_trust::TrustAnchor::manual(
+            document.anchor.cluster_id.clone(),
+            principal,
+            expected,
+        )?;
+        crate::admin_trust::AdminTrust::bootstrap_primary_with_anchor(
+            &destination,
+            anchor,
+            &signing_key,
+        )?;
+        if config::Config::exists() {
+            let mut config = config::Config::load()?;
+            if config.profile != crate::profile::NodeProfile::Admin {
+                config.profile = crate::profile::NodeProfile::Admin;
+                config.save()?;
+            }
+        }
+    } else {
+        crate::admin_trust::AdminTrust::install_document(&destination, document)?;
+    }
+    println!("âncora administrativa instalada em {}", destination.display());
+    Ok(())
+}
+
+fn local_authority_identity() -> Result<(
+    ed25519_dalek::SigningKey,
+    crate::admin_trust::AuthorityPrincipal,
+)> {
+    let local_identity = identity::Identity::load_or_create(&identity::key_path());
+    let pkarr = pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path())
+        .context("não foi possível carregar a identidade libp2p para a âncora")?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&pkarr.secret_key_bytes());
+    let mut seed = signing_key.to_bytes();
+    let keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+        .context("a identidade local não pôde ser convertida em chave libp2p")?;
+    let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+        local_identity.node_id.0,
+        keypair.public().to_peer_id().to_string(),
+        &signing_key,
+    );
+    Ok((signing_key, principal))
 }
 
 fn gateway_url(port: u16) -> String {
@@ -718,7 +886,12 @@ async fn async_main(
             .is_none()
     {
         warn!(
-            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node até a âncora manual e a cadeia serem instaladas"
+            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node. \
+             Para ancorar o primeiro principal nesta máquina: `pom admin-anchor --cluster-id <nome>`, \
+             confira a impressão digital exibida e repita com `--fingerprint <valor> --confirm`. \
+             Para um nó que já tem principal no cluster, copie {} do admin por um canal seu e rode \
+             `pom admin-anchor --from <arquivo> --fingerprint <valor> --confirm`",
+            config::admin_trust_filename()
         );
     }
     let net = stack.net;
@@ -1567,7 +1740,12 @@ async fn start_gateway_only(
             .is_none()
     {
         warn!(
-            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node até a âncora manual e a cadeia serem instaladas"
+            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node. \
+             Para ancorar o primeiro principal nesta máquina: `pom admin-anchor --cluster-id <nome>`, \
+             confira a impressão digital exibida e repita com `--fingerprint <valor> --confirm`. \
+             Para um nó que já tem principal no cluster, copie {} do admin por um canal seu e rode \
+             `pom admin-anchor --from <arquivo> --fingerprint <valor> --confirm`",
+            config::admin_trust_filename()
         );
     }
     let net = stack.net;

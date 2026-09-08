@@ -72,11 +72,13 @@ fonte do escopo aplicado pelo gateway:
 - `common/identity internal`: catálogo próprio, vistas compartilhadas,
   telemetria e protocolo nó-a-nó.
 
-O middleware lê o `profile` persistido no `pom.json` e recusa um perfil fora do
-escopo com HTTP 403 e JSON nomeando rota e perfil. O marcador interno nunca
-substitui essa decisão de perfil. Nas rotas `common/identity internal`, as
-chamadas entre nós ainda exigem a `connection_key` correta e o marcador interno
-validado pelo handler, nunca o marcador sozinho. `/api/setup/key`, `/api/setup/save` e as rotas da porta 8181
+O middleware lê o `profile` persistido no `pom.json` e recusa um navegador fora
+do escopo com HTTP 403 e JSON nomeando rota e perfil. Uma chamada entre nós que
+prova `InternalNodeAuth` pode atravessar o perfil local do receptor para o
+fan-out de controle; o handler ainda exige a assinatura administrativa quando
+a operação muda autoridade. Nas rotas `common/identity internal`, as chamadas
+entre nós exigem a `connection_key` correta e o marcador interno validado pelo
+handler, nunca o marcador sozinho. `/api/setup/key`, `/api/setup/save` e as rotas da porta 8181
 (`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
 `/v1/tp/reduce`, `/health`) ficam explicitamente fora do escopo desta política.
 
@@ -90,8 +92,31 @@ autorizada para promover, resignar e despromover. O pedido de infer para node é
 `POST /api/ui/network/relinquish-node`. Os estados das ofertas de autoridade
 compartilham `GET /api/transfer/offers` e suas respostas
 `POST /api/transfer/offers/{id}/accept|reject`, para que a interface use o
-mesmo sino das ofertas de fatia. Esses endpoints são contratos de apresentação
-e não definem chave, assinatura ou armazenamento de concessões.
+mesmo sino das ofertas de fatia. Para uma oferta de sucessão, `accept` exige a
+aceitação assinada do sucessor; `reject` é recusado porque a oferta só termina
+com aceitação assinada ou avanço de época. Esses endpoints são contratos de
+apresentação e não definem chave, assinatura ou armazenamento de concessões.
+
+## 2.1 Autoridade administrativa
+
+`connection_key` é apenas credencial de transporte entre nós. A capacidade de
+admin vem do arquivo separado `config::admin_trust_path()`, protegido com modo
+0600 e contendo a âncora manual, a concessão raiz, a cadeia de concessões
+secundárias, despromoções, sucessão e registros persistidos de replay. O
+`profile: admin` sozinho não cria capacidade: sem cadeia válida o nó permanece
+sem acesso às rotas `admin-only` e emite um diagnóstico no arranque.
+
+`GET /api/ui/network/admin-authority` expõe somente a vista de apresentação. O
+principal promove com `POST /admin/nodes/{id}/promote-admin`; a entrega leva a
+cadeia completa assinada ao alvo. `POST /admin/authority/resign` abre uma oferta
+assinada para o último secundário ativo, e `POST
+/api/transfer/offers/{id}/accept` só conclui quando o sucessor apresenta a
+aceitação assinada. `POST /admin/authority/secondaries/{id}/demote` é exclusivo
+do principal. O caminho de infer para node é um pedido assinado autorizado por
+qualquer admin, e node para infer é uma decisão local com aviso.
+
+Os quadros de inferência não recebem assinatura administrativa por quadro; o
+peer é autenticado pelo transporte libp2p e o controle permanece separado.
 
 ### Fronteira de exposição
 
@@ -410,17 +435,20 @@ ele chega à geração; se o modelo servido sabe usá-lo é medição em cluster
 
 `GET /admin/nodes` (inclui nós bloqueados mas desconectados, para o painel não
 ficar vazio), `POST /admin/nodes/{id}/block`, `POST /admin/nodes/{id}/unblock`,
-`POST /admin/nodes/{id}/promote-admin`, `DELETE /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST
+`POST /admin/nodes/{id}/promote-admin`, `POST /admin/authority/resign`,
+`POST /admin/authority/secondaries/{id}/demote`, `DELETE /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST
 /admin/api-keys`, `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers`
 (stub, ver Defeitos). `list_nodes` adiciona entradas para bloqueados fora da
 rede.
 
-`POST /admin/nodes/{id}/promote-admin` só é aceito pelo nó cujo `NodeProfile` é
-`admin` e cujo `Role` é `Principal`. O administrador assina o alvo com a
-identidade Ed25519; o alvo aceita a mudança somente quando a assinatura é
-válida, o remetente é um peer principal conhecido e o alvo ainda é `node`.
-`POST /api/internal/profile/promote-admin` é a rota nó-a-nó correspondente e
-não é uma autorização de navegador.
+`POST /admin/nodes/{id}/promote-admin` só é aceito pelo nó cuja autoridade
+efetiva no arquivo separado é `Primary`. O principal assina uma concessão
+`secondary` pela identidade Ed25519; o alvo aceita a mudança somente após
+validar a âncora manual e a cadeia completa, enquanto ainda é `node`.
+`GET /api/ui/network/admin-authority` é a vista da cadeia e dos membros. A
+resignação é uma oferta assinada ao último secundário ativo e só a aceitação
+assinada pela chave desse sucessor muda o principal. Um secundário não pode
+promover nem despromover outro.
 
 `DELETE /admin/api-keys/{key}` desativa a chave no `pom.db` sem apagar a linha e
 acrescenta uma revogação com o `node_id` do operador autenticado e o horário.

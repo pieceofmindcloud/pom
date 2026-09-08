@@ -550,8 +550,9 @@ global do mapa de canais. Cada quadro, nas duas direções:
 - **A credencial é reconferida a cada quadro**, não só na abertura. O receptor
   confere a `connection_key` e o marcador interno; uma conexão de 12 h que
   autenticou uma vez manteria válido por 12 h um segredo trocado por outro
-  processo. Um quadro recusado é recusa **daquele quadro** - o canal continua
-  servindo os seguintes.
+  processo. Isso autentica o peer no transporte, não adiciona assinatura
+  administrativa Ed25519 a cada frame de inferência. Um quadro recusado é recusa
+  **daquele quadro** - o canal continua servindo os seguintes.
 
 **Degradação.** Falha de transporte no canal não mata a geração: a chamada volta
 pela escada de sempre (túnel libp2p, depois HTTPS por requisição) com

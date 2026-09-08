@@ -66,6 +66,7 @@ impl NodeProfile {
 /// Whether a target is in the only state that the administrator promotion can
 /// change. Keeping the target check beside the actor policy makes the command
 /// reusable by every backend route that exposes profile capabilities.
+#[cfg(test)]
 pub(crate) const fn can_promote_node_to_admin(actor: NodeProfile, target: NodeProfile) -> bool {
     matches!(actor, NodeProfile::Admin) && matches!(target, NodeProfile::Node)
 }

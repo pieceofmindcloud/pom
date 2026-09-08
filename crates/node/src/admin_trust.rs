@@ -52,9 +52,6 @@ impl AuthorityPrincipal {
         VerifyingKey::from_bytes(&bytes).context("chave pública de autoridade inválida")
     }
 
-    fn matches_transport(&self, node_id: &str, peer_id: &str, pubkey: &str) -> bool {
-        self.node_id == node_id && self.peer_id == peer_id && self.pubkey == pubkey
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -271,6 +268,23 @@ impl AdminTrust {
         }
     }
 
+    /// Installs a manually transported, already signed chain at the local
+    /// trust path. The caller must obtain the document out of band and must
+    /// separately compare the anchor fingerprint with the operator's record.
+    pub(crate) fn install_document(
+        path: impl AsRef<Path>,
+        document: AdminTrustDocument,
+    ) -> Result<Self> {
+        validate_document(&document)?;
+        let trust = Self {
+            state: Arc::new(Mutex::new(document)),
+            path: Some(path.as_ref().to_path_buf()),
+        };
+        trust.save()?;
+        Ok(trust)
+    }
+
+    #[cfg(test)]
     pub(crate) fn in_memory(document: AdminTrustDocument) -> Result<Self> {
         validate_document(&document)?;
         Ok(Self {
@@ -288,12 +302,14 @@ impl AdminTrust {
         anchor: TrustAnchor,
         signing_key: &SigningKey,
     ) -> Result<Self> {
+        let anchor = TrustAnchor::manual(
+            anchor.cluster_id.clone(),
+            anchor.principal.clone(),
+            anchor.fingerprint.clone(),
+        )?;
         let principal = anchor.principal.clone();
         if principal.verifying_key()? != signing_key.verifying_key() {
             bail!("a chave de bootstrap não corresponde ao principal ancorado");
-        }
-        if !anchor.validates() {
-            bail!("a âncora manual não é válida");
         }
         let mut grant = AdminGrant {
             version: TRUST_VERSION,
@@ -510,6 +526,7 @@ impl AdminTrust {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_secondary_grant(
         &self,
         grant: AdminGrant,
@@ -594,49 +611,6 @@ impl AdminTrust {
         validate_document(&document)?;
         persist_document(&document, self.path.as_deref())?;
         Ok(demotion)
-    }
-
-    pub(crate) fn sign_node_promotion(
-        &self,
-        signing_key: &SigningKey,
-        subject: AuthorityPrincipal,
-    ) -> Result<NodePromotionCommand> {
-        let mut document = self.state.lock().expect("admin trust lock poisoned");
-        validate_document(&document)?;
-        let issuer = document
-            .primary_history
-            .iter()
-            .find(|principal| {
-                principal.pubkey == hex::encode(signing_key.verifying_key().as_bytes())
-                    && (document.primary == **principal
-                        || document.grants.iter().any(|grant| {
-                            grant.subject == **principal
-                                && grant.level == AdminLevel::Secondary
-                                && !document.demotions.iter().any(|demotion| {
-                                    demotion.target_grant_hash
-                                        == grant_hash(grant).unwrap_or_default()
-                                })
-                        }))
-            })
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("a chave emissora não é de um admin vigente"))?;
-        if document.pending_transfer.is_some() {
-            bail!("não é possível autorizar nó durante transferência aberta");
-        }
-        let mut command = NodePromotionCommand {
-            version: TRUST_VERSION,
-            command_id: Uuid::new_v4().simple().to_string(),
-            cluster_id: document.anchor.cluster_id.clone(),
-            issuer,
-            subject,
-            authority_epoch: document.authority_epoch,
-            nonce: random_nonce(),
-            signature: String::new(),
-        };
-        command.signature = sign_bytes(signing_key, &node_promotion_message(&command));
-        consume_replay(&mut document, &command.nonce, &command.command_id, None)?;
-        persist_document(&document, self.path.as_deref())?;
-        Ok(command)
     }
 
     pub(crate) fn node_promotion_request(

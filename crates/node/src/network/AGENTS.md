@@ -39,9 +39,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
-  dual-stack, gossip, lifecycle de peers, varredura de descoberta. O papel
-  anunciado por `with_identity` pode ser atualizado por `set_role` quando um
-  nó recebe a promoção assinada para administrador.
+  dual-stack, gossip, lifecycle de peers, varredura de descoberta. O perfil
+  anunciado por `with_identity` pode ser atualizado por `set_profile`; a
+  capacidade de admin não vem do anúncio, mas da cadeia em `admin_trust.rs`.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
@@ -176,16 +176,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `observed_addr` do `identify`. É o "qual é o meu IP público" sem dependência
   de STUN. Recusa endereço privado/CGNAT (`addrs::is_private_or_local`) e
   qualquer coisa que não seja `/ip4|ip6/.../tcp/<porta>`.
-- `announce_message_id` - **como o gossipsub distingue dois anúncios, e sem ela
-  ele não distingue nada.** A função padrão do libp2p é `source + sequence`, e
-  as duas são `None` sob `MessageAuthenticity::Anonymous`, que é o modo deste
-  swarm: todo anúncio saía com o id constante `15R0` (`31355230` no log). O
-  efeito medido em 2026-08-16, no cluster de verdade e com a malha formada
-  (4 peers grafados): **zero** mensagem de gossipsub aceita em 90 s, e todo
-  publish depois do primeiro recusado com `Not publishing a message that has
-  already been published`. Hoje o id é hash do tópico + payload; o `timestamp`
-  que o `self_announce` já grava faz cada anúncio diferir. É configuração
-  local, então um nó atualizado convive com um que ainda usa o padrão.
+- `announce_message_id` - id determinístico do tópico + payload. O gossipsub
+  agora usa autenticação assinada e validação estrita; `handle_event` confere
+  que o `libp2p_peer_id` declarado no `Announce` é o `source` autenticado antes
+  de inserir o peer. Essa ligação de transporte não substitui a cadeia
+  Ed25519 de autoridade administrativa.
 
 `addrs.rs`:
 - `filter_candidates` - descarta loopback/link-local/deprecated, estável antes

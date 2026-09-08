@@ -398,8 +398,7 @@ impl Config {
         let path = Self::config_path();
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config at {:?}", path))?;
-        serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse config at {:?}", path))
+        parse_config(&content, &path)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -593,6 +592,19 @@ fn bundled_ui_dist() -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+fn parse_config(content: &str, path: &Path) -> Result<Config> {
+    serde_json::from_str(content).map_err(|error| {
+        let role_hint = serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .filter(|value| value.get("role").is_some())
+            .map(|_| {
+                ". O campo `role` foi removido da configuração; remova-o e use `profile` (`admin`, `node` ou `infer`)"
+            })
+            .unwrap_or("");
+        anyhow::anyhow!("Failed to parse config at {:?}: {error}{role_hint}", path)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     /// A peer address with no port is what produces `invalid port value` — the
@@ -744,6 +756,18 @@ mod tests {
         let old = r#"{"connection_key":"k","gateway_port":8080,
                       "p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#;
         assert!(serde_json::from_str::<Config>(old).is_err());
+    }
+
+    #[test]
+    fn a_legacy_role_config_explains_the_profile_replacement() {
+        let error = parse_config(
+            r#"{"role":"principal","profile":"admin"}"#,
+            Path::new("pom.json"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("campo `role` foi removido"));
+        assert!(error.contains("use `profile`"));
     }
 
     #[test]

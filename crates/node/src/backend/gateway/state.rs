@@ -118,10 +118,10 @@ pub struct GatewayState {
     pub auth: AuthState,
     /// Durable anchor and grant chain for administrator capabilities. It is
     /// deliberately separate from `Config.profile`.
-    pub admin_trust: Arc<crate::admin_trust::AdminTrust>,
+    pub(crate) admin_trust: Arc<crate::admin_trust::AdminTrust>,
     /// The libp2p identity is the only signing authority for this node.
-    pub authority_signing_key: Arc<ed25519_dalek::SigningKey>,
-    pub authority_principal: crate::admin_trust::AuthorityPrincipal,
+    pub(crate) authority_signing_key: Arc<ed25519_dalek::SigningKey>,
+    pub(crate) authority_principal: crate::admin_trust::AuthorityPrincipal,
     /// In-memory browser sessions. It is intentionally not persisted beside
     /// the configuration and is bound to the current admin access token.
     pub(crate) admin_sessions: crate::auth::AdminSessionState,

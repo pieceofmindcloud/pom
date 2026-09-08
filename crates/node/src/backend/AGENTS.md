@@ -501,8 +501,11 @@ profile policy remains the effective authorization boundary.
   writes. `#[cfg(test)] mod testkit` is the shared scaffold for route tests - a
   whole `GatewayState` with the peer table seeded by hand; its network socket
   is loopback-only and nothing touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
-  `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
-  JSON body (used by the transfer, deploy and webui tests).
+  `PeerInfo`, `state_with(node_id, peers)` the state, and
+  `state_with_secondary_admin(node_id, peers)` a state whose trust document
+  names another node as primary and carries one signed secondary grant;
+  `body_of(response)` extracts the JSON body (used by the transfer, deploy and
+  webui tests).
 - `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
   número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
   de backend, escolha do operador, que a decisão do produto proíbe levantar.

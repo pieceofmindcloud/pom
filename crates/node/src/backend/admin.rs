@@ -1851,15 +1851,19 @@ mod tests {
 
     #[tokio::test]
     async fn a_secondary_admin_cannot_promote_another_node() {
-        let state = crate::gateway::testkit::state_with(
+        let state = crate::gateway::testkit::state_with_secondary_admin(
             "secondary",
             vec![crate::gateway::testkit::peer("outro", "salem", 8081)],
         )
         .await;
-        {
-            let mut auth = state.auth.write().await;
-            auth.profile = NodeProfile::Admin;
-        }
+        assert_eq!(state.admin_trust.current_primary().node_id, "primary");
+        assert_eq!(
+            state.admin_trust.effective_authority(
+                &state.authority_principal,
+                NodeProfile::Admin,
+            ),
+            Some(crate::admin_trust::EffectiveAuthority::Secondary)
+        );
         let response =
             promote_node_to_admin(ConnectionAuth, State(state), Path("outro".to_string())).await;
 

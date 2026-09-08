@@ -1962,6 +1962,46 @@ pub(crate) mod testkit {
         state_named(node_id, "", peers).await
     }
 
+    /// Um estado cujo nó local é admin secundário de uma cadeia real de teste.
+    /// A âncora pertence a outro nó e a concessão local é assinada pelo
+    /// principal antes de ser aplicada, então mudar apenas `profile` não pode
+    /// transformar este estado em principal.
+    pub(crate) async fn state_with_secondary_admin(
+        node_id: &str,
+        peers: Vec<PeerInfo>,
+    ) -> GatewayState {
+        let mut state = state_with(node_id, peers).await;
+        let primary_signing_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            "peer-primary",
+            &primary_signing_key,
+        );
+        let secondary = state.authority_principal.clone();
+        let admin_trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "test-cluster",
+            primary.clone(),
+            &primary_signing_key,
+        )
+        .expect("concessão raiz de teste");
+        let grant = admin_trust
+            .signed_secondary_grant(&primary_signing_key, secondary.clone(), &primary.node_id)
+            .expect("concessão secundária de teste");
+        admin_trust
+            .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Node)
+            .expect("aplicação da concessão secundária de teste");
+
+        *state
+            .network
+            .authority_pubkey
+            .write()
+            .expect("chave de autoridade do testkit") = secondary.pubkey.clone();
+        state.network.set_profile(crate::profile::NodeProfile::Admin);
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        state.admin_trust = Arc::new(admin_trust);
+        state
+    }
+
     /// O mesmo, com um **nome anunciado** — o que `node_name` do `pom.json`
     /// produz em `with_identity`, e o nome pelo qual o cluster inteiro chama
     /// esta máquina. Distinto do hostname cru do sistema operacional.

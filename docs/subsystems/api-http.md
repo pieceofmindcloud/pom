@@ -876,9 +876,12 @@ inteiro com a tabela de peers semeada à mão: `peer(node_id, hostname,
 gateway_port)` constrói um `PeerInfo` de loopback, `state_with(node_id, peers)`
 monta o estado (com um `Network` real em porta UDP efêmera, mas **nada fala
 UDP** - um teste nunca anuncia na LAN nem cai no cluster de verdade), e
-`body_of(response)` extrai o JSON da resposta. É o único jeito de testar rota de
-controle sem transmissão; `transfer`, `deploy` e `webui` o usam. Para subir um
-nó de verdade sem sair anunciando, o equivalente em produção é `--no-discovery`.
+`state_with_secondary_admin(node_id, peers)` monta um administrador secundário
+de verdade: outro nó é o principal e o nó local recebe uma concessão
+`Secondary` assinada. `body_of(response)` extrai o JSON da resposta. É o único
+jeito de testar rota de controle sem transmissão; `transfer`, `deploy` e
+`webui` o usam. Para subir um nó de verdade sem sair anunciando, o equivalente
+em produção é `--no-discovery`.
 
 ## 6. Defeitos anotados
 

@@ -6,6 +6,38 @@ use super::*;
 mod tests {
     use super::*;
 
+    #[test]
+    fn trace_calcula_caminho_critico_sem_somar_spans_paralelos() {
+        let spans = vec![
+            TraceSpan::for_test("orchestration", "gateway", 0, 10, None),
+            TraceSpan::for_test("route", "gateway", 10, 4, None),
+            TraceSpan::for_test("prefill-a", "gateway", 14, 12, Some("prefill")),
+            TraceSpan::for_test("prefill-b", "gateway", 14, 8, Some("prefill")),
+            TraceSpan::for_test("node", "node-a", 0, 100, None),
+        ];
+
+        assert_eq!(critical_path_ms(&spans, "gateway"), 26);
+    }
+
+    #[test]
+    fn trace_mantem_unknown_separado_e_nunca_fica_negativo() {
+        let mut trace = RequestTrace::new("model", &[]);
+        trace.set_outside_node_total_ms(20);
+        trace.set_accounted_spans(vec![TraceSpan::for_test(
+            "dispatch",
+            "gateway",
+            0,
+            7,
+            None,
+        )]);
+        assert_eq!(trace.outside_node_total_ms, Some(20));
+        assert_eq!(trace.outside_node_accounted_ms, Some(7));
+        assert_eq!(trace.outside_node_unaccounted_ms, Some(13));
+
+        trace.set_outside_node_total_ms(3);
+        assert_eq!(trace.outside_node_unaccounted_ms, Some(0));
+    }
+
     #[tokio::test]
     async fn lote_oportunista_drena_o_que_ja_existe_sem_esperar() {
         let (sender, mut receiver) = mpsc::channel(REMOTE_STREAM_BATCH_LIMIT);

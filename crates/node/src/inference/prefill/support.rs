@@ -932,8 +932,154 @@ pub struct HopTrace {
     pub decode: PhaseTrace,
 }
 
+/// Estado de aquecimento observado por esta execução. `Unknown` é deliberado:
+/// um peer antigo ou uma fronteira que não expõe o estado não deve virar
+/// `cold` por inferência.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestState {
+    Cold,
+    Warm,
+    #[default]
+    Unknown,
+}
+
+/// Span fechado medido em um único host.
+///
+/// `started_at_ms` é wall clock apenas para correlação. `start_offset_ms` e
+/// `duration_ms` vêm de `Instant` no mesmo host. Nunca se subtraem offsets de
+/// máquinas diferentes. O `parallel_group` permite que a UI explique
+/// sobreposição; o cálculo de caminho crítico usa a união dos intervalos.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TraceSpan {
+    pub name: String,
+    pub span_id: String,
+    pub parent_span_id: Option<String>,
+    pub host: String,
+    pub started_at_ms: u64,
+    pub start_offset_ms: u64,
+    pub duration_ms: u64,
+    pub parallel_group: Option<String>,
+}
+
+impl TraceSpan {
+    pub fn new(
+        name: impl Into<String>,
+        host: impl Into<String>,
+        parent_span_id: Option<String>,
+        started_at_ms: u64,
+        start_offset_ms: u64,
+        duration_ms: u64,
+        parallel_group: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            span_id: uuid::Uuid::new_v4().simple().to_string(),
+            parent_span_id,
+            host: host.into(),
+            started_at_ms,
+            start_offset_ms,
+            duration_ms,
+            parallel_group,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        name: &str,
+        host: &str,
+        start_offset_ms: u64,
+        duration_ms: u64,
+        parallel_group: Option<&str>,
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            span_id: format!("test-{name}"),
+            parent_span_id: None,
+            host: host.to_owned(),
+            started_at_ms: 0,
+            start_offset_ms,
+            duration_ms,
+            parallel_group: parallel_group.map(str::to_owned),
+        }
+    }
+}
+
+/// Marcos observáveis do primeiro token. Cada timestamp é local ao host que
+/// o registrou; os campos de duração só são preenchidos quando o mesmo host
+/// consegue medir ambas as pontas.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct FirstTokenTrace {
+    pub engine_produced_at_ms: Option<u64>,
+    pub node_serialized_at_ms: Option<u64>,
+    pub node_sent_at_ms: Option<u64>,
+    pub coordinator_received_at_ms: Option<u64>,
+    pub gateway_stream_at_ms: Option<u64>,
+    pub client_received_at_ms: Option<u64>,
+    pub engine_ttft_ms: Option<u64>,
+    pub node_to_gateway_ms: Option<u64>,
+    pub gateway_to_client_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct StreamingTrace {
+    pub time_to_first_chunk_ms: Option<u64>,
+    pub time_to_first_token_ms: Option<u64>,
+    pub stream_duration_ms: Option<u64>,
+    pub time_last_token_to_response_end_ms: Option<u64>,
+    pub chunks: u64,
+    pub bytes: u64,
+    pub tokens_per_chunk: Option<f64>,
+}
+
+/// União dos intervalos observados em um host. Abrange spans inclusivos e
+/// paralelos uma vez só, por isso não confunde soma de trabalho com caminho
+/// crítico.
+pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
+    let mut intervals: Vec<_> = spans
+        .iter()
+        .filter(|span| span.host == host && span.duration_ms > 0)
+        .map(|span| {
+            (
+                span.start_offset_ms,
+                span.start_offset_ms.saturating_add(span.duration_ms),
+            )
+        })
+        .collect();
+    intervals.sort_unstable_by_key(|(start, _)| *start);
+
+    let mut covered_until = 0;
+    let mut covered: u64 = 0;
+    for (start, end) in intervals {
+        if end <= covered_until {
+            continue;
+        }
+        if start >= covered_until {
+            covered = covered.saturating_add(end.saturating_sub(start));
+        } else {
+            covered = covered.saturating_add(end.saturating_sub(covered_until));
+        }
+        covered_until = end;
+    }
+    covered
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
+    pub trace_id: String,
+    pub request_state: RequestState,
+    pub spans: Vec<TraceSpan>,
+    pub outside_node_total_ms: Option<u64>,
+    pub outside_node_accounted_ms: Option<u64>,
+    pub outside_node_unaccounted_ms: Option<u64>,
+    pub first_token: FirstTokenTrace,
+    pub streaming: StreamingTrace,
+    pub server_ttft_ms: Option<u64>,
+    pub engine_ttft_ms: Option<u64>,
+    pub client_ttft_ms: Option<u64>,
+    pub decode_calls: u64,
+    pub generated_tokens: u32,
+    pub tokens_per_decode_call: Option<f64>,
     pub model: String,
     pub input_tokens: u32,
     /// Quantos dos `input_tokens` a cabeça **não** reprocessou porque já
@@ -1104,7 +1250,33 @@ impl TraceIssue {
 
 impl RequestTrace {
     pub fn new(model: impl Into<String>, steps: &[(&str, u32, u32)]) -> Self {
+        Self::new_with_trace_id(
+            uuid::Uuid::new_v4().simple().to_string(),
+            model,
+            steps,
+        )
+    }
+
+    pub fn new_with_trace_id(
+        trace_id: impl Into<String>,
+        model: impl Into<String>,
+        steps: &[(&str, u32, u32)],
+    ) -> Self {
         Self {
+            trace_id: trace_id.into(),
+            request_state: RequestState::Unknown,
+            spans: Vec::new(),
+            outside_node_total_ms: None,
+            outside_node_accounted_ms: None,
+            outside_node_unaccounted_ms: None,
+            first_token: FirstTokenTrace::default(),
+            streaming: StreamingTrace::default(),
+            server_ttft_ms: None,
+            engine_ttft_ms: None,
+            client_ttft_ms: None,
+            decode_calls: 0,
+            generated_tokens: 0,
+            tokens_per_decode_call: None,
             model: model.into(),
             input_tokens: 0,
             cached_tokens: 0,
@@ -1148,6 +1320,35 @@ impl RequestTrace {
         }
     }
 
+    pub fn record_span(&mut self, span: TraceSpan) {
+        self.spans.push(span);
+        self.refresh_outside_node_accounting();
+    }
+
+    pub fn set_accounted_spans(&mut self, spans: Vec<TraceSpan>) {
+        self.spans = spans;
+        self.refresh_outside_node_accounting();
+    }
+
+    pub fn set_outside_node_total_ms(&mut self, total_ms: u64) {
+        self.outside_node_total_ms = Some(total_ms);
+        self.refresh_outside_node_accounting();
+    }
+
+    pub fn set_generated_tokens(&mut self, tokens: u32) {
+        self.generated_tokens = tokens;
+        self.tokens_per_decode_call = (self.decode_calls > 0)
+            .then(|| tokens as f64 / self.decode_calls as f64);
+    }
+
+    fn refresh_outside_node_accounting(&mut self) {
+        let accounted = critical_path_ms(&self.spans, "gateway");
+        self.outside_node_accounted_ms = self.outside_node_total_ms.map(|_| accounted);
+        self.outside_node_unaccounted_ms = self
+            .outside_node_total_ms
+            .map(|total| total.saturating_sub(accounted));
+    }
+
     pub(super) fn record_prefix_decision(&mut self, meta: &serde_json::Value, requested: bool) {
         self.prefix_match_tokens = meta
             .get("prefix_match_tokens")
@@ -1186,12 +1387,24 @@ impl RequestTrace {
     }
 
     pub fn from_plan(model: &str, plan: &PipelinePlan) -> Self {
+        Self::from_plan_with_trace_id(
+            &uuid::Uuid::new_v4().simple().to_string(),
+            model,
+            plan,
+        )
+    }
+
+    pub fn from_plan_with_trace_id(
+        trace_id: &str,
+        model: &str,
+        plan: &PipelinePlan,
+    ) -> Self {
         let steps: Vec<_> = plan
             .steps
             .iter()
             .map(|step| (step.node_id.as_str(), step.start_layer, step.end_layer))
             .collect();
-        Self::new(model, &steps)
+        Self::new_with_trace_id(trace_id, model, &steps)
     }
 
     pub fn record_hop(
@@ -1228,6 +1441,11 @@ impl RequestTrace {
             tls,
             node,
         );
+        if phase == Phase::Decode {
+            self.decode_calls = self.decode_calls.saturating_add(1);
+            self.tokens_per_decode_call = (self.decode_calls > 0)
+                .then(|| self.generated_tokens as f64 / self.decode_calls as f64);
+        }
         self.record_mtp_counts(node);
         self.total_bytes_sent += bytes_sent;
         self.total_bytes_received += bytes_received;

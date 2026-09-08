@@ -84,6 +84,8 @@ pub const MTP_NO_NEXTN_REASON: &str = "o modelo carregado não traz o bloco next
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
+    /// Projector multimodal opcional, carregado como o `--mmproj` do llama.cpp.
+    pub mmproj_path: Option<String>,
     /// Capacidade total do cache KV. O runtime já multiplica a janela pública
     /// por sessão por `max_sessions` antes de montar esta configuração.
     pub n_ctx: u32,

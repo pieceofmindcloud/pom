@@ -6,6 +6,7 @@ pub async fn run_with_options(
     model: &str,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -36,6 +37,7 @@ pub async fn run_with_options(
             model,
             session_id,
             prompt,
+            images,
             chat_template,
             chunk_size,
             dtype,
@@ -56,6 +58,7 @@ pub async fn run_with_options(
             model,
             session_id,
             prompt,
+            images,
             chat_template,
             chunk_size,
             dtype,
@@ -124,6 +127,7 @@ pub async fn run_with_options(
                 reuse_prefix && idx == 0,
                 start_pos,
             );
+            let head_meta = add_images_to_head_meta(head_meta, (idx == 0).then_some(images));
             let mut head_trace = RequestTrace::from_plan(model, plan);
             let (meta, tensor) = match send_chunk(
                 http,
@@ -440,6 +444,7 @@ pub(super) async fn run_ring(
     model: &str,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -471,6 +476,10 @@ pub(super) async fn run_ring(
             chat_template,
             reuse_prefix && chunk_index == 0,
             next_start_pos,
+        );
+        head_meta = add_images_to_head_meta(
+            head_meta,
+            (chunk_index == 0).then_some(images),
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
@@ -582,6 +591,7 @@ pub(super) async fn run_direct(
     model: &str,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -640,6 +650,7 @@ pub(super) async fn run_direct(
                 plan,
                 session_id,
                 prompt,
+                images,
                 chat_template,
                 chunk_size,
                 dtype,
@@ -855,6 +866,7 @@ pub(super) async fn dispatch_direct_prefill(
     plan: &PipelinePlan,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -881,6 +893,7 @@ pub(super) async fn dispatch_direct_prefill(
         reuse_prefix,
         start_pos,
     );
+    head_meta = add_images_to_head_meta(head_meta, (chunk_index == 0).then_some(images));
     head_meta["next_hops"] = json!(next_hops);
     head_meta["reply_to"] = direct.reply_to(ticket);
     head_meta["prefill_sequence_id"] = json!(prefill_sequence_id);

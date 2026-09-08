@@ -104,6 +104,8 @@ export interface RuntimeStatus {
 
 export interface NodeConfig {
   model_path: string;
+  /** Projector multimodal carregado neste nó, quando a visão está ligada. */
+  mmproj_path?: string | null;
   model_label: string;
   /** A implantação de que este nó faz parte; vazio se ele não veio de uma. */
   deploy_id: string;
@@ -440,6 +442,8 @@ export interface RoutingEdge {
 export interface ClusterView {
   self_id: string;
   active_model: string;
+  /** Projetor carregado na cabeça da implantação ativa, quando há visão. */
+  mmproj_path?: string | null;
   total_layers: number;
   covered_layers: number;
   coverage: boolean[];
@@ -466,6 +470,8 @@ export interface DiscoveredModel {
   source: ModelSource;
   source_label: string;
   path: string;
+  /** GGUF mmproj adjacente escolhido pela convenção do llama.cpp. */
+  mmproj_path?: string | null;
   size_bytes: number;
   /** O GGUF declara split.count > 1 e este item representa o conjunto. */
   multipart?: boolean;
@@ -1535,6 +1541,8 @@ export interface DeployPlan {
    * the same default the node applies to a request without a `kind`.
    */
   kind?: DeployKind;
+  /** Projector adjacente encontrado para o modelo escolhido. */
+  mmproj_path?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;
   /** Whether this plan can honor the selected inference mode. */

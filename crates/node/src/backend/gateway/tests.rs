@@ -1536,6 +1536,7 @@ mod budget_tests {
         NodeConfig {
             deploy_id: String::new(),
             model_path: String::new(),
+            mmproj_path: None,
             model_label: String::new(),
             deployment_name: String::new(),
             start_layer: 0,
@@ -2111,6 +2112,7 @@ pub(crate) mod testkit {
         crate::runtime::NodeConfig {
             deploy_id: String::new(),
             model_path: String::new(),
+            mmproj_path: None,
             model_label: "lab".into(),
             deployment_name: "lab".into(),
             start_layer: 0,

@@ -133,6 +133,7 @@ pub(super) async fn add_node_endpoint(
             model_label: Some(req.group.clone()),
             deployment_name: req.group.clone(),
             total_layers,
+            use_mmproj: false,
             // Um alvo so: o `launch` para a inferencia dos alvos que recebe, e
             // esta lista tem exatamente a maquina que esta entrando.
             targets: vec![LaunchTarget {
@@ -151,6 +152,7 @@ pub(super) async fn add_node_endpoint(
                 peer_index: Some(peer_index),
                 peer_count: Some(peer_count),
                 tp: None,
+                use_mmproj: false,
             }],
             // Quem e a entrada do pipeline nao muda por isto: so quem fica com
             // a camada 0 recebe o prompt, e o `launch` so marca `primary` no

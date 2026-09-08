@@ -68,6 +68,8 @@ pub struct ReconfigureSlice {
     #[serde(default)]
     pub model_path: Option<String>,
     #[serde(default)]
+    pub mmproj_path: Option<String>,
+    #[serde(default)]
     pub part_sha256: Option<String>,
     pub model_label: String,
     #[serde(default)]
@@ -191,6 +193,7 @@ pub(crate) async fn reconfigure_local(
                 deploy_id: slice.deploy_id,
                 deployment_name: slice.deployment_name,
                 model_path,
+                mmproj_path: slice.mmproj_path,
                 model_label: slice.model_label,
                 start_layer: slice.start_layer,
                 end_layer: slice.end_layer,
@@ -553,6 +556,7 @@ pub(super) async fn release_slice(
         primary: cfg.primary,
         tp: cfg.tp.clone(),
         skip_split: true,
+        use_mmproj: cfg.mmproj_path.is_some(),
         merge: None,
         params: RuntimeParams::from(&cfg),
     };
@@ -682,6 +686,9 @@ pub struct LaunchTarget {
     /// coletiva em vez de só fatiar por camadas.
     #[serde(default)]
     pub tp: Option<crate::network::TpIdentity>,
+    /// The target should load the adjacent multimodal projector.
+    #[serde(default)]
+    pub use_mmproj: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -706,6 +713,8 @@ pub struct LaunchRequest {
     pub primary_node_id: Option<String>,
     #[serde(default)]
     pub params: RuntimeParams,
+    #[serde(default)]
+    pub use_mmproj: bool,
 }
 
 /// The cluster-wide settings as one peer will actually receive them.
@@ -791,6 +800,9 @@ pub(crate) async fn launch(
              atribuídas sem esse total. Fatias geradas pela tela de Fatiar gravam esse dado; \
              as antigas não, e nesse caso o total é deduzido da cobertura das fatias.",
         );
+    }
+    if req.use_mmproj && !req.targets.iter().any(|target| target.use_mmproj) {
+        return bad_request("este modelo não tem visão: nenhum alvo recebeu mmproj");
     }
     let deployment = match normalize_deployment_name(Some(&req.deployment_name), &req.base_name) {
         Ok(name) => name,
@@ -888,6 +900,7 @@ pub(crate) async fn launch(
             deploy_id: req.deploy_id.clone(),
             part_sha256: target.part_sha256.clone(),
             merge: target.merge.clone(),
+            use_mmproj: req.use_mmproj && target.use_mmproj,
             params,
         };
 

@@ -917,6 +917,7 @@ async fn conversa_com_hops_fault_kind(
                 inference_token: "test-api-key".into(),
                 model: "lab".into(),
                 prompt,
+                images: Vec::new(),
                 chat_template: true,
                 budget: crate::gateway::OutputBudget::single(8),
                 stops: Vec::new(),

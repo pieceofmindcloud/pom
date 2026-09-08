@@ -880,6 +880,14 @@ profile policy remains the effective authorization boundary.
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
   gateway HTTP for transfers, deploy forwarding, and cancel notices.
 
+### Visão na implantação e no chat
+
+`deploy::Plan.mmproj_path` vem do catálogo do modelo inteiro e
+`DeployRequest.vision` só habilita o projetor na cabeça da implantação.
+`webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
+`openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
+projetor e a mensagem para o usuário precisam permanecer alinhadas.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

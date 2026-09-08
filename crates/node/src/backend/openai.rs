@@ -27,6 +27,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::Engine as _;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -84,8 +85,17 @@ pub enum Content {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentPart {
+    #[serde(rename = "type", default)]
+    pub kind: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<ImageUrl>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    pub url: String,
 }
 
 impl Content {
@@ -99,6 +109,40 @@ impl Content {
                 .join("\n"),
             Content::Null => String::new(),
         }
+    }
+
+    fn has_images(&self) -> bool {
+        matches!(self, Content::Parts(parts) if parts.iter().any(|part| part.image_url.is_some()))
+    }
+
+    fn prompt_parts(&self) -> Result<(String, Vec<Vec<u8>>), String> {
+        let Content::Parts(parts) = self else {
+            return Ok((self.as_text(), Vec::new()));
+        };
+        let mut text = String::new();
+        let mut images = Vec::new();
+        for part in parts {
+            if let Some(value) = part.text.as_deref() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(value);
+            }
+            if let Some(image) = part.image_url.as_ref() {
+                let Some((prefix, encoded)) = image.url.split_once(",") else {
+                    return Err("imagem deve ser um data URL base64".to_string());
+                };
+                if !prefix.starts_with("data:image/") || !prefix.contains(";base64") {
+                    return Err("imagem deve ser um data URL base64".to_string());
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|error| format!("imagem base64 inválida: {error}"))?;
+                text.push_str("<__media__>");
+                images.push(bytes);
+            }
+        }
+        Ok((text, images))
     }
 }
 
@@ -144,6 +188,7 @@ impl ChatMessage {
     /// reach the model on replay.
     fn is_empty(&self) -> bool {
         self.content.as_text().trim().is_empty()
+            && !self.content.has_images()
             && self.tool_calls.as_ref().is_none_or(|c| c.is_empty())
     }
 
@@ -151,8 +196,14 @@ impl ChatMessage {
     /// exact shape the model itself emits, so replayed history stays
     /// self-consistent with what it wrote.
     fn rendered_body(&self) -> String {
+        self.rendered_body_with_images()
+            .map(|(body, _)| body)
+            .unwrap_or_default()
+    }
+
+    fn rendered_body_with_images(&self) -> Result<(String, Vec<Vec<u8>>), String> {
         let mut parts = Vec::new();
-        let text = self.content.as_text();
+        let (text, images) = self.content.prompt_parts()?;
         if !text.trim().is_empty() {
             parts.push(text);
         }
@@ -165,7 +216,7 @@ impl ChatMessage {
                 }
             }
         }
-        parts.join("\n")
+        Ok((parts.join("\n"), images))
     }
 }
 
@@ -297,23 +348,49 @@ pub fn conversation_cache_key(messages: &[ChatMessage], tools: &[ToolDef]) -> St
 ///
 /// Cliente que queira o texto cru, sem rótulo nenhum, tem `/v1/completions` e
 /// `POST /api/generate`, que passam o prompt adiante intocado.
+#[allow(dead_code)]
 pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
+    render_prompt_with_images(messages, tools)
+        .map(|(prompt, _)| prompt)
+        .unwrap_or_default()
+}
+
+/// Renderiza o prompt e extrai as imagens em bytes para o projector. O texto
+/// usa o marcador oficial do mtmd no mesmo lugar de cada `image_url`.
+pub fn render_prompt_with_images(
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+) -> Result<(String, Vec<Vec<u8>>), String> {
     let non_empty: Vec<&ChatMessage> = messages.iter().filter(|m| !m.is_empty()).collect();
 
     let tools_block = render_tools_block(tools);
 
     let mut system: Vec<String> = Vec::new();
     let mut turns: Vec<String> = Vec::new();
+    let mut images = Vec::new();
 
     for m in &non_empty {
         match m.role.as_str() {
-            "system" | "developer" => system.push(m.content.as_text()),
-            "assistant" => turns.push(format!("Assistant: {}", m.rendered_body())),
-            "tool" | "function" => {
-                let text = m.content.as_text();
-                turns.push(format!("User: <tool_response>\n{text}\n</tool_response>"));
+            "system" | "developer" => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                system.push(text);
+                images.append(&mut media);
             }
-            _ => turns.push(format!("User: {}", m.content.as_text())),
+            "assistant" => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                turns.push(format!("Assistant: {text}"));
+                images.append(&mut media);
+            }
+            "tool" | "function" => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                turns.push(format!("User: <tool_response>\n{text}\n</tool_response>"));
+                images.append(&mut media);
+            }
+            _ => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                turns.push(format!("User: {text}"));
+                images.append(&mut media);
+            }
         }
     }
 
@@ -331,7 +408,15 @@ pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
         out.push_str("\n\n");
     }
     out.push_str(&turns.join("\n\n"));
-    out
+    Ok((out, images))
+}
+
+pub(crate) fn image_vision_error(images: &[Vec<u8>], mmproj_path: Option<&str>) -> Option<&'static str> {
+    if !images.is_empty() && mmproj_path.is_none() {
+        Some("este modelo não tem visão")
+    } else {
+        None
+    }
 }
 
 /// Rough token count for the `usage` block.
@@ -528,7 +613,10 @@ async fn chat_completions(
         .into_iter()
         .map(ChatToolDef::into_tool_def)
         .collect();
-    let prompt = render_prompt(&req.messages, &tools);
+    let (prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
+        Ok(rendered) => rendered,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
     // Chaveia o cache de prefixo pelas mensagens, não pelo texto renderizado -
     // ver `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
@@ -578,6 +666,7 @@ async fn chat_completions(
             "/v1/chat/completions",
             model,
             prompt,
+            images,
             budget,
             id,
             created,
@@ -595,6 +684,7 @@ async fn chat_completions(
             "/v1/chat/completions",
             model,
             prompt,
+            images,
             budget,
             id,
             created,
@@ -647,6 +737,7 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
+            Vec::new(),
             budget,
             id,
             created,
@@ -665,6 +756,7 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
+            Vec::new(),
             budget,
             id,
             created,
@@ -727,6 +819,7 @@ async fn blocking_response(
     route: &'static str,
     model: String,
     prompt: String,
+    images: Vec<Vec<u8>>,
     budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
@@ -745,6 +838,7 @@ async fn blocking_response(
             inference_token,
             model: model.clone(),
             prompt,
+            images,
             chat_template: mode.applies_chat_template(),
             budget,
             stops,
@@ -929,6 +1023,7 @@ fn stream_response(
     route: &'static str,
     model: String,
     prompt: String,
+    images: Vec<Vec<u8>>,
     budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
@@ -947,6 +1042,7 @@ fn stream_response(
             inference_token,
             model: model.clone(),
             prompt,
+            images,
             chat_template: mode.applies_chat_template(),
             budget,
             stops,
@@ -1397,6 +1493,16 @@ mod tests {
             content: Content::Text(text.into()),
             tool_calls: None,
         }
+    }
+
+    #[test]
+    fn image_is_rejected_when_the_served_model_has_no_mmproj() {
+        assert_eq!(
+            image_vision_error(&[vec![0xFF, 0xD8]], None),
+            Some("este modelo não tem visão")
+        );
+        assert_eq!(image_vision_error(&[vec![0xFF, 0xD8]], Some("mmproj.gguf")), None);
+        assert_eq!(image_vision_error(&[], None), None);
     }
 
     // ── Escolha de implantação ───────────────────────────────────────────────
@@ -2022,10 +2128,14 @@ mod tests {
             role: "user".into(),
             content: Content::Parts(vec![
                 ContentPart {
+                    kind: Some("text".into()),
                     text: Some("linha 1".into()),
+                    image_url: None,
                 },
                 ContentPart {
+                    kind: Some("text".into()),
                     text: Some("linha 2".into()),
+                    image_url: None,
                 },
             ]),
             tool_calls: None,

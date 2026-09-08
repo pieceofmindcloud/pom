@@ -481,6 +481,14 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` e
 `/api/ui/model-provider/downloads/:id/{cancel,retry}`.
 
+### Deploy e chat multimodais
+
+`DeployModel.tsx` só exibe a opção de visão quando o plano devolve
+`mmproj_path`, e envia a escolha para a implantação. `Chat.tsx` esconde o
+seletor de imagem sem visão, aceita arquivos de texto sempre, suporta botão e
+arrastar e largar com retorno visual e redimensiona imagens antes de enviá-las
+ao endpoint OpenAI. Cada anexo tem miniatura e remoção própria.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

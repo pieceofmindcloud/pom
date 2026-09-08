@@ -64,6 +64,12 @@ vive nele), `inference/executor.rs`, `models/splitter.rs` (usa `gguf` e, nos
 testes, `llama_engine::llama_cpp_sys_2`), e todo o resto do pipeline
 (`infer_server.rs`, `prefill.rs`, `direct.rs`, `runtime.rs`, ...).
 
+### Visão
+
+`llm::VisionContext` usa o `mtmd` já fornecido pelo llama.cpp para carregar o
+GGUF `mmproj` separado e transformar imagens em tokens no prefill. O caminho é
+opcional e é validado junto com `NodeConfig.mmproj_path`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

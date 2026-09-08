@@ -1323,7 +1323,9 @@ fn main() {
             .include(llama_src.join("include"))
             .include(llama_src.join("ggml/include"))
             .include(llama_src.join("common"))
+            .include(llama_src.join("vendor/hash"))
             .include(llama_src.join("vendor"))
+            .file(llama_src.join("vendor/hash/hash.cpp"))
             .flag_if_supported("-std=c++17")
             .flag_if_supported("-Wno-cast-qual")
             .pic(true);
@@ -1354,6 +1356,13 @@ fn main() {
         }
 
         mtmd_build.compile("mtmd");
+
+        // hash.cpp is C++, but the bundled SHA-256 implementation must keep
+        // its C symbol name for the wrapper's extern "C" declaration.
+        cc::Build::new()
+            .include(llama_src.join("vendor/hash"))
+            .file(llama_src.join("vendor/hash/sha256/sha256.c"))
+            .compile("mtmd_sha256");
     }
 
     // Search paths

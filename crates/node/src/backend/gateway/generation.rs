@@ -11,6 +11,7 @@ pub(super) async fn generate_stream_inner(
         inference_token: _inference_token,
         model,
         prompt,
+        images,
         chat_template,
         budget,
         stops,
@@ -75,6 +76,26 @@ pub(super) async fn generate_stream_inner(
         return;
     };
 
+    // The gateway may be a middle or tail peer. Vision is an admission fact
+    // of the selected head, so only reject here when this process owns that
+    // head; a remote head performs the same check in its inference runtime.
+    if !images.is_empty()
+        && plan
+            .steps
+            .first()
+            .is_some_and(|step| step.node_id == state.network.node_id)
+    {
+        let mmproj_path = state
+            .runtime
+            .config()
+            .await
+            .and_then(|cfg| cfg.mmproj_path);
+        if let Some(error) = crate::openai::image_vision_error(&images, mmproj_path.as_deref()) {
+            let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+            return;
+        }
+    }
+
     // A rota e escolhida por quem vai discar, nao por quem planejou: o plano
     // pode ter vindo de uma maquina noutra rede, e so este no mediu os
     // candidatos. Resolver aqui, uma vez, fixa o endereco de cada hop para a
@@ -110,13 +131,13 @@ pub(super) async fn generate_stream_inner(
         Uuid::new_v4().to_string(),
     );
     let mut session_id = prefix_lease.session_id().to_string();
-    let mut reuse_prefix = prefix_lease.is_hit();
+    let mut reuse_prefix = prefix_lease.is_hit() && images.is_empty();
     // Camada de disco (Phase 3): um miss em memória que casa um snapshot
     // automático em disco - típico depois de um reinício - restaura o KV em
     // todos os hops em vez de refazer o prefill a frio. Ver
     // `crate::prefix_cache::PrefixDiskIndex`.
     let mut disk_restore_hash: Option<String> = None;
-    if !reuse_prefix {
+    if !reuse_prefix && images.is_empty() {
         if let Some(disk) = state.prefix_disk.clone() {
             if let Some(entry) =
                 disk.longest_prefix_match(&prefix_key.model, &prefix_key.hops, &cache_prompt)
@@ -327,6 +348,7 @@ pub(super) async fn generate_stream_inner(
                 model,
                 &session_id,
                 &prompt,
+                &images,
                 chat_template,
                 chunk_tokens,
                 dtype,

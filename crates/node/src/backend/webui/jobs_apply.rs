@@ -889,9 +889,18 @@ pub(super) async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &s
         .inference_port
         .ok_or_else(|| anyhow::anyhow!("este nó subiu sem --inference-port"))?;
 
+    let mmproj_path = if req.use_mmproj {
+        Some(crate::catalog::find_mmproj_sibling(std::path::Path::new(&model_path)).ok_or_else(
+            || anyhow::anyhow!("este modelo não tem visão: mmproj não encontrado ao lado do GGUF"),
+        )?)
+    } else {
+        None
+    };
+
     let cfg = NodeConfig {
         deploy_id: req.deploy_id.clone(),
         model_path: model_path.clone(),
+        mmproj_path,
         model_label: label,
         deployment_name: deployment,
         start_layer: req.start_layer,

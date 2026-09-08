@@ -189,6 +189,13 @@ comprimento. Comprimento 1 é broadcast e permanece igual; um comprimento
 positivo menor que `block_count` em array da arquitetura é recusa nominal com
 chave e tamanho.
 
+### Projetor multimodal
+
+`catalog.rs::find_mmproj_sibling` segue a convenção do llama.cpp: GGUF `.gguf`
+vizinho no mesmo diretório com `mmproj` no nome, escolhendo a quantização mais
+próxima. `DiscoveredModel.mmproj_path` é a resposta persistida no catálogo;
+a interface não deve varrer o disco. O projetor não é um modelo selecionável.
+
 ## Manutenção deste arquivo
 
 Este arquivo é um mapa curto da pasta. Ao adicionar metadados de modelo ou

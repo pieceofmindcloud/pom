@@ -15,11 +15,14 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  ImagePlus,
   MessagesSquare,
+  Paperclip,
   Pencil,
   Plus,
   Square,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
@@ -47,8 +50,10 @@ import {
   useChatSessionController,
   useOptionalChatSessionController,
   type ChatMessage,
+  type ChatRequestPart,
   type ChatSession,
 } from "../lib/chatStore";
+import { resizeImageForVision } from "../lib/imageResize";
 import { ms, num } from "../lib/format";
 import type { RequestTrace } from "../lib/chatStream";
 import {
@@ -76,6 +81,25 @@ type WebKitWindow = Window & {
     };
   };
 };
+
+type ChatAttachment = {
+  id: string;
+  name: string;
+  kind: "image" | "text";
+  data: string;
+};
+
+function isTextFile(file: File): boolean {
+  if (file.type.startsWith("text/")) return true;
+  return /\.(c|cc|cpp|css|csv|go|h|hpp|html?|ini|java|js|json|jsx|log|md|py|rs|sh|sql|toml|ts|tsx|txt|xml|yaml|yml)$/i.test(file.name);
+}
+
+function attachmentFormat(attachment: ChatAttachment): string {
+  if (attachment.kind === "image") return "IMG";
+  const extension = attachment.name.match(/\.([^.]+)$/)?.[1];
+  if (extension) return extension.slice(0, 6).toUpperCase();
+  return "TXT";
+}
 
 function nativeWindowHandler() {
   if (typeof window === "undefined") return undefined;
@@ -394,6 +418,8 @@ function ChatScreen() {
   );
 
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [telemetryCapture, setTelemetryCapture] = useState<{
     messageId: string;
@@ -406,12 +432,18 @@ function ChatScreen() {
   const thread = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const textInput = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
 
   useEffect(
     () => registerBeforeChange((kind) => {
       abort.current?.abort();
       setTelemetryCapture(null);
-      if (kind === "new") setDraft("");
+      if (kind === "new") {
+        setDraft("");
+        setAttachments([]);
+      }
     }),
     [registerBeforeChange],
   );
@@ -484,15 +516,103 @@ function ChatScreen() {
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, []);
 
+  const visionAvailable = Boolean(node.data?.config?.mmproj_path || cluster.data?.mmproj_path);
+
+  async function addFiles(files: FileList | File[]) {
+    const added: ChatAttachment[] = [];
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith("image/")) {
+        if (!visionAvailable) {
+          toast.error("Imagem recusada", "este modelo não tem visão");
+          continue;
+        }
+        try {
+          added.push({ id: newId(), name: file.name, kind: "image", data: await resizeImageForVision(file) });
+        } catch (error) {
+          toast.error("Imagem recusada", error instanceof Error ? error.message : String(error));
+        }
+        continue;
+      }
+      if (isTextFile(file)) {
+        try {
+          added.push({ id: newId(), name: file.name, kind: "text", data: await file.text() });
+        } catch (error) {
+          toast.error("Ficheiro recusado", error instanceof Error ? error.message : String(error));
+        }
+        continue;
+      }
+      toast.error("Ficheiro recusado", "aceite imagens ou ficheiros de texto");
+    }
+    if (added.length > 0) setAttachments((current) => [...current, ...added]);
+  }
+
+  function hasFiles(dataTransfer: DataTransfer): boolean {
+    return Array.from(dataTransfer.types).includes("Files");
+  }
+
+  function handleDragEnter(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (!hasFiles(event.dataTransfer)) return;
+    dragDepth.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (!hasFiles(event.dataTransfer)) return;
+    event.dataTransfer.dropEffect = "copy";
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragActive(false);
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragActive(false);
+    if (event.dataTransfer.files.length === 0) {
+      toast.error("Ficheiro recusado", "solte uma imagem ou um ficheiro de texto");
+      return;
+    }
+    void addFiles(event.dataTransfer.files);
+  }
+
   async function send(options?: { visibleText?: string; requestContent?: string }) {
     const text = options?.visibleText ?? draft.trim();
-    if (!text || streaming || !model) return;
+    if ((!text && attachments.length === 0) || streaming || !model) return;
+    if (attachments.some((attachment) => attachment.kind === "image") && !visionAvailable) {
+      toast.error("Imagem recusada", "este modelo não tem visão");
+      return;
+    }
+
+    const requestParts: ChatRequestPart[] = [];
+    if (text) requestParts.push({ type: "text", text });
+    for (const attachment of attachments) {
+      if (attachment.kind === "image") {
+        requestParts.push({ type: "image_url", image_url: { url: attachment.data } });
+      } else {
+        requestParts.push({ type: "text", text: `Arquivo ${attachment.name}:\n${attachment.data}` });
+      }
+    }
+    const requestContent = options?.requestContent ?? (
+      requestParts.length === 1 && requestParts[0].type === "text"
+        ? requestParts[0].text
+        : requestParts
+    );
+    const visibleText = text || "Arquivos anexados";
+    const visibleWithAttachments = attachments.length > 0
+      ? `${visibleText}\n\n${attachments.map((attachment) => `📎 ${attachment.name}`).join("\n")}`
+      : visibleText;
 
     const user: ChatMessage = {
       id: newId(),
       role: "user",
-      content: text,
-      requestContent: options?.requestContent,
+      content: visibleWithAttachments,
+      requestContent,
       at: new Date().toISOString(),
     };
     const reply: ChatMessage = {
@@ -519,6 +639,7 @@ function ChatScreen() {
     };
     setSession(live);
     setDraft("");
+    setAttachments([]);
     setTelemetryCapture(null);
     setStreaming(true);
     autoFollow.current = true;
@@ -678,6 +799,7 @@ function ChatScreen() {
 
   function startNewChat() {
     setDraft("");
+    setAttachments([]);
     setTelemetryCapture(null);
     startNewSession(model || null);
   }
@@ -784,7 +906,108 @@ function ChatScreen() {
 
         <div className="shrink-0 border-t border-line bg-surface/80 px-4 py-3 backdrop-blur-md sm:px-6">
           <div className="mx-auto w-full max-w-3xl">
-            <div className="flex items-end gap-2 rounded-xl border border-line bg-ink p-2 transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20">
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {attachments.map((attachment) => (
+                  <span
+                    key={attachment.id}
+                    className="flex max-w-full items-center gap-2 rounded-lg border border-line bg-raised px-1.5 py-1.5 text-[0.65rem] text-muted"
+                  >
+                    {attachment.kind === "image" ? (
+                      <img
+                        src={attachment.data}
+                        alt={`Miniatura de ${attachment.name}`}
+                        className="h-10 w-10 shrink-0 rounded-md border border-line object-cover"
+                      />
+                    ) : (
+                      <span
+                        aria-label={`Formato ${attachmentFormat(attachment)}`}
+                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-aqua/30 bg-aqua/[0.08] px-1 text-center font-mono text-[0.58rem] font-semibold uppercase text-aqua"
+                      >
+                        {attachmentFormat(attachment)}
+                      </span>
+                    )}
+                    <span className="max-w-[16rem] truncate" title={attachment.name}>{attachment.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remover ${attachment.name}`}
+                      onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                      className="rounded p-0.5 text-faint hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div
+              role="group"
+              aria-label="Campo de mensagem"
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={clsx(
+                "relative flex items-end gap-2 rounded-xl border bg-ink p-2 transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20",
+                dragActive ? "border-iris bg-iris/[0.08] ring-2 ring-iris/30" : "border-line",
+              )}
+            >
+              {dragActive && (
+                <div
+                  aria-live="polite"
+                  className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-lg border border-dashed border-iris bg-ink/90 px-4 text-center text-sm font-medium text-iris shadow-lift"
+                >
+                  Solte uma imagem ou um ficheiro de texto
+                </div>
+              )}
+              <input
+                ref={textInput}
+                type="file"
+                accept="text/*,.md,.csv,.json,.yaml,.yml,.xml,.toml,.log,.rs,.py,.js,.ts,.tsx,.jsx,.css,.sql,.sh"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  const files = event.currentTarget.files;
+                  if (files) void addFiles(files);
+                  event.currentTarget.value = "";
+                }}
+              />
+              {visionAvailable && (
+                <input
+                  ref={imageInput}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    const files = event.currentTarget.files;
+                    if (files) void addFiles(files);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              )}
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Anexar ficheiro de texto"
+                  title="Anexar ficheiro de texto"
+                  onClick={() => textInput.current?.click()}
+                  className="rounded-md p-1.5 text-faint transition-colors hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                {visionAvailable && (
+                  <button
+                    type="button"
+                    aria-label="Anexar imagem"
+                    title="Anexar imagem"
+                    onClick={() => imageInput.current?.click()}
+                    className="rounded-md p-1.5 text-faint transition-colors hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+                  >
+                    <ImagePlus className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
               <textarea
                 ref={composer}
                 rows={1}
@@ -813,7 +1036,7 @@ function ChatScreen() {
               ) : (
                 <Button
                   variant="primary"
-                  disabled={!draft.trim()}
+                  disabled={!draft.trim() && attachments.length === 0}
                   onClick={() => void send()}
                   aria-label={t("chat.send")}
                   className="w-9 px-0"

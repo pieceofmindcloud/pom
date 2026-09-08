@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine as _;
 
 pub(super) async fn handle_prefill(
     State(app): State<InferenceAppState>,
@@ -122,6 +123,25 @@ pub(super) async fn handle_prefill(
         .get("prompt")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let images = match meta.get("images") {
+        None => None,
+        Some(value) => {
+            let Some(values) = value.as_array() else {
+                return err400("campo images inválido");
+            };
+            let mut decoded = Vec::with_capacity(values.len());
+            for value in values {
+                let Some(encoded) = value.as_str() else {
+                    return err400("campo images contém um item inválido");
+                };
+                match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                    Ok(bytes) => decoded.push(bytes),
+                    Err(error) => return err400(format!("imagem codificada inválida: {error}")),
+                }
+            }
+            Some(decoded)
+        }
+    };
     let chat_template = meta.get("chat_template").and_then(|v| v.as_bool());
     // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
     // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
@@ -186,6 +206,7 @@ pub(super) async fn handle_prefill(
         is_final_chunk,
         wire_dtype,
         prompt,
+        images,
         chat_template,
         tensor,
         capture_block,
@@ -585,6 +606,7 @@ pub(super) fn prefill_blocking(
     is_final_chunk: bool,
     wire_dtype: WireDtype,
     prompt: Option<String>,
+    images: Option<Vec<Vec<u8>>>,
     chat_template: Option<bool>,
     tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
@@ -598,6 +620,7 @@ pub(super) fn prefill_blocking(
 ) -> Result<TimedReply> {
     let mut is_final_chunk = is_final_chunk;
     let owns_prompt_tokens = prompt.is_some();
+    let has_images = images.as_ref().is_some_and(|images| !images.is_empty());
     let mut timings = NodeTimings {
         queue_us: queued_at.elapsed().as_micros() as u64,
         ..Default::default()
@@ -632,7 +655,7 @@ pub(super) fn prefill_blocking(
     // We must not hold a &mut Session borrow while calling engine methods, so
     // compute everything we need, store results, then re-borrow.
     if let Some(ref text) = prompt {
-        if chunk_index == 0 {
+        if chunk_index == 0 && !has_images {
             let use_tmpl = use_chat_template(chat_template, s.chat_template);
             let no_think = s.no_thinking;
             let formatted = if use_tmpl {
@@ -682,12 +705,12 @@ pub(super) fn prefill_blocking(
     // Um pedaço nunca atravessa a fronteira: ele para nela, e o seguinte começa
     // já na outra sequência.
     let stable = s.sessions[&sid_key].stable_len;
-    if expected_pos >= stable {
+    if expected_pos >= stable && !has_images {
         s.open_generation(&sid_key)?;
     }
     let (n_past, seq_id, tokens_for_chunk) = {
         let session = &s.sessions[&sid_key];
-        let toks = if tensor.is_none() {
+        let toks = if tensor.is_none() && !has_images {
             let start = expected_pos as usize;
             let mut end = (expected_pos + chunk_size) as usize;
             if expected_pos < stable {
@@ -727,6 +750,7 @@ pub(super) fn prefill_blocking(
     };
 
     let n_tokens;
+    let mut multimodal_n_past = None;
     let decode_started = Instant::now();
     let engine_timing;
     if let Some((hidden, shape)) = tensor {
@@ -741,6 +765,30 @@ pub(super) fn prefill_blocking(
             !is_last,
             chunk_tokens.as_deref(),
         )?;
+    } else if has_images {
+        if chunk_index != 0 || tensor.is_some() {
+            bail!("imagens só podem acompanhar o primeiro chunk de prefill");
+        }
+        let text = prompt
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("imagem sem prompt"))?;
+        let use_tmpl = use_chat_template(chat_template, s.chat_template);
+        let formatted = if use_tmpl {
+            s.engine
+                .apply_chat_template(&[("user", text)], true, s.no_thinking)?
+        } else {
+            text.to_string()
+        };
+        let (decoded_tokens, decoded_n_past, timing) = s.engine.decode_multimodal(
+            &formatted,
+            images.as_deref().unwrap_or_default(),
+            n_past,
+            seq_id,
+            !is_last,
+        )?;
+        n_tokens = decoded_tokens;
+        multimodal_n_past = Some(decoded_n_past);
+        engine_timing = timing;
     } else {
         if tokens_for_chunk.is_empty() {
             bail!("chunk {chunk_index} não tem tokens");
@@ -777,7 +825,13 @@ pub(super) fn prefill_blocking(
     // ── Session update ───────────────────────────────────────────────────────
     {
         let session = s.sessions.get_mut(&sid_key).unwrap();
-        session.n_past += n_tokens as u32;
+        if let Some(decoded_n_past) = multimodal_n_past {
+            session.n_past = decoded_n_past;
+            session.prompt_tokens = vec![0; n_tokens];
+            session.stable_len = decoded_n_past;
+        } else {
+            session.n_past += n_tokens as u32;
+        }
         session.last_used = Instant::now();
     }
 
@@ -1022,6 +1076,7 @@ pub(super) fn prefill_batch_blocking(
             is_final_chunk,
             wire_dtype,
             prompt,
+            images: _images,
             chat_template,
             tensor,
             capture_block,

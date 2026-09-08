@@ -323,6 +323,9 @@ pub(super) struct PrefillJob {
     pub(super) is_final_chunk: bool,
     pub(super) wire_dtype: WireDtype,
     pub(super) prompt: Option<String>,
+    /// Imagens só existem no chunk 0 da cabeça; os hops seguintes recebem
+    /// apenas o estado oculto já produzido pelo projector.
+    pub(super) images: Option<Vec<Vec<u8>>>,
     pub(super) chat_template: Option<bool>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
@@ -802,6 +805,17 @@ pub(super) fn execute_scheduled_batch(
     items: Vec<crate::scheduler::QueueItem<InferenceCommand>>,
     enabled: bool,
 ) {
+    if items.iter().any(|item| {
+        matches!(
+            &item.payload,
+            InferenceCommand::Prefill { job, .. } if job.images.as_ref().is_some_and(|images| !images.is_empty())
+        )
+    }) {
+        for item in items {
+            execute_one_command(state.clone(), item.payload);
+        }
+        return;
+    }
     if !enabled || items.len() == 1 {
         for item in items {
             execute_one_command(state.clone(), item.payload);
@@ -862,6 +876,7 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.is_final_chunk,
                 job.wire_dtype,
                 job.prompt,
+                job.images,
                 job.chat_template,
                 job.tensor,
                 job.capture_block,
@@ -1289,6 +1304,7 @@ mod tests {
         let mut cfg = crate::runtime::NodeConfig {
             deploy_id: String::new(),
             model_path: "/nao/existe/modelo.gguf".into(),
+            mmproj_path: None,
             model_label: "qwen35".into(),
             deployment_name: "qwen35".into(),
             start_layer: 0,

@@ -433,6 +433,9 @@ pub(crate) struct GenerationInput {
     pub(crate) inference_token: String,
     pub(crate) model: String,
     pub(crate) prompt: String,
+    /// Bytes das imagens já reduzidas pelo cliente. Só a cabeça do pipeline
+    /// recebe este campo; os outros peers trabalham com o estado oculto.
+    pub(crate) images: Vec<Vec<u8>>,
     pub(crate) chat_template: bool,
     /// Os dois tetos desta requisição: o da perna e o do total. Ver
     /// [`OutputBudget`].

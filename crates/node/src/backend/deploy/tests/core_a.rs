@@ -279,6 +279,7 @@
                         total_layers: s.declares,
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
+                        mmproj_path: None,
                         sha256: None,
                         pom_id: None,
                         virtual_slice: false,

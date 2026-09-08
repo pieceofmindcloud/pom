@@ -1217,9 +1217,23 @@ unidade mas **não** tem número medido de ponta a ponta.
   `llm.rs` (llama-cpp-sys-2). `old/python-inference/inference_server.py` e
   `split_model.py` são legado, não são mais invocados.
 
+### Prefill multimodal
+
+`LlmEngine` carrega o contexto `mtmd` somente quando `NodeConfig.mmproj_path`
+está configurado. O prefill da cabeça transporta as imagens em base64 apenas
+no primeiro chunk; os peers as decodificam e o `mtmd` faz o prefill em ordem.
+Imagens não usam reuso de prefixo nem batching concorrente.
+
 ## Manutenção deste arquivo
 
 Este arquivo é um mapa de responsabilidades da pasta. Ao mudar uma interface
 de inferência ou uma invariável de sessão, atualize aqui e o README do
 subsistema no mesmo commit. Mantenha detalhes de implementação no código ou
 em `docs/subsystems/inferencia.md`, para que este índice continue curto.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

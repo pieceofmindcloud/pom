@@ -360,6 +360,16 @@ inferência escolhe a cópia com menor RTT medido, equilibrando também a carga 
 voo. `load_distribution` separa carga atual de carga projetada pelo plano, sem
 abrir uma segunda execução concorrente.
 
+### Visão opcional
+
+O catálogo registra `mmproj_path` quando encontra, no mesmo diretório, o GGUF
+vizinho que segue a convenção do llama.cpp. O `Plan` repassa esse caminho para
+a interface sem uma nova varredura do disco. `DeployRequest.vision` só pode ser
+marcado quando o plano tem projetor; nesse caso o lançamento da cabeça recebe
+`--mmproj <caminho>`. A escolha é persistida em `NodeConfig`, para que o estado
+de visão carregado e o caminho em uso fiquem disponíveis ao chat e às rotas de
+administração.
+
 ### O modelo e seu tamanho
 
 `model_size` resolve o total de camadas do modelo com precedência

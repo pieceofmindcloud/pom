@@ -55,10 +55,11 @@ const MACHINES = [
 ];
 
 /** O plano de um modelo inteiro: um passo, todas as camadas, uma máquina. */
-function wholePlan(target = "ksia"): DeployPlan {
+function wholePlan(target = "ksia", mmproj_path: string | null = null): DeployPlan {
   return {
     group: "qwen3.5-9b",
     kind: "whole",
+    mmproj_path,
     total_layers: 32,
     total_layers_inferred: false,
     steps: [
@@ -647,6 +648,31 @@ describe("DeployModel · modelo inteiro", () => {
       expect(deploys).toHaveLength(1);
       expect(deploys[0][1]).toMatchObject({ group: "qwen3.5-9b", kind: "whole" });
     });
+  });
+
+  it("mostra a opção de visão somente quando o plano tem mmproj", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(body?.kind === "whole" ? wholePlan("ksia", "/lm/mmproj.gguf") : shardPlan());
+    });
+    mount();
+    chooseWhole();
+    await waitFor(() => expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true));
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+
+    expect(screen.getByRole("checkbox", { name: /Ativar visão/ })).toBeTruthy();
+    expect(screen.getByText("/lm/mmproj.gguf")).toBeTruthy();
+  });
+
+  it("não renderiza opção de visão quando o plano não tem mmproj", async () => {
+    answerPlans();
+    mount();
+    chooseWhole();
+    await waitFor(() => expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true));
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+
+    expect(screen.queryByRole("checkbox", { name: "Ativar visão" })).toBeNull();
+    expect(screen.queryByText(/mmproj/)).toBeNull();
   });
 
   /**

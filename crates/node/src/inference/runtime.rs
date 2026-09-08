@@ -54,6 +54,7 @@ pub(crate) fn engine_config_from_node(
 ) -> Result<crate::llm::EngineConfig> {
     let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
     Ok(crate::llm::EngineConfig {
+        mmproj_path: cfg.mmproj_path.clone(),
         n_ctx: total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
         offload_kqv: cfg.offload_kqv,
         cache_type_k: cfg.cache_type_k,
@@ -105,6 +106,9 @@ pub use llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB;
 pub struct NodeConfig {
     /// Path of the GGUF this peer loads — a full model or one slice of one.
     pub model_path: String,
+    /// Projector multimodal carregado junto do GGUF, equivalente a `--mmproj`.
+    #[serde(default)]
+    pub mmproj_path: Option<String>,
     /// Label shared by every peer of the same model. The pipeline planner only
     /// chains peers whose label matches exactly, so this must agree across the
     /// cluster (see `ModelProfile::guess_from_name`).
@@ -276,6 +280,7 @@ impl NodeConfig {
             deploy_id: String::new(),
             deployment_name: String::new(),
             model_path: String::new(),
+            mmproj_path: None,
             model_label: String::new(),
             start_layer: 0,
             end_layer: 0,
@@ -344,6 +349,7 @@ impl NodeConfig {
             deploy_id: self.deploy_id.clone(),
             deployment_name: self.deployment_name.clone(),
             model_path: self.model_path.clone(),
+            mmproj_path: self.mmproj_path.clone(),
             model_label: self.model_label.clone(),
             start_layer: self.start_layer,
             end_layer: self.end_layer,
@@ -493,6 +499,7 @@ impl NodeConfig {
     /// sampling ficam fora desta identidade e são reconstruídos no servidor.
     fn weights_are_compatible(&self, other: &Self) -> bool {
         self.model_path == other.model_path
+            && self.mmproj_path == other.mmproj_path
             && self.start_layer == other.start_layer
             && self.end_layer == other.end_layer
             && self.total_layers == other.total_layers
@@ -509,6 +516,11 @@ impl NodeConfig {
         }
         if !PathBuf::from(&self.model_path).exists() {
             bail!("arquivo não encontrado: {}", self.model_path);
+        }
+        if let Some(mmproj_path) = self.mmproj_path.as_deref() {
+            if !PathBuf::from(mmproj_path).is_file() {
+                bail!("arquivo mmproj não encontrado: {mmproj_path}");
+            }
         }
         if self.start_layer > self.end_layer {
             bail!(
@@ -1753,6 +1765,7 @@ mod tests {
         NodeConfig {
             deploy_id: String::new(),
             model_path: "/nonexistent/model.gguf".into(),
+            mmproj_path: None,
             model_label: "qwen35".into(),
             deployment_name: "qwen35".into(),
             start_layer: 0,

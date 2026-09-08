@@ -188,6 +188,8 @@ pub struct Plan {
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     pub(super) kind: DeployKind,
+    /// Projector selected by the catalog for the model, if any.
+    pub(super) mmproj_path: Option<String>,
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
     pub(super) is_moe: bool,
@@ -1038,6 +1040,11 @@ pub(super) fn plan_with_rtt_options(
         .iter()
         .flat_map(|machine| &machine.held)
         .any(|shard| shard.is_moe);
+    let mmproj_path = machines
+        .iter()
+        .flat_map(|machine| machine.held.iter())
+        .find(|shard| shard.mmproj_path.is_some() && shard.start_layer == 0)
+        .and_then(|shard| shard.mmproj_path.clone());
     let inference_mode_reason = if params.inference_mode == InferenceMode::Moe && !is_moe {
         Some("MoE exige metadata real de experts no GGUF deste modelo.".to_string())
     } else if kind == DeployKind::TensorParallel && is_moe {
@@ -1754,6 +1761,7 @@ pub(super) fn plan_with_rtt_options(
         deployment_name: deployment_name.to_string(),
         strategy,
         kind,
+        mmproj_path,
         tp,
         is_moe,
         inference_mode_supported,

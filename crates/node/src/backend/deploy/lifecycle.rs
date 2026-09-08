@@ -15,6 +15,7 @@ pub(super) async fn run(
     params: RuntimeParams,
     identity: RequestedModelIdentity,
     record_plan: RecordPlan,
+    use_mmproj: bool,
     job_id: &str,
 ) -> Result<(), String> {
     let deploy_id = record_plan.deploy_id().to_string();
@@ -298,6 +299,13 @@ pub(super) async fn run(
         plan.tp.as_ref(),
         &plan.tp_targets,
     )?;
+    if use_mmproj {
+        let head = targets
+            .iter_mut()
+            .find(|target| target.start_layer == 0)
+            .ok_or_else(|| "a implantação com visão precisa de um alvo que comece na camada 0".to_string())?;
+        head.use_mmproj = true;
+    }
     if params.no_embeddings {
         // O planner já validou atomicamente a topologia. Marcar cada alvo
         // explicitamente evita que um interruptor global seja reinterpretado
@@ -363,6 +371,7 @@ pub(super) async fn run(
             targets,
             primary_node_id: primary,
             params,
+            use_mmproj,
         }),
     )
     .await;
@@ -816,6 +825,11 @@ pub(super) async fn run_redeploy(
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                         .map(str::to_string),
+                    mmproj_path: config
+                        .and_then(|c| c.get("mmproj_path"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
                     model_label: config
                         .and_then(|c| c.get("model_label"))
                         .and_then(|v| v.as_str())
@@ -918,6 +932,7 @@ pub(super) async fn run_redeploy(
             model_path: snap
                 .and_then(|s| s.model_path.clone())
                 .or_else(|| no.source_model_path.clone()),
+            mmproj_path: snap.and_then(|s| s.mmproj_path.clone()),
             part_sha256: no.part_sha256.clone(),
             model_label: snap
                 .and_then(|s| s.model_label.clone())
@@ -967,6 +982,7 @@ pub(super) async fn run_redeploy(
 /// A fotografia do que um nó estava rodando, tirada antes do unload.
 pub(super) struct NodeIdentitySnapshot {
     pub(super) model_path: Option<String>,
+    pub(super) mmproj_path: Option<String>,
     pub(super) model_label: Option<String>,
     pub(super) deployment_name: String,
     pub(super) single_peer: bool,
@@ -1260,4 +1276,3 @@ pub(super) async fn reconfigure_one(
         Err(e) => Some(format!("máquina inacessível: {e}")),
     }
 }
-

@@ -263,6 +263,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
 
+### Anexos
+
+`imageResize.ts` reduz imagens para no máximo 2048 px no lado maior e preserva
+a proporção antes de montar o pedido multimodal. `chatStore` preserva as partes
+estruturadas do pedido para que anexos de texto e imagem sobrevivam ao histórico.
+
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
 - `streamErrorMessage(payload)` / `consumeChatError(previous, error)` - leem a mensagem real de um frame de erro compatível com OpenAI dentro do stream SSE e a mantêm junto do conteúdo já renderizado.

@@ -292,6 +292,7 @@ mod tests {
         crate::runtime::NodeConfig {
             deploy_id: String::new(),
             model_path: "/models/m_0_7.gguf".into(),
+            mmproj_path: None,
             model_label: "qwen35".into(),
             deployment_name: "qwen35".into(),
             start_layer: 0,

@@ -1434,6 +1434,22 @@ pub(super) fn head_prefill_meta(
     })
 }
 
+/// Codifica as imagens somente no primeiro quadro enviado à cabeça. O projector
+/// é executado ali; os demais peers recebem apenas o estado oculto.
+pub(super) fn add_images_to_head_meta(
+    mut meta: serde_json::Value,
+    images: Option<&[Vec<u8>]>,
+) -> serde_json::Value {
+    if let Some(images) = images.filter(|images| !images.is_empty()) {
+        use base64::Engine as _;
+        meta["images"] = json!(images
+            .iter()
+            .map(|image| base64::engine::general_purpose::STANDARD.encode(image))
+            .collect::<Vec<_>>());
+    }
+    meta
+}
+
 /// Posições de prefill são absolutas na sessão, não são deriváveis do índice
 /// lógico do pedaço. Um prompt curto pode terminar no token 42 e o pedaço 1
 /// seguinte começa em 42, não em `1 * chunk_size`.

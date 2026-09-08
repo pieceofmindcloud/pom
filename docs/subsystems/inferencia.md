@@ -16,6 +16,16 @@ servidor de inferência local, então `GET /api/ui/node` mede também pedidos qu
 chegam diretamente à porta de inferência; a ausência de requisições reporta
 zero, e falha de leitura permanece desconhecida na UI.
 
+## Entrada multimodal
+
+O catálogo e a implantação carregam a visão como estado explícito: sem
+`NodeConfig.mmproj_path`, uma parte de imagem em `/v1/chat/completions` é
+recusada com `este modelo não tem visão`; arquivos de texto continuam sendo
+aceitos. Com o projetor carregado, o gateway valida imagens `data:image/...`
+em base64, envia-as para o primeiro peer junto do prompt e o prefill usa o
+`mtmd` do llama.cpp. O caminho é intencionalmente separado do prefill textual
+para não reutilizar prefixos ou misturar imagens em batches concorrentes.
+
 ## Porta de inferência e exposição administrativa
 
 O servidor de inferência (`--inference-port`) mantém a escuta em IPv4 e IPv6,

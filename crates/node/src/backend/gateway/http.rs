@@ -247,6 +247,7 @@ pub(super) async fn handle_generate(
             inference_token,
             model,
             prompt: req.prompt,
+            images: Vec::new(),
             chat_template: true,
             budget: output_limit.budget(),
             stops,

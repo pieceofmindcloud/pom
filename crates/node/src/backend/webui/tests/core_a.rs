@@ -134,6 +134,7 @@ mod tests {
             skip_split: false,
             merge: None,
             params: RuntimeParams::default(),
+            use_mmproj: false,
         };
         let ident = |rank: u32, role: &str| crate::network::TpIdentity {
             role: role.into(),
@@ -205,6 +206,7 @@ mod tests {
             peer_index: None,
             peer_count: None,
             tp: None,
+            use_mmproj: false,
         };
 
         let cpu_only = params_for(&base, &target(Some(0), Some(false)));
@@ -242,6 +244,7 @@ mod tests {
             skip_split: false,
             merge: None,
             params: RuntimeParams::default(),
+            use_mmproj: false,
         }
     }
 

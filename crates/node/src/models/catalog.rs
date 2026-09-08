@@ -82,6 +82,11 @@ pub struct DiscoveredModel {
     pub source_label: &'static str,
     /// Absolute path of the `.gguf` file.
     pub path: String,
+    /// Adjacent llama.cpp multimodal projector, when the sibling convention
+    /// found one. `None` is also the catalog's fast answer for text-only
+    /// models, so callers never need to scan the directory again.
+    #[serde(default)]
+    pub mmproj_path: Option<String>,
     pub size_bytes: u64,
     /// True when the source GGUF declares a tensor-split set with more than
     /// one part. The catalog exposes only the first part as the selectable
@@ -549,6 +554,7 @@ fn describe(
         source,
         source_label: source.label(),
         path: path.to_string_lossy().into_owned(),
+        mmproj_path: find_mmproj_sibling(path),
         size_bytes,
         multipart: false,
         multipart_parts: Vec::new(),
@@ -574,6 +580,50 @@ fn describe(
         tp_size: part.and_then(|c| c.tp_size),
         capabilities: None,
     })
+}
+
+/// Match llama.cpp's local projector discovery: a `.gguf` sibling in the same
+/// directory whose filename contains `mmproj`, choosing the closest
+/// quantisation when more than one candidate exists.
+pub(crate) fn find_mmproj_sibling(model: &Path) -> Option<String> {
+    let parent = model.parent()?;
+    let model_name = model.file_name()?.to_string_lossy();
+    let model_bits = parse_quant_bits(&model_name);
+    let mut candidates = std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            if path == model
+                || !path.is_file()
+                || !name.to_ascii_lowercase().contains("mmproj")
+                || !name.to_ascii_lowercase().ends_with(".gguf")
+            {
+                return None;
+            }
+            let distance = match (model_bits, parse_quant_bits(&name)) {
+                (Some(model_bits), Some(projector_bits)) => {
+                    model_bits.abs_diff(projector_bits)
+                }
+                _ => u32::MAX,
+            };
+            Some((distance, name, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    candidates
+        .first()
+        .map(|(_, _, path)| path.to_string_lossy().into_owned())
+}
+
+fn parse_quant_bits(filename: &str) -> Option<u32> {
+    let quant = parse_quant(filename)?;
+    let digits = quant
+        .strip_prefix("IQ")
+        .or_else(|| quant.strip_prefix('Q'))
+        .or_else(|| quant.strip_prefix('F'))?;
+    digits.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok()
 }
 
 fn file_mtime_fingerprint(meta: &std::fs::Metadata) -> u64 {
@@ -1317,6 +1367,53 @@ mod tests {
     }
 
     #[test]
+    fn catalog_records_the_llama_mmproj_sibling_without_listing_it() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-catalog-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("gemma-3-4b-it-Q4_K_M.gguf");
+        let projector = models.join("mmproj-gemma-3-4b-it-f16.gguf");
+        std::fs::write(&model, crate::splitter::test_gguf_bytes(8)).unwrap();
+        std::fs::write(&projector, vec![0u8; 4096]).unwrap();
+
+        let catalog = discover_fast(std::slice::from_ref(&models), &shards);
+        assert_eq!(catalog.models.len(), 1);
+        assert_eq!(catalog.models[0].mmproj_path.as_deref(), projector.to_str());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_does_not_pair_a_projector_from_another_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-scope-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let other = root.join("other");
+        let shards = root.join("shards");
+        for directory in [&models, &other, &shards] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            models.join("model-Q4_K_M.gguf"),
+            crate::splitter::test_gguf_bytes(4),
+        )
+        .unwrap();
+        std::fs::write(other.join("mmproj-model-f16.gguf"), vec![0u8; 4096]).unwrap();
+
+        let catalog = discover_fast(std::slice::from_ref(&models), &shards);
+        assert_eq!(catalog.models[0].mmproj_path, None);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn shard_set_completeness() {
         let mk = |start: u32, end: u32, total: u32| DiscoveredModel {
             id: format!("s{start}"),
@@ -1324,6 +1421,7 @@ mod tests {
             source: ModelSource::Local,
             source_label: "Local",
             path: format!("/tmp/s_{start}_{end}.gguf"),
+            mmproj_path: None,
             size_bytes: 4096,
             architecture: None,
             is_moe: false,
@@ -1379,6 +1477,7 @@ mod tests {
                 multipart_parts: Vec::new(),
                 multipart_error: None,
                 metadata_error: None,
+                mmproj_path: None,
                 metadata_identity: None,
             };
             if tensor_parallel {
@@ -1488,6 +1587,7 @@ mod tests {
             source: ModelSource::Local,
             source_label: "Local",
             path: format!("/tmp/qwen_{start}_{end}.gguf"),
+            mmproj_path: None,
             size_bytes: 4096,
             architecture: None,
             is_moe: false,

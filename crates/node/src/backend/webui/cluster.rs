@@ -526,6 +526,28 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
 
     // Preserve the legacy active-model fields for existing UI consumers.
     let active = state.active_model().await;
+    let active_mmproj_path = views.iter().find_map(|view| {
+        let node = view.node.as_ref()?;
+        let config = node.get("config")?;
+        if config.get("start_layer").and_then(serde_json::Value::as_u64) != Some(0) {
+            return None;
+        }
+        let serves_active_model = view.model == active
+            || view
+                .capabilities
+                .iter()
+                .any(|capability| capability.model_id == active)
+            || node.get("active_model").and_then(serde_json::Value::as_str) == Some(active.as_str())
+            || config.get("model_label").and_then(serde_json::Value::as_str) == Some(active.as_str());
+        if !serves_active_model {
+            return None;
+        }
+        config
+            .get("mmproj_path")
+            .and_then(serde_json::Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+    });
     let active_coverage = model_inventory
         .iter()
         .find(|inventory| inventory.model_id == active);
@@ -572,6 +594,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         "covered_layers": covered_count,
         "coverage": covered,
         "complete": active_coverage.is_some_and(|inventory| inventory.complete),
+        "mmproj_path": active_mmproj_path,
         "model_inventory": model_inventory,
         "peers": views,
         "routing_edges": routing_edges,

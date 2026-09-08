@@ -55,6 +55,11 @@ pub(super) async fn deploy_endpoint(
         &pairwise_rtt,
         layer_options,
     );
+    if req.vision && plan.mmproj_path.is_none() {
+        return bad(json!({
+            "error": "este modelo não tem visão: nenhum mmproj foi encontrado ao lado do GGUF"
+        }));
+    }
 
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
     // sobre a varredura fresca, então também re-valida aqui — não confia no
@@ -152,7 +157,7 @@ pub(super) async fn deploy_endpoint(
     let reused = matches!(record_plan, RecordPlan::ReuseVersion(_));
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, identity, record_plan, &id).await {
+        match run(state, plan, params, identity, record_plan, req.vision, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -508,6 +513,7 @@ pub(super) fn launch_targets(
                     },
                     &membros,
                 )),
+                use_mmproj: false,
             });
         }
         return Ok(targets);
@@ -585,6 +591,7 @@ pub(super) fn launch_targets(
                 peer_index,
                 peer_count,
                 tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+                use_mmproj: false,
             });
             continue;
         }
@@ -616,6 +623,7 @@ pub(super) fn launch_targets(
             peer_index,
             peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+            use_mmproj: false,
         });
     }
 
@@ -654,6 +662,7 @@ pub(super) fn launch_targets(
                 peer_index: None,
                 peer_count: None,
                 tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
+                use_mmproj: false,
             });
         }
     }
@@ -887,6 +896,7 @@ pub(super) fn add_virtual_whole_slices(
             total_layers: Some(options.total_layers),
             name: format!("{group} L{start_layer}-{end_layer}"),
             path: whole.path.clone(),
+            mmproj_path: whole.mmproj_path.clone(),
             size_bytes,
             sha256: None,
             pom_id: None,
@@ -1399,4 +1409,3 @@ pub(super) enum RecordPlan {
     /// anexa - ou reativa - uma versão neste registro.
     ReuseVersion(Box<crate::deployment::Deployment>),
 }
-

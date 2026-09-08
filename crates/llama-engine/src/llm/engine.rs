@@ -480,6 +480,16 @@ impl LlmEngine {
             (None, None, None)
         };
         let mtp_allocation = mtp.as_ref().map(|drafter| drafter.allocation());
+        let vision = match cfg.mmproj_path.as_deref() {
+            Some(path) => match VisionContext::load(path, model, cfg) {
+                Ok(vision) => Some(vision),
+                Err(error) => {
+                    unsafe { sys::llama_free(ctx) };
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
 
         Ok(LlmEngine {
             loaded,
@@ -498,6 +508,7 @@ impl LlmEngine {
             effective_n_ubatch: effective_n_ubatch(cfg),
             cparams_snapshot,
             moe_external_executor: cfg.moe_external_executor,
+            vision,
             mtp,
             mtp_unavailable_reason,
             mtp_initial_context_error,
@@ -564,6 +575,11 @@ impl LlmEngine {
         unsafe { sys::llama_n_batch(self.ctx) }
     }
 
+    /// O projector foi carregado neste contexto e pode receber imagens.
+    pub fn vision_enabled(&self) -> bool {
+        self.vision.is_some()
+    }
+
     pub fn offload_kqv(&self) -> bool {
         // The setting is immutable for this context and carried in the engine
         // configuration only during construction. Keep a copy visible through
@@ -582,6 +598,124 @@ impl LlmEngine {
     /// Quantos blocos esta fatia carregou.
     pub fn n_layer(&self) -> u32 {
         unsafe { sys::llama_model_n_layer(self.loaded.model) as u32 }
+    }
+
+    /// Tokeniza texto e imagens pelo projector e avalia todos os chunks no
+    /// mesmo cache KV. O retorno preserva a contagem de tokens e a posição
+    /// efetiva, que pode divergir em modelos M-RoPE.
+    pub fn decode_multimodal(
+        &mut self,
+        prompt: &str,
+        images: &[Vec<u8>],
+        n_past: u32,
+        seq_id: u32,
+        logits_last: bool,
+    ) -> Result<(usize, u32, DecodeTimings)> {
+        self.ensure_moe_executor_ready()?;
+        let vision_ctx = self
+            .vision
+            .as_ref()
+            .map(|vision| vision.ctx)
+            .ok_or_else(|| anyhow::anyhow!("este modelo não tem visão"))?;
+        let prompt = CString::new(prompt)
+            .map_err(|_| anyhow::anyhow!("o prompt multimodal contém NUL"))?;
+        let mut bitmaps = Vec::with_capacity(images.len());
+        for image in images {
+            let wrapper = unsafe {
+                sys::mtmd_helper_bitmap_init_from_buf(
+                    vision_ctx,
+                    image.as_ptr(),
+                    image.len(),
+                    false,
+                )
+            };
+            if wrapper.bitmap.is_null() {
+                bail!("não foi possível decodificar uma imagem recebida");
+            }
+            bitmaps.push(wrapper);
+        }
+        struct BitmapCleanup(Vec<sys::mtmd_helper_bitmap_wrapper>);
+        impl Drop for BitmapCleanup {
+            fn drop(&mut self) {
+                for bitmap in self.0.drain(..) {
+                    unsafe {
+                        if !bitmap.video_ctx.is_null() {
+                            sys::mtmd_helper_video_free(bitmap.video_ctx);
+                        }
+                        if !bitmap.bitmap.is_null() {
+                            sys::mtmd_bitmap_free(bitmap.bitmap);
+                        }
+                    }
+                }
+            }
+        }
+        let bitmaps = BitmapCleanup(bitmaps);
+        let bitmap_ptrs = bitmaps
+            .0
+            .iter()
+            .map(|bitmap| bitmap.bitmap as *const sys::mtmd_bitmap)
+            .collect::<Vec<_>>();
+        let text = sys::mtmd_input_text {
+            text: prompt.as_ptr(),
+            text_len: prompt.as_bytes().len(),
+            add_special: n_past == 0,
+            parse_special: true,
+        };
+        let chunks = unsafe { sys::mtmd_input_chunks_init() };
+        if chunks.is_null() {
+            bail!("mtmd não conseguiu criar os chunks multimodais");
+        }
+        struct ChunksCleanup(*mut sys::mtmd_input_chunks);
+        impl Drop for ChunksCleanup {
+            fn drop(&mut self) {
+                unsafe { sys::mtmd_input_chunks_free(self.0) };
+            }
+        }
+        let chunks = ChunksCleanup(chunks);
+        let tokenized = unsafe {
+            sys::mtmd_tokenize(
+                vision_ctx,
+                chunks.0,
+                &text,
+                bitmap_ptrs.as_ptr() as *mut *const sys::mtmd_bitmap,
+                bitmap_ptrs.len(),
+            )
+        };
+        if tokenized != 0 {
+            bail!("mtmd não conseguiu tokenizar a mensagem multimodal (rc={tokenized})");
+        }
+        let n_tokens = unsafe { sys::mtmd_helper_get_n_tokens(chunks.0) };
+        let mut new_n_past = n_past as sys::llama_pos;
+        self.reset_capture_slot(n_tokens);
+        let started = Instant::now();
+        self.begin_moe_callback();
+        let rc = unsafe {
+            sys::mtmd_helper_eval_chunks(
+                vision_ctx,
+                self.ctx,
+                chunks.0,
+                n_past as sys::llama_pos,
+                seq_id as sys::llama_seq_id,
+                self.n_batch() as i32,
+                logits_last,
+                &mut new_n_past,
+            )
+        };
+        if rc != 0 {
+            bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
+        }
+        let mut timings = DecodeTimings {
+            enqueue_us: started.elapsed().as_micros() as u64,
+            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
+            ..Default::default()
+        };
+        if profile_backend_sync_enabled() {
+            let sync_started = Instant::now();
+            unsafe { sys::llama_synchronize(self.ctx) };
+            timings.backend_completion_us = sync_started.elapsed().as_micros() as u64;
+        }
+        self.finish_moe_callback(&mut timings)?;
+        Ok((n_tokens, new_n_past as u32, timings))
     }
 
     /// Em qual bloco desta fatia a próxima decodificação deve ser capturada.

@@ -157,4 +157,58 @@ describe("navegação depois do chat", () => {
     expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
     expect(screen.getByRole("link", { name: "Rede" })).toBeTruthy();
   });
+
+  it("mostra o alvo de largada, identifica o formato e remove o anexo sem apagar o rascunho", async () => {
+    mount();
+
+    const composer = await screen.findByRole("textbox");
+    const dropTarget = screen.getByRole("group", { name: "Campo de mensagem" });
+    act(() => {
+      fireEvent.change(composer, { target: { value: "texto antes do anexo" } });
+      fireEvent.dragEnter(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [] },
+      });
+    });
+    expect(screen.getByText("Solte uma imagem ou um ficheiro de texto")).toBeTruthy();
+
+    const file = new File(["{\"ok\":true}"], "dados.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => "{\"ok\":true}" });
+    act(() => {
+      fireEvent.drop(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [file] },
+      });
+    });
+
+    expect(await screen.findByText("dados.json")).toBeTruthy();
+    expect(screen.getByLabelText("Formato JSON")).toBeTruthy();
+    expect(screen.queryByText("Solte uma imagem ou um ficheiro de texto")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover dados.json" }));
+    expect(screen.queryByText("dados.json")).toBeNull();
+    expect((composer as HTMLTextAreaElement).value).toBe("texto antes do anexo");
+  });
+
+  it("recusa uma largada que não seja imagem ou texto com mensagem legível", async () => {
+    mount();
+
+    const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
+    const file = new File([new Uint8Array([0, 1, 2])], "dados.bin", { type: "application/octet-stream" });
+    fireEvent.drop(dropTarget, {
+      dataTransfer: { types: ["Files"], files: [file] },
+    });
+
+    expect(await screen.findByText("aceite imagens ou ficheiros de texto")).toBeTruthy();
+  });
+
+  it("recusa imagem largada quando o modelo não tem visão", async () => {
+    mount();
+
+    const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
+    const file = new File(["fake"], "foto.png", { type: "image/png" });
+    fireEvent.drop(dropTarget, {
+      dataTransfer: { types: ["Files"], files: [file] },
+    });
+
+    expect(await screen.findByText("este modelo não tem visão")).toBeTruthy();
+  });
 });

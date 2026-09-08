@@ -17,6 +17,8 @@ pub(super) struct HeldShard {
     pub(super) total_layers: Option<u32>,
     pub(super) name: String,
     pub(super) path: String,
+    /// Adjacent llama.cpp projector, when the catalog found one.
+    pub(super) mmproj_path: Option<String>,
     pub(super) size_bytes: u64,
     /// sha256 da parte, quando ela é endereçada por conteúdo.
     ///
@@ -747,6 +749,10 @@ pub(super) fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option
             .filter(|t| *t > 0),
         name: v.get("name")?.as_str()?.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
+        mmproj_path: v
+            .get("mmproj_path")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         sha256: v
             .get("sha256")
@@ -807,6 +813,10 @@ pub(super) fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShar
         total_layers: Some(total),
         name: name.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
+        mmproj_path: v
+            .get("mmproj_path")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
         sha256: None,

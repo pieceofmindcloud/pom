@@ -37,7 +37,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "event";
   content: string;
   /** Content sent to the model when the visible bubble is a compact summary. */
-  requestContent?: string;
+  requestContent?: ChatRequestContent;
   /** Set when the answer failed; the turn stays visible with its reason. */
   error?: string;
   /** `x_pom.source`-style hop chain, when the node reported one. */
@@ -54,6 +54,12 @@ export interface ChatMessage {
   trace?: RequestTrace;
   at: string;
 }
+
+export type ChatRequestContent = string | ChatRequestPart[];
+
+export type ChatRequestPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
 
 export interface ChatSession {
   id: string;

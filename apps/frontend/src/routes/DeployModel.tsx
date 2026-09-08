@@ -331,6 +331,7 @@ export function DeployModel() {
   const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
   const [cacheTypesLoaded, setCacheTypesLoaded] = useState(false);
   const [savingCacheTypes, setSavingCacheTypes] = useState(false);
+  const [useVision, setUseVision] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
   const invalidate = useInvalidate();
@@ -497,6 +498,15 @@ export function DeployModel() {
   });
 
   const p = plan.data;
+  // The plan is authoritative once answered; the catalog is useful while the
+  // first plan is loading so the vision control does not flicker into view.
+  const mmprojPath = p?.mmproj_path !== undefined
+    ? p.mmproj_path
+    : wholeModel?.mmproj_path ?? null;
+  const visionAvailable = Boolean(mmprojPath);
+  useEffect(() => {
+    if (!visionAvailable) setUseVision(false);
+  }, [visionAvailable]);
   useEffect(() => {
     if (p?.auto && p.group === chosen && kindOf(p) === kind) {
       autoTopologyKey.current = topologyKey(rowsOf(p));
@@ -894,6 +904,7 @@ export function DeployModel() {
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
+        vision: useVision,
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -1308,6 +1319,24 @@ export function DeployModel() {
               }
               showHiddenStateDtype={crossesPeerBoundary}
             />
+            {visionAvailable && (
+              <section className="border-b border-line px-2 py-3">
+                <label className="flex cursor-pointer items-start gap-2 text-[0.68rem]">
+                  <input
+                    type="checkbox"
+                    checked={useVision}
+                    onChange={(event) => setUseVision(event.target.checked)}
+                    className="mt-0.5 accent-iris"
+                  />
+                  <span className="min-w-0">
+                    <span className="block font-semibold text-fg">Ativar visão</span>
+                    <span className="mt-0.5 block break-all text-[0.6rem] text-faint">
+                      {mmprojPath}
+                    </span>
+                  </span>
+                </label>
+              </section>
+            )}
             {isMoePlan && !inferenceModeSupported && (
               <p role="alert" className="border-b border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
                 {inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido."}

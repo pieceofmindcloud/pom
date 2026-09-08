@@ -48,6 +48,52 @@ pub(super) struct ContextParamsSnapshot {
     pub(super) n_rs_seq: u32,
 }
 
+/// Contexto `mtmd` correspondente ao argumento `--mmproj` do llama.cpp.
+///
+/// O projector depende dos pesos do `llama_model`, por isso vive no mesmo
+/// `LlmEngine` que o contexto de texto e é destruído antes dele.
+pub(super) struct VisionContext {
+    pub(super) ctx: *mut sys::mtmd_context,
+}
+
+unsafe impl Send for VisionContext {}
+unsafe impl Sync for VisionContext {}
+
+impl VisionContext {
+    pub(super) fn load(
+        mmproj_path: &str,
+        model: *const sys::llama_model,
+        cfg: &EngineConfig,
+    ) -> Result<Self> {
+        let path = CString::new(mmproj_path)
+            .map_err(|_| anyhow::anyhow!("caminho mmproj contém NUL: {mmproj_path}"))?;
+        let mut params = unsafe { sys::mtmd_context_params_default() };
+        params.use_gpu = cfg.n_gpu_layers != 0;
+        params.batch_max_tokens = i32::try_from(cfg.n_batch)
+            .map_err(|_| anyhow::anyhow!("n_batch excede o limite do mtmd"))?;
+        let ctx = unsafe { sys::mtmd_init_from_file(path.as_ptr(), model, params) };
+        if ctx.is_null() {
+            bail!("não foi possível carregar o mmproj: {mmproj_path}");
+        }
+        if !unsafe { sys::mtmd_support_vision(ctx) } {
+            unsafe { sys::mtmd_free(ctx) };
+            bail!("o mmproj não oferece entrada de imagem: {mmproj_path}");
+        }
+        Ok(Self { ctx })
+    }
+}
+
+impl Drop for VisionContext {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ctx.is_null() {
+                sys::mtmd_free(self.ctx);
+                self.ctx = ptr::null_mut();
+            }
+        }
+    }
+}
+
 pub struct LlmEngine {
     /// Os pesos. `Arc` porque o último contexto a morrer é quem os libera.
     pub(super) loaded: Arc<LoadedModel>,
@@ -74,6 +120,8 @@ pub struct LlmEngine {
     /// This is part of the engine identity because a dense/native context and
     /// an external-executor context cannot share the same loaded model.
     pub(super) moe_external_executor: bool,
+    /// Projector de visão carregado com o modelo, quando a implantação o pediu.
+    pub(super) vision: Option<VisionContext>,
     /// A cabeça de rascunho `nextn`, quando o modelo traz uma e o operador
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
@@ -249,6 +297,7 @@ impl LlmEngine {
         // Primeiro o rascunho: o contexto dele também é VRAM.
         self.mtp = None;
         self.mtp_allocation = None;
+        self.vision = None;
         unsafe {
             if !self.ctx.is_null() {
                 sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());

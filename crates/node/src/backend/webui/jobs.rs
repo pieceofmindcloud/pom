@@ -339,6 +339,9 @@ pub struct ApplyRequest {
     /// `source_model_path`.
     #[serde(default)]
     pub merge: Option<Vec<MergeSource>>,
+    /// Load the adjacent mmproj projector for this target's model.
+    #[serde(default)]
+    pub use_mmproj: bool,
     #[serde(default)]
     pub params: RuntimeParams,
 }

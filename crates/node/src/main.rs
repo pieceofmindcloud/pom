@@ -1107,6 +1107,7 @@ async fn async_main(
             deploy_id: String::new(),
             // Configurado pela linha de comando: não veio de implantação nenhuma.
             model_path: model_name.clone(),
+            mmproj_path: None,
             model_label: profile.name.clone(),
             deployment_name: profile.name.clone(),
             start_layer: assignment.start_layer,

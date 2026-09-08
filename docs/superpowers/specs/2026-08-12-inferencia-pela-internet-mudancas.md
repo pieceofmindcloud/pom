@@ -143,28 +143,25 @@ irregular por arquitetura — ter as cabeças não garante poder usá-las via
 Especulação correta exige **amostragem por rejeição modificada** para preservar a
 distribuição — senão acelera e muda o que sai. Isso é matemática delicada.
 
-Só que hoje o cluster gera em **modo guloso** (ver Mudança 4), e em modo guloso a
-verificação é trivial: aceita enquanto o token do rascunho for igual ao argmax do
-alvo, para no primeiro que divergir.
+O cluster agora gera pela distribuição normalizada (ver Mudança 4). Portanto, a
+verificação da especulação exige a amostragem por rejeição modificada para não
+alterar essa distribuição.
 
 **As duas decisões estão amarradas, e a ordem importa.**
 
-## Mudança 4 — Decidir o que fazer com o `top_p`
+## Mudança 4 — `top_p` corrigido
 
-**Tipo:** decisão do captain. O conserto é uma linha.
+**Status:** entregue. A decisão foi resolvida em 2026-08-31.
 
-`sample_token_profiled` (`llm.rs`) percorre o top-p sobre probabilidades **não
-normalizadas**. A maior vale sempre `exp(0) = 1.0`, então qualquer `top_p ≤ 1` é
-satisfeito pelo primeiro elemento e todo o resto é cortado. Com o padrão de 0.9,
-**`temperature` e `top_k` nunca tiveram efeito**: toda geração é gulosa.
+`sample_token_profiled` (`llm.rs`) normaliza os pesos de softmax depois de
+aplicar top-k e antes de avaliar top-p. O núcleo é o prefixo mínimo ordenado por
+probabilidade cuja massa atinge `top_p`, é renormalizado e então alimenta o
+sorteio multinomial. Empates não expandem top-k nem o núcleo: top-k desempata
+por id e top-p preserva somente o prefixo necessário.
 
-Está documentado em teste (`top_p_below_one_currently_collapses_to_greedy`) e o
-comportamento foi **preservado de propósito** — consertar muda o que o cluster
-gera, e isso é decisão de produto.
-
-- **Manter guloso:** a Mudança 3 fica bem mais simples, e o defeito vira escolha.
-- **Consertar:** amostragem de verdade, e a Mudança 3 passa a precisar da
-  rejeição modificada.
+Temperatura positiva e top-k voltaram a afetar a distribuição como configurado.
+A consequência já assumida pela Mudança 3 é que uma implementação especulativa
+correta precisa de amostragem por rejeição modificada.
 
 ## Mudança 5 — Investigar o callback de captura do residual
 

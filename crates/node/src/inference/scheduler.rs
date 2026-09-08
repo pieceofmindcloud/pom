@@ -132,19 +132,37 @@ impl<T> SchedulerQueue<T> {
         Ok(())
     }
 
-    pub fn take_batch(&mut self, _now: Instant, class: WorkClass) -> BatchSelection<T> {
+    /// Seleciona um microbatch da classe `class`, respeitando os limites e a
+    /// **admissão de sessão**: um `Prefill*` para uma sessão que ainda não
+    /// existe no motor (`is_existing` devolve `false`) consome um dos
+    /// `new_session_slots` disponíveis; esgotado o orçamento, o item fica na
+    /// fila em ordem em vez de ser despachado e recusado com "seq pool
+    /// esgotado". Decode e continuações de sessão viva não consomem slot.
+    pub fn take_batch(
+        &mut self,
+        _now: Instant,
+        class: WorkClass,
+        is_existing: impl Fn(&str) -> bool,
+        new_session_slots: usize,
+    ) -> BatchSelection<T> {
         let mut selected = Vec::new();
         let mut seen_sessions = HashSet::new();
         let mut total_tokens = 0usize;
+        let mut new_used = 0usize;
         let pending_count = self.pending.len();
 
         for _ in 0..pending_count {
             let Some(item) = self.pending.pop_front() else {
                 break;
             };
+            let needs_slot = matches!(
+                item.class,
+                WorkClass::PrefillTokens | WorkClass::PrefillHidden
+            ) && !is_existing(item.session_id.as_str());
             if item.class != class
                 || seen_sessions.contains(item.session_id.as_str())
                 || selected.len() >= self.config.max_batch_sequences
+                || (needs_slot && new_used >= new_session_slots)
                 || (total_tokens.saturating_add(item.tokens) > self.config.max_batch_tokens
                     && !selected.is_empty())
             {
@@ -152,6 +170,9 @@ impl<T> SchedulerQueue<T> {
                 continue;
             }
 
+            if needs_slot {
+                new_used += 1;
+            }
             total_tokens = total_tokens.saturating_add(item.tokens);
             seen_sessions.insert(item.session_id.clone());
             selected.push(item);
@@ -190,10 +211,40 @@ mod tests {
             .unwrap();
         q.try_push(QueueItem::test("sess-b", WorkClass::DecodeTokens, 1))
             .unwrap();
-        let batch = q.take_batch(Instant::now(), WorkClass::DecodeTokens);
+        let batch = q.take_batch(Instant::now(), WorkClass::DecodeTokens, |_| true, 0);
         assert_eq!(batch.items.len(), 2);
         assert_eq!(batch.items[0].session_id, "sess-a");
         assert_eq!(batch.items[1].session_id, "sess-b");
+    }
+
+    #[test]
+    fn a_new_session_prefill_waits_in_order_when_no_slot_is_free() {
+        let mut q = SchedulerQueue::new(SchedulerConfig::test(8, 4));
+        q.try_push(QueueItem::test("live", WorkClass::PrefillTokens, 10))
+            .unwrap();
+        q.try_push(QueueItem::test("wait-1", WorkClass::PrefillTokens, 10))
+            .unwrap();
+        q.try_push(QueueItem::test("wait-2", WorkClass::PrefillTokens, 10))
+            .unwrap();
+
+        // "live" já tem sessão; os outros dois são novos e não há slot livre.
+        let existing = |sid: &str| sid == "live";
+        let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, existing, 0);
+        assert_eq!(
+            batch.items.iter().map(|i| i.session_id.as_str()).collect::<Vec<_>>(),
+            ["live"],
+            "só a continuação da sessão viva entra"
+        );
+        assert_eq!(q.len(), 2, "os dois novos ficam na fila");
+
+        // Abre um slot: o próximo da fila entra, o outro continua esperando.
+        let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 1);
+        assert_eq!(
+            batch.items.iter().map(|i| i.session_id.as_str()).collect::<Vec<_>>(),
+            ["wait-1"],
+            "FIFO: wait-1 antes de wait-2"
+        );
+        assert_eq!(q.len(), 1);
     }
 
     #[test]

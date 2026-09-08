@@ -20,6 +20,7 @@ import { useToast } from "../lib/toast";
 import { canCancel, isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
 import { useI18n } from "../i18n/provider";
+import type { TransferOffer } from "../lib/types";
 
 export function Transfers() {
   const { t } = useI18n();
@@ -31,7 +32,9 @@ export function Transfers() {
   const jobs = transfers.data?.jobs ?? [];
   const active = jobs.filter((j) => isActiveTransfer(j.state));
   const finished = jobs.filter((j) => isFinishedTransfer(j.state));
-  const waiting = offers.data?.offers ?? [];
+  const waiting = (offers.data?.offers ?? []).filter(
+    (offer): offer is TransferOffer => !offer.kind || offer.kind === "slice",
+  );
 
   async function cancel(id: string) {
     try {

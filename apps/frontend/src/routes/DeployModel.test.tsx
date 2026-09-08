@@ -123,6 +123,7 @@ function planOutOfLayerOrder(): DeployPlan {
       label: id,
       mem_free_mb: 100_000,
       disk_free_mb: 500_000,
+      load: 0,
       holds: ranges,
       taking: null,
     })),
@@ -138,6 +139,7 @@ function planOutOfLayerOrder(): DeployPlan {
       n_gpu_layers: 0,
       offload_kqv: true,
       fit_memory: true,
+      fit_memory_margin_mb: 256,
     } as DeployPlan["params"],
     prompt_tokens: 3840,
     chunk_tokens: 512,
@@ -270,12 +272,16 @@ describe("DeployModel", () => {
     expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("exibe e salva o tipo do cache KV no inspetor global da instalação", async () => {
+  it("mantém os combos de cache KV e aplica a escolha sem botão", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
-    post.mockImplementation((url: string) =>
+    post.mockImplementation((url: string, body?: { cache_type_k?: string; cache_type_v?: string }) =>
       url === "/api/ui/cache-types"
-        ? Promise.resolve({ cache_type_k: "q8_0", cache_type_v: "f16", choices: [] })
+        ? Promise.resolve({
+            cache_type_k: body?.cache_type_k ?? "f16",
+            cache_type_v: body?.cache_type_v ?? "f16",
+            choices: ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
+          })
         : Promise.resolve(p),
     );
     mount();
@@ -285,15 +291,17 @@ describe("DeployModel", () => {
     });
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
-    expect(screen.getByText("Cache KV da instalação")).toBeTruthy();
+    // Os combos do cache KV moram na categoria "Configurações padrões".
+    expect(screen.getByText("Configurações padrões")).toBeTruthy();
     const cacheK = screen.getByRole("combobox", { name: "Cache K" });
     const cacheV = screen.getByRole("combobox", { name: "Cache V" });
     expect((cacheK as HTMLSelectElement).value).toBe("f16");
     expect((cacheV as HTMLSelectElement).value).toBe("f16");
+    expect(screen.queryByText("global", { exact: true })).toBeNull();
+    expect(screen.queryByText("Tipo aplicado a todos os contextos deste nó no próximo carregamento.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Salvar cache KV" })).toBeNull();
 
     fireEvent.change(cacheK, { target: { value: "q8_0" } });
-    fireEvent.click(screen.getByRole("button", { name: "Salvar cache KV" }));
-
     await waitFor(() => {
       expect(post).toHaveBeenCalledWith("/api/ui/cache-types", {
         cache_type_k: "q8_0",
@@ -742,7 +750,7 @@ describe("DeployModel", () => {
 
     await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
-    expect(screen.getByText("Configurações globais")).toBeTruthy();
+    expect(screen.getByText("Configurações padrões")).toBeTruthy();
     expect(screen.queryByText("Camadas nesta máquina")).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: /Máquina:/ }));

@@ -48,8 +48,23 @@ cargo test               # testes do nó
   `cudaGraphLaunch` mesmo depois do warmup. Para habilitar esse recurso,
   somente quando houver VRAM livre comprovada, use
   `POM_CUDA_GRAPHS=1 cargo build --release --features cuda`.
+- O sysmon consulta a descrição dos dispositivos no próprio registro de
+  backends do ggml depois que ele é inicializado. A ponte comum
+  `llama_rs_backend_devices_json`, em `vendor/llama-cpp-sys-2`, inclui também o
+  `device_id` PCI para que a descrição Vulkan seja casada com a placa correta.
+  Linux ainda usa `/usr/share/misc/pci.ids` ou `/usr/share/hwdata/pci.ids` como
+  fallback; macOS usa a descrição Metal e depois `system_profiler`.
 - O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
   instala `hf`, Python ou outro runtime externo.
+- O `build.rs` lê o checkout local de `llama.cpp` em modo somente leitura para
+  gerar `OUT_DIR/mtp_graph_architectures.rs`. O extrator percorre as
+  verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em `src/models`, cruza
+  cada classe com o dispatch de `src/llama-model.cpp` e usa a tabela
+  `LLM_ARCH_NAMES` de `src/llama-arch.cpp` para obter a cadeia comparada ao
+  `general.architecture` do GGUF. A verificação precisa estar no escopo
+  inequívoco de `build_arch_graph`; comentários não contam. Se o fork estiver
+  ausente, se nenhuma verificação for encontrada, se o resultado tiver menos de
+  treze entradas, ou se for inconsistente, o build falha de forma ruidosa.
 
 ### Validação CUDA isolada na ksia
 
@@ -127,7 +142,7 @@ os três saem do mesmo `brand.json` (`app_icons`):
 | Sistema | Arquivo | Como entra |
 |---|---|---|
 | Windows | `assets/brand/pom.ico` | recurso **dentro do `.exe`**, gravado por `crates/node/build.rs` (`embed_windows_icon`, via `winresource`). O `cfg(windows)` ali é do host: o release compila o alvo Windows num runner Windows. Cruzar de Linux sai sem ícone, em silêncio, em vez de quebrar o build. |
-| macOS | `assets/brand/pom.icns` | quem mostra o ícone é o bundle, não o binário: `scripts/make-macos-app.sh` monta `POM.app` em volta do executável já compilado (Info.plist, `LSUIElement` para não abrir no Dock, ícone em `Resources/`). O release roda o script e leva o `.app` no pacote do macOS. |
+| macOS | `assets/brand/pom.icns` + `assets/brand/macos/pom-status-template{,@2x,@3x}.png` | quem mostra o ícone é o bundle, não o binário: `scripts/make-macos-app.sh` monta `POM.app` em volta do executável já compilado (Info.plist, `LSUIElement`, ícone do Finder em `Resources/` e a template image do `NSStatusItem`, gerada por `scripts/derive-macos-status-icon.py`). O binário liga a ponte AppKit/WebKit só nesse alvo - `cc` é build-dependency apenas para host macOS; o release roda o script e leva o `.app` no pacote do macOS. |
 | Linux | `assets/brand/linux/hicolor/**` + `pom.desktop` | árvore `hicolor` de 16 a 512 e a entrada `.desktop`, empacotadas em `share/` no tarball. Instalar é copiar para `~/.local/share/{icons,applications}`. |
 
 **O `.app` tem que achar a interface.** Dentro do bundle o binário fica em
@@ -262,6 +277,19 @@ O procedimento de subida está em `operacao.md`.
   binário relativo ao cwd.
 - `old/scripts/request.sh` - `POST /api/generate` para o gateway com o prompt
   como primeiro argumento (`GATEWAY`/`PORT` sobrescrevem o host/porta).
+- `scripts/bench-rotas.sh` - bateria de medicao da geracao que compara quatro
+  origens e cinco prompts, grava um CSV estavel com os contadores e a taxa de
+  aceitacao MTP por requisicao ao final das colunas existentes e imprime
+  medianas por celula. `POM_BENCH_API_KEY` deve conter a API key de inferência
+  ativa e é enviada em cada chamada, sem ser impressa nem gravada no CSV. O
+  modelo e omitido por padrao para usar o modelo ativo da rede;
+  `POM_BENCH_MODEL` fixa um modelo somente quando desejado. Para a origem da
+  salem, exporte `SALEM_PASS` sem gravar a senha em arquivo.
+
+O detector conservador de ciclos vem ligado por padrão em cada processo. Para
+manter o comportamento anterior, o operador pode iniciar um nó com
+`--no-cycle-detection`; os limites da janela e o número de repetições são
+parâmetros de runtime persistidos pela tela de implantação.
 
 Não existe `pom-ksia.sh` em lugar nenhum do repositório (nem em histórico de
 git); a referência a ele no plano da etapa não corresponde a artefato
@@ -273,12 +301,19 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 |---|---|
 | `POM_HOME` | Resolução de `project_root()` em primeiro lugar: config, `models/`, `venv/`, UI. Sem ela: cwd que parece o projeto, depois subir do diretório do executável. Dois nós na mesma máquina precisam de casas distintas (identidade `node_id` também mora no project root). |
 | `POM_CONFIG` | Caminho do `pom.json` (padrão `<project_root>/pom.json`). |
+| `POM_DB_DIR` | Diretório de `pom.db` e seus arquivos WAL/SHM. Se ausente ou vazio, usa `<project_root>`; o diretório é criado no arranque. |
 | `POM_UI_DIST` | Onde `webapp.rs` lê o bundle da UI (padrão `<project_root>/apps/frontend/dist`). A imagem Docker a seta explicitamente. |
+| `POM_SLOT_SAVE_PATH` | Diretório de snapshots de KV cache (`--slot-save-path` do llama-server). Vence o campo `slot_save_path` do `pom.json`; a flag `--slot-save-path` vence a env var. Por processo, não persistida. Ausente desliga `POST /v1/session/slot` e `/admin/slots`. Ver `inferencia.md` §3.1.1. |
+| `POM_SLOT_PERSIST_PREFIX_CACHE` | `1`/`true`/`yes`/`on` liga o cache de prefixo persistente (gateway grava/restaura o KV retido entre reinícios). Vence `slot_persist_prefix_cache` do `pom.json`; exige `slot_save_path` em todos os hops. Desligado por padrão. Ver `inferencia.md` §3.1.1. |
+| `POM_SLOT_AUTO_TTL_SECS` | TTL de um snapshot automático de prefixo sem uso, em segundos (padrão 7 dias). Vence `slot_auto_ttl_secs` do `pom.json`. Lido no arranque do gateway. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` faz o nó **receptor** aceitar toda oferta de transferência sem clique. Só desenvolvimento; lida uma vez no arranque. O remetente não pode pedi-la. |
 | `POM_DEV_UPDATE` | `=1` liga o portão de "Atualizar e reiniciar" no card do peer (`devupdate.rs`). Por processo, nunca na config. |
 | `POM_BUILD_FEATURES` | Features com que a máquina compila no devupdate (`cuda`/`metal`); sem ela a ksia perde a GPU no primeiro clique. |
 | `POM_CUDA_GRAPHS` | `=1`, `true`, `yes` ou `on` habilita CUDA Graphs no build CUDA. O padrão é desligado para reduzir o risco de OOM no lançamento do grafo. É uma opção de compilação, então exige reconstruir o binário. |
 | `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
+| `LLAMA_SOURCE` | Checkout local de `llama.cpp` já preparado; precisa conter `ggml` e evita copiar o fork para o worktree. |
+| `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remoto e branch usados pela preparação automática quando o fork está ausente. Os padrões são o fork público e `pom-tensor-parallel`. |
+| `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` para impedir o download automático e receber somente a mensagem com o procedimento manual. |
 | `VITE_API_TARGET` | Alvo do proxy do dev server da UI (padrão `http://127.0.0.1:8080`). |
 
 ## Release pelo GitHub Actions
@@ -301,37 +336,41 @@ apaga o pacote de macOS que já estava lá.
 
 `vendor/llama-cpp-sys-2/llama.cpp` é um **symlink versionado** para a raiz do
 repositório, e a pasta que ele aponta (`/llama.cpp/`) está no `.gitignore`. Num
-checkout limpo - que é exatamente o que a CI faz - o symlink aponta para o
-vazio, e o build morre no `build.rs` do `llama-cpp-sys-2` com
-`Failed to obtain entry ... NotFound`, antes de compilar qualquer coisa do
-projeto. Por isso cada workflow tem um passo que clona o fork
-(`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, público) **por cima do
-symlink**, no caminho que o `build.rs` de fato lê (`<manifest_dir>/llama.cpp`).
+checkout limpo, o próprio `build.rs` do `llama-cpp-sys-2` detecta o symlink
+quebrado e clona automaticamente o fork público
+`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, antes de caminhar pelos
+arquivos nativos. Assim CI, releases e `cargo build` local seguem o mesmo
+caminho, sem fixar um commit do fork.
 
-Clonar nesse caminho, e não na raiz, é o que faz o Windows funcionar: lá o
-checkout não cria symlink nenhum - materializa um arquivo de texto com o caminho
-dentro -, então repor a pasta na raiz não adiantaria.
+Essa branch também carrega a correção local do `common_fit_params`: a memória
+livre é capturada antes do contexto seco, pois os buffers de estado recorrente
+são reais mesmo com `no_alloc=true`. O projeto não versiona o conteúdo apontado
+pelo symlink, então atualizar o fork é parte da atualização da dependência.
+
+No Windows o checkout pode materializar o symlink como um arquivo de texto. O
+`build.rs` reconhece essa forma e instala o clone diretamente no caminho que o
+Cargo lê (`<manifest_dir>/llama.cpp`). Se o clone não puder ser baixado, o erro
+lista o comando completo para a preparação manual, em vez de deixar o
+`NotFound` cru do `walkdir`.
 
 ### Preparar um worktree local
 
 O symlink versionado em `vendor/llama-cpp-sys-2/llama.cpp` resolve para
-`<worktree>/llama.cpp`, mas o conteúdo da raiz é ignorado pelo git. Portanto,
-um worktree novo precisa receber uma cópia ou um symlink para um checkout local
-do fork antes do primeiro build. O preparo não toca no checkout primário:
+`<worktree>/llama.cpp`, mas o conteúdo da raiz é ignorado pelo git. O primeiro
+`cargo build -p node` já dispara o preparo automático. Para reutilizar um
+checkout local do fork sem copiá-lo para o worktree, informe `LLAMA_SOURCE`:
 
 ```bash
 LLAMA_SOURCE=/caminho/para/llama.cpp
 test -d "$LLAMA_SOURCE/ggml"
-ln -s "$LLAMA_SOURCE" llama.cpp
-test -d vendor/llama-cpp-sys-2/llama.cpp/ggml
 cargo build -p node
 ```
 
 Se `llama.cpp` já existir na raiz do worktree, confirme que ele é o checkout
-do fork e que contém `ggml`; não substitua uma pasta de pesos por engano. Em
-ambientes de CI ou Windows, clone diretamente sobre
-`vendor/llama-cpp-sys-2/llama.cpp`, como descrito acima, porque esses ambientes
-não preservam o symlink da raiz.
+do fork e que contém `ggml`; um diretório existente sem `ggml` não é sobrescrito
+automaticamente. `POM_LLAMA_CPP_REPOSITORY` e `POM_LLAMA_CPP_REF` podem apontar
+o preparo automático para outro remoto ou branch durante testes, sem tornar
+essa referência uma dependência fixa do projeto.
 
 ### A interface tem que ir no pacote
 

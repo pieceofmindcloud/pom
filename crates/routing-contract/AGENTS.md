@@ -57,7 +57,7 @@ touching node internals.
   planner validates against this contract but does its own planning.
 - Siblings: see `crates/AGENTS.md`.
 
-## Defeitos anotados
+## Pendências
 
-- Contract says `end_layer` is inclusive; an "exclusive end" future wire version
-  is flagged in a comment but not implemented.
+O contrato v1 ainda usa fim de faixa inclusivo; a evolução futura para fim
+exclusivo está em `TODO.md`, item 24.

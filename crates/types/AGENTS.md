@@ -21,11 +21,10 @@ that the workspace exposes a library crate; it carries no behavior.
 ## Links
 
 - Consumed by nothing in the workspace today.
-- Sibling crates that should eventually depend on it: `config`, `routing-contract`,
-  and the `node` crate (see `crates/AGENTS.md`).
+- Sibling crates that may eventually consume it: `routing-contract` and the
+  `node` crate (see `crates/AGENTS.md`).
 
-## Defeitos anotados
+## Pendências
 
-- Placeholder crate: the only "type" is `WorkspaceMarker`. Real shared domain
-  types that node still owns (e.g. `PeerInfo`, `NodeConfig`) have not been moved
-  here, so the crate is dead weight until the extraction.
+A extração dos tipos de domínio compartilhados ainda não foi concluída; ver
+`TODO.md`, item 25.

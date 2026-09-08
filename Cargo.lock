@@ -145,6 +145,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -460,6 +469,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "brand"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2577,6 +2594,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "llama-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brand",
+ "cc",
+ "chrono",
+ "half",
+ "hex",
+ "llama-cpp-sys-2",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2885,19 +2923,21 @@ name = "node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "axum",
+ "base64",
+ "brand",
  "cc",
  "chrono",
  "clap",
  "ed25519-dalek 2.2.0",
  "futures",
- "half",
  "hex",
  "hyper",
  "hyper-util",
  "libp2p",
- "llama-cpp-sys-2",
+ "llama-engine",
  "md-5",
  "memmap2",
  "mime_guess",
@@ -2912,6 +2952,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "socket2 0.5.10",
+ "subtle",
  "tokio",
  "tokio-rustls",
  "tokio-util",

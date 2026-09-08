@@ -7,7 +7,7 @@
  */
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n/provider";
 
 /**
@@ -33,11 +33,24 @@ let nextId = 1;
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const timers = useRef(new Map<number, number>());
 
   const dismiss = useCallback(
-    (id: number) => setToasts((t) => t.filter((x) => x.id !== id)),
+    (id: number) => {
+      setToasts((t) => t.filter((x) => x.id !== id));
+      const timer = timers.current.get(id);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timers.current.delete(id);
+      }
+    },
     [],
   );
+
+  useEffect(() => () => {
+    for (const timer of timers.current.values()) window.clearTimeout(timer);
+    timers.current.clear();
+  }, []);
 
   const push = useCallback(
     (kind: Kind, title: string, detail?: string) => {
@@ -46,7 +59,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       // Errors stay long enough to be read and copied; the rest step aside.
       // Bad news stays on screen long enough to be read, not just glimpsed.
       const linger = kind === "error" || kind === "warning";
-      window.setTimeout(() => dismiss(id), linger ? 9000 : 4200);
+      const timer = window.setTimeout(() => {
+        timers.current.delete(id);
+        dismiss(id);
+      }, linger ? 9000 : 4200);
+      timers.current.set(id, timer);
     },
     [dismiss],
   );

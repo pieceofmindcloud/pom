@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { canAccessRoute, routeProfiles } from "./access";
+import { canAccessRoute, canSeePeerDetails, homeRoute, routeProfiles } from "./access";
 
 describe("canAccessRoute", () => {
   it("deixa o administrador entrar nas telas de operação do cluster", () => {
-    for (const path of ["/implantar", "/implantacoes", "/logs", "/logs/ao-vivo"]) {
+    for (const path of ["/implantar", "/implantacoes", "/logs"]) {
       expect(canAccessRoute(path, "admin")).toBe(true);
     }
   });
 
   it("fecha implantar, implantações e logs para o perfil do nó", () => {
-    for (const path of ["/implantar", "/implantacoes", "/logs", "/logs/ao-vivo"]) {
+    for (const path of ["/implantar", "/implantacoes", "/logs"]) {
       expect(canAccessRoute(path, "node")).toBe(false);
     }
   });
@@ -29,11 +29,57 @@ describe("canAccessRoute", () => {
   it("casa por segmento, não por prefixo de texto", () => {
     expect(canAccessRoute("/implantarx", "node")).toBe(true);
     expect(canAccessRoute("/logs-antigos", "node")).toBe(true);
-    expect(canAccessRoute("/logs/ao-vivo/detalhe", "node")).toBe(false);
+    expect(canAccessRoute("/logs/qualquer-filha", "node")).toBe(false);
   });
 
   it("diz que uma rota livre não tem lista de perfis", () => {
     expect(routeProfiles("/modelos")).toBeNull();
     expect(routeProfiles("/implantar")).toEqual(["admin"]);
+  });
+
+  it("manda cada perfil para uma tela inicial que ele abre", () => {
+    // O `/` é o Painel: o infer cairia na recusa, que é um beco.
+    expect(homeRoute("infer")).toBe("/chat");
+    expect(canAccessRoute(homeRoute("infer"), "infer")).toBe(true);
+    expect(homeRoute("admin")).toBe("/");
+    expect(homeRoute("node")).toBe("/");
+  });
+
+  /**
+   * A tela da raiz de confiança é o trabalho anterior à autoridade: um nó
+   * `admin` por ancorar ainda não tem capacidade de admin, e quem recebe a
+   * âncora costuma ser `node` ou `infer`. Fechá-la a algum perfil deixaria o
+   * operador sem caminho justamente onde ele precisa dela.
+   */
+  it("abre a raiz de confiança para os três perfis", () => {
+    for (const profile of ["admin", "node", "infer"] as const) {
+      expect(canAccessRoute("/config/confianca", profile)).toBe(true);
+    }
+    expect(routeProfiles("/config/confianca")).toBeNull();
+  });
+
+  it("mantém o infer na rede local, conversa, documentação e sua chave", () => {
+    expect(canAccessRoute("/chat", "infer")).toBe(true);
+    expect(canAccessRoute("/config/keys/api", "infer")).toBe(true);
+    expect(canAccessRoute("/config/rede", "infer")).toBe(true);
+    expect(canAccessRoute("/documentacao", "infer")).toBe(true);
+    expect(canAccessRoute("/config/confianca", "infer")).toBe(true);
+    for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/keys/conexao"]) {
+      expect(canAccessRoute(path, "infer")).toBe(false);
+    }
+  });
+
+  /**
+   * Os Detalhes do Painel são operação do cluster: estado interno de cada
+   * máquina, liberar fatia, remover do pipeline, tirar da rede. O `node` abre
+   * o Painel e fica com o Fluxo - e onde há uma vista só, não há o que
+   * escolher.
+   */
+  it("reserva o detalhe máquina a máquina do Painel ao administrador", () => {
+    expect(canSeePeerDetails("admin")).toBe(true);
+    expect(canSeePeerDetails("node")).toBe(false);
+    expect(canSeePeerDetails("infer")).toBe(false);
+    // O Painel em si continua aberto ao `node`: o que muda é a vista.
+    expect(canAccessRoute("/", "node")).toBe(true);
   });
 });

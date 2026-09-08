@@ -16,9 +16,9 @@
  *   caixinha que nunca desmarca. Ruído fantasiado de escolha.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeployPlan, RuntimeParams } from "../lib/types";
+import type { DeployPlan, PeerCatalog, RuntimeParams } from "../lib/types";
 
 const post = vi.fn();
 vi.mock("../lib/api", () => ({
@@ -46,6 +46,7 @@ vi.mock("../lib/api", () => ({
 import { DeployModel } from "./DeployModel";
 import { LocaleProvider } from "../i18n/provider";
 import { keys } from "../lib/queries";
+import { ToastProvider } from "../lib/toast";
 
 const MACHINES = [
   { node_id: "ksia", label: "ksia" },
@@ -58,19 +59,6 @@ function wholePlan(target = "ksia"): DeployPlan {
   return {
     group: "qwen3.5-9b",
     kind: "whole",
-    layer_options: {
-      source_node_id: "ksia",
-      total_layers: 32,
-      cuts: [
-        { end_layer: 3, layers: 4, size_bytes: 700_000_000, remainder_bytes: 4_300_000_000 },
-        { end_layer: 7, layers: 8, size_bytes: 1_300_000_000, remainder_bytes: 3_700_000_000 },
-        { end_layer: 15, layers: 16, size_bytes: 2_500_000_000, remainder_bytes: 2_500_000_000 },
-        { end_layer: 31, layers: 32, size_bytes: 5_000_000_000, remainder_bytes: 0 },
-      ],
-      granularity: 4,
-      rule: "modelo híbrido: cortes apenas nas fronteiras arquiteturais reais do GGUF",
-      reason: null,
-    },
     total_layers: 32,
     total_layers_inferred: false,
     steps: [
@@ -133,6 +121,7 @@ function wholePlan(target = "ksia"): DeployPlan {
       n_gpu_layers: 0,
       offload_kqv: true,
       fit_memory: true,
+      fit_memory_margin_mb: 256,
       speculative_decoding_enabled: false,
       speculative_k: 4,
       speculative_lookup_window: 3,
@@ -143,6 +132,14 @@ function wholePlan(target = "ksia"): DeployPlan {
     prompt_tokens: 3840,
     chunk_tokens: 512,
   };
+}
+
+function wholePlanWithName(name: string, target = "ksia"): DeployPlan {
+  const plan = wholePlan(target);
+  plan.group = name;
+  plan.steps[0].name = name;
+  plan.available[0].name = name;
+  return plan;
 }
 
 /** O mesmo plano, mas sobre fatias - o que a tela pede por padrão. */
@@ -174,7 +171,11 @@ function moePlan(kind: DeployPlan["kind"] = "whole"): DeployPlan {
 
 /** Uma máquina com o GGUF inteiro **e** um conjunto de fatias, para que as
  *  duas opções existam e a troca entre elas seja de verdade. */
-function mount() {
+function mount(
+  wholeModelName = "qwen3.5-9b",
+  shardGroup = "qwen",
+  shardLabel = shardGroup,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
@@ -188,10 +189,10 @@ function mount() {
         models: [
           {
             id: "1",
-            name: "qwen3.5-9b",
+            name: wholeModelName,
             source: "lmstudio",
             source_label: "LM Studio",
-            path: "/lm/qwen3.5-9b.gguf",
+            path: `/lm/${wholeModelName}`,
             size_bytes: 5_000_000_000,
             architecture: "qwen3",
             total_layers: 32,
@@ -201,8 +202,8 @@ function mount() {
           },
         ],
         shard_sets: [{
-          group: "qwen",
-          model_label: "qwen3.5-9b",
+          group: shardGroup,
+          model_label: shardLabel,
           pom_id: "pom-qwen",
           total_layers: 32,
           total_layers_inferred: false,
@@ -219,9 +220,9 @@ function mount() {
               total_layers: 32,
               quant: "Q4_K_M",
               shard_range: [0, 31],
-              shard_group: "qwen",
+              shard_group: shardGroup,
               sha256: "tp0",
-              model_label: "qwen3.5-9b",
+              model_label: shardLabel,
               pom_id: "pom-qwen",
               tp_rank: 0,
               tp_size: 2,
@@ -237,9 +238,9 @@ function mount() {
               total_layers: 32,
               quant: "Q4_K_M",
               shard_range: [0, 31],
-              shard_group: "qwen",
+              shard_group: shardGroup,
               sha256: "tp1",
-              model_label: "qwen3.5-9b",
+              model_label: shardLabel,
               pom_id: "pom-qwen",
               tp_rank: 1,
               tp_size: 2,
@@ -255,10 +256,10 @@ function mount() {
         models: [
           {
             id: String(index + 2),
-            name: "qwen3.5-9b",
+            name: wholeModelName,
             source: "lmstudio",
             source_label: "LM Studio",
-            path: "/lm/qwen3.5-9b.gguf",
+            path: `/lm/${wholeModelName}`,
             size_bytes: 5_000_000_000,
             architecture: "qwen3",
             total_layers: 32,
@@ -268,8 +269,8 @@ function mount() {
           },
         ],
         shard_sets: node_id === "mac" ? [{
-          group: "qwen",
-          model_label: "qwen3.5-9b",
+          group: shardGroup,
+          model_label: shardLabel,
           pom_id: "pom-qwen",
           total_layers: 32,
           total_layers_inferred: false,
@@ -285,9 +286,9 @@ function mount() {
             total_layers: 32,
             quant: "Q4_K_M",
             shard_range: [0, 31],
-            shard_group: "qwen",
+            shard_group: shardGroup,
             sha256: "tp1",
-            model_label: "qwen3.5-9b",
+            model_label: shardLabel,
             pom_id: "pom-qwen",
             tp_rank: 1,
             tp_size: 2,
@@ -300,7 +301,9 @@ function mount() {
   const view = render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-        <DeployModel />
+        <ToastProvider>
+          <DeployModel />
+        </ToastProvider>
       </LocaleProvider>
     </QueryClientProvider>,
   );
@@ -329,6 +332,23 @@ const chooseWhole = () =>
 
 const chooseTensor = () => fireEvent.click(screen.getByRole("radio", { name: "Tensor" }));
 
+async function ensureWholeMachine(node = "ksia") {
+  const removeName = new RegExp(`Remover ${node} da implantação`);
+  const addName = new RegExp(`${node} RTT`);
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("button", { name: removeName })
+        ?? screen.queryByRole("button", { name: addName }),
+    ).toBeTruthy();
+  });
+  if (!screen.queryByRole("button", { name: removeName })) {
+    fireEvent.click(screen.getByRole("button", { name: addName }));
+  }
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: removeName })).toBeTruthy(),
+  );
+}
+
 describe("DeployModel · modelo inteiro", () => {
   beforeEach(() => {
     post.mockReset();
@@ -351,19 +371,114 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
-  it("mostra tamanho, quantização e camadas do modelo escolhido", async () => {
+  it("nomeia os campos nativos do studio para acessibilidade e gestores de senha", async () => {
+    answerPlans();
+    mount();
+
+    await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
+    for (const field of document.querySelectorAll("input, select, textarea")) {
+      expect(field.getAttribute("name") || field.getAttribute("id")).toBeTruthy();
+    }
+  });
+
+  it("faz uma única consulta ao trocar o modelo", async () => {
+    post.mockImplementation((url: string, body: { group?: string; kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = body.kind === "whole" ? wholePlan() : shardPlan();
+      plan.group = body.group ?? plan.group;
+      return Promise.resolve(plan);
+    });
+    const { client } = mount();
+    await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
+
+    const catalog = client.getQueryData<{ peers: PeerCatalog[] }>(keys.clusterModels)!;
+    const first = catalog.peers[0].models[0];
+    client.setQueryData(keys.clusterModels, {
+      ...catalog,
+      peers: catalog.peers.map((peer, index) =>
+        index === 0
+          ? {
+              ...peer,
+              models: [
+                ...peer.models,
+                { ...first, id: "4", name: "zeta-2b", path: "/lm/zeta-2b.gguf" },
+              ],
+            }
+          : peer,
+      ),
+    });
+
+    chooseWhole();
+    await waitFor(() => {
+      expect(planCalls().at(-1)?.[1]).toMatchObject({
+        group: "qwen3.5-9b",
+        kind: "whole",
+      });
+    });
+    const before = planCalls().length;
+    const model = screen.getByRole("combobox", { name: "Modelo técnico" });
+    fireEvent.change(model, { target: { value: "zeta-2b" } });
+
+    await waitFor(() => {
+      const requests = planCalls().filter(([, body]) => body.group === "zeta-2b");
+      expect(requests).toHaveLength(1);
+      expect(requests[0][1]).not.toHaveProperty("deployment_name");
+      expect(requests[0][1]).not.toHaveProperty("params");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(planCalls()).toHaveLength(before + 1);
+  });
+
+  it("não reconsulta o plano ao ajustar camadas GPU da máquina", async () => {
+    answerPlans();
+    mount();
+    await waitFor(() => expect(planCalls()).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: /ksia na implantação/ })).toBeTruthy());
+
+    const before = planCalls().length;
+    const gpuLayers = screen.getByRole("spinbutton", { name: "Camadas GPU" });
+    fireEvent.change(gpuLayers, { target: { value: "8" } });
+
+    await waitFor(() => expect((gpuLayers as HTMLInputElement).value).toBe("8"));
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(planCalls()).toHaveLength(before);
+  });
+
+  it("mantém o indicador até a consulta do modelo terminar", async () => {
+    let resolveWhole: ((plan: DeployPlan) => void) | undefined;
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      if (body.kind === "whole") {
+        return new Promise<DeployPlan>((resolve) => {
+          resolveWhole = resolve;
+        });
+      }
+      return Promise.resolve(shardPlan());
+    });
+    mount();
+    await waitFor(() => expect(planCalls()).toHaveLength(1));
+
+    chooseWhole();
+    await waitFor(() => expect(screen.getByText("conferindo com o nó…")).toBeTruthy());
+    expect(resolveWhole).toBeTypeOf("function");
+
+    resolveWhole!(wholePlan());
+    await waitFor(() => expect(screen.queryByText("conferindo com o nó…")).toBeNull());
+  });
+
+  it("não mostra a seção de fatos do modelo inteiro no inspetor", async () => {
     answerPlans();
     mount();
     chooseWhole();
 
     await waitFor(() => {
-      expect(screen.getByText("Quantização")).toBeTruthy();
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
     });
-    expect(screen.getByText("Q4_K_M")).toBeTruthy();
-    expect(screen.getByText("32")).toBeTruthy();
-    expect(screen.getByText(/4,7 GB|5,0 GB|4.7 GB/)).toBeTruthy();
-    // Quem tem o arquivo é nomeado: é o que faz "receberia" ser previsível.
-    expect(screen.getByText("Está em")).toBeTruthy();
+    expect(screen.queryByText("Quantização")).toBeNull();
+    expect(screen.queryByText("Camadas")).toBeNull();
+    expect(screen.queryByText("Tamanho")).toBeNull();
+    expect(screen.queryByText("Está em")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /Máquina que serve o modelo inteiro/ })).toBeNull();
   });
 
   /**
@@ -384,19 +499,105 @@ describe("DeployModel · modelo inteiro", () => {
       expect(screen.queryByText(/Cobertura do modelo/)).toBeNull();
     });
     expect(screen.queryByRole("checkbox", { name: /Incluir/ })).toBeNull();
-    // No lugar delas, a faixa inteira como um fato, não como uma escolha.
-    expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
+    // A troca começa com o mapa vazio; a faixa só aparece depois da escolha
+    // explícita de uma máquina.
+    expect(screen.queryByText(/L0–31/)).toBeNull();
   });
 
-  it("deixa escolher a máquina e manda a faixa inteira na seleção", async () => {
+  it("mostra o nome do modelo sem extensão, mantendo o valor técnico no request", async () => {
+    const technicalName = "Qwen3.8-27B-UD-IQ3_XXS.gguf";
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(body.kind === "whole" ? wholePlanWithName(technicalName) : shardPlan());
+    });
+    mount(technicalName);
+    chooseWhole();
+
+    const model = await screen.findByRole("combobox", { name: "Modelo técnico" });
+    expect(within(model).getByRole("option", { name: "Qwen3.8-27B-UD-IQ3_XXS" })).toBeTruthy();
+    expect(within(model).queryByRole("option", { name: technicalName })).toBeNull();
+    await waitFor(() => {
+      expect(planCalls().at(-1)?.[1]).toMatchObject({ group: technicalName });
+    });
+  });
+
+  it("preserva hífens e dígitos legítimos no nome exibido", async () => {
+    const technicalName = "Qwen3.8-27B-UD-IQ3_XXS-v2-2024.gguf";
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(body.kind === "whole" ? wholePlanWithName(technicalName) : shardPlan());
+    });
+    mount(technicalName);
+    chooseWhole();
+
+    const model = await screen.findByRole("combobox", { name: "Modelo técnico" });
+    expect(within(model).getByRole("option", { name: "Qwen3.8-27B-UD-IQ3_XXS-v2-2024" })).toBeTruthy();
+  });
+
+  it("oculta o hash da rodada nas opções de fatias", async () => {
+    const shardName = "Ornith-1.5-35B-Q4_K_M-42739874";
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = shardPlan();
+      plan.group = shardName;
+      return Promise.resolve(plan);
+    });
+    mount("qwen3.5-9b", shardName, shardName);
+
+    const model = await screen.findByRole("combobox", { name: "Modelo técnico" });
+    expect(within(model).getByRole("option", { name: "Ornith-1.5-35B-Q4_K_M" })).toBeTruthy();
+    expect(within(model).queryByRole("option", { name: shardName })).toBeNull();
+  });
+
+  it("oculta o hash da rodada na opção de Tensor", async () => {
+    const tensorName = "Ornith-1.5-35B-Q4_K_M-b3bdbf23";
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = tensorPlan();
+      plan.group = tensorName;
+      return Promise.resolve(plan);
+    });
+    mount("qwen3.5-9b", tensorName, tensorName);
+    chooseTensor();
+    const model = await screen.findByRole("combobox", { name: "Modelo técnico" });
+    await waitFor(() => {
+      expect(within(model).getByRole("option", { name: "Ornith-1.5-35B-Q4_K_M · TP 2" })).toBeTruthy();
+    });
+    expect(within(model).queryByRole("option", { name: `${tensorName} · TP 2` })).toBeNull();
+  });
+
+  it("esvazia o mapa ao trocar de fatias para modelo inteiro", async () => {
+    answerPlans();
+    mount();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /mac RTT/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /mac RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+
+    const whole = screen.getByRole("radio", { name: "Um modelo inteiro" });
+    fireEvent.click(whole);
+
+    expect(whole.getAttribute("aria-checked")).toBe("true");
+    await waitFor(() => {
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
+    });
+    expect(screen.queryByRole("button", { name: /Remover ksia da implantação/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Remover mac da implantação/ })).toBeNull();
+  });
+
+  it("mantém a faixa inteira na única máquina do mapa", async () => {
     answerPlans();
     mount();
     chooseWhole();
 
-    const select = await screen.findByRole("combobox", {
-      name: /Máquina que serve o modelo inteiro/,
+    await waitFor(() => {
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
     });
-    fireEvent.change(select, { target: { value: "mac" } });
+    fireEvent.click(await screen.findByRole("button", { name: /ksia RTT/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Remover ksia da implantação/ }));
+    const mac = await screen.findByRole("button", { name: /mac RTT/ });
+    fireEvent.click(mac);
 
     await waitFor(() => {
       const last = planCalls().at(-1)![1] as { selection?: unknown };
@@ -412,135 +613,30 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
-  it("mostra cortes reais no slider e envia o prefixo para o destino", async () => {
+  it("recusa adicionar uma segunda máquina ao mapa do modelo inteiro", async () => {
     answerPlans();
     mount();
     chooseWhole();
 
-    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
-    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
-    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
-
-    const slider = await screen.findByRole("slider", { name: /Camadas a enviar para mac/ });
-    expect(slider.getAttribute("max")).toBe("3");
-    expect(screen.getByText(/Passo real: 4 camadas/)).toBeTruthy();
-
-    fireEvent.change(slider, { target: { value: "0" } });
     await waitFor(() => {
-      const request = planCalls().find(([, body]) => {
-        const typed = body as {
-          whole_slice?: { end_layer: number };
-          selection?: unknown[];
-        };
-        return typed.whole_slice?.end_layer === 3 && typed.selection?.length === 2;
-      });
-      expect(request?.[1]).toMatchObject({
-        whole_slice: {
-          source_node_id: "ksia",
-          target_node_id: "mac",
-          end_layer: 3,
-        },
-        selection: [
-          { start_layer: 0, end_layer: 3, target_node_id: "mac" },
-          { start_layer: 4, end_layer: 31, target_node_id: "ksia" },
-        ],
-      });
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
     });
-  });
+    const ksia = await screen.findByRole("button", { name: /ksia RTT/ });
+    fireEvent.click(ksia);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Remover ksia da implantação/ })).toBeTruthy());
+    const mac = await screen.findByRole("button", { name: /mac RTT/ });
+    fireEvent.click(mac);
 
-  it("oculta o slider quando o destino já tem uma fatia", async () => {
-    post.mockImplementation((url: string, body: { kind?: string }) => {
-      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
-      const plan = body?.kind === "whole" ? wholePlan() : shardPlan();
-      if (body?.kind === "whole") {
-        plan.available.push({
-          start_layer: 0,
-          end_layer: 3,
-          total_layers: 32,
-          name: "qwen3.5-9b L0-3",
-          size_bytes: 700_000_000,
-          holders: ["mac"],
-          selected: false,
-        });
-      }
-      return Promise.resolve(plan);
-    });
-    mount();
-    chooseWhole();
-
-    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
-    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
-    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
-
-    const available = await screen.findByRole("button", { name: /Atribuir L0–3 a mac/ });
-    expect(available).toBeTruthy();
-    expect(screen.queryByRole("slider", { name: /Camadas a enviar para mac/ })).toBeNull();
-    fireEvent.click(available);
-    await waitFor(() => {
-      const request = planCalls().find(([, body]) => {
-        const typed = body as { selection?: Array<{ target_node_id: string; end_layer: number }> };
-        return typed.selection?.some((row) => row.target_node_id === "mac" && row.end_layer === 3);
-      });
-      expect(request).toBeTruthy();
-    });
-  });
-
-  it("mostra por que não há slider quando a leitura do GGUF é indeterminada", async () => {
-    post.mockImplementation((url: string, body: { kind?: string }) => {
-      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
-      const plan = body?.kind === "whole" ? wholePlan() : shardPlan();
-      if (body?.kind === "whole") {
-        plan.layer_options = {
-          source_node_id: "ksia",
-          total_layers: 32,
-          cuts: [],
-          granularity: null,
-          rule: "não foi possível confirmar as regras reais deste GGUF",
-          reason: "o peer não respondeu ao catálogo do GGUF",
-        };
-      }
-      return Promise.resolve(plan);
-    });
-    mount();
-    chooseWhole();
-
-    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
-    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
-    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
-
-    expect((await screen.findByRole("alert")).textContent).toMatch(/peer não respondeu/);
-    expect(screen.queryByRole("slider", { name: /Camadas a enviar para mac/ })).toBeNull();
-  });
-
-  it("adiciona uma réplica do modelo inteiro ao incluir outra máquina no mapa", async () => {
-    answerPlans();
-    mount();
-    chooseWhole();
-
-    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
-    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
-
-    await waitFor(() => {
-      const last = planCalls().at(-1)![1] as {
-        selection?: Array<{
-          start_layer: number;
-          end_layer: number;
-          target_node_id: string;
-          n_gpu_layers: number | null;
-          offload_kqv: boolean | null;
-        }>;
-      };
-      expect(last.selection).toEqual([
-        { start_layer: 0, end_layer: 31, target_node_id: "ksia", n_gpu_layers: null, offload_kqv: null },
-        { start_layer: 0, end_layer: 31, target_node_id: "mac", n_gpu_layers: null, offload_kqv: null },
-      ]);
-    });
+    expect(screen.getByText(/Retire uma máquina do mapa antes de trocar para modelo inteiro ou adicionar outra/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /mac RTT/ })).toBeTruthy();
+    expect(planCalls().some(([, body]) => (body as { selection?: Array<{ target_node_id: string }> }).selection?.some((row) => row.target_node_id === "mac"))).toBe(false);
   });
 
   it("implanta mandando o mesmo `kind` que planejou", async () => {
     answerPlans();
     mount();
     chooseWhole();
+    await ensureWholeMachine();
 
     const button = await screen.findByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
@@ -578,8 +674,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
-  /** Uma máquina que ainda não tem o arquivo é uma cópia, e a tela diz de onde. */
-  it("diz de onde o arquivo vem quando a máquina escolhida não o tem", async () => {
+  it("não mostra fatos duplicados quando a máquina escolhida precisa de cópia", async () => {
     post.mockImplementation((url: string, body: { kind?: string }) =>
       Promise.resolve(body?.kind === "whole" ? wholePlan("mac") : shardPlan()),
     );
@@ -587,8 +682,9 @@ describe("DeployModel · modelo inteiro", () => {
     chooseWhole();
 
     await waitFor(() => {
-      expect(screen.getByText(/copiar de ksia/)).toBeTruthy();
+      expect(planCalls().some(([, body]) => (body as { kind?: string }).kind === "whole")).toBe(true);
     });
+    expect(screen.queryByText(/copiar de ksia/)).toBeNull();
   });
 
   /**
@@ -621,11 +717,15 @@ describe("DeployModel · modelo inteiro", () => {
     });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
 
+    const before = planCalls().length;
     fireEvent.click(toggle);
     await waitFor(() => {
-      const last = planCalls().at(-1)![1] as { params: RuntimeParams };
-      expect(last.params.fit_memory).toBe(false);
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
     });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(planCalls()).toHaveLength(before);
+    expect(planCalls().every(([, body]) => !Object.prototype.hasOwnProperty.call(body, "params"))).toBe(true);
+    expect(screen.queryByText("conferindo com o nó…")).toBeNull();
   });
 
   it("mantém o seletor de motor oculto para um modelo denso", async () => {
@@ -644,12 +744,12 @@ describe("DeployModel · modelo inteiro", () => {
     });
     mount();
     chooseWhole();
+    await ensureWholeMachine();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
     const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
     fireEvent.change(selector, { target: { value: "moe" } });
-    await waitFor(() => {
-      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("moe");
-    });
+    expect((selector as HTMLSelectElement).value).toBe("moe");
 
     const button = screen.getByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
@@ -673,13 +773,13 @@ describe("DeployModel · modelo inteiro", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
     const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
     fireEvent.change(selector, { target: { value: "dense" } });
-    await waitFor(() => {
-      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("dense");
-    });
+    expect((selector as HTMLSelectElement).value).toBe("dense");
 
     chooseTensor();
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
-    expect(screen.getByText("Tensor Parallelism não suporta MoE nesta versão.")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByText("Tensor Parallelism não suporta MoE nesta versão.")).toBeTruthy(),
+    );
     expect(screen.getByRole("combobox", { name: "Motor de inferência" })).toBeTruthy();
   });
 });
@@ -740,12 +840,20 @@ describe("DeployModel · MTP", () => {
   it("liga o MTP, vê os controles numéricos e os manda na implantação", async () => {
     mountWhole();
     chooseWhole();
+    await ensureWholeMachine();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
     const switchEl = await screen.findByRole("checkbox", {
       name: /Predição multi-token/,
     });
     expect(switchEl).toBeTruthy();
     fireEvent.click(switchEl);
+
+    const ramFallback = await screen.findByRole("checkbox", {
+      name: "Permitir recuo do MTP para a RAM",
+    });
+    expect(ramFallback.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(ramFallback);
 
     await waitFor(() => {
       expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
@@ -781,6 +889,7 @@ describe("DeployModel · MTP", () => {
       };
       expect(body.kind).toBe("whole");
       expect(body.params.mtp_enabled).toBe(true);
+      expect(body.params.mtp_cpu_fallback_enabled).toBe(false);
       expect(body.params.mtp_draft_tokens).toBe(5);
     });
   });
@@ -788,6 +897,8 @@ describe("DeployModel · MTP", () => {
   it("marcar o MTP preenche 0,75 e permite editar a probabilidade mínima", async () => {
     mountWhole();
     chooseWhole();
+    await ensureWholeMachine();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
     const switchEl = await screen.findByRole("checkbox", {
       name: /Predição multi-token/,

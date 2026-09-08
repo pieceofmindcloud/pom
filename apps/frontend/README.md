@@ -87,6 +87,13 @@ que está sendo usado. Há teste disso em `src/network.rs`
 Um nó destacado mostra "Fora da rede" em Configurações › Rede, com um botão
 "Voltar para a rede" que chama `/api/ui/rejoin`.
 
+As preferências locais ficam em Configurações › Preferências: exposição da
+interface administrativa, porta do gateway, TLS entre nós, proteção térmica da
+GPU e credencial opcional do Hugging Face. A exposição começa em localhost;
+quando passa para a rede, a tela mostra o token humano gerado e a API exige
+`X-POM-Access-Token`. A `connection_key` continua separada, para autenticar os
+nós e clientes da pipeline.
+
 ### A tela abriu sem estilo? Reinicie o dev server
 
 Sintoma: a página aparece crua, fontes com serifa, sem layout — e junto,
@@ -150,17 +157,19 @@ a versão anterior tinha um `mock-server.mjs` e ele foi removido.
 | Tela | Rotas |
 |---|---|
 | Painel (fluxo e detalhes) | `GET /api/ui/node`, `/api/ui/cluster`, `/peers` |
-| Chat de teste | `POST /v1/chat/completions` (SSE, token a token) |
+| Chat | `POST /v1/chat/completions` (SSE, token a token) |
 | Modelos inteiros | `GET /api/ui/models` |
 | Fatiar modelos | `POST /api/ui/slice/plan`, `POST /api/ui/slice` |
 | Fatias / Fatiamentos | `GET /api/ui/cluster/models`, `/api/ui/jobs`, `/api/ui/jobs/:id` |
 | Transferências | `GET /api/ui/jobs`, rotas de `src/transfer.rs` |
 | Enviar um arquivo | transferência por concessão (`grant`) |
 | Logs por token e por nó | `GET /api/ui/requests` |
+| Estatísticas | `GET /api/ui/requests` |
 | Logs ao vivo | `GET /api/ui/requests` em polling |
 | Rede (bloquear nó) | `GET /admin/nodes`, `POST /admin/nodes/:id/block`/`unblock` |
 | API keys | `GET`/`POST /admin/api-keys`, `DELETE /admin/api-keys/:key` |
 | Chaves de conexão | `GET /api/ui/node`, `POST /admin/regenerate-key` |
+| Exposição da administração | `GET /api/access`, `GET`/`POST /api/ui/access` |
 | Pastas de modelos | `GET`/`POST /api/ui/paths` |
 | Configuração inicial | `GET /api/setup/key`, `POST /api/setup/save` |
 | Implantar modelo fatiado | `POST /api/ui/deploy/plan`, `POST /api/ui/deploy`, `GET /api/ui/jobs` |
@@ -228,7 +237,7 @@ Todas em `src/webui.rs`, no estilo do arquivo, mais um módulo novo.
 | `POST /api/ui/unload` | Descarrega da memória o modelo do nó. |
 | `POST /api/ui/leave` | Sai da rede: para de anunciar e esquece os peers. |
 | `POST /api/ui/rejoin` | Volta para a rede. |
-| `GET /api/ui/requests` | O registro de requisições, por token e por nó, que alimenta as duas telas de Logs. |
+| `GET /api/ui/requests` | O registro de requisições, por token e por nó, que alimenta Logs e Estatísticas. |
 | `POST /api/ui/release` | O nó devolve a memória da fatia que serve e continua na rede; se houver peer ocioso com a fatia no disco, ela é passada adiante. Nunca é recusada. |
 | `GET /api/ui/release/candidate` | Quem assumiria a fatia, para a confirmação na tela avisar de verdade quando a faixa vai ficar descoberta. |
 | `POST /api/ui/deploy/plan` | Só leitura: quem serviria qual faixa de um conjunto de fatias pronto, e o que teria de ser copiado antes. |
@@ -309,12 +318,12 @@ Viabilidade, e o que é recusa e o que é aviso:
 
 ### Ajustes avançados (execução)
 
-Os treze knobs de `RuntimeParams` (`src/webui.rs`) voltaram para a tela, com os
+Os quatorze knobs de `RuntimeParams` (`src/webui.rs`) voltaram para a tela, com os
 mesmos rótulos e padrões da interface antiga, e agora vão de verdade para o
 `launch` de cada fatia: contexto (`n_ctx`), lote (`n_batch`), máx. tokens novos,
 requisições simultâneas, tokens por pedaço, temperatura, `top_p`, `top_k`,
-penalidade de repetição e sua janela, desligar o bloco de raciocínio, e forçar
-sem embeddings.
+penalidade de repetição e sua janela, a reserva de segurança da VRAM do ajuste
+automático, desligar o bloco de raciocínio, e forçar sem embeddings.
 
 São **do cluster**, não de cada peer, porque o pipeline precisa que sejam: o
 contexto e o lote decidem o orçamento de prompt que o gateway cobra de toda

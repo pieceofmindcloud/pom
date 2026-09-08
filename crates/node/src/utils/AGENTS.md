@@ -1,14 +1,27 @@
 # utils/ - apoio sem estado de rede
 
+> **Mudança de crate:** `brand.rs` virou o crate `crates/brand`; `sysmon.rs`
+> foi para `crates/llama-engine` (usa a FFI do ggml para listar GPUs). `node`
+> re-exporta ambos em `main.rs` (`use ::brand as brand;`,
+> `pub use llama_engine::sysmon`), então `crate::brand::…` e `crate::sysmon::…`
+> seguem valendo. `sysmon` recebe a raiz do projeto por `sysmon::set_disk_root`
+> no arranque, em vez de chamar `config::project_root()`.
+> `KvCacheType` saiu de `config.rs` para `llama_engine::kv_cache` e é
+> re-exportado por `crate::config`.
+
 Caminhos de configuração, a TUI de linha de comando, o respawn do processo e o
 monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 (no caso de `config` e `sysmon`) por praticamente todo o resto do crate.
 
 ## Arquivos
 
-- `config.rs` - o `Config` persistido em `pom.json`, incluindo identidades
-  opacas das API keys, e a resolução do project root / diretório da UI. O
-  `audit.sqlite3` do gateway usa o mesmo `project_root`.
+- `config.rs` - o `Config` persistido em `pom.json` e a resolução do project
+  root, do diretório do `pom.db` e da UI. `POM_DB_DIR` aponta o banco para um
+  volume; sem ele, fica na raiz do projeto. O estado operacional usa
+  `backend::db::PomDb`; os campos legados continuam serializáveis em `pom.json`
+  para não destruir a cópia de segurança antiga. O campo obrigatório
+  `profile` é o perfil oficial do nó; um `pom.json` antigo sem ele exige novo
+  setup, sem migração.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque.
@@ -37,7 +50,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `<project_root>/pom.json`.
   `Config::save` grava com permissão exclusiva do proprietário (`0600` no
   Unix), inclusive quando o arquivo já existia; o campo opcional
-  `huggingface_token` é segredo e o `Debug` de `Config` o mascara.
+  `huggingface_token` é segredo e o `Debug` de `Config` o mascara. O runtime
+  lê chaves, política térmica e token do `pom.db`, sem usar esses campos como
+  fallback.
 - `normalize_peer_addr` - completa a porta que falta em endereço digitado
   (IPv6 puro sem porta vira `invalid port value` no resolver, repetido para
   sempre no log); mantém o que está gravado igual ao que se imprime.
@@ -87,12 +102,26 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   do Activity Monitor, e devolve wired para os buffers do Metal); Windows
   `GlobalMemoryStatusEx` declarado à mão para não arrastar `windows-sys`.
 - `read_gpu`/`nvidia_smi` - VRAM total/em uso e processos por placa NVIDIA;
+  `current_process_gpu_memory_mb` faz a sondagem síncrona do uso do PID atual
+  para correlacionar o processo com o snapshot do fit, e devolve `None` quando
+  o driver não informa a linha.
   Apple Silicon reporta `GpuKind::Unified` com a nota honesta (sem VRAM
   dedicada para medir) em vez de inventar número. Essa variante só é construída
   no macOS, e fora dele o `dead_code` acusava - daí o `cfg_attr(not(macos),
   allow)` nela. Tirá-la por `cfg` seria pior: `gpu_kind` é campo serializado, e
   `deploy::free_memory_mb` lê o de **outras** máquinas para decidir se a fatia
   cabe.
+  o nome segue uma política comum: descrição do backend correspondente,
+  `pci.ids` no Linux e identificador da placa como último recurso. O wrapper
+  `llama_rs_backend_devices_json` expõe a descrição e o `device_id` do ggml;
+  o `device_id` PCI é usado para associar a descrição Vulkan à Radeon certa em
+  máquinas com várias placas. Apple Silicon reporta `GpuKind::Unified` com a
+  nota honesta (sem VRAM dedicada para medir) em vez de inventar número, usando
+  a descrição Metal e depois `system_profiler` para o nome. Essa variante só é
+  construída no macOS, e fora dele o `dead_code` acusava - daí o
+  `cfg_attr(not(macos), allow)` nela. Tirá-la por `cfg` seria pior:
+  `gpu_kind` é campo serializado, e `deploy::free_memory_mb` lê o de
+  **outras** máquinas para decidir se a fatia cabe.
 - `sample_disk` - `df -m` no project root (não no cwd); Windows
   `GetDiskFreeSpaceExW`. `sample_disk_at` recebe o destino configurado e mede
   o volume que contém esse caminho, inclusive quando a pasta ainda não existe.
@@ -114,10 +143,6 @@ desconhecida e nunca é convertido em alarme pela proteção térmica.
 - **`respawn`** é chamado pelo `backend/devupdate.rs` (atualizar e reiniciar
   pela interface) e por `main.rs` no arranque.
 - **`sysmon`** em `main.rs` (hostname) e `webui.rs` (endpoints `/api/ui/*`).
-
-## Defeitos anotados
-
-Nenhum.
 
 ## Maintaining this file
 

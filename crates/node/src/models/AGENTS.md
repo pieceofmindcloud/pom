@@ -1,5 +1,10 @@
 # `crates/node/src/models/`
 
+> **Mudança de crate:** `gguf.rs`, `multipart.rs` e `kv_budget.rs` saíram para
+> `crates/llama-engine` (o lado FFI precisa deles). `node` os re-exporta em
+> `main.rs`; `crate::gguf::…` etc. seguem valendo. `splitter.rs` ficou aqui e
+> usa `crate::gguf` normalmente (nos testes, `llama_engine::llama_cpp_sys_2`).
+
 Modelos, leitura de GGUF, planejamento e arquivos de fatias. O módulo é usado
 por `main.rs` e pelos handlers de catálogo, fatiamento, implantação e
 transferência.
@@ -10,9 +15,11 @@ transferência.
   `Catalog.metadata_complete`. Falha de leitura marca `metadata_error` no item,
   sem impedir os modelos válidos; depois de uma passagem terminal,
   `metadata_complete` vira `true`. Nova tentativa só ocorre em um novo refresh
-  ou invalidação. As capacidades vêm do header e de uma varredura leve dos nomes
-  de tensores `nextn`; o cálculo completo de layout continua em
-  `gguf::read_capability_evidence` para callers que exigem essa prova.
+  ou invalidação. As capacidades publicadas pelo catálogo vêm somente do
+  cabeçalho; ele não percorre a tabela de tensores nem os pesos. A evidência
+  estrutural de MTP continua em `gguf::read_capability_evidence`, hoje restrita
+  às provas que exigem essa confirmação; o cálculo completo de layout continua
+  separado.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade.
@@ -97,10 +104,11 @@ transferência.
   validação de entradas, retomada por faixa, cache próprio e manifesto local.
 
 O token do Hugging Face é resolvido em cada requisição nesta ordem: `HF_TOKEN`,
-`HUGGING_FACE_HUB_TOKEN`, o campo `huggingface_token` do `pom.json` e, por fim,
-o arquivo de cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
+`HUGGING_FACE_HUB_TOKEN`, o segredo do `pom.db` e, por fim, o arquivo de cache
+(`HF_TOKEN_PATH`, `HF_HOME/token` ou
 `~/.cache/huggingface/token`). A configuração da UI fica em memória no
-`HfTokenStore`, então salvar na tela atualiza autenticação sem reiniciar o nó.
+`HfTokenStore` e no `pom.db`, então salvar na tela atualiza autenticação sem
+reiniciar o nó.
 Nenhum endpoint devolve o token bruto; erros continuam passando por
 `redact_sensitive`.
 
@@ -130,9 +138,24 @@ manifesto existente e só reaproveita uma parte quando o arquivo confere por
 SHA-256 e tamanho.
 
 `deployment::DeploymentIdentity` persiste a prova do artefato que entrou em
-serviço: `pom_id` para uma rodada de fatias ou SHA-256 do GGUF inteiro. Registros
+serviço: `pom_id` para uma rodada de fatias ou SHA-256 do GGUF inteiro. O
+registro completo da implantação vive em `backend::db::PomDb`; os JSON em
+`deployments/` são fonte legada preservada para a ferramenta descartável. Registros
 antigos sem essa prova só podem ser associados por caminho canônico no mesmo
 peer, nunca por nome.
+
+`Deployment` é versionado (`DEPLOYMENT_VERSION = 2`): `versions:
+Vec<DeploymentVersion>` guarda cada configuração que já rodou sob o mesmo
+`deploy_id` e `active_version` aponta a que está no ar; `nodes` é a lista
+achatada da versão ativa, mantida em sincronia. O que distingue uma versão é o
+`RuntimeParams` do deployment inteiro (`params`); ajustes por máquina entram no
+snapshot `nodes` mas não forkam versão. `upsert_version` reusa a versão de
+`params` iguais ou anexa `max+1`; `set_active_version` só troca a ativa;
+`ensure_versions` sintetiza a v1 de um registro v1 legado (sem `versions`), e é
+chamado em toda leitura (`PomDb`, `find_record`, listagem). `matching_shape` é a
+função pura que decide se um `POST /api/ui/deploy` reaproveita um `deploy_id`:
+mesmo `kind`, mesma `DeploymentIdentity` provada e o mesmo conjunto de
+`(node_id, faixa, tp_rank)`. Sem identidade provada, cunha id novo.
 
 A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
 de armazenamento vale somente para a pasta de fatias; pastas de modelos
@@ -142,8 +165,13 @@ inteiros são somente leitura e nunca entram na retenção automática.
 as configurações do scheduler local (`batching_enabled`, limites da fila,
 janela e limites do microbatch) também sobrevivem a um reinício e voltam com a
 mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
-`cache_type_v`) também são serializados no estado efetivo, mas o `NodeRuntime`
-os repõe a partir do `pom.json` antes de carregar o modelo.
+`cache_type_v`) e a margem de segurança do fit também são serializados no
+estado efetivo. Os tipos do cache continuam sendo repostos a partir do
+`pom.json` pelo `NodeRuntime` antes de carregar o modelo; a margem vem dos
+parâmetros da implantação. Os parâmetros do detector de ciclos
+(`cycle_detection_*`) também fazem parte do `NodeConfig` achatado, para que o
+gateway preserve a mesma política depois de um restart e a fatia anotada não
+volte a gerar com uma configuração diferente.
 
 O fatiador primeiro classifica arrays GGUF pelo namespace: somente arrays sob o
 namespace da arquitetura, exceto os arrays estruturais de rope, podem ser
@@ -163,3 +191,10 @@ Este arquivo é um mapa curto da pasta. Ao adicionar metadados de modelo ou
 mudar a fronteira entre catálogo, GGUF e planejamento, atualize aqui e o
 subsistema correspondente no mesmo commit. Detalhes de implementação ficam no
 código ou em `docs/subsystems/`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

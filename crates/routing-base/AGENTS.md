@@ -35,9 +35,7 @@ can swap in a different provider without touching the contract.
   contract types. `routing-base::plan` is exercised solely by its inline tests.
 - Siblings: see `crates/AGENTS.md`.
 
-## Defeitos anotados
+## Pendências
 
-- Dead code from the product's perspective: node does not link this crate, so the
-  open planner and the shipped planner can drift apart with no test comparing
-  them. The stated open-core intent (a provider the closed plugin could
-  implement against) is not yet wired to any call site.
+O provider aberto ainda não é chamado pelo binário nem comparado ao planner
+servido; ver `TODO.md`, item 5.

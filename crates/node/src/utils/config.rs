@@ -11,73 +11,47 @@ fn config_filename() -> String {
     crate::brand::config_filename()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    Principal,
-    Node,
+/// Arquivo separado que guarda a âncora e a cadeia de concessões de admin.
+/// Nunca é derivado de `Config.profile`: editar `pom.json` não pode criar
+/// autoridade.
+pub fn admin_trust_filename() -> String {
+    format!(".{}-admin-trust.json", crate::brand::slug())
 }
 
-impl std::fmt::Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Role::Principal => write!(f, "Principal"),
-            Role::Node => write!(f, "Nó"),
-        }
+pub fn admin_trust_path() -> PathBuf {
+    crate::brand::env("ADMIN_TRUST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| project_root().join(admin_trust_filename()))
+}
+
+/// Superfície administrativa do gateway. As rotas da pipeline não usam esta
+/// política: continuam ouvindo em IPv4 e IPv6 para que o túnel libp2p tenha um
+/// caminho HTTP de reserva.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminExposure {
+    Localhost,
+    Network,
+}
+
+impl Default for AdminExposure {
+    fn default() -> Self {
+        Self::Localhost
+    }
+}
+
+impl AdminExposure {
+    pub fn requires_token(self) -> bool {
+        matches!(self, Self::Network)
     }
 }
 
 /// Tipos de dados aceitos pelo cache KV do llama.cpp desta instalação.
 ///
-/// A lista acompanha `common/arg.cpp::kv_cache_types` do llama.cpp vendorizado
-/// e evita deixar uma string inválida chegar ao FFI. `f16` é o padrão upstream.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum KvCacheType {
-    F32,
-    F16,
-    Bf16,
-    Q8_0,
-    Q4_0,
-    Q4_1,
-    Iq4Nl,
-    Q5_0,
-    Q5_1,
-}
-
-impl Default for KvCacheType {
-    fn default() -> Self {
-        Self::F16
-    }
-}
-
-impl KvCacheType {
-    pub const ALL: [Self; 9] = [
-        Self::F32,
-        Self::F16,
-        Self::Bf16,
-        Self::Q8_0,
-        Self::Q4_0,
-        Self::Q4_1,
-        Self::Iq4Nl,
-        Self::Q5_0,
-        Self::Q5_1,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::F32 => "f32",
-            Self::F16 => "f16",
-            Self::Bf16 => "bf16",
-            Self::Q8_0 => "q8_0",
-            Self::Q4_0 => "q4_0",
-            Self::Q4_1 => "q4_1",
-            Self::Iq4Nl => "iq4_nl",
-            Self::Q5_0 => "q5_0",
-            Self::Q5_1 => "q5_1",
-        }
-    }
-}
+/// A definição mudou para `llama-engine` (`kv_cache.rs`) porque o lado FFI
+/// precisa dela; aqui é só um campo de `Config`. Re-exportada para que
+/// `crate::config::KvCacheType` continue valendo.
+pub use llama_engine::KvCacheType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -87,6 +61,10 @@ pub struct ApiKey {
     pub key: String,
     pub label: String,
     pub node_id: String,
+    /// Node that minted this key. It remains stable when the key is
+    /// synchronized to another node or assigned to a consumer node.
+    #[serde(default)]
+    pub origin_node_id: String,
     #[serde(default)]
     pub active: bool,
     pub created_at: String,
@@ -95,11 +73,22 @@ pub struct ApiKey {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub role: Role,
+    /// Product profile owned by this node. It is not selected by the browser
+    /// and is intentionally required in the new schema. Administrative
+    /// capability comes only from the separate signed grant chain.
+    pub profile: crate::profile::NodeProfile,
     #[serde(default)]
     pub connection_key: String,
     #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
+    /// Onde as rotas administrativas podem ser usadas. Ausente significa
+    /// localhost, inclusive em configurações gravadas antes deste campo.
+    #[serde(default)]
+    pub admin_exposure: AdminExposure,
+    /// Credencial exclusiva da pessoa que abre a superfície administrativa.
+    /// Não é a `connection_key`, que continua autenticando nós e pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_access_token: Option<String>,
     #[serde(default = "default_p2p_port")]
     pub p2p_port: u16,
     #[serde(default)]
@@ -129,6 +118,10 @@ pub struct Config {
     /// `tls_policy`.
     #[serde(default)]
     pub tls_required: bool,
+    /// Coleta de logs de processo para o nó principal. A decisão é do
+    /// principal e os demais nós só adotam a resposta autenticada da catraca.
+    #[serde(default)]
+    pub cluster_logs_enabled: bool,
     /// Directories holding **whole** models.
     ///
     /// `None` — the field missing from an old `pom.json`, or never edited —
@@ -180,12 +173,39 @@ pub struct Config {
     /// devolve pela API: a interface recebe apenas estado e máscara.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
+    /// Diretório onde os snapshots de KV cache são gravados e lidos, como o
+    /// `--slot-save-path` do llama-server. Propriedade da máquina, não da
+    /// implantação: cada peer grava a fatia dele aqui. A variável de ambiente
+    /// `POM_SLOT_SAVE_PATH` e a flag `--slot-save-path` têm precedência sobre
+    /// este campo - use `slot_save_path_effective()`, nunca o campo cru.
+    /// Ausente/vazio em todas as fontes desliga o recurso e as rotas de
+    /// snapshot respondem "não configurado".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_save_path: Option<String>,
+    /// Liga a persistência automática do cache de prefixo: ao fim de cada turno
+    /// o gateway grava o KV retido em `slot_save_path` e, num miss após
+    /// reinício, restaura em vez de refazer o prefill a frio. Exige
+    /// `slot_save_path` em todos os hops. Desligado por padrão até ter prova de
+    /// campo; a env var `POM_SLOT_PERSIST_PREFIX_CACHE=1` também liga. Use
+    /// `slot_persist_prefix_cache_enabled()`.
+    #[serde(default)]
+    pub slot_persist_prefix_cache: bool,
+    /// Orçamento de disco para os snapshots automáticos de prefixo, somado
+    /// entre as fatias. `None` usa `DEFAULT_SLOT_AUTO_MAX_BYTES` (2 GiB). Use
+    /// `slot_auto_max_bytes()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_auto_max_bytes: Option<u64>,
+    /// TTL de um snapshot automático de prefixo sem uso, em segundos. `None`
+    /// usa `DEFAULT_SLOT_AUTO_TTL_SECS` (7 dias). A env `POM_SLOT_AUTO_TTL_SECS`
+    /// vence o campo. Use `slot_auto_ttl_secs()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_auto_ttl_secs: Option<u64>,
 }
 
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
-            .field("role", &self.role)
+            .field("profile", &self.profile)
             .field(
                 "connection_key",
                 if self.connection_key.is_empty() {
@@ -195,6 +215,11 @@ impl fmt::Debug for Config {
                 },
             )
             .field("gateway_port", &self.gateway_port)
+            .field("admin_exposure", &self.admin_exposure)
+            .field(
+                "admin_access_token",
+                &self.admin_access_token.as_ref().map(|_| "[redacted]"),
+            )
             .field("p2p_port", &self.p2p_port)
             .field("inference_port", &self.inference_port)
             .field("bootstrap_nodes", &self.bootstrap_nodes)
@@ -202,6 +227,7 @@ impl fmt::Debug for Config {
             .field("api_key_count", &self.api_keys.len())
             .field("blocked_nodes", &self.blocked_nodes)
             .field("tls_required", &self.tls_required)
+            .field("cluster_logs_enabled", &self.cluster_logs_enabled)
             .field("model_dirs", &self.model_dirs)
             .field("shard_dir", &self.shard_dir)
             .field("shard_max_gb", &self.shard_max_gb)
@@ -214,12 +240,21 @@ impl fmt::Debug for Config {
                 "huggingface_token",
                 &self.huggingface_token.as_ref().map(|_| "[redacted]"),
             )
+            .field("slot_save_path", &self.slot_save_path)
+            .field("slot_persist_prefix_cache", &self.slot_persist_prefix_cache)
+            .field("slot_auto_max_bytes", &self.slot_auto_max_bytes)
+            .field("slot_auto_ttl_secs", &self.slot_auto_ttl_secs)
             .finish()
     }
 }
 
 fn default_gateway_port() -> u16 {
     8080
+}
+
+pub fn validate_gateway_port(port: u16) -> anyhow::Result<()> {
+    anyhow::ensure!(port != 0, "a porta da interface deve estar entre 1 e 65535");
+    Ok(())
 }
 fn default_p2p_port() -> u16 {
     42777
@@ -328,6 +363,26 @@ pub fn project_root() -> PathBuf {
     cwd
 }
 
+/// Directory that contains the runtime SQLite database.
+///
+/// `POM_DB_DIR` is intended for a Docker volume. Without it the database is
+/// kept beside `pom.json`, as before this setting existed.
+pub fn database_dir() -> PathBuf {
+    let configured = crate::brand::env("DB_DIR").ok();
+    database_dir_for(project_root(), configured.as_deref())
+}
+
+fn database_dir_for(root: PathBuf, configured: Option<&str>) -> PathBuf {
+    configured
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(root)
+}
+
+pub fn database_path() -> PathBuf {
+    database_dir().join(crate::db::DATABASE_FILENAME)
+}
+
 impl Config {
     pub fn config_path() -> PathBuf {
         crate::brand::env("CONFIG")
@@ -343,8 +398,7 @@ impl Config {
         let path = Self::config_path();
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config at {:?}", path))?;
-        serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse config at {:?}", path))
+        parse_config(&content, &path)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -353,7 +407,22 @@ impl Config {
     }
 
     fn write_to(&self, path: &Path) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)?;
+        let mut value = serde_json::to_value(self)?;
+        if path.exists() {
+            let old = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read existing config at {:?}", path))?;
+            let old: serde_json::Value = serde_json::from_str(&old)
+                .with_context(|| format!("Failed to parse existing config at {:?}", path))?;
+            // These fields are now owned by pom.db. Preserve their old values
+            // when another setting updates pom.json, so the legacy source stays
+            // a usable safety copy until the operator explicitly migrates it.
+            for field in ["api_keys", "thermal", "huggingface_token"] {
+                if let Some(old_value) = old.get(field) {
+                    value[field] = old_value.clone();
+                }
+            }
+        }
+        let content = serde_json::to_string_pretty(&value)?;
         let mut options = std::fs::OpenOptions::new();
         options.create(true).write(true).truncate(true);
         #[cfg(unix)]
@@ -420,6 +489,65 @@ impl Config {
     pub fn shard_max_bytes(&self) -> u64 {
         (self.shard_max_gb() * 1_073_741_824.0).round() as u64
     }
+
+    /// Diretório efetivo de snapshots de KV cache, ou `None` quando o recurso
+    /// está desligado. Precedência: a variável de ambiente `POM_SLOT_SAVE_PATH`
+    /// (derivada da marca, `brand::env("SLOT_SAVE_PATH")`) vence o campo do
+    /// `pom.json`. Vazio em qualquer uma conta como desligado, igual à regra de
+    /// `shard_dir`. Como a env var é por processo, ela **não** é persistida:
+    /// `save()` continua gravando só o campo do arquivo.
+    pub fn slot_save_path_effective(&self) -> Option<String> {
+        crate::brand::env("SLOT_SAVE_PATH")
+            .ok()
+            .or_else(|| self.slot_save_path.clone())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn slot_save_dir(&self) -> Option<PathBuf> {
+        self.slot_save_path_effective().map(PathBuf::from)
+    }
+
+    /// Persistência automática do cache de prefixo ligada? A env var
+    /// `POM_SLOT_PERSIST_PREFIX_CACHE` (`1`/`true`/`yes`/`on`) vence o campo do
+    /// `pom.json`.
+    pub fn slot_persist_prefix_cache_enabled(&self) -> bool {
+        match crate::brand::env("SLOT_PERSIST_PREFIX_CACHE")
+            .ok()
+            .as_deref()
+        {
+            Some(v) => matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            None => self.slot_persist_prefix_cache,
+        }
+    }
+
+    /// Caminho do índice de snapshots automáticos de prefixo (fica ao lado dos
+    /// `.bin`, no `slot_save_path` deste nó). `None` se `slot_save_path` não
+    /// está configurado.
+    pub fn prefix_auto_index_path(&self) -> Option<PathBuf> {
+        self.slot_save_dir()
+            .map(|dir| dir.join("prefix-auto-index.json"))
+    }
+
+    pub fn slot_auto_max_bytes(&self) -> u64 {
+        self.slot_auto_max_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(crate::prefix_cache::DEFAULT_SLOT_AUTO_MAX_BYTES)
+    }
+
+    /// TTL efetivo dos snapshots automáticos de prefixo, em segundos.
+    /// `POM_SLOT_AUTO_TTL_SECS` vence o campo do `pom.json`.
+    pub fn slot_auto_ttl_secs(&self) -> i64 {
+        crate::brand::env("SLOT_AUTO_TTL_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .or_else(|| self.slot_auto_ttl_secs.map(|n| n as i64))
+            .filter(|n| *n > 0)
+            .unwrap_or(crate::prefix_cache::DEFAULT_SLOT_AUTO_TTL_SECS)
+    }
 }
 
 /// `<project_root>/models` — where every slice has always landed.
@@ -464,6 +592,19 @@ fn bundled_ui_dist() -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+fn parse_config(content: &str, path: &Path) -> Result<Config> {
+    serde_json::from_str(content).map_err(|error| {
+        let role_hint = serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .filter(|value| value.get("role").is_some())
+            .map(|_| {
+                ". O campo `role` foi removido da configuração; remova-o e use `profile` (`admin`, `node` ou `infer`)"
+            })
+            .unwrap_or("");
+        anyhow::anyhow!("Failed to parse config at {:?}: {error}{role_hint}", path)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     /// A peer address with no port is what produces `invalid port value` — the
@@ -497,16 +638,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn database_directory_uses_volume_override_and_project_fallback() {
+        let root = PathBuf::from("/project");
+        assert_eq!(
+            database_dir_for(root.clone(), Some("/volume/pom")),
+            PathBuf::from("/volume/pom")
+        );
+        assert_eq!(database_dir_for(root.clone(), Some("  ")), root.clone());
+        assert_eq!(database_dir_for(root.clone(), None), root);
+    }
+
+    #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
-            role: Role::Principal,
+            profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
+            cluster_logs_enabled: false,
             connection_key: "test-key".into(),
             gateway_port: 8080,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
@@ -518,10 +673,14 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.role, Role::Principal);
+        assert_eq!(parsed.profile, crate::profile::NodeProfile::Admin);
         assert_eq!(parsed.connection_key, "test-key");
     }
 
@@ -530,7 +689,7 @@ mod tests {
     #[test]
     fn removed_output_capacity_field_is_rejected_explicitly() {
         let legacy_field = ["max", "output", "tokens"].join("_");
-        let mut value = serde_json::json!({"role": "principal", "connection_key": "k"});
+        let mut value = serde_json::json!({"profile": "admin", "connection_key": "k"});
         value
             .as_object_mut()
             .unwrap()
@@ -542,7 +701,12 @@ mod tests {
 
     #[test]
     fn reference_config_has_no_absolute_output_capacity_field() {
-        let cfg: Config = serde_json::from_str(include_str!("../../pom.json")).unwrap();
+        // Keep this fixture in the test source. `pom.json` is runtime state and
+        // intentionally ignored by Git, so a compile must never depend on it.
+        let cfg: Config = serde_json::from_str(
+            r#"{"profile":"admin","connection_key":"reference-test","gateway_port":8080,"p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#,
+        )
+        .unwrap();
         let value = serde_json::to_value(cfg).unwrap();
         assert!(!value
             .as_object()
@@ -557,10 +721,13 @@ mod tests {
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
-            role: Role::Node,
+            profile: crate::profile::NodeProfile::Node,
             tls_required: false,
+            cluster_logs_enabled: false,
             connection_key: "node-key".into(),
             gateway_port: 8090,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
@@ -572,36 +739,47 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.role, Role::Node);
+        assert_eq!(parsed.profile, crate::profile::NodeProfile::Node);
     }
 
-    /// A `pom.json` written before the directories were configurable has
-    /// to keep behaving exactly as it did: auto-detected libraries, slices in
-    /// `<project_root>/models`.
+    /// A config without the official profile is not a supported schema. The
+    /// operator recreates it through setup instead of silently guessing.
     #[test]
-    fn a_config_without_the_new_fields_keeps_todays_behaviour() {
-        let old = r#"{"role":"principal","connection_key":"k","gateway_port":8080,
+    fn a_config_without_profile_requires_reinitialization() {
+        let old = r#"{"connection_key":"k","gateway_port":8080,
                       "p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#;
-        let cfg: Config = serde_json::from_str(old).unwrap();
-        assert!(cfg.model_dirs_are_default());
-        assert_eq!(cfg.model_dir_paths(), crate::catalog::default_model_dirs());
-        assert_eq!(cfg.shard_dir_path(), default_shard_dir());
-        assert_eq!(cfg.shard_max_gb(), 100.0);
-        assert_eq!(cfg.thermal, crate::thermal::ThermalPolicy::default());
+        assert!(serde_json::from_str::<Config>(old).is_err());
+    }
+
+    #[test]
+    fn a_legacy_role_config_explains_the_profile_replacement() {
+        let error = parse_config(
+            r#"{"role":"principal","profile":"admin"}"#,
+            Path::new("pom.json"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("campo `role` foi removido"));
+        assert!(error.contains("use `profile`"));
     }
 
     #[test]
     fn thermal_policy_is_configurable_and_survives_roundtrip() {
-        let mut cfg: Config = serde_json::from_str(r#"{"role":"node"}"#).unwrap();
+        let mut cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
         cfg.thermal = crate::thermal::ThermalPolicy {
             limit_c: 82.0,
             hysteresis_c: 7.0,
             cooldown_secs: 45,
         };
         let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["thermal"]["limit_c"], 82.0);
         let parsed: Config = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.thermal.limit_c, 82.0);
         assert_eq!(parsed.thermal.hysteresis_c, 7.0);
@@ -611,7 +789,7 @@ mod tests {
     #[test]
     fn cache_types_are_persisted_as_installation_settings() {
         let cfg: Config =
-            serde_json::from_str(r#"{"role":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
+            serde_json::from_str(r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
                 .unwrap();
         let json = serde_json::to_value(cfg).unwrap();
 
@@ -622,19 +800,19 @@ mod tests {
     #[test]
     fn invalid_cache_type_is_rejected() {
         let result: Result<Config, _> =
-            serde_json::from_str(r#"{"role":"node","cache_type_k":"not-a-type"}"#);
+            serde_json::from_str(r#"{"profile":"node","cache_type_k":"not-a-type"}"#);
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cache_type_defaults_to_f16_and_preserves_iq4_nl_spelling() {
-        let defaulted: Config = serde_json::from_str(r#"{"role":"node"}"#).unwrap();
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
         assert_eq!(defaulted.cache_type_k, KvCacheType::F16);
         assert_eq!(defaulted.cache_type_v, KvCacheType::F16);
 
         let typed: Config =
-            serde_json::from_str(r#"{"role":"node","cache_type_k":"iq4_nl"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"node","cache_type_k":"iq4_nl"}"#).unwrap();
         assert_eq!(typed.cache_type_k, KvCacheType::Iq4Nl);
         assert_eq!(typed.cache_type_k.as_str(), "iq4_nl");
     }
@@ -649,10 +827,12 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let cfg = Config {
-            role: Role::Node,
+        let mut cfg = Config {
+            profile: crate::profile::NodeProfile::Node,
             connection_key: String::new(),
             gateway_port: 8080,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
@@ -660,6 +840,7 @@ mod tests {
             api_keys: vec![],
             blocked_nodes: vec![],
             tls_required: false,
+            cluster_logs_enabled: false,
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
@@ -669,18 +850,30 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             node_name: None,
             huggingface_token: Some("hf_super_secret".into()),
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
+        cfg.admin_exposure = AdminExposure::Network;
+        cfg.admin_access_token = Some("admin_super_secret".into());
 
-        std::fs::write(&path, b"old config").unwrap();
+        std::fs::write(
+            &path,
+            r#"{"api_keys":[],"thermal":{"limit_c":85.0,"hysteresis_c":8.0,"cooldown_secs":30},"huggingface_token":"hf_legacy"}"#,
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         cfg.write_to(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert!(format!("{cfg:?}").contains("[redacted]"));
         assert!(!format!("{cfg:?}").contains("hf_super_secret"));
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("hf_super_secret"));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["huggingface_token"], "hf_legacy");
+        assert!(!format!("{cfg:?}").contains("admin_super_secret"));
+        assert_eq!(saved["admin_access_token"], "admin_super_secret");
         let _ = std::fs::remove_file(path);
     }
 
@@ -689,7 +882,7 @@ mod tests {
     #[test]
     fn an_explicit_empty_list_is_not_the_default_list() {
         let cfg: Config = serde_json::from_str(
-            r#"{"role":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
+            r#"{"profile":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
         )
         .unwrap();
         assert!(!cfg.model_dirs_are_default());
@@ -704,14 +897,21 @@ mod tests {
     /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
     #[test]
     fn config_antiga_parseia_sem_tls_required() {
-        let cfg: Config = serde_json::from_str(r#"{"role":"node","connection_key":"k"}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
+    }
+
+    #[test]
+    fn gateway_port_zero_is_rejected_instead_of_using_an_ephemeral_port() {
+        assert!(validate_gateway_port(0).is_err());
+        assert!(validate_gateway_port(1).is_ok());
+        assert!(validate_gateway_port(u16::MAX).is_ok());
     }
 
     #[test]
     fn tls_required_sobrevive_ao_roundtrip() {
         let cfg: Config =
-            serde_json::from_str(r#"{"role":"principal","tls_required":true}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"admin","tls_required":true}"#).unwrap();
         assert!(cfg.tls_required);
         let texto = serde_json::to_string(&cfg).unwrap();
         let volta: Config = serde_json::from_str(&texto).unwrap();
@@ -720,7 +920,7 @@ mod tests {
 
     #[test]
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
-        let cfg: Config = serde_json::from_str(r#"{"role":"node","shard_dir":"   "}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
     }
 
@@ -731,10 +931,13 @@ mod tests {
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
-            role: Role::Principal,
+            profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
+            cluster_logs_enabled: false,
             connection_key: "k".into(),
             gateway_port: 8080,
+            admin_exposure: AdminExposure::Localhost,
+            admin_access_token: None,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
@@ -745,6 +948,7 @@ mod tests {
                     key: "sk-old".into(),
                     label: "old".into(),
                     node_id: "n1".into(),
+                    origin_node_id: "n1".into(),
                     active: false,
                     created_at: "2026-01-01T00:00:00Z".into(),
                 },
@@ -753,6 +957,7 @@ mod tests {
                     key: "sk-active".into(),
                     label: "active".into(),
                     node_id: "n1".into(),
+                    origin_node_id: "n1".into(),
                     active: true,
                     created_at: "2026-02-01T00:00:00Z".into(),
                 },
@@ -763,6 +968,10 @@ mod tests {
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
             huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

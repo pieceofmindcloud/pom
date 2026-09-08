@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 import { ProfileProvider } from "../lib/profile";
+import { ChatSessionProvider, useChatSessionController } from "../lib/chatStore";
+import { fakeNode } from "../test/fixtures";
+import type { NodeInfo } from "../lib/types";
+
+let sidebarNodeData: NodeInfo | null = null;
 
 vi.mock("../lib/queries", () => ({
-  useNode: () => ({ data: null }),
+  useNode: () => ({ data: sidebarNodeData }),
 }));
 
 vi.mock("../lib/theme", () => ({
@@ -20,9 +25,19 @@ vi.mock("./Logo", () => ({
 
 import { Sidebar } from "./Sidebar";
 
+function ChatSessionProbe() {
+  const { session } = useChatSessionController();
+  return <output data-testid="active-chat-session">{session.title}</output>;
+}
+
+function RouteProbe() {
+  return <output data-testid="route">{useLocation().pathname}</output>;
+}
+
 describe("Sidebar", () => {
   afterEach(() => {
     cleanup();
+    sidebarNodeData = null;
     vi.useRealTimers();
     window.localStorage.clear();
   });
@@ -135,5 +150,140 @@ describe("Sidebar", () => {
     expect(screen.getByText("Implantar na rede")).toBeTruthy();
     expect(screen.getByText("Histórico")).toBeTruthy();
     expect(screen.getByText("Logs")).toBeTruthy();
+  });
+
+  it("mostra o estado TLS junto às bandeiras e sem texto visível", () => {
+    sidebarNodeData = fakeNode({ tls_required: true });
+    render(
+      <MemoryRouter
+        initialEntries={["/"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <Sidebar />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    const controls = screen.getByRole("group", { name: "Idioma" });
+    const indicator = within(controls).getByTestId("tls-indicator");
+    expect(indicator.getAttribute("data-tls-state")).toBe("on");
+    expect(indicator.textContent).toBe("");
+  });
+
+  it("transforma o menu do infer em histórico acionável e deixa docs/config no rodapé", () => {
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      {
+        id: "active",
+        title: "Conversa ativa",
+        model: "qwen",
+        messages: [],
+        updatedAt: "2026-09-07T10:00:00.000Z",
+      },
+      {
+        id: "older",
+        title: "Conversa antiga",
+        model: "qwen",
+        messages: [],
+        updatedAt: "2026-09-06T10:00:00.000Z",
+      },
+    ]));
+
+    render(
+      <MemoryRouter
+        initialEntries={["/chat"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="infer">
+            <ChatSessionProvider>
+              <Sidebar />
+              <ChatSessionProbe />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("button", { name: "Conversa nova" })).toBeTruthy();
+    const activeButton = screen.getAllByRole("button", { name: /Conversa ativa/ })
+      .find((button) => button.getAttribute("aria-pressed") === "true");
+    expect(activeButton).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Documentação" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Configurações" })).toBeTruthy();
+    expect(screen.queryByText("Painel")).toBeNull();
+    expect(screen.getByTestId("chat-session-list").className).toContain("overflow-y-auto");
+
+    const olderChoice = screen.getAllByRole("button", { name: /Conversa antiga/ })
+      .find((button) => button.getAttribute("aria-pressed") === "false");
+    expect(olderChoice).toBeTruthy();
+    fireEvent.click(olderChoice!);
+    expect(screen.getByTestId("active-chat-session").textContent).toBe("Conversa antiga");
+    const olderButton = screen.getAllByRole("button", { name: /Conversa antiga/ })
+      .find((button) => button.getAttribute("aria-pressed") === "true");
+    expect(olderButton).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Conversa nova" }));
+    expect(screen.getByTestId("active-chat-session").textContent).toBe("Conversa nova");
+  });
+
+  /**
+   * O histórico é o menu principal do `infer` e é visto de toda rota. Escolher
+   * uma conversa das configurações ou da documentação trocava a conversa ativa
+   * e deixava a tela onde estava - o menu parecia ter parado de responder.
+   */
+  it("leva ao chat ao escolher uma conversa a partir de outra rota", () => {
+    window.localStorage.setItem("pom.chat.sessions", JSON.stringify([
+      {
+        id: "older",
+        title: "Conversa antiga",
+        model: "qwen",
+        messages: [],
+        updatedAt: "2026-09-06T10:00:00.000Z",
+      },
+    ]));
+
+    render(
+      <MemoryRouter
+        initialEntries={["/config/rede"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="infer">
+            <ChatSessionProvider>
+              <Sidebar />
+              <RouteProbe />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("route").textContent).toBe("/config/rede");
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Conversa antiga/ })[0]);
+    expect(screen.getByTestId("route").textContent).toBe("/chat");
+  });
+
+  it("leva ao chat ao começar uma conversa nova a partir da documentação", () => {
+    render(
+      <MemoryRouter
+        initialEntries={["/documentacao"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <ProfileProvider initialProfile="infer">
+            <ChatSessionProvider>
+              <Sidebar />
+              <RouteProbe />
+            </ChatSessionProvider>
+          </ProfileProvider>
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Conversa nova" }));
+    expect(screen.getByTestId("route").textContent).toBe("/chat");
   });
 });

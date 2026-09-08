@@ -16,93 +16,37 @@ fn main() {
         .expect("workspace root");
 
     emit_build_id(&root);
-    build_mtp_shim();
-    build_moe_cuda();
+    build_macos_status();
     embed_windows_icon(&root);
 }
 
-/// Compila os kernels do executor MoE próprio quando o binário usa CUDA.
+/// Compila a ponte Objective-C do item da barra de status, só no alvo macOS.
 ///
-/// O host continua em Rust e só chama a ABI C mínima exportada pelo arquivo
-/// CUDA. Não há Python, Triton ou processo externo no caminho de inferência.
-fn build_moe_cuda() {
-    if std::env::var_os("CARGO_FEATURE_CUDA").is_none() {
+/// AppKit e WebKit entram pelos frameworks do sistema, não por uma dependência
+/// Rust nem por um runtime de navegador empacotado: o bundle continua fino e
+/// Linux e Windows não ganham nada disto.
+///
+/// O `cfg(macos)` de fora é do **host** e traz o `cc` como build-dependency,
+/// exatamente pelo motivo descrito em `embed_windows_icon`. O teste contra
+/// `CARGO_CFG_TARGET_OS` é do **alvo**, que é quem decide se a ponte tem que
+/// existir no binário. Os dois têm que valer: compilar um alvo macOS é coisa
+/// que só acontece num host macOS.
+#[cfg(target_os = "macos")]
+fn build_macos_status() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
-    println!("cargo:rerun-if-env-changed=CCACHE");
-
-    let source = Path::new("src/inference/moe/cuda_kernels.cu");
-    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let object = out_dir.join("pom_moe_cuda.o");
-    let library = out_dir.join("libpom_moe_cuda.a");
-    println!("cargo:rerun-if-changed={}", source.display());
-
-    let nvcc = std::env::var_os("CUDACXX")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("CUDA_PATH")
-                .map(PathBuf::from)
-                .map(|path| path.join("bin/nvcc"))
-        })
-        .unwrap_or_else(|| PathBuf::from("nvcc"));
-    let mut compile = if let Some(wrapper) = std::env::var_os("CCACHE") {
-        let mut command = Command::new(wrapper);
-        command.arg(&nvcc);
-        command
-    } else {
-        Command::new(&nvcc)
-    };
-    compile.args([
-        "-c",
-        source.to_str().expect("caminho CUDA UTF-8"),
-        "-o",
-        object.to_str().expect("objeto CUDA UTF-8"),
-        "-O3",
-        "--std=c++17",
-    ]);
-    if let Some(arch) = std::env::var_os("CUDAARCHS") {
-        let arch = arch.to_string_lossy();
-        let arch = arch.split(';').next().unwrap_or_default();
-        if !arch.is_empty() {
-            compile.arg(format!("-arch=sm_{arch}"));
-        }
-    }
-    let status = compile
-        .status()
-        .unwrap_or_else(|error| panic!("não foi possível executar {}: {error}", nvcc.display()));
-    assert!(status.success(), "nvcc falhou ao compilar cuda_kernels.cu");
-
-    let status = Command::new("ar")
-        .args([
-            "crus",
-            library.to_str().expect("biblioteca CUDA UTF-8"),
-            object.to_str().expect("objeto CUDA UTF-8"),
-        ])
-        .status()
-        .expect("não foi possível executar ar para a biblioteca CUDA");
-    assert!(status.success(), "ar falhou ao empacotar os kernels CUDA");
-    println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=pom_moe_cuda");
-}
-
-/// Compila a ponte C para as entradas NextN/MTP do llama.cpp.
-///
-/// Ver o cabeçalho de `src/inference/llama_mtp_shim.cpp` para o porquê de
-/// existir uma ponte em vez de um `#[link_name]` com o nome mangled. Não
-/// acrescenta requisito de build: o `llama-cpp-sys-2` já exige um compilador
-/// C++ para compilar o próprio llama.cpp.
-///
-/// A ordem do link importa em `ld` do GNU (esquerda para a direita): esta
-/// biblioteca referencia símbolos do `libllama`, então tem que aparecer antes
-/// dele na linha. O rustc emite as bibliotecas nativas do crate atual antes
-/// das dos dependentes, que é exatamente essa ordem.
-fn build_mtp_shim() {
-    println!("cargo:rerun-if-changed=src/inference/llama_mtp_shim.cpp");
+    println!("cargo:rerun-if-changed=src/macos_status.m");
     cc::Build::new()
-        .cpp(true)
-        .file("src/inference/llama_mtp_shim.cpp")
-        .compile("pom_llama_mtp_shim");
+        .file("src/macos_status.m")
+        .flag("-fobjc-arc")
+        .compile("pom_macos_status");
+    println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=WebKit");
 }
+
+#[cfg(not(target_os = "macos"))]
+fn build_macos_status() {}
 
 /// Grava o ícone do aplicativo dentro do `.exe` (só no Windows).
 ///

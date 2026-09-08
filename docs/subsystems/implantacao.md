@@ -9,11 +9,18 @@ pelas máquinas do cluster. Vive em `crates/node/src/backend/deploy.rs`
 "a escolha do operador é parte do pedido": o nó sugere, o operador decide, e o
 deploy re-varre o cluster em vez de confiar na prévia.
 
+O registro durável de cada implantação fica em `pom.db`, em
+`POM_DB_DIR` quando definido ou na raiz do projeto por padrão. O JSON validado
+continua completo para permitir listar e recuperar a intenção do operador;
+desimplantação marca o registro inativo e guarda um tombstone. A pasta legada
+`deployments/` não é apagada nem escrita pelo runtime. A cópia opcional é feita
+somente pelo script descartável `scripts/migrate_pom_db.py`.
+
 ## 1. Visão geral: o plano, a fusão e a ordem
 
-Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
-chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
-cluster). O pedido carrega `group` (o modelo original, pela chave técnica
+Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura da
+topologia, chamada após edição estrutural) e `POST /api/ui/deploy` (executa;
+re-varre o cluster). O pedido carrega `group` (o modelo original, pela chave técnica
 `ShardSet.group` derivada do `pom_id` do `.pom` - ou o **nome** do modelo no catálogo, com
 `kind: "whole"`), `kind`
 (`"shards"`, o padrão, `"whole"` - ver a seção 1.1 - ou
@@ -35,6 +42,16 @@ de fatias cria limites novos de GGUF: para isso continua existindo a tela de
 Fatiar. O modo de modelo inteiro é a exceção controlada: quando o operador pede
 um prefixo para outro peer, o backend consulta as fronteiras reais do GGUF e
 materializa as faixas no peer que possui o arquivo.
+
+Na tela de implantação, trocar de fatias para `whole` limpa o mapa e não
+escolhe uma máquina automaticamente. O operador adiciona a máquina desejada
+pela faixa inferior; a interface mantém a regra de uma máquina para esse modo.
+Mudanças de `RuntimeParams`, dos overrides de GPU/KV por máquina no inspetor e
+do nome operacional não alteram a topologia: a tela não reinicia o `plan` nem
+pede uma nova prévia de capacidade a cada controle. A chave do plano considera
+somente faixas e máquinas; os overrides continuam nas linhas locais e entram
+no deploy. A projeção antiga fica oculta até o `POST /api/ui/deploy`, que faz o
+preflight completo com os valores atuais antes de iniciar a subida.
 
 ## 1.3 Capacidade de saída derivada do runtime
 
@@ -87,7 +104,7 @@ Três regras saem da arquitetura, não do gosto:
 
 ## 1.4 Proteção térmica da implantação
 
-Cada nó grava `thermal` no `pom.json`, com `limit_c` padrão de 85 °C,
+Cada nó grava `thermal` no `pom.db`, com `limit_c` padrão de 85 °C,
 `hysteresis_c` de 8 °C e `cooldown_secs` de 30 segundos. O monitor usa a mesma
 lista `SystemLoad.gpus` que a tela exibe. Uma leitura conhecida acima do limite
 descarrega o modelo, remove o anúncio das camadas e publica o estado
@@ -136,6 +153,13 @@ sentido **puxar**, que `transfer::safe_model_path` prende à pasta de fatias de
 quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
 Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
 arquivo pela tela de Transferências antes.
+
+O planejamento de um modelo inteiro não espera o catálogo completo. Se o
+inventário rápido já mostrou o arquivo, mas a resposta ainda não tem
+`total_layers`, o survey pede `POST /api/ui/model-metadata` nesse peer e lê
+somente o cabeçalho do caminho selecionado. O restante da pasta pode continuar
+com `metadata_complete: false`; isso não transforma vizinhos sem relação em
+pré-requisito para a implantação.
 
 ### 1.1.1 Escolha de camadas a partir do modelo inteiro
 
@@ -289,9 +313,13 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   peer incompatível; a validação no caminho de inferência mantém a mesma
   proteção contra configurações divergentes depois do deploy.
 - **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
-  padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
-  antes da carga usando a capacidade total `n_ctx * max_sessions`, e pode
-  reduzir as camadas GPU para evitar OOM. Um
+  padrão em `shards` e `whole`. O nó consulta a memória livre e total do
+  backend por dispositivo e usa `RuntimeParams.fit_memory_margin_mb` para
+  definir a reserva de segurança de cada um, padrão 256 MiB. O livre já vem
+  descontado dos processos existentes, então essa margem não é uma segunda
+  cobrança da ocupação. O `common_fit_params` do llama.cpp roda antes da carga
+  usando a capacidade total `n_ctx * max_sessions`, e pode reduzir as camadas
+  GPU para evitar OOM. Um
   `n_gpu_layers` diferente de `99` é explícito e desliga esse ajuste de camadas.
   Em `tensor_parallel`, o planner normaliza `fit_memory` para desligado porque
   o fit nativo não suporta `split-mode tensor`.
@@ -343,6 +371,58 @@ em `NodeConfig::validate` depois de o `launch` já ter parado a inferência das
 máquinas alvo. Fatias sem total são nomeadas "L{}-{} em {}" (`nameless`) e só
 aparecem assim.
 
+## 3.1 Pré-visualização de capacidade (VRAM projetada)
+
+Depois que `plan_endpoint` monta os passos (e só se `blocked` está vazio),
+`enrich_capacity_previews` (`backend/deploy.rs`) pergunta a cada alvo já
+materializado localmente como aquele passo ocuparia a VRAM dele com os
+parâmetros deste plano. É o que a tela Implantar usa para desenhar os cards
+como um **preview do sistema depois da implantação**, não como o estado de
+agora - uma barra por GPU, uso projetado contra o total, que se recalcula a
+cada ajuste de contexto, lote ou sessões (debounce de 260 ms e um round trip,
+como o resto do plano).
+
+- **Uma chamada por `Step`** (`POST /api/ui/deploy/capacity-preview`, handler
+  em `webui.rs`), só para passos `!merged` com `target_path` resolvido - um
+  passo que ainda depende de cópia ou de junção não tem arquivo local para a
+  conta examinar, e a pré-visualização nunca materializa nada. Passos em espera
+  aparecem como "projeção após a cópia". Tensor Parallelism fica de fora nesta
+  versão, pois a divisão real é `split-mode tensor`.
+- **Estimativa analítica.** A rota lê `gguf::read_layout` e `gguf::read_info`,
+  cobra peso e KV com `plan::range_cost` e distribui o resultado
+  proporcionalmente à VRAM livre atual de cada GPU. A quantização do cache
+  entra: `cache_type_k`/`cache_type_v` saem da config da instalação e o KV só
+  é somado à VRAM quando `offload_kqv` está ligado. Sem isso, o cache mora na
+  RAM do host e a projeção anota a diferença. O executor externo de MoE fica
+  de fora porque a rota não abre o modelo nem calcula ownership de experts.
+  O compute buffer também fica fora: o resultado é um sinal de planejamento,
+  não uma substituição da carga real.
+- **Divisão multi-GPU.** Sempre proporcional à VRAM livre atual. A resposta
+  identifica a divisão como estimada e o carregamento real continua sendo a
+  autoridade sobre camadas efetivas, contexto e layout final. A rota nunca
+  chama `llama_backend_init`, `llama_rs_fit_params` ou `fit_plan`, e por isso
+  não compete com a carga nativa.
+- **Três estados visíveis, nenhum bloqueio.** Coerente com a regra "memória é
+  estimativa" (`a_target_short_on_memory_warns_and_still_deploys`): **verde**
+  cabe na projeção analítica; **amber** (`fits && degraded`) a conta crua não
+  cabe, mas `fit_memory` está ligado e as camadas foram deixadas no padrão, de
+  modo que a carga real pode aparar o pedido; **rósea** (`!fits`) a conta não
+  cabe e não há ajuste automático autorizado. O amber é uma heurística explícita,
+  não uma alegação sobre o resultado do llama.cpp. Os três estados são aviso e
+  a tela ainda pede `Confirm` antes de implantar.
+
+  O endpoint admite quatro prévias por processo. Quando todas as vagas estão
+  ocupadas, responde `429` imediatamente; o coordenador limita seu fan-out a
+  quatro chamadas simultâneas com `buffer_unordered`, sem formar fila nativa.
+
+  Rósea abre um `Confirm` nomeando as máquinas antes de implantar. `canDeploy`
+  não muda - buraco de cobertura e `blocked` continuam sendo os únicos
+  bloqueios de verdade; a capacidade continua sendo apenas aviso.
+
+`MachineView.capacity` (`MachineCapacity { fits, degraded, note, gpus }`) é a
+soma por GPU dos passos daquela máquina - dois passos não-adjacentes na mesma
+placa somam. `Step.capacity` (`CapacityPreview`) é o passo isolado.
+
 ## 4. Execução (`deploy_endpoint` -> `run`)
 
 1. `deploy_endpoint` re-varre (`survey`), re-planeja, recusa `blocked`/vazio,
@@ -375,7 +455,8 @@ aparecem assim.
 
 | Rota | Papel |
 |---|---|
-| `POST /api/ui/deploy/plan` | prévia (leitura, chamada a cada edição) |
+| `POST /api/ui/deploy/plan` | prévia (leitura, chamada a cada edição); enriquece os passos com a projeção de capacidade |
+| `POST /api/ui/deploy/capacity-preview` | prévia por passo, local ao peer: estima por metadata GGUF e VRAM livre, sem chamar o fit nativo, e devolve a VRAM projetada por GPU (`webui.rs`) |
 | `POST /api/ui/deploy` | executa (re-varre, recusa `blocked`/vazio, job) |
 | `POST /api/ui/deploy/node` | adiciona uma máquina a um pipeline já no ar |
 | `POST /api/ui/deploy/node/remove` | tira uma máquina do modelo (libera a memória) |
@@ -427,7 +508,15 @@ fatias é o que a tela de Modelos faz, com o seu próprio pedido de confirmaçã
 - A liberação vai pelo `/api/ui/unload` do próprio peer (a mesma rota do botão de
   uma máquina só), que continua valendo para qualquer nó.
 
-## 7.1 Reimplantar o mesmo modelo
+## 7.1 Reimplantar o mesmo modelo, e as versões de uma implantação
+
+Uma implantação é **versionada** (`Deployment`, `DEPLOYMENT_VERSION = 2`).
+`versions` guarda cada configuração que já rodou sob o mesmo `deploy_id` e
+`active_version` diz qual está no ar; `nodes` é a lista achatada da versão
+ativa. O que distingue uma versão é o `RuntimeParams` do deployment inteiro -
+ajustes por máquina (`n_gpu_layers`/`offload_kqv`) entram no snapshot da versão
+mas não forkam versão. Um registro v1 legado (sem `versions`) ganha a v1
+sintetizada por `ensure_versions` em toda leitura.
 
 `POST /api/ui/deploy` faz uma pré-verificação antes de copiar qualquer arquivo
 ou chamar `launch`. Para fatias, a prova é o `pom_id` do manifesto; para um GGUF
@@ -436,12 +525,74 @@ prova. Registros antigos sem identidade só podem usar o caminho canônico quand
 o caminho pertence ao mesmo peer; se não houver prova, a ação é recusada com o
 motivo visível e nenhuma máquina é descarregada.
 
-Quando a implantação ativa é comprovadamente a mesma, o fluxo chama
-`/api/ui/unload` em todos os peers correspondentes e consulta `/api/ui/node` até
-cada um anunciar `config: null`, estado `disabled` e nenhum modelo ou deployment
-ativo. A espera tem limite de 30 segundos por rodada; se um peer continuar
-ocupado, o job falha nomeando a máquina e seu último estado. Falha de unload
-também bloqueia a nova implantação e preserva no job o motivo retornado.
+**Reaproveitar o `deploy_id`.** Antes de cunhar um id novo, `deploy_endpoint`
+procura no `pom.db` **local** uma implantação de mesma **forma**
+(`deployment::matching_shape`): mesmo `kind`, mesma `DeploymentIdentity`
+provada e o mesmo conjunto de `(node_id, faixa, tp_rank)`. Achou:
+
+- `params` iguais aos de uma versão registrada -> aquela versão volta a ser a
+  ativa, sem anexar outra;
+- `params` diferentes -> **mesma `deploy_id`, versão nova** anexada
+  (`upsert_version`).
+
+Sem identidade provada, ou forma diferente (uma faixa ou máquina mudou), cunha
+um `deploy_id` novo - trocar de máquina ou de faixa é assunto do Deploy Studio,
+não uma versão. Quando a implantação ativa é comprovadamente a mesma, o fluxo
+chama `/api/ui/unload` em todos os peers correspondentes e consulta
+`/api/ui/node` até cada um anunciar `config: null`, estado `disabled` e nenhum
+modelo ou deployment ativo. A espera tem limite de 30 segundos por rodada; se um
+peer continuar ocupado, o job falha nomeando a máquina e seu último estado.
+Falha de unload também bloqueia a nova implantação e preserva no job o motivo
+retornado. A resposta do endpoint carrega `deploy_id` e `reused`.
+
+### `POST /api/ui/deployments/:id/redeploy` (a tela "Implantações")
+
+`RedeployRequest` carrega `params` (opcional), `version` (opcional) e
+`per_node`. `version` reimplanta uma versão já registrada, sem anexar outra;
+`params` novos reimplantam anexando - ou reativando - uma versão pela mesma
+comparação do `deploy_endpoint`. Informe um dos dois (`redeploy_endpoint`
+recusa com 400 quando faltam os dois ou a `version` não existe).
+`RedeployRequest::resolve` muta o registro para refletir a versão escolhida e
+devolve os parâmetros base; a subida usa `no.config` da versão ativa (os
+parâmetros com os ajustes por máquina embutidos), então reimplantar uma versão
+devolve a cada máquina exatamente o que ela rodava.
+
+Mesma implantação, mesmo `deploy_id`, mesmas máquinas e faixas - **não
+re-planeja** (re-planejar cunharia um `deploy_id` novo e quebraria clientes
+presos a `modelo@deploy_id`). `run_redeploy` (`deploy.rs`):
+
+1. **Fotografa** o `NodeConfig` vivo de cada nó (`model_path`, `model_label`,
+   `deployment_name`, `no_embeddings`) - o registro guarda faixa, posição,
+   `part_sha256` e `source_model_path` (o arquivo que aquele nó carregou), mas
+   um registro antigo pode não ter nenhum caminho.
+2. **Descarrega** toda máquina que ainda anuncia este `deploy_id`
+   (`release_one` em paralelo, o mesmo `/api/ui/unload` do undeploy). Uma
+   máquina órfã que saiu do plano também é liberada aqui.
+3. **Sobe uma de cada vez**, esperando cada uma reportar `ready` antes da
+   próxima (`wait_for_peer_serving_with_timeout`, teto de 30 min): sequencial
+   de propósito, para não empilhar picos de VRAM. Cada nó recebe
+   `/api/ui/reconfigure` com um `ReconfigureSlice` montado da fotografia + do
+   registro; `reconfigure_local` reconstrói o `NodeConfig` a partir dele
+   **sirva o nó algo ou não**. O arquivo é resolvido em três degraus: o
+   `model_path` fotografado (ou `source_model_path` do registro); o
+   `part_sha256` (`transfer::find_part`); e, sem hash de parte - modelo
+   inteiro ou fatia de rodada antiga -, o catálogo local casando rótulo do
+   modelo + faixa de camadas (`resolve_deployment_slice_file`). Um nó que não
+   tem mais o arquivo por nenhum dos três devolve um erro nomeando a faixa,
+   não um 500 mudo.
+4. Grava no registro só os parâmetros que cada máquina aceitou, sincroniza o
+   snapshot da versão ativa (`commit_active_nodes`) e publica.
+
+O job carrega o resultado por máquina em `outputs` (`"<host>: <motivo>"`), que
+a tela de Implantações mostra abaixo da contagem. Tensor Parallelism mantém o
+caminho antigo (`reconfigure` no lugar, sem unload): a coletiva não sobrevive
+a um unload e o registro não guarda o `TpLaunch` inteiro. O `resolve` das
+versões roda antes do desvio para o caminho TP, então versão vale para os dois.
+
+Limite conhecido: a busca de forma do `deploy_endpoint` olha só o `pom.db`
+local. Um coordenador que não é participante da implantação existente não a
+encontra e cunha id novo; a tela "Implantações", que junta os registros do
+cluster, não tem esse limite.
 
 ## 8. Aplicar e servir uma fatia (`webui.rs`)
 
@@ -516,6 +667,15 @@ axum na loopback (no caso do undeploy, contando os hits em `/api/ui/unload`).
   `nvidia_memory_comes_from_vram_and_everything_else_from_ram`.
 - **Undeploy**: `any_node_may_undeploy_for_now` documenta a porta aberta de
   propósito (ver defeitos).
+- **Versões** (`models/deployment.rs`):
+  `ensure_versions_sintetiza_a_v1_de_um_registro_legado`,
+  `upsert_version_reusa_a_versao_de_params_iguais_e_anexa_quando_diferem`,
+  `set_active_version_troca_os_nos_e_recusa_versao_inexistente`,
+  `matching_shape_casa_por_identidade_e_faixas` +
+  `matching_shape_ignora_registro_sem_identidade`,
+  `versoes_sobrevivem_ao_serde`. Em `deploy.rs`:
+  `redeploy_request_resolve_escolhe_ou_cria_versao` e
+  `redeploy_de_versao_inexistente_e_recusado`.
 
 ## 11. Defeitos anotados
 

@@ -32,6 +32,47 @@ pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
         .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions excede o limite numérico"))
 }
 
+/// A mesma conversão `NodeConfig` -> `EngineConfig` que `infer_server::run`
+/// monta antes de carregar o modelo de verdade.
+///
+/// Extraída para ser reutilizada pela pré-visualização de capacidade
+/// (`crate::deploy::capacity_preview_endpoint`), que precisa dos mesmos
+/// parâmetros normalizados sem chamar a FFI. `need_embeddings` continua
+/// parâmetro em vez de recomputado aqui: o carregamento real também considera
+/// o caminho de inferência MoE (`inference_path.is_moe()`), que depende de uma
+/// leitura de GGUF que o chamador já fez; a pré-visualização usa só
+/// `cfg.needs_residual_export()`, que é a metade que não depende do executor.
+/// `moe_external_executor`/`moe_external_executor_layers` ficam de fora da
+/// pré-visualização porque o ownership de experts é decidido por
+/// `MoeRuntime::external_executor_plan`, uma leitura de GGUF à parte que ela
+/// não faz. A carga real recebe esses valores completos.
+pub(crate) fn engine_config_from_node(
+    cfg: &NodeConfig,
+    need_embeddings: bool,
+    moe_external_executor: bool,
+    moe_external_executor_layers: Vec<u8>,
+) -> Result<crate::llm::EngineConfig> {
+    let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
+    Ok(crate::llm::EngineConfig {
+        n_ctx: total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
+        offload_kqv: cfg.offload_kqv,
+        cache_type_k: cfg.cache_type_k,
+        cache_type_v: cfg.cache_type_v,
+        fit_memory: cfg.fit_memory && cfg.tp.is_none(),
+        fit_memory_margin_mb: cfg.fit_memory_margin_mb,
+        n_batch: cfg.n_batch,
+        n_gpu_layers: cfg.n_gpu_layers as i32,
+        n_threads: 0,
+        max_sessions: cfg.max_sessions.max(1),
+        need_embeddings,
+        mtp: cfg.mtp_effective(),
+        mtp_cpu_fallback_enabled: cfg.mtp_cpu_fallback_enabled,
+        rs_seq_window,
+        moe_external_executor,
+        moe_external_executor_layers,
+    })
+}
+
 /// Converte a prova de prontidão do servidor numa capacidade publicável.
 /// `n_ctx_per_session` é a janela que o llama.cpp conseguiu reservar de fato;
 /// `max_new_tokens` continua sendo apenas o tamanho de uma perna. A capacidade
@@ -52,6 +93,12 @@ fn runtime_capacity_from_health(
 }
 
 // ── Configuration ────────────────────────────────────────────────────────────
+
+/// Folga conservadora para a projeção de alocação CUDA: 256 MiB mantém o
+/// ganho de capacidade observado no modelo híbrido sem voltar a consumir 1 GiB.
+/// Definida em `llama-engine` (o `llm` a usa); re-exportada para que
+/// `crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB` continue valendo.
+pub use llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB;
 
 /// What this node is currently serving. Serialisable so the UI can round-trip it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -111,9 +158,18 @@ pub struct NodeConfig {
     /// Tipo numérico do cache V, definido pela instalação inteira.
     #[serde(default)]
     pub cache_type_v: crate::config::KvCacheType,
+    /// Diretório de snapshots de KV cache (`Config::slot_save_path`), injetado
+    /// da instalação em `apply_locked` como `cache_type_*`. `None` desliga as
+    /// rotas de snapshot neste peer. Não entra em `weights_are_compatible`:
+    /// mudar o diretório não invalida os pesos carregados.
+    #[serde(default)]
+    pub slot_save_path: Option<String>,
     /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
+    /// Reserva de segurança que o `fit` deixa livre em cada dispositivo.
+    #[serde(default = "default_fit_memory_margin_mb")]
+    pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
     /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
@@ -148,6 +204,16 @@ pub struct NodeConfig {
     pub top_k: u32,
     pub repeat_penalty: f32,
     pub repeat_last_n: u32,
+    /// Detecta três janelas consecutivas que repetem a mesma estrutura e
+    /// encerra a resposta com `finish_reason: cycle`.
+    #[serde(default = "default_cycle_detection_enabled")]
+    pub cycle_detection_enabled: bool,
+    #[serde(default = "default_cycle_detection_min_window_tokens")]
+    pub cycle_detection_min_window_tokens: u32,
+    #[serde(default = "default_cycle_detection_max_window_tokens")]
+    pub cycle_detection_max_window_tokens: u32,
+    #[serde(default = "default_cycle_detection_repetitions")]
+    pub cycle_detection_repetitions: u32,
     pub no_thinking: bool,
     pub single_peer: bool,
     /// Disable embedding extraction in llama.cpp. Set on the last (sampling)
@@ -185,6 +251,11 @@ pub struct NodeConfig {
     /// para uma aposta que a verificação vai recusar.
     #[serde(default = "default_mtp_min_probability")]
     pub mtp_min_probability: f32,
+    /// Permite carregar os pesos e o contexto `nextn` na RAM quando a VRAM
+    /// não comportar o MTP pedido. Ligado por padrão para honrar a implantação;
+    /// o operador pode desligar o recuo se a medição local não compensar.
+    #[serde(default = "default_mtp_cpu_fallback_enabled")]
+    pub mtp_cpu_fallback_enabled: bool,
 }
 
 impl NodeConfig {
@@ -224,7 +295,9 @@ impl NodeConfig {
             hidden_state_dtype: p.hidden_state_dtype,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: p.fit_memory && allow_fit_memory,
+            fit_memory_margin_mb: p.fit_memory_margin_mb,
             n_batch: p.n_batch,
             max_new_tokens: p.max_new_tokens,
             max_sessions: p.max_sessions,
@@ -240,6 +313,10 @@ impl NodeConfig {
             top_k: p.top_k,
             repeat_penalty: p.repeat_penalty,
             repeat_last_n: p.repeat_last_n,
+            cycle_detection_enabled: p.cycle_detection_enabled,
+            cycle_detection_min_window_tokens: p.cycle_detection_min_window_tokens,
+            cycle_detection_max_window_tokens: p.cycle_detection_max_window_tokens,
+            cycle_detection_repetitions: p.cycle_detection_repetitions,
             no_thinking: p.no_thinking,
             speculative_decoding_enabled: p.speculative_decoding_enabled,
             speculative_k: p.speculative_k,
@@ -247,6 +324,7 @@ impl NodeConfig {
             mtp_enabled: p.mtp_enabled,
             mtp_draft_tokens: p.mtp_draft_tokens,
             mtp_min_probability: p.mtp_min_probability,
+            mtp_cpu_fallback_enabled: p.mtp_cpu_fallback_enabled,
         }
     }
 
@@ -313,8 +391,24 @@ fn default_offload_kqv() -> bool {
     true
 }
 
+fn default_cycle_detection_enabled() -> bool {
+    true
+}
+fn default_cycle_detection_min_window_tokens() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
+}
+fn default_cycle_detection_max_window_tokens() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
+}
+fn default_cycle_detection_repetitions() -> u32 {
+    crate::cycle::DEFAULT_CYCLE_REPETITIONS
+}
+
 fn default_fit_memory() -> bool {
     true
+}
+fn default_fit_memory_margin_mb() -> u32 {
+    DEFAULT_FIT_MEMORY_MARGIN_MB
 }
 fn default_speculative_k() -> u32 {
     4
@@ -330,6 +424,9 @@ fn default_mtp_draft_tokens() -> u32 {
 /// medição diga que cortar rende mais que rascunhar.
 fn default_mtp_min_probability() -> f32 {
     0.0
+}
+fn default_mtp_cpu_fallback_enabled() -> bool {
+    true
 }
 
 impl NodeConfig {
@@ -401,6 +498,7 @@ impl NodeConfig {
             && self.total_layers == other.total_layers
             && self.n_gpu_layers == other.n_gpu_layers
             && self.fit_memory == other.fit_memory
+            && (!self.fit_memory || self.fit_memory_margin_mb == other.fit_memory_margin_mb)
             && self.mtp_effective() == other.mtp_effective()
             && self.tp == other.tp
     }
@@ -538,6 +636,10 @@ pub struct NodeRuntime {
     /// Dono do último conjunto de pesos carregado. O servidor de cada geração
     /// conserva sua própria referência até drenar as requisições em voo.
     model_cache: Arc<crate::llm::ModelCache>,
+    /// Contador compartilhado pelo gateway e pelo servidor de inferência local.
+    /// Sem a mesma instância, o painel só veria o zero do tracker do gateway
+    /// enquanto as requisições executavam na porta de inferência.
+    loads: Arc<crate::pipeline::LoadTracker>,
     /// Serializes apply, manual unload and thermal unload so an operator action
     /// cannot race a temperature transition.
     operation: Mutex<()>,
@@ -583,12 +685,19 @@ impl NodeRuntime {
             tls,
             auth,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
+            loads: Arc::new(crate::pipeline::LoadTracker::new()),
             operation: Mutex::new(()),
             thermal: Arc::new(Mutex::new(ThermalRuntime {
                 blocked: false,
                 recovery: None,
             })),
         })
+    }
+
+    /// Tracker compartilhado com o gateway desta máquina e com o servidor de
+    /// inferência da geração atual.
+    pub fn load_tracker(&self) -> Arc<crate::pipeline::LoadTracker> {
+        self.loads.clone()
     }
 
     pub async fn config(&self) -> Option<NodeConfig> {
@@ -681,6 +790,7 @@ impl NodeRuntime {
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
         self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
 
         // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
@@ -704,6 +814,14 @@ impl NodeRuntime {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
             cfg.cache_type_v = installation.cache_type_v;
+            // Precedência: o que já veio no `cfg` (a flag `--slot-save-path` da
+            // linha de comando) vence; senão `POM_SLOT_SAVE_PATH` e depois o
+            // campo do `pom.json` (`slot_save_path_effective`). Uma implantação
+            // pela UI chega aqui com `None` e adota o valor da instalação.
+            cfg.slot_save_path = cfg
+                .slot_save_path
+                .take()
+                .or_else(|| installation.slot_save_path_effective());
         }
         cfg.validate()?;
 
@@ -909,6 +1027,7 @@ impl NodeRuntime {
         );
         *self.status.write().await = RuntimeStatus::new(ServerState::Thermal, reason);
         self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
         if let Err(error) = crate::lastslice::save(cfg, crate::lastslice::SliceState::Serving) {
             warn!("não deu para preservar a fatia para recuperação térmica: {error}");
@@ -966,9 +1085,19 @@ impl NodeRuntime {
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
         let batching_ready = self.net.batching_ready_handle();
+        // `slot_save_path` é config estática da máquina: já se sabe aqui se
+        // este peer serve `POST /v1/session/slot`. Ver `Network::slot_persist_ready`.
+        self.net.set_slot_persist_ready(
+            cfg.slot_save_path
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|dir| !dir.is_empty()),
+        );
         let capacity_net = self.net.clone();
         let auth = self.auth.clone();
         let model_cache = self.model_cache.clone();
+        let loads = self.loads.clone();
+        let load_node_id = self.net.node_id.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
@@ -1043,6 +1172,8 @@ impl NodeRuntime {
                     auth.clone(),
                     model_cache.clone(),
                     reuse_weights,
+                    loads.clone(),
+                    load_node_id.clone(),
                 )
                 .await;
                 if *gen_rx.borrow() != generation {
@@ -1454,7 +1585,7 @@ mod tests {
         let port = ocupante.local_addr().unwrap().port();
 
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );
@@ -1587,6 +1718,9 @@ mod tests {
 
         assert!(antes.weights_are_compatible(&depois));
 
+        depois.fit_memory_margin_mb += 1;
+        assert!(!antes.weights_are_compatible(&depois));
+
         depois.start_layer += 1;
         assert!(!antes.weights_are_compatible(&depois));
     }
@@ -1635,7 +1769,9 @@ mod tests {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: true,
+            fit_memory_margin_mb: DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,
             batching_enabled: true,
             max_queue_requests: 128,
@@ -1652,6 +1788,10 @@ mod tests {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
+            cycle_detection_enabled: true,
+            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
+            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
+            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -1661,6 +1801,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            mtp_cpu_fallback_enabled: true,
             tp: None,
         }
     }
@@ -1695,7 +1836,7 @@ mod tests {
         });
 
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );
@@ -1741,7 +1882,7 @@ mod tests {
     #[tokio::test]
     async fn a_fatia_que_nao_carregou_aparece_no_status_com_a_razao() {
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );
@@ -1766,7 +1907,7 @@ mod tests {
     #[tokio::test]
     async fn parada_manual_cancela_a_retomada_termica_pendente() {
         let net = Arc::new(
-            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+            Network::testkit("no".into(), "pk".into(), vec![], None, None, None)
                 .await
                 .expect("socket UDP em porta efêmera"),
         );

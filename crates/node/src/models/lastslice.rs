@@ -308,7 +308,9 @@ mod tests {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
+            slot_save_path: None,
             fit_memory: true,
+            fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
             max_sessions: 1,
             batching_enabled: true,
@@ -324,6 +326,10 @@ mod tests {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
+            cycle_detection_enabled: true,
+            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
+            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
+            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -333,6 +339,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            mtp_cpu_fallback_enabled: true,
             tp: None,
         }
     }

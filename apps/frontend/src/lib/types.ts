@@ -6,6 +6,7 @@
  * status and node config), `src/transfer.rs` (transfers), `src/admin.rs`
  * (nodes and keys). Anything typed loosely here is loose in the API too.
  */
+import type { Profile } from "./profile";
 
 export interface MemStat {
   total_mb: number;
@@ -47,6 +48,8 @@ export interface DiskStat {
   total_mb: number;
   free_mb: number;
   mount_point: string;
+  /** Dispositivo por trás da montagem (`/dev/nvme0n1p2`); vazio quando não se sabe. */
+  device: string;
 }
 
 export interface SystemLoad {
@@ -61,7 +64,15 @@ export interface SystemLoad {
   gpus: GpuStat[];
   gpu_processes: GpuProcess[];
   wired_mb: number | null;
+  /** O volume onde as fatias moram - o que responde "cabe outra?". */
   disk: DiskStat;
+  /**
+   * Todo volume montado na máquina, um por partição.
+   *
+   * Lista vazia é "não perguntei", não "não tem disco": um nó velho não
+   * publica este campo, e a tela recai no `disk`.
+   */
+  disks: DiskStat[];
   sampled_at: string;
 }
 
@@ -111,6 +122,7 @@ export interface NodeConfig {
   n_ctx: number;
   offload_kqv: boolean;
   fit_memory: boolean;
+  fit_memory_margin_mb: number;
   n_batch: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
@@ -122,6 +134,11 @@ export interface NodeConfig {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
+  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
+  cycle_detection_enabled?: boolean;
+  cycle_detection_min_window_tokens?: number;
+  cycle_detection_max_window_tokens?: number;
+  cycle_detection_repetitions?: number;
   no_thinking: boolean;
   single_peer: boolean;
   no_embeddings: boolean;
@@ -133,14 +150,46 @@ export interface NodeConfig {
   mtp_min_probability: number;
 }
 
+/** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
+export type AdminExposure = "localhost" | "network";
+
+/** Metadados públicos usados para decidir se a catraca deve aparecer. */
+export interface AdminAccessStatus {
+  admin_exposure: AdminExposure;
+  requires_token: boolean;
+  gateway_port: number;
+}
+
+/** Estado administrativo consultado depois que a página já foi autenticada. */
+export interface AdminAccessInfo {
+  admin_exposure: AdminExposure;
+  gateway_port: number;
+  access_token: string | null;
+}
+
 export interface NodeInfo {
   node_id: string;
   short_id: string;
   hostname: string;
-  role: string;
+  profile: Profile;
+  /**
+   * A chave de conexão do cluster, que esta interface mostra em "Chave de
+   * Conexão" e guarda para autenticar as chamadas que a exigem.
+   */
   connection_key: string;
+  /**
+   * Autoridade administrativa **efetiva** deste nó, e não o perfil: um
+   * `profile: admin` sem a concessão assinada vem `null`. É o que decide se a
+   * tela oferece um ato administrativo ou só o mostra.
+   */
+  authority_level: "primary" | "secondary" | null;
+  /** Impressão digital do principal ancorado, quando este nó é `admin`. */
+  authority_fingerprint: string | null;
   p2p_port: number;
   gateway_port: number;
+  admin_exposure: AdminExposure;
+  admin_access_token_configured: boolean;
+  admin_access_token_masked: string | null;
   inference_port: number | null;
   config: NodeConfig | null;
   status: RuntimeStatus;
@@ -161,8 +210,14 @@ export interface NodeInfo {
   effective_address: string;
   /** Se o cluster fala TLS entre peers agora. `webui.rs` - `NodeInfo`. */
   tls_required: boolean;
+  /** Estado do pedido deste nó infer para participar como node. */
+  node_promotion_request?: "none" | "pending" | "rejected";
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
+  /** Se este nó coleta e envia logs de processo do cluster. */
+  cluster_logs_enabled: boolean;
+  /** Só o principal pode mudar a política de logs. */
+  cluster_logs_authority: boolean;
   thermal: ThermalPolicy;
 }
 
@@ -179,10 +234,20 @@ export interface PeerView {
   /** Endereço escolhido para falar com este peer, e a latência medida. */
   route: { addr: string; rtt_ms: number } | null;
   gateway_url: string | null;
-  load: number;
+  /** In-flight requests as reported by the peer itself; `null` means it was not readable. */
+  load: number | null;
   is_self: boolean;
   node: NodeInfo | null;
   unreachable: string | null;
+  /**
+   * Todo endereço conhecido deste par está desacreditado e o nó já pediu à
+   * rede o endereço atual dele.
+   *
+   * Não é o mesmo que `unreachable`: aqui há trabalho em curso. Endereços IPv6
+   * temporários rodam sozinhos, e a tela precisa dizer "reencontrando" em vez
+   * de anunciar um beco sem saída que se resolve na volta seguinte do gossip.
+   */
+  rediscovering: boolean;
 }
 
 /** Quantos bytes de um grupo de tensores ficaram num buffer. */
@@ -230,6 +295,35 @@ export interface ContextMemoryBuffer {
   compute: number;
 }
 
+/**
+ * Os parâmetros de llama.cpp com que o contexto de um nó subiu.
+ *
+ * Vem do contexto vivo, não do `EngineConfig` do nó: o fallback de KV em RAM
+ * reconstrói o contexto com outra configuração, e o operador precisa ver o que
+ * está rodando, não o que foi pedido.
+ */
+export interface PeerLoadParams {
+  n_ctx: number;
+  n_ctx_seq: number;
+  n_batch: number;
+  n_ubatch: number;
+  n_seq_max: number;
+  n_threads: number;
+  n_threads_batch: number;
+  /** `null` quando a ponte de diagnóstico não respondeu. */
+  flash_attn: boolean | null;
+  /** O Flash Attention veio da sonda `AUTO` ou de um pedido explícito? */
+  flash_attn_auto: boolean | null;
+  kv_unified: boolean;
+  embeddings: boolean;
+  n_rs_seq: number;
+  offload_kqv: boolean;
+  cache_type_k: KvCacheType;
+  cache_type_v: KvCacheType;
+  n_gpu_layers: number;
+  fit_memory_applied: boolean;
+}
+
 /** O `/health` do servidor de inferência de uma máquina, como a tela o lê. */
 export interface PeerRuntimeHealth {
   start_layer: number;
@@ -245,7 +339,19 @@ export interface PeerRuntimeHealth {
   profile_sync_enabled?: boolean;
   /** Caminho selecionado pelo GGUF; o motor por requisição vem da trace. */
   selected_path?: string;
+  /** Ownership efetivo dos experts neste nó, separado do caminho selecionado. */
+  moe_requested?: boolean;
+  moe_executor?: "cpu-reference" | "cuda" | "not-installed" | "not-requested" | "not-run" | "mixed";
+  moe_executor_dtypes?: number[];
+  /** Razão concreta quando o executor MoE não foi instalado ou usa CPU. */
+  moe_executor_reason?: string | null;
   mtp_ready: boolean;
+  /** Motivo retornado pelo runtime quando o MTP pedido não foi anexado. */
+  mtp_unavailable_reason?: string | null;
+  /** Local dominante dos buffers do contexto MTP pronto. */
+  mtp_allocation?: "vram" | "ram" | null;
+  /** Com que parâmetros de llama.cpp este contexto subiu. */
+  load_params?: PeerLoadParams;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
   context_memory: { buffers: ContextMemoryBuffer[] } | null;
@@ -271,6 +377,32 @@ export interface ChatTelemetryNetwork {
   measurements: ChatTelemetryRtt[];
 }
 
+/** Resposta do recorte de topologia que um nó infer pode consultar. */
+export interface InferenceHeadCandidate {
+  node_id: string;
+  short_id: string;
+  hostname: string;
+  start_layer: number;
+  end_layer: number;
+  total_layers: number;
+  /** In-flight requests reported by the candidate; null means unreadable. */
+  load: number | null;
+  runtime_capacity: { n_ctx: number; max_new_tokens: number } | null;
+  rtt_ms: number | null;
+  rtt_age_ms: number | null;
+  rtt_state: "fresh" | "stale" | "unmeasured";
+  selected: boolean;
+}
+
+export interface InferenceHeadsResponse {
+  model: string;
+  status: "selected" | "incomplete_pipeline" | "no_candidate" | "invalid_model";
+  selected_node_id: string | null;
+  selection_policy: "coverage_then_weighted_rtt_load";
+  rtt_valid_for_secs: number;
+  candidates: InferenceHeadCandidate[];
+}
+
 export interface ModelCapability {
   model_id: string;
   start_layer: number;
@@ -285,6 +417,15 @@ export interface ModelCoverage {
   covered_layers: number;
   coverage: boolean[];
   complete: boolean;
+  /**
+   * Máquinas que contribuem camadas para esta cobertura e não puderam ser
+   * lidas nesta passagem.
+   *
+   * A cobertura sai do que os pares anunciam no gossip, não da leitura de
+   * cada um. Sem esta lista, um par ilegível conta como saudável e a tela diz
+   * "completo" para um modelo cuja metade ninguém consegue consultar.
+   */
+  unreadable_nodes: string[];
 }
 
 /** A handoff selected by the backend routing planner for the active model. */
@@ -373,11 +514,30 @@ export interface DeploymentNode {
 }
 
 /**
+ * `src/models/deployment.rs` — uma configuração que este `deploy_id` já rodou.
+ *
+ * O que distingue uma versão da outra são os parâmetros do deployment inteiro
+ * (`params`). Ajustes por máquina entram no snapshot `nodes` mas não forkam
+ * uma versão.
+ */
+export interface DeploymentVersion {
+  version: number;
+  created_at: string;
+  created_by: string;
+  params: RuntimeParams;
+  nodes: DeploymentNode[];
+}
+
+/**
  * `src/models/deployment.rs` — a ligação entre um conjunto de nós e um modelo.
  *
  * O mesmo modelo pode estar no ar em mais de uma implantação, com máquinas ou
  * configuração diferentes; o `deploy_id` é o que as distingue. Uma requisição
  * escolhe uma pelo sufixo `<modelo>@<deploy_id>`.
+ *
+ * `versions` é o histórico de configurações do mesmo `deploy_id`;
+ * `active_version` aponta a que está no ar. `nodes` é a lista achatada da
+ * versão ativa.
  */
 export interface Deployment {
   deployment_version: number;
@@ -392,6 +552,8 @@ export interface Deployment {
   created_by: string;
   activated_at: string;
   nodes: DeploymentNode[];
+  versions: DeploymentVersion[];
+  active_version: number;
 }
 
 /** O que `GET /api/ui/deployments` responde. */
@@ -648,6 +810,11 @@ export interface TransferJob {
 }
 
 export interface TransferOffer {
+  /** Tipo explícito no contrato novo; ausente apenas quando o servidor ainda
+   * não anota ofertas de fatia, que continuam sendo o caso padrão. */
+  kind?: "slice";
+  /** Resultado terminal, quando o servidor mantém o desfecho no sino. */
+  status?: "pending" | "accepted" | "rejected" | "expired";
   id: string;
   from_node_id: string;
   from_host: string;
@@ -672,6 +839,50 @@ export interface TransferOffer {
    */
   pom?: OfferManifest | null;
 }
+
+/** Oferta do mesmo sino que transfere o papel de principal. */
+export interface AdminTransferOffer {
+  kind: "principal_transfer";
+  id: string;
+  from_node_id: string;
+  from_host: string;
+  target_node_id: string;
+  target_host: string;
+  status: "pending" | "accepted" | "rejected" | "expired";
+  issued_at: string;
+}
+
+/** Pedido de um nó infer para entrar no processamento da rede. */
+export interface NodePromotionOffer {
+  kind: "node_promotion";
+  id: string;
+  from_node_id: string;
+  from_host: string;
+  target_node_id: string;
+  target_host: string;
+  status: "pending" | "accepted" | "rejected";
+  issued_at: string;
+}
+
+/** Aviso informativo emitido quando outro nó desce para infer. */
+export interface NodeRelinquishNotice {
+  kind: "node_relinquish_notice";
+  id: string;
+  from_node_id: string;
+  from_host: string;
+  target_node_id: string;
+  target_host: string;
+  status: "notice";
+  issued_at: string;
+  active_model?: string | null;
+}
+
+/** Todos os pedidos que podem aparecer no sino de atividade. */
+export type NetworkOffer =
+  | TransferOffer
+  | AdminTransferOffer
+  | NodePromotionOffer
+  | NodeRelinquishNotice;
 
 /** `crate::pom::PomManifest`, na parte que a tela usa. */
 export interface OfferManifest {
@@ -699,6 +910,71 @@ export interface AdminNode {
   blocked: boolean;
   verified: boolean;
 }
+
+export type AdminAuthorityViewer = "principal" | "secondary" | "node";
+
+export interface AdminAuthorityMember {
+  node_id: string;
+  short_id: string;
+  hostname: string;
+  active: boolean;
+}
+
+export interface AdminGrant {
+  sequence: number;
+  node_id: string;
+  node_hostname: string;
+  promoted_by_node_id: string;
+  promoted_by_hostname: string;
+}
+
+export type AdminResignationState =
+  | { kind: "eligible"; successor: AdminAuthorityMember }
+  | { kind: "no_secondary" }
+  | { kind: "no_active_secondary" };
+
+/** Contrato de apresentação. Não carrega a escolha de chave, assinatura ou armazenamento. */
+export interface AdminAuthorityView {
+  viewer: AdminAuthorityViewer;
+  principal: AdminAuthorityMember;
+  secondary: AdminAuthorityMember[];
+  grants: AdminGrant[];
+  resignation: AdminResignationState;
+  pending_transfer: AdminTransferOffer | null;
+  permissions: {
+    promote: boolean;
+    resign: boolean;
+    demote: boolean;
+  };
+}
+
+/**
+ * A raiz de confiança desta máquina.
+ *
+ * Contrato de apresentação, como o de autoridade: a impressão digital é
+ * pública e existe para o operador a conferir a olho; a decisão de instalar
+ * é do servidor, e `can_install` só diz se vale a pena desenhar o formulário.
+ */
+export interface TrustAnchorView {
+  anchored: boolean;
+  fingerprint: string | null;
+  cluster_id: string | null;
+  anchor_node_id: string | null;
+  /** A raiz é a chave deste nó, e não uma que ele recebeu. */
+  is_anchor: boolean;
+  /** Esta ligação chegou pelo loopback, medido no socket real. */
+  loopback: boolean;
+  can_install: boolean;
+  trust_filename: string;
+}
+
+/** Códigos de recusa do servidor ao instalar a âncora, traduzidos na tela. */
+export type TrustAnchorRefusal =
+  | "not_loopback"
+  | "already_anchored"
+  | "invalid_document"
+  | "fingerprint_mismatch"
+  | "install_failed";
 
 export interface ApiKey {
   /** Stable identity used by audit queries, never a secret. */
@@ -767,6 +1043,66 @@ export interface RequestLogResponse {
   storage: "sqlite" | string;
 }
 
+/** Linha do log de processo persistida pelo nó principal. */
+export interface ClusterLogEntry {
+  received_seq: number;
+  received_at: string;
+  node_id: string;
+  node_name: string;
+  deploy_id: string;
+  origin_at: string;
+  level: string;
+  target: string;
+  message: string;
+}
+
+export interface ClusterLogResponse {
+  entries: ClusterLogEntry[];
+  dropped: number;
+}
+
+export interface RequestUsageStats {
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface RequestModelStats {
+  requests: number;
+  average_tokens_per_sec: number | null;
+  average_inference_ms: number | null;
+}
+
+export interface RequestPeerStats {
+  requests: number;
+  bytes_sent: number;
+  bytes_received: number;
+  network_ms: number;
+}
+
+export interface RequestCacheStats {
+  eligible_requests: number;
+  hit_requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+}
+
+export interface RequestStats {
+  total: number;
+  input_tokens: number;
+  output_tokens: number;
+  average_inference_ms: number | null;
+  average_ttft_ms: number | null;
+  by_token: Record<string, number>;
+  by_node: Record<string, number>;
+  by_day: Record<string, RequestUsageStats>;
+  by_model: Record<string, RequestModelStats>;
+  peer_consumption: Record<string, RequestPeerStats>;
+  terminal_states: Record<string, number>;
+  cache: RequestCacheStats;
+  storage: "sqlite" | string;
+}
+
 /** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */
 export interface SizedRange {
   index: number;
@@ -779,6 +1115,14 @@ export interface SizedRange {
   is_last: boolean;
   too_small: boolean;
   empty: boolean;
+}
+
+/** A cut accepted by the model's real GGUF layout. */
+export interface LayerCut {
+  end_layer: number;
+  layers: number;
+  size_bytes: number;
+  remainder_bytes: number;
 }
 
 /** Cortes de camada aceitos pelo GGUF para uma fatia independente. */
@@ -933,6 +1277,48 @@ export interface DeployStep {
   /** The slices this step is assembled from, in layer order. Empty for a
    *  plain step. */
   parts: DeployStepPart[];
+  /** Projected VRAM/RAM this step would take on its target, under the plan's
+   *  settings. Absent until a locally-materialized step is previewed, or when
+   *  that preview failed. TP plans and not-yet-merged steps never carry it. */
+  capacity?: CapacityPreview | null;
+}
+
+/** One GPU's projected use for a deploy step or an aggregated machine.
+ *  `src/backend/webui.rs` — `GpuCapacityProjection`. */
+export interface GpuCapacityProjection {
+  index: number;
+  vram_total_mb: number;
+  /** Measured now, before this deployment. */
+  vram_used_mb: number;
+  /** `vram_used_mb` plus the share of this step/machine that would land here. */
+  vram_projected_mb: number;
+}
+
+/** A single deploy step's capacity projection. `src/backend/webui.rs` —
+ *  `CapacityPreview`. */
+export interface CapacityPreview {
+  /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
+   *  machine with no discrete GPU — nothing to run out of. */
+  fits: boolean;
+  /** Raw estimate does not fit, but the default all-layers request has
+   *  `fit_memory` enabled and the real load may trim it. This is a heuristic. */
+  degraded?: boolean;
+  /** Operator-ready sentence: possible adjustment, analytic split, or KV in
+   *  host RAM. The real load confirms the final placement. */
+  note?: string | null;
+  effective_n_gpu_layers?: number | null;
+  effective_n_ctx?: number | null;
+  gpus: GpuCapacityProjection[];
+}
+
+/** A whole machine's projection: the sum, per GPU, of every step it would
+ *  take. `src/backend/deploy.rs` — `MachineCapacity`. */
+export interface MachineCapacity {
+  fits: boolean;
+  /** Some step of this machine received the same possible-adjustment heuristic. */
+  degraded?: boolean;
+  note?: string | null;
+  gpus: GpuCapacityProjection[];
 }
 
 /** One pre-sliced tensor-parallel rank in a deploy plan. */
@@ -982,9 +1368,14 @@ export interface DeployMachine {
   ram_used_pct?: number | null;
   disk_free_mb: number;
   rtt_ms: number | null;
-  load: number;
+  /** In-flight requests observed by the survey; `null` means not observed. */
+  load: number | null;
   holds: Array<[number, number]>;
   taking: [number, number] | null;
+  /** Post-deployment projection for this machine — the sum of the steps it
+   *  would take, per GPU. Absent until previewed, or when no step of this
+   *  machine is materialized locally yet. */
+  capacity?: MachineCapacity | null;
 }
 
 export type DeployStrategy = "simple" | "complete";
@@ -999,8 +1390,8 @@ export interface DeployRouteOption {
 
 export interface DeployLoadDistribution {
   node_id: string;
-  current: number;
-  projected: number;
+  current: number | null;
+  projected: number | null;
   selected: boolean;
 }
 
@@ -1025,6 +1416,8 @@ export interface RuntimeParams {
   n_ctx: number;
   offload_kqv: boolean;
   fit_memory: boolean;
+  /** VRAM left free by llama.cpp's automatic layer fit, per device. */
+  fit_memory_margin_mb: number;
   n_batch: number;
   max_new_tokens: number;
   max_sessions: number;
@@ -1036,6 +1429,11 @@ export interface RuntimeParams {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
+  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
+  cycle_detection_enabled?: boolean;
+  cycle_detection_min_window_tokens?: number;
+  cycle_detection_max_window_tokens?: number;
+  cycle_detection_repetitions?: number;
   no_thinking: boolean;
   no_embeddings: boolean;
   /** Kill-switch do operador: mesmo com todos os peers capazes, a
@@ -1054,6 +1452,8 @@ export interface RuntimeParams {
   mtp_draft_tokens: number;
   /** Confiança mínima para o rascunho continuar; 0 aceita qualquer palpite. */
   mtp_min_probability: number;
+  /** Permite o recuo do MTP para pesos e cache em RAM quando a VRAM falhar. */
+  mtp_cpu_fallback_enabled?: boolean;
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
@@ -1096,31 +1496,6 @@ export interface DeploySelection {
    * cannot both be right about where it fits.
    */
   offload_kqv?: boolean | null;
-}
-
-/** Prefix cut selected from a whole GGUF proposer during deployment. */
-export interface WholeSliceSelection {
-  source_node_id: string;
-  target_node_id: string;
-  end_layer: number;
-}
-
-/** A cut accepted by the model's real GGUF layout. */
-export interface LayerCut {
-  end_layer: number;
-  layers: number;
-  size_bytes: number;
-  remainder_bytes: number;
-}
-
-export interface WholeLayerOptions {
-  source_node_id: string;
-  total_layers: number;
-  cuts: LayerCut[];
-  /** Set only when all valid cut distances share one common step. */
-  granularity: number | null;
-  rule: string;
-  reason?: string | null;
 }
 
 /**
@@ -1168,8 +1543,6 @@ export interface DeployPlan {
   inference_mode_reason?: string | null;
   /** Capacidades condicionais apuradas pelo backend para os alvos atuais. */
   capabilities?: DeploymentCapabilities;
-  /** Real cut points reported by the peer holding the whole GGUF. */
-  layer_options?: WholeLayerOptions | null;
   /** `null` means no slice declares it and none starts at layer 0, which is a
    *  `blocked` plan rather than a model of zero layers. */
   total_layers: number | null;

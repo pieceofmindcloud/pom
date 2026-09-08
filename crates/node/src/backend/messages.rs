@@ -592,9 +592,11 @@ async fn messages(
 
     let id = format!("msg_{}", uuid::Uuid::new_v4().simple());
 
+    let inference_token = auth.token().to_string();
     let params = RespostaParams {
         state,
         caller: auth.into_caller(),
+        inference_token,
         model,
         prompt,
         budget,
@@ -648,6 +650,7 @@ fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'
 struct RespostaParams {
     state: GatewayState,
     caller: crate::reqlog::Caller,
+    inference_token: String,
     model: String,
     prompt: String,
     budget: crate::gateway::OutputBudget,
@@ -668,6 +671,7 @@ async fn blocking_response(params: RespostaParams) -> Response {
     let RespostaParams {
         state,
         caller,
+        inference_token,
         model,
         prompt,
         budget,
@@ -687,6 +691,7 @@ async fn blocking_response(params: RespostaParams) -> Response {
         caller,
         GenerationInput {
             state,
+            inference_token,
             model: model.clone(),
             prompt,
             chat_template: true,
@@ -770,6 +775,7 @@ fn stream_response(params: RespostaParams) -> Response {
     let RespostaParams {
         state,
         caller,
+        inference_token,
         model,
         prompt,
         budget,
@@ -788,6 +794,7 @@ fn stream_response(params: RespostaParams) -> Response {
         caller,
         GenerationInput {
             state,
+            inference_token,
             model: model.clone(),
             prompt,
             chat_template: true,

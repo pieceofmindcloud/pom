@@ -31,6 +31,7 @@ export const KNOBS: Knob[] = [
   { key: "n_gpu_layers", min: 0 },
   { key: "n_ctx", min: 512, max: 250000, step: 512 },
   { key: "n_batch", min: 32, step: 32 },
+  { key: "fit_memory_margin_mb", min: 4, max: 16384, step: 16 },
   { key: "max_new_tokens", min: 16 },
   { key: "max_sessions", min: 1, max: 16 },
   { key: "prefill_chunk_tokens", min: 32, step: 32 },
@@ -40,6 +41,14 @@ export const KNOBS: Knob[] = [
   { key: "top_k", min: 0 },
   { key: "repeat_penalty", min: 1, max: 2, step: 0.01 },
   { key: "repeat_last_n", min: 0 },
+];
+
+/** Ajustes do detector, mantidos fora da lista de sampling para deixar clara
+ * a diferença entre penalizar a próxima ficha e interromper uma degeneração. */
+export const CYCLE_KNOBS: Knob[] = [
+  { key: "cycle_detection_min_window_tokens", min: 1, max: 1024 },
+  { key: "cycle_detection_max_window_tokens", min: 1, max: 1024 },
+  { key: "cycle_detection_repetitions", min: 2, max: 8 },
 ];
 
 /**
@@ -225,11 +234,11 @@ export function RuntimeParamsForm({
     }
   }
 
-  const numeric = (k: Knob, withHint: boolean) => (
+  const numeric = (k: Knob) => (
     <Field
       key={k.key}
       label={t("deploy.knob." + k.key)}
-      hint={withHint ? t("deploy.knob." + k.key + "Hint") : undefined}
+      tip={t("deploy.knob." + k.key + "Hint")}
     >
       <Input
         type="number"
@@ -253,7 +262,7 @@ export function RuntimeParamsForm({
   return (
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-        {KNOBS.map((k) => numeric(k, false))}
+        {KNOBS.map((k) => numeric(k))}
       </div>
 
       <div className="border-t border-line pt-4">
@@ -308,6 +317,13 @@ export function RuntimeParamsForm({
           label={t("deploy.noEmbeddings")}
           hint={t("deploy.noEmbeddingsHint")}
         />
+        <Switch
+          checked={value.cycle_detection_enabled ?? true}
+          onChange={(v) => onChange({ ...value, cycle_detection_enabled: v })}
+          disabled={disabled}
+          label={t("deploy.cycleDetection")}
+          hint={t("deploy.cycleDetectionHint")}
+        />
         <CapabilitySwitch
           capability={capabilities?.speculative_decoding}
           checked={value.speculative_decoding_enabled ?? false}
@@ -332,17 +348,31 @@ export function RuntimeParamsForm({
         />
       </div>
 
+      {(value.cycle_detection_enabled ?? true) && (
+        <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
+          {CYCLE_KNOBS.map((k) => numeric(k))}
+        </div>
+      )}
+
       {(value.speculative_decoding_enabled ?? false) &&
         capabilities?.speculative_decoding?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-          {SPECULATIVE_KNOBS.map((k) => numeric(k, true))}
+          {SPECULATIVE_KNOBS.map((k) => numeric(k))}
         </div>
       )}
 
       {(value.mtp_enabled ?? false) &&
         capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-          {MTP_KNOBS.map((k) => numeric(k, true))}
+          {MTP_KNOBS.map((k) => numeric(k))}
+          <CapabilitySwitch
+            alwaysVisible
+            checked={value.mtp_cpu_fallback_enabled ?? true}
+            onChange={(v) => onChange({ ...value, mtp_cpu_fallback_enabled: v })}
+            disabled={disabled}
+            label={t("deploy.mtpCpuFallback")}
+            hint={t("deploy.mtpCpuFallbackHint")}
+          />
         </div>
       )}
     </div>

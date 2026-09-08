@@ -1,13 +1,132 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { canAccessRoute } from "./lib/access";
+import { canAccessRoute, homeRoute } from "./lib/access";
+import {
+  api,
+  clearAdminAccessToken,
+  onAdminSessionLost,
+  setAdminAccessToken,
+} from "./lib/api";
 import { useProfile } from "./lib/profile";
-import { useIsSetupMode } from "./lib/queries";
+import { ChatSessionProvider } from "./lib/chatStore";
+import { useAdminSurface } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { useI18n } from "./i18n/provider";
+import { Button, Input, Panel, PanelHeader } from "./components/ui";
+
+function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function authenticate(event: React.FormEvent) {
+    event.preventDefault();
+    const token = draft.trim();
+    if (!token) {
+      setFailed(true);
+      return;
+    }
+    setBusy(true);
+    setFailed(false);
+    setAdminAccessToken(token);
+    try {
+      await api.get("/api/ui/node", { auth: false });
+      onAuthenticated();
+    } catch {
+      clearAdminAccessToken();
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
+      <Panel className="w-full max-w-md">
+        <PanelHeader
+          eyebrow={t("accessGate.eyebrow")}
+          title={t("accessGate.title")}
+          subtitle={t("accessGate.subtitle")}
+        />
+        <form
+          className="space-y-4 px-5 py-5"
+          autoComplete="on"
+          onSubmit={(event) => void authenticate(event)}
+        >
+          <label className="block">
+            <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
+              {t("accessGate.username")}
+            </span>
+            <Input
+              name="username"
+              type="text"
+              defaultValue="administrator"
+              autoComplete="username"
+              aria-label={t("accessGate.username")}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
+              {t("accessGate.label")}
+            </span>
+            <Input
+              autoFocus
+              type="password"
+              name="password"
+              id="admin-access-password"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label={t("accessGate.label")}
+              autoComplete="current-password"
+            />
+          </label>
+          {failed && <p className="text-xs text-rose">{t("accessGate.invalid")}</p>}
+          <Button variant="primary" loading={busy} type="submit" className="w-full">
+            {t("accessGate.submit")}
+          </Button>
+        </form>
+      </Panel>
+    </div>
+  );
+}
+
+function AdminLocalOnly() {
+  return (
+    <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10 text-center">
+      <section className="max-w-2xl">
+        <p className="mb-8 text-2xl font-semibold text-fg">POM</p>
+        <p className="text-base leading-relaxed text-muted">
+          This administrative interface is available only through the local address{" "}
+          <strong>127.0.0.1</strong> on this machine, not through its network IP address or the
+          internet.
+        </p>
+        <p className="mt-4 text-base leading-relaxed text-muted" lang="pt-BR">
+          Esta interface administrativa está disponível apenas pelo endereço local{" "}
+          <strong>127.0.0.1</strong> desta máquina, não pelo IP de rede nem pela internet.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function AdminAccessUnavailable() {
+  const { t } = useI18n();
+  return (
+    <div className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
+      <Panel className="w-full max-w-md">
+        <PanelHeader
+          eyebrow={t("accessGate.eyebrow")}
+          title={t("accessGate.unavailableTitle")}
+          subtitle={t("accessGate.unavailable")}
+        />
+      </Panel>
+    </div>
+  );
+}
 
 /**
  * Route modules are loaded on demand so the dashboard does not pay for every
@@ -15,12 +134,17 @@ import { useI18n } from "./i18n/provider";
  */
 export const routeLoaders = {
   setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
+  setupWizard: () => import("./routes/SetupWizard").then(({ SetupWizard }) => SetupWizard),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
-  logsByToken: () => import("./routes/LogsByToken").then(({ LogsByToken }) => LogsByToken),
-  logsLive: () => import("./routes/LogsLive").then(({ LogsLive }) => LogsLive),
+  logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
+  deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
+  statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
+  adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
+  trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
+  preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
@@ -41,12 +165,17 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
 }
 
 const Setup = lazyRoute(routeLoaders.setup);
+const SetupWizard = lazyRoute(routeLoaders.setupWizard);
 const Chat = lazyRoute(routeLoaders.chat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
-const LogsByToken = lazyRoute(routeLoaders.logsByToken);
-const LogsLive = lazyRoute(routeLoaders.logsLive);
+const Logs = lazyRoute(routeLoaders.logs);
+const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
+const Statistics = lazyRoute(routeLoaders.statistics);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
+const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
+const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
+const Preferences = lazyRoute(routeLoaders.preferences);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
 const Deployments = lazyRoute(routeLoaders.deployments);
@@ -106,6 +235,7 @@ export default function App() {
    */
   const allowed = canAccessRoute(location.pathname, profile);
   const isChat = allowed && location.pathname === "/chat";
+  const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
   // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
@@ -113,7 +243,20 @@ export default function App() {
   // o layout de tela cheia não rola por dentro.
   const isFullBleed =
     allowed &&
-    (isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar");
+    (isDashboard ||
+      location.pathname === "/documentacao" ||
+      location.pathname === "/implantar" ||
+      location.pathname === "/implantacoes" ||
+      location.pathname === "/logs" ||
+      location.pathname === "/implantacoes/logs");
+  /*
+   * O assistente é a única tela que sai da moldura inteira: ele guia a
+   * configuração do zero, com barra de progresso e uma pergunta por vez, e o
+   * menu ao lado convida a sair pelo meio para uma tela que ainda não faz
+   * sentido. Renderiza como o `Setup` do primeiro arranque - sem Sidebar, sem
+   * Topbar -, e não só sem enchimento como as outras de tela cheia.
+   */
+  const isWizard = allowed && location.pathname === "/setup";
   /*
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -122,12 +265,23 @@ export default function App() {
    * connection key, so asking it "are we in setup?" would rotate the cluster
    * credential on every page load.
    */
-  const isSetup = useIsSetupMode();
+  const adminSurface = useAdminSurface();
+  const [adminReady, setAdminReady] = useState(false);
+
+  /*
+   * A sessão administrativa pode morrer com a aba aberta: ela vive na memória
+   * do nó, e um reinício ou as 8 h de validade a levam. Quem refaz a sonda é
+   * o próprio `useAdminSurface`; aqui só se esquece que esta aba já passou
+   * pelo portão, senão a resposta "requires-token" continuaria escondida
+   * atrás de um `adminReady` que ficou de uma sessão que não existe mais.
+   */
+  useEffect(() => onAdminSessionLost(() => setAdminReady(false)), []);
 
   // Undefined means the probe has not answered yet. Rendering either branch on
   // a guess flashes the wrong screen, so hold the paint for one request.
-  if (isSetup === undefined) return <div className="h-full bg-ink" />;
-  if (isSetup) {
+  if (adminSurface.isLoading) return <div className="h-full bg-ink" />;
+  if (adminSurface.isError || !adminSurface.data) return <AdminAccessUnavailable />;
+  if (adminSurface.data === "setup") {
     return (
       <ErrorBoundary>
         <Suspense fallback={<RouteFallback fullScreen />}>
@@ -137,75 +291,125 @@ export default function App() {
     );
   }
 
-  return (
-    <div className="flex h-full min-h-0 w-full overflow-hidden">
-      {/*
-        The chrome gets its own boundaries. The routed page below is the part
-        that is expected to fail, but a toolbar that throws used to blank the
-        whole window — including the menu that gets the operator out of it.
-      */}
-      <ErrorBoundary fallback={null}>
-        <Sidebar />
+  if (adminSurface.data === "local-only") return <AdminLocalOnly />;
+  if (adminSurface.data === "requires-token" && !adminReady) {
+    return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
+  }
+
+  /*
+   * O painel nativo da barra de status do macOS carrega esta rota dentro de um
+   * `WKWebView` estreito. Ela renderiza o mesmo Chat sem Sidebar nem Topbar,
+   * porque o chrome administrativo não cabe na largura de um telemóvel.
+   *
+   * Fica deliberadamente **depois** do portão de acesso acima: o painel usa a
+   * mesma sessão com cookie `HttpOnly` que o navegador, e não um caminho de
+   * credencial próprio.
+   */
+  if (isEmbeddedChat) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={<RouteFallback fullScreen />}>
+          <div className="h-full min-h-0 w-full overflow-hidden bg-ink">
+            <Chat />
+          </div>
+        </Suspense>
       </ErrorBoundary>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <ErrorBoundary
-          fallback={
-            <div className="border-b border-line px-4 py-3 text-xs text-faint">
-              {t("app.topbarFailed")}
-            </div>
-          }
-        >
-          <Topbar />
+    );
+  }
+
+  if (isWizard) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={<RouteFallback fullScreen />}>
+          <SetupWizard />
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
+
+  return (
+    <ChatSessionProvider>
+      <div className="flex h-full min-h-0 w-full overflow-hidden">
+        {/*
+          The chrome gets its own boundaries. The routed page below is the part
+          that is expected to fail, but a toolbar that throws used to blank the
+          whole window - including the menu that gets the operator out of it.
+        */}
+        <ErrorBoundary fallback={null}>
+          <Sidebar />
         </ErrorBoundary>
-        <main
-          className={
-            isChat || isFullBleed
-              ? "min-h-0 flex-1 overflow-hidden"
-              : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
-          }
-        >
-          <ErrorBoundary resetKey={location.pathname}>
-            <Suspense fallback={<RouteFallback />}>
-              {!allowed ? (
-                <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
-                  <Page>
-                    <Forbidden />
-                  </Page>
-                </div>
-              ) : isChat ? (
-                <Chat />
-              ) : (
-                <div className={isFullBleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
-                  <AnimatePresence mode="wait">
-                    <Routes location={location} key={location.pathname}>
-                      <Route path="/" element={<Page><Dashboard /></Page>} />
-                      <Route path="/modelos" element={<Page><WholeModels /></Page>} />
-                      <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
-                      <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
-                      <Route path="/fatias" element={<Page><Shards /></Page>} />
-                      <Route path="/implantar" element={<Page><DeployModel /></Page>} />
-                      <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
-                      {/* Keep the former deploy URL working for old bookmarks. */}
-                      <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
-                      <Route path="/transferencias" element={<Page><Transfers /></Page>} />
-                      <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
-                      <Route path="/logs" element={<Page><LogsByToken /></Page>} />
-                      <Route path="/logs/ao-vivo" element={<Page><LogsLive /></Page>} />
-                      <Route path="/documentacao" element={<Page><Documentation /></Page>} />
-                      <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
-                      <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
-                      <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
-                      <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
-                      <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
-                      <Route path="*" element={<Page><NotFound /></Page>} />
-                    </Routes>
-                  </AnimatePresence>
-                </div>
-              )}
-            </Suspense>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <ErrorBoundary
+            fallback={
+              <div className="border-b border-line px-4 py-3 text-xs text-faint">
+                {t("app.topbarFailed")}
+              </div>
+            }
+          >
+            <Topbar />
           </ErrorBoundary>
-        </main>
+          <main
+            className={
+              isChat || isFullBleed
+                ? "min-h-0 flex-1 overflow-hidden"
+                : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+            }
+          >
+            <ErrorBoundary resetKey={location.pathname}>
+              <Suspense fallback={<RouteFallback />}>
+                {!allowed && location.pathname === "/" ? (
+                  /*
+                   * O `/` é o Painel, que o `infer` não abre. Mandá-lo para a
+                   * recusa faria a interface abrir num beco: a tela inicial do
+                   * perfil é quem responde por ele.
+                   */
+                  <Navigate to={homeRoute(profile)} replace />
+                ) : !allowed ? (
+                  <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+                    <Page>
+                      <Forbidden />
+                    </Page>
+                  </div>
+                ) : isChat ? (
+                  <Chat />
+                ) : (
+                  <div className={isFullBleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
+                    <AnimatePresence mode="wait">
+                      <Routes location={location} key={location.pathname}>
+                        <Route path="/" element={<Page><Dashboard /></Page>} />
+                        <Route path="/modelos" element={<Page><WholeModels /></Page>} />
+                        <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
+                        <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
+                        <Route path="/fatias" element={<Page><Shards /></Page>} />
+                        <Route path="/implantar" element={<Page><DeployModel /></Page>} />
+                        <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
+                        <Route path="/implantacoes/logs" element={<Page><DeploymentLogs /></Page>} />
+                        {/* Keep the former deploy URL working for old bookmarks. */}
+                        <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
+                        <Route path="/transferencias" element={<Page><Transfers /></Page>} />
+                        <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
+                        <Route path="/logs" element={<Page><Logs /></Page>} />
+                        <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
+                        <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
+                        <Route path="/documentacao" element={<Page><Documentation /></Page>} />
+                        <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
+                        <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
+                        <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
+                        <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
+                        <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
+                        <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
+                        <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
+                        <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
+                        <Route path="*" element={<Page><NotFound /></Page>} />
+                      </Routes>
+                    </AnimatePresence>
+                  </div>
+                )}
+              </Suspense>
+            </ErrorBoundary>
+          </main>
+        </div>
       </div>
-    </div>
+    </ChatSessionProvider>
   );
 }

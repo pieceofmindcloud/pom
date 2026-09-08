@@ -22,7 +22,10 @@ export function fakeSystem(over: Partial<SystemLoad> = {}): SystemLoad {
     gpus: [],
     gpu_processes: [],
     wired_mb: 2048,
-    disk: { total_mb: 500000, free_mb: 200000, mount_point: "/" },
+    disk: { total_mb: 500000, free_mb: 200000, mount_point: "/", device: "/dev/disk3s1s1" },
+    disks: [
+      { total_mb: 500000, free_mb: 200000, mount_point: "/", device: "/dev/disk3s1s1" },
+    ],
     sampled_at: "2026-08-15T00:00:00Z",
     ...over,
   };
@@ -33,10 +36,15 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     node_id: "a",
     short_id: "a",
     hostname: "salem",
-    role: "peer",
+    profile: "node",
     connection_key: "",
+    authority_level: null,
+    authority_fingerprint: null,
     p2p_port: 42777,
     gateway_port: 8080,
+    admin_exposure: "localhost",
+    admin_access_token_configured: false,
+    admin_access_token_masked: null,
     inference_port: 8181,
     config: null,
     status: {
@@ -60,6 +68,8 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     effective_address: "10.0.0.1:42777",
     tls_required: false,
     tls_authority: false,
+    cluster_logs_enabled: false,
+    cluster_logs_authority: false,
     ...over,
   };
 }
@@ -81,6 +91,7 @@ export function fakePeer(over: Partial<PeerView> & Pick<PeerView, "node_id">): P
     is_self: false,
     node: null,
     unreachable: null,
+    rediscovering: false,
     ...over,
   };
 }

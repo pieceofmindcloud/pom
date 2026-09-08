@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama.cpp/include/llama.h"
+#include "llama.cpp/ggml/include/ggml-backend.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -58,6 +59,29 @@ int llama_rs_fit_params(
     uint32_t n_ctx_min,
     enum ggml_log_level log_level);
 
+// Returns the current free and total memory for the devices selected by the
+// default llama.cpp model placement, in the same order used by common_fit_params.
+// The return value is the number of records written, capped by `capacity`.
+struct llama_rs_device_memory {
+    size_t free_bytes;
+    size_t total_bytes;
+};
+
+// Returns the devices selected by llama.cpp's default layer-split policy, in
+// the order it would pass to the model. The handles remain owned by ggml.
+size_t llama_rs_get_devices(
+    ggml_backend_dev_t * out,
+    size_t capacity);
+
+size_t llama_rs_get_device_memory(
+    struct llama_rs_device_memory * out,
+    size_t capacity);
+
+// Measures one small generic matrix-vector graph on the backend. The result is
+// cached per device for the process; zero means that the backend could not be
+// measured and callers must retain the default device order.
+float llama_rs_benchmark_device(ggml_backend_dev_t device);
+
 void llama_rs_memory_breakdown_print(const struct llama_context * ctx);
 
 // Onde cada camada do modelo carregado realmente ficou, em JSON.
@@ -77,6 +101,23 @@ llama_rs_status llama_rs_model_placement_json(const struct llama_model * model, 
 //
 // O chamador é dono da string e a libera com `llama_rs_string_free`.
 llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json);
+
+// O Flash Attention **resolvido** deste contexto, lido de `get_cparams()`.
+//
+// `llama_context_params::flash_attn_type` é o pedido, e o padrão é `AUTO`: o
+// llama.cpp sonda o backend na criação do contexto e decide. Nada no
+// `llama.h` público devolve a decisão, então derivar a resposta do pedido
+// mentiria sempre que a sonda recusasse o kernel. `out_auto` diz se a decisão
+// veio da sonda (`AUTO`) ou do pedido explícito do operador.
+llama_rs_status llama_rs_context_flash_attn(
+    const struct llama_context * ctx,
+    bool * out_enabled,
+    bool * out_auto);
+
+// Lista os dispositivos registrados pelos backends do ggml, incluindo a
+// descricao comercial e o identificador PCI quando o backend os conhece.
+// O chamador e dono da string e a libera com `llama_rs_string_free`.
+llama_rs_status llama_rs_backend_devices_json(char ** out_json);
 
 // CPU reference for the differential MoE proof. It uses the tensors loaded by
 // llama.cpp itself and returns the intermediate expert vectors in execution

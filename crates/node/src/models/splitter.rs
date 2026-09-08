@@ -365,6 +365,9 @@ fn layer_slice_bounds(
     Ok((start_layer as usize, end_layer as usize))
 }
 
+// Helper de teste que preserva a prova da seleção de valores por camada; o
+// caminho de produção usa `layer_slice_bounds` diretamente ao serializar.
+#[cfg(test)]
 fn slice_layer_values<T: Clone>(
     values: &[T],
     original_block_count: u32,
@@ -3427,13 +3430,13 @@ mod tests {
             Some(12)
         );
 
-        unsafe { llama_cpp_sys_2::llama_backend_init() };
+        unsafe { llama_engine::llama_cpp_sys_2::llama_backend_init() };
         let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
-        let mut params = unsafe { llama_cpp_sys_2::llama_model_default_params() };
+        let mut params = unsafe { llama_engine::llama_cpp_sys_2::llama_model_default_params() };
         params.n_gpu_layers = 0;
-        let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        let model = unsafe { llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
         assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
-        unsafe { llama_cpp_sys_2::llama_model_free(model) };
+        unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3458,16 +3461,16 @@ mod tests {
         );
         split(source, &out, 15, 28, false, false, |_| {}).unwrap();
 
-        unsafe { llama_cpp_sys_2::llama_backend_init() };
+        unsafe { llama_engine::llama_cpp_sys_2::llama_backend_init() };
         let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
-        let mut params = unsafe { llama_cpp_sys_2::llama_model_default_params() };
+        let mut params = unsafe { llama_engine::llama_cpp_sys_2::llama_model_default_params() };
         params.n_gpu_layers = 0;
-        let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        let model = unsafe { llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
         assert!(
             !model.is_null(),
             "uma fatia intermediária DeepSeek4 deveria carregar"
         );
-        unsafe { llama_cpp_sys_2::llama_model_free(model) };
+        unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
     }
 

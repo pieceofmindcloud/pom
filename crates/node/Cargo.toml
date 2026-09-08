@@ -10,22 +10,28 @@ path = "src/main.rs"
 
 [features]
 default = []
-cuda = ["llama-cpp-sys-2/cuda"]
-metal = ["llama-cpp-sys-2/metal"]
+# As features do backend nativo vivem em `llama-engine`, que é quem declara
+# `llama-cpp-sys-2`. Aqui só encaminham.
+cuda = ["llama-engine/cuda"]
+metal = ["llama-engine/metal"]
 # Backend portatil: e o caminho das placas AMD, e tambem roda em NVIDIA e
 # Intel. Pode ser combinado com `cuda` - o ggml carrega os dois backends e a
 # escolha de qual usar e feita em tempo de execucao.
-vulkan = ["llama-cpp-sys-2/vulkan"]
+vulkan = ["llama-engine/vulkan"]
 
 [dependencies]
-llama-cpp-sys-2 = { version = "0.1.154", default-features = false, features = ["common"] }
-half = "2"
+# Todo o código llama.cpp (FFI, MTP, MoE, GGUF, sysmon) mora aqui, para que
+# editar backend/rede/roteamento de `node` não o reconstrua.
+llama-engine = { path = "../llama-engine" }
+brand = { path = "../brand" }
+arc-swap = "1"
 socket2 = "0.5"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
 sha2 = "0.10"
@@ -57,6 +63,7 @@ libp2p = { version = "0.56", features = [
 ] }
 pkarr = "6"
 async-trait = "0.1"
+subtle = "2"
 mime_guess = "2"
 tower-http = { version = "0.5", features = ["compression-full"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -65,9 +72,9 @@ routing-contract = { path = "../routing-contract" }
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
-[build-dependencies]
-# Compila `src/inference/llama_mtp_shim.cpp`, a ponte para as entradas NextN
-# (MTP) que o bindgen do llama-cpp-sys-2 não emite. Ver o build.rs.
+# Só compila `src/macos_status.m`, a ponte AppKit/WebKit do item de barra de
+# status. Como o `winresource` acima, o `cfg` aqui é do host.
+[target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1"
 
 [dev-dependencies]

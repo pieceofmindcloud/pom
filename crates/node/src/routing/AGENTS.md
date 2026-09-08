@@ -10,7 +10,9 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `pipeline.rs` - `LoadTracker`/`LoadGuard` (contagem RAII de requisições em
   voo por peer), `PipelineStep`/`PipelinePlan`/`PipelineEdge`, `plan_pipeline`
   (greedy) e `resolve_step_url` (endereço por hop, por sessão). Cada
-  `PipelineStep` preserva também os candidatos UDP do hop para o túnel libp2p.
+  `PipelineStep` preserva os candidatos HTTP e UDP do hop; os transportes
+  tentam a lista com memória de falha expirável em vez de tratar `addr` como
+  verdade permanente.
 
 ## Funções-chave
 
@@ -23,6 +25,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   workers de tensor parallelism** (`PeerInfo::is_tp_worker`): só o primary de
   um grupo entra na cadeia. Devolve `None` no primeiro buraco executável.
 - `plan_pipeline` - chama a variante acima sem medições de RTT.
+- `model_pipeline_candidates` e `model_head_candidates` - o primeiro aplica o
+  filtro de modelo, implantação, liveness e primary; o segundo recorta somente
+  as faixas que começam em L0 para a visão limitada do perfil infer. Nenhum
+  deles publica a topologia completa.
 - `PipelineStep::exec_start`/`exec_end` - faixa que o hop executa, distinta da
   faixa que ele carregou; `PipelineEdge` só existe quando essas sub-faixas são
   contíguas.
@@ -33,10 +39,18 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `CAP_FRAME_BATCH` - capability `inference/frame-v1-batch`; o relay só envia
   depois que o peer anuncia o servidor carregado. Não há rolling upgrade para
   formatos anteriores nesta primeira versão do produto.
+- `CAP_LINK_STREAM` - capability `transport/link-v1`, verificada **por hop**
+  como a do túnel, não all-or-nothing: o chamador abre o canal persistente
+  quando o hop seguinte a anuncia, e qualquer falha de transporte desce para a
+  escada de sempre sem encerrar a geração. Ver `inference/link.rs`.
 - `CAP_FRAME_DTYPE_F8` e `PipelinePlan::validate_wire_dtype` - capability
   `inference/frame-v1-dtype-f8` e validação all-or-nothing da precisão f8 no
   plano inteiro; uma ausência identificada bloqueia o deploy ou a requisição
   com a razão do peer, sem deixar bytes serem interpretados como outro dtype.
+- `CAP_REMOTE_TOKEN_STREAM` - capability anunciada pelo servidor de inferência
+  para que um head remoto mantenha o laço de decode no peer e entregue tokens
+  ao gateway em callbacks limitados por lotes oportunistas. O gateway exige
+  também um endereço de callback; o atalho local nunca usa este transporte.
 - `PipelinePlan::supports_relay_chain` / `supports_direct_reply` /
   `supports_speculation` - all-or-nothing: um passo sem a capability derruba a
   feature do plano inteiro (`CAP_RELAY_CHAIN`, `CAP_RELAY_DIRECT`,
@@ -58,7 +72,8 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   candidato), 2) `inference_url` (endereço observado, o único comprovado antes
   da primeira sonda), 3) primeiro candidato. Fixa a escolha por sessão - o KV
   cache do outro lado é por sessão, e trocar de endereço no meio é pior que a
-  rota lenta.
+  rota lenta. A abertura usa `PipelineStep.inference_candidates` como fallback
+  quando o endereço escolhido falha antes de a sessão começar.
 - `routing_request_from_peers` - traduz `PeerInfo` para o `RoutingRequest` do
   `routing-contract` (rota futura de planejador; produção ainda usa
   `plan_pipeline` até cobertura de equivalência).
@@ -75,7 +90,8 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - **Chama**: `network::PeerInfo` e `network::route::RouteTable`
   (`resolve_step_url`).
 - **Consumido por**: `inference/relay.rs` e `inference/infer_server.rs` (as
-  capabilities `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/`CAP_SPECULATE_LOOKUP`/
+  capabilities `CAP_REMOTE_TOKEN_STREAM`/`CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
+  `CAP_SPECULATE_LOOKUP`/
   `CAP_SPECULATE_MTP`/`CAP_SPECULATE_MTP_SLICED` viajam em `next_hops` e no
   wire format); `inference/direct.rs` (o modo direto
   depende de `supports_direct_reply`); `inference/wire.rs` (dtype/codificação
@@ -85,3 +101,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 ## Defeitos anotados
 
 Nenhum.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

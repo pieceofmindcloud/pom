@@ -127,6 +127,11 @@ function PeerCard({
   const kind = machineKind(system);
   const serving = isServing(peer.node?.status.state);
   const unreachable = Boolean(peer.unreachable);
+  // Um nó a ser reencontrado não é um nó perdido: o endereço dele rodou e a
+  // rede já foi perguntada. O card fica esmaecido como o ilegível, mas o ponto
+  // pulsa em âmbar em vez de ficar parado em rosa.
+  const rediscovering = Boolean(peer.rediscovering);
+  const unread = unreachable || rediscovering;
 
   return (
     <motion.button
@@ -140,7 +145,7 @@ function PeerCard({
         "transition-[border-color,transform,box-shadow] duration-200 ease-swift",
         "hover:-translate-y-0.5 hover:shadow-lift",
         selected ? "border-iris/50 bg-raised" : "border-line bg-surface",
-        unreachable && "opacity-60",
+        unread && "opacity-60",
       )}
     >
       {/* The track colour is the same one the layer ribbon paints below. */}
@@ -175,17 +180,23 @@ function PeerCard({
         <span className="flex min-w-0 items-center gap-1.5">
           <Dot
             tone={
-              unreachable ? "rose" : serverStateTone(peer.node?.status.state)
+              rediscovering
+                ? "amber"
+                : unreachable
+                  ? "rose"
+                  : serverStateTone(peer.node?.status.state)
             }
-            pulse={serving && !unreachable}
+            pulse={rediscovering || (serving && !unread)}
           />
           <span className="truncate text-[0.72rem] text-muted">
-            {unreachable
-              ? t("pipeline.noResponse")
-              : serverStateLabel(peer.node?.status.state)}
+            {rediscovering
+              ? t("pipeline.rediscovering")
+              : unreachable
+                ? t("pipeline.noResponse")
+                : serverStateLabel(peer.node?.status.state)}
           </span>
         </span>
-        {peer.load > 0 && (
+        {peer.load != null && peer.load > 0 && (
           <span className="shrink-0 font-mono text-[0.68rem] text-amber">
             {t("pipeline.inFlight", { count: peer.load })}
           </span>

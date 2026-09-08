@@ -3,21 +3,19 @@
  * and whether this machine is even taking part.
  */
 import {
+  ArrowDownToLine,
+  ArrowUp,
   Ban,
   LogIn,
   LogOut,
-  Lock,
   Network,
   Radio,
   Save,
-  ShieldCheck,
   ShieldOff,
-  Thermometer,
   Undo2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Confirm } from "../components/Confirm";
-import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import { MachineIcon } from "../components/MachineIcon";
 import {
   Badge,
@@ -36,198 +34,36 @@ import {
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
+import { adminAuthorityApi } from "../lib/adminAuthority";
 import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import type { NodeInfo, ThermalPolicy } from "../lib/types";
+import type { NodeInfo } from "../lib/types";
 import { useI18n } from "../i18n/provider";
-
-/**
- * A criptografia do cluster, e quem manda nela.
- *
- * O interruptor só é editável no nó principal - a decisão é dele e vale para a
- * rede inteira. Nos demais o painel aparece em leitura, porque esconder o
- * estado faria o operador de um nó comum não ter onde ver se o tráfego da
- * máquina dele está cifrado. A recusa que vale é a do servidor (`save_tls`
- * responde 403); isto aqui é só a tela dizendo a verdade antes do clique.
- */
-export function TlsPanel({
-  tlsRequired,
-  authority,
-  busy = false,
-  onToggle,
-}: {
-  tlsRequired: boolean;
-  authority: boolean;
-  busy?: boolean;
-  onToggle?: (next: boolean) => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <Panel>
-      <PanelHeader
-        title={t("network.tlsTitle")}
-        subtitle={t("network.tlsSubtitle")}
-        actions={
-          <Button
-            variant={tlsRequired ? "danger" : "primary"}
-            role="switch"
-            aria-checked={tlsRequired}
-            disabled={!authority || busy}
-            loading={busy}
-            icon={
-              tlsRequired ? (
-                <ShieldOff className="h-3.5 w-3.5" />
-              ) : (
-                <Lock className="h-3.5 w-3.5" />
-              )
-            }
-            onClick={() => onToggle?.(!tlsRequired)}
-          >
-            {t(tlsRequired ? "network.tlsDisable" : "network.tlsEnable")}
-          </Button>
-        }
-      />
-      <div className="space-y-3 px-5 py-4">
-        <KeyValue label={t("network.tlsState")}>
-          <Badge tone={tlsRequired ? "aqua" : "amber"}>
-            {tlsRequired ? (
-              <ShieldCheck className="h-3.5 w-3.5" />
-            ) : (
-              <ShieldOff className="h-3.5 w-3.5" />
-            )}
-            {t(tlsRequired ? "network.tlsOn" : "network.tlsOff")}
-          </Badge>
-        </KeyValue>
-        <Footnote icon={<ShieldCheck className="h-3.5 w-3.5" />}>
-          {t("network.tlsHowItWorks")}
-        </Footnote>
-        {!authority && (
-          <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
-            {t("network.tlsNotAuthority")}
-          </Footnote>
-        )}
-      </div>
-    </Panel>
-  );
-}
-
-const DEFAULT_THERMAL_POLICY: ThermalPolicy = {
-  limit_c: 85,
-  hysteresis_c: 8,
-  cooldown_secs: 30,
-};
-
-export function ThermalPanel({
-  policy,
-  onSave,
-  busy = false,
-}: {
-  policy?: ThermalPolicy;
-  onSave: (next: ThermalPolicy) => void;
-  busy?: boolean;
-}) {
-  const { t } = useI18n();
-  const [limit, setLimit] = useState(String(policy?.limit_c ?? DEFAULT_THERMAL_POLICY.limit_c));
-  const [hysteresis, setHysteresis] = useState(
-    String(policy?.hysteresis_c ?? DEFAULT_THERMAL_POLICY.hysteresis_c),
-  );
-  const [cooldown, setCooldown] = useState(
-    String(policy?.cooldown_secs ?? DEFAULT_THERMAL_POLICY.cooldown_secs),
-  );
-  const [thermalLoaded, setThermalLoaded] = useState(false);
-
-  useEffect(() => {
-    if (thermalLoaded || !policy) return;
-    setLimit(String(policy.limit_c));
-    setHysteresis(String(policy.hysteresis_c));
-    setCooldown(String(policy.cooldown_secs));
-    setThermalLoaded(true);
-  }, [policy, thermalLoaded]);
-
-  const nextPolicy = (): ThermalPolicy => ({
-    limit_c: Number(limit),
-    hysteresis_c: Number(hysteresis),
-    cooldown_secs: Number(cooldown),
-  });
-
-  const resumeAt = Number(limit) - Number(hysteresis);
-  return (
-    <Panel>
-      <PanelHeader
-        title={t("network.thermalTitle")}
-        subtitle={t("network.thermalSubtitle")}
-        actions={
-          <Button
-            variant="primary"
-            icon={<Thermometer className="h-3.5 w-3.5" />}
-            loading={busy}
-            onClick={() => onSave(nextPolicy())}
-          >
-            {t("network.thermalSave")}
-          </Button>
-        }
-      />
-      <div className="grid gap-4 px-5 py-4 sm:grid-cols-3">
-        <Field label={t("network.thermalLimitLabel")}>
-          <Input type="number" min="1" max="150" step="0.5" value={limit} onChange={(e) => setLimit(e.target.value)} />
-        </Field>
-        <Field label={t("network.thermalHysteresisLabel")}>
-          <Input type="number" min="0.1" max="149" step="0.5" value={hysteresis} onChange={(e) => setHysteresis(e.target.value)} />
-        </Field>
-        <Field label={t("network.thermalCooldownLabel")}>
-          <Input type="number" min="1" step="1" value={cooldown} onChange={(e) => setCooldown(e.target.value)} />
-        </Field>
-        <Footnote className="sm:col-span-3" icon={<Thermometer className="h-3.5 w-3.5" />}>
-          {t("network.thermalHint")} {Number.isFinite(resumeAt) && ` ${t("network.thermalResumeAt", { value: resumeAt })}`}
-        </Footnote>
-      </div>
-    </Panel>
-  );
-}
 
 export function NetworkSettings() {
   const { t } = useI18n();
   const node = useNode();
   const cluster = useCluster();
-  const nodes = useAdminNodes();
+  const isInfer = node.data?.profile === "infer";
+  /*
+   * Ler o retrato da rede é de `node` e de `admin`; bloquear e desbloquear
+   * uma máquina continua sendo ato de administrador, e só com a concessão -
+   * `profile: admin` sozinho não concede capacidade. Oferecer o botão a quem
+   * vai levar 403 é o defeito de menu que esta base já nomeia.
+   */
+  const isAdmin = node.data?.authority_level != null;
+  const nodes = useAdminNodes(node.data !== undefined && !isInfer);
   const toast = useToast();
   const invalidate = useInvalidate();
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const [tlsSaving, setTlsSaving] = useState(false);
-  const [thermalSaving, setThermalSaving] = useState(false);
-
-  async function toggleTls(next: boolean) {
-    setTlsSaving(true);
-    try {
-      await api.post("/api/ui/network/tls", { tls_required: next });
-      toast.success(
-        t(next ? "network.tlsEnabled" : "network.tlsDisabled"),
-        t("network.tlsPropagates"),
-      );
-      invalidate();
-    } catch (e) {
-      toast.fromError(t("network.tlsFailed"), e);
-    } finally {
-      setTlsSaving(false);
-    }
-  }
-
-  async function saveThermal(next: ThermalPolicy) {
-    setThermalSaving(true);
-    try {
-      await api.post<ThermalPolicy>("/api/ui/thermal", next);
-      toast.success(t("network.thermalSaved"), t("network.thermalSavedDetail"));
-      invalidate();
-    } catch (e) {
-      toast.fromError(t("network.thermalSaveFailed"), e);
-    } finally {
-      setThermalSaving(false);
-    }
-  }
+  const [nodeRequestBusy, setNodeRequestBusy] = useState(false);
+  const [nodeRequestState, setNodeRequestState] = useState<"none" | "pending" | "rejected">("none");
+  const [nodeRequestLoaded, setNodeRequestLoaded] = useState(false);
+  const [relinquishConfirm, setRelinquishConfirm] = useState(false);
+  const [relinquishing, setRelinquishing] = useState(false);
 
   const [advertiseAddr, setAdvertiseAddr] = useState("");
   const [addrSaving, setAddrSaving] = useState(false);
@@ -239,6 +75,12 @@ export function NetworkSettings() {
     setAdvertiseAddr(node.data.advertise_addr ?? "");
     setAddrLoaded(true);
   }, [node.data, addrLoaded]);
+
+  useEffect(() => {
+    if (nodeRequestLoaded || !node.data) return;
+    setNodeRequestState(node.data.node_promotion_request ?? "none");
+    setNodeRequestLoaded(true);
+  }, [node.data, nodeRequestLoaded]);
 
   async function saveAdvertiseAddr() {
     setAddrSaving(true);
@@ -290,6 +132,34 @@ export function NetworkSettings() {
     }
   }
 
+  async function requestNodePromotion() {
+    setNodeRequestBusy(true);
+    try {
+      await adminAuthorityApi.requestNodePromotion();
+      setNodeRequestState("pending");
+      toast.success(t("network.requestNodeSent"), t("network.requestNodePending"));
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("network.requestNodeFailed"), e);
+    } finally {
+      setNodeRequestBusy(false);
+    }
+  }
+
+  async function relinquishNode() {
+    setRelinquishing(true);
+    try {
+      await adminAuthorityApi.relinquishNode();
+      toast.success(t("network.relinquishNodeStarted"));
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("network.relinquishNodeFailed"), e);
+    } finally {
+      setRelinquishing(false);
+      setRelinquishConfirm(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -334,25 +204,71 @@ export function NetworkSettings() {
                   })}
                 </Mono>
               </KeyValue>
-              <KeyValue label={t("network.role")}>{node.data.role}</KeyValue>
+              <KeyValue label={t("network.profile")}>
+                {t(`profile.${node.data.profile}`)}
+              </KeyValue>
+              {/* O antigo "Papel" (principal/nó) saiu do `/api/ui/node` com o
+                  modelo de confiança e deixava a célula em branco. O que existe
+                  hoje é a autoridade efetiva, e ela responde à mesma pergunta:
+                  esta máquina manda em quê. `profile: admin` sem concessão
+                  aparece como sem autoridade, que é o que ele é. */}
+              <KeyValue label={t("network.authority")}>
+                {node.data.authority_level
+                  ? t(`network.authority.${node.data.authority_level}`)
+                  : t("network.authorityNone")}
+              </KeyValue>
             </dl>
           )}
         </Panel>
 
-        <TlsPanel
-          tlsRequired={node.data?.tls_required ?? false}
-          authority={node.data?.tls_authority ?? false}
-          busy={tlsSaving}
-          onToggle={(next) => void toggleTls(next)}
-        />
+        {isInfer && (
+          <Panel>
+            <PanelHeader
+              eyebrow={t("network.profile")}
+              title={t("profile.infer")}
+              subtitle={t("network.inferRequestDetail")}
+              actions={
+                nodeRequestState === "pending" ? (
+                  <Badge tone="amber">{t("network.requestNodePending")}</Badge>
+                ) : (
+                  <Button
+                    variant="primary"
+                    loading={nodeRequestBusy}
+                    icon={<ArrowUp className="h-3.5 w-3.5" />}
+                    onClick={() => void requestNodePromotion()}
+                  >
+                    {t("network.requestNode")}
+                  </Button>
+                )
+              }
+            />
+            {nodeRequestState === "rejected" && (
+              <p className="border-t border-line px-5 py-3 text-sm text-rose">
+                {t("network.requestNodeRejected")}
+              </p>
+            )}
+          </Panel>
+        )}
 
-        <ThermalPanel
-          policy={node.data?.thermal}
-          busy={thermalSaving}
-          onSave={(next) => void saveThermal(next)}
-        />
-
-        <HuggingFaceSettingsPanel />
+        {node.data?.profile === "node" && (
+          <Panel>
+            <PanelHeader
+              eyebrow={t("network.profile")}
+              title={t("network.relinquishNode")}
+              subtitle={t("network.relinquishNodeDescription")}
+              actions={
+                <Button
+                  variant="danger"
+                  loading={relinquishing}
+                  icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
+                  onClick={() => setRelinquishConfirm(true)}
+                >
+                  {t("network.relinquishNode")}
+                </Button>
+              }
+            />
+          </Panel>
+        )}
 
         <Panel>
           <PanelHeader
@@ -441,25 +357,27 @@ export function NetworkSettings() {
                       <Dot tone={n.connected ? "aqua" : "neutral"} />
                       {n.connected ? t("network.connected") : t("network.away")}
                     </span>
-                    {!n.is_self && (
-                      <Button
-                        size="sm"
-                        variant={n.blocked ? "outline" : "danger"}
-                        icon={
-                          n.blocked ? (
-                            <Undo2 className="h-3.5 w-3.5" />
-                          ) : (
-                            <Ban className="h-3.5 w-3.5" />
-                          )
-                        }
-                        onClick={() =>
-                          n.blocked
-                            ? void setBlocked(n.node_id, false)
-                            : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })
-                        }
-                      >
-                        {n.blocked ? t("network.unblock") : t("network.block")}
-                      </Button>
+                    {isAdmin && !n.is_self && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant={n.blocked ? "outline" : "danger"}
+                          icon={
+                            n.blocked ? (
+                              <Undo2 className="h-3.5 w-3.5" />
+                            ) : (
+                              <Ban className="h-3.5 w-3.5" />
+                            )
+                          }
+                          onClick={() =>
+                            n.blocked
+                              ? void setBlocked(n.node_id, false)
+                              : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })
+                          }
+                        >
+                          {n.blocked ? t("network.unblock") : t("network.block")}
+                        </Button>
+                      </>
                     )}
                   </div>
                 ))}
@@ -484,6 +402,16 @@ export function NetworkSettings() {
         busy={busy}
         onConfirm={() => pending && void setBlocked(pending.id, true)}
         onCancel={() => setPending(null)}
+      />
+      <Confirm
+        open={relinquishConfirm}
+        title={t("network.relinquishNodeTitle")}
+        description={t("network.relinquishNodeDescription")}
+        confirmLabel={t("network.relinquishNode")}
+        tone="danger"
+        busy={relinquishing}
+        onConfirm={() => void relinquishNode()}
+        onCancel={() => setRelinquishConfirm(false)}
       />
     </>
   );

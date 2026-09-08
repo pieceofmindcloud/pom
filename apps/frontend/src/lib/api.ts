@@ -4,10 +4,10 @@
  * Paths are relative: in production the node serves this app on its own gateway
  * port, and in development Vite proxies the same paths (see `vite.config.ts`).
  *
- * Authentication is the cluster's **connection key** — the same credential the
- * operator pastes into a second machine's setup screen. `GET /api/ui/node`
- * returns it without authentication, so the panel can pick it up on load and
- * then sign the routes that do demand it (`/admin/*`, `/api/ui/apply`, `/v1`).
+ * The connection key authenticates the administrative surface. Inference uses
+ * the browser's dedicated `pom-[node_id]` API key, created by `/api/ui/chat-key`.
+ * The separate `X-POM-Access-Token` only authenticates a person to the
+ * administrative surface; it is kept in memory for this browser tab.
  */
 
 import { getActiveLocale } from "../i18n/locales";
@@ -26,6 +26,52 @@ import type {
 const KEY_STORAGE = storageKey("connectionKey");
 
 let connectionKey: string = localStorage.getItem(KEY_STORAGE) ?? "";
+let adminAccessToken = "";
+let chatApiKey: string | null = null;
+let chatApiKeyRequest: Promise<string> | null = null;
+
+export const ADMIN_ACCESS_TOKEN_HEADER = "X-POM-Access-Token";
+/**
+ * O nó nomeia a recusa administrativa neste cabeçalho (`backend/auth.rs`). A
+ * frase do corpo é para a pessoa e muda com o idioma; este valor é estável, e
+ * é ele que separa "a sessão administrativa acabou" de qualquer outro 401.
+ */
+export const ADMIN_ERROR_HEADER = "x-pom-admin-error";
+const ADMIN_SESSION_LOST = ["missing-token", "invalid-token"];
+
+const adminSessionLostListeners = new Set<() => void>();
+
+/**
+ * Avisa quando a sessão administrativa deixou de valer.
+ *
+ * A sessão vive na memória do nó e o token humano vive na memória desta aba:
+ * um reinício do nó, ou o fim das 8 h da sessão, derruba as duas sem que a
+ * aba perceba. Antes disso cada tela imprimia o 401 cru do servidor e o
+ * operador não tinha caminho de volta ao portão a não ser recarregar na mão.
+ */
+export function onAdminSessionLost(handler: () => void): () => void {
+  adminSessionLostListeners.add(handler);
+  return () => {
+    adminSessionLostListeners.delete(handler);
+  };
+}
+
+/** Descarta a credencial morta e acorda quem sabe voltar ao portão. */
+function noteAdminSessionLost(res: Response, path: string) {
+  if (!isAdminSurfacePath(path)) return;
+  const kind = res.headers.get(ADMIN_ERROR_HEADER);
+  if (!kind || !ADMIN_SESSION_LOST.includes(kind)) return;
+  if (adminAccessToken) setAdminAccessToken("");
+  for (const handler of adminSessionLostListeners) handler();
+}
+
+export function isAdminSurfacePath(path: string): boolean {
+  const pathname = path.split("?", 1)[0];
+  return pathname === "/api/ui"
+    || pathname.startsWith("/api/ui/")
+    || pathname === "/admin"
+    || pathname.startsWith("/admin/");
+}
 
 export function getConnectionKey(): string {
   return connectionKey;
@@ -37,6 +83,48 @@ export function setConnectionKey(key: string) {
   connectionKey = nextKey;
   if (connectionKey) localStorage.setItem(KEY_STORAGE, connectionKey);
   else localStorage.removeItem(KEY_STORAGE);
+}
+
+export function getAdminAccessToken(): string {
+  return adminAccessToken;
+}
+
+export function setAdminAccessToken(token: string) {
+  const nextToken = token ?? "";
+  if (nextToken !== adminAccessToken) clearConditionalCache();
+  adminAccessToken = nextToken;
+}
+
+export function clearAdminAccessToken() {
+  setAdminAccessToken("");
+}
+
+function isInferencePath(path: string): boolean {
+  const pathname = path.split("?", 1)[0];
+  return pathname === "/api/generate" || pathname === "/generate" || pathname.startsWith("/v1/");
+}
+
+export function forgetChatApiKey() {
+  chatApiKey = null;
+}
+
+/** Return the node-owned API key reserved for this UI's inference requests. */
+export async function ensureChatApiKey(force = false): Promise<string> {
+  if (!force && chatApiKey) return chatApiKey;
+  if (chatApiKeyRequest) return chatApiKeyRequest;
+  chatApiKeyRequest = (async () => {
+    const response = await request<{ key?: unknown }>("/api/ui/chat-key", {
+      method: "POST",
+    });
+    if (typeof response.key !== "string" || !response.key) {
+      throw new ApiError(502, "the chat API key was not provisioned");
+    }
+    chatApiKey = response.key;
+    return response.key;
+  })().finally(() => {
+    chatApiKeyRequest = null;
+  });
+  return chatApiKeyRequest;
 }
 
 /** Thrown for any non-2xx answer, carrying whatever the node explained. */
@@ -85,25 +173,42 @@ export async function request<T>(
   path: string,
   { method = "GET", body, auth = true, signal }: RequestOptions = {},
 ): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+  const inference = isInferencePath(path);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (inference) {
+      headers["X-API-Key"] = await ensureChatApiKey(attempt > 0);
+    } else if (auth && connectionKey) {
+      headers.Authorization = `Bearer ${connectionKey}`;
+    }
+    if (adminAccessToken && isAdminSurfacePath(path)) {
+      headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+    }
 
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
+    const res = await fetch(path, {
+      method,
+      headers,
+      credentials: "same-origin",
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    });
 
-  if (!res.ok) {
-    const { message, body: detail } = await explain(res);
-    throw new ApiError(res.status, message, detail);
+    if (inference && (res.status === 401 || res.status === 403) && attempt === 0) {
+      forgetChatApiKey();
+      continue;
+    }
+    if (!res.ok) {
+      noteAdminSessionLost(res, path);
+      const { message, body: detail } = await explain(res);
+      throw new ApiError(res.status, message, detail);
+    }
+    if (res.status === 204) return undefined as T;
+
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
   }
-  if (res.status === 204) return undefined as T;
-
-  const text = await res.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  throw new ApiError(502, "inference authentication failed");
 }
 
 type ConditionalCacheEntry = {
@@ -134,34 +239,41 @@ export async function requestConditional<T>(
   { auth = true, signal }: Pick<RequestOptions, "auth" | "signal"> = {},
 ): Promise<T> {
   const cached = conditionalCache.get(path);
-  const headers: Record<string, string> = {};
-  if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
-  if (cached) headers["If-None-Match"] = cached.etag;
+  const inference = isInferencePath(path);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {};
+    if (inference) headers["X-API-Key"] = await ensureChatApiKey(attempt > 0);
+    else if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+    if (adminAccessToken && isAdminSurfacePath(path)) {
+      headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+    }
+    if (cached) headers["If-None-Match"] = cached.etag;
 
-  let res = await fetch(path, { method: "GET", headers, signal });
+    let res = await fetch(path, { method: "GET", headers, credentials: "same-origin", signal });
+    if (inference && (res.status === 401 || res.status === 403) && attempt === 0) {
+      forgetChatApiKey();
+      continue;
+    }
+    // A 304 without a local value is not useful to a new tab. Recover with one
+    // unconditional read instead of exposing an impossible empty state.
+    if (res.status === 304 && !cached) {
+      res = await fetch(path, { method: "GET", headers: { ...headers, "If-None-Match": "" }, credentials: "same-origin", signal });
+    }
+    if (res.status === 304 && cached) return cached.data as T;
+    if (!res.ok) {
+      noteAdminSessionLost(res, path);
+      const { message, body: detail } = await explain(res);
+      throw new ApiError(res.status, message, detail);
+    }
 
-  // A 304 without a local value is not useful to a new tab. Recover with one
-  // unconditional read instead of exposing an impossible empty state.
-  if (res.status === 304 && !cached) {
-    res = await fetch(path, {
-      method: "GET",
-      headers: auth && connectionKey ? { Authorization: `Bearer ${connectionKey}` } : {},
-      signal,
-    });
+    const text = await res.text();
+    const data = (text ? JSON.parse(text) : undefined) as T;
+    const etag = res.headers.get("ETag");
+    if (etag) conditionalCache.set(path, { etag, data });
+    else conditionalCache.delete(path);
+    return data;
   }
-
-  if (res.status === 304 && cached) return cached.data as T;
-  if (!res.ok) {
-    const { message, body: detail } = await explain(res);
-    throw new ApiError(res.status, message, detail);
-  }
-
-  const text = await res.text();
-  const data = (text ? JSON.parse(text) : undefined) as T;
-  const etag = res.headers.get("ETag");
-  if (etag) conditionalCache.set(path, { etag, data });
-  else conditionalCache.delete(path);
-  return data;
+  throw new ApiError(502, "inference authentication failed");
 }
 
 export const api = {
@@ -343,16 +455,21 @@ export function listDeployments() {
 }
 
 /**
- * Reimplanta mexendo só nos parâmetros.
+ * Reimplanta um `deploy_id` que já existe.
  *
  * Mesmo `deploy_id`, mesmas máquinas, mesmas faixas: as máquinas recarregam o
- * mesmo arquivo com outra configuração. Nada é planejado nem copiado, e quem
- * estiver usando `modelo@deploy_id` continua chegando no mesmo lugar.
+ * mesmo arquivo. Nada é planejado nem copiado, e quem estiver usando
+ * `modelo@deploy_id` continua chegando no mesmo lugar.
+ *
+ * `version` reimplanta uma versão já registrada (sem anexar outra). `params`
+ * reimplanta com parâmetros novos: iguais aos de uma versão existente reativam
+ * aquela versão, diferentes anexam uma versão nova. Informe um dos dois.
  */
 export function redeployDeployment(
   deployId: string,
   body: {
-    params: RuntimeParams;
+    params?: RuntimeParams;
+    version?: number;
     per_node?: Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>;
   },
 ) {
@@ -391,21 +508,33 @@ export async function* streamSse(
   body: unknown,
   signal?: AbortSignal,
 ): AsyncGenerator<string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-  };
-  if (connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
-
-  const res = await fetch(path, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok) {
-    const { message, body: detail } = await explain(res);
-    throw new ApiError(res.status, message, detail);
+  let res: Response | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "X-API-Key": await ensureChatApiKey(attempt > 0),
+    };
+    if (adminAccessToken && isAdminSurfacePath(path)) {
+      headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+    }
+    res = await fetch(path, {
+      method: "POST",
+      headers,
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+      signal,
+    });
+    if ((res.status === 401 || res.status === 403) && attempt === 0) {
+      forgetChatApiKey();
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) {
+    if (res) noteAdminSessionLost(res, path);
+    const { message, body: detail } = await explain(res!);
+    throw new ApiError(res?.status ?? 502, message, detail);
   }
   if (!res.body) {
     throw new ApiError(

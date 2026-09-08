@@ -394,7 +394,6 @@ async fn spawn_hop(hop: Hop) -> String {
 
 // ── O nó, com as rotas `/v1` de verdade num socket ────────────────────────────
 
-const CHAVE: &str = "chave";
 const API_CHAVE: &str = "api-chave";
 
 struct No {
@@ -492,17 +491,17 @@ async fn no_with_peer_capacities(
     config.max_new_tokens = deployment_max_new_tokens;
     config.n_ctx = n_ctx;
     state.runtime.seed_config_for_test(config).await;
-    {
-        let mut auth = state.auth.write().await;
-        auth.api_keys.push(crate::config::ApiKey {
-            id: "claude-code-contract".into(),
-            key: API_CHAVE.into(),
-            label: "claude-code".into(),
-            node_id: "eu".into(),
-            active: true,
-            created_at: String::new(),
-        });
-    }
+    let api_key = crate::config::ApiKey {
+        id: "claude-code-contract".into(),
+        key: API_CHAVE.into(),
+        label: "claude-code".into(),
+        node_id: "eu".into(),
+        origin_node_id: "eu".into(),
+        active: true,
+        created_at: String::new(),
+    };
+    state.database.insert_api_key(&api_key).unwrap();
+    state.auth.write().await.api_keys.push(api_key);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -548,7 +547,7 @@ fn pedido(max_tokens: u32, stream: bool, com_ferramenta: bool) -> Value {
 async fn post_json(no: &No, body: Value) -> Value {
     reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&body)
         .send()
         .await
@@ -563,7 +562,7 @@ async fn post_json(no: &No, body: Value) -> Value {
 async fn post_messages(no: &No, body: Value) -> Value {
     reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&body)
         .send()
         .await
@@ -576,7 +575,7 @@ async fn post_messages(no: &No, body: Value) -> Value {
 async fn eventos_messages(no: &No, body: Value) -> Vec<Value> {
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&body)
         .send()
         .await
@@ -707,7 +706,7 @@ impl Fluxo {
 async fn post_sse(no: &No, body: Value) -> Fluxo {
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&body)
         .send()
         .await
@@ -1216,7 +1215,7 @@ async fn the_advertised_completion_ceiling_is_the_request_ceiling() {
 
     let corpo: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1350,7 +1349,7 @@ async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
 
     let models: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1365,7 +1364,7 @@ async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&pedido(32_000, false, false))
         .send()
         .await
@@ -1431,7 +1430,7 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
 
     let models: Value = reqwest::Client::new()
         .get(format!("{}/v1/models", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .send()
         .await
         .expect("resposta HTTP")
@@ -1446,7 +1445,7 @@ async fn a_32000_deployment_leg_uses_the_context_derived_capacity() {
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&pedido(32_000, false, false))
         .send()
         .await
@@ -1754,7 +1753,7 @@ async fn a_request_above_the_removed_absolute_default_uses_runtime_context() {
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&pedido(100_000, false, false))
         .send()
         .await
@@ -1881,7 +1880,7 @@ async fn a_task_budget_below_the_minimum_is_refused() {
 
     let resposta = reqwest::Client::new()
         .post(format!("{}/v1/messages", no.base))
-        .bearer_auth(CHAVE)
+        .bearer_auth(API_CHAVE)
         .json(&json!({
             "model": "lab",
             "max_tokens": 100,

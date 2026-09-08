@@ -12,8 +12,8 @@
 #
 # O bundle é um invólucro fino: o binário continua sendo o mesmo programa de
 # linha de comando, e `POM.app/Contents/MacOS/pom` pode ser chamado direto com
-# os mesmos argumentos. `LSUIElement` mantém o nó fora do Dock, porque abrir o
-# app não abre janela nenhuma - a interface é web, na porta do gateway.
+# os mesmos argumentos. `LSUIElement` mantém o nó fora do Dock; a interface
+# principal continua web, com acesso rápido pelo item nativo da barra de status.
 set -euo pipefail
 
 raiz="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,15 +23,30 @@ destino="${2:-$raiz/dist-release/POM.app}"
 nome=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "$raiz/brand.json")
 slug=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["slug"])' "$raiz/brand.json")
 icns="$raiz/$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["app_icons"]["macos"])' "$raiz/brand.json")"
+# A arte do item de barra e as traduções da tela nativa moram juntas.
+recursos_macos="$raiz/assets/brand/macos"
+status_icon="$recursos_macos/pom-status-template.png"
 
 [ -x "$bin" ] || { echo "binário não encontrado: $bin" >&2; exit 1; }
 [ -f "$icns" ] || { echo "ícone não encontrado: $icns" >&2; exit 1; }
+# Um item de barra sem arte cai para um rótulo de texto, o que é uma entrega
+# pior e silenciosa. `scripts/derive-macos-status-icon.py` gera esta arte.
+[ -f "$status_icon" ] || {
+    echo "ícone da barra não encontrado: $status_icon" >&2
+    echo "gere-o com: python3 scripts/derive-macos-status-icon.py" >&2
+    exit 1
+}
 
 rm -rf "$destino"
 mkdir -p "$destino/Contents/MacOS" "$destino/Contents/Resources"
 
 cp "$bin" "$destino/Contents/MacOS/$slug"
 cp "$icns" "$destino/Contents/Resources/$slug.icns"
+# As três resoluções entram com o nome original: o lado nativo procura as
+# companheiras `@2x` e `@3x` ao lado da arte 1x que o Rust lhe indica.
+cp "$recursos_macos"/pom-status-template*.png "$destino/Contents/Resources/"
+find "$recursos_macos" -mindepth 1 -maxdepth 1 -type d -name '*.lproj' \
+    -exec cp -R {} "$destino/Contents/Resources/" \;
 
 versao=$(grep -m1 '^version' "$raiz/Cargo.toml" | sed 's/[^0-9.]//g')
 versao=${versao:-0.1.0}

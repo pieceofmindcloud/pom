@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   formatMessage,
   localizeServerText,
@@ -53,6 +53,18 @@ describe("formatMessage", () => {
       "Encontrar modelos no Hugging Face",
     );
   });
+
+  it("returns a safe fallback instead of throwing when an ICU value is missing", () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(formatMessage("en", "keys.revoke")).toBe("Revoke {label}");
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Could not format locale message "keys.revoke"'),
+      expect.anything(),
+    );
+
+    warning.mockRestore();
+  });
 });
 
 /**
@@ -74,5 +86,16 @@ describe("localizeServerText", () => {
     expect(localizeServerText("en", "conferindo o arquivo na origem")).toBe(
       "checking the file at the source",
     );
+  });
+
+  it("traduz as recusas de autoridade da implantação", () => {
+    expect(localizeServerText(
+      "en",
+      "somente o administrador pode adicionar uma máquina à implantação",
+    )).toBe("Only the administrator can add a machine to a deployment.");
+    expect(localizeServerText(
+      "en",
+      "somente o administrador pode desimplantar a implantação",
+    )).toBe("Only the administrator can undeploy a deployment.");
   });
 });

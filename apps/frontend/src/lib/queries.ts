@@ -8,9 +8,11 @@
  * node nobody is watching.
  */
 import { useQueries, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import {
   ApiError,
   api,
+  onAdminSessionLost,
   getRemoteModelDetails,
   getRemoteModelProviderStatus,
   getRemoteModelStorage,
@@ -23,19 +25,26 @@ import { modelDownloadJobs } from "./modelProvider";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
   AdminNode,
+  AdminAccessInfo,
+  AdminAccessStatus,
+  AdminAuthorityView,
   ApiKey,
   CacheTypesResponse,
   CatalogResponse,
   ChatTelemetryNetwork,
   ClusterView,
+  ClusterLogResponse,
+  InferenceHeadsResponse,
   Job,
   NodeInfo,
+  NetworkOffer,
   PathsResponse,
   PeerCatalog,
   PeerRuntime,
   RequestLogResponse,
+  RequestStats,
   TransferJob,
-  TransferOffer,
+  TrustAnchorView,
 } from "./types";
 
 /**
@@ -56,6 +65,9 @@ async function optional<T>(promise: Promise<T>, fallback: T): Promise<T> {
 
 export const keys = {
   node: ["node"] as const,
+  adminAccess: ["admin-access"] as const,
+  adminSurface: ["admin-surface"] as const,
+  adminAccessInfo: ["admin-access-info"] as const,
   cluster: ["cluster"] as const,
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
@@ -64,14 +76,19 @@ export const keys = {
   jobs: ["jobs"] as const,
   transfers: ["transfers"] as const,
   offers: ["offers"] as const,
+  adminAuthority: ["admin-authority"] as const,
+  trustAnchor: ["trust-anchor"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
+  requestStats: ["request-stats"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
+  inferenceHeads: (model: string) => ["inference-heads", model] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
+  clusterLogs: (deployId: string | undefined) => ["cluster-logs", deployId ?? "all"] as const,
   remoteModels: (query: string, ggufOnly: boolean, page: number) =>
     ["remote-models", query, ggufOnly, page] as const,
   remoteModelDetails: (repoId: string, revision: string | undefined) =>
@@ -113,7 +130,78 @@ export function useIsSetupMode() {
   }).data;
 }
 
-export function useNode() {
+export type AdminSurfaceState = "setup" | "available" | "requires-token" | "local-only";
+
+/**
+ * One probe decides which shell is safe to render. A valid server session
+ * makes `/api/ui/node` succeed after a reload, so the token gate does not
+ * return merely because React state was recreated by F5.
+ */
+export function useAdminSurface() {
+  const client = useQueryClient();
+  /*
+   * A sonda decide qual casca é segura desenhar e roda uma vez por
+   * carregamento (`staleTime: Infinity`). Só que a sessão administrativa vive
+   * na memória do nó: um reinício, ou as 8 h de validade, a derrubam com a aba
+   * aberta. Sem refazer a sonda, cada tela passava a imprimir o
+   * "missing administrative access token" cru no lugar do seu conteúdo, e o
+   * operador não tinha caminho de volta ao portão que não fosse recarregar na
+   * mão.
+   */
+  useEffect(
+    () =>
+      onAdminSessionLost(() => {
+        void client.invalidateQueries({ queryKey: keys.adminSurface });
+      }),
+    [client],
+  );
+  return useQuery<AdminSurfaceState>({
+    queryKey: keys.adminSurface,
+    queryFn: async () => {
+      try {
+        await api.get<unknown>("/api/ui/node", { auth: false });
+        return "available";
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return "setup";
+        if (error instanceof ApiError && error.status === 403) {
+          try {
+            const access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
+            if (access.admin_exposure === "localhost") return "local-only";
+          } catch {
+            // A transient policy read must not expose a guessed UI state.
+          }
+        }
+        return "requires-token";
+      }
+    },
+    retry: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** Public metadata needed before the app knows whether to show the token gate. */
+export function useAdminAccess() {
+  return useQuery({
+    queryKey: keys.adminAccess,
+    queryFn: () => api.get<AdminAccessStatus>("/api/access", { auth: false }),
+    retry: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** Authenticated administrative state, including the token for the settings page. */
+export function useAdminAccessInfo() {
+  return useQuery({
+    queryKey: keys.adminAccessInfo,
+    queryFn: () => api.get<AdminAccessInfo>("/api/ui/access", { auth: false }),
+    retry: false,
+    staleTime: 10_000,
+  });
+}
+
+export function useNode(enabled = true) {
   return useQuery({
     queryKey: keys.node,
     queryFn: async () => {
@@ -123,6 +211,7 @@ export function useNode() {
       if (node.connection_key) setConnectionKey(node.connection_key);
       return node;
     },
+    enabled,
     refetchInterval: 4000,
   });
 }
@@ -200,6 +289,21 @@ export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
     retry: false,
     refetchInterval: 15000,
     staleTime: 10000,
+  });
+}
+
+/** Cabeças do modelo que este nó infer pode escolher, sem abrir a rede toda. */
+export function useInferenceHeads(model: string, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.inferenceHeads(model),
+    queryFn: () =>
+      api.get<InferenceHeadsResponse>(
+        `/api/ui/infer/heads?model=${encodeURIComponent(model)}`,
+      ),
+    enabled: enabled && Boolean(model),
+    retry: false,
+    refetchInterval: 15_000,
+    staleTime: 5_000,
   });
 }
 
@@ -285,6 +389,19 @@ export function useDeployments() {
   });
 }
 
+/** Logs de processo em ordem de chegada ao principal. */
+export function useClusterLogs(deployId?: string) {
+  const query = new URLSearchParams();
+  if (deployId) query.set("deploy_id", deployId);
+  const suffix = query.toString();
+  return useQuery<ClusterLogResponse>({
+    queryKey: keys.clusterLogs(deployId),
+    queryFn: () =>
+      api.get<ClusterLogResponse>(`/api/ui/cluster-logs${suffix ? `?${suffix}` : ""}`),
+    refetchInterval: 1000,
+  });
+}
+
 export function useTransfers() {
   return useQuery({
     queryKey: keys.transfers,
@@ -308,17 +425,45 @@ export function useOffers() {
     queryKey: keys.offers,
     queryFn: () =>
       optional(
-        api.getConditional<{ offers: TransferOffer[] }>("/api/transfer/offers"),
+        api.getConditional<{ offers: NetworkOffer[] }>("/api/transfer/offers"),
         { offers: [] },
-      ),
+      ).then((response) => ({
+        offers: response.offers.map((offer) =>
+          offer.kind ? offer : { ...offer, kind: "slice" as const },
+        ),
+      })),
     refetchInterval: (query) => offersPollInterval(query.state.data),
   });
 }
 
-export function useAdminNodes() {
+/** Authority state is presentation data; mechanism details stay server-side. */
+export function useAdminAuthority(enabled = true) {
+  return useQuery({
+    queryKey: keys.adminAuthority,
+    queryFn: () => api.get<AdminAuthorityView>("/api/ui/network/admin-authority"),
+    enabled,
+    refetchInterval: 8000,
+  });
+}
+
+/**
+ * O estado de ancoragem desta máquina.
+ *
+ * Sem polling curto: uma raiz de confiança muda por um gesto do operador, não
+ * sozinha, e a tela refaz a leitura depois de instalar.
+ */
+export function useTrustAnchor() {
+  return useQuery({
+    queryKey: keys.trustAnchor,
+    queryFn: () => api.get<TrustAnchorView>("/api/ui/network/trust-anchor"),
+  });
+}
+
+export function useAdminNodes(enabled = true) {
   return useQuery({
     queryKey: keys.adminNodes,
     queryFn: () => api.get<AdminNode[]>("/admin/nodes"),
+    enabled,
     refetchInterval: 8000,
   });
 }
@@ -368,6 +513,31 @@ export function useRequestLog(
         },
       ),
     refetchInterval: 3000,
+  });
+}
+
+export function useRequestStats(
+  params: {
+    node_id?: string;
+    api_key?: string;
+    prompt?: string;
+    from?: string;
+    to?: string;
+  } = {},
+  enabled = true,
+) {
+  const search = new URLSearchParams();
+  if (params.node_id) search.set("node_id", params.node_id);
+  if (params.api_key) search.set("api_key", params.api_key);
+  if (params.prompt) search.set("prompt", params.prompt);
+  if (params.from) search.set("from", params.from);
+  if (params.to) search.set("to", params.to);
+  const qs = search.toString();
+  return useQuery({
+    queryKey: [...keys.requestStats, qs],
+    enabled,
+    queryFn: () => api.get<RequestStats>(`/api/ui/requests/stats${qs ? `?${qs}` : ""}`),
+    refetchInterval: enabled ? 30_000 : false,
   });
 }
 
@@ -452,6 +622,8 @@ export function invalidateAfterAction(qc: QueryClient) {
     keys.node,
     keys.cluster,
     keys.jobs,
+    keys.offers,
+    keys.adminAuthority,
     keys.adminNodes,
     keys.models,
     keys.remoteModelProviderStatus,

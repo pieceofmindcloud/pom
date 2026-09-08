@@ -2,7 +2,7 @@
 
 Transportes de descoberta e endereçamento do nó. Dois mundos no mesmo diretório:
 o UDP nativo (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`) e o
-libp2p/pkarr para a internet (`discovery.rs`, `pkarr_node.rs`, `bitswap.rs`).
+libp2p/pkarr para a internet (`discovery.rs`, `pkarr_node.rs`).
 `main.rs` monta `Network` e `Discovery`; `gateway.rs` e `routing/pipeline.rs`
 consomem `PeerInfo` e `RouteTable`. A regra da casa: a decisão de endereço
 pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `RouteTable`).
@@ -19,27 +19,39 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   inferência pelo enxame libp2p como transporte preferencial quando o peer
   anuncia essa capability. Se o túnel falhar por transporte, o relay usa o
   cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
-  corpo e cabeçalhos, inclusive a credencial da porta de inferência;
+  corpo e cabeçalhos, inclusive a `connection_key` e o marcador interno da
+  porta de inferência;
   `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
   sonda `/health`. POSTs sem `Content-Type` recebem o padrão binário, mas um
   `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
   mesmo túnel Noise.
-- `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
-  (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
-  atende requisição (ver Defeitos).
+- `cluster_logs.rs` - captura limitada do `tracing` e transporte request/response
+  separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão e só o
+  principal ingere e persiste lotes.
+- `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
+  campo anunciado só dispara a leitura da política no principal.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
-  (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência. Põe peers
+  (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e o
+  protocolo de logs do cluster. Põe peers
   no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
   antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
-  dual-stack, gossip, lifecycle de peers, varredura de descoberta.
+  dual-stack, gossip, lifecycle de peers, varredura de descoberta. O perfil
+  anunciado por `with_identity` pode ser atualizado por `set_profile`; a
+  capacidade de admin não vem do anúncio, mas da cadeia em `admin_trust.rs`.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
-  quem colcheta IPv6.
+  quem colcheta IPv6, além da preferência e da quarentena temporária de rotas
+  que falharam. `route_order` apenas reordena os candidatos: mesmo quando
+  todos estão em quarentena, devolve a lista para que a tentativa real decida.
+  O cliente destinado a outro nó marca requests de controle com
+  `x-pom-internal-node`, usa a `connection_key` nas rotas internas de
+  inferência e limita a abertura TCP a 2 s; o cliente `plain()` para Ollama e
+  loopback não envia essa marca.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
@@ -48,10 +60,17 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `tls_policy.rs` - a catraca: o campo `tls` do Announce é gatilho, e só a
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
+- `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
+  `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
+  é a fonte, e falha preserva o valor local.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
-  quando o peer muda seus endereços anunciados. `RttTable` guarda a medição
-  direcional deste nó para cada destino, sem inferir o sentido inverso.
+  quando o peer muda seus endereços anunciados. Guarda também a **memória de
+  falha por `(node_id, URL)`**, que serve tanto ao pipeline quanto ao plano de
+  controle - ver `docs/subsystems/rede-p2p.md`, "Endereço que deixou de
+  responder". `RttTable` guarda a medição direcional deste nó para cada
+  destino, sem inferir o sentido inverso, e expõe snapshots com idade: só os
+  RTTs com menos de cinco minutos entram em seleção.
 
 ## Funções-chave
 
@@ -60,15 +79,48 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `IPV6_V6ONLY` desligado **antes** do bind (depois não tem efeito; no Windows o
   padrão é 1 e um nó lá não veria peer IPv4 nenhum). Sem IPv6 no SO, cai para
   `0.0.0.0`.
+- `Network::testkit` - socket UDP isolado em `127.0.0.1:0`, com o destino do
+  anúncio local preso à loopback; `testkit_with_broadcast_addr` permite injetar
+  um endpoint loopback para observar o datagrama e recusa o broadcast global.
 - `Network::start` - spawna o receive loop, o loop de gossip (5 s: announce
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
   de rotas e RTT (30 s, sonda lenta não segura o gossip). A política TLS inicial
-  é aplicada antes de `start`; a task mede o RTT por libp2p quando o peer
-  anuncia o túnel e usa o health HTTP apenas para peers antigos.
+  é aplicada antes de `start`; a task sonda `/health` na porta de inferência de
+  cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel. Cada
+  `self_announce` enumera as interfaces uma vez por anúncio, portanto a
+  troca de IPv6 temporário entra no gossip seguinte sem sondagem de rede. O
+  tratamento de cada datagrama é protegido por `catch_unwind`, com contexto no
+  aviso e limite de frequência para não inundar o log se o pânico se repetir.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
-  origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
-  `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. Nó destacado
-  (`is_detached`) não aprende nem responde.
+  origem e chama `merge_observed` com o endereço efetivo do socket), PeerRequest
+  (responde Announce imediato + `PeerList` fatiado), PeerList, Heartbeat,
+  LocalDiscover. O `PeerList` também
+  atualiza um peer já conhecido quando o snapshot é mais novo, preservando o
+  estado local de verificação e os candidatos de endereço **que este nó ainda
+  não provou mortos**; snapshots antigos são
+  ignorados para não reverter a cobertura. Nó destacado (`is_detached`) não
+  aprende nem responde.
+- `Network::request_peer_addresses` - quando **todo** endereço conhecido de um
+  peer está desacreditado, manda `PeerRequest` aos bootstrap nodes e aos outros
+  peers vivos e poda os candidatos mortos da entrada local, para que o
+  `Announce` seguinte a repovoe. Uma vez por `REDISCOVERY_INTERVAL` (30 s) por
+  peer; `is_rediscovering` é o que o Painel lê para dizer "reencontrando" em vez
+  de "não dá para ler", e ele expira em `REDISCOVERY_GIVE_UP` (90 s) - promessa
+  sem prazo seria o mesmo aviso desonesto com outra palavra. `note_peer_read`
+  encerra a busca quando o par volta a ser lido. Endereços IPv6 temporários
+  rodam sozinhos, e o cluster tem de aguentar isso sem `--advertise-addr`.
+- `Network::cleanup_dead_peers` - além de remover o peer expirado, chama
+  `RouteTable::forget` nele, para que um nó que volta com o mesmo endereço não
+  nasça desacreditado.
+- `PeerInfo::dialable_addrs` - todos os endereços UDP válidos, com deduplicação,
+  para que descoberta e reencontro tentem os candidatos antes de desistir.
+- `PeerInfo::gateway_candidates` / `gateway_url` - uma URL de gateway por
+  endereço conhecido, com `addr` primeiro (fato conhecido: é de onde os pacotes
+  do peer chegaram) e os candidatos anunciados depois; `gateway_url` é só a
+  primeira. Enquanto era só `peer.addr`, o plano de controle inteiro (Painel,
+  `deploy`, transferência, `devupdate`) tinha um endereço e nenhum plano B.
+  Mesma disciplina de `pipeline::resolve_step_url`: palpite não passa na frente
+  de fato conhecido.
 - `Network::discovery_sweep` - PeerRequest rotativo: 3 por varredura, varredura
   a cada 6 tiques (30 s), rodízio cobre o cluster inteiro. É o que aprende peers
   transitivos fora da LAN; sem isto a descoberta é um retrato do arranque.
@@ -83,11 +135,19 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `detach`/`rejoin` - tirar/voltar o nó da rede sem derrubar a UI/API
   (`--no-discovery`); rejoin refaz bootstrap + announce.
 - `self_announce` - monta o Announce; anuncia zero camadas quando não há
-  assignment, para que nó configurado pela UI ainda seja visível. O endereço
-  segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
-  atual das interfaces com estável antes de temporário, endereço observado por
-  `identify`, demais interfaces locais e o sentinela `0.0.0.0`. Bridges e pares
-  virtuais de container não entram nos candidatos automáticos. A capability
+  assignment, para que nó configurado pela UI ainda seja visível. Relê as
+  interfaces uma vez a cada anúncio, a cada 5 s no gossip e também em anúncios
+  imediatos; é uma leitura local de `ifconfig`/`ip`, sem sonda de rede. O mesmo
+  snapshot alimenta `addr` e `addr_candidates`. O endereço segue a mesma ordem
+  em UDP e gossip: fixação explícita, endereço público atual das interfaces com
+  estável antes de temporário, endereço observado por `identify`, demais
+  interfaces locais e o sentinela `0.0.0.0`. Bridges e pares virtuais de
+  container não entram nos candidatos automáticos. Quando o
+  servidor de inferência está carregado, o anúncio também inclui
+  `inference/remote-token-stream-v1`, que permite ao gateway remoto pedir o
+  laço de decode com callbacks em lotes limitados. O mesmo anúncio leva
+  `transport/link-v1`, a ligação persistente entre andares (`/v1/link`), que é
+  servida pelo mesmo router das demais rotas `/v1`. A capability
   `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
   um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
   queda não anunciam capacidade de inferência. `runtime_capacity` só entra
@@ -95,6 +155,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `max_new_tokens` (perna); apply, erro, stop e thermal unload limpam o campo
   antes de anunciar. Não existe anúncio ou fallback
   para formatos de frame anteriores, porque o produto ainda não foi lançado.
+  `cluster_logs_enabled` também é anunciado, mas só como gatilho da catraca:
+  a política efetiva vem de uma busca autenticada no principal.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
   (`None` = nó sem TP). Cada `TpMember` leva o `PeerId`, os candidatos de
@@ -113,8 +175,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   Kademlia; Identify grava listen_addrs e, para relays conectados, escuta no
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
-  que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT/
-  Bitswap só logam.
+  que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
+  só logam. O request/response de logs usa um behaviour próprio,
+  responde apenas no nó principal e nunca retransmite por outro peer.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
@@ -122,16 +185,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `observed_addr` do `identify`. É o "qual é o meu IP público" sem dependência
   de STUN. Recusa endereço privado/CGNAT (`addrs::is_private_or_local`) e
   qualquer coisa que não seja `/ip4|ip6/.../tcp/<porta>`.
-- `announce_message_id` - **como o gossipsub distingue dois anúncios, e sem ela
-  ele não distingue nada.** A função padrão do libp2p é `source + sequence`, e
-  as duas são `None` sob `MessageAuthenticity::Anonymous`, que é o modo deste
-  swarm: todo anúncio saía com o id constante `15R0` (`31355230` no log). O
-  efeito medido em 2026-08-16, no cluster de verdade e com a malha formada
-  (4 peers grafados): **zero** mensagem de gossipsub aceita em 90 s, e todo
-  publish depois do primeiro recusado com `Not publishing a message that has
-  already been published`. Hoje o id é hash do tópico + payload; o `timestamp`
-  que o `self_announce` já grava faz cada anúncio diferir. É configuração
-  local, então um nó atualizado convive com um que ainda usa o padrão.
+- `announce_message_id` - id determinístico do tópico + payload. O gossipsub
+  agora usa autenticação assinada e validação estrita; `handle_event` confere
+  que o `libp2p_peer_id` declarado no `Announce` é o `source` autenticado antes
+  de inserir o peer. Essa ligação de transporte não substitui a cadeia
+  Ed25519 de autoridade administrativa.
 
 `addrs.rs`:
 - `filter_candidates` - descarta loopback/link-local/deprecated, estável antes
@@ -167,20 +225,32 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `choose_route` - melhor candidato vivo; só troca de rota atual se o ganho
   passar de 25% relativo **e** 2 ms absolutos (medido 9,6 vs 7,2 ms
   MacBook↔ksia não pode trocar a cada ciclo).
-- `RouteTable::measure_peer` - sonda `GET /health` num endpoint real do peer,
-  preferindo a porta de gateway porque ela continua disponível sem modelo ou
-  quando a porta de inferência está restrita. A escolha gravada continua sendo
-  a URL de inferência correspondente. A sonda aceita o certificado autoassinado
-  e o hostname do peer; isso não altera o cliente pinado usado pela inferência.
+- `RouteTable::measure_peer` - sonda `GET /health` na própria URL de inferência
+  anunciada, não no gateway. Assim um gateway saudável não promove uma porta
+  de inferência que engole SYN. A sonda aceita o certificado autoassinado e o
+  hostname do peer; isso não altera o cliente pinado usado pela inferência.
   Timeout de 3 s e intervalo de 5 min.
-- `RouteTable::mark_failure` - tira a rota de uso na hora quando uma requisição
-  real falhou naquele endereço, sem esperar o ciclo.
+- `RouteTable::mark_failure` / `mark_success` / `is_failed` / `usable` - a
+  memória de falha, chaveada por `(node_id, URL)` e válida por 5 min. Grava
+  quando uma **requisição real** falhou naquele endereço (sonda lenta não
+  escreve: o timeout dela é apertado demais e desacreditar tudo deixaria
+  `resolve_step_url` sem rota). Como a chave é a URL inteira, a porta de
+  inferência e a do gateway do mesmo host convivem - e é a mesma memória que a
+  leitura do Painel usa, em vez de um mecanismo paralelo. `usable` devolve os
+  candidatos ainda vivos; vazio significa "todo endereço deste par falhou", e o
+  chamador deve pedir o atual em vez de insistir.
+- `RouteTable::invalidate` **preserva** a memória de falha; só `forget` a apaga.
+  Apagá-la em `invalidate` significava que a rotação de IPv6 - o evento que mata
+  o endereço - era também o que apagava a prova de que ele morreu.
+- `RouteTable::host_is_discredited` - a mesma pergunta por host, para o gossip
+  decidir se herda um candidato antigo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
-  "ainda não medido", e o chamador cai no `inference_url` do plano.
+  "ainda não medido ou vencido", e o chamador cai no `inference_url` do plano.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;
-  `libp2p` é a medição normal e `direct-health` identifica compatibilidade com
-  peers antigos. O endpoint autenticado `/api/ui/network/rtt` publica esse
-  snapshot com o `source_node_id` para o planejador montar arestas direcionais.
+  `libp2p` é a medição normal e `direct-health` identifica o fallback de sonda.
+  `fresh_snapshot` é a única fonte de RTT para seleção; `snapshot_with_age`
+  conserva a idade para diagnósticos. O endpoint autenticado
+  `/api/ui/network/rtt` publica só medições frescas com `source_node_id`.
 
 `pkarr_node.rs`:
 - `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma
@@ -189,12 +259,6 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (multiaddr + faixa de camadas + `is_relay`); falha vira `None`, nunca erro.
 - `detect_local_ip` - IP de saída por socket UDP conectado a 8.8.8.8:80 (nada é
   enviado).
-
-`bitswap.rs`:
-- `BitswapCodec` - enquadramento `[4 bytes BE len][JSON]` sobre o
-  request/response do libp2p.
-- `bitswap_behaviour` - behaviour request/response para `BSWP_PROTOCOL`
-  (`/pom/bitswap/1.0.0`).
 
 ## Ligações
 
@@ -206,31 +270,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (consome `PeerInfo`/`alive_peers`).
 - **Chama**: `network.rs` ← `identity.rs` (via main), `addrs.rs`
   (`self_addr_candidates`), `route.rs` (`Network.routes`); `discovery.rs` →
-  `network.rs::insert_peer` e `bitswap.rs`.
+  `network.rs::insert_peer`.
 
-## Defeitos anotados
+## Maintaining this file
 
-- **bitswap é protocolo órfão**: `bitswap_behaviour` está no swarm e os eventos
-  só são logados em `debug!` (`discovery.rs::handle_event`) - nenhuma requisição
-  é atendida, nenhum bloco é servido. A transferência real vai por HTTP Range
-  (`backend/transfer.rs`). O protocolo existe mas ninguém implementa o lado
-  servidor.
-
-- **Um hop inalcançável custa o timeout de `connect` do sistema antes de o
-  túnel ser tentado**: `relay::send_frame` fixa 600 s por requisição (sobrepõe
-  o do cliente), então quem decide é o SO - medido em **75 s** no macOS contra
-  um endereço que engole os SYN (`relay::tests::the_tunnel_carries_a_real_frame_to_a_live_peer`).
-  O desvio pelo túnel funciona e é rápido depois disso; o problema é o tempo
-  até chegar nele.
-- **O `receive_loop` não tem isolamento de pânico**: ele aguarda
-  `handle_message` em linha, então um pânico ali mata a task e o nó **para de
-  receber UDP para sempre**, enquanto HTTP, gossip e TUI seguem saudáveis - a
-  única pista é o socket com a fila de recepção cheia. Aconteceu de verdade em
-  2026-08-16 (`&node_id[..12]` num id de dois caracteres, corrigido com
-  `short()`), e derrubou os dois nós do captain que ficam na porta 42777 da LAN.
-  O guarda contra o próximo pânico não existe.
-- **A suíte de testes transmite na LAN de verdade**: `broadcast_local` manda
-  para `255.255.255.255:42777` qualquer que seja a porta do nó, e há teste que
-  chama `announce` num nó não destacado. Rodar `cargo test` ao lado de um
-  cluster vivo injeta mensagens de teste nele - foi assim que o id `"eu"` chegou
-  ao nó do captain.
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

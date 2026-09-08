@@ -533,6 +533,7 @@ async fn chat_completions(
     // ver `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
     let prompt_tokens = approx_tokens(&prompt);
+    let inference_token = auth.token().to_string();
     let caller = auth.into_caller();
 
     let output_limit = state
@@ -572,6 +573,7 @@ async fn chat_completions(
     if req.stream {
         stream_response(
             state,
+            inference_token.clone(),
             caller.clone(),
             "/v1/chat/completions",
             model,
@@ -588,6 +590,7 @@ async fn chat_completions(
     } else {
         blocking_response(
             state,
+            inference_token,
             caller,
             "/v1/chat/completions",
             model,
@@ -619,6 +622,7 @@ async fn completions(
     let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let prompt_tokens = approx_tokens(&req.prompt);
+    let inference_token = auth.token().to_string();
     let output_limit = state
         .request_output_limit_for_model(Some(&model), requested_max_tokens, &req.prompt)
         .await;
@@ -638,6 +642,7 @@ async fn completions(
     if req.stream {
         stream_response(
             state,
+            inference_token.clone(),
             auth.into_caller(),
             "/v1/completions",
             model,
@@ -655,6 +660,7 @@ async fn completions(
     } else {
         blocking_response(
             state,
+            inference_token,
             auth.into_caller(),
             "/v1/completions",
             model,
@@ -716,6 +722,7 @@ impl Mode {
 #[allow(clippy::too_many_arguments)]
 async fn blocking_response(
     state: GatewayState,
+    inference_token: String,
     caller: crate::reqlog::Caller,
     route: &'static str,
     model: String,
@@ -735,6 +742,7 @@ async fn blocking_response(
         caller,
         GenerationInput {
             state,
+            inference_token,
             model: model.clone(),
             prompt,
             chat_template: mode.applies_chat_template(),
@@ -916,6 +924,7 @@ fn chat_message_json(parts: &[OutputPart]) -> (serde_json::Value, bool) {
 #[allow(clippy::too_many_arguments)]
 fn stream_response(
     state: GatewayState,
+    inference_token: String,
     caller: crate::reqlog::Caller,
     route: &'static str,
     model: String,
@@ -935,6 +944,7 @@ fn stream_response(
         caller,
         GenerationInput {
             state,
+            inference_token,
             model: model.clone(),
             prompt,
             chat_template: mode.applies_chat_template(),
@@ -1528,7 +1538,7 @@ mod tests {
             .await;
 
         let response = chat_completions(
-            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
                 model: Some("lab".into()),
@@ -1661,7 +1671,7 @@ mod tests {
             .await;
 
         let response = chat_completions(
-            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
                 model: Some("lab".into()),
@@ -1811,7 +1821,7 @@ mod tests {
             .unwrap()
         };
         let first = chat_completions(
-            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state.clone()),
             Json(ChatRequest {
                 model: Some("whole-model".into()),
@@ -1830,7 +1840,7 @@ mod tests {
         assert!(!first_body.contains("server_error"));
 
         let second = chat_completions(
-            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
                 model: Some("whole-model".into()),
@@ -1876,7 +1886,7 @@ mod tests {
             .await;
 
         chat_completions(
-            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
                 model: Some("lab".into()),
@@ -2444,8 +2454,8 @@ mod tests {
             tokens_per_sec: 4.5,
             duration_ms: 2666,
             timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
-            partial: false,
-            finish_reason: None,
+            partial: true,
+            finish_reason: Some("cycle".into()),
             stop_sequence: None,
             legs: 1,
             trace: Some(crate::prefill::RequestTrace::new(
@@ -2470,5 +2480,8 @@ mod tests {
         assert_eq!(payload["x_pom"]["timings"]["ttft_ms"], 900);
         assert!(payload["x_pom"]["timings"]["generation_tokens_per_sec"].is_number());
         assert_eq!(payload["x_pom"]["trace"]["model"], "qwen35");
+        assert_eq!(payload["choices"][0]["finish_reason"], "stop");
+        assert_eq!(payload["x_pom"]["finish_reason"], "cycle");
+        assert_eq!(payload["x_pom"]["partial"], true);
     }
 }

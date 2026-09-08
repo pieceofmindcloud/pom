@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mold \
     nodejs \
     npm \
+    libshaderc-dev \
+    libvulkan-dev \
+    glslc \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CARGO_HOME=/root/.cargo \
@@ -65,19 +68,35 @@ ARG LLAMA_CPP_COMMIT="unknown"
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_COMMIT} \
-    cargo build --release --features cuda && \
+    cargo build --release --features cuda,vulkan && \
     cp target/release/pom /build/pom
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# `libvulkan1` is only the loader. Without an ICD it enumerates zero devices,
+# so the Vulkan-compiled binary silently falls back to CPU on an AMD box and
+# the Radeon shows almost no VRAM in use. `mesa-vulkan-drivers` provides the
+# RADV ICD (/usr/share/vulkan/icd.d/radeon_icd.*.json + libvulkan_radeon.so)
+# that `sysmon::icd_amd()` also looks for. `vulkan-tools` ships `vulkaninfo`
+# for `docker exec <container> vulkaninfo --summary` when a card is missing.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libstdc++6 \
     libgomp1 \
+    libvulkan1 \
+    mesa-vulkan-drivers \
+    vulkan-tools \
     nvidia-utils-595 \
     && rm -rf /var/lib/apt/lists/*
+
+# mesa-vulkan-drivers drops an ICD for every Mesa driver (intel, nouveau,
+# llvmpipe, ...). Keep only RADV: the NVIDIA card is served by CUDA, and the
+# software rasterizer `llvmpipe` is an active hazard here - the Vulkan backend
+# would happily "offload" a model onto a CPU device. This also makes the AMD
+# index the Vulkan index by construction (sysmon::icd_amd / the ksia note).
+RUN find /usr/share/vulkan/icd.d -type f ! -name 'radeon_icd*.json' -delete
 
 COPY --from=builder /build/pom /usr/local/bin/pom
 COPY --from=builder /build/apps/frontend/dist /app/apps/frontend/dist

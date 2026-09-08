@@ -20,6 +20,24 @@ export function gpuLabel(gpu: { name: string; vendor?: string }) {
   return gpu.name.replace(/^NVIDIA\s+/i, "");
 }
 
+/**
+ * O mesmo nome, com o índice quando a máquina tem duas placas iguais.
+ *
+ * Uma caixa com duas RTX 5060 Ti mostrava dois rótulos idênticos - duas
+ * temperaturas, duas barras de VRAM, e nada dizendo qual era qual. O índice é
+ * o número pelo qual a `pom.json` e o painel já falam de uma placa, então é
+ * ele que entra, e só onde é preciso: numa máquina de placa única o sufixo
+ * seria ruído.
+ */
+export function gpuDisplayName(
+  gpu: { index: number; name: string; vendor?: string },
+  all: { name: string }[],
+): string {
+  const label = gpuLabel(gpu);
+  const repeated = all.filter((other) => other.name === gpu.name).length > 1;
+  return repeated ? `${label} #${gpu.index}` : label;
+}
+
 export function machineKind(system?: SystemLoad | null) {
   if (!system) return { label: "Desconhecida", icon: HelpCircle, accent: "faint" as const };
   const os = system.os.toLowerCase();

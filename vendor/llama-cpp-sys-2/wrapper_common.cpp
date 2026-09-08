@@ -1,23 +1,30 @@
 #include "wrapper_common.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <map>
-#include <memory>
+#include <mutex>
 #include <string>
 #include <stdint.h>
+#include <unordered_map>
 #include <vector>
 
 #include "llama.cpp/common/common.h"
-// Cabeçalhos internos: `llama_model` (`tensors_by_name`, `dev_layer`) e o
-// `llama-ext.h` de estágio (`llama_get_memory_breakdown`). Nada disso está no
-// `llama.h` público, e é justamente o que responde onde cada camada ficou.
+// Cabeçalhos internos: `llama_model` (`tensors_by_name`, `dev_layer`), o
+// `llama-ext.h` de estágio (`llama_get_memory_breakdown`) e o `llama_context`
+// (`get_cparams`, o Flash Attention resolvido). Nada disso está no `llama.h`
+// público, e é justamente o que responde onde cada camada ficou e com que
+// parâmetros o contexto ficou de pé.
 #include "llama.cpp/src/llama-ext.h"
+#include "llama.cpp/src/llama-context.h"
 #include "llama.cpp/src/llama-model.h"
 #include "llama.cpp/ggml/include/ggml-backend.h"
 #include "llama.cpp/ggml/include/ggml-cpu.h"
 #include "llama.cpp/common/fit.h"
+#include "llama.cpp/common/log.h"
 #include "llama.cpp/common/json-schema-to-grammar.h"
 #include "llama.cpp/common/speculative.h"
 #include "llama.cpp/include/llama.h"
@@ -132,8 +139,25 @@ extern "C" llama_rs_status llama_rs_sampler_accept(struct llama_sampler * sample
     }
 }
 
+class common_log_trace_guard {
+public:
+    common_log_trace_guard()
+        : previous_(common_log_get_verbosity_thold()) {
+        common_log_set_verbosity_thold(LOG_LEVEL_TRACE);
+    }
+
+    ~common_log_trace_guard() {
+        common_log_set_verbosity_thold(previous_);
+    }
+
+private:
+    int previous_;
+};
+
 // Thin pass-through to llama.cpp's common_fit_params (a C++ symbol in libcommon).
 // Returns common_params_fit_status as an int: 0 = success, 1 = failure, 2 = error.
+// The fit decision is otherwise invisible at the default log threshold. Its
+// trace is enabled only for this non-thread-safe call and restored on return.
 extern "C" int llama_rs_fit_params(
     const char * path_model,
     struct llama_model_params * mparams,
@@ -143,6 +167,7 @@ extern "C" int llama_rs_fit_params(
     size_t * margins,
     uint32_t n_ctx_min,
     enum ggml_log_level log_level) {
+    common_log_trace_guard trace;
     return static_cast<int>(common_fit_params(
         path_model,
         mparams,
@@ -152,6 +177,193 @@ extern "C" int llama_rs_fit_params(
         margins,
         n_ctx_min,
         log_level));
+}
+
+static std::vector<ggml_backend_dev_t> llama_rs_default_devices() {
+    // Keep this selection in lockstep with llama_prepare_model_devices: RPC
+    // devices first, then discrete GPUs, then integrated GPUs only when there
+    // is no discrete GPU. This is backend metadata, not a vendor allow-list.
+    std::vector<ggml_backend_dev_t> rpc_servers;
+    std::vector<ggml_backend_dev_t> gpus;
+    std::vector<ggml_backend_dev_t> igpus;
+
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        switch (ggml_backend_dev_type(dev)) {
+            case GGML_BACKEND_DEVICE_TYPE_CPU:
+            case GGML_BACKEND_DEVICE_TYPE_ACCEL:
+                break;
+
+            case GGML_BACKEND_DEVICE_TYPE_GPU: {
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+                if (std::string(ggml_backend_reg_name(reg)) == "RPC") {
+                    rpc_servers.push_back(dev);
+                    break;
+                }
+
+                ggml_backend_dev_props props;
+                ggml_backend_dev_get_props(dev, &props);
+                const bool duplicate = std::any_of(
+                    gpus.begin(),
+                    gpus.end(),
+                    [&props](ggml_backend_dev_t existing) {
+                        ggml_backend_dev_props existing_props;
+                        ggml_backend_dev_get_props(existing, &existing_props);
+                        return props.device_id && existing_props.device_id
+                            && std::strcmp(props.device_id, existing_props.device_id) == 0;
+                    });
+                if (!duplicate) {
+                    gpus.push_back(dev);
+                }
+                break;
+            }
+
+            case GGML_BACKEND_DEVICE_TYPE_IGPU:
+                if (igpus.empty()
+                    || ggml_backend_dev_backend_reg(dev) == ggml_backend_dev_backend_reg(igpus.back())) {
+                    igpus.push_back(dev);
+                }
+                break;
+
+            case GGML_BACKEND_DEVICE_TYPE_META:
+                break;
+        }
+    }
+
+    std::vector<ggml_backend_dev_t> devices;
+    devices.reserve(rpc_servers.size() + gpus.size() + igpus.size());
+    devices.insert(devices.end(), rpc_servers.begin(), rpc_servers.end());
+    devices.insert(devices.end(), gpus.begin(), gpus.end());
+    if (gpus.empty()) {
+        devices.insert(devices.end(), igpus.begin(), igpus.end());
+    }
+    return devices;
+}
+
+extern "C" size_t llama_rs_get_devices(
+    ggml_backend_dev_t * out,
+    size_t capacity) {
+    if (!out || capacity == 0) {
+        return 0;
+    }
+
+    const std::vector<ggml_backend_dev_t> devices = llama_rs_default_devices();
+    const size_t written = std::min(capacity, devices.size());
+    std::copy_n(devices.begin(), written, out);
+    return written;
+}
+
+extern "C" size_t llama_rs_get_device_memory(
+    struct llama_rs_device_memory * out,
+    size_t capacity) {
+    if (!out || capacity == 0) {
+        return 0;
+    }
+
+    const std::vector<ggml_backend_dev_t> devices = llama_rs_default_devices();
+
+    const size_t written = std::min(capacity, devices.size());
+    for (size_t i = 0; i < written; ++i) {
+        size_t free_bytes = 0;
+        size_t total_bytes = 0;
+        ggml_backend_dev_memory(devices[i], &free_bytes, &total_bytes);
+        out[i] = {free_bytes, total_bytes};
+    }
+    return written;
+}
+
+static float llama_rs_benchmark_device_uncached(ggml_backend_dev_t device) {
+    if (!device) {
+        return 0.0f;
+    }
+
+    // A matrix-vector product approximates the memory-bound shape of one
+    // decode token while keeping the one-time probe below 16 MiB of weights.
+    // It uses only the public ggml backend graph API, so RPC and every other
+    // backend are measured through the same interface.
+    constexpr int n = 2048;
+    constexpr int runs = 3;
+    constexpr size_t context_bytes = 1024 * 1024;
+
+    ggml_backend_t backend = ggml_backend_dev_init(device, nullptr);
+    if (!backend) {
+        return 0.0f;
+    }
+
+    ggml_init_params init_params = {
+        /* .mem_size   = */ context_bytes,
+        /* .mem_buffer = */ nullptr,
+        /* .no_alloc   = */ true,
+    };
+    ggml_context * ctx = ggml_init(init_params);
+    if (!ctx) {
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+
+    ggml_tensor * weights = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, n);
+    ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, 1);
+    ggml_tensor * output = ggml_mul_mat(ctx, weights, input);
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 4, false);
+    if (!weights || !input || !output || !graph) {
+        ggml_free(ctx);
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+    ggml_build_forward_expand(graph, output);
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (!buffer) {
+        ggml_free(ctx);
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+    ggml_backend_buffer_clear(buffer, 1);
+
+    if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+        ggml_backend_buffer_free(buffer);
+        ggml_free(ctx);
+        ggml_backend_free(backend);
+        return 0.0f;
+    }
+    ggml_backend_synchronize(backend);
+
+    double elapsed_seconds = 0.0;
+    for (int i = 0; i < runs; ++i) {
+        const auto started = std::chrono::steady_clock::now();
+        if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+            ggml_backend_buffer_free(buffer);
+            ggml_free(ctx);
+            ggml_backend_free(backend);
+            return 0.0f;
+        }
+        ggml_backend_synchronize(backend);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        elapsed_seconds += std::chrono::duration<double>(elapsed).count();
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+
+    return elapsed_seconds > 0.0
+        ? static_cast<float>(runs / elapsed_seconds)
+        : 0.0f;
+}
+
+extern "C" float llama_rs_benchmark_device(ggml_backend_dev_t device) {
+    static std::mutex mutex;
+    static std::unordered_map<ggml_backend_dev_t, float> scores;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto found = scores.find(device);
+    if (found != scores.end()) {
+        return found->second;
+    }
+
+    const float score = llama_rs_benchmark_device_uncached(device);
+    scores.emplace(device, score);
+    return score;
 }
 
 extern "C" void llama_rs_memory_breakdown_print(const struct llama_context * ctx) {
@@ -266,6 +478,70 @@ extern "C" llama_rs_status llama_rs_model_placement_json(const struct llama_mode
     }
 }
 
+static nlohmann::ordered_json llama_rs_context_memory_value(
+        const struct llama_context * ctx,
+        const struct llama_model * model) {
+    auto buffers = nlohmann::ordered_json::array();
+    for (const auto & [buft, data] : llama_get_memory_breakdown(ctx)) {
+        if (!buft) {
+            continue;
+        }
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+        int device_index = -1;
+        if (dev && model) {
+            for (int i = 0; i < llama_model_n_devices(model); ++i) {
+                if (dev == llama_model_get_device(model, i)) {
+                    device_index = i;
+                    break;
+                }
+            }
+        }
+        buffers.push_back({
+            {"buffer",       ggml_backend_buft_name(buft)},
+            {"device",       dev ? ggml_backend_dev_name(dev) : "CPU"},
+            {"host",         ggml_backend_buft_is_host(buft)},
+            {"device_index", device_index >= 0 ? nlohmann::ordered_json(device_index) : nullptr},
+            {"model",        data.model},
+            // `context` é o cache KV (mais o estado recorrente, quando o
+            // modelo tem um). É esta linha que responde onde o KV ficou.
+            {"context",      data.context},
+            {"compute",      data.compute},
+        });
+    }
+    return {{"buffers", buffers}};
+}
+
+extern "C" llama_rs_status llama_rs_backend_devices_json(char ** out_json) {
+    if (!out_json) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+    *out_json = nullptr;
+
+    try {
+        auto devices = nlohmann::ordered_json::array();
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (!dev) {
+                continue;
+            }
+
+            ggml_backend_dev_props props = {};
+            ggml_backend_dev_get_props(dev, &props);
+            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+            devices.push_back({
+                {"backend", reg ? ggml_backend_reg_name(reg) : ""},
+                {"description", props.description ? props.description : ""},
+                {"device_id", props.device_id ? props.device_id : nullptr},
+            });
+        }
+
+        *out_json = llama_rs_dup_string(devices.dump());
+        return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
 extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json) {
     if (!ctx || !out_json) {
         return LLAMA_RS_STATUS_INVALID_ARGUMENT;
@@ -273,26 +549,28 @@ extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_conte
     *out_json = nullptr;
 
     try {
-        auto buffers = nlohmann::ordered_json::array();
-        for (const auto & [buft, data] : llama_get_memory_breakdown(ctx)) {
-            if (!buft) {
-                continue;
-            }
-            ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
-            buffers.push_back({
-                {"buffer",  ggml_backend_buft_name(buft)},
-                {"device",  dev ? ggml_backend_dev_name(dev) : "CPU"},
-                {"model",   data.model},
-                // `context` é o cache KV (mais o estado recorrente, quando o
-                // modelo tem um). É esta linha que responde onde o KV ficou.
-                {"context", data.context},
-                {"compute", data.compute},
-            });
-        }
-
-        const nlohmann::ordered_json out = {{"buffers", buffers}};
-        *out_json = llama_rs_dup_string(out.dump());
+        *out_json = llama_rs_dup_string(llama_rs_context_memory_value(ctx, nullptr).dump());
         return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
+extern "C" llama_rs_status llama_rs_context_flash_attn(
+        const struct llama_context * ctx,
+        bool * out_enabled,
+        bool * out_auto) {
+    if (!ctx || !out_enabled || !out_auto) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+
+    try {
+        // `get_cparams` é a decisão já tomada, não o pedido: o construtor do
+        // contexto resolve `AUTO` sondando o backend antes de gravar aqui.
+        const llama_cparams & cparams = const_cast<llama_context *>(ctx)->get_cparams();
+        *out_enabled = cparams.flash_attn;
+        *out_auto    = cparams.auto_fa;
+        return LLAMA_RS_STATUS_OK;
     } catch (const std::exception &) {
         return LLAMA_RS_STATUS_EXCEPTION;
     }

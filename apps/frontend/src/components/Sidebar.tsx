@@ -2,14 +2,17 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
+import { ChatSessionList } from "./ChatSessionList";
 import { brand } from "../lib/brand";
-import { navForProfile, type NavSection } from "./nav";
+import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
+import { useOptionalChatSessionController } from "../lib/chatStore";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
+import { TlsChip } from "./TlsIndicator";
 
 /**
  * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
@@ -62,6 +65,7 @@ function SidebarBrand({
  */
 function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   const { locale, setLocale, t } = useI18n();
+  const { profile } = useProfile();
   const { theme, toggle } = useTheme();
   // O commit deste nó vive aqui, ao lado dos controles: num cluster de várias
   // máquinas "qual build é esse?" não se responde sem shell, e um peer rodando
@@ -72,8 +76,33 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
     { id: "en", label: "English" },
     { id: "pt-BR", label: "Português (Brasil)" },
   ] as const;
+  const footerLinks = navFooterForProfile(profile);
   return (
     <div className={clsx("border-t border-line py-2.5", collapsed ? "px-2" : "px-3")}>
+      {footerLinks.length > 0 && (
+        <div className={clsx("mb-2 grid gap-1.5", collapsed ? "grid-cols-1" : "grid-cols-2")}>
+          {footerLinks.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                aria-label={t(item.labelKey)}
+                title={t(item.labelKey)}
+                className={({ isActive }) => clsx(
+                  "flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2 text-[0.72rem] transition-colors",
+                  isActive
+                    ? "border-iris/50 bg-iris/12 text-fg"
+                    : "border-line text-muted hover:border-line-strong hover:text-fg",
+                )}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                {!collapsed && <span className="truncate">{t(item.labelKey)}</span>}
+              </NavLink>
+            );
+          })}
+        </div>
+      )}
       <div
         role="group"
         aria-label={locale === "pt-BR" ? "Idioma" : "Language"}
@@ -106,6 +135,7 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
             />
           </button>
         ))}
+        <TlsChip />
         {!collapsed && node?.build_commit && (
           <span
             title={t("sidebar.buildTitle")}
@@ -357,6 +387,76 @@ function Section({
   );
 }
 
+function InferenceMainMenu({
+  onNavigate,
+  collapsed,
+}: {
+  onNavigate?: () => void;
+  collapsed: boolean;
+}) {
+  const { session, sessions, selectSession, startNew, deleteSession } =
+    useOptionalChatSessionController() ?? {
+      session: null,
+      sessions: [],
+      selectSession: () => {},
+      startNew: () => {},
+      deleteSession: () => {},
+    };
+  const { profile } = useProfile();
+  const sections = navForProfile(profile);
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+
+  /*
+   * Esta lista é o menu principal do perfil `infer`, e é vista de toda rota -
+   * da documentação, das configurações. Trocar a conversa ativa não é
+   * navegar: fora do `/chat` o clique mudava o estado compartilhado e a tela
+   * continuava a mesma, como se o menu tivesse parado de responder. Quem já
+   * está no chat não é enviado de novo, para não empilhar entradas iguais no
+   * histórico do navegador.
+   */
+  const openChat = () => {
+    if (pathname !== "/chat") navigate("/chat");
+  };
+
+  return (
+    <div
+      className={clsx(
+        "flex min-h-0 flex-1 flex-col pb-4 pt-[5px]",
+        collapsed ? "overflow-visible px-2" : "px-3",
+      )}
+    >
+      <ChatSessionList
+        sessions={sessions}
+        activeId={session?.id ?? ""}
+        compact
+        collapsed={collapsed}
+        onPick={(next) => {
+          selectSession(next);
+          openChat();
+          onNavigate?.();
+        }}
+        onNew={() => {
+          startNew(session?.model ?? null);
+          openChat();
+          onNavigate?.();
+        }}
+        onDelete={(id) => deleteSession(id, session?.model ?? null)}
+      />
+      <div className="mt-2 shrink-0 space-y-1">
+        {sections.map((section) => (
+          <Section
+            key={section.labelKey}
+            section={section}
+            onNavigate={onNavigate}
+            collapsed={collapsed}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SidebarContent({
   onNavigate,
   collapsed = false,
@@ -369,22 +469,24 @@ export function SidebarContent({
   // O menu segue o perfil: o que este perfil não abre também não é oferecido.
   // Ver `navForProfile` e a tabela em `lib/access.ts`.
   const { profile } = useProfile();
-  const sections = navForProfile(profile);
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
-      {/* O respiro do topo é o que separa o primeiro item da linha divisória:
-          sem ele a pílula ativa encosta na borda da faixa da marca. */}
-      <nav
-        className={clsx(
-          "flex min-h-0 flex-1 flex-col gap-1 pb-4 pt-[5px]",
-          collapsed ? "overflow-visible px-2" : "overflow-y-auto px-3",
-        )}
-      >
-        {sections.map((s) => (
-          <Section key={s.labelKey} section={s} onNavigate={onNavigate} collapsed={collapsed} />
-        ))}
-      </nav>
+      {profile === "infer" ? (
+        <InferenceMainMenu onNavigate={onNavigate} collapsed={collapsed} />
+      ) : (
+        /* O menu existente permanece intocado para administrador e node. */
+        <nav
+          className={clsx(
+            "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-4 pt-[5px]",
+            collapsed ? "overflow-visible px-2" : "px-3",
+          )}
+        >
+          {navForProfile(profile).map((s) => (
+            <Section key={s.labelKey} section={s} onNavigate={onNavigate} collapsed={collapsed} />
+          ))}
+        </nav>
+      )}
       <SidebarUtilityControls collapsed={collapsed} />
     </>
   );

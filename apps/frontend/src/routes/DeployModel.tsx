@@ -10,19 +10,19 @@
  *   a single range covering every layer, so the plan that comes back has the
  *   same shape and the same route validates it; nothing here recomputes it.
  *   What the screen drops is the questions that have only one answer. There is
- *   no order to choose in a pipeline of one, and no per-layer checklist: when
- *   another peer lacks a slice, the machine inspector offers a discrete slider
- *   over the cut points the backend read from the selected GGUF.
+ *   no order to choose in a pipeline of one, no per-layer checklist, and the
+ *   deployment map is the sole machine choice.
  *
  * The rest of this comment is about the slice case, which is the one with
  * decisions in it.
  *
- * The screen opens on a decision the node made — who would serve which range,
- * and what has to be copied first — and every part of that decision is then
+ * The screen opens on a decision the node made - who would serve which range,
+ * and what has to be copied first - and every part of that decision is then
  * editable. Nothing here computes the plan in the browser: the suggestion comes
- * from `/api/ui/deploy/plan`, every edit is sent straight back to the same route
- * for validation, and pressing the button re-surveys the cluster server-side
- * before acting, because a machine can leave between looking and deciding.
+ * from `/api/ui/deploy/plan`, topology edits are sent back to that route for
+ * validation, and pressing the button re-surveys the cluster server-side before
+ * acting, because a machine can leave between looking and deciding. Runtime
+ * settings stay local until deploy, when the fresh preflight validates them.
  *
  * Three things the operator is choosing, and why they are the shape they are:
  *
@@ -55,9 +55,9 @@ import { api } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
-import { bytes, layerRange, megabytes } from "../lib/format";
+import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
 import { Confirm } from "../components/Confirm";
-import { CapabilitySwitch, MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
+import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
@@ -76,42 +76,12 @@ import type {
   DeployStrategy,
   CacheTypesResponse,
   KvCacheType,
-  InferenceMode,
   RuntimeParams,
   TpLaunch,
-  WireDtype,
-  WholeSliceSelection,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 const rangeKey = (start: number, end: number) => `${start}-${end}`;
-
-type NumericRuntimeKey =
-  | "n_ctx"
-  | "n_batch"
-  | "max_new_tokens"
-  | "max_sessions"
-  | "prefill_chunk_tokens"
-  | "prefill_max_inflight_chunks"
-  | "temperature"
-  | "top_p"
-  | "top_k"
-  | "repeat_penalty"
-  | "repeat_last_n";
-
-const GLOBAL_NUMERIC_KNOBS: Array<{ key: NumericRuntimeKey; label: string; step?: string }> = [
-  { key: "n_ctx", label: "Contexto" },
-  { key: "n_batch", label: "Batch" },
-  { key: "max_new_tokens", label: "Máx. tokens" },
-  { key: "max_sessions", label: "Sessões" },
-  { key: "prefill_chunk_tokens", label: "Chunk prefill" },
-  { key: "prefill_max_inflight_chunks", label: "Chunks em voo" },
-  { key: "temperature", label: "Temperatura", step: "0.05" },
-  { key: "top_p", label: "Top-p", step: "0.01" },
-  { key: "top_k", label: "Top-k" },
-  { key: "repeat_penalty", label: "Penalidade", step: "0.01" },
-  { key: "repeat_last_n", label: "Janela repetição" },
-];
 
 const DEFAULT_CACHE_TYPES: KvCacheType[] = [
   "f32",
@@ -124,18 +94,6 @@ const DEFAULT_CACHE_TYPES: KvCacheType[] = [
   "q5_0",
   "q5_1",
 ];
-
-const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
-  f32: "F32",
-  f16: "F16",
-  bf16: "BF16",
-  q8_0: "Q8_0",
-  q4_0: "Q4_0",
-  q4_1: "Q4_1",
-  iq4_nl: "IQ4_NL",
-  q5_0: "Q5_0",
-  q5_1: "Q5_1",
-};
 
 /** The plan on screen, in the shape the routes accept it back.
  *
@@ -177,6 +135,41 @@ const sameRows = (a: DeploySelection[], b: DeploySelection[]) =>
 const byLayer = (a: DeploySelection, b: DeploySelection) =>
   a.start_layer - b.start_layer ||
   a.end_layer - b.end_layer;
+
+/** The planner's expensive survey only depends on topology. Per-machine
+ * launch overrides are carried by the selection for deploy, but changing one
+ * must not make the node rediscover the same machines and ranges. */
+const topologyKey = (rows: DeploySelection[] | null) =>
+  rows === null
+    ? "auto"
+    : JSON.stringify(
+        rows
+          .map((row) => [row.start_layer, row.end_layer, row.target_node_id])
+          .sort((a, b) =>
+            Number(a[0]) - Number(b[0]) ||
+            Number(a[1]) - Number(b[1]) ||
+            String(a[2]).localeCompare(String(b[2])),
+          ),
+      );
+
+const launchOverridesKey = (rows: DeploySelection[] | null) =>
+  rows === null
+    ? "auto"
+    : JSON.stringify(
+        rows
+          .map((row) => [
+            row.start_layer,
+            row.end_layer,
+            row.target_node_id,
+            row.n_gpu_layers ?? null,
+            row.offload_kqv ?? null,
+          ])
+          .sort((a, b) =>
+            Number(a[0]) - Number(b[0]) ||
+            Number(a[1]) - Number(b[1]) ||
+            String(a[2]).localeCompare(String(b[2])),
+          ),
+      );
 
 /** Which question the node answered. An older peer does not say, and an older
  *  peer only ever answers about shards. */
@@ -295,36 +288,6 @@ function Coverage({
   );
 }
 
-function Switch({
-  checked,
-  onChange,
-  label,
-  hint,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
-  hint?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div className={`flex items-start gap-2.5 ${disabled ? "opacity-55" : ""}`}>
-      <span className="mt-0.5">
-        {disabled ? (
-          <Tick on={false} label={label} onToggle={() => {}} />
-        ) : (
-          <Tick on={checked} label={label} onToggle={() => onChange(!checked)} />
-        )}
-      </span>
-      <span className="min-w-0">
-        <span className={`block text-[0.82rem] ${disabled ? "text-muted" : "text-fg"}`}>{label}</span>
-        {hint && <span className="mt-0.5 block text-xs text-faint">{hint}</span>}
-      </span>
-    </div>
-  );
-}
-
 export function DeployModel() {
   const { t } = useI18n();
   const cluster = useClusterCatalog();
@@ -353,16 +316,16 @@ export function DeployModel() {
   const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
   const [selection, setSelection] = useState<DeploySelection[] | null>(null);
-  /** A whole-model prefix cut requested for a destination without that slice. */
-  const [wholeSlice, setWholeSlice] = useState<WholeSliceSelection | null>(null);
   /** `null` means "the node's own defaults", which is what most deploys want. */
   const [params, setParams] = useState<RuntimeParams | null>(null);
   const nodeParams = useRef<RuntimeParams | null>(null);
   /** `null` means "the node's default" — merged units off. */
   const [merge, setMerge] = useState<boolean | null>(null);
-  /** Half-typed numbers, so clearing a field does not snap back to a digit. */
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [asked, setAsked] = useState(false);
+  /** Segundo confirm, separado do de cobertura parcial: a projeção de VRAM
+   *  passa da capacidade de alguma máquina. Avisa, não bloqueia - o operador
+   *  pode reduzir contexto/sessões ou implantar mesmo assim. */
+  const [capacityAsked, setCapacityAsked] = useState(false);
   const [running, setRunning] = useState(false);
   const [cacheTypeK, setCacheTypeK] = useState<KvCacheType>("f16");
   const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
@@ -380,7 +343,6 @@ export function DeployModel() {
     setCacheTypeV(cacheTypes.data.cache_type_v);
     setCacheTypesLoaded(true);
   }, [cacheTypes.data, cacheTypesLoaded]);
-
   /** Every slicing round anyone in the cluster holds, named once. */
   const groups = useMemo(() => {
     const seen = new Map<string, { key: string; label: string; pomId: string }>();
@@ -440,9 +402,6 @@ export function DeployModel() {
         : wholeName || wholes[0]?.name || ""
       : group || groups[0]?.key || "";
 
-  useEffect(() => {
-    setWholeSlice(null);
-  }, [chosen, kind]);
   const defaultDeploymentName = useRef("");
   useEffect(() => {
     if (!chosen) return;
@@ -487,31 +446,34 @@ export function DeployModel() {
       ? `tensor:${chosen}:${tpGroup?.tp_size ?? tp.worker_node_ids.length + 1}`
       : chosen;
 
-  // Edits go to the node for validation, but not on every keystroke: the survey
-  // behind this route talks to every peer, and the settings are typed digit by
-  // digit.
+  // Map edits go to the node for validation, but not on every keystroke: the
+  // survey behind this route talks to every peer, and the settings are typed
+  // digit by digit. Runtime parameters are launch configuration, not topology,
+  // so changing them must not restart the full survey and capacity preview.
   const [settled, setSettled] = useState<DeploySelection[] | null>(null);
-  const [settledParams, setSettledParams] = useState<RuntimeParams | null>(null);
+  /** The topology returned by an automatic plan. An explicit selection that
+   * only adds launch overrides must remain on this same query key. */
+  const autoTopologyKey = useRef<string | null>(null);
+  const queryTopologyKey = (rows: DeploySelection[] | null) => {
+    const key = topologyKey(rows);
+    return key !== "auto" && key === autoTopologyKey.current ? "auto" : key;
+  };
   useEffect(() => {
     const t = setTimeout(() => {
       setSettled(selection);
-      setSettledParams(params);
     }, 260);
     return () => clearTimeout(t);
-  }, [selection, params]);
+  }, [selection]);
 
   const plan = useQuery({
     queryKey: [
       "deploy-plan",
       kind,
       chosen,
-      settled ? JSON.stringify(settled) : "auto",
-      settledParams ? JSON.stringify(settledParams) : "padrão",
+      queryTopologyKey(settled),
       merge == null ? "merge-padrão" : `merge-${merge}`,
-      deploymentName,
       strategy,
       JSON.stringify(preferredNodeIds),
-      wholeSlice ? JSON.stringify(wholeSlice) : "sem-corte-do-inteiro",
       // TP: o plano revalida quando o primary/workers mudam — a checagem de
       // shardabilidade roda no nó, então a troca precisa re-disparar a query.
       isTp ? JSON.stringify(tpPayload()) : "sem-tp",
@@ -520,12 +482,9 @@ export function DeployModel() {
       api.post<DeployPlan>("/api/ui/deploy/plan", {
         group: chosen,
         kind,
-        deployment_name: deploymentName || chosen,
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
-        ...(settledParams ? { params: settledParams } : {}),
-        ...(wholeSlice ? { whole_slice: wholeSlice } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
@@ -538,6 +497,11 @@ export function DeployModel() {
   });
 
   const p = plan.data;
+  useEffect(() => {
+    if (p?.auto && p.group === chosen && kindOf(p) === kind) {
+      autoTopologyKey.current = topologyKey(rowsOf(p));
+    }
+  }, [chosen, kind, p]);
   useEffect(() => {
     if (p?.params && nodeParams.current == null) nodeParams.current = p.params;
   }, [p]);
@@ -561,14 +525,32 @@ export function DeployModel() {
         ram_free_mb: system?.ram.available_mb ?? machine.ram_free_mb,
         gpu_used_pct: gpu?.vram_used_pct ?? machine.gpu_used_pct ?? null,
         ram_used_pct: system?.ram.used_pct ?? machine.ram_used_pct ?? null,
-        load: peer?.load ?? machine.load,
+        load: peer ? peer.load : machine.load,
         // O RTT de uma máquina vem do survey direcional do backend. A rota
         // do cluster é a medição HTTP do gateway e não deve sobrescrevê-lo.
         rtt_ms: machine.rtt_ms,
       };
     });
   }, [liveCluster.data, p]);
-  const displayPlan = p ? { ...p, machines: liveMachines } : undefined;
+  // Capacity is the only part of the plan that depends on RuntimeParams. It
+  // cannot be reused after a launch setting changes, but that setting also
+  // does not justify a new topology survey. Hide the old projection until the
+  // deploy endpoint confirms the fresh state instead of showing stale advice.
+  const capacityFresh =
+    !params || !p?.params || JSON.stringify(params) === JSON.stringify(p.params);
+  const currentRows = selection ?? rowsOf(p);
+  const launchOverridesFresh =
+    launchOverridesKey(currentRows) === launchOverridesKey(rowsOf(p));
+  const displayPlan = p
+    ? {
+        ...p,
+        machines: liveMachines.map((machine) =>
+          capacityFresh && launchOverridesFresh
+            ? machine
+            : { ...machine, capacity: undefined },
+        ),
+      }
+    : undefined;
 
   useEffect(() => {
     if (inspectedNodeId && p?.machines.some((machine) => machine.node_id === inspectedNodeId)) {
@@ -619,16 +601,17 @@ export function DeployModel() {
     [selection, p],
   );
   /** The canvas, TP selectors and card actions all use this same membership.
-   *  Complete strategy intentionally puts every live machine on the map. */
+   *  Complete strategy puts every live machine on the map except in whole mode,
+   *  where the map is intentionally limited to one machine. */
   const mapNodeIds = useMemo(
     () => {
       const ids = new Set([...rows.map((row) => row.target_node_id), ...preferredNodeIds]);
-      if (strategy === "complete") {
+      if (strategy === "complete" && !isWhole) {
         for (const machine of liveMachines) ids.add(machine.node_id);
       }
       return ids;
     },
-    [liveMachines, preferredNodeIds, rows, strategy],
+    [isWhole, liveMachines, preferredNodeIds, rows, strategy],
   );
   const mapMachineIds = useMemo(
     () => liveMachines.filter((machine) => mapNodeIds.has(machine.node_id)).map((machine) => machine.node_id),
@@ -713,14 +696,18 @@ export function DeployModel() {
   /**
    * True while the plan in hand is still the answer to an older question.
    *
-   * `isPlaceholderData` is exactly that and nothing else: react-query sets it
-   * only while showing a previous key's data, so a background refetch of the
-   * same selection does not make the screen blink. The debounce above is the
-   * other half - between the keystroke and `settled` the query key has not
-   * moved yet, so the plan looks current when it is not.
+   * `isFetching` keeps the indicator tied to the request for the current key,
+   * including the tail after React Query has stopped showing placeholder data.
+   * `isPlaceholderData` still covers the interval where the previous answer is
+   * displayed. The debounce above is the other half - between a map edit and
+   * `settled` the query key has not moved yet, so the plan looks current when it
+   * is not. Runtime parameter edits do not enter this state because they do not
+   * alter topology.
    */
   const syncing =
-    plan.isPlaceholderData || settled !== selection || settledParams !== params;
+    plan.isFetching ||
+    plan.isPlaceholderData ||
+    queryTopologyKey(settled) !== queryTopologyKey(selection);
 
   /** True while the node's answer still describes exactly these rows.
    *
@@ -746,9 +733,6 @@ export function DeployModel() {
   const labelOf = (id: string) =>
     p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
 
-  const wholeLayerOptions = isWhole ? p?.layer_options ?? undefined : undefined;
-  const wholeSourceNodeId = wholeLayerOptions?.source_node_id ?? wholeModel?.holders[0] ?? "";
-
   const tpRankRows = useMemo(() => {
     if (p?.tp_targets && p.tp_targets.length > 0) {
       return p.tp_targets.slice().sort((a, b) => a.rank - b.rank);
@@ -766,22 +750,32 @@ export function DeployModel() {
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
+  /**
+   * Runtime mode is checked locally from the already-surveyed model shape.
+   * Changing this selector must not make the planner survey the cluster again;
+   * the deploy preflight repeats the same check with its fresh survey.
+   */
+  const inferenceModeReason = !p
+    ? null
+    : eff.inference_mode === "moe" && !isMoePlan
+      ? "MoE exige metadata real de experts no GGUF deste modelo."
+      : isTp && isMoePlan
+        ? "Tensor Parallelism não suporta MoE nesta versão."
+        : null;
+  const inferenceModeSupported = inferenceModeReason == null;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
-  const hiddenStateCapability = p?.capabilities?.hidden_state_f8;
-  const hiddenStateDtype = eff.hidden_state_dtype ?? "f16";
-  const f8Unavailable = hiddenStateCapability
-    ? hiddenStateCapability.state !== "supported"
-    : false;
-
-  /** Edit one knob. The draft keeps the field usable while it is half-typed. */
-  function setKnob(key: keyof RuntimeParams, text: string) {
-    setDrafts((d) => ({ ...d, [key]: text }));
-    const value = Number(text);
-    if (text !== "" && Number.isFinite(value)) {
-      setParams({ ...eff, [key]: value });
-    }
-  }
+  /**
+   * `hidden_state_dtype` só faz algo quando o estado oculto atravessa a
+   * fronteira de um peer - ou seja, num pipeline de fatias com faixas
+   * adjacentes distintas. Modelo inteiro (uma máquina), Tensor Parallelism
+   * (troca por coletiva, não por frame) e um plano de fatias que caiu numa
+   * máquina só nunca serializam o estado, então o seletor seria um controle
+   * sem efeito. Duas máquinas na mesma faixa são réplicas, não hop.
+   */
+  const crossesPeerBoundary =
+    kind === "shards" &&
+    new Set(rows.map((r) => `${r.start_layer}-${r.end_layer}`)).size >= 2;
 
   function edit(next: (base: DeploySelection[]) => DeploySelection[]) {
     setSelection(next(rows.map((r) => ({ ...r }))).slice().sort(byLayer));
@@ -831,18 +825,6 @@ export function DeployModel() {
       (item) => item.start_layer === startLayer && item.end_layer === endLayer,
     );
     if (!candidate) return;
-    const wholeOptions = isWhole ? p?.layer_options : undefined;
-    if (
-      isWhole
-      && candidate.start_layer === 0
-      && wholeOptions
-      && candidate.end_layer + 1 < wholeOptions.total_layers
-      && wholeOptions.cuts.some((cut) => cut.end_layer === candidate.end_layer)
-    ) {
-      assignWholeCut(nodeId, candidate.end_layer);
-      return;
-    }
-    setWholeSlice(null);
     setSelection((current) => {
       const base = (current ?? rows)
         .filter(
@@ -885,7 +867,6 @@ export function DeployModel() {
    * tirar uma camada não é o mesmo gesto que "Remover da implantação".
    */
   function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
-    setWholeSlice(null);
     edit((base) =>
       base.filter(
         (row) =>
@@ -898,62 +879,10 @@ export function DeployModel() {
     );
   }
 
-  function assignWhole(nodeId: string) {
-    setWholeSlice(null);
-    const candidate = p?.available[0] ?? (
-      wholeModel?.total_layers != null
-        ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
-        : undefined
-    );
-    if (!candidate) return;
-    const current = rows[0];
-    setSelection([{
-      start_layer: candidate.start_layer,
-      end_layer: candidate.end_layer,
-      target_node_id: nodeId,
-      n_gpu_layers: current?.n_gpu_layers ?? null,
-      offload_kqv: current?.offload_kqv ?? null,
-    }]);
-  }
-
-  /**
-   * Pick one of the cuts the GGUF layout accepts. The slider index is an
-   * index into those cuts, never an invented layer number, so hybrid models
-   * jump over their real architectural blocks instead of cutting inside one.
-   */
-  function assignWholeCut(targetNodeId: string, endLayer: number) {
-    const options = p?.layer_options;
-    const sourceNodeId = options?.source_node_id ?? wholeModel?.holders[0];
-    const totalLayers = options?.total_layers ?? wholeModel?.total_layers;
-    if (!options || !sourceNodeId || totalLayers == null || sourceNodeId === targetNodeId) return;
-    const cut = options.cuts.find((candidate) => candidate.end_layer === endLayer);
-    if (!cut) return;
-    const template = rows[0];
-    const next: DeploySelection[] = [{
-      start_layer: 0,
-      end_layer: cut.end_layer,
-      target_node_id: targetNodeId,
-      n_gpu_layers: template?.n_gpu_layers ?? null,
-      offload_kqv: template?.offload_kqv ?? null,
-    }];
-    if (cut.end_layer + 1 < totalLayers) {
-      next.push({
-        start_layer: cut.end_layer + 1,
-        end_layer: totalLayers - 1,
-        target_node_id: sourceNodeId,
-        n_gpu_layers: template?.n_gpu_layers ?? null,
-        offload_kqv: template?.offload_kqv ?? null,
-      });
-    }
-    setWholeSlice({ source_node_id: sourceNodeId, target_node_id: targetNodeId, end_layer: cut.end_layer });
-    setSelection(next);
-    setInspectedNodeId(targetNodeId);
-    setInspectorTab("machine");
-  }
-
   async function deploy() {
     setRunning(true);
     setAsked(false);
+    setCapacityAsked(false);
     try {
       const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
         group: chosen,
@@ -962,7 +891,6 @@ export function DeployModel() {
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...(selection ? { selection: rows } : {}),
-        ...(wholeSlice ? { whole_slice: wholeSlice } : {}),
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
@@ -990,22 +918,26 @@ export function DeployModel() {
     }
   }
 
-  async function saveCacheTypes() {
+  async function updateCacheTypes(part: "k" | "v", value: KvCacheType) {
+    const previousK = cacheTypeK;
+    const previousV = cacheTypeV;
+    const nextK = part === "k" ? value : cacheTypeK;
+    const nextV = part === "v" ? value : cacheTypeV;
+    setCacheTypeK(nextK);
+    setCacheTypeV(nextV);
     setSavingCacheTypes(true);
     try {
       const saved = await api.post<CacheTypesResponse>("/api/ui/cache-types", {
-        cache_type_k: cacheTypeK,
-        cache_type_v: cacheTypeV,
+        cache_type_k: nextK,
+        cache_type_v: nextV,
       });
       setCacheTypeK(saved.cache_type_k);
       setCacheTypeV(saved.cache_type_v);
       setCacheTypesLoaded(true);
-      toast.success(
-        "Cache KV salvo",
-        "A escolha é global para esta instalação e será usada no próximo carregamento do modelo.",
-      );
     } catch (e) {
-      toast.fromError("Não foi possível salvar o cache KV", e);
+      setCacheTypeK(previousK);
+      setCacheTypeV(previousV);
+      toast.fromError(t("deploy.cacheUpdateFailed"), e);
     } finally {
       setSavingCacheTypes(false);
     }
@@ -1013,10 +945,9 @@ export function DeployModel() {
 
   function restoreNodePlan() {
     setSelection(null);
-    setWholeSlice(null);
+    setSettled(null);
     const defaults = nodeParams.current ?? p?.params ?? null;
     setParams(defaults);
-    setDrafts(defaults ? { n_ctx: String(defaults.n_ctx) } : {});
     setMerge(p?.merge ?? null);
     setPreferredNodeIds([]);
     preserveEmptyPrimary.current = true;
@@ -1026,36 +957,39 @@ export function DeployModel() {
   }
 
   function addPeerToDeployment(nodeId: string) {
+    if (isWhole && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
+      toast.warning(
+        t("deploy.wholeSingleMachineTitle"),
+        t("deploy.wholeSingleMachineDetail"),
+      );
+      return;
+    }
     inspectMachine(nodeId);
     setPreferredNodeIds((current) =>
       current.includes(nodeId) ? current : [...current, nodeId],
     );
-    if (isWhole) {
-      const candidate = p?.available[0] ?? (
-        wholeModel?.total_layers != null
-          ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
-          : undefined
-      );
+    if (isWhole && mapMachineIds.length === 0) {
+      // A resposta de fatias anterior pode continuar visível enquanto a
+      // consulta `whole` chega. Nunca use essa faixa velha para montar o
+      // modelo inteiro: o catálogo é a fonte do intervalo completo.
+      const candidate = wholeModel?.total_layers != null
+        ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
+        : p?.kind === "whole"
+          ? p.available[0]
+          : undefined;
       if (candidate) {
-        setWholeSlice(null);
-        setSelection((current) => {
-          const base = current ?? rows;
-          if (base.some((row) => row.target_node_id === nodeId)) return base;
-          const template = base[0];
-          return [...base, {
-            start_layer: candidate.start_layer,
-            end_layer: candidate.end_layer,
-            target_node_id: nodeId,
-            n_gpu_layers: template?.n_gpu_layers ?? null,
-            offload_kqv: template?.offload_kqv ?? null,
-          }].sort(byLayer);
-        });
+        setSelection([{
+          start_layer: candidate.start_layer,
+          end_layer: candidate.end_layer,
+          target_node_id: nodeId,
+          n_gpu_layers: null,
+          offload_kqv: null,
+        }]);
       }
     }
-    // A peer sem faixa ainda é apenas uma possibilidade no canvas. A seleção
+    // Um peer sem faixa ainda é apenas uma possibilidade no canvas. A seleção
     // só muda quando o operador atribui uma camada, evitando redesenhar a
-    // sugestão por causa de um simples arrastar e soltar. No modelo inteiro,
-    // cada máquina incluída recebe uma réplica explícita da faixa completa.
+    // sugestão por causa de um simples arrastar e soltar.
   }
 
   function removePeerFromDeployment(nodeId: string) {
@@ -1077,13 +1011,31 @@ export function DeployModel() {
   const canDeploy =
     validated &&
     !p?.blocked &&
-    p?.inference_mode_supported !== false &&
+    inferenceModeSupported &&
     rows.length > 0;
-  const machineOptions = liveMachines.length > 0 ? liveMachines : (cluster.data?.peers ?? []).map((peer) => ({
-    node_id: peer.node_id,
-    label: peer.hostname || peer.node_id,
-  }));
   const bottomMachines = liveMachines.filter((machine) => !mapNodeIds.has(machine.node_id));
+  /** Máquinas cuja projeção estoura a VRAM (rósea) ou que só cabem porque o
+   *  "Ajustar à memória" apararia o pedido (amber) - as duas pedem um aviso
+   *  antes de implantar. */
+  const capacityWarnMachines = (displayPlan?.machines ?? []).filter(
+    (machine) =>
+      machine.capacity && (!machine.capacity.fits || machine.capacity.degraded),
+  );
+  const anyOverCapacity = capacityWarnMachines.some((m) => !m.capacity?.fits);
+
+  /** O gesto de implantar, com os confirms possíveis no caminho: cobertura
+   *  parcial (o modelo não fica inteiro no ar) e a projeção de capacidade
+   *  (estoura a VRAM, ou o fit apararia o pedido). O primeiro é mais
+   *  fundamental, então vem antes. */
+  function attemptDeploy() {
+    if (!p?.complete) {
+      setAsked(true);
+    } else if (capacityWarnMachines.length > 0) {
+      setCapacityAsked(true);
+    } else {
+      void deploy();
+    }
+  }
 
   /**
    * Why the button is grey, in one line, next to the button.
@@ -1102,7 +1054,7 @@ export function DeployModel() {
         ? t("deploy.whyNotChecking")
           : p.blocked
             ? t("deploy.whyNotBlocked")
-          : p.inference_mode_supported === false
+          : !inferenceModeSupported
             ? t("deploy.whyNotBlocked")
           : !validated
             ? t("deploy.whyNotMismatch")
@@ -1112,6 +1064,19 @@ export function DeployModel() {
   const cacheTypeChoices = cacheTypes.data?.choices?.length
     ? cacheTypes.data.choices
     : DEFAULT_CACHE_TYPES;
+
+  function selectKind(value: DeployKind) {
+    if (value === kind) return;
+    setPickedKind(value);
+    // Trocar de fatias para um GGUF inteiro muda a unidade da decisão. A
+    // seleção anterior não pode escolher uma máquina por acidente enquanto o
+    // novo plano chega: [] significa mapa vazio e deixa a próxima escolha ao
+    // operador. Os outros modos continuam usando a sugestão do nó.
+    setSelection(value === "whole" ? [] : null);
+    setSettled(value === "whole" ? [] : null);
+    setPreferredNodeIds([]);
+    setJobId(null);
+  }
 
   return (
     <>
@@ -1138,13 +1103,7 @@ export function DeployModel() {
                   role="radio"
                   aria-label={value === "whole" ? "Um modelo inteiro" : label}
                   aria-checked={kind === value}
-                  onClick={() => {
-                    setPickedKind(value);
-                    setSelection(null);
-                    setWholeSlice(null);
-                    setPreferredNodeIds([]);
-                    setJobId(null);
-                  }}
+                  onClick={() => selectKind(value)}
                   className={`rounded-md px-3 py-1.5 text-[0.72rem] font-medium transition-colors ${
                     kind === value ? "bg-iris text-white" : "text-muted hover:text-fg"
                   }`}
@@ -1156,6 +1115,7 @@ export function DeployModel() {
             <div className="flex min-w-[15rem] flex-1 gap-2">
               <Select
                 aria-label="Modelo técnico"
+                name="model"
                 value={isTp && hasSlicedTp ? (tpGroup?.key ?? "") : chosen}
                 onChange={(event) => {
                   if (isWhole) setWholeName(event.target.value);
@@ -1163,7 +1123,7 @@ export function DeployModel() {
                   else if (isTp) setWholeName(event.target.value);
                   else setGroup(event.target.value);
                   setSelection(null);
-                  setWholeSlice(null);
+                  setSettled(null);
                   setPreferredNodeIds([]);
                 }}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
@@ -1171,16 +1131,16 @@ export function DeployModel() {
                 {isTp && hasSlicedTp
                   ? tensorGroups.map((entry) => (
                       <option key={entry.key} value={entry.key}>
-                        {entry.label} · TP {entry.tp_size}
+                        {deployModelDisplayName(entry.label)} · TP {entry.tp_size}
                       </option>
                     ))
                   : isWhole || isTp
                   ? wholes.map((item) => (
-                      <option key={item.name} value={item.name}>{item.name}</option>
+                      <option key={item.name} value={item.name}>{deployModelDisplayName(item.name)}</option>
                     ))
                   : groups.map((item) => (
                       <option key={item.key} value={item.key}>
-                        {item.label}
+                        {deployModelDisplayName(item.label)}
                         {duplicateGroupLabels.get(item.label)! > 1 && item.pomId
                           ? ` · ${item.pomId.slice(0, 8)}`
                           : ""}
@@ -1189,6 +1149,7 @@ export function DeployModel() {
               </Select>
               <Input
                 aria-label="Nome da implantação"
+                name="deployment_name"
                 value={deploymentName}
                 onChange={(event) => setDeploymentName(event.target.value)}
                 placeholder={chosen || "Nome da implantação"}
@@ -1204,9 +1165,9 @@ export function DeployModel() {
                   onClick={() => {
                     setStrategy(value);
                     setSelection(null);
-                    setWholeSlice(null);
+                    setSettled(null);
                     setPreferredNodeIds((current) =>
-                      isTp ? current : value === "complete" ? liveMachines.map((machine) => machine.node_id) : [],
+                      isWhole ? [] : isTp ? current : value === "complete" ? liveMachines.map((machine) => machine.node_id) : [],
                     );
                   }}
                   className={`rounded-md px-2.5 py-1.5 text-[0.7rem] font-medium ${
@@ -1232,7 +1193,7 @@ export function DeployModel() {
               icon={<Rocket className="h-3.5 w-3.5" />}
               loading={running}
               disabled={!canDeploy}
-              onClick={() => (p?.complete ? void deploy() : setAsked(true))}
+              onClick={attemptDeploy}
             >
               Implantar
             </Button>
@@ -1327,167 +1288,40 @@ export function DeployModel() {
             </div>
 
             {inspectorTab === "global" ? <>
-            <section className="border-b border-iris/20 bg-iris/[0.04] pb-3">
-              <p className="border-b border-iris/20 bg-iris/10 px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Configurações globais</p>
-              <div className="space-y-1 px-2 pt-2">
-                {GLOBAL_NUMERIC_KNOBS.map(({ key, label, step }) => (
-                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                    <span className="truncate text-muted">{label}</span>
-                    <Input name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
-                  </label>
-                ))}
-                <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-1.5 text-[0.65rem]">
-                  <span className="truncate text-muted">{t("deploy.knob.hidden_state_dtype")}</span>
-                  <Select
-                    aria-label={t("deploy.knob.hidden_state_dtype")}
-                    name="hidden_state_dtype"
-                    value={hiddenStateDtype}
-                    onChange={(event) => setParams({ ...eff, hidden_state_dtype: event.target.value as WireDtype })}
-                    compact
-                  >
-                    <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
-                    <option value="f8" disabled={f8Unavailable}>{t("deploy.knob.hidden_state_dtypeF8")}</option>
-                  </Select>
-                </label>
-                {hiddenStateCapability && f8Unavailable && (
-                  <p role="alert" className="text-[0.6rem] leading-relaxed text-amber">
-                    {t("deploy.knob.hidden_state_dtypeUnavailable")}{hiddenStateCapability.reason}
-                  </p>
-                )}
-                <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
-                <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
-                <CapabilitySwitch capability={p?.capabilities?.no_embeddings} alwaysVisible checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
-              </div>
-            </section>
-
-            {isMoePlan && (
-              <section className="border-b border-amber/25 bg-amber/[0.04] px-2 py-3">
-                <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-amber">Motor de inferência</p>
-                <label className="mt-2 grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
-                  <span className="truncate text-muted">Escolha para os três modos</span>
-                  <Select
-                    aria-label="Motor de inferência"
-                    value={eff.inference_mode ?? "auto"}
-                    onChange={(event) => setParams({ ...eff, inference_mode: event.target.value as InferenceMode })}
-                    compact
-                  >
-                    <option value="auto">Automático</option>
-                    <option value="dense">llama.cpp</option>
-                    <option value="moe">MoE</option>
-                  </Select>
-                </label>
-                <p className="mt-1.5 text-[0.6rem] leading-relaxed text-faint">A decisão usa metadata real do GGUF e é enviada ao modelo inteiro, às fatias e ao Tensor Parallelism.</p>
-                {p?.inference_mode_supported === false && (
-                  <p role="alert" className="mt-2 rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
-                    {p.inference_mode_reason ?? "Este caminho não pode honrar o motor escolhido."}
-                  </p>
-                )}
-              </section>
+            <DeploymentInspector
+              value={eff}
+              onChange={setParams}
+              capabilities={p?.capabilities}
+              cacheTypes={{
+                k: cacheTypeK,
+                v: cacheTypeV,
+                choices: cacheTypeChoices,
+                busy: cacheTypes.isLoading || savingCacheTypes,
+                onChange: (part, next) => void updateCacheTypes(part, next),
+              }}
+              merge={isWhole ? undefined : { value: effMerge, onChange: setMerge }}
+              showInferenceMode={isMoePlan}
+              inferenceModeAlert={
+                inferenceModeSupported
+                  ? undefined
+                  : (inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido.")
+              }
+              showHiddenStateDtype={crossesPeerBoundary}
+            />
+            {isMoePlan && !inferenceModeSupported && (
+              <p role="alert" className="border-b border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
+                {inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido."}
+              </p>
             )}
-
-            <section className="border-b border-aqua/20 bg-aqua/[0.035] px-2 py-3">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-aqua">Cache KV da instalação</p>
-                  <p className="mt-1 text-[0.6rem] leading-relaxed text-faint">Tipo aplicado a todos os contextos deste nó no próximo carregamento.</p>
-                </div>
-                <Badge tone="aqua" className="shrink-0 px-1.5 py-0 text-[0.56rem]">global</Badge>
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <label className="min-w-0 text-[0.62rem]">
-                  <span className="mb-1 block text-muted">Cache K</span>
-                  <Select
-                    aria-label="Cache K"
-                    value={cacheTypeK}
-                    disabled={cacheTypes.isLoading || savingCacheTypes}
-                    onChange={(event) => setCacheTypeK(event.target.value as KvCacheType)}
-                    compact
-                  >
-                    {cacheTypeChoices.map((choice) => (
-                      <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
-                    ))}
-                  </Select>
-                </label>
-                <label className="min-w-0 text-[0.62rem]">
-                  <span className="mb-1 block text-muted">Cache V</span>
-                  <Select
-                    aria-label="Cache V"
-                    value={cacheTypeV}
-                    disabled={cacheTypes.isLoading || savingCacheTypes}
-                    onChange={(event) => setCacheTypeV(event.target.value as KvCacheType)}
-                    compact
-                  >
-                    {cacheTypeChoices.map((choice) => (
-                      <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
-                    ))}
-                  </Select>
-                </label>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                loading={savingCacheTypes}
-                disabled={cacheTypes.isLoading}
-                onClick={() => void saveCacheTypes()}
-                className="mt-2 w-full text-[0.65rem]"
-              >
-                Salvar cache KV
-              </Button>
-            </section>
-            {/*
-              * Duas faixas vizinhas na mesma máquina só passam quando são
-              * juntadas antes de subir: `split` renomeia os blocos de toda
-              * fatia para `blk.0..`, então duas não carregam lado a lado, e
-              * `splitter::merge` é o inverso disso. O planejador recusa o par
-              * sem esta flag, e a mensagem de recusa manda "juntar as fatias
-              * vizinhas na tela" - o controle tem que existir, ou a recusa
-              * aponta para lugar nenhum. Foi exatamente o que aconteceu quando
-              * a reescrita do canvas apagou este interruptor.
-              *
-              * Vive sob a mesma condição que decide se `merge` é enviado, e não
-              * outra: um controle que a requisição ignora, ou um valor enviado
-              * sem controle, é como ele se perdeu da primeira vez.
-              */}
-            {!isWhole && (
-              <section className="border-b border-line py-3">
-                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Fatias</p>
-                <Switch
-                  checked={effMerge}
-                  onChange={(value) => setMerge(value)}
-                  label={t("deploy.merge")}
-                  hint={t("deploy.mergeHint")}
-                />
-              </section>
-            )}
-
-            {(isWhole || isTp) && (wholeModel || tpGroup) && (
-              <section className="border-b border-line py-3">
-                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{isTp && hasSlicedTp ? "Grupo Tensor Parallelism" : "Modelo inteiro"}</p>
+            {isTp && tpGroup && (
+              <section className="border-b border-line px-2 py-3">
+                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{hasSlicedTp ? "Grupo Tensor Parallelism" : "Modelo inteiro"}</p>
                 <dl className="grid grid-cols-3 gap-2 text-[0.6rem]">
                   <div><dt className="text-faint">Quantização</dt><dd className="font-mono text-muted">{wholeModel?.quant ?? tpGroup?.quant ?? "-"}</dd></div>
                   <div><dt className="text-faint">Camadas</dt><dd className="font-mono text-muted">{wholeModel?.total_layers ?? tpGroup?.total_layers ?? "-"}</dd></div>
                   <div><dt className="text-faint">Tamanho</dt><dd className="font-mono text-muted">{bytes(wholeModel?.size_bytes ?? tpGroup?.size_bytes ?? 0)}</dd></div>
                 </dl>
                 <p className="mt-1.5 text-[0.6rem] text-faint"><span>{isTp && hasSlicedTp ? "Ranks disponíveis em" : "Está em"}</span>{" "}<span>{(wholeModel?.holders ?? tpGroup?.holders ?? []).map(labelOf).join(", ") || "nenhuma máquina"}</span></p>
-                {isWhole && p && (
-                  <label className="mt-2 grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
-                    <span className="truncate text-muted">Máquina que serve o modelo inteiro</span>
-                    <Select
-                      aria-label="Máquina que serve o modelo inteiro"
-                      value={rows[0]?.target_node_id ?? p?.steps[0]?.target_node_id ?? ""}
-                      onChange={(event) => assignWhole(event.target.value)}
-                      compact
-                    >
-                      {machineOptions.map((machine) => (
-                        <option key={machine.node_id} value={machine.node_id}>{machine.label}</option>
-                      ))}
-                    </Select>
-                  </label>
-                )}
-                {isWhole && p?.steps[0]?.source_host && p.steps[0]?.target_node_id !== p.steps[0]?.source_node_id && (
-                  <p className="mt-1.5 text-[0.6rem] text-amber">copiar de {p.steps[0].source_host}</p>
-                )}
                 {isTp && hasSlicedTp && (
                   <div className="mt-3 border-t border-line pt-2">
                     <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Ranks do grupo TP</p>
@@ -1505,61 +1339,14 @@ export function DeployModel() {
               </section>
             )}
 
-            <section className="border-b border-line py-3">
-              <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Execução</p>
-              <CapabilitySwitch
-                capability={p?.capabilities?.speculative_decoding}
-                checked={eff.speculative_decoding_enabled ?? false}
-                onChange={(value) => setParams({ ...eff, speculative_decoding_enabled: value })}
-                label="Decodificação especulativa"
-              />
-              {eff.speculative_decoding_enabled &&
-                p?.capabilities?.speculative_decoding?.state !== "unsupported" && (
-                <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                    <span className="truncate text-muted">Largura do rascunho</span>
-                    <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} compact className="text-right font-mono" />
-                  </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                    <span className="truncate text-muted">Janela de busca</span>
-                    <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} compact className="text-right font-mono" />
-                  </label>
-                </div>
-              )}
-              <div className="mt-2">
-                <CapabilitySwitch
-                  capability={p?.capabilities?.mtp}
-                  checked={eff.mtp_enabled ?? false}
-                  onChange={(value) => setParams({
-                    ...eff,
-                    mtp_enabled: value,
-                    ...(value ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
-                  })}
-                  label="Predição multi-token (MTP)"
-                />
-              </div>
-              {eff.mtp_enabled &&
-                p?.capabilities?.mtp?.state !== "unsupported" && (
-                <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                    <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
-                    <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
-                  </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
-                    <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                    <Input aria-label="Probabilidade mínima do MTP" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} compact className="text-right font-mono" />
-                  </label>
-                </div>
-              )}
-            </section>
-
             {isTp && (wholeModel || tpGroup) && (
-              <section className="border-b border-line py-3">
+              <section className="border-b border-line px-2 py-3">
                 <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Tensor paralelo</p>
                 <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
                   <span className="truncate text-muted">Principal</span>
                   <Select
                     aria-label="Máquina principal do Tensor Parallelism"
+                    name="tp_primary_node"
                     value={tp.primary_node_id}
                     onChange={(event) => {
                       preserveEmptyPrimary.current = false;
@@ -1581,6 +1368,7 @@ export function DeployModel() {
                   <span className="mb-1 block text-muted">Workers</span>
                   <Select
                     aria-label="Workers do Tensor Parallelism"
+                    name="tp_worker_node_ids"
                     multiple
                     value={tp.worker_node_ids}
                     onChange={(event) => setTp((current) => ({
@@ -1606,19 +1394,6 @@ export function DeployModel() {
               const first = taking[0];
               if (!machine) return <p className="py-4 text-[0.68rem] text-faint">Selecione uma máquina no canvas.</p>;
               const availableForMachine = p?.available.filter((candidate) => candidate.holders.includes(machine.node_id)) ?? [];
-              const wholeCuts = wholeLayerOptions?.cuts ?? [];
-              const selectedWholeCutIndex = wholeSlice?.target_node_id === machine.node_id
-                ? wholeCuts.findIndex((cut) => cut.end_layer === wholeSlice.end_layer)
-                : -1;
-              const wholeCutIndex = selectedWholeCutIndex >= 0
-                ? selectedWholeCutIndex
-                : Math.max(0, wholeCuts.length - 1);
-              const wholeCut = wholeCuts[wholeCutIndex];
-              const showWholeSlider = isWhole
-                && machine.node_id !== wholeSourceNodeId
-                && availableForMachine.length === 0
-                && !!wholeCut
-                && !wholeLayerOptions?.reason;
               return (
                 <section className="border border-aqua/20 bg-aqua/[0.035] pt-0">
                   <div className="flex items-center justify-between gap-2 border-b border-aqua/20 bg-aqua/10 px-2 py-1.5">
@@ -1687,49 +1462,21 @@ export function DeployModel() {
                           }) : <span className="text-[0.64rem] text-faint">Nenhuma fatia disponível</span>}
                         </div>
                       </div>
-                      {isWhole && wholeLayerOptions?.reason && machine.node_id !== wholeSourceNodeId && (
-                        <p role="alert" className="mt-3 border-t border-amber/20 pt-2 text-[0.62rem] leading-relaxed text-amber">
-                          Não foi possível confirmar os cortes reais deste modelo: {wholeLayerOptions.reason}
-                        </p>
-                      )}
-                      {showWholeSlider && (
-                        <div className="mt-3 border-t border-iris/20 pt-2">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Enviar camadas para este peer</p>
-                              <p className="mt-1 text-[0.62rem] leading-relaxed text-muted">
-                                {layerRange(0, wholeCut.end_layer)} para {machine.label}; o restante fica em {labelOf(wholeSourceNodeId)}.
-                              </p>
-                            </div>
-                            <span className="shrink-0 font-mono text-[0.62rem] text-iris">{wholeCut.layers} camadas</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={wholeCuts.length - 1}
-                            step={1}
-                            value={wholeCutIndex}
-                            aria-label={`Camadas a enviar para ${machine.label}`}
-                            onChange={(event) => {
-                              const cut = wholeCuts[Number(event.target.value)];
-                              if (cut) assignWholeCut(machine.node_id, cut.end_layer);
-                            }}
-                            className="mt-2 w-full accent-iris"
-                          />
-                          <p className="mt-1 text-[0.58rem] leading-relaxed text-faint">
-                            {wholeLayerOptions?.rule}. {wholeLayerOptions?.granularity
-                              ? `Passo real: ${wholeLayerOptions.granularity} camadas.`
-                              : "Os cortes disponíveis podem ter tamanhos diferentes."}
-                            {" "}O fatiamento acontece localmente na máquina que propôs o modelo antes da transferência.
-                          </p>
-                        </div>
-                      )}
                     </>
                   )}
+                  {/* As duas propriedades por máquina usam a mesma linha das
+                      globais: o `[i]` antes do nome, na mesma coluna, e o
+                      controle à direita. A explicação do KV cache era um
+                      parágrafo fixo debaixo do interruptor; agora está no `[i]`,
+                      como todas as outras. */}
                   {first && (
-                    <div className="mt-3 space-y-2 border-t border-line pt-2">
-                      <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></label>
-                      <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" />
+                    <div className="mt-3 space-y-1 border-t border-line pt-2">
+                      <InspectorRow label="Camadas GPU" tip={t("deploy.knob.n_gpu_layersHint")}>
+                        <Input aria-label="Camadas GPU" name={`n_gpu_layers_${machine.node_id}`} type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" />
+                      </InspectorRow>
+                      <InspectorRow label="KV cache na GPU" tip={t("deploy.knob.offload_kqvHint")}>
+                        <Tick on={first.offload_kqv ?? eff.offload_kqv} label="KV cache na GPU" onToggle={() => setPeerKqv(machine.node_id, !(first.offload_kqv ?? eff.offload_kqv))} />
+                      </InspectorRow>
                     </div>
                   )}
                   </div>
@@ -1769,7 +1516,7 @@ export function DeployModel() {
             {bottomMachines.map((machine) => (
               <button key={machine.node_id} type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-pom-node", machine.node_id)} onClick={() => addPeerToDeployment(machine.node_id)} onDoubleClick={() => addPeerToDeployment(machine.node_id)} className="flex min-w-[8rem] shrink-0 items-center gap-1.5 rounded-md border border-line bg-ink px-2 py-1 text-left hover:border-iris/60">
                 <ServerCog className="h-3 w-3 shrink-0 text-faint" />
-                <span className="min-w-0"><span className="block truncate text-[0.62rem] text-fg">{machine.label}</span><span className="block font-mono text-[0.54rem] text-faint">{machine.rtt_ms == null ? "RTT -" : `${machine.rtt_ms.toFixed(1)} ms`} · carga {machine.load}</span></span>
+                <span className="min-w-0"><span className="block truncate text-[0.62rem] text-fg">{machine.label}</span><span className="block font-mono text-[0.54rem] text-faint">{machine.rtt_ms == null ? "RTT -" : `${machine.rtt_ms.toFixed(1)} ms`} · {machine.load == null ? t("dashboard.inFlightUnavailable") : t("canvas.inFlight", { count: machine.load })}</span></span>
               </button>
             ))}
             {p && !isWhole && (
@@ -1798,6 +1545,34 @@ export function DeployModel() {
         busy={running}
         onConfirm={() => void deploy()}
         onCancel={() => setAsked(false)}
+      />
+
+      <Confirm
+        open={capacityAsked}
+        title={t(anyOverCapacity ? "deploy.capacityWarnTitle" : "deploy.capacityDegradedTitle")}
+        description={
+          <>
+            {t(anyOverCapacity ? "deploy.capacityWarnDetail" : "deploy.capacityDegradedDetail", {
+              machines: capacityWarnMachines.map((machine) => machine.label).join(", "),
+            })}
+            {capacityWarnMachines.some((machine) => machine.capacity?.note) && (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-[0.72rem] text-muted">
+                {capacityWarnMachines
+                  .filter((machine) => machine.capacity?.note)
+                  .map((machine) => (
+                    <li key={machine.node_id}>
+                      <span className="font-medium text-fg">{machine.label}:</span>{" "}
+                      {machine.capacity?.note}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </>
+        }
+        confirmLabel={t("deploy.deploy")}
+        busy={running}
+        onConfirm={() => void deploy()}
+        onCancel={() => setCapacityAsked(false)}
       />
     </>
   );

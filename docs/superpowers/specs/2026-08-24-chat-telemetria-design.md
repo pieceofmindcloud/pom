@@ -2,7 +2,7 @@
 
 ## Contexto
 
-O chat de teste (`apps/frontend/src/routes/Chat.tsx`) já recebe um resumo
+O Chat (`apps/frontend/src/routes/Chat.tsx`) já recebe um resumo
 `x_pom.trace` no último evento SSE, mas só mostra tempos internos, bytes e
 telemetria TP. O cluster e os cards de implantação já carregam capacidade,
 configuração e RTT direcional, e o servidor de inferência já expõe a colocação

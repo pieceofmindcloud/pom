@@ -142,6 +142,26 @@ describe("telemetryAnalysis", () => {
     expect(result.evidence).toContain("700 ms");
   });
 
+  it("does not blame the backend when total time is outside node measurements", () => {
+    const result = analyzeTelemetry(
+      trace(phase({ processing_ms: 593, node_decode_ms: 588 })),
+      {
+        ttft_ms: 6_040,
+        prefill_ms: 153,
+        prefill_tokens: 28,
+        prefill_tokens_per_sec: 183,
+        generation_ms: 24_960,
+        generation_tokens: 56,
+        generation_tokens_per_sec: 2.2,
+        total_ms: 31_000,
+        total_tokens_per_sec: 2.2,
+      },
+    );
+
+    expect(result.kind).toBe("outside-node");
+    expect(result.evidence).toContain("outside 30407 ms");
+  });
+
   it("does not invent TP data when the trace has no TP phase", () => {
     const result = analyzeTelemetry(trace(phase({ processing_ms: 100, node_decode_ms: 20 })));
 

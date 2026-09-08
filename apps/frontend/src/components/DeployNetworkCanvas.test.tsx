@@ -11,6 +11,7 @@ const params = {
   n_ctx: 4096,
   offload_kqv: true,
   fit_memory: true,
+  fit_memory_margin_mb: 256,
   n_batch: 512,
   max_new_tokens: 256,
   max_sessions: 1,
@@ -179,6 +180,18 @@ describe("DeployNetworkCanvas", () => {
     await waitFor(() => {
       expect(canvas!.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(0);
     });
+    view.unmount();
+  });
+
+  it("diz quando a carga da máquina não foi observada em vez de mostrar zero", () => {
+    const current = plan([step(0, 3, "a", 1)], []);
+    current.machines = current.machines.map((item) => item.node_id === "a" ? { ...item, load: null } : item);
+
+    const view = renderCanvas(current, [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
+
+    const card = screen.getByText("carga em voo indisponível").closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card!).queryByText("0 em voo")).toBeNull();
     view.unmount();
   });
 

@@ -321,6 +321,20 @@ pub fn is_active() -> bool {
     tp_state().is_some()
 }
 
+/// Liga a ponte que o `llama-engine` usa para consultar este módulo de dentro
+/// do decode (`llm.rs` -> `llama_engine::tp_probe`). Chamado uma vez no arranque
+/// do `node`; `tp.rs` fica em `node` porque a coletiva fala com o primary por
+/// HTTP/túnel libp2p.
+pub fn install_probe() {
+    llama_engine::tp_probe::install(llama_engine::tp_probe::TpProbe {
+        is_active,
+        reduce_count,
+        reduces_in_current_decode,
+        take_failure,
+        set_expected_reduces,
+    });
+}
+
 /// Quantos reduces este processo já executou.
 ///
 /// O decode compara antes e depois: com a coletiva ligada, um decode que não
@@ -439,14 +453,14 @@ pub fn register_tp_reduce_with_urls(
         *slot = Some(state);
     }
     unsafe {
-        llama_cpp_sys_2::llama_set_tp_reduce_callback(Some(tp_reduce_cb), std::ptr::null_mut());
+        llama_engine::llama_cpp_sys_2::llama_set_tp_reduce_callback(Some(tp_reduce_cb), std::ptr::null_mut());
     }
 }
 
 /// Desliga a coletiva: o callback vira None e o fork deixa de inserir o op.
 pub fn unregister_tp_reduce() {
     unsafe {
-        llama_cpp_sys_2::llama_set_tp_reduce_callback(None, std::ptr::null_mut());
+        llama_engine::llama_cpp_sys_2::llama_set_tp_reduce_callback(None, std::ptr::null_mut());
     }
     // Limpar o estado é metade do desligamento: sem isto `is_active()` continua
     // verdadeiro e o nó se comporta como membro de um grupo que não existe mais.
@@ -610,10 +624,10 @@ pub fn broadcast_to(
         let tunnel = crate::infer_tunnel::tunnel_sender();
         let auth_state = auth.clone();
         tokio::spawn(async move {
-            let inference_token = match auth_state {
+            let internal_token = match auth_state {
                 Some(auth) => {
                     let config = auth.read().await;
-                    crate::auth::inference_token(&config)
+                    crate::auth::internal_node_token(&config)
                 }
                 None => None,
             };
@@ -621,7 +635,11 @@ pub fn broadcast_to(
             if let Some(ct) = ct {
                 headers.push(("content-type".to_string(), ct.to_string()));
             }
-            if let Some(token) = inference_token {
+            if let Some(token) = internal_token {
+                headers.push((
+                    crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+                    "1".to_string(),
+                ));
                 headers.push((
                     reqwest::header::AUTHORIZATION.as_str().to_string(),
                     format!("Bearer {token}"),
@@ -710,10 +728,10 @@ async fn post_reduce(
     let request_bytes = corpo.len() as u64;
     let started = std::time::Instant::now();
 
-    let inference_token = match &state.auth {
+    let internal_token = match &state.auth {
         Some(auth) => {
             let config = auth.read().await;
-            crate::auth::inference_token(&config)
+            crate::auth::internal_node_token(&config)
         }
         None => None,
     };
@@ -726,7 +744,13 @@ async fn post_reduce(
         ),
     ]
     .into_iter()
-    .chain(inference_token.as_ref().map(|token| {
+    .chain(internal_token.as_ref().map(|_| {
+        (
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+            "1".to_string(),
+        )
+    }))
+    .chain(internal_token.as_ref().map(|token| {
         (
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),

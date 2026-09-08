@@ -31,25 +31,56 @@ O levantamento de reuso da fase de UI está em
 O relatório de entrega da fase de UI está em
 `rdma-hf-provider-ui-relatorio.md` e descreve o painel de status, os modelos
 gated e a licença antes do download.
+- `bench-llamacpp-qwen36-unified.md` - registro versionado da rodada de
+  comparação do llama.cpp puro com cache unificado, MTP e a geometria do POM.
 - `subsystems/freetoken-moe.md` - método, medições e invariantes do goal que
   adiciona o caminho MoE próprio ao lado do caminho denso, incluindo o marco
-  dos quatro modelos da ksia, a salvaguarda por dtype e o goal CUDA posterior.
+  dos quatro modelos da ksia, a salvaguarda por dtype, o diagnóstico de reserva
+  de KV multiplicada por `max_sessions` e o goal CUDA posterior.
+- `subsystems/rede-p2p.md` - descoberta, identidade, TLS e o canal unidirecional
+  de logs de processo enviado ao principal.
 
 ## subsystems/
 
-Os guias permanentes do runtime ficam em `docs/subsystems/`. `fatiamento.md`
-documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas
-e o rebase de metadata de camadas para a numeração local. `paralelismo.md`
+Os guias permanentes do runtime ficam em `docs/subsystems/`. `rede-p2p.md`
+documenta também que os testes usam o `Network::testkit` em loopback, com
+destino de anúncio injetável e sem broadcast global. `fatiamento.md`
+documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas,
+o rebase de metadata de camadas para a numeração local e a leitura somente de
+cabeçalho do catálogo, inclusive para o modelo selecionado. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
-a leitura da telemetria correspondente. `inferencia.md` e `web-ui.md` também
-documentam o RTT observado do Chat, o RTT direcional por aresta e a leitura
-efetiva de colocação e configuração por peer. `implantacao.md` também documenta a
+a leitura da telemetria correspondente. `build-execucao.md` documenta também a
+geração em tempo de compilação da lista MTP a partir do fork local do
+`llama.cpp`. `inferencia.md` e `web-ui.md` também
+documentam o RTT observado do Chat, o RTT direcional por aresta, a leitura
+efetiva de colocação e configuração por peer, a reserva do segundo contexto MTP
+e o recuo dele para a RAM. Em `inferencia.md`, o fit do modelo principal é a
+autoridade: a reserva do MTP só entra numa tentativa conjunta que não possa
+reduzir suas camadas. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
-completa. `web-ui.md` descreve como essa validação aparece na tela Implantar e
-como o mapa apresenta hops e RTTs direcionais. `inferencia.md` registra também
-as causas conhecidas de perda do estado de sessão e a tarefa de observabilidade
-recomendada para distingui-las em campo.
+completa, além da prévia analítica de capacidade sem chamada ao fit nativo.
+`web-ui.md` descreve também a escolha de exposição administrativa, o token
+humano separado da `connection_key`, a autoridade do perfil `admin` sobre
+adicionar máquina e desimplantar e a orientação de TLS em Preferências. A
+fronteira é de rota no gateway: a pipeline continua dual-stack para o fallback
+HTTP do túnel libp2p. O guia descreve como essa validação aparece na tela Implantar, como o mapa
+apresenta hops e RTTs direcionais e como o perfil Inference reduz a vista sem
+criar autorização no backend. `inferencia.md` registra também
+as causas conhecidas de perda do estado de sessão, o estado de disponibilidade
+do MTP no `/health` e a tarefa de observabilidade recomendada para distingui-las
+em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
+2026-09-04, a reaplicação da rota morta por lote e a memória de falha que a
+corrige.
+`api-http.md` registra também que o endereço anunciado é uma mutação local
+disponível a todo perfil e que o fallback da interface não intercepta métodos
+de rotas administrativas concretas.
+
+O armazenamento local unificado está especificado em
+`superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no
+backend. O runtime mantém uma conexão SQLite compartilhada por processo,
+serializa mutações explicitamente e mantém o timeout apenas como segurança;
+o contrato HTTP do histórico de conversas fica em `subsystems/api-http.md`.
 
 ## superpowers/specs/
 
@@ -75,6 +106,11 @@ mudar frame entre peers ou planner.
 auditoria persistente de prompts em SQLite, a identidade não secreta da chave,
 o FTS5 e o ciclo em duas etapas do registro.
 
+O wizard de primeiro acesso está descrito em
+`superpowers/specs/2026-09-02-rdma-wizard-primeiro-acesso-design.md`, com o
+fluxo navegável e os limites do protótipo. A execução correspondente está em
+`superpowers/plans/2026-09-02-rdma-wizard-primeiro-acesso.md`.
+
 ## Proteção térmica da implantação
 
 `superpowers/specs/2026-08-26-protecao-termica-gpu-design.md` registra a
@@ -94,6 +130,8 @@ Ex.: `2026-08-13-rota-dinamica-e-implantacao-incremental.md` implementa a spec
 acima em duas fases (A: rota dinamica em `crates/node/src/network/route.rs` e
 `addrs.rs`; B: endpoints incrementais em `backend/deploy.rs`), cada task com
 commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
+O plano `2026-09-02-nome-comercial-gpu.md` cobre a resolucao de nomes de GPU
+pela descricao do backend, pela base do sistema e pelo identificador PCI.
 
 ## Convencao de nomes - e a excecao
 

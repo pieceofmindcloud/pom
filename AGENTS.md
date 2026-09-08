@@ -23,7 +23,7 @@ dele é lá, não aqui.
 | `freetoken-moe.md` | medições do goal FreeToken, orçamento de KV e caminho MoE próprio |
 | `transferencia.md` | puxar/oferecer arquivos entre máquinas, retomada, MD5, concessões |
 | `api-http.md` | todas as rotas, autenticação, `x_pom.source`, `gateway::testkit` |
-| `web-ui.md` | como a UI sobe, menu, modais, Painel, chat de teste, telas de fatiar/implantar |
+| `web-ui.md` | como a UI sobe, menu, modais, Painel, Chat, telas de fatiar/implantar |
 
 **Por pasta** (`AGENTS.md`) - o que cada arquivo faz, função a função, e as
 ligações com outras pastas: `crates/`, `crates/node/`, e dentro de
@@ -78,26 +78,21 @@ cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 
 ## Preparo do build
 
-O build depende do fork do `llama.cpp` em `/llama.cpp`, ignorado pelo Git
-(ver `.gitignore`), alcançado por `vendor/llama-cpp-sys-2/llama.cpp`.
-Antes de compilar, confira e atualize o checkout na branch
-`pom-tensor-parallel`, pois o lado Rust acompanha a API desse fork:
-
-```bash
-git -C /llama.cpp remote -v
-git -C /llama.cpp switch pom-tensor-parallel
-git -C /llama.cpp pull --ff-only origin pom-tensor-parallel
-git -C /llama.cpp log -1 --oneline
-```
+O build depende do fork do `llama.cpp` na branch `pom-tensor-parallel`,
+ignorado pelo Git (ver `.gitignore`) e alcançado por
+`vendor/llama-cpp-sys-2/llama.cpp`. O `build.rs` prepara automaticamente um
+clone raso quando o checkout está ausente. Para reutilizar uma cópia existente,
+use `LLAMA_SOURCE=/caminho/para/llama.cpp cargo build`; o diretório precisa
+conter `ggml`. O erro de preparo informa o comando manual completo quando o
+download não puder ocorrer. O lado Rust acompanha a API dessa branch, mas o
+projeto não fixa um commit do fork.
 
 Se faltarem `llama_moe_ffn_descriptor`, `llama_set_moe_ffn_callback` ou campos
 `moe_external_executor*` em `llama_model_params`, o checkout do fork está
-desatualizado - não é defeito preexistente do projeto. Em uma cópia nova, se o
-symlink estiver ausente, recrie-o com:
-
-```bash
-ln -s ../../llama.cpp vendor/llama-cpp-sys-2/llama.cpp
-```
+desatualizado - não é defeito preexistente do projeto. Em uma cópia nova, o
+primeiro `cargo build` prepara o conteúdo ignorado; não crie um symlink
+adicional nem altere arquivos dentro de um checkout existente do fork. Ver
+`docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
 
 **Compilar com `--features cuda` sem `CUDAARCHS` é quase sempre desperdício**:
 o llama.cpp gera cada objeto CUDA para dez arquiteturas de GPU. Meça o custo e
@@ -152,9 +147,15 @@ quebra o produto inteiro.
   apagar `.pom-node.key` cria uma máquina nova. Não confundir com
   `.pom.key`, do pkarr. → `rede-p2p.md`
 - **A chave de conexão é a mesma no cluster inteiro** e é a credencial de
-  operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e as rotas
-  `/v1`. Sem `pom.json` o nó sobe em **modo setup**, que serve só a tela de
-  escolha Principal/Nó e gera essa chave. → `api-http.md`, `web-ui.md`
+  operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e a
+  sincronização nó-a-nó. `POST /api/generate` e todas as rotas `/v1/` aceitam
+  somente uma API key ativa. A superfície administrativa da UI usa sessão em memória com cookie
+  `HttpOnly`; o token humano não vai para storage nem URL. Em modo local, a
+  mesma fronteira cobre os ficheiros estáticos, mas nunca as rotas da pipeline.
+  Sem `pom.json` o nó sobe em **modo setup**, que escolhe o perfil inicial
+  `admin`, `node` ou `infer` e gera essa chave quando necessário. O perfil
+  persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
+  continua sendo o mecanismo de autenticação. → `api-http.md`, `web-ui.md`
 - **Política de primeira versão.** O produto ainda não foi lançado. Portanto,
   não manter no runtime código de compatibilidade, adapters ou fallbacks para
   versões antigas de protocolos - especialmente formatos de inferência v1/v2.
@@ -215,6 +216,9 @@ quebra o produto inteiro.
   verificado por `SHA256(pubkey) == node_id`. → `rede-p2p.md`
 - **Testes de rota usam `gateway::testkit`**, nunca UDP de verdade - a suíte
   transmite na LAN e pode injetar mensagens num cluster vivo. → `api-http.md`
+
+As pendências de engenharia que acompanham estas invariantes ficam em
+`TODO.md`; este arquivo não duplica a lista de trabalho.
 
 ## Manutenção deste arquivo
 

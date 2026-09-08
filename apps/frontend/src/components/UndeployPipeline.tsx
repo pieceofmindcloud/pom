@@ -27,7 +27,7 @@ import { useToast } from "../lib/toast";
 import { Confirm, Modal } from "./Confirm";
 import { Button } from "./ui";
 import { useI18n } from "../i18n/provider";
-import { formatMessage, getActiveLocale } from "../i18n/locales";
+import { localizeServerText } from "../i18n/locales";
 
 export interface UndeployTarget {
   node_id: string;
@@ -53,7 +53,7 @@ export function UndeployPipeline({
    */
   deployId?: string;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<UndeployReport | null>(null);
@@ -77,7 +77,10 @@ export function UndeployPipeline({
       }
       invalidate();
     } catch (e) {
-      toast.fromError(t("undeploy.failedTitle"), e);
+      toast.error(
+        t("undeploy.failedTitle"),
+        localizeServerText(locale, e instanceof Error ? e.message : String(e)),
+      );
     } finally {
       setBusy(false);
       setAsking(false);
@@ -131,7 +134,7 @@ export function UndeployPipeline({
         onClose={() => setReport(null)}
         footer={
           <Button variant="primary" onClick={() => setReport(null)}>
-            {formatMessage(getActiveLocale(), "common.close")}
+            {t("common.close")}
           </Button>
         }
       >

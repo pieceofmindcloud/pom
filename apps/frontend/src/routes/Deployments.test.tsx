@@ -9,7 +9,7 @@
  * marcar as duas como padrão, o operador reimplanta a errada.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Deployments } from "./Deployments";
 import { LocaleProvider } from "../i18n/provider";
@@ -48,6 +48,7 @@ const params: RuntimeParams = {
   n_ctx: 8192,
   offload_kqv: true,
   fit_memory: true,
+  fit_memory_margin_mb: 256,
   n_batch: 512,
   max_new_tokens: 512,
   max_sessions: 1,
@@ -70,29 +71,47 @@ const params: RuntimeParams = {
 
 function row(
   id: string,
-  opts: { serving: boolean; isDefault: boolean; kind?: "shards" | "whole" },
+  opts: {
+    serving: boolean;
+    isDefault: boolean;
+    kind?: "shards" | "whole";
+    versions?: { version: number; n_ctx: number }[];
+    activeVersion?: number;
+    activatedAt?: string;
+  },
 ): DeploymentRow {
+  const nodes = [
+    {
+      node_id: "no-a",
+      hostname: "ksia",
+      start_layer: 0,
+      end_layer: 31,
+      peer_index: 0,
+      peer_count: 1,
+      primary: true,
+      config: { ...params },
+    },
+  ];
+  const versionSpecs = opts.versions ?? [{ version: 1, n_ctx: 8192 }];
+  const versions = versionSpecs.map((v) => ({
+    version: v.version,
+    created_at: "2026-08-19T00:00:00Z",
+    created_by: "coordenador",
+    params: { ...params, n_ctx: v.n_ctx },
+    nodes,
+  }));
   return {
     deployment: {
-      deployment_version: 1,
+      deployment_version: 2,
       deploy_id: id,
       kind: opts.kind ?? "shards",
       model: { label: "qwen3:8b", total_layers: 32 },
       created_at: "2026-08-19T00:00:00Z",
       created_by: "coordenador",
-      activated_at: "2026-08-19T00:00:00Z",
-      nodes: [
-        {
-          node_id: "no-a",
-          hostname: "ksia",
-          start_layer: 0,
-          end_layer: 31,
-          peer_index: 0,
-          peer_count: 1,
-          primary: true,
-          config: { ...params },
-        },
-      ],
+      activated_at: opts.activatedAt ?? "2026-08-19T00:00:00Z",
+      nodes,
+      versions,
+      active_version: opts.activeVersion ?? versionSpecs[versionSpecs.length - 1].version,
     },
     serving: opts.serving,
     is_default: opts.isDefault,
@@ -153,29 +172,35 @@ describe("Deployments", () => {
     expect(screen.getByText("Modelo inteiro")).toBeTruthy();
   });
 
-  it("organiza o histórico do mais recente para o mais antigo", async () => {
+  it("organiza pela última ativação de versão, não pela criação", async () => {
     listDeployments.mockResolvedValue({
       node_id: "no-a",
       deployments: [
-        row("d-old", { serving: false, isDefault: false }),
-        {
-          ...row("d-new", { serving: true, isDefault: true }),
-          deployment: {
-            ...row("d-new", { serving: true, isDefault: true }).deployment,
-            created_at: "2026-08-29T12:00:00Z",
-          },
-        },
+        row("d-old", {
+          serving: false,
+          isDefault: false,
+          activatedAt: "2026-08-20T12:00:00Z",
+        }),
+        row("d-new", {
+          serving: true,
+          isDefault: true,
+          activatedAt: "2026-08-29T12:00:00Z",
+        }),
       ],
     });
 
     mount();
     const table = await screen.findByRole("table");
-    const cells = Array.from(table.querySelectorAll("tbody tr")).map((tr) => tr.cells[0]);
+    // A primeira coluna é o controle de expansão; o `deploy_id` é a segunda.
+    const cells = Array.from(table.querySelectorAll("tbody tr")).map((tr) => tr.cells[1]);
 
-    expect(cells.map((cell) => cell.textContent?.trim())).toEqual(["d-new", "d-old"]);
-    expect(table.querySelector("thead th")?.textContent).toBe("Id");
+    expect(cells.map((cell) => cell.textContent ?? "")).toEqual([
+      expect.stringContaining("d-new"),
+      expect.stringContaining("d-old"),
+    ]);
+    expect(table.querySelectorAll("thead th")[1]?.textContent).toBe("Id");
     expect(cells[0].className).toContain("px-5");
-    expect(screen.getByText("Criada")).toBeTruthy();
+    expect(screen.getByText("Última ativação")).toBeTruthy();
   });
 
   it("reimplanta mandando o parâmetro mexido e preservando o resto", async () => {
@@ -188,7 +213,7 @@ describe("Deployments", () => {
     mount();
     await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
 
-    click(screen.getByText("Reimplantar"));
+    click(screen.getByText("Reimplantar com novos parâmetros"));
 
     // O formulário abre preenchido com o que a implantação está rodando.
     const nCtx = (await screen.findByRole("spinbutton", { name: /contexto|n_ctx/i })) as
@@ -247,6 +272,97 @@ describe("Deployments", () => {
     listDeployments.mockResolvedValue({ node_id: "eu", deployments: [] });
     mount();
     await waitFor(() => expect(screen.getByText("Nada implantado ainda")).toBeTruthy());
-    expect(screen.queryByText("Reimplantar")).toBeNull();
+    expect(screen.queryByText("Reimplantar com novos parâmetros")).toBeNull();
+  });
+
+  it("expande uma linha e reimplanta uma versão pelo número", async () => {
+    listDeployments.mockResolvedValue({
+      node_id: "eu",
+      deployments: [
+        row("d-aaaaaaaa", {
+          serving: true,
+          isDefault: true,
+          versions: [
+            { version: 1, n_ctx: 8192 },
+            { version: 2, n_ctx: 16384 },
+          ],
+          activeVersion: 2,
+        }),
+      ],
+    });
+    redeployDeployment.mockResolvedValue({ job_id: "j9", deploy_id: "d-aaaaaaaa" });
+
+    mount();
+    await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
+
+    // Fechada, as versões não aparecem.
+    expect(screen.queryByText("Reimplantar esta versão")).toBeNull();
+
+    click(screen.getByRole("button", { name: "Ver versões" }));
+
+    // As duas versões, com a ativa marcada.
+    expect(screen.getByText("v1")).toBeTruthy();
+    expect(screen.getByText("v2")).toBeTruthy();
+    expect(screen.getByText("Ativa")).toBeTruthy();
+
+    const botoes = screen.getAllByText("Reimplantar esta versão");
+    // v2 primeiro (mais recente); clicar em v1 é o segundo.
+    click(botoes[1]);
+
+    await waitFor(() => expect(redeployDeployment).toHaveBeenCalledWith("d-aaaaaaaa", {
+      version: 1,
+    }));
+  });
+
+  /**
+   * O mesmo inspetor da tela de implantar, aqui em somente leitura: é o que
+   * responde "com que parâmetros esta versão subiu?" sem obrigar a abrir o
+   * diálogo de reimplantar, que é um formulário editável e sugere mudança.
+   */
+  it("abre as propriedades de uma versão em somente leitura", async () => {
+    listDeployments.mockResolvedValue({
+      node_id: "eu",
+      deployments: [
+        row("d-aaaaaaaa", {
+          serving: true,
+          isDefault: true,
+          versions: [
+            { version: 1, n_ctx: 8192 },
+            { version: 2, n_ctx: 16384 },
+          ],
+          activeVersion: 2,
+        }),
+      ],
+    });
+
+    mount();
+    await waitFor(() => expect(screen.getByText("d-aaaaaaaa")).toBeTruthy());
+    click(screen.getByRole("button", { name: "Ver versões" }));
+
+    // Fechado, o inspetor não existe.
+    expect(screen.queryByText("Configurações padrões")).toBeNull();
+
+    click(screen.getByRole("button", { name: "Ver as propriedades da versão 1" }));
+
+    expect(screen.getByText("Propriedades da versão 1")).toBeTruthy();
+    expect(screen.getByText("Configurações padrões")).toBeTruthy();
+    expect(screen.getByText("Configurações POM")).toBeTruthy();
+    expect(screen.getByText("Configurações POM (DESENV)")).toBeTruthy();
+
+    // Somente leitura de verdade: o valor está escrito, não num campo.
+    const inspector = screen.getByText("Configurações padrões").closest("aside");
+    expect(inspector).toBeTruthy();
+    expect(inspector!.querySelectorAll("input")).toHaveLength(0);
+    expect(inspector!.querySelectorAll("select")).toHaveLength(0);
+    expect(within(inspector!).getByText("8192")).toBeTruthy();
+    // E o interruptor do plano continua legível, sem ser acionável.
+    const noThinking = within(inspector!).getByRole("checkbox", {
+      name: "Desativar thinking",
+    }) as HTMLButtonElement;
+    expect(noThinking.getAttribute("aria-checked")).toBe("true");
+    expect(noThinking.disabled).toBe(true);
+
+    click(screen.getByRole("button", { name: "Fechar as propriedades" }));
+    expect(screen.queryByText("Configurações padrões")).toBeNull();
   });
 });

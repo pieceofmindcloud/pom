@@ -26,7 +26,7 @@
 use crate::pipeline::{PipelinePlan, PipelineStep};
 use crate::wire::{self, TensorShape, WireDtype};
 use axum::body::Bytes;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
@@ -65,6 +65,45 @@ struct Hop {
     /// absoluta nos chunks seguintes, como `expected_prefill_pos` faz em
     /// produção, e o teste compara os valores com a progressão publicada.
     received_starts: Arc<Mutex<Vec<(u32, Option<u32>, u32)>>>,
+    auth: Option<AuthProbe>,
+}
+
+/// Observa a fronteira de autenticação sem tocar na rede real. Cada hop deve
+/// receber somente a `connection_key`; a regressão fazia o primeiro hop usar a
+/// chave da sessão e deixava o hop seguinte sem credencial.
+#[derive(Clone)]
+struct AuthProbe {
+    accepted_tokens: Vec<String>,
+    missing: Arc<AtomicU64>,
+    invalid: Arc<AtomicU64>,
+}
+
+fn auth_failure(headers: &HeaderMap, probe: Option<&AuthProbe>) -> Option<Response> {
+    let probe = probe?;
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .or_else(|| headers.get("x-api-key").and_then(|value| value.to_str().ok()));
+    let internal = headers
+        .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
+        .and_then(|value| value.to_str().ok())
+        == Some("1");
+    match token {
+        None => {
+            probe.missing.fetch_add(1, Ordering::Relaxed);
+            Some((StatusCode::UNAUTHORIZED, "missing inference credential").into_response())
+        }
+        Some(token)
+            if internal && probe.accepted_tokens.iter().any(|accepted| accepted == token) =>
+        {
+            None
+        }
+        Some(_) => {
+            probe.invalid.fetch_add(1, Ordering::Relaxed);
+            Some((StatusCode::FORBIDDEN, "invalid inference API key").into_response())
+        }
+    }
 }
 
 impl Hop {
@@ -321,6 +360,17 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     response
 }
 
+async fn auth_prefill(
+    State(hop): State<Hop>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Some(response) = auth_failure(&headers, hop.auth.as_ref()) {
+        return response;
+    }
+    fake_prefill(State(hop), body).await
+}
+
 async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
     hop.arrive().await;
     let inc = read(&body);
@@ -406,6 +456,19 @@ async fn spawn_hop(hop: Hop) -> String {
     format!("http://{addr}")
 }
 
+async fn spawn_auth_hop(hop: Hop) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = Router::new()
+        .route("/health", get(fake_health))
+        .route("/v1/prefill", post(auth_prefill))
+        .with_state(hop);
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).tcp_nodelay(true).await;
+    });
+    format!("http://{addr}")
+}
+
 // ── O gateway falso ───────────────────────────────────────────────────────────
 
 /// Serve o handler de produção de `/v1/relay-result`, pagando o enlace entre a
@@ -417,13 +480,32 @@ struct GatewaySite {
     site: usize,
     tail_site: usize,
     deliveries: Arc<AtomicU64>,
+    prefill_deliveries: Arc<AtomicU64>,
+    auth: Option<AuthProbe>,
 }
 
-async fn fake_relay_result(State(gw): State<GatewaySite>, body: Bytes) -> Response {
-    if gw.site != gw.tail_site {
+async fn fake_relay_result(
+    State(gw): State<GatewaySite>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Some(response) = auth_failure(&headers, gw.auth.as_ref()) {
+        return response;
+    }
+    let (meta, _) = wire::decode(&body).expect("resultado direto válido");
+    let is_transport_update = meta
+        .get("transport_update")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !is_transport_update && gw.site != gw.tail_site {
         tokio::time::sleep(Duration::from_millis(LINK_MS)).await;
     }
-    gw.deliveries.fetch_add(1, Ordering::Relaxed);
+    if !is_transport_update {
+        gw.deliveries.fetch_add(1, Ordering::Relaxed);
+        if meta.get("next_pos").is_some() {
+            gw.prefill_deliveries.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     crate::direct::handle_relay_result(&gw.inbox, body)
 }
 
@@ -466,6 +548,8 @@ fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> Pip
 struct Outcome {
     ms_per_token: f64,
     deliveries: u64,
+    prefill_deliveries: u64,
+    prefill_chunks: u32,
     head_starts: Vec<(u32, Option<u32>, u32)>,
 }
 
@@ -474,6 +558,7 @@ struct Outcome {
 async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: bool) -> Outcome {
     let gateway_site = entry;
     let deliveries = Arc::new(AtomicU64::new(0));
+    let prefill_deliveries = Arc::new(AtomicU64::new(0));
 
     let inbox = crate::direct::ReplyInbox::new();
     let gateway_url = spawn_gateway(GatewaySite {
@@ -481,6 +566,8 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         site: gateway_site,
         tail_site: n_hops - 1,
         deliveries: deliveries.clone(),
+        prefill_deliveries: prefill_deliveries.clone(),
+        auth: None,
     })
     .await;
 
@@ -498,6 +585,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
             caller_site,
             is_head: i == 0,
             received_starts,
+            auth: None,
         })
         .await;
         steps.push(step_for(
@@ -513,10 +601,14 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         steps,
         edges: vec![],
     };
-    let reply = crate::direct::DirectReply::new(inbox, vec![gateway_url], "gateway".into());
+    let session = uuid::Uuid::new_v4().to_string();
+    let reply = crate::direct::DirectReply::new(
+        inbox,
+        vec![gateway_url],
+        "gateway".into(),
+    );
     let http = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
     let routes = crate::route::RouteTable::new();
-    let session = uuid::Uuid::new_v4().to_string();
 
     let first = crate::prefill::run_with_options(
         &plan,
@@ -543,7 +635,11 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     );
     assert_eq!(
         first.chunks,
-        PROMPT_TOKENS.div_ceil(CHUNK),
+        if reuse_prefix {
+            PROMPT_TOKENS.saturating_sub(1).div_ceil(CHUNK)
+        } else {
+            PROMPT_TOKENS.div_ceil(CHUNK)
+        },
         "o prompt tem que atravessar em todos os pedaços — um `prompt_progress` \
          perdido trunca no primeiro"
     );
@@ -572,8 +668,130 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
     Outcome {
         ms_per_token: started.elapsed().as_millis() as f64 / (DECODE_TOKENS - 1) as f64,
         deliveries: deliveries.load(Ordering::Relaxed),
+        prefill_deliveries: prefill_deliveries.load(Ordering::Relaxed),
+        prefill_chunks: first.chunks,
         head_starts,
     }
+}
+
+/// Reproduz a regressão de `f9d5632`: o gateway autentica o primeiro salto com
+/// a chave da sessão, mas o hop intermediário não recebe credencial para falar
+/// com o seguinte. Ao denunciar a falha, a cauda também chega ao callback sem
+/// API key e encontra o segundo 401. O cenário permanece ponta a ponta para
+/// garantir que o quadro chega à cauda e o resultado é entregue ao inbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_pipeline_reproduces_both_missing_credentials() {
+    let session_key = format!("sk-session-{}", uuid::Uuid::new_v4().simple());
+    let connection_key = "cluster-secret".to_string();
+    let tail_missing = Arc::new(AtomicU64::new(0));
+    let accepted_tokens = vec![connection_key.clone()];
+
+    let inbox = crate::direct::ReplyInbox::new();
+    let gateway_url = spawn_gateway(GatewaySite {
+        inbox: inbox.clone(),
+        site: 1,
+        tail_site: 1,
+        deliveries: Arc::new(AtomicU64::new(0)),
+        prefill_deliveries: Arc::new(AtomicU64::new(0)),
+        // The callback is authenticated by the per-frame Ticket in the body.
+        auth: None,
+    })
+    .await;
+
+    let head_missing = Arc::new(AtomicU64::new(0));
+    let head_url = spawn_auth_hop(Hop {
+        site: 0,
+        caller_site: 1,
+        is_head: true,
+        received_starts: Arc::new(Mutex::new(Vec::new())),
+        auth: Some(AuthProbe {
+            accepted_tokens: accepted_tokens.clone(),
+            missing: head_missing.clone(),
+            invalid: Arc::new(AtomicU64::new(0)),
+        }),
+    })
+    .await;
+    let tail_url = spawn_auth_hop(Hop {
+        site: 1,
+        caller_site: 0,
+        is_head: false,
+        received_starts: Arc::new(Mutex::new(Vec::new())),
+        auth: Some(AuthProbe {
+            accepted_tokens,
+            missing: tail_missing.clone(),
+            invalid: Arc::new(AtomicU64::new(0)),
+        }),
+    })
+    .await;
+
+    let steps = vec![
+        step_for("head", &head_url, 0, 0, true),
+        step_for("tail", &tail_url, 1, 1, true),
+    ];
+    let session = uuid::Uuid::new_v4().to_string();
+    let reply = crate::direct::DirectReply::new(
+        inbox.clone(),
+        vec![gateway_url],
+        "gateway".into(),
+    )
+    .expect("gateway de teste precisa ser alcançável");
+    let ticket = reply.ticket_for_hops(steps.len());
+    let meta = json!({
+        "session_id": session,
+        "chunk_index": 0,
+        "chunk_size": CHUNK,
+        "is_final_chunk": true,
+        "next_hops": [steps[1].clone()],
+        "reply_to": reply.reply_to(ticket.id()),
+    });
+
+    let state = crate::gateway::testkit::state_with("gateway", vec![]).await;
+    {
+        let mut config = state.auth.write().await;
+        config.connection_key = connection_key;
+        config.api_keys.push(crate::config::ApiKey {
+            id: "session-key".into(),
+            key: session_key.clone(),
+            label: "direct-lab".into(),
+            node_id: "gateway".into(),
+            origin_node_id: "gateway".into(),
+            active: true,
+            created_at: "2026-09-07T00:00:00Z".into(),
+        });
+    }
+    let http = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+    http.set_auth_state(state.auth.clone());
+    crate::infer_server::http_client().set_auth_state(state.auth.clone());
+
+    let sent = crate::relay::send_frame_or_tunnel(
+        &http,
+        &steps[0],
+        None,
+        "/v1/prefill",
+        &meta,
+        None,
+        WireDtype::F16,
+        WireDtype::F16.frame_encoding(),
+        1,
+        "head",
+        |_| {},
+    )
+    .await
+    .expect("o primeiro hop deve aceitar o quadro");
+    assert_eq!(sent.meta["accepted"], true);
+
+    let observed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if inbox.outstanding() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(observed.is_ok(), "o resultado não chegou ao gateway");
+    assert_eq!(head_missing.load(Ordering::Relaxed), 0);
+    assert_eq!(tail_missing.load(Ordering::Relaxed), 0);
 }
 
 /// Pernas de rede pagas por token, lidas do relógio. Com o cálculo em zero, o
@@ -606,12 +824,12 @@ fn minimum_legs(n_hops: usize, entry: usize) -> f64 {
 /// cauda paga o dobro das travessias, que foi a queda de 25 para 14 tok/s
 /// medida no cluster do captain em 2026-08-14.
 ///
-/// Tolerância de 0,65 perna (≈33 ms com `LINK_MS` 50) absorve o custo de
+/// Tolerância de 0,45 perna (≈23 ms com `LINK_MS` 50) absorve o custo de
 /// quatro chamadas HTTP em loopback com tensores de 5120 posições; ela é bem
 /// menor que a perna inteira que separa um resultado certo de um errado.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
-    const TOLERANCE: f64 = 0.65;
+    const TOLERANCE: f64 = 0.45;
 
     for n_hops in 2..=4usize {
         let mut measured = Vec::new();
@@ -630,7 +848,7 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
             );
             assert_eq!(
                 outcome.deliveries,
-                DECODE_TOKENS as u64 - 1 + PROMPT_TOKENS.div_ceil(CHUNK) as u64,
+                DECODE_TOKENS as u64 - 1 + outcome.prefill_chunks as u64,
                 "cada quadro tem que ser entregue direto exatamente uma vez, \
                  no decode e no prefill"
             );
@@ -682,11 +900,21 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
 async fn direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso() {
     for reuse_prefix in [false, true] {
         let outcome = run_scenario(2, 1, true, reuse_prefix).await;
-        assert_eq!(outcome.deliveries, PROMPT_TOKENS.div_ceil(CHUNK) as u64);
+        assert_eq!(
+            outcome.deliveries,
+            DECODE_TOKENS as u64 - 1 + outcome.prefill_chunks as u64
+        );
+        assert_eq!(
+            outcome.prefill_deliveries, outcome.prefill_chunks as u64,
+            "cada chunk de prefill deve chegar ao gateway exatamente uma vez"
+        );
         let mut starts = outcome.head_starts;
         starts.sort_by_key(|(chunk, _, _)| *chunk);
-        let expected_next = if reuse_prefix { 3 } else { 2 };
-        assert_eq!(starts[0], (0, None, if reuse_prefix { 1 } else { 0 }));
-        assert_eq!(starts[1], (1, Some(expected_next), expected_next));
+        if reuse_prefix {
+            assert_eq!(starts, vec![(0, None, 1)]);
+        } else {
+            assert_eq!(starts[0], (0, None, 0));
+            assert_eq!(starts[1], (1, Some(2), 2));
+        }
     }
 }

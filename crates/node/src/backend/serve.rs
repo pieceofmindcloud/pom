@@ -23,6 +23,18 @@ use tokio::net::{TcpListener, TcpStream};
 use tower::Service;
 use tracing::{debug, warn};
 
+/// Endereço real do socket que trouxe a requisição. A autenticação
+/// administrativa usa isto para manter o modo localhost fora da rede, sem
+/// confiar em cabeçalhos que o cliente pode forjar.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PeerAddr(pub SocketAddr);
+
+/// Whether the current request came through the TLS branch of the listener.
+/// The admin session middleware uses the real transport state to decide if a
+/// Secure cookie is safe, never a client-controlled header.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TransportSecurity(pub bool);
+
 /// O que fazer com uma conexão em texto claro vinda de fora, com a política
 /// ligada.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -291,7 +303,12 @@ async fn handle_conn(
 
     let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
         let mut app = app.clone();
-        async move { Service::call(&mut app, req).await }
+        async move {
+            let mut req = req;
+            req.extensions_mut().insert(PeerAddr(peer));
+            req.extensions_mut().insert(TransportSecurity(is_tls));
+            Service::call(&mut app, req).await
+        }
     });
 
     match (is_tls, acceptor) {

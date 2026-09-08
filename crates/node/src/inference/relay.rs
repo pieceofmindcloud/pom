@@ -62,12 +62,20 @@ pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
     *local_inference_slot().write().await = local.map(|local| (u64::MAX, local));
 }
 
-/// Attempts per prefill chunk before giving up on it — safe to retry because
-/// the receiving peer rewinds its KV cache to the chunk's position first
-/// (`infer_server.rs`'s rollback/order check). A decode step has no such
-/// protection, so callers relaying a step must pass `1` instead — see each
-/// call site's own comment for which applies.
-pub const CHUNK_ATTEMPTS: u32 = 3;
+/// Tentativa de prefill por chamada antes de devolver a falha ao gateway.
+///
+/// Uma falha de transporte não informa se o peer já gravou o chunk antes de
+/// perder a resposta. Reenviar cegamente pode pedir `kv_remove` no meio de um
+/// cache recorrente. A recuperação segura acontece no gateway, que recria a
+/// sessão inteira a partir do chunk 0. Decode também passa `1`, mas por uma
+/// razão independente: ele nunca tem rollback automático.
+pub const CHUNK_ATTEMPTS: u32 = 1;
+
+#[cfg(not(test))]
+const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_secs(600);
+
+#[cfg(test)]
+const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Transporte que realmente carregou um frame de inferência.
 ///
@@ -80,6 +88,13 @@ pub enum InferenceTransport {
     Local,
     Libp2pTunnel,
     Https,
+    /// The remote decode stream's callback transport. It carries batches
+    /// rather than one request/response per generated token.
+    RemoteStream,
+    /// A ligação persistente entre andares (`transport/link-v1`): o mesmo
+    /// HTTPS pinado, mas um corpo em fluxo que carrega quadros sucessivos em
+    /// vez de uma requisição por ativação.
+    HttpsLink,
     Unknown,
 }
 
@@ -89,6 +104,8 @@ impl InferenceTransport {
             Self::Local => "local",
             Self::Libp2pTunnel => "libp2p-tunnel",
             Self::Https => "https",
+            Self::RemoteStream => "remote-stream",
+            Self::HttpsLink => "https-link",
             Self::Unknown => "unknown",
         }
     }
@@ -98,6 +115,8 @@ impl InferenceTransport {
             "local" => Self::Local,
             "libp2p-tunnel" => Self::Libp2pTunnel,
             "https" => Self::Https,
+            "remote-stream" => Self::RemoteStream,
+            "https-link" => Self::HttpsLink,
             _ => Self::Unknown,
         }
     }
@@ -336,7 +355,7 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
         })
         .collect();
     let result = async {
-        let body = wire::encode_batch_items(&path, batch_id, &items)?;
+        let body = wire::encode_batch_items(&path, batch_id.clone(), &items)?;
         let first = calls.first().expect("non-empty calls");
         let response = send_batch_body(
             &first.clients,
@@ -344,9 +363,11 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
             first.tunnel.as_ref(),
             first.local.clone(),
             &first.path,
-            body,
+            &batch_id,
+            Bytes::from(body),
             first.attempts,
             &first.peer_label,
+            first.meta.get("session_id").and_then(Value::as_str),
         )
         .await?;
         let (_, decoded) = wire::decode_batch_items(&response.body)?;
@@ -594,7 +615,7 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 /// this project has always used. An explicit HTTP error response is never
 /// retried — it's the peer's considered refusal, not a hiccup. `attempts=1`
 /// means exactly one try, no retry at all (the decode/`/v1/step` path has
-/// never retried, since — unlike prefill chunks — a step has no KV-rollback
+/// never retried, since, unlike prefill chunks, a step has no KV-rollback
 /// idempotency protection against being redecoded).
 fn encode_frame_body(
     meta: &Value,
@@ -716,8 +737,21 @@ pub async fn send_frame(
     on_issue: impl FnMut(SendIssue),
 ) -> Result<SentFrame> {
     send_frame_with_protocol(
-        clients, peer_id, base_url, path, meta, tensor, dtype, encoding, false, attempts,
-        peer_label, false, on_issue,
+        clients,
+        peer_id,
+        base_url,
+        &[],
+        path,
+        meta,
+        tensor,
+        dtype,
+        encoding,
+        false,
+        attempts,
+        peer_label,
+        false,
+        on_issue,
+        None,
     )
     .await
 }
@@ -727,6 +761,7 @@ async fn send_frame_with_protocol(
     clients: &crate::peer_client::PeerClients,
     peer_id: &str,
     base_url: &str,
+    candidates: &[String],
     path: &str,
     meta: &Value,
     tensor: Option<(&[f32], TensorShape)>,
@@ -737,6 +772,7 @@ async fn send_frame_with_protocol(
     peer_label: &str,
     transport_fallback: bool,
     mut on_issue: impl FnMut(SendIssue),
+    session_id: Option<&str>,
 ) -> Result<SentFrame> {
     // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
     // certificado esperado deste destino, e o pinning é o que distingue o peer
@@ -746,107 +782,127 @@ async fn send_frame_with_protocol(
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
-    let url = format!("{base_url}{path}");
     let attempts = attempts.max(1);
     let mut last_error = String::new();
 
     for attempt in 1..=attempts {
-        let started = Instant::now();
-        let request = http
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(body.clone())
-            .timeout(Duration::from_secs(600));
-        let sent = clients
-            .authorize_inference_request(request)
-            .await
-            .send()
-            .await;
+        let mut route_candidates = Vec::with_capacity(candidates.len() + 1);
+        if !base_url.is_empty() {
+            route_candidates.push(base_url.to_string());
+        }
+        let additional: Vec<String> = candidates
+            .iter()
+            .filter(|candidate| !route_candidates.contains(candidate))
+            .cloned()
+            .collect();
+        route_candidates.extend(additional);
+        let route_key = format!("inference:{peer_id}");
+        let ordered = clients.route_order(&route_key, &route_candidates);
+        if ordered.is_empty() {
+            break;
+        }
 
-        match sent {
-            Ok(r) if r.status().is_success() => {
-                let response_headers_ms = started.elapsed().as_millis() as u64;
-                let response_body_started = Instant::now();
-                let bytes = r.bytes().await?;
-                let response_body_ms = response_body_started.elapsed().as_millis() as u64;
-                let client_decode_started = Instant::now();
-                let (meta, tensor) = match wire::decode(&bytes) {
-                    Ok(decoded) => decoded,
-                    Err(error) => {
-                        on_issue(SendIssue {
-                            kind: SendIssueKind::Protocol,
-                            attempt,
-                            message: error.to_string(),
-                        });
-                        return Err(error);
-                    }
-                };
-                let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
-                let hidden_state_bytes_received = received_hidden_state_bytes(
-                    &meta,
-                    tensor
-                        .as_ref()
-                        .map(|(values, shape)| (values.as_slice(), shape.clone())),
-                    dtype,
-                    peer_label,
-                )?;
-                // O handshake é medido no servidor e volta no meta da resposta:
-                // é lá que o tempo é exato, porque é lá que o `accept` acontece.
-                let tls_handshake_ms = meta
-                    .get("tls_handshake_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                return Ok(SentFrame {
-                    meta,
-                    tensor,
-                    tls: url.starts_with("https://"),
-                    tls_handshake_ms,
-                    round_trip_ms: started.elapsed().as_millis() as u64,
-                    bytes_sent: body.len() as u64,
-                    bytes_received: bytes.len() as u64,
-                    hidden_state_bytes_sent,
-                    hidden_state_bytes_received,
-                    hidden_state_dtype: dtype,
-                    client_encode_ms,
-                    response_headers_ms,
-                    response_body_ms,
-                    client_decode_ms,
-                    transport: InferenceTransport::Https,
-                    transport_fallback,
-                });
-            }
-            Ok(r) => {
-                let code = r.status();
-                let text = r.text().await.unwrap_or_default();
-                on_issue(SendIssue {
-                    kind: SendIssueKind::Http,
-                    attempt,
-                    message: format!("HTTP {code}: {text}"),
-                });
-                return Err(anyhow::Error::new(HttpRefusal {
-                    status: code.as_u16(),
-                    body: text,
-                    peer_label: peer_label.to_string(),
-                }));
-            }
-            Err(e) => {
-                last_error = e.to_string();
-                on_issue(SendIssue {
-                    kind: if e.is_timeout() {
-                        SendIssueKind::Timeout
-                    } else {
-                        SendIssueKind::Transport
-                    },
-                    attempt,
-                    message: last_error.clone(),
-                });
-                warn!(
-                    "chamada para {peer_label} falhou (tentativa {attempt}/{attempts}): {last_error}"
-                );
-                if attempt < attempts {
-                    tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+        for base in ordered {
+            let url = format!("{}{path}", base.trim_end_matches('/'));
+            let started = Instant::now();
+            let request = http
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(body.clone())
+                .timeout(DIRECT_FRAME_TIMEOUT);
+            let sent = clients
+                .authorize_inference_request_for_session(request, session_id)
+                .await
+                .send()
+                .await;
+
+            match sent {
+                Ok(r) if r.status().is_success() => {
+                    let response_headers_ms = started.elapsed().as_millis() as u64;
+                    let response_body_started = Instant::now();
+                    let bytes = r.bytes().await?;
+                    let response_body_ms = response_body_started.elapsed().as_millis() as u64;
+                    let client_decode_started = Instant::now();
+                    let (meta, tensor) = match wire::decode(&bytes) {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            on_issue(SendIssue {
+                                kind: SendIssueKind::Protocol,
+                                attempt,
+                                message: error.to_string(),
+                            });
+                            return Err(error);
+                        }
+                    };
+                    let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+                    let hidden_state_bytes_received = received_hidden_state_bytes(
+                        &meta,
+                        tensor
+                            .as_ref()
+                            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                        dtype,
+                        peer_label,
+                    )?;
+                    // O handshake é medido no servidor e volta no meta da resposta:
+                    // é lá que o tempo é exato, porque é lá que o accept acontece.
+                    let tls_handshake_ms = meta
+                        .get("tls_handshake_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    clients.remember_route_success(&route_key, &base);
+                    return Ok(SentFrame {
+                        meta,
+                        tensor,
+                        tls: url.starts_with("https://"),
+                        tls_handshake_ms,
+                        round_trip_ms: started.elapsed().as_millis() as u64,
+                        bytes_sent: body.len() as u64,
+                        bytes_received: bytes.len() as u64,
+                        hidden_state_bytes_sent,
+                        hidden_state_bytes_received,
+                        hidden_state_dtype: dtype,
+                        client_encode_ms,
+                        response_headers_ms,
+                        response_body_ms,
+                        client_decode_ms,
+                        transport: InferenceTransport::Https,
+                        transport_fallback,
+                    });
+                }
+                Ok(r) => {
+                    let code = r.status();
+                    let text = r.text().await.unwrap_or_default();
+                    on_issue(SendIssue {
+                        kind: SendIssueKind::Http,
+                        attempt,
+                        message: format!("HTTP {code}: {text}"),
+                    });
+                    return Err(anyhow::Error::new(HttpRefusal {
+                        status: code.as_u16(),
+                        body: text,
+                        peer_label: peer_label.to_string(),
+                    }));
+                }
+                Err(e) => {
+                    last_error = e.to_string();
+                    clients.remember_route_failure(&route_key, &base);
+                    on_issue(SendIssue {
+                        kind: if e.is_timeout() {
+                            SendIssueKind::Timeout
+                        } else {
+                            SendIssueKind::Transport
+                        },
+                        attempt,
+                        message: last_error.clone(),
+                    });
+                    warn!(
+                        "chamada para {peer_label} em {base} falhou (tentativa {attempt}/{attempts}): {last_error}"
+                    );
                 }
             }
+        }
+        if attempt < attempts {
+            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
         }
     }
 
@@ -871,21 +927,24 @@ struct BatchTransportResponse {
 /// Send one already encoded batch. The batch coordinator uses this function
 /// instead of recursively calling `send_frame_or_tunnel`, otherwise a flushed
 /// batch would immediately be queued as another batch forever.
+#[allow(clippy::too_many_arguments)]
 async fn send_batch_body(
     clients: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
     tunnel: Option<&TunnelOutboundSender>,
     local: Option<LocalInference>,
     path: &str,
-    body: Vec<u8>,
+    batch_id: &str,
+    body: Bytes,
     attempts: u32,
     peer_label: &str,
+    session_id: Option<&str>,
 ) -> Result<BatchTransportResponse> {
     if let Some(local) = local {
         debug!(peer = peer_label, path, "inferência em processo em batch");
         let started = Instant::now();
         let bytes_sent = body.len() as u64;
-        let response = local.dispatch(path, Bytes::from(body)).await?;
+        let response = local.dispatch(path, body).await?;
         let status = response.status();
         let bytes =
             axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES).await?;
@@ -921,16 +980,59 @@ async fn send_batch_body(
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
     let mut transport_fallback = false;
+
+    // A ligação persistente vem antes porque é a única que não reconstrói a
+    // abstração de chamada por ativação. Quando ela não serve - peer sem a
+    // capability, endereço direto inalcançável, canal caído - a chamada segue
+    // pela escada de sempre e o `transport_fallback` diz que isso aconteceu.
+    if step.supports(crate::pipeline::CAP_LINK_STREAM)
+        && !crate::infer_tunnel::is_local_node(&step.node_id)
+    {
+        match crate::link::send_batch_with_session(
+            clients,
+            &step.node_id,
+            &step.inference_url,
+            &step.inference_candidates,
+            batch_id,
+            body.clone(),
+            peer_label,
+            session_id,
+        )
+        .await
+        {
+            Ok(response) => {
+                return Ok(BatchTransportResponse {
+                    body: response.body,
+                    round_trip_ms: response.round_trip_ms,
+                    bytes_sent: response.bytes_sent,
+                    client_encode_ms: 0,
+                    response_headers_ms: 0,
+                    response_body_ms: 0,
+                    client_decode_ms: 0,
+                    tls: step.inference_url.starts_with("https://"),
+                    transport: InferenceTransport::HttpsLink,
+                    transport_fallback: false,
+                })
+            }
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) => {
+                transport_fallback = true;
+                warn!("{peer_label}: canal persistente falhou ({error}), usando o caminho por requisição")
+            }
+        }
+    }
+
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = clients.inference_token().await;
+        let auth = clients.internal_node_token().await;
         match send_batch_via_tunnel(
             tunnel,
             peer_id,
             &step.libp2p_addr_candidates,
             path,
-            body.clone(),
+            body.to_vec(),
             peer_label,
             auth,
+            session_id,
         )
         .await
         {
@@ -944,59 +1046,79 @@ async fn send_batch_body(
     }
 
     let client = clients.for_peer(&step.node_id)?;
-    let url = format!("{}{}", step.inference_url.trim_end_matches('/'), path);
+    let mut route_candidates = Vec::with_capacity(step.inference_candidates.len() + 1);
+    if !step.inference_url.is_empty() {
+        route_candidates.push(step.inference_url.clone());
+    }
+    let additional: Vec<String> = step
+        .inference_candidates
+        .iter()
+        .filter(|candidate| !route_candidates.contains(candidate))
+        .cloned()
+        .collect();
+    route_candidates.extend(additional);
+    let route_key = format!("inference:{}", step.node_id);
     let attempts = attempts.max(1);
     let client_encode_ms = 0;
     let mut last_error = String::new();
     for attempt in 1..=attempts {
-        let started = Instant::now();
-        let request = client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(body.clone())
-            .timeout(Duration::from_secs(600));
-        let response = clients
-            .authorize_inference_request(request)
-            .await
-            .send()
-            .await;
-        match response {
-            Ok(response) if response.status().is_success() => {
-                let response_headers_ms = started.elapsed().as_millis() as u64;
-                let body_started = Instant::now();
-                let bytes = response.bytes().await?.to_vec();
-                let response_body_ms = body_started.elapsed().as_millis() as u64;
-                let decode_started = Instant::now();
-                wire::decode_batch(&bytes)?;
-                let client_decode_ms = decode_started.elapsed().as_millis() as u64;
-                return Ok(BatchTransportResponse {
-                    body: bytes,
-                    round_trip_ms: started.elapsed().as_millis() as u64,
-                    bytes_sent: body.len() as u64,
-                    client_encode_ms,
-                    response_headers_ms,
-                    response_body_ms,
-                    client_decode_ms,
-                    tls: url.starts_with("https://"),
-                    transport: InferenceTransport::Https,
-                    transport_fallback,
-                });
-            }
-            Ok(response) => {
-                let status = response.status();
-                let text = response.text().await.unwrap_or_default();
-                return Err(anyhow::Error::new(HttpRefusal {
-                    status: status.as_u16(),
-                    body: text,
-                    peer_label: peer_label.to_string(),
-                }));
-            }
-            Err(error) => {
-                last_error = error.to_string();
-                if attempt < attempts {
-                    tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+        let ordered = clients.route_order(&route_key, &route_candidates);
+        if ordered.is_empty() {
+            break;
+        }
+        for base in ordered {
+            let url = format!("{}{path}", base.trim_end_matches('/'));
+            let started = Instant::now();
+            let request = client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(body.clone())
+                .timeout(DIRECT_FRAME_TIMEOUT);
+            let response = clients
+                .authorize_inference_request_for_session(request, session_id)
+                .await
+                .send()
+                .await;
+            match response {
+                Ok(response) if response.status().is_success() => {
+                    let response_headers_ms = started.elapsed().as_millis() as u64;
+                    let body_started = Instant::now();
+                    let bytes = response.bytes().await?.to_vec();
+                    let response_body_ms = body_started.elapsed().as_millis() as u64;
+                    let decode_started = Instant::now();
+                    wire::validate_batch_bytes(&bytes)?;
+                    let client_decode_ms = decode_started.elapsed().as_millis() as u64;
+                    clients.remember_route_success(&route_key, &base);
+                    return Ok(BatchTransportResponse {
+                        body: bytes,
+                        round_trip_ms: started.elapsed().as_millis() as u64,
+                        bytes_sent: body.len() as u64,
+                        client_encode_ms,
+                        response_headers_ms,
+                        response_body_ms,
+                        client_decode_ms,
+                        tls: url.starts_with("https://"),
+                        transport: InferenceTransport::Https,
+                        transport_fallback,
+                    });
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    return Err(anyhow::Error::new(HttpRefusal {
+                        status: status.as_u16(),
+                        body: text,
+                        peer_label: peer_label.to_string(),
+                    }));
+                }
+                Err(error) => {
+                    last_error = error.to_string();
+                    clients.remember_route_failure(&route_key, &base);
                 }
             }
+        }
+        if attempt < attempts && !last_error.is_empty() {
+            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
         }
     }
     Err(anyhow!(
@@ -1012,12 +1134,23 @@ async fn send_batch_via_tunnel(
     body: Vec<u8>,
     peer_label: &str,
     auth_token: Option<String>,
+    session_id: Option<&str>,
 ) -> Result<BatchTransportResponse> {
     let mut headers = Vec::new();
     if let Some(token) = auth_token {
         headers.push((
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+            "1".to_string(),
+        ));
+        headers.push((
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),
+        ));
+    }
+    if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
+        headers.push((
+            crate::auth::INFERENCE_SESSION_HEADER.to_string(),
+            session_id.to_string(),
         ));
     }
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1046,7 +1179,7 @@ async fn send_batch_via_tunnel(
             peer_label: peer_label.to_string(),
         }));
     }
-    wire::decode_batch(&response.body)?;
+    wire::validate_batch_bytes(&response.body)?;
     Ok(BatchTransportResponse {
         body: response.body,
         round_trip_ms: started.elapsed().as_millis() as u64,
@@ -1343,10 +1476,11 @@ pub async fn send_frame_or_tunnel(
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
+    let session_id = meta.get("session_id").and_then(Value::as_str);
     let mut transport_fallback = false;
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = clients.inference_token().await;
+        let auth = clients.internal_node_token().await;
         match send_frame_via_tunnel_with_auth(
             tunnel,
             peer_id,
@@ -1359,6 +1493,7 @@ pub async fn send_frame_or_tunnel(
             use_batch_frame,
             peer_label,
             auth,
+            session_id,
         )
         .await
         {
@@ -1375,6 +1510,7 @@ pub async fn send_frame_or_tunnel(
         clients,
         &step.node_id,
         &step.inference_url,
+        &step.inference_candidates,
         path,
         meta,
         tensor,
@@ -1385,6 +1521,7 @@ pub async fn send_frame_or_tunnel(
         peer_label,
         transport_fallback,
         on_issue,
+        session_id,
     )
     .await
 }
@@ -1465,6 +1602,7 @@ pub async fn send_frame_via_tunnel(
         false,
         peer_label,
         None,
+        None,
     )
     .await
 }
@@ -1481,6 +1619,7 @@ async fn send_frame_via_tunnel_with_auth(
     use_batch_frame: bool,
     peer_label: &str,
     auth_token: Option<String>,
+    session_id: Option<&str>,
 ) -> Result<SentFrame> {
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
@@ -1495,8 +1634,18 @@ async fn send_frame_via_tunnel_with_auth(
     let mut headers = Vec::new();
     if let Some(token) = auth_token {
         headers.push((
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+            "1".to_string(),
+        ));
+        headers.push((
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),
+        ));
+    }
+    if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
+        headers.push((
+            crate::auth::INFERENCE_SESSION_HEADER.to_string(),
+            session_id.to_string(),
         ));
     }
     let outbound = TunnelOutbound {
@@ -2227,6 +2376,65 @@ mod tests {
         assert_eq!(sent.meta["done"], true);
     }
 
+    #[tokio::test]
+    async fn a_blackholed_inference_address_is_tried_only_once_across_frames() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let blackhole_hits = Arc::new(AtomicUsize::new(0));
+        let blackhole_hits_task = blackhole_hits.clone();
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let blackhole_addr = blackhole.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = blackhole.accept().await {
+                blackhole_hits_task.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let _stream = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+
+        let healthy_port = spawn_fake_inference_server(|_body| {
+            (
+                200,
+                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let blackhole_url = format!("http://{blackhole_addr}");
+        let healthy_url = format!("http://127.0.0.1:{healthy_port}");
+        let mut step = step_with(&blackhole_url, false, None);
+        step.inference_candidates = vec![blackhole_url, healthy_url];
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let started = std::time::Instant::now();
+
+        for _ in 0..2 {
+            let sent = send_frame_or_tunnel(
+                &clients,
+                &step,
+                None,
+                "/v1/step",
+                &json!({}),
+                None,
+                WireDtype::F16,
+                FrameEncoding::F16,
+                1,
+                "peer-x",
+                |_| {},
+            )
+            .await
+            .expect("o endereço saudável deve assumir a sessão");
+            assert_eq!(sent.meta["done"], true);
+        }
+
+        assert_eq!(blackhole_hits.load(Ordering::SeqCst), 1);
+        assert!(
+            started.elapsed() < DIRECT_FRAME_TIMEOUT * 2,
+            "o endereço morto voltou a ser pago por quadro: {:?}",
+            started.elapsed()
+        );
+    }
+
     /// An HTTP server that spawns per-test on loopback, for `send_frame_or_tunnel`
     /// coverage — same pattern as `infer_tunnel::tests::spawn_fake_inference_server`,
     /// duplicated locally since it lives in a different module.
@@ -2498,11 +2706,10 @@ mod tests {
     /// 1. **O desvio abre pelo motivo certo.** O HTTP direto aponta para
     ///    `192.0.2.1` (TEST-NET-1, RFC 5737, nunca roteável), então a primeira
     ///    perna falha por `Timeout`/`Transport` - o gatilho real - e não por
-    ///    uma recusa considerada, que nunca deve desviar. Custa caro: o prazo
-    ///    do `send_frame` é de 600 s por requisição (ele sobrepõe o do cliente),
-    ///    então quem manda a conta é o `connect` do sistema - medido em 75 s no
-    ///    macOS contra um endereço que engole os SYN. É esse o atraso que um
-    ///    hop atrás de NAT impõe **antes** de o desvio começar.
+    ///    uma recusa considerada, que nunca deve desviar. O prazo de 600 s do
+    ///    `send_frame` continua reservado para processamento longo, mas o
+    ///    cliente tem teto próprio de 2 s para abrir TCP. Assim um endereço que
+    ///    engole SYN não decide a duração da chamada antes de o desvio começar.
     /// 2. **O quadro atravessa.** `/v1/session/release` é a rota mais barata do
     ///    servidor de inferência e não toca o modelo; ela lê JSON, não um
     ///    quadro, então recusa este com um status *dela*. Uma recusa HTTP vinda

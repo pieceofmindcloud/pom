@@ -4,23 +4,41 @@ pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
 #[path = "network/addrs.rs"]
 pub mod addrs;
 #[path = "backend/admin.rs"]
-mod admin;
+pub(crate) mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
-#[path = "utils/brand.rs"]
-mod brand;
+// `brand` e o cluster llama.cpp saíram para crates próprios (`crates/brand` e
+// `crates/llama-engine`) para que editar backend/rede/roteamento não os
+// reconstrua. Re-exportados abaixo para que `crate::brand::…`, `crate::llm::…`
+// etc. continuem resolvendo em todo o `node` sem tocar os ~40 arquivos que os
+// usam. Ver `docs/subsystems/build-execucao.md`.
+use ::brand;
+pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "backend/capabilities.rs"]
 mod capabilities;
+#[path = "admin_trust.rs"]
+mod admin_trust;
+#[path = "models/catalog.rs"]
+mod catalog;
+#[path = "network/cluster_logs.rs"]
+mod cluster_logs;
+#[path = "network/cluster_logs_policy.rs"]
+mod cluster_logs_policy;
+#[path = "utils/config.rs"]
+mod config;
+#[path = "profile.rs"]
+pub(crate) mod profile;
+#[cfg(test)]
+#[path = "profile_tests.rs"]
+mod profile_tests;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
-#[path = "models/catalog.rs"]
-mod catalog;
-#[path = "inference/collective.rs"]
-mod collective;
-#[path = "utils/config.rs"]
-mod config;
-#[path = "backend/deploy.rs"]
+#[path = "inference/cycle.rs"]
+mod cycle;
+#[path = "backend/db.rs"]
+mod db;
+#[path = "backend/deploy/mod.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
 mod deployment;
@@ -36,24 +54,25 @@ mod discovery;
 mod display;
 #[path = "inference/executor.rs"]
 mod executor;
-#[path = "backend/gateway.rs"]
+#[path = "backend/gateway/mod.rs"]
 mod gateway;
-#[path = "models/gguf.rs"]
-mod gguf;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
 mod identity;
-#[path = "inference/infer_server.rs"]
+#[path = "inference/infer_server/mod.rs"]
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;
-#[path = "models/kv_budget.rs"]
-mod kv_budget;
 #[path = "models/lastslice.rs"]
 mod lastslice;
-#[path = "inference/llm.rs"]
-mod llm;
+#[path = "inference/link.rs"]
+mod link;
+#[cfg(test)]
+#[path = "inference/link_lab.rs"]
+mod link_lab;
+#[cfg(target_os = "macos")]
+mod macos_status;
 #[path = "models/memory.rs"]
 mod memory;
 #[path = "backend/messages.rs"]
@@ -64,12 +83,6 @@ mod model;
 mod model_provider;
 #[path = "backend/model_provider.rs"]
 mod model_provider_backend;
-#[path = "inference/moe/mod.rs"]
-pub(crate) mod moe;
-#[path = "inference/mtp.rs"]
-mod mtp;
-#[path = "models/multipart.rs"]
-pub(crate) mod multipart;
 #[path = "network/network.rs"]
 mod network;
 #[path = "models/ollama.rs"]
@@ -86,7 +99,7 @@ mod pkarr_node;
 mod plan;
 #[path = "models/pom.rs"]
 mod pom;
-#[path = "inference/prefill.rs"]
+#[path = "inference/prefill/mod.rs"]
 mod prefill;
 #[path = "inference/prefix_cache.rs"]
 mod prefix_cache;
@@ -118,8 +131,6 @@ mod spec_lab;
 mod splitter;
 #[path = "models/storage.rs"]
 mod storage;
-#[path = "utils/sysmon.rs"]
-mod sysmon;
 #[path = "utils/thermal.rs"]
 mod thermal;
 #[path = "network/tls.rs"]
@@ -134,25 +145,53 @@ mod tp;
 mod transfer;
 #[path = "backend/webapp.rs"]
 mod webapp;
-#[path = "backend/webui.rs"]
+#[path = "backend/webui/mod.rs"]
 mod webui;
-#[path = "inference/wire.rs"]
-mod wire;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::Parser;
+use clap::Subcommand;
 use discovery::Discovery;
 use gateway::{start_gateway, GatewayState};
 use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
 use network::Network;
 use ollama::OllamaClient;
-use pipeline::LoadTracker;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Create or install the operator-anchored administrator trust file.
+    #[command(name = "admin-anchor")]
+    AdminAnchor {
+        /// Stable operator-chosen identifier for this cluster. Required when
+        /// creating the root locally, optional when importing a root document.
+        #[arg(long)]
+        cluster_id: Option<String>,
+
+        /// SHA-256 fingerprint printed by the first invocation. It is required
+        /// together with --confirm so the operator performs the manual check.
+        #[arg(long)]
+        fingerprint: Option<String>,
+
+        /// Existing signed trust document transported out of band from the
+        /// anchored primary to another node.
+        #[arg(long = "from", value_name = "FILE")]
+        from_file: Option<std::path::PathBuf>,
+
+        /// Confirm that the displayed fingerprint was checked by the operator.
+        #[arg(long)]
+        confirm: bool,
+
+        /// Replace an existing local trust file after the same explicit check.
+        #[arg(long)]
+        replace: bool,
+    },
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -163,6 +202,9 @@ use tracing_subscriber::EnvFilter;
                   and coordinates with peers to cover the full model."
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Model to load — built-in name (e.g. gemma3, llama3) or any Ollama model name.
     /// Not required when using --list-models.
     #[arg(long, short = 'm')]
@@ -293,9 +335,20 @@ struct Args {
     #[arg(long, default_value = "64")]
     repeat_last_n: u32,
 
+    /// Disable the conservative cycle detector for this node.
+    #[arg(long)]
+    no_cycle_detection: bool,
+
     /// Disable Qwen3.5 thinking mode (injects empty <think></think> block).
     #[arg(long)]
     no_thinking: bool,
+
+    /// Directory for KV-cache snapshots (like llama-server's `--slot-save-path`).
+    /// Precedence: this flag > `POM_SLOT_SAVE_PATH` env var > `slot_save_path`
+    /// in the config file. Unset everywhere disables `/v1/session/slot` and
+    /// `/admin/slots` on this node.
+    #[arg(long)]
+    slot_save_path: Option<String>,
 
     /// Single-peer mode: loads model without embedding extraction (correct causal attention).
     /// Enable when one node covers all layers.
@@ -339,23 +392,216 @@ struct Args {
     no_discovery: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// O nó é um serviço Tokio, e a thread principal é dele em toda plataforma
+/// menos uma.
+///
+/// No macOS a thread principal pertence ao AppKit: `NSApplication` só aceita
+/// ser conduzida a partir dela, e é ela que atende o item da barra de status.
+/// Por isso o serviço é movido para uma thread de fundo com o seu próprio
+/// runtime, e a principal fica no laço de eventos nativo. Nas outras
+/// plataformas nada disso existe e o runtime é construído aqui mesmo, de modo
+/// que quem corre o binário num servidor Linux não ganha dependência de
+/// interface gráfica.
+fn main() -> Result<()> {
     respawn::remember_argv(std::env::args().collect());
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(false)
+    let (log_capture, log_receiver) =
+        cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
         .init();
 
+    // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
+    // que o `sysmon` mede e as funções de estado da coletiva TP que o `llm`
+    // consulta de dentro do decode (`tp.rs` fica em `node`, ver `tp_probe`).
+    sysmon::set_disk_root(config::project_root());
+    tp::install_probe();
+
     let args = Args::parse();
+    if let Some(command) = args.command.as_ref() {
+        return run_command(command);
+    }
+
+    #[cfg(target_os = "macos")]
+    let gateway_port = configured_gateway_port(&args);
+
+    let service = move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async_main(args, log_capture, log_receiver))
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        return macos_status::run(gateway_port, service);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    service()
+}
+
+fn run_command(command: &Command) -> Result<()> {
+    match command {
+        Command::AdminAnchor {
+            cluster_id,
+            fingerprint,
+            from_file,
+            confirm,
+            replace,
+        } => anchor_admin(
+            cluster_id.as_deref(),
+            fingerprint.as_deref(),
+            from_file.as_deref(),
+            *confirm,
+            *replace,
+        ),
+    }
+}
+
+fn anchor_admin(
+    cluster_id: Option<&str>,
+    fingerprint: Option<&str>,
+    from_file: Option<&std::path::Path>,
+    confirm: bool,
+    replace: bool,
+) -> Result<()> {
+    let destination = config::admin_trust_path();
+    if destination.exists() && !replace {
+        bail!(
+            "a cadeia administrativa já existe em {}; use --replace somente para uma reancoragem manual explícita",
+            destination.display()
+        );
+    }
+
+    let (document, local_root) = if let Some(source) = from_file {
+        let source_store = crate::admin_trust::AdminTrust::load(source)
+            .with_context(|| format!("não foi possível ler a cadeia transportada em {}", source.display()))?;
+        let document = source_store.document();
+        if let Some(expected_cluster) = cluster_id {
+            if expected_cluster != document.anchor.cluster_id {
+                bail!(
+                    "o cluster da cadeia transportada é {}, não {}",
+                    document.anchor.cluster_id,
+                    expected_cluster
+                );
+            }
+        }
+        (document, false)
+    } else {
+        let cluster_id = cluster_id
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("--cluster-id é obrigatório ao criar a raiz local"))?;
+        let (_signing_key, principal) = local_authority_identity()?;
+        let anchor = crate::admin_trust::TrustAnchor::for_principal(
+            cluster_id.to_string(),
+            principal,
+        );
+        let root_principal = anchor.principal.clone();
+        let document = crate::admin_trust::AdminTrustDocument {
+            version: crate::admin_trust::TRUST_VERSION,
+            anchor,
+            authority_epoch: 0,
+            promotion_seq: 0,
+            primary: root_principal.clone(),
+            primary_history: vec![root_principal],
+            grants: Vec::new(),
+            demotions: Vec::new(),
+            pending_transfer: None,
+            completed_transfers: Vec::new(),
+            replay: Vec::new(),
+        };
+        (document, true)
+    };
+
+    let expected = crate::admin_trust::anchor_fingerprint(&document);
+    println!("impressão digital da autoridade: {expected}");
+    // A mesma conferência que a interface faz. Duas seriam duas políticas.
+    if !fingerprint.is_some_and(|typed| crate::admin_trust::fingerprint_matches(typed, &expected)) {
+        bail!(
+            "a impressão digital não foi confirmada; confira a linha acima e execute novamente com --fingerprint {expected} --confirm"
+        );
+    }
+    if !confirm {
+        bail!(
+            "a impressão digital precisa de confirmação explícita; execute novamente com --confirm"
+        );
+    }
+
+    if local_root {
+        let (signing_key, principal) = local_authority_identity()?;
+        let anchor = crate::admin_trust::TrustAnchor::manual(
+            document.anchor.cluster_id.clone(),
+            principal,
+            expected,
+        )?;
+        crate::admin_trust::AdminTrust::bootstrap_primary_with_anchor(
+            &destination,
+            anchor,
+            &signing_key,
+        )?;
+        if config::Config::exists() {
+            let mut config = config::Config::load()?;
+            if config.profile != crate::profile::NodeProfile::Admin {
+                config.profile = crate::profile::NodeProfile::Admin;
+                config.save()?;
+            }
+        }
+    } else {
+        crate::admin_trust::AdminTrust::install_document(&destination, document)?;
+    }
+    println!("âncora administrativa instalada em {}", destination.display());
+    Ok(())
+}
+
+fn local_authority_identity() -> Result<(
+    ed25519_dalek::SigningKey,
+    crate::admin_trust::AuthorityPrincipal,
+)> {
+    let local_identity = identity::Identity::load_or_create(&identity::key_path());
+    let pkarr = pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path())
+        .context("não foi possível carregar a identidade libp2p para a âncora")?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&pkarr.secret_key_bytes());
+    let mut seed = signing_key.to_bytes();
+    let keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+        .context("a identidade local não pôde ser convertida em chave libp2p")?;
+    let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+        local_identity.node_id.0,
+        keypair.public().to_peer_id().to_string(),
+        &signing_key,
+    );
+    Ok((signing_key, principal))
+}
+
+fn gateway_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/admin-ui/chat")
+}
+
+fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
+    config_port.unwrap_or(cli_port)
+}
+
+#[cfg(target_os = "macos")]
+fn configured_gateway_port(args: &Args) -> u16 {
+    let persisted = config::Config::load().ok().map(|config| config.gateway_port);
+    select_gateway_port(persisted, args.gateway_port)
+}
+
+async fn async_main(
+    args: Args,
+    log_capture: Arc<cluster_logs::LogCapture>,
+    log_receiver: tokio::sync::mpsc::Receiver<cluster_logs::LogEntry>,
+) -> Result<()> {
 
     info!(
         "Project root: {} (config: {})",
         config::project_root().display(),
         config::Config::config_path().display()
     );
+
+    let database = Arc::new(db::PomDb::open(config::database_path())?);
+    info!("Local database: {}", database.path().display());
 
     // ── Setup flow: if no config exists, serve only the setup page ──────────
     if !config::Config::exists() {
@@ -365,8 +611,15 @@ async fn main() -> Result<()> {
     }
 
     // ── Load existing config ─────────────────────────────────────────────────
-    let app_config = config::Config::load()?;
-    info!("Role: {}", app_config.role);
+    let mut app_config = config::Config::load()?;
+    let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
+    app_config.api_keys = database.api_keys()?;
+    app_config.thermal = database
+        .thermal_policy()?
+        .unwrap_or_else(crate::thermal::ThermalPolicy::default);
+    app_config.huggingface_token = database.huggingface_token()?;
+    config::validate_gateway_port(app_config.gateway_port)?;
+    info!("Profile: {}", app_config.profile);
 
     // Antes de qualquer coisa que possa carregar modelo: os backends do ggml
     // enumeram os dispositivos ao serem registrados, e depois disso a lista está
@@ -426,6 +679,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    crate::gateway::ensure_gateway_port_available(app_config.gateway_port, None).await?;
+
     // ── Branch: with model = full stack; without = gateway only (UI + admin) ──
     let model_name = args.model.as_ref().map(|m| m.clone());
 
@@ -433,12 +688,15 @@ async fn main() -> Result<()> {
         info!("No --model provided — starting gateway without model binding");
         return start_gateway_only(
             gateway_port,
+            database.clone(),
             app_config.clone(),
             args.ollama_url,
             args.no_discovery,
             args.no_default_relays,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
+            !args.no_cycle_detection,
+            cluster_logs,
         )
         .await;
     }
@@ -601,19 +859,45 @@ async fn main() -> Result<()> {
         ollama_port,
         inference_port,
         gateway_port,
-        role: app_config.role.to_string(),
+        profile: app_config.profile,
         node_display_name,
         advertise_addr,
         tls_required: app_config.tls_required,
+        cluster_logs: cluster_logs.clone(),
+        cluster_logs_enabled: app_config.cluster_logs_enabled,
         relay_peer_keys: relay_peer_keys.clone(),
         serve_relay: args.serve_relay,
         use_default_relays: !args.no_default_relays,
         no_discovery: args.no_discovery,
     })
     .await?;
+    let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
+    let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+        node_id.clone(),
+        stack.libp2p_peer_id.clone(),
+        &stack.authority_signing_key,
+    );
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
+    if app_config.profile == crate::profile::NodeProfile::Admin
+        && admin_trust
+            .effective_authority(&authority_principal, app_config.profile)
+            .is_none()
+    {
+        warn!(
+            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node. \
+             Para ancorar o primeiro principal nesta máquina: `pom admin-anchor --cluster-id <nome>`, \
+             confira a impressão digital exibida e repita com `--fingerprint <valor> --confirm`. \
+             Para um nó que já tem principal no cluster, copie {} do admin por um canal seu e rode \
+             `pom admin-anchor --from <arquivo> --fingerprint <valor> --confirm`",
+            config::admin_trust_filename()
+        );
+    }
     let net = stack.net;
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
+    let cluster_logs = stack.cluster_logs;
     let pkarr_node = stack.pkarr_node;
     let disc_dial_tx = stack.disc_dial_tx;
     let p2p_port = net.bind_addr.port();
@@ -714,7 +998,8 @@ async fn main() -> Result<()> {
     // ── Runtime: owns the model configuration and the inference server ──────
     let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
         Arc::new(tokio::sync::RwLock::new(app_config.clone()));
-    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
+    let hf_token_store =
+        huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
     // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
@@ -752,6 +1037,71 @@ async fn main() -> Result<()> {
     // restart que nunca seria lida de volta.
     let _ = lastslice::take();
 
+    // ── HTTP API server - every node serves it ───────────────────────────────
+    // Bind before scheduling the model load. A model, fit, or runtime lock is
+    // allowed to take as long as it needs without hiding the control plane.
+    {
+        let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
+        peer_clients.apply_cluster_policy(app_config.tls_required);
+        peer_clients.set_auth_state(auth_config.clone());
+        // A catraca do TLS: escuta o gatilho do gossip e confirma a política
+        // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
+        tls_policy::spawn_ratchet(
+            net.clone(),
+            peer_clients.clone(),
+            auth_config.clone(),
+            tls_server.clone(),
+        );
+        cluster_logs_policy::spawn_ratchet(
+            net.clone(),
+            peer_clients.clone(),
+            auth_config.clone(),
+            cluster_logs.clone(),
+        );
+
+        let gw_state = GatewayState {
+            network: net.clone(),
+            ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
+            default_model: profile.name.clone(),
+            local_assignment: assignment_shared.clone(),
+            loads: node_runtime.load_tracker(),
+            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
+            prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
+            peer_http: peer_clients.clone(),
+            runtime: node_runtime.clone(),
+            cycle_config: crate::cycle::CycleConfig {
+                enabled: !args.no_cycle_detection,
+                ..crate::cycle::CycleConfig::default()
+            },
+            audit: reqlog::AuditLog::new(database.clone()),
+            database: database.clone(),
+            gateway_port,
+            auth: auth_config,
+            admin_trust: admin_trust.clone(),
+            authority_signing_key: authority_signing_key.clone(),
+            authority_principal: authority_principal.clone(),
+            admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            transfers: Default::default(),
+            reply_inbox: crate::direct::ReplyInbox::new(),
+            tunnel_tx: Some(tunnel_tx.clone()),
+            tls_server: tls_server.clone(),
+            cluster_logs: cluster_logs.clone(),
+            cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
+                Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
+                    hf_token_store.clone(),
+                )),
+                hf_token_store,
+            )),
+        };
+        let gw_port = gateway_port;
+        tokio::spawn(async move {
+            if let Err(e) = start_gateway(gw_state, gw_port).await {
+                error!("HTTP API server error: {}", e);
+            }
+        });
+    }
+
     if let Some(port) = inference_port {
         let cfg = runtime::NodeConfig {
             deploy_id: String::new(),
@@ -774,7 +1124,14 @@ async fn main() -> Result<()> {
             hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: config::KvCacheType::F16,
             cache_type_v: config::KvCacheType::F16,
+            // Precedência: flag > POM_SLOT_SAVE_PATH > pom.json
+            // (`slot_save_path_effective` resolve os dois últimos).
+            slot_save_path: args
+                .slot_save_path
+                .clone()
+                .or_else(|| app_config.slot_save_path_effective()),
             fit_memory: true,
+            fit_memory_margin_mb: runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
             batching_enabled: true,
@@ -790,6 +1147,10 @@ async fn main() -> Result<()> {
             top_k: args.top_k,
             repeat_penalty: args.repeat_penalty,
             repeat_last_n: args.repeat_last_n,
+            cycle_detection_enabled: !args.no_cycle_detection,
+            cycle_detection_min_window_tokens: cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
+            cycle_detection_max_window_tokens: cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
+            cycle_detection_repetitions: cycle::DEFAULT_CYCLE_REPETITIONS,
             no_thinking: args.no_thinking,
             single_peer: args.single_peer,
             no_embeddings: false,
@@ -801,56 +1162,11 @@ async fn main() -> Result<()> {
             mtp_enabled: args.mtp,
             mtp_draft_tokens: args.mtp_draft_tokens,
             mtp_min_probability: 0.0,
+            mtp_cpu_fallback_enabled: true,
         };
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");
         }
-    }
-
-    // ── HTTP API server — every node serves it ───────────────────────────────
-    {
-        let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-        peer_clients.apply_cluster_policy(app_config.tls_required);
-        peer_clients.set_auth_state(auth_config.clone());
-        // A catraca do TLS: escuta o gatilho do gossip e confirma a política
-        // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
-        tls_policy::spawn_ratchet(
-            net.clone(),
-            peer_clients.clone(),
-            auth_config.clone(),
-            tls_server.clone(),
-        );
-
-        let gw_state = GatewayState {
-            network: net.clone(),
-            ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
-            default_model: profile.name.clone(),
-            local_assignment: assignment_shared.clone(),
-            loads: Arc::new(LoadTracker::new()),
-            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
-            peer_http: peer_clients.clone(),
-            runtime: node_runtime.clone(),
-            audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
-            gateway_port,
-            auth: auth_config,
-            transfers: Default::default(),
-            reply_inbox: crate::direct::ReplyInbox::new(),
-            tunnel_tx: Some(tunnel_tx.clone()),
-            tls_server: tls_server.clone(),
-            cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
-                Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
-                    hf_token_store.clone(),
-                )),
-                hf_token_store,
-            )),
-        };
-        let gw_port = gateway_port;
-        tokio::spawn(async move {
-            if let Err(e) = start_gateway(gw_state, gw_port).await {
-                error!("HTTP API server error: {}", e);
-            }
-        });
     }
 
     // ── Resolve pkarr peers and dial on startup ──────────────────────────────
@@ -1044,14 +1360,16 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
 }
 
 async fn start_setup_mode(gateway_port: u16) -> Result<()> {
-    use crate::config::{Config, Role};
+    use crate::config::Config;
     use crate::webui;
     use axum::{routing::get, Router};
     use std::net::SocketAddr;
 
+    config::validate_gateway_port(gateway_port)?;
     let config = Arc::new(RwLock::new(Config {
-        role: Role::Principal,
+        profile: crate::profile::NodeProfile::Admin,
         tls_required: false,
+        cluster_logs_enabled: false,
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,
@@ -1060,6 +1378,8 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         cache_type_v: config::KvCacheType::F16,
         connection_key: String::new(),
         gateway_port,
+        admin_exposure: config::AdminExposure::Localhost,
+        admin_access_token: None,
         p2p_port: 42777,
         inference_port: None,
         bootstrap_nodes: vec![],
@@ -1073,6 +1393,10 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         node_name: None,
         huggingface_token: None,
+        slot_save_path: None,
+        slot_persist_prefix_cache: false,
+        slot_auto_max_bytes: None,
+        slot_auto_ttl_secs: None,
     }));
 
     // The same interface the configured node serves, so setup is not a second
@@ -1085,7 +1409,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         .with_state(config)
         .layer(tower_http::compression::CompressionLayer::new());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], gateway_port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
     info!("Setup page available at http://localhost:{}", gateway_port);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1127,13 +1451,15 @@ struct P2pStackArgs {
     ollama_port: Option<u16>,
     inference_port: Option<u16>,
     gateway_port: u16,
-    role: String,
+    profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
     /// Política inicial, aplicada antes da task de sondagem da `Network`.
     /// Sem isso a URL já nascia em HTTPS pelo cliente global, mas a sonda
     /// começava em HTTP e todos os RTTs remotos ficavam ausentes.
     tls_required: bool,
+    cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    cluster_logs_enabled: bool,
     /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
     /// *inside* this function, after it loads its own `pkarr_node` — not
     /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
@@ -1153,6 +1479,9 @@ struct P2pStackArgs {
 /// pkarr dial/publish — none of which belong inside this shared helper).
 struct P2pStack {
     net: Arc<Network>,
+    authority_signing_key: ed25519_dalek::SigningKey,
+    libp2p_peer_id: String,
+    cluster_logs: Arc<cluster_logs::ClusterLogs>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
     pkarr_node: Option<pkarr_node::PkarrNode>,
     assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>>,
@@ -1178,6 +1507,10 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .filter(|addr| !addr.is_empty())
         .collect();
     infer_tunnel::set_local_node_id(args.node_id.clone());
+    let cluster_logs = args.cluster_logs.clone();
+    cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
+    cluster_logs.set_principal(args.profile == crate::profile::NodeProfile::Admin);
+    cluster_logs.set_enabled(args.cluster_logs_enabled);
 
     let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
         Ok(n) => {
@@ -1193,13 +1526,15 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     // `Network` needs to advertise the resulting PeerId in its own
     // `Announce`, and it's built (then wrapped in `Arc`, no longer mutable
     // in place) a few lines below — so the keypair has to exist before that.
-    let libp2p_keypair = pkarr_node
+    let authority_signing_key = pkarr_node
         .as_ref()
-        .and_then(|pn| {
-            let mut seed = pn.secret_key_bytes();
-            libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..]).ok()
-        })
-        .unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
+        .map(|pn| ed25519_dalek::SigningKey::from_bytes(&pn.secret_key_bytes()))
+        .unwrap_or_else(|| {
+            ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)
+        });
+    let mut authority_seed = authority_signing_key.to_bytes();
+    let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut authority_seed[..])
+        .expect("a chave Ed25519 da autoridade deve ser uma identidade libp2p válida");
     let libp2p_peer_id = libp2p_keypair.public().to_peer_id().to_string();
 
     // Resolved *here*, not by the caller — needs the `pkarr_node` this
@@ -1246,11 +1581,15 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
             Some(args.gateway_port),
         )
         .await?
-        .with_identity(args.role, args.node_display_name)
+        .with_identity(args.profile, args.node_display_name)
         .with_advertise_addr(args.advertise_addr)
+        .with_authority_pubkey(hex::encode(
+            authority_signing_key.verifying_key().as_bytes(),
+        ))
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
     );
     net.set_tls(args.tls_required);
+    net.set_cluster_logs_enabled(args.cluster_logs_enabled);
 
     if args.no_discovery {
         net.detach().await;
@@ -1260,6 +1599,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
         Arc::new(RwLock::new(None));
     net.clone().start(assignment_shared.clone()).await?;
+    let (log_tx, log_rx) = mpsc::channel(cluster_logs::LOG_TRANSPORT_QUEUE_CAPACITY);
+    cluster_logs.start(net.clone(), assignment_shared.clone(), log_tx);
 
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
     // messages are published to gossipsub every 5 s so internet peers learn
@@ -1276,6 +1617,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         net.clone(),
         libp2p_keypair,
         tunnel_rx,
+        log_rx,
+        cluster_logs.clone(),
     ) {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
@@ -1314,6 +1657,9 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
 
     Ok(P2pStack {
         net,
+        authority_signing_key,
+        libp2p_peer_id,
+        cluster_logs,
         tunnel_tx,
         pkarr_node,
         assignment_shared,
@@ -1330,16 +1676,17 @@ fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
 
 async fn start_gateway_only(
     gateway_port: u16,
+    database: Arc<db::PomDb>,
     app_config: config::Config,
     ollama_url: String,
     no_discovery: bool,
     no_default_relays: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
+    cycle_detection_enabled: bool,
+    cluster_logs: Arc<cluster_logs::ClusterLogs>,
 ) -> Result<()> {
     use crate::gateway::{start_gateway, GatewayState};
-    use crate::pipeline::LoadTracker;
-
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
@@ -1362,10 +1709,12 @@ async fn start_gateway_only(
         ollama_port,
         inference_port: Some(app_config.inference_port_or_default()),
         gateway_port,
-        role: app_config.role.to_string(),
+        profile: app_config.profile,
         node_display_name,
         advertise_addr,
         tls_required: app_config.tls_required,
+        cluster_logs: cluster_logs.clone(),
+        cluster_logs_enabled: app_config.cluster_logs_enabled,
         // No CLI here to source pkarr/relay peer keys from — see the plan's
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],
@@ -1374,9 +1723,33 @@ async fn start_gateway_only(
         no_discovery,
     })
     .await?;
+    let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
+    let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+        node_id.clone(),
+        stack.libp2p_peer_id.clone(),
+        &stack.authority_signing_key,
+    );
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
+    if app_config.profile == crate::profile::NodeProfile::Admin
+        && admin_trust
+            .effective_authority(&authority_principal, app_config.profile)
+            .is_none()
+    {
+        warn!(
+            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node. \
+             Para ancorar o primeiro principal nesta máquina: `pom admin-anchor --cluster-id <nome>`, \
+             confira a impressão digital exibida e repita com `--fingerprint <valor> --confirm`. \
+             Para um nó que já tem principal no cluster, copie {} do admin por um canal seu e rode \
+             `pom admin-anchor --from <arquivo> --fingerprint <valor> --confirm`",
+            config::admin_trust_filename()
+        );
+    }
     let net = stack.net;
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
+    let cluster_logs = stack.cluster_logs;
 
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
@@ -1398,7 +1771,8 @@ async fn start_gateway_only(
         };
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
-    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
+    let hf_token_store =
+        huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
     let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
@@ -1406,6 +1780,73 @@ async fn start_gateway_only(
         Some(auth_state.clone()),
     );
     node_runtime.start_thermal_monitor(auth_state.clone()).await;
+
+    // Bind the gateway before restoring a persisted slice. Applying it may
+    // schedule a model load, but that load must never hide the control plane.
+    let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
+    peer_clients.apply_cluster_policy(app_config.tls_required);
+    peer_clients.set_auth_state(auth_state.clone());
+
+    tls_policy::spawn_ratchet(
+        net.clone(),
+        peer_clients.clone(),
+        auth_state.clone(),
+        tls_server.clone(),
+    );
+    cluster_logs_policy::spawn_ratchet(
+        net.clone(),
+        peer_clients.clone(),
+        auth_state.clone(),
+        cluster_logs.clone(),
+    );
+
+    let gw_state = GatewayState {
+        network: net.clone(),
+        ollama: Arc::new(OllamaClient::new(&ollama_url)),
+        default_model: String::new(),
+        local_assignment: assignment_shared.clone(),
+        loads: node_runtime.load_tracker(),
+        prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
+        // Nó implantado pela UI (sem `--model`): é este o caminho comum, e o
+        // cache de prefixo persistente precisa do índice aqui também.
+        prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
+        peer_http: peer_clients.clone(),
+        runtime: node_runtime.clone(),
+        cycle_config: crate::cycle::CycleConfig {
+            enabled: cycle_detection_enabled,
+            ..crate::cycle::CycleConfig::default()
+        },
+        audit: reqlog::AuditLog::new(database.clone()),
+        database,
+        gateway_port,
+        auth: auth_state,
+        admin_trust,
+        authority_signing_key,
+        authority_principal,
+        admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
+        transfers: Default::default(),
+        reply_inbox: crate::direct::ReplyInbox::new(),
+        // `start_p2p_stack` always hands back a working sender, even when
+        // `Discovery::new` itself failed - sending on it then just fails
+        // fast with a closed-channel error, the same already-handled
+        // "no tunnel available" outcome `send_frame_via_tunnel` treats as.
+        tunnel_tx: Some(tunnel_tx),
+        tls_server: tls_server.clone(),
+        cluster_logs,
+        cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
+        model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
+            Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
+                hf_token_store.clone(),
+            )),
+            hf_token_store,
+        )),
+    };
+
+    info!(
+        "Gateway running at http://localhost:{} (model not yet configured)",
+        gateway_port
+    );
+    let gateway_task = tokio::spawn(async move { start_gateway(gw_state, gateway_port).await });
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
     // nova: o nó volta servindo o que servia. Só aqui, porque este é o
@@ -1423,57 +1864,13 @@ async fn start_gateway_only(
         // A fatia foi aplicada e o processo morreu antes de ela carregar uma
         // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o
         // processo, o Docker religa o container, e assim para sempre. O nó
-        // sobe vazio — mas dizendo por quê, senão o operador não tem como
+        // sobe vazio - mas dizendo por quê, senão o operador não tem como
         // saber que a máquina não aguentou a fatia que recebeu.
         lastslice::LastSlice::NeverLoaded(cfg) => node_runtime.note_unloadable_slice(&cfg).await,
         lastslice::LastSlice::Nothing => {}
     }
 
-    let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-    peer_clients.apply_cluster_policy(app_config.tls_required);
-    peer_clients.set_auth_state(auth_state.clone());
-
-    tls_policy::spawn_ratchet(
-        net.clone(),
-        peer_clients.clone(),
-        auth_state.clone(),
-        tls_server.clone(),
-    );
-
-    let gw_state = GatewayState {
-        network: net.clone(),
-        ollama: Arc::new(OllamaClient::new(&ollama_url)),
-        default_model: String::new(),
-        local_assignment: assignment_shared.clone(),
-        loads: Arc::new(LoadTracker::new()),
-        prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
-        peer_http: peer_clients.clone(),
-        runtime: node_runtime.clone(),
-        audit: reqlog::AuditLog::new(config::project_root().join("audit.sqlite3")),
-        gateway_port,
-        auth: auth_state,
-        transfers: Default::default(),
-        reply_inbox: crate::direct::ReplyInbox::new(),
-        // `start_p2p_stack` always hands back a working sender, even when
-        // `Discovery::new` itself failed — sending on it then just fails
-        // fast with a closed-channel error, the same already-handled
-        // "no tunnel available" outcome `send_frame_via_tunnel` treats it as.
-        tunnel_tx: Some(tunnel_tx),
-        tls_server: tls_server.clone(),
-        cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-        model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
-            Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
-                hf_token_store.clone(),
-            )),
-            hf_token_store,
-        )),
-    };
-
-    info!(
-        "Gateway running at http://localhost:{} (model not yet configured)",
-        gateway_port
-    );
-    start_gateway(gw_state, gateway_port).await?;
+    gateway_task.await??;
     Ok(())
 }
 
@@ -1482,9 +1879,53 @@ mod main_tests {
     use super::*;
 
     #[test]
+    fn menu_bar_chat_url_uses_loopback_and_gateway_port() {
+        assert_eq!(gateway_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
+        assert_eq!(gateway_url(8090), "http://127.0.0.1:8090/admin-ui/chat");
+    }
+
+    #[test]
+    fn persisted_gateway_port_wins_over_cli_fallback() {
+        assert_eq!(select_gateway_port(Some(9123), 8080), 9123);
+        assert_eq!(select_gateway_port(None, 8080), 8080);
+    }
+
+    #[test]
     fn gateway_only_honors_the_default_relay_switch() {
         assert!(gateway_only_use_default_relays(false));
         assert!(!gateway_only_use_default_relays(true));
+    }
+
+    #[test]
+    fn cli_starts_the_gateway_before_scheduling_model_load() {
+        let source = include_str!("main.rs");
+        let gateway = source
+            .find("Bind before scheduling the model load")
+            .expect("o caminho CLI precisa iniciar o gateway");
+        let apply = source[gateway..]
+            .find("node_runtime.apply(cfg).await")
+            .map(|offset| gateway + offset)
+            .expect("o caminho CLI precisa agendar o carregamento");
+        assert!(
+            gateway < apply,
+            "o carregamento do modelo não pode atrasar o bind do gateway"
+        );
+    }
+
+    #[test]
+    fn gateway_only_starts_the_gateway_before_restoring_a_slice() {
+        let source = include_str!("main.rs");
+        let gateway = source
+            .find("Bind the gateway before restoring a persisted slice")
+            .expect("o caminho sem --model precisa iniciar o gateway");
+        let restore = source[gateway..]
+            .find("match lastslice::take()")
+            .map(|offset| gateway + offset)
+            .expect("o caminho sem --model precisa tratar a fatia persistida");
+        assert!(
+            gateway < restore,
+            "a restauração da fatia não pode atrasar o bind do gateway"
+        );
     }
 
     /// A porta do Ollama anunciada não pode depender de `--gateway`: a flag está

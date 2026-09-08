@@ -147,11 +147,14 @@ de camadas residentes no dispositivo. Modelar como parcela por camada seria
 inventar precisão que não existe. Fica:
 
 ```
-reserva(dev) = compute_buffer(n_ubatch, n_embd, camadas(dev)) + FIT_MEMORY_MARGIN_BYTES
+reserva(dev) = compute_buffer(n_ubatch, n_embd, camadas(dev)) + fit_memory_margin(dev)
 ```
 
-`FIT_MEMORY_MARGIN_BYTES` é a margem que o `llm.rs:245` já passa ao fit por
-dispositivo; reusá-la mantém o orçamento do planejador alinhado com o do motor.
+`fit_memory_margin(dev)` é a reserva configurável que o `llm.rs` passa ao fit
+por dispositivo. O backend mede o livre real antes de comparar essa reserva,
+então a ocupação de outros processos não é descontada duas vezes. O padrão de
+256 MiB substitui a folga fixa de 1 GiB e mantém o orçamento do planejador
+alinhado com o do motor.
 
 O dispositivo que carrega a **camada 0** recebe reserva extra dimensionada por
 `n_batch` (o pedaço de prompt), não por `n_ubatch`: quem tem a camada 0 processa

@@ -5,13 +5,29 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 
 ## scripts/
 
+- `bench-rotas.sh` - executa a bateria reproduzivel de medicao da geracao
+  distribuida: quatro origens, cinco prompts, aquecimento por origem, CSV com
+  as telemetrias de timings/trace/decode/prefill e tabela de medianas. O CSV
+  inclui ao final os contadores
+  `trace_mtp_draft_tokens_{proposed,accepted,rejected}` e
+  `trace_mtp_acceptance_rate`, preservando a ordem das colunas anteriores; o
+  quinto prompt usa 1200 palavras hexadecimais novas e `max_tokens=8`. Envia a
+  API key de inferência em `POM_BENCH_API_KEY` para cada chamada ao
+  `/api/generate`; a variável não é impressa nem gravada no CSV. Por padrao
+  omite `model` no `/api/generate`, para o gateway usar o modelo atualmente
+  servido; `POM_BENCH_MODEL` e um override opcional. A origem `salem-ksia`
+  usa `SALEM_PASS` em tempo de execucao, nunca uma senha gravada no
+  repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
+  `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `POM_BUILD_COMMIT`, roda `npm run build` em `apps/frontend` e
-  `docker compose build`. O commit nao pode ser lido dentro da imagem builder
+  exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,
+  o `Dockerfile:45-46` roda `npm run build` em `apps/frontend`; o script não
+  executa o build da UI diretamente. O commit nao pode ser lido dentro da imagem builder
   (`.dockerignore` corta `.git/` e a imagem nao tem `git`); sem a variavel o
-  `crates/node/build.rs` carimba "desconhecido" em todo container. Construa a
-  imagem por este script, nunca `docker compose build` na mao.
+  `crates/node/build.rs` carimba "desconhecido" em todo container; ver
+  `TODO.md`, item 26. Construa a imagem por este script, nunca `docker compose build`
+  na mao.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =
@@ -23,6 +39,32 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   tambem em configs existentes, preservando os outros campos.
 - `test_gen_node_configs.py` - testes unitarios do override de
   `advertise_addr`, incluindo a preservacao dos demais campos da config.
+- `bench-llamacpp.sh` - CLI do benchmark do llama.cpp puro na ksia. Recebe o
+  snapshot `.config.json` do pom-bench, seleciona uma implantacao `whole`,
+  verifica VRAM livre, sobe o `llama-server` do fork remoto do POM em uma porta
+  local ao host remoto, mede os cinco prompts da bateria e derruba somente o
+  PID criado. A implementacao Python fica em `bench_llamacpp.py`; os testes
+  puros de selecao, payload, SSE e medianas ficam em
+  `test_bench_llamacpp.py`. A geometria equivalente ao POM usa `-c n_ctx`,
+  `-np (max_sessions * 2)` e `--kv-unified`, preservando a janela por sessao
+  sem multiplicar `n_ctx`; `offload_kqv=true` usa o default do llama.cpp e so
+  `false` acrescenta `-nkvo`. Um binario preexistente
+  so e aceito quando o `CMakeCache.txt` prova o mesmo source com CUDA e
+  `LLAMA_BUILD_SERVER=ON`; caso contrario o build vai para fora da arvore.
+  Quando `mtp_enabled=true`, a configuracao vira `--spec-type draft-mtp`,
+  `--spec-draft-n-max` e `--spec-draft-p-min`; o fork usa a cabeca `nextn` do
+  proprio GGUF, sem modelo draft separado.
+  Os artefatos vao por padrao para `/Users/jairpereira/scripts/reports` e a
+  CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
+  tarefa. Se o `nvcc` nao estiver no `PATH` remoto, o harness autodetecta
+  `/usr/local/cuda/bin/nvcc`, `/usr/local/cuda-13.0/bin/nvcc` ou
+  `/usr/local/cuda-12.9/bin/nvcc`; `--cuda-compiler` e
+  `LLAMACPP_CUDA_COMPILER` permitem fixar outro caminho.
+- `migrate_pom_db.py` - ferramenta descartável e explícita para copiar, uma
+  única vez, implantações, auditoria, API keys, preferência térmica e token
+  das fontes antigas para um `pom.db` já criado pelo binário. O arranque nunca
+  chama o script; ele valida conflitos, não imprime credenciais e não apaga ou
+  altera as fontes.
 - `run-docker.sh` - `docker compose down` + `docker compose up -d`. Nao recria
   a imagem; use `build-docker.sh` para isso.
 
@@ -143,7 +185,21 @@ Nome, slug e caminho do `.icns` saem do `brand.json`; o Info.plist marca
 o bundle continua chamavel por linha de comando em
 `POM.app/Contents/MacOS/pom`. O workflow de release chama este script no alvo
 macOS e copia o `dist` da interface para `Contents/Resources/apps/frontend/`,
-que e onde `config::bundled_ui_dist()` a procura.
+que e onde `config::bundled_ui_dist()` a procura. O script também copia
+`assets/brand/macos/pom-status-template{,@2x,@3x}.png` e as localizações
+`assets/brand/macos/*.lproj` para `Contents/Resources`, e recusa montar o
+bundle se a arte do item de barra faltar - um item sem arte cai para um rótulo
+de texto, em silêncio. O mesmo bundle abre `/admin-ui/chat` no painel de
+390 x 844 points e oferece a janela maior pelo WebKit do sistema.
+
+## derive-macos-status-icon.py
+
+Deriva a arte do `NSStatusItem` a partir de `pom-icon-src.png`. A barra de
+menus usa **template images**, que só têm canal alfa: a marca do POM é um
+quadrado azul opaco e, usada como está, viraria um retângulo preto. O script
+converte o traço branco em alfa, descarta o wordmark (ilegível a 18 pontos) e
+grava 1x, 2x e 3x em `assets/brand/macos/`. Corra-o depois de mexer na marca;
+um teste em `macos_status.rs` falha se a arte sumir.
 
 ## derive-dark-logo.py
 

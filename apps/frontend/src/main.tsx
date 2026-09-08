@@ -32,6 +32,7 @@ createRoot(document.getElementById("root")!).render(
                   assumes, and it keeps the dev console free of deprecation
                   noise so a real warning stands out. */}
               <BrowserRouter
+                basename="/admin-ui"
                 future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
               >
                 <App />

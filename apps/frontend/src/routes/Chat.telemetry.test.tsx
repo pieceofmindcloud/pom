@@ -6,8 +6,11 @@
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatError, ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
+import { Bubble, ChatError } from "./Chat";
+import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { LocaleProvider } from "../i18n/provider";
+import { ProfileProvider } from "../lib/profile";
+import type { ChatMessage } from "../lib/chatStore";
 import type { GenerationTimings, PhaseTrace, RequestTrace } from "../lib/chatStream";
 
 function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
@@ -74,6 +77,31 @@ const twoPeerTrace: RequestTrace = {
   ],
 };
 
+const contradictoryTrace: RequestTrace = {
+  ...trace,
+  hops: [{
+    node_id: "abcdef0123456789",
+    start_layer: 0,
+    end_layer: 15,
+    prefill: phase({
+      processing_ms: 880,
+      round_trip_ms: 920,
+      calls: 5,
+      selected_path: "dense/llama.cpp",
+      executed_engine: "llama.cpp",
+      engine_mismatch: false,
+    }),
+    decode: phase({
+      processing_ms: 300,
+      round_trip_ms: 420,
+      calls: 34,
+      selected_path: "dense/llama.cpp",
+      executed_engine: "llama.cpp",
+      engine_mismatch: false,
+    }),
+  }],
+};
+
 const environment: ExecutionTelemetryEnvironment = {
   snapshotCaptured: true,
   cluster: {
@@ -84,7 +112,7 @@ const environment: ExecutionTelemetryEnvironment = {
         node: {
           hostname: "gpu-a",
           system: { cpu_count: 12, ram: { total_mb: 32768, available_mb: 16384 }, gpus: [{ name: "RTX A6000" }] },
-          config: { n_gpu_layers: 12, n_ctx: 8192, n_batch: 512, fit_memory: true, offload_kqv: true, max_sessions: 2 },
+          config: { n_gpu_layers: 12, n_ctx: 8192, n_batch: 512, fit_memory: true, fit_memory_margin_mb: 256, offload_kqv: true, max_sessions: 2 },
         },
       },
       {
@@ -93,14 +121,14 @@ const environment: ExecutionTelemetryEnvironment = {
         node: {
           hostname: "cpu-b",
           system: { cpu_count: 8, ram: { total_mb: 16384, available_mb: 4096 }, gpus: [] },
-          config: { n_gpu_layers: 0, n_ctx: 4096, n_batch: 256, fit_memory: false, offload_kqv: false, max_sessions: 1 },
+          config: { n_gpu_layers: 0, n_ctx: 4096, n_batch: 256, fit_memory: false, fit_memory_margin_mb: 256, offload_kqv: false, max_sessions: 1 },
         },
       },
     ],
   } as unknown as ExecutionTelemetryEnvironment["cluster"],
   network: { measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: 12.5, transport: "libp2p" }] },
   runtimes: {
-    "abcdef0123456789": { loaded: true, health: { profile_sync_enabled: true, selected_path: "moe/q4_0", placement: { layers: [
+    "abcdef0123456789": { loaded: true, health: { profile_sync_enabled: true, selected_path: "moe/q4_0", moe_requested: true, moe_executor: "cpu-reference", moe_executor_reason: "dtype IQ3_S sem ponte CUDA; CPUReference selecionado", placement: { layers: [
       { layer: 0, device: "CUDA0", buffers: [{ buffer: "CUDA0", bytes: 10 }] },
       { layer: 1, device: "CUDA0", buffers: [{ buffer: "CPU", bytes: 10 }, { buffer: "CUDA0", bytes: 10 }] },
     ] } } as never },
@@ -173,6 +201,16 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText("motor MoE")).toBeTruthy();
   });
 
+  it("separates the current health path from the path observed in this execution", () => {
+    mount(<ExecutionTelemetry trace={contradictoryTrace} environment={environment} />);
+
+    expect(screen.getByText("estado atual: caminho selecionado: moe/q4_0")).toBeTruthy();
+    expect(screen.getByText("nesta execução: caminho selecionado: dense/llama.cpp")).toBeTruthy();
+    expect(screen.getByText(/O estado atual diverge desta execução/)).toBeTruthy();
+    expect(screen.getByText(/Os valores do ambiente são um snapshot atual de \/health/)).toBeTruthy();
+    expect(screen.getAllByText("caminho selecionado: dense/llama.cpp").length).toBeGreaterThan(0);
+  });
+
   it("shows unknown when a hop has no engine field", () => {
     mount(<ExecutionTelemetry trace={twoPeerTrace} />);
 
@@ -209,8 +247,10 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText(/Ajuste à memória: desligado/)).toBeTruthy();
     expect(screen.getByText(/Pedido de offload KV: ligado/)).toBeTruthy();
     expect(screen.getByText(/Pedido de offload KV: desligado/)).toBeTruthy();
-    expect(screen.getByText("caminho selecionado: moe/q4_0")).toBeTruthy();
-    expect(screen.getByText("caminho selecionado: desconhecido")).toBeTruthy();
+    expect(screen.getByText("estado atual: caminho selecionado: moe/q4_0")).toBeTruthy();
+    expect(screen.getByText("executor MoE: cpu-reference")).toBeTruthy();
+    expect(screen.getByText(/motivo do executor MoE: dtype IQ3_S/)).toBeTruthy();
+    expect(screen.getByText("estado atual: caminho selecionado: não informado")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: ativo")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: desligado")).toBeTruthy();
   });
@@ -279,6 +319,54 @@ describe("ExecutionTelemetry", () => {
     // ...and the row says why there is no prefill/decode split, rather than
     // printing one total twice under two labels.
     expect(screen.getByText(/telemetria antiga/i)).toBeTruthy();
+  });
+});
+
+describe("telemetria no chat por perfil", () => {
+  const tracedMessage: ChatMessage = {
+    id: "assistant-1",
+    role: "assistant",
+    content: "resposta",
+    at: "2026-09-02T00:00:00Z",
+    source: "pipeline:abc→def",
+    tokensPerSecond: 4,
+    timings: {
+      ttft_ms: 100,
+      prefill_ms: 80,
+      prefill_tokens: 8,
+      prefill_tokens_per_sec: 100,
+      generation_ms: 500,
+      generation_tokens: 2,
+      generation_tokens_per_sec: 4,
+      total_ms: 600,
+      total_tokens_per_sec: 3.3,
+    },
+    trace,
+  };
+
+  function mountBubble(profile: "admin" | "node" | "infer") {
+    return render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile={profile}>
+          <Bubble message={tracedMessage} streaming={false} />
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+  }
+
+  it("não mostra telemetria no chat para infer", () => {
+    mountBubble("infer");
+
+    expect(screen.getByText("resposta")).toBeTruthy();
+    expect(screen.queryByText("pipeline:abc→def")).toBeNull();
+    expect(screen.queryByText(/Primeiro token|RTT agregado da execução/)).toBeNull();
+  });
+
+  it.each(["admin", "node"] as const)("mantém telemetria no chat para o perfil %s", (profile) => {
+    mountBubble(profile);
+
+    expect(screen.getAllByText("pipeline:abc→def").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Primeiro token/).length).toBeGreaterThan(0);
   });
 });
 

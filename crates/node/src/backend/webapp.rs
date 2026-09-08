@@ -1,20 +1,18 @@
 //! Serving the CODAI-SERVER interface off disk.
 //!
-//! The bundle lives wherever `config::ui_dist_dir()` points — by default
+//! The bundle lives wherever `config::ui_dist_dir()` points - by default
 //! `<project_root>/apps/frontend/dist`, built independently with
 //! `npm run build` in `apps/frontend`. Nothing here is compiled into the
 //! binary, so editing the interface no longer touches the Rust build: run
 //! `npm run build` (or point `POM_UI_DIST` at a Vite watch build) and
 //! reload the browser.
 //!
-//! The routing rule is the part worth reading. A single-page app owns paths
-//! that do not exist as files: reloading the browser on `/config/keys/api` has
-//! to answer with `index.html` so the client router can take it from there.
-//! Answering *everything* with `index.html` would be wrong in the other
-//! direction — a mistyped `/api/ui/nodes` would return a web page with status
-//! 200, and the screen would report "Unexpected token '<'" instead of a 404.
-//! So the fallback is deliberately narrow: real files win, the API prefixes are
-//! never touched, and anything left over that looks like a page gets the app.
+//! The routing rule is the part worth reading. The single-page app is mounted
+//! at `/admin-ui/`, while the root redirects there without exposing a bundle
+//! from the old root. Reloading a browser route such as
+//! `/admin-ui/config/keys/api` answers with `index.html` so the client router
+//! can take it from there. API routes are kept outside this mount, so a mistyped
+//! `/api/ui/nodes` still gets a JSON 404 instead of a web page with status 200.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -22,8 +20,8 @@ use axum::{
     body::Body,
     extract::Path as AxumPath,
     http::{header, HeaderValue, StatusCode, Uri},
-    response::{IntoResponse, Response},
-    routing::get,
+    response::{IntoResponse, Redirect, Response},
+    routing::{any, get},
     Router,
 };
 
@@ -42,8 +40,15 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
-        .route("/", get(index))
-        .route("/*path", get(asset))
+        .route("/", get(root))
+        .route("/admin-ui", get(index))
+        .route("/admin-ui/", get(index))
+        .route("/admin-ui/*path", any(asset))
+        .fallback(fallback)
+}
+
+async fn root() -> Redirect {
+    Redirect::temporary("/admin-ui/")
 }
 
 async fn index() -> Response {
@@ -53,9 +58,16 @@ async fn index() -> Response {
         .unwrap_or_else(|| missing_bundle(&base))
 }
 
-async fn asset(AxumPath(path): AxumPath<String>, uri: Uri) -> Response {
+async fn asset(AxumPath(path): AxumPath<String>, uri: Uri, method: axum::http::Method) -> Response {
+    if method != axum::http::Method::GET {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let base = crate::config::ui_dist_dir();
-    let trimmed = path.trim_start_matches('/');
+    let trimmed = path
+        .strip_prefix("admin-ui/")
+        .unwrap_or(path.as_str())
+        .trim_start_matches('/');
 
     if let Some(hit) = serve(&base, trimmed).await {
         return hit;
@@ -86,6 +98,14 @@ async fn asset(AxumPath(path): AxumPath<String>, uri: Uri) -> Response {
     serve(&base, "index.html")
         .await
         .unwrap_or_else(|| missing_bundle(&base))
+}
+
+/// Serve the SPA only after no concrete API or UI route matched. Keeping this
+/// as a router fallback is important: a GET-only wildcard otherwise claims the
+/// path of every unknown POST/DELETE and turns a missing route into 405.
+async fn fallback(method: axum::http::Method, uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/').to_string();
+    asset(AxumPath(path), uri, method).await
 }
 
 /// Join a request path onto the bundle directory without ever leaving it.
@@ -150,6 +170,8 @@ fn missing_bundle(base: &Path) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{body::Body, http::Request, routing::post};
+    use tower::ServiceExt;
 
     /// `..` must never walk the resolved path outside the bundle directory,
     /// no matter how it is spelled in the request.
@@ -202,11 +224,87 @@ mod tests {
                 "{p} devia ser tratado como rota de API"
             );
         }
-        for p in ["config/keys/api", "fatias/andamento", "chat"] {
+        for p in [
+            "config/keys/api",
+            "fatias/andamento",
+            "chat",
+            "admin-ui/chat",
+        ] {
             assert!(
                 !API_PREFIXES.iter().any(|pre| p.starts_with(pre)),
                 "{p} e uma rota de tela e devia cair no index.html"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn root_redirects_to_the_admin_ui_mount() {
+        let response = root().await.into_response();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/admin-ui/"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_specific_admin_post_beats_the_get_only_spa_fallback() {
+        let app = Router::new()
+            .route(
+                "/admin/nodes/:id/promote-admin",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .merge(routes::<()>());
+
+        let response = app
+            .oneshot(
+                Request::post("/admin/nodes/peer/promote-admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn the_registered_admin_promotion_route_reaches_its_handler() {
+        let state = crate::gateway::testkit::state_with("node", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+        }
+        let app = Router::new()
+            .merge(crate::admin::admin_routes())
+            .merge(routes())
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::post("/admin/nodes/peer/promote-admin")
+                    .header("authorization", "Bearer connection-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_mutation_is_not_found_not_method_not_allowed() {
+        for request in [
+            Request::post("/admin/nodes/unknown/promote-admin")
+                .body(Body::empty())
+                .unwrap(),
+            Request::delete("/admin/nodes/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        ] {
+            let response = routes::<()>().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
     }
 }

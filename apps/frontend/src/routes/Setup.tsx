@@ -7,20 +7,20 @@
  * `/api/setup/*` exists, which is also the reason this screen cannot show
  * anything about the cluster — there isn't one yet.
  *
- * The two roles differ in exactly one thing, and the copy says so plainly: the
- * Principal *mints* the connection key, a Nó is *given* it. Everything else on
- * both paths is the same node.
+ * The initial profile choice differs in exactly one thing, and the copy says so
+ * plainly: the administrator *mints* the connection key, while a node or infer
+ * machine is *given* it. Everything else on both paths is the same node.
  */
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight, Check, Copy, KeyRound, Landmark, Network, Server } from "lucide-react";
+import { ArrowRight, Check, Copy, KeyRound, Landmark, Network, Server, Sparkles } from "lucide-react";
 import { api } from "../lib/api";
 import { LogoFull } from "../components/Logo";
 import { Button, Field, Footnote, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { useToast } from "../lib/toast";
 import { LanguageSelect, useI18n } from "../i18n/provider";
 
-type Role = "principal" | "node";
+type SetupProfile = "admin" | "node" | "infer";
 
 interface SetupKey {
   connection_key: string;
@@ -29,7 +29,7 @@ interface SetupKey {
 
 export function Setup() {
   const { t } = useI18n();
-  const [role, setRole] = useState<Role | null>(null);
+  const [profile, setProfile] = useState<SetupProfile | null>(null);
   const [key, setKey] = useState<SetupKey | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [bootstrap, setBootstrap] = useState("");
@@ -39,10 +39,10 @@ export function Setup() {
   const [copied, setCopied] = useState(false);
   const toast = useToast();
 
-  // Minting the key is what choosing "Principal" means, so it happens on the
-  // choice rather than behind a second button.
+  // Minting the key is what choosing the administrator profile means, so it
+  // happens on the choice rather than behind a second button.
   useEffect(() => {
-    if (role !== "principal" || key) return;
+    if (profile !== "admin" || key) return;
     let cancelled = false;
     api
       .get<SetupKey>("/api/setup/key")
@@ -51,15 +51,15 @@ export function Setup() {
     return () => {
       cancelled = true;
     };
-  }, [role, key]);
+  }, [profile, key]);
 
   async function save() {
     setSaving(true);
     try {
       await api.post("/api/setup/save", {
-        role: role === "principal" ? "principal" : "node",
-        connection_key: role === "node" ? pastedKey.trim() : "",
-        bootstrap: role === "node" ? bootstrap.trim() : "",
+        profile,
+        connection_key: profile === "admin" ? "" : pastedKey.trim(),
+        bootstrap: profile === "admin" ? "" : bootstrap.trim(),
       });
       // The node writes the config, respawns itself and exits, so there is no
       // second response to wait for — the panel comes back on its own.
@@ -72,8 +72,10 @@ export function Setup() {
   }
 
   const canSave =
-    role === "principal" ||
-    (role === "node" && pastedKey.trim().length > 0 && bootstrap.trim().length > 0);
+    profile === "admin" ||
+    ((profile === "node" || profile === "infer") &&
+      pastedKey.trim().length > 0 &&
+      bootstrap.trim().length > 0);
 
   return (
     <div className="min-h-full bg-ink px-4 py-10 sm:px-6">
@@ -123,25 +125,32 @@ export function Setup() {
             </motion.div>
           ) : (
             <motion.div key="form" className="space-y-5">
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-3">
                 <RoleCard
                   icon={<Landmark className="h-5 w-5" />}
-                  title={t("setup.principal")}
-                  detail={t("setup.principalDetail")}
-                  selected={role === "principal"}
-                  onSelect={() => setRole("principal")}
+                  title={t("profile.admin")}
+                  detail={t("setup.adminDetail")}
+                  selected={profile === "admin"}
+                  onSelect={() => setProfile("admin")}
                 />
                 <RoleCard
                   icon={<Server className="h-5 w-5" />}
-                  title={t("setup.node")}
+                  title={t("profile.node")}
                   detail={t("setup.nodeDetail")}
-                  selected={role === "node"}
-                  onSelect={() => setRole("node")}
+                  selected={profile === "node"}
+                  onSelect={() => setProfile("node")}
+                />
+                <RoleCard
+                  icon={<Sparkles className="h-5 w-5" />}
+                  title={t("profile.infer")}
+                  detail={t("setup.inferDetail")}
+                  selected={profile === "infer"}
+                  onSelect={() => setProfile("infer")}
                 />
               </div>
 
               <AnimatePresence mode="wait">
-                {role === "principal" && (
+                {profile === "admin" && (
                   <Reveal key="principal">
                     <Panel>
                       <PanelHeader
@@ -209,8 +218,8 @@ export function Setup() {
                   </Reveal>
                 )}
 
-                {role === "node" && (
-                  <Reveal key="node">
+                {(profile === "node" || profile === "infer") && (
+                  <Reveal key={profile}>
                     <Panel>
                       <PanelHeader
                         title={t("setup.wherePrincipal")}
@@ -246,7 +255,7 @@ export function Setup() {
                 )}
               </AnimatePresence>
 
-              {role && (
+              {profile && (
                 <Reveal key="action">
                   <div className="flex justify-end">
                     <Button

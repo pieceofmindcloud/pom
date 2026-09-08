@@ -31,6 +31,21 @@ medidas em campo.
   cada instalação e valem para todos os contextos daquela instalação. O padrão
   é `f16`; os tipos aceitos e a confirmação em `/health` estão em
   `inferencia.md`. Eles não são escolhas por máquina no deploy.
+- **Snapshots de KV cache:** o diretório onde cada peer grava e relê snapshots
+  de KV, como o `--slot-save-path` do llama-server. Propriedade da máquina, não
+  do deploy. Três fontes, nesta precedência: a flag `--slot-save-path`, a
+  variável `POM_SLOT_SAVE_PATH` e o campo `slot_save_path` do `pom.json`. A env
+  var é por processo e não é persistida no `pom.json`. Ausente em todas desliga
+  o recurso e `POST /v1/session/slot` / `POST /admin/slots/{name}` respondem
+  "não configurado". Ver `inferencia.md` §3.1.1 e `api-http.md`.
+- **Cache de prefixo persistente:** `slot_persist_prefix_cache` no `pom.json`
+  (ou `POM_SLOT_PERSIST_PREFIX_CACHE=1`) faz o gateway gravar o KV retido ao
+  fim de cada turno e restaurá-lo num miss depois de um reinício, sem chamada
+  manual. Desligado por padrão; exige `slot_save_path` em todos os hops. Uma
+  conversa que cresce mantém um só snapshot (supersessão); turnos curtos não
+  regravam (debounce). `slot_auto_max_bytes` limita o disco (padrão 2 GiB) e
+  `slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS` o TTL (padrão 7 dias, renovado
+  a cada uso). Ver `inferencia.md` §3.1.1.
 
 ## Subida (cluster de duas máquinas)
 
@@ -43,8 +58,10 @@ ssh root@<peer2> 'cd /caminho/pom && ./old/scripts/run-p2.sh'
 # BOOTSTRAP=<ip-do-peer1>:42777 sobrescreve o endereço do peer 1.
 ```
 
-O carregamento do modelo leva ~1 min; espere o `/health` do servidor de
-inferência antes de mandar requisição:
+O gateway HTTP é ligado antes do carregamento do modelo, então a UI e a API de
+controle ficam disponíveis durante o arranque. O carregamento do modelo leva
+~1 min; espere o `/health` do servidor de inferência antes de mandar
+requisição:
 
 ```bash
 until curl -sf localhost:8181/health; do sleep 5; done
@@ -62,6 +79,32 @@ ssh root@<peer2> 'nvidia-smi --query-compute-apps=pid,used_memory --format=csv'
 `source` começando com `pipeline:` e com **dois** hops é a única prova de que a
 inferência foi conjunta. Um hop só, ou `"source": "none"`, significa que o
 planejador não fechou a cobertura `0..total_layers`.
+
+## Bateria de rotas e forma da saída
+
+Para separar o efeito da forma da saída do efeito da origem de rede, rode
+`POM_BENCH_API_KEY=sk-... ./scripts/bench-rotas.sh <rotulo>`. A variável é
+obrigatória, usada somente como cabeçalho de inferência e nunca aparece no
+CSV ou no resumo. O script executa uma chamada de
+aquecimento por origem, depois três repetições em cada combinação de
+`mac-local`, `mac-ksia`, `ksia-local`, `salem-ksia` com os prompts
+`p-curto-repetitivo`, `p-curto-variado`, `p-longo-repetitivo`,
+`p-longo-variado` e `p-prefill-aleatorio`. Ele omite `model` por padrão,
+então o gateway usa o modelo que a rede estiver servindo naquele momento. Use
+`POM_BENCH_MODEL=...` somente para uma comparação que exija um modelo
+explícito.
+
+O CSV tem uma linha por aquecimento, medição ou falha. `phase=warmup` fica
+fora das medianas; `status=unavailable` no aquecimento impede novas tentativas
+nessa origem e preserva o restante da matriz. `fichas_por_chamada` é
+calculada em cada linha como
+`trace.output_tokens / trace.hops[0].decode.calls`. Para `salem-ksia`,
+defina `SALEM_PASS` no ambiente no momento da execução; a senha não pertence
+ao script. Os prompts longos são preenchidos por texto determinístico e a
+tabela final mostra as medianas de `fichas/chamada`, `generation_tok/s`,
+`mtp_acceptance_rate`, `ttft_ms`, `node_p50_ms` e `total_ms`. O prompt
+`p-prefill-aleatorio` usa 1200 palavras hexadecimais novas por chamada e
+limita a saída a 8 tokens, como o benchmark de referência.
 
 `--n-gpu-layers` (padrão 0) decide quantas camadas vão para a VRAM; sem a
 feature de build correta (`metal`/`cuda`) o modelo roda todo em CPU. Para
@@ -192,7 +235,7 @@ deixá-lo aguardando um evento de erro que não tem formato de chunk.
 O Pi só expõe base URL para Azure; não há como apontá-lo para um endpoint
 OpenAI-compatível arbitrário por variável de ambiente.
 
-## Monitor de carga (`utils/sysmon.rs`)
+## Monitor de carga (`crates/llama-engine/src/sysmon.rs`)
 
 Linux: RAM de `/proc/meminfo`, VRAM e processos de `nvidia-smi` (conferido
 contra `nvidia-smi` na mão: bate exato). As chamadas frequentes ao utilitário
@@ -201,3 +244,76 @@ do DHT pkarr com `EINTR`. macOS: RAM de `sysctl` + `vm_stat`;
 memória unificada **não** reporta VRAM dedicada - a tela diz isso e mostra a
 memória wired, que é onde ficam os buffers do Metal, em vez de inventar um
 número.
+
+**Radeon (Linux).** Nome, VRAM, ocupação e temperatura saem do sysfs do
+`amdgpu` (`/sys/class/drm/card*/device`), sem binário externo - o equivalente
+do `nvidia-smi` seria o `rocm-smi`, que só existe com o ROCm inteiro instalado,
+e o backend usado é o Vulkan. Quem segura VRAM sai de `/proc/<pid>/fdinfo`
+(`drm-resident-vram`, ou `drm-memory-vram` nos kernels antigos), desduplicado
+por `drm-client-id`. A leitura é honestamente **o que este usuário pode ler**:
+processo de outro dono recusa o `fdinfo`, e o nó - que é o que interessa -
+está sempre na lista.
+
+**Apple Silicon.** O acelerador publica `PerformanceStatistics` no IORegistry,
+sem root e sem `powermetrics`: `ioreg -r -d 1 -w 0 -c AGXAccelerator` dá
+`Device Utilization %` e `In use system memory`, que viram `utilization_pct` e
+`vram_used_mb` (com `vram_total_mb` em `None`, porque VRAM dedicada não
+existe ali). Temperatura continua desconhecida de propósito: ela mora no SMC,
+atrás de API privada, e "não sei" é a única resposta honesta sem privilégio.
+
+**Discos.** `disk` é o volume onde as fatias moram - o que responde "cabe outra
+fatia?". `disks` é toda partição montada, de `df -k -P`, sem os pseudo sistemas
+de arquivos (`tmpfs`, `devfs`, `overlay`…) e sem repetir ponto de montagem. É
+`-k`, e não `-m`: o `-P` fixa blocos de 512 bytes no macOS e ignora o `-m`, o
+que faria todo volume aparecer 2048 vezes maior. Windows não tem `df` e
+continua reportando só o volume do projeto.
+
+## Comparar POM com llama.cpp puro
+
+O benchmark operacional está em `scripts/bench-llamacpp.sh`. Ele recebe o
+snapshot `*.config.json` do `pom-bench`, seleciona por padrão o deployment
+`serving`/`is_default` do modelo ativo e só aceita `kind=whole`, pois o
+`llama-server` simples não reproduz o RPC de `shards` ou `tensor_parallel`.
+Antes de iniciar qualquer processo na ksia consulta `nvidia-smi` e exige, por
+padrão, 14.000 MiB livres em cada GPU; quando o POM ocupa a memória, termina
+com `status=blocked_vram` sem tocar no processo do POM. O servidor usa a porta
+dedicada 8090 em `127.0.0.1`, e o cleanup é limitado ao PID que o harness
+criou.
+
+Quando a compilação CUDA é necessária, o harness passa explicitamente o
+`nvcc` ao CMake. Ele tenta primeiro os caminhos padrão da instalação CUDA na
+ksia; `--cuda-compiler` ou `LLAMACPP_CUDA_COMPILER` fixa um caminho alternativo.
+
+Uso mínimo, a partir da raiz do repositório:
+
+```bash
+scripts/bench-llamacpp.sh ~/scripts/reports/<data>-<modelo>.config.json \
+  --deploy-id <deploy-id> --output-dir ./bench-llamacpp-results
+```
+
+O resultado é um CSV com uma linha por warmup, medição ou erro, mais um
+`summary.md` com medianas dos cinco prompts de `bench-rotas.sh`. O campo
+`generation_tok_s` vem de `timings.predicted_per_second`; `prefill_ms` e
+`prefill_tok_s` vêm de `timings.prompt_ms` e `timings.prompt_per_second`;
+`ttft_ms` é o tempo observado até o primeiro evento SSE e `total_ms` é o tempo
+de parede da chamada local na ksia. Consulte `scripts/bench-llamacpp.sh --help`
+para os overrides de `n_ctx`, caminhos remotos e política de VRAM.
+Sem `--output-dir`, CSV, resumo, metadata e relatório Markdown são gravados em
+`/Users/jairpereira/scripts/reports`; `--report` permite fixar o caminho do
+relatório individual.
+
+No runtime POM, `n_ctx` é a janela de cada sessão e o orçamento de sequências é
+`2 * max_sessions`. Por isso o harness passa `-c n_ctx`, `-np 2 * max_sessions`
+e `--kv-unified`; a capacidade não é multiplicada por sessão. `offload_kqv=true`
+fica no default do llama.cpp e somente `false` passa `-nkvo`. Um `llama-server`
+preexistente só é reutilizado quando o `CMakeCache.txt` confirma a árvore do
+fork com CUDA e `LLAMA_BUILD_SERVER=ON`; builds necessários usam diretório
+externo para não alterar a árvore fonte.
+
+Quando o snapshot traz `mtp_enabled=true`, a referência local também ativa a
+cabeça MTP do mesmo GGUF com `--spec-type draft-mtp`,
+`--spec-draft-n-max=mtp_draft_tokens` e
+`--spec-draft-p-min=mtp_min_probability`. Com MTP e lookup ligados no POM, o
+POM escolhe MTP primeiro, então o harness mapeia o caminho efetivo MTP e
+registra `speculative_k` e `speculative_lookup_window` como configuração não
+executada simultaneamente.

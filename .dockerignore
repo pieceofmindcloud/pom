@@ -9,6 +9,8 @@ tests/
 *.log
 *.key
 pom.json
+pom.db
+pom.db-*
 docs/superpowers/
 apps/frontend/node_modules
 apps/frontend/dist*

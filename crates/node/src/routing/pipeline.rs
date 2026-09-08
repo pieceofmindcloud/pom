@@ -162,6 +162,13 @@ pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 /// when it is unavailable or fails at the transport layer.
 pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
 
+/// Advertised when the node serves `/v1/link`: one long-lived HTTP body pair
+/// carrying successive `frame/v1-batch` frames instead of a fresh request per
+/// activation. Checked **per-hop**, like the tunnel: the caller opens the
+/// channel when the next hop advertises it, and any transport failure degrades
+/// to the request-per-frame ladder without ending the generation.
+pub const CAP_LINK_STREAM: &str = "transport/link-v1";
+
 /// Advertised only while the local inference server has the validated
 /// multi-item scheduler active. It is the first and only inference frame
 /// contract; peers are never downgraded to an older wire format.
@@ -171,6 +178,16 @@ pub const CAP_FRAME_BATCH: &str = "inference/frame-v1-batch";
 /// representation of hidden state. This is all-or-nothing across a plan:
 /// sending f8 through one peer that only knows f16 would corrupt the answer.
 pub const CAP_FRAME_DTYPE_F8: &str = "inference/frame-v1-dtype-f8";
+
+/// Advertised when a remote complete-model peer can own the autoregressive
+/// loop and return generated tokens through bounded opportunistic batches.
+pub const CAP_REMOTE_TOKEN_STREAM: &str = "inference/remote-token-stream-v1";
+
+/// Advertised when this peer has a `--slot-save-path` configured and can save
+/// or restore a session's KV cache to local disk via `POST /v1/session/slot`.
+/// A deployment snapshot is all-or-nothing: `gateway::snapshot_deployment`
+/// refuses unless every hop advertises this.
+pub const CAP_SLOT_PERSIST: &str = "inference/slot-persist-v1";
 
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
@@ -377,20 +394,15 @@ pub async fn plan_pipeline(
     .await
 }
 
-/// Same planner, with RTTs measured by the gateway that is about to originate
-/// the request. Exact range replicas are the same logical stage, so the lowest
-/// measured RTT wins before load is considered. A caller without measurements
-/// can keep using `plan_pipeline` and retains the stable legacy ordering.
-pub async fn plan_pipeline_with_rtt(
-    peers: &[PeerInfo],
+/// Retorna os peers vivos que anunciam um servidor de inferência para o
+/// modelo. A resolução de implantação é a mesma usada pelo planejador, para
+/// que a tela de infer não mostre uma cabeça que o gateway jamais escolheria.
+pub fn model_pipeline_candidates<'a>(
+    peers: &'a [PeerInfo],
     model_name: &str,
     deploy_id: Option<&str>,
-    total_layers: u32,
-    tracker: &LoadTracker,
-    rtts: &HashMap<String, f64>,
-) -> Option<PipelinePlan> {
-    // Only peers that expose an inference server AND match the model name
-    let servindo: Vec<&PeerInfo> = peers
+) -> Vec<&'a PeerInfo> {
+    let serving: Vec<&PeerInfo> = peers
         .iter()
         .filter(|p| {
             p.inference_port.is_some()
@@ -402,6 +414,56 @@ pub async fn plan_pipeline_with_rtt(
                 }
         })
         .collect();
+
+    match deploy_id {
+        Some(_) => serving,
+        None => {
+            let mut deployment_ids: Vec<&str> = serving
+                .iter()
+                .map(|p| p.deploy_id.as_str())
+                .filter(|deployment| !deployment.is_empty())
+                .collect();
+            deployment_ids.sort_unstable();
+            deployment_ids.dedup();
+            match deployment_ids.first().copied() {
+                None => serving,
+                Some(selected) => serving
+                    .into_iter()
+                    .filter(|p| p.deploy_id == selected || p.deploy_id.is_empty())
+                    .collect(),
+            }
+        }
+    }
+}
+
+/// Cabeças são apenas as faixas que começam na camada zero. O restante da
+/// topologia continua privado ao gateway; este recorte é a única topologia
+/// que o perfil infer precisa conhecer para iniciar uma requisição.
+pub fn model_head_candidates<'a>(
+    peers: &'a [PeerInfo],
+    model_name: &str,
+    deploy_id: Option<&str>,
+) -> Vec<&'a PeerInfo> {
+    model_pipeline_candidates(peers, model_name, deploy_id)
+        .into_iter()
+        .filter(|peer| peer.start_layer == 0)
+        .collect()
+}
+
+/// Same planner, with RTTs measured by the gateway that is about to originate
+/// the request. Coverage is the first key, so a longer contiguous slice avoids
+/// an extra handoff. Among equally useful slices, the score combines fresh RTT
+/// (100 points per millisecond) and in-flight load (10 points per request).
+/// Unknown RTT gets the maximum latency penalty and `node_id` breaks exact ties.
+pub async fn plan_pipeline_with_rtt(
+    peers: &[PeerInfo],
+    model_name: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    tracker: &LoadTracker,
+    rtts: &HashMap<String, f64>,
+) -> Option<PipelinePlan> {
+    let servindo = model_pipeline_candidates(peers, model_name, deploy_id);
 
     if servindo.is_empty() {
         debug!(
@@ -424,37 +486,7 @@ pub async fn plan_pipeline_with_rtt(
     // duas máquinas do cluster têm que chegar à mesma implantação. A ordem por
     // id é o critério estável até o registro dizer qual é a ativa
     // (`deployment::active`).
-    let candidates: Vec<&PeerInfo> = match deploy_id {
-        Some(_) => servindo,
-        None => {
-            let mut ids: Vec<&str> = servindo
-                .iter()
-                .map(|p| p.deploy_id.as_str())
-                .filter(|d| !d.is_empty())
-                .collect();
-            ids.sort_unstable();
-            ids.dedup();
-            match ids.first().copied() {
-                // Nenhum peer anuncia implantação: cluster de versão anterior,
-                // ou nós subidos pela linha de comando. Casa por rótulo.
-                None => servindo,
-                Some(escolhida) => {
-                    if ids.len() > 1 {
-                        debug!(
-                            "modelo '{model_name}' está no ar em {} implantações; usando {escolhida}",
-                            ids.len()
-                        );
-                    }
-                    servindo
-                        .into_iter()
-                        // Um nó sem implantação declarada continua servindo o
-                        // rótulo: ele entra junto em vez de abrir buraco.
-                        .filter(|p| p.deploy_id == escolhida || p.deploy_id.is_empty())
-                        .collect()
-                }
-            }
-        }
-    };
+    let candidates = servindo;
 
     let mut steps: Vec<PipelineStep> = Vec::new();
     let mut pos: u32 = 0; // next layer we need covered
@@ -479,24 +511,29 @@ pub async fn plan_pipeline_with_rtt(
             return None; // gap — no peer covers layer `pos`
         }
 
-        // Pick the best-scoring candidate
-        let mut best: Option<(&PeerInfo, i64)> = None;
+        // Pick the candidate with the longest useful slice first. The second
+        // key is a weighted speed penalty: a small RTT advantage can be lost
+        // when its peer is carrying enough in-flight work.
+        let mut best: Option<(&PeerInfo, i64, i64)> = None;
         for peer in reachable {
             let load = tracker.load(&peer.node_id).await as i64;
             let layers = (peer.end_layer - pos + 1) as i64;
-            // Layer coverage remains the dominant factor. For peers covering
-            // the same range, lower RTT wins, followed by lower in-flight
-            // load. Unknown RTT is a stable last resort.
             let rtt_penalty = rtts
                 .get(&peer.node_id)
                 .map(|rtt| (*rtt * 100.0).max(0.0) as i64)
                 .unwrap_or(100_000);
-            let score = layers * 100_000 - rtt_penalty.min(99_999) - load * 10;
+            let speed_penalty = rtt_penalty.min(99_999) + load * 10;
             if best
-                .map(|(current, s)| score > s || (score == s && peer.node_id < current.node_id))
+                .map(|(current, current_layers, current_penalty)| {
+                    layers > current_layers
+                        || (layers == current_layers
+                            && (speed_penalty < current_penalty
+                                || (speed_penalty == current_penalty
+                                    && peer.node_id < current.node_id)))
+                })
                 .unwrap_or(true)
             {
-                best = Some((peer, score));
+                best = Some((peer, layers, speed_penalty));
             }
         }
 
@@ -524,11 +561,7 @@ pub async fn plan_pipeline_with_rtt(
             exec_end: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
-            libp2p_addr_candidates: if chosen.addr_candidates.is_empty() {
-                vec![chosen.addr.clone()]
-            } else {
-                chosen.addr_candidates.clone()
-            },
+            libp2p_addr_candidates: chosen.dialable_addrs(),
         });
 
         pos = chosen.end_layer + 1;
@@ -576,15 +609,21 @@ pub fn resolve_step_url(
     }
     let escolhido = tabela
         .resolve(&step.node_id)
-        .filter(|url| step.inference_candidates.iter().any(|c| c == url))
+        .filter(|url| {
+            step.inference_candidates.iter().any(|c| c == url)
+                && !tabela.is_failed(&step.node_id, url)
+        })
         .unwrap_or_else(|| {
-            if step.inference_url.is_empty() {
+            if !step.inference_url.is_empty()
+                && !tabela.is_failed(&step.node_id, &step.inference_url)
+            {
+                step.inference_url.clone()
+            } else {
                 step.inference_candidates
-                    .first()
+                    .iter()
+                    .find(|candidate| !tabela.is_failed(&step.node_id, candidate))
                     .cloned()
                     .unwrap_or_default()
-            } else {
-                step.inference_url.clone()
             }
         });
     fixadas.insert(step.node_id.clone(), escolhido.clone());
@@ -602,6 +641,7 @@ mod ipv6_tests {
             tls: false,
             node_id: "n".repeat(64),
             pubkey: "p".into(),
+            authority_pubkey: String::new(),
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -613,7 +653,7 @@ mod ipv6_tests {
             ollama_port: None,
             inference_port: Some(8181),
             gateway_port: Some(8090),
-            role: String::new(),
+            profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
             connection_verified: false,
@@ -815,6 +855,40 @@ mod ipv6_tests {
         assert_eq!(plan.steps[0].node_id, "fast-entry");
     }
 
+    #[tokio::test]
+    async fn a_busy_low_rtt_entry_can_lose_to_a_quieter_entry() {
+        let mut busy = peer("10.0.0.1:42777", 0, 7);
+        let mut quiet = peer("10.0.0.2:42777", 0, 7);
+        let mut tail = peer("10.0.0.3:42777", 8, 15);
+        busy.node_id = "busy-entry".into();
+        quiet.node_id = "quiet-entry".into();
+        tail.node_id = "tail".into();
+
+        let tracker = LoadTracker::new();
+        let mut busy_requests = Vec::new();
+        for _ in 0..20 {
+            busy_requests.push(tracker.acquire("busy-entry").await);
+        }
+        let rtts = HashMap::from([
+            (String::from("busy-entry"), 1.0),
+            (String::from("quiet-entry"), 2.0),
+        ]);
+
+        let plan = plan_pipeline_with_rtt(
+            &[busy, quiet, tail],
+            "qwen35",
+            None,
+            16,
+            &tracker,
+            &rtts,
+        )
+        .await
+        .expect("as duas entradas cobrem o mesmo ramo");
+
+        assert_eq!(plan.steps[0].node_id, "quiet-entry");
+        drop(busy_requests);
+    }
+
     #[test]
     fn peers_without_a_compression_capability_keep_the_v1_f16_wire_format() {
         let step = PipelineStep {
@@ -834,7 +908,7 @@ mod ipv6_tests {
 
     #[test]
     fn f8_is_refused_when_any_pipeline_step_lacks_the_capability() {
-        let mut missing = step(&[CAP_FRAME_DTYPE_F8]);
+        let mut missing = step(&[]);
         missing.node_id = "old-peer".into();
         let error = plan_of(vec![step(&[CAP_FRAME_DTYPE_F8]), missing])
             .validate_wire_dtype(crate::wire::WireDtype::F8)
@@ -978,6 +1052,24 @@ mod ipv6_tests {
         assert_eq!(
             resolve_step_url(&step, &tabela, &mut fixadas),
             "http://rapido:8181"
+        );
+    }
+
+    #[test]
+    fn a_failed_route_is_not_selected_again_when_another_address_exists() {
+        let tabela = crate::route::RouteTable::new();
+        tabela.remember_for_test("n1", "http://blackhole:8181", 1.0);
+        tabela.mark_failure("n1", "http://blackhole:8181");
+        let mut fixadas = std::collections::HashMap::new();
+        let step = step_com(
+            vec!["http://blackhole:8181", "http://healthy:8181"],
+            "http://blackhole:8181",
+        );
+
+        assert_eq!(
+            resolve_step_url(&step, &tabela, &mut fixadas),
+            "http://healthy:8181",
+            "uma falha real deve tirar o endereço da sessão seguinte"
         );
     }
 
@@ -1151,6 +1243,28 @@ mod ipv6_tests {
         .expect("plano");
 
         assert_eq!(plan.steps[0].node_id, "fast");
+    }
+
+    #[test]
+    fn head_candidates_are_only_live_layer_zero_inference_peers() {
+        let mut head = peer("head", 0, 15);
+        head.node_id = "head".into();
+        let mut middle = peer("middle", 16, 31);
+        middle.node_id = "middle".into();
+        let mut dead = peer("dead", 0, 15);
+        dead.node_id = "dead".into();
+        dead.last_seen = chrono::Utc::now() - chrono::Duration::seconds(60);
+
+        let peers = [head, middle, dead];
+        let candidates = model_head_candidates(&peers, "qwen35", None);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|p| p.node_id.as_str())
+                .collect::<Vec<_>>(),
+            ["head"]
+        );
     }
 
     #[tokio::test]

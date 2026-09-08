@@ -11,21 +11,35 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ## Per-file
 
-- `api.ts` - fetch wrapper over relative paths with connection-key auth,
-  conditional JSON GETs with ETag caching, the SSE reader and the deployment
-  registry actions (`listDeployments`, `redeployDeployment`,
-  `activateDeployment`), além do status autenticado do provider remoto.
+- `api.ts` - fetch wrapper over relative paths with same-origin credentials,
+  connection-key auth, administrative-token auth only for `/api/ui/**` and
+  `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
+  registry actions (`listDeployments`, `redeployDeployment` - `{ params }` ou
+  `{ version }` para reimplantar uma versão registrada -, `activateDeployment`),
+  além do status autenticado do provider remoto.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
-- `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
-- `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, hidden-state bytes/dtype, bounded `transport_summary` and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
-- `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; derives the observed execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer counts from actual buffers.
+- `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
+- `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
+  synced; keeps the initial model mark and private request content for telemetry
+  analysis. `ChatSessionProvider` shares the active session and selection/new/
+  delete actions between `Chat` and the infer Sidebar; direct Chat consumers get
+  an isolated provider wrapper.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
+  backend cost and time outside the node; compara timings ponta a ponta com o
+  processamento medido no nó antes de nomear o gargalo. Derives the observed
+  execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer
+  counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
 - `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
   the GPU badge; missing or non-finite readings stay explicitly unknown.
+- `gpu.ts` - `sumVram`/`vramUsedPct`: a VRAM somada das placas que a reportam,
+  `null` quando nenhuma reporta (memória unificada, placa sem leitura). É o que
+  o card em miniatura do Fluxo mostra - antes ele lia só `gpus[0]` e metade do
+  hardware de uma caixa com duas placas sumia da tela. Testes em `gpu.test.ts`.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
@@ -36,24 +50,32 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
   is shared by the remote-model and transfers screens.
   `useCacheTypes` reads the installation-wide K/V cache representation from
-  `/api/ui/cache-types`; saving it is an authenticated mutation owned by the
-  deployment inspector, not a per-machine launch parameter.
+  `/api/ui/cache-types`; the deployment inspector applies combo changes through
+  the same endpoint, not as a per-machine launch parameter.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
   RTT snapshot after a chat stream, and `usePeerRuntimes` reads `/health` for
   the peers in that trace without polling the whole cluster.
   `useNetworkRtt` asks the same authenticated telemetry route for the current
   deployment edges shown on the Dashboard and refreshes them every 15 s.
+  `useInferenceHeads` polls the infer-only model head view every 15 s; this is
+  a capability slice, not a general peer list.
+  `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
+  por `deploy_id`, e atualiza a consola a cada segundo.
+  `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
+  available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
   values remain unchanged. It prevents effects that capture `useQueries` data
   from writing state on every render; the Chat regression test covers this
   navigation freeze.
-- `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`): tipo, provider,
-  `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
-  desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia
-  telas no navegador e nada mais; a credencial continua sendo a chave de conexão
-  verificada no nó.
+- `profile.tsx` - o perfil persistido que o nó entrega em `/api/ui/node`
+  (`admin`/`node`/`infer`), o provider e `useProfile()`. Não há setter nem
+  `localStorage`: o navegador só apresenta o valor e deriva dele o menu/guarda
+  de rota. **Não é autorização** - o backend continua sendo a fronteira.
 - `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
-  para a lista de perfis; rota ausente é livre. `canAccessRoute(path, profile)` é
+  para a lista de perfis; para `infer`, `/chat`, `/documentacao`, `/config/keys/api`
+  e `/config/rede` são visíveis. No Chat, esse perfil também esconde os resumos
+  e o painel de telemetria.
+  `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
   a rota recusa. Testes em `access.test.ts`.
@@ -69,13 +91,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `saveHuggingFaceToken` e `useHuggingFaceTokenConfig`; o tipo de resposta
   contém apenas `configured`, `masked` e `source`, nunca o token bruto.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
-- `types.ts` - all API shapes served by the node, one authoritative source.
+- `types.ts` - all API shapes served by the node, one authoritative source,
+  incluindo `ClusterLogEntry` e o estado de autoridade do interruptor de logs.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
   the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
   `tp_size`, which the UI turns into one-based labels such as `1of4`.
-  `WholeLayerOptions` and `LayerCut` carry the GGUF-derived cut points used by
-  the whole-model deploy slider; `WholeSliceSelection` identifies the source,
-  destination and accepted prefix end sent back to the node.
+  O modo modelo inteiro não expõe cortes de GGUF no inspetor: o mapa escolhe
+  uma única máquina e o frontend não envia seleção de prefixo.
   `SliceLayerOptions` carries the starts and architectural options for the
   single-range slicing controls, while `SizePlan` and `TpSlicePlan` carry the
   destination disk-space estimate shown before writing.
@@ -86,8 +108,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   displaying a first-part byte count while enrichment is pending.
   `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8 choice;
   `RuntimeParams.max_new_tokens` is only the size of one backend leg. The
-  total output capacity comes from live runtime context and `/v1/models`, not
-  from a second deployment field. `PhaseTrace` carries the effective dtype and
+  cycle detector settings in `RuntimeParams` control the gateway's bounded
+  repetition safety stop and can be disabled explicitly. The total output
+  capacity comes from live runtime context and `/v1/models`, not from a second deployment field. `PhaseTrace` carries the effective dtype and
   hidden-state bytes per hop.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
@@ -95,8 +118,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### api.ts
 - `request<T>(path, opts)` - the single ordinary fetch path: JSON body,
-  optional `Authorization: Bearer <connectionKey>`, throws `ApiError` on
-  non-2xx. Everything in the app goes through it.
+  same-origin credentials for the server session, connection-key auth for
+  administration, and the dedicated `pom-[node_id]` API key for `/v1/*` and
+  `/api/generate`; a 401/403 replaces that key once and retries.
+  Everything in the app goes through it; the human token remains in memory only.
 - `requestConditional<T>(path, opts)` / `api.getConditional` - GET with an
   in-memory ETag cache. It sends `If-None-Match`, returns the cached object
   without parsing a 304 body, and falls back to an unconditional GET if a new
@@ -105,9 +130,21 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   connection key does this automatically so a new node cannot reuse an old
   node's state.
 - `class ApiError` - carries `status` and the decoded JSON `body` so 409-style refusals (e.g. delete warnings list) survive to the caller.
+- `onAdminSessionLost(handler)` - subscribe to "the administrative session is
+  gone". Every refusal path checks the node's `x-pom-admin-error` header
+  (`backend/auth.rs`): `missing-token`/`invalid-token` on an administrative
+  path drops the in-memory token and notifies. The header, not the sentence -
+  the body text is for the person and changes with the locale. A profile 403
+  (`perfil sem autorização para esta rota`) is deliberately not this: sending
+  an authenticated operator back to the gate would only make them re-enter to
+  see the same refusal.
 - `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
 - `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
-- `streamSse(path, body, signal)` - async generator yielding each `data:` payload of an SSE stream (blank-line framing); used by Chat for `/v1/chat/completions`.
+- `ensureChatApiKey` / `forgetChatApiKey` - keep the UI-only `pom-[node_id]`
+  key in memory and recreate it after revocation without exposing its value.
+- `streamSse(path, body, signal)` - async generator yielding each `data:`
+  payload of an SSE stream (blank-line framing); used by Chat for
+  `/v1/chat/completions`, with one replacement-key retry.
 - `api.get/post/del` - typed conveniences over `request`.
 - `devUpdate(nodeId)` - update+restart a machine, repassing to a peer when `node_id` is not this node (`src/devupdate.rs`).
 - `addNode` / `removeNode` - add/remove one machine to a deployed model (`/api/ui/deploy/node{,/remove}`).
@@ -118,12 +155,22 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "failed" | "thermal"`; the thermal state is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
+  `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
+  de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
+  nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que
+  impede o Painel de pintar "completo" em verde nesse estado. Ver
+  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder". A carga
+  em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
+  zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
   `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
   alternatives and projected load, while `DeployMachine` carries GPU/RAM
-  capacity plus optional live GPU/RAM usage percentages. `DeployStep.parts`
+  capacity plus optional live GPU/RAM usage percentages. Its live load and
+  route load distribution are nullable when the survey could not read the
+  peer, so the deploy screen can say that the value is unavailable.
+  `DeployStep.parts`
   carries merged-slice steps, `primary` marks whoever holds layer 0, and the
   optional `exec_start`/`exec_end` pair identifies the sub-range actually
   executed by that step. `start_layer`/`end_layer` remain the physical range
@@ -131,14 +178,24 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `DeployPlan.tp_targets` describes pre-sliced TP ranks separately from
   pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
-  off for tensor parallel deployment. `RuntimeParams.inference_mode` is the
+  off for tensor parallel deployment. `RuntimeParams.fit_memory_margin_mb` is
+  the per-device safety reserve, defaulting to 256 MiB. `RuntimeParams.inference_mode` is the
   persisted `auto`/`dense`/`moe` preference. `DeployPlan.is_moe` comes from the
   node's GGUF expert metadata; the deploy screen must not infer MoE from a
   filename. `inference_mode_supported` and `inference_mode_reason` keep an
   unsupported path visible instead of presenting a misleading selection.
+  The capacity preview is an analytic planning estimate, not the effective
+  placement reported by the real load; the deploy screen keeps that distinction
+  visible in its capacity warning.
   `DeployPlan.capabilities` is the backend tri-state contract for conditional
   global controls, including source and reason. The UI does not infer model or
   topology support from names; unknown remains visible but disabled.
+  `PeerRuntimeHealth` carries the selected path and effective MoE ownership
+  (`moe_requested`, `moe_executor`, dtypes and `moe_executor_reason`) alongside
+  `mtp_ready` and an optional `mtp_allocation` and `mtp_unavailable_reason`;
+  the dashboard detail card reads these fields from `usePeerRuntime` so a
+  requested-but-unused executor, actual VRAM/RAM placement and a failed MTP
+  attach are visible.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
   size-, tensor- and budget-driven slicing plans. Budget-driven shards expose
@@ -146,26 +203,62 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   returned by the node planner, not display-only estimates.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
+- `AdminAuthorityView` and the authority offer types describe the principal,
+  secondary admins, promotion chain, resignation eligibility and notification
+  states. `adminAuthority.ts` keeps mutations behind a contract and does not
+  encode key, signature or grant-storage decisions.
+- `TrustAnchorView` e `TrustAnchorRefusal` descrevem a raiz de confiança: se o
+  nó está ancorado, a impressão digital pública, o cluster e a máquina da raiz,
+  se a ligação é loopback e se instalar é possível agora. `trustAnchorApi`
+  (também em `adminAuthority.ts`) envia a cadeia colada e a impressão digital
+  digitada; a tela nunca deriva a segunda da primeira, e `can_install` é
+  apresentação - quem recusa é o servidor.
 
 ### queries.ts
+- `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
+  404 means setup, a valid server session means available, a localhost policy
+  refusal means the local-only state, and other refusals keep the token gate.
+  It subscribes to `onAdminSessionLost` and re-probes: the administrative
+  session lives in the node's memory, so a restart or the 8h expiry kills it
+  with the tab open, and a once-per-load probe would leave every screen
+  printing the server's raw 401 with no way back to the gate.
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
-- `useNode()` - polls `/api/ui/node` every 4s, stores `connection_key`.
+- `useAdminAccess()` - public one-shot metadata for the administrative token
+  gate; it never receives the token.
+- `useAdminAccessInfo()` - authenticated administrative settings, including the
+  token only for the Preferences screen.
+- `useNode()` - polls `/api/ui/node` every 4s after the admin gate, stores
+  `connection_key`. That field is not decoration: it is what authenticates
+  every later call that needs `ConnectionAuth` (`/admin/*`, `/api/ui/leave`).
+  It also carries `authority_level`, the **effective** administrative
+  authority, which is what decides whether a screen offers an administrative
+  act - `profile: admin` alone grants nothing.
 - `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
   máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to})` 3s, `useServableModels()` 30s.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to})` 3s, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
   is a question waiting on a human, not a progress bar. With the sender no
   longer hashing the file before offering, the active cadence keeps that
   question responsive without charging an idle tab the same rate.
+- `useTrustAnchor()` reads the anchoring state once, sem polling: uma raiz de
+  confiança muda por gesto do operador, e a tela refaz a leitura ao instalar.
+- `useAdminAuthority()` reads the authority presentation contract every 8s;
+  `useOffers()` normalizes legacy slice offers and also carries principal
+  transfer, infer-to-node approval and node-to-infer notice states for the
+  activity bell.
 - `invalidateAfterAction(qc)` / `useInvalidate()` - after a mutation, refetch node, cluster, jobs, admin-nodes and models at once.
 
 ### chatStore.ts
 - `useChatSessions()` - `localStorage` list (`codai.chat.sessions`) capped at `MAX_SESSIONS` 50, kept in sync across tabs via the `storage` event; returns `{sessions, upsert, remove, clear}`.
+- `ChatSessionProvider` / `useChatSessionController()` - one active session
+  and the store actions shared by the Chat screen and `Sidebar`. The controller
+  invokes the registered pre-change hook before a menu selection, new session or
+  deletion so a live stream is aborted and the Chat clears transient state.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
@@ -193,25 +286,37 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `usableSelection(remembered, ranges, machineIds)` - prunes remembered rows against what the cluster still offers (deleted slices, left machines); returns `null` when nothing survives so the caller keeps the node's own suggestion.
 
 ### profile.tsx / access.ts
-- `PROFILES` / `Profile` - `["admin", "node"]` e a união literal.
-- `DEFAULT_PROFILE` - `admin`. Abrir como `node` esconderia telas de quem sempre
-  as teve, sem a pessoa saber que existe perfil para trocar.
-- `ProfileProvider({ children, initialProfile })` - estado inicial de
-  `initialProfile` (usado pelos testes) ou do `localStorage` `pom.profile`;
-  valor desconhecido guardado cai no padrão. Escreve `<html data-profile>`.
+- `PROFILES` / `Profile` - `["admin", "node", "infer"]` e a união literal.
+- `DEFAULT_PROFILE` - `admin` somente enquanto `/api/ui/node` ainda não respondeu.
+  A resposta do nó substitui o fallback assim que chega.
+- `ProfileProvider({ children, initialProfile })` - lê o perfil de `useNode()`;
+  `initialProfile` existe somente para testes de apresentação. Escreve
+  `<html data-profile>` e não persiste estado no navegador.
+- `homeRoute(profile)` - a tela inicial do perfil: `/` para quem abre o Painel,
+  `/chat` para quem não abre. O `App.tsx` redireciona com ela em vez de mostrar
+  a recusa, senão o `infer` abriria a interface num beco - e a recusa mandava
+  trocar de perfil, controle que deixou de existir.
 - `routeProfiles(path)` - os perfis que entram, ou `null` quando a rota é livre.
-  Casa por segmento (`/logs` cobre `/logs/ao-vivo`, e **não** `/logs-antigos`) e
+  Casa por segmento (`/logs` cobre futuras filhas, e **não** `/logs-antigos`) e
   a chave mais específica vence.
+- `canAccessRoute(path, profile)` - para o `infer`, permite somente a vista de
+  conversa, documentação, API keys e rede local. É apresentação, não escopo de credencial; a fronteira
+  real ficou para `rdma-perfis-escopo-backend`. `components/nav.ts` usa o mesmo
+  resultado para manter a rede no menu principal do infer e mover documentação
+  e API keys para o rodapé.
 
 ### theme.tsx
 - `ThemeProvider` / `useTheme` - reads the theme from `document.documentElement.dataset.theme` (index.html stamped it pre-paint), writes `data-theme` + `localStorage` `codai.theme`. Dark is the default; the system preference does not override.
 
 ### toast.tsx
-- `ToastProvider` / `useToast` - `push(kind, title, detail)`; error/warning linger 9s, others 4.2s; keeps the last 4 toasts; `fromError` surfaces `ApiError.message` verbatim.
+- `ToastProvider` / `useToast` - `push(kind, title, detail)`; error/warning linger 9s, others 4.2s; keeps the last 4 toasts; `fromError` surfaces `ApiError.message` verbatim; clears auto-dismiss timers when the provider unmounts.
 
 ### format.ts
 - `bytes/megabytes/pct/num/duration/ms/rate` - `Intl.NumberFormat` in the active locale; null/non-finite render as a placeholder dash.
 - `since(iso)` / `clock(iso)` - relative recency ("há 4 min" / "4 min ago") and clock time.
+- `deployModelDisplayName(name)` - removes only a final `.gguf` and a final
+  eight-character hexadecimal round hash from deployment labels; request
+  values and model identities remain unchanged.
 - `isServing(state)` / `serverStateLabel(state)` / `serverStateTone(state)` - the one place `ServerState` is compared/labeled, so screens never hand-roll the comparison.
 
 ### deleteModel.ts
@@ -269,7 +374,12 @@ would go.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
-- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
+- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
+- O Chat do perfil `infer` também lê `/api/ui/infer/heads?model=...`, que
+  devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT
+  com idade. A carga é `null` se o relatório vivo do candidato não chegar, e a
+  UI mostra "indisponível" nesse caso. RTT fora da validade continua
+  identificável na resposta, mas não entra no mapa usado para escolher.
 
 ## Maintaining this file
 

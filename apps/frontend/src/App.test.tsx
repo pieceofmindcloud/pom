@@ -5,6 +5,10 @@ import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "./i18n/provider";
 import { ProfileProvider, type Profile } from "./lib/profile";
 
+const adminSurface = vi.hoisted(() => ({
+  value: "available" as "setup" | "available" | "requires-token" | "local-only",
+}));
+
 /**
  * Esconder o item do menu não é bloquear: o endereço continua digitável, e um
  * favorito antigo entra direto. Este teste é o que prova que a rota fechada
@@ -14,7 +18,7 @@ import { ProfileProvider, type Profile } from "./lib/profile";
  * o que está sob prova é o guarda, não o conteúdo de cada tela.
  */
 vi.mock("./lib/queries", () => ({
-  useIsSetupMode: () => false,
+  useAdminSurface: () => ({ data: adminSurface.value, isLoading: false, isError: false }),
   // Nó completo o bastante para a barra superior e o rodapé do menu
   // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o
   // teste passa a medir o `ErrorBoundary` em vez do guarda.
@@ -35,6 +39,8 @@ vi.mock("./lib/queries", () => ({
 }));
 
 vi.mock("./components/Notifications", () => ({ Notifications: () => null }));
+vi.mock("./components/Sidebar", () => ({ Sidebar: () => <aside data-testid="admin-sidebar" /> }));
+vi.mock("./components/Topbar", () => ({ Topbar: () => <header data-testid="admin-topbar" /> }));
 vi.mock("./components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,
   LogoMark: () => <div aria-hidden="true" />,
@@ -44,11 +50,13 @@ vi.mock("./components/Logo", () => ({
 // marcador é escrito à mão em vez de sair de um auxiliar compartilhado.
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
-vi.mock("./routes/LogsByToken", () => ({ LogsByToken: () => <div>tela-logs</div> }));
-vi.mock("./routes/LogsLive", () => ({ LogsLive: () => <div>tela-logs-ao-vivo</div> }));
+vi.mock("./routes/Logs", () => ({ Logs: () => <div>tela-logs</div> }));
+vi.mock("./routes/Statistics", () => ({ Statistics: () => <div>tela-estatisticas</div> }));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
+vi.mock("./routes/Preferences", () => ({ Preferences: () => <div>tela-preferencias</div> }));
+vi.mock("./routes/SetupWizard", () => ({ SetupWizard: () => <div>tela-wizard</div> }));
 
 import App from "./App";
 
@@ -70,13 +78,16 @@ function open(path: string, profile: Profile) {
 }
 
 describe("guarda de perfil por rota", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    adminSurface.value = "available";
+  });
 
   const fechadas = [
     ["/implantar", "tela-implantar"],
     ["/implantacoes", "tela-implantacoes"],
     ["/logs", "tela-logs"],
-    ["/logs/ao-vivo", "tela-logs-ao-vivo"],
+    ["/estatisticas", "tela-estatisticas"],
   ] as const;
 
   for (const [path, marker] of fechadas) {
@@ -98,6 +109,16 @@ describe("guarda de perfil por rota", () => {
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
   });
 
+  it("abre Preferências para o perfil do nó", async () => {
+    open("/config/preferencias", "node");
+    expect(await screen.findByText("tela-preferencias")).toBeTruthy();
+  });
+
+  it("mantém o wizard acessível depois do primeiro acesso", async () => {
+    open("/setup", "admin");
+    expect(await screen.findByText("tela-wizard")).toBeTruthy();
+  });
+
   /**
    * O chat renderiza fora do `<Routes>`, então um guarda por rota o deixaria
    * de fora. Hoje ele é livre, e este teste é o que avisa se a exceção do chat
@@ -106,5 +127,40 @@ describe("guarda de perfil por rota", () => {
   it("passa o chat pelo mesmo guarda", async () => {
     open("/chat", "node");
     expect(await screen.findByText("tela-chat")).toBeTruthy();
+  });
+
+  it("renderiza um formulário reconhecível pelo gestor de senhas", () => {
+    adminSurface.value = "requires-token";
+    open("/", "admin");
+
+    const form = screen.getByRole("button", { name: "Abrir interface" }).closest("form");
+    expect(form).not.toBeNull();
+    expect(form?.getAttribute("autocomplete")).toBe("on");
+    expect(form?.querySelector('input[name="username"]')).not.toBeNull();
+    const password = screen.getByLabelText("Token de acesso administrativo");
+    expect(password.getAttribute("type")).toBe("password");
+    expect(password.getAttribute("autocomplete")).toBe("current-password");
+    expect(screen.queryByRole("navigation")).toBeNull();
+  });
+
+  it("mantém a tela local autônoma e nas duas línguas", () => {
+    adminSurface.value = "local-only";
+    open("/", "admin");
+
+    expect(screen.getByText(/This administrative interface is available only/)).toBeTruthy();
+    expect(screen.getByText(/Esta interface administrativa está disponível apenas/)).toBeTruthy();
+    expect(screen.queryByRole("navigation")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("abre o chat compacto pelo caminho usado pelo app da barra de menus", async () => {
+    open("/admin-ui/chat", "node");
+    const chat = await screen.findByText("tela-chat");
+    expect(chat).toBeTruthy();
+    expect(chat.parentElement?.className).toContain("h-full");
+    expect(chat.parentElement?.className).toContain("min-h-0");
+    expect(chat.parentElement?.className).toContain("overflow-hidden");
+    expect(screen.queryByTestId("admin-sidebar")).toBeNull();
+    expect(screen.queryByTestId("admin-topbar")).toBeNull();
   });
 });

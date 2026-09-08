@@ -1,0 +1,1210 @@
+use super::*;
+
+pub(super) struct PreparedStep {
+    pub(super) sid_key: String,
+    pub(super) seq_id: u32,
+    pub(super) n_past: u32,
+    pub(super) n_tokens: usize,
+    pub(super) is_last: bool,
+    pub(super) wire_dtype: WireDtype,
+    pub(super) capture_block: Option<u32>,
+    pub(super) input: PreparedStepInput,
+    pub(super) queued_at: Instant,
+}
+
+pub(super) enum PreparedStepInput {
+    Tokens {
+        token: i32,
+    },
+    Hidden {
+        values: Vec<f32>,
+        shape: TensorShape,
+    },
+}
+
+// ── /v1/step ─────────────────────────────────────────────────────────────────
+
+pub(crate) async fn handle_step(
+    State(app): State<InferenceAppState>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    let _load_guard = app.loads.acquire(&app.load_node_id).await;
+    // Só o cabeçalho é lido aqui: um quadro de um item - o caso normal de
+    // todo salto interno - não pode pagar uma cópia do estado oculto inteiro
+    // só para descobrir que não é um lote.
+    if wire::peek_batch_header(&body).is_ok_and(|header| header.item_count > 1) {
+        match wire::decode_batch(&body) {
+            Ok(batch) => return handle_step_batch(app, headers, batch).await,
+            Err(error) => return err400(format!("quadro inválido: {error}")),
+        }
+    }
+    // See the matching guard in `handle_prefill`: a one-item batch must not
+    // overwrite the decode/barrier state of another TP request while its
+    // ranks are still in the collective.
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_request_guard = if tp_active && headers.get(BATCH_CHILD_HEADER).is_none() {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
+    let state = app.state.clone();
+    let scheduler = app.scheduler.clone();
+    open_tp_decode(&state, &headers, "/v1/step", &body);
+    let processing_started = Instant::now();
+    // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
+    // mesmo em qualquer ponto do handler.
+    let tls_handshake_ms = last_handshake_ms(&state);
+    let inbound_bytes = body.len();
+    let frame_decode_started = Instant::now();
+    let (meta, tensor) = match wire::decode_inference_request(&body) {
+        Ok(v) => v,
+        Err(e) => return err400(format!("quadro inválido: {e}")),
+    };
+    let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
+    let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
+        Some(value) => match WireDtype::parse(value) {
+            Ok(dtype) => dtype,
+            Err(error) => return err400(error),
+        },
+        None => return err400("quadro sem dtype de estado oculto"),
+    };
+
+    let sid_key = meta
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("__session__")
+        .to_string();
+    // Present and non-empty only when the sender negotiated relay mode
+    // (`PipelinePlan::supports_relay_chain`) — the ordered chain from *our*
+    // next hop through the tail. An empty list still parses as `Some(vec![])`
+    // and behaves exactly like `None`: this hop is the tail either way.
+    let next_hops: Option<Vec<PipelineStep>> = meta
+        .get("next_hops")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let is_last = next_hops
+        .as_ref()
+        .map(|hops| hops.is_empty())
+        .unwrap_or_else(|| {
+            meta.get("is_last")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        });
+    let remote_stream = meta
+        .get("remote_stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+    let token_id = meta
+        .get("token_id")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+    // Present only on the request to the head — see `step_blocking`'s
+    // `speculate` param doc.
+    let speculate = Speculate::from_meta(&meta);
+    // Present on every non-head request in a speculative round — see
+    // `step_blocking`'s `incoming_draft` param doc for why `None` and
+    // `Some(vec![])` mean different things here.
+    let incoming_draft: Option<Vec<i32>> = meta
+        .get("draft")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    // A composição do lote decodificado na cabeça, ecoada de hop em hop até a
+    // cauda — é o que alimenta o `observe` da cabeça `nextn` (ver o doc de
+    // `batch_tokens` em `step_blocking`). Ausente é peer antigo.
+    let batch_tokens: Option<Vec<i32>> = meta
+        .get("tokens")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    // A largura de lote que o gateway quer na rodada seguinte, gerada na
+    // cabeça (do `speculate`) e ecoada até a cauda (ver o doc de `mtp_k`).
+    let mtp_k: Option<u32> = meta.get("mtp_k").and_then(|v| v.as_u64()).map(|v| v as u32);
+
+    let input_prepare_started = Instant::now();
+    let tensor = match tensor {
+        Some((mut values, shape)) => {
+            if scale != 1.0 {
+                values.iter_mut().for_each(|v| *v *= scale);
+            }
+            Some((values, shape))
+        }
+        None => None,
+    };
+    let inbound_hidden_state_bytes = match wire::tensor_payload_len(
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+        wire_dtype,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => return err400(error),
+    };
+    let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
+    // A sub-faixa só é válida se este peer consegue executá-la exatamente.
+    // Sem os campos, o contrato antigo continua rodando a fatia inteira.
+    let capture_block = {
+        let (slice_start, slice_end) = match lock_inference_state(&state) {
+            Ok(st) => (st.start_layer, st.end_layer),
+            Err(error) => return err500(error),
+        };
+        match resolve_exec_range(&meta, slice_start, slice_end) {
+            Ok(block) => block,
+            Err(motivo) => return err400(motivo),
+        }
+    };
+    // Neither of `step_blocking`'s replies echoes `session_id` back — a
+    // relay branch that forwards to the next hop needs its own copy, taken
+    // before `sid_key` moves into the blocking closure below.
+    let sid_for_forward = sid_key.clone();
+
+    let queued_at = Instant::now();
+    let result = match scheduler.submit_step(StepJob {
+        sid_key,
+        is_last,
+        remote_stream,
+        wire_dtype,
+        token_id,
+        tensor,
+        capture_block,
+        speculate,
+        incoming_draft,
+        batch_tokens,
+        mtp_k,
+        queued_at,
+    }) {
+        Ok(receiver) => receiver.await,
+        Err(SchedulerSubmitError::Full { limit }) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "1")],
+                format!("fila de inferência cheia (limite {limit})"),
+            )
+                .into_response();
+        }
+        Err(SchedulerSubmitError::Closed) => {
+            return err500("scheduler de inferência encerrado");
+        }
+    };
+
+    let mut reply = match result {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(e)) => {
+            let code = if e.to_string().contains("desconhecida") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            return (code, e.to_string()).into_response();
+        }
+        Err(e) => return err500(e),
+    };
+    reply.timings.frame_decode_us = frame_decode_us;
+    reply.timings.input_prepare_us = input_prepare_us;
+
+    // Decode what step_blocking already encoded so we can tell a residual
+    // (needs relaying, if `next_hops` says so) from a final answer (the
+    // tail's `{token_id, text, done}`, with no tensor) — and, either way, to
+    // patch in this hop's own `processing_ms`/`node_timings` before it goes
+    // any further. `handle_prefill` does the identical patch for the same
+    // reason.
+    let elapsed = processing_started.elapsed();
+    let (mut local_meta, local_tensor) = match wire::decode(&reply.bytes) {
+        Ok(v) => v,
+        Err(e) => return err500(e),
+    };
+    local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
+    local_meta["node_timings"] = reply.timings.json();
+    local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
+    preserve_batch_identity(&meta, &mut local_meta);
+
+    // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
+    // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
+    if let Some(reply_to) = direct_reply_to(&meta) {
+        let outbound_hidden_state_bytes = match wire::tensor_payload_len(
+            local_tensor
+                .as_ref()
+                .map(|(values, shape)| (values.as_slice(), shape.clone())),
+            wire_dtype,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return err500(error),
+        };
+        let hop_timings = crate::direct::accumulate(
+            &meta,
+            crate::direct::hop_entry_with_state(
+                &local_meta["processing_ms"],
+                &local_meta["node_timings"],
+                inbound_bytes,
+                inbound_hidden_state_bytes,
+                outbound_hidden_state_bytes,
+                wire_dtype,
+            ),
+        );
+        let hops = next_hops.unwrap_or_default();
+
+        if hops.is_empty() {
+            // Cauda: o resultado sai daqui direto para quem pediu.
+            let mut result = local_meta;
+            result["hop_timings"] = json!(hop_timings);
+            tokio::spawn(async move {
+                crate::direct::deliver_result(http_client(), &reply_to, result).await;
+            });
+            return direct_ack();
+        }
+
+        let Some((residual, shape)) = local_tensor else {
+            // Não somos a cauda e não temos residual: a cadeia não anda. Dizer
+            // isso ao gateway agora vale mais que deixá-lo esperar o prazo.
+            let failure = crate::relay::RelayFailure {
+                failed_node_id: hops[0].node_id.clone(),
+                kind: "protocol".into(),
+                message: "hop intermediário não produziu estado oculto".into(),
+            };
+            tokio::spawn(async move {
+                crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+            });
+            return direct_ack();
+        };
+
+        let mut forward = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
+        forward["hop_timings"] = json!(hop_timings);
+        tokio::spawn(forward_direct(
+            hops, "/v1/step", forward, residual, shape, wire_dtype,
+            1, // a decode step has never retried — see relay_and_bubble's doc comment
+            reply_to,
+        ));
+        return direct_ack();
+    }
+
+    let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
+    if !should_relay {
+        return match wire::encode_batch_single(
+            &local_meta,
+            local_tensor
+                .as_ref()
+                .map(|(v, s)| (v.as_slice(), s.clone())),
+            wire_dtype,
+        ) {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [("content-type", "application/octet-stream")],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => err500(e),
+        };
+    }
+
+    // Relay branch: this hop is not the tail, and the sender wants the rest
+    // of the chain reached directly instead of relaying back through it.
+    let hops = next_hops.expect("should_relay implies next_hops is Some");
+    let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
+    let forward_meta = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
+
+    let bubbled = match relay_and_bubble(
+        http_client(),
+        &hops,
+        "/v1/step",
+        forward_meta,
+        (&residual, shape),
+        wire_dtype,
+        1, // a decode step has never retried — see relay_and_bubble's doc comment
+        local_meta["processing_ms"].clone(),
+        local_meta["node_timings"].clone(),
+    )
+    .await
+    {
+        Ok(bubbled) => bubbled,
+        Err(resp) => return resp,
+    };
+    if remote_stream {
+        let accept_count = bubbled
+            .get("accept_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let batch_width = bubbled
+            .get("batch_width")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        if batch_width > 0 && accept_count < batch_width {
+            match rollback_session(&state, &sid_for_forward, accept_count, batch_width) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => {
+                    return err500("rollback especulativo remoto recusado no hop");
+                }
+            }
+        }
+    }
+    match wire::encode_batch_single(&bubbled, None, wire_dtype) {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => err500(e),
+    }
+}
+
+/// Estado do canal persistente: o do servidor de inferência e a configuração
+/// usada para reconferir a `connection_key` a cada quadro.
+#[derive(Clone)]
+pub(super) struct LinkState {
+    pub(super) app: InferenceAppState,
+    pub(super) auth: Option<crate::auth::AuthState>,
+}
+
+/// Serve a ligação persistente da aresta da pipeline. Cada quadro que chega
+/// pelo fluxo é despachado pela mesma tabela de rotas em processo que o
+/// caminho por requisição usa (`InProcessInference::dispatch`), então canal e
+/// requisição executam exatamente o mesmo código de inferência - e passam pela
+/// mesma conferência de credencial.
+pub(super) async fn handle_link(
+    State(state): State<LinkState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Response {
+    crate::link::serve(body, move |path, bytes| {
+        let state = state.clone();
+        let headers = headers.clone();
+        async move {
+            if let Some(config) = &state.auth {
+                crate::auth::validate_internal_node_headers(config, &headers)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("credencial de peer inválida"))?;
+            }
+            use crate::relay::InProcessInference;
+            state.app.dispatch(&path, bytes).await
+        }
+    })
+}
+
+/// Starts a decode session owned by the remote peer. The response only
+/// acknowledges ownership; generated tokens are sent back through the
+/// bounded callback inbox in opportunistic batches.
+pub(crate) async fn handle_step_stream(
+    State(app): State<InferenceAppState>,
+    _headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    let (meta, tensor) = match wire::decode_inference_request(&body) {
+        Ok(v) => v,
+        Err(error) => return err400(format!("quadro inválido: {error}")),
+    };
+    if tensor.is_some() {
+        return err400("transporte remoto por lotes não aceita estado oculto");
+    }
+    let Some(reply_to) = meta.get("reply_to").cloned() else {
+        return err400("transporte remoto por lotes sem reply_to");
+    };
+    if reply_to.get("ticket").and_then(Value::as_str).is_none() {
+        return err400("transporte remoto por lotes sem ticket");
+    }
+    let Some(dtype) = meta
+        .get("dtype")
+        .and_then(Value::as_str)
+        .and_then(|value| WireDtype::parse(value).ok())
+    else {
+        return err400("quadro sem dtype de estado oculto");
+    };
+    if meta.get("session_id").and_then(Value::as_str).is_none()
+        || meta.get("token_id").and_then(Value::as_i64).is_none()
+    {
+        return err400("transporte remoto por lotes sem sessão ou token inicial");
+    }
+
+    let loads = app.loads.clone();
+    let load_node_id = app.load_node_id.clone();
+    let (producer_tx, producer_rx) = mpsc::channel(16);
+    tokio::spawn(async move {
+        let _load_guard = loads.acquire(&load_node_id).await;
+        let producer = remote_stream_producer(app, meta, dtype, producer_tx);
+        let emitter = remote_stream_emitter(reply_to, producer_rx);
+        let _ = tokio::join!(producer, emitter);
+    });
+
+    match wire::encode(
+        &json!({"stream_accepted": true, "processing_ms": 0, "node_timings": {}}),
+        None,
+        dtype,
+    ) {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => err500(error),
+    }
+}
+
+pub(super) struct RemoteStreamToken {
+    pub(super) token_id: u32,
+    pub(super) text: String,
+    pub(super) done: bool,
+    pub(super) processing_ms: u64,
+    pub(super) node_timings: Option<Value>,
+    pub(super) speculated: bool,
+    pub(super) speculation_active: bool,
+    pub(super) speculation_disabled_reason: Option<String>,
+    pub(super) next_draft: Option<Vec<i32>>,
+}
+
+pub(super) enum RemoteStreamItem {
+    Token(RemoteStreamToken),
+    Error(String),
+}
+
+pub(super) fn remote_stream_install_draft(
+    step_meta: &mut Value,
+    next_draft: Option<&[i32]>,
+    disabled_reason: Option<&str>,
+) -> bool {
+    let Some(object) = step_meta.as_object_mut() else {
+        return false;
+    };
+    let Some(speculate) = object.get_mut("speculate").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    if let Some(draft) = next_draft.filter(|draft| !draft.is_empty()) {
+        speculate.insert("draft".into(), json!(draft));
+        true
+    } else {
+        object.remove("speculate");
+        if let Some(reason) = disabled_reason {
+            object.insert("speculation_disabled_reason".into(), json!(reason));
+        }
+        false
+    }
+}
+
+pub(super) async fn remote_stream_producer(
+    app: InferenceAppState,
+    mut step_meta: Value,
+    dtype: WireDtype,
+    sender: mpsc::Sender<RemoteStreamItem>,
+) {
+    step_meta.as_object_mut().map(|object| {
+        object.remove("reply_to");
+    });
+    loop {
+        let body = match wire::encode(&step_meta, None, dtype) {
+            Ok(body) => Bytes::from(body),
+            Err(error) => {
+                let _ = sender
+                    .send(RemoteStreamItem::Error(error.to_string()))
+                    .await;
+                return;
+            }
+        };
+        let response = handle_step(State(app.clone()), axum::http::HeaderMap::new(), body).await;
+        if !response.status().is_success() {
+            let body = axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT)
+                .await
+                .map(|body| String::from_utf8_lossy(&body).into_owned())
+                .unwrap_or_else(|error| error.to_string());
+            let _ = sender
+                .send(RemoteStreamItem::Error(format!(
+                    "step remoto respondeu com erro: {body}"
+                )))
+                .await;
+            return;
+        }
+        let response_body =
+            match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
+                Ok(body) => body,
+                Err(error) => {
+                    let _ = sender
+                        .send(RemoteStreamItem::Error(error.to_string()))
+                        .await;
+                    return;
+                }
+            };
+        let (reply_meta, tensor) = match wire::decode(&response_body) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = sender
+                    .send(RemoteStreamItem::Error(error.to_string()))
+                    .await;
+                return;
+            }
+        };
+        if tensor.is_some() {
+            let _ = sender
+                .send(RemoteStreamItem::Error(
+                    "step remoto devolveu estado oculto em vez de token".into(),
+                ))
+                .await;
+            return;
+        }
+
+        let processing_ms = reply_meta
+            .get("processing_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let node_timings = reply_meta.get("node_timings").cloned();
+        let done = reply_meta
+            .get("done")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let accepted = reply_meta
+            .get("accepted")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some((
+                            entry.get("token_id")?.as_u64()? as u32,
+                            entry.get("text")?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let requested_mtp = Speculate::from_meta(&step_meta)
+            .is_some_and(|speculate| speculate.source == DraftSource::Mtp);
+        let next_draft = reply_meta
+            .get("next_draft")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(Value::as_i64)
+                    .map(|value| value as i32)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|draft| !draft.is_empty());
+        let speculated = reply_meta
+            .get("speculated")
+            .and_then(Value::as_bool)
+            .unwrap_or(!accepted.is_empty());
+        let speculation_active = reply_meta
+            .get("speculation_active")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| {
+                if requested_mtp {
+                    next_draft.is_some()
+                } else {
+                    speculated
+                }
+            });
+        let speculation_disabled_reason = (!speculation_active && requested_mtp).then(|| {
+            reply_meta
+                .get("speculation_disabled_reason")
+                .and_then(Value::as_str)
+                .unwrap_or(SPECULATION_REASON_MODEL_WITHOUT_MTP)
+                .to_string()
+        });
+        if requested_mtp {
+            remote_stream_install_draft(
+                &mut step_meta,
+                next_draft.as_deref(),
+                speculation_disabled_reason.as_deref(),
+            );
+        }
+        if !accepted.is_empty() {
+            for (index, (token_id, text)) in accepted.iter().enumerate() {
+                if sender
+                    .send(RemoteStreamItem::Token(RemoteStreamToken {
+                        token_id: *token_id,
+                        text: text.clone(),
+                        done: done && index + 1 == accepted.len(),
+                        processing_ms: if index == 0 { processing_ms } else { 0 },
+                        node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
+                        speculated,
+                        speculation_active,
+                        speculation_disabled_reason: speculation_disabled_reason.clone(),
+                        next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
+                    }))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if done {
+                return;
+            }
+            // Every hop in a remote stream already rolled back its own KV
+            // before bubbling this reply. The counts remain in the callback
+            // for the gateway's telemetry, but no rollback request is sent
+            // after the frame.
+            if let Some(token_id) = accepted.last().map(|(token_id, _)| *token_id) {
+                step_meta["token_id"] = json!(token_id);
+            }
+            continue;
+        }
+
+        let Some(token_id) = reply_meta.get("token_id").and_then(Value::as_u64) else {
+            let _ = sender
+                .send(RemoteStreamItem::Error(
+                    "step remoto não devolveu token".into(),
+                ))
+                .await;
+            return;
+        };
+        if sender
+            .send(RemoteStreamItem::Token(RemoteStreamToken {
+                token_id: token_id as u32,
+                text: reply_meta
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                done,
+                processing_ms,
+                node_timings,
+                speculated,
+                speculation_active,
+                speculation_disabled_reason,
+                next_draft,
+            }))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        if done {
+            return;
+        }
+        step_meta["token_id"] = json!(token_id);
+    }
+}
+
+pub(super) fn aggregate_remote_node_timings(items: &[RemoteStreamItem]) -> Value {
+    let mut merged = serde_json::Map::new();
+    for item in items {
+        let RemoteStreamItem::Token(token) = item else {
+            continue;
+        };
+        let Some(Value::Object(values)) = &token.node_timings else {
+            continue;
+        };
+        for (key, value) in values {
+            if matches!(
+                key.as_str(),
+                "mtp_draft_tokens_proposed"
+                    | "mtp_draft_tokens_accepted"
+                    | "mtp_draft_tokens_rejected"
+            ) {
+                let total = merged
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .saturating_add(value.as_u64().unwrap_or(0));
+                merged.insert(key.clone(), json!(total));
+            } else if key.ends_with("_ms") {
+                let total = merged.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+                    + value.as_f64().unwrap_or(0.0);
+                merged.insert(key.clone(), json!(total));
+            } else if key == "engine_mismatch" {
+                let mismatch = merged.get(key).and_then(Value::as_bool).unwrap_or(false)
+                    || value.as_bool().unwrap_or(false);
+                merged.insert(key.clone(), json!(mismatch));
+            } else {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Value::Object(merged)
+}
+
+pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<String>, bool) {
+    let mut tokens = Vec::new();
+    let mut processing_ms = 0_u64;
+    let mut done = false;
+    let mut error = None;
+    let mut status = None;
+    let mut next_draft = None;
+    for item in items {
+        match item {
+            RemoteStreamItem::Token(token) => {
+                tokens.push(json!({
+                    "token_id": token.token_id,
+                    "text": token.text,
+                }));
+                processing_ms = processing_ms.saturating_add(token.processing_ms);
+                done |= token.done;
+                status = Some((
+                    token.speculated,
+                    token.speculation_active,
+                    token.speculation_disabled_reason.clone(),
+                ));
+                if next_draft.is_none() {
+                    next_draft = token.next_draft.clone();
+                }
+            }
+            RemoteStreamItem::Error(message) => error = Some(message.clone()),
+        }
+    }
+    let terminal = done || error.is_some();
+    let (speculated, speculation_active, speculation_disabled_reason) =
+        status.unwrap_or((false, false, None));
+    let batch = json!({
+        "accepted": tokens,
+        "done": done && error.is_none(),
+        "processing_ms": processing_ms,
+        "node_timings": aggregate_remote_node_timings(items),
+        "speculated": speculated,
+        "speculation_active": speculation_active,
+        "speculation_disabled_reason": speculation_disabled_reason,
+        "next_draft": next_draft,
+    });
+    (batch, error, terminal)
+}
+
+pub(super) async fn remote_stream_emitter(
+    reply_to: Value,
+    receiver: mpsc::Receiver<RemoteStreamItem>,
+) {
+    emit_remote_stream_batches(reply_to, receiver, |reply_to, batch| async move {
+        crate::direct::deliver_stream_batch(http_client(), &reply_to, batch).await
+    })
+    .await;
+}
+
+/// Um lote terminal que só carrega o erro. Não tem token: serve para o
+/// gateway parar de esperar e nomear a causa.
+pub(super) fn remote_stream_error_batch(error: Value) -> Value {
+    json!({
+        "accepted": [],
+        "done": false,
+        "processing_ms": 0,
+        "node_timings": {},
+        "error": error,
+    })
+}
+
+pub(super) async fn emit_remote_stream_batches<F, Fut>(
+    reply_to: Value,
+    mut receiver: mpsc::Receiver<RemoteStreamItem>,
+    mut deliver: F,
+) where
+    F: FnMut(Value, Value) -> Fut,
+    Fut: Future<Output = crate::direct::Delivery>,
+{
+    while let Some(first) = receiver.recv().await {
+        let items = crate::prefill::drain_opportunistic_batch(first, &mut receiver);
+        let (batch, error, terminal) = remote_stream_batch(&items);
+        let has_tokens = batch
+            .get("accepted")
+            .and_then(Value::as_array)
+            .is_some_and(|tokens| !tokens.is_empty());
+        if !has_tokens && error.is_some() {
+            let _ = deliver(reply_to.clone(), remote_stream_error_batch(json!(error))).await;
+            return;
+        }
+        match deliver(reply_to.clone(), batch).await {
+            crate::direct::Delivery::Accepted => {}
+            // O gateway já desistiu deste stream: não há a quem reportar.
+            crate::direct::Delivery::GatewayGone => return,
+            // Sem isto o emissor sumia em silêncio e o gateway só percebia
+            // quando o `DIRECT_REPLY_DEADLINE` vencia - dez minutos de espera
+            // por uma falha que este lado já conhecia. O aviso é um lote
+            // terminal pequeno, e vai pela mesma escada de endereços, que
+            // agora sempre tem pelo menos uma tentativa a pagar.
+            crate::direct::Delivery::Failed => {
+                warn!(
+                    "lote do stream remoto não chegou ao gateway; encerrando o stream com erro \
+                     explícito em vez de deixar o prazo vencer"
+                );
+                let _ = deliver(
+                    reply_to.clone(),
+                    remote_stream_error_batch(json!(
+                        "o lote de decode não chegou ao gateway por nenhum endereço de retorno"
+                    )),
+                )
+                .await;
+                return;
+            }
+        }
+        // Preserve tokens that were already generated before an error. The
+        // error is terminal, but it must not make the gateway discard the
+        // prefix carried by the same opportunistic batch.
+        if let Some(error) = error {
+            let _ = deliver(reply_to.clone(), remote_stream_error_batch(json!(error))).await;
+        }
+        if terminal {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod remote_stream_tests {
+    use super::*;
+
+    fn token(token_id: u32, text: &str, done: bool) -> RemoteStreamItem {
+        token_state(token_id, text, done, false, false, None)
+    }
+
+    fn token_state(
+        token_id: u32,
+        text: &str,
+        done: bool,
+        speculated: bool,
+        speculation_active: bool,
+        next_draft: Option<Vec<i32>>,
+    ) -> RemoteStreamItem {
+        RemoteStreamItem::Token(RemoteStreamToken {
+            token_id,
+            text: text.into(),
+            done,
+            processing_ms: 3,
+            node_timings: Some(json!({"decode_ms": 2, "engine_mismatch": false})),
+            speculated,
+            speculation_active,
+            speculation_disabled_reason: None,
+            next_draft,
+        })
+    }
+
+    #[test]
+    fn lote_remoto_preserva_conteudo_ordem_e_tempos() {
+        let (batch, error, terminal) =
+            remote_stream_batch(&[token(4, "A", false), token(9, "ção", true)]);
+
+        assert_eq!(batch["accepted"][0], json!({"token_id": 4, "text": "A"}));
+        assert_eq!(batch["accepted"][1], json!({"token_id": 9, "text": "ção"}));
+        assert_eq!(batch["processing_ms"], 6);
+        assert_eq!(batch["node_timings"]["decode_ms"], 4.0);
+        assert_eq!(batch["done"], true);
+        assert!(error.is_none());
+        assert!(terminal);
+    }
+
+    #[test]
+    fn lote_remoto_soma_contadores_mtp_de_rodadas_agrupadas() {
+        let timings = |proposed, accepted, rejected| {
+            json!({
+                "mtp_draft_tokens_proposed": proposed,
+                "mtp_draft_tokens_accepted": accepted,
+                "mtp_draft_tokens_rejected": rejected,
+            })
+        };
+        let items = [
+            token_with_node_timings(timings(7, 5, 2)),
+            token_with_node_timings(timings(3, 2, 1)),
+        ];
+
+        let aggregated = aggregate_remote_node_timings(&items);
+
+        assert_eq!(aggregated["mtp_draft_tokens_proposed"], 10);
+        assert_eq!(aggregated["mtp_draft_tokens_accepted"], 7);
+        assert_eq!(aggregated["mtp_draft_tokens_rejected"], 3);
+    }
+
+    fn token_with_node_timings(node_timings: Value) -> RemoteStreamItem {
+        RemoteStreamItem::Token(RemoteStreamToken {
+            token_id: 0,
+            text: String::new(),
+            done: false,
+            processing_ms: 0,
+            node_timings: Some(node_timings),
+            speculated: true,
+            speculation_active: true,
+            speculation_disabled_reason: None,
+            next_draft: None,
+        })
+    }
+
+    #[test]
+    fn lote_remoto_transporta_o_rascunho_no_mesmo_callback() {
+        let item = RemoteStreamItem::Token(RemoteStreamToken {
+            token_id: 4,
+            text: "A".into(),
+            done: false,
+            processing_ms: 3,
+            node_timings: None,
+            speculated: false,
+            speculation_active: true,
+            speculation_disabled_reason: None,
+            next_draft: Some(vec![5, 6]),
+        });
+
+        let (batch, error, terminal) = remote_stream_batch(&[item]);
+
+        assert_eq!(batch["next_draft"], json!([5, 6]));
+        assert_eq!(batch["speculated"], false);
+        assert_eq!(batch["speculation_active"], true);
+        assert!(error.is_none());
+        assert!(!terminal);
+    }
+
+    #[test]
+    fn rascunho_remoto_e_instalado_sem_criar_rodada_extra() {
+        let mut step_meta = json!({
+            "token_id": 4,
+            "speculate": {"k": 4, "m": 0, "source": "mtp"}
+        });
+
+        assert!(remote_stream_install_draft(
+            &mut step_meta,
+            Some(&[5, 6]),
+            None,
+        ));
+        assert_eq!(step_meta["speculate"]["draft"], json!([5, 6]));
+
+        // The next invocation consumes this installed draft. The transport
+        // still has one metadata frame per decode round, with no probe frame
+        // inserted solely to carry the draft.
+        assert_eq!(
+            Speculate::from_meta(&step_meta).unwrap().draft,
+            Some(vec![5, 6])
+        );
+    }
+
+    #[test]
+    fn rascunho_remoto_desativado_remove_o_estado_com_razao() {
+        let mut step_meta = json!({
+            "speculate": {"k": 4, "m": 0, "source": "mtp", "draft": [5, 6]}
+        });
+
+        assert!(!remote_stream_install_draft(
+            &mut step_meta,
+            None,
+            Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK),
+        ));
+        assert!(step_meta.get("speculate").is_none());
+        assert_eq!(
+            step_meta["speculation_disabled_reason"],
+            SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK
+        );
+    }
+
+    #[test]
+    fn erro_depois_de_tokens_mantem_o_prefixo_e_e_terminal() {
+        let (batch, error, terminal) = remote_stream_batch(&[
+            token(4, "prefixo", false),
+            RemoteStreamItem::Error("falha no peer seguinte".into()),
+        ]);
+
+        assert_eq!(batch["accepted"][0]["text"], "prefixo");
+        assert_eq!(batch["done"], false);
+        assert_eq!(error.as_deref(), Some("falha no peer seguinte"));
+        assert!(terminal);
+    }
+
+    #[tokio::test]
+    async fn oito_tokens_e_rascunho_cruzam_em_um_unico_callback() {
+        let (items_tx, items_rx) = mpsc::channel(16);
+        items_tx
+            .send(token_state(0, "t0", false, false, true, Some(vec![8, 9])))
+            .await
+            .expect("token enfileirado");
+        for id in 1..8 {
+            items_tx
+                .send(token_state(
+                    id,
+                    &format!("t{id}"),
+                    id == 7,
+                    false,
+                    true,
+                    None,
+                ))
+                .await
+                .expect("token enfileirado");
+        }
+        drop(items_tx);
+
+        let (deliveries_tx, mut deliveries_rx) = mpsc::channel(8);
+        emit_remote_stream_batches(
+            json!({"ticket": "test"}),
+            items_rx,
+            move |_reply_to, batch| {
+                let deliveries_tx = deliveries_tx.clone();
+                async move {
+                    if deliveries_tx.send(batch).await.is_ok() {
+                        crate::direct::Delivery::Accepted
+                    } else {
+                        crate::direct::Delivery::Failed
+                    }
+                }
+            },
+        )
+        .await;
+
+        let batch = deliveries_rx.recv().await.expect("callback");
+        assert_eq!(batch["accepted"].as_array().unwrap().len(), 8);
+        assert_eq!(batch["accepted"][0]["token_id"], 0);
+        assert_eq!(batch["accepted"][7]["token_id"], 7);
+        assert_eq!(batch["next_draft"], json!([8, 9]));
+        assert!(
+            deliveries_rx.try_recv().is_err(),
+            "oito tokens e o rascunho, um callback"
+        );
+    }
+
+    #[tokio::test]
+    async fn falha_de_entrega_do_stream_chega_em_lote_de_erro() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let (items_tx, items_rx) = mpsc::channel(4);
+        items_tx
+            .send(token(7, "token antes da falha", true))
+            .await
+            .expect("token enfileirado");
+        drop(items_tx);
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (deliveries_tx, mut deliveries_rx) = mpsc::channel(4);
+        let started = Instant::now();
+        emit_remote_stream_batches(json!({"ticket": "stream-falha"}), items_rx, {
+            let attempts = attempts.clone();
+            move |_reply_to, batch| {
+                let attempts = attempts.clone();
+                let deliveries_tx = deliveries_tx.clone();
+                async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        crate::direct::Delivery::Failed
+                    } else {
+                        deliveries_tx
+                            .send(batch)
+                            .await
+                            .map(|_| crate::direct::Delivery::Accepted)
+                            .unwrap_or(crate::direct::Delivery::Failed)
+                    }
+                }
+            }
+        })
+        .await;
+
+        let error_batch = deliveries_rx
+            .recv()
+            .await
+            .expect("a falha deve chegar como lote terminal");
+        assert_eq!(
+            error_batch["error"],
+            json!("o lote de decode não chegou ao gateway por nenhum endereço de retorno")
+        );
+        assert!(error_batch["accepted"].as_array().unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a falha do stream não pode esperar o deadline: {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+/// Monta o metadado que um hop de decode encaminha ao próximo peer.
+///
+/// A faixa carregada do próximo peer não basta para definir o que ele deve
+/// executar: uma mesma fatia pode ser usada por ramos diferentes. Por isso a
+/// sub-faixa é escolhida pelo `PipelineStep` do próximo hop e viaja em cada
+/// quadro `/v1/step`.
+pub(super) fn step_forward_meta(
+    session_id: &str,
+    request_meta: &Value,
+    local_meta: &Value,
+    next: &PipelineStep,
+) -> Value {
+    let mut meta = json!({
+        "session_id": session_id,
+        "exec_start": next.exec_start,
+        "exec_end": next.exec_end,
+    });
+    preserve_batch_identity(request_meta, &mut meta);
+    for field in ["draft", "tokens", "mtp_k", "remote_stream"] {
+        if let Some(value) = local_meta.get(field).or_else(|| request_meta.get(field)) {
+            meta[field] = value.clone();
+        }
+    }
+    meta
+}
+
+/// Relay a residual to `hops[0]` and bubble its reply back: the eventual
+/// tail's real answer, plus this hop's own already-known contribution
+/// (`local_processing_ms`/`local_node_timings`, computed by the caller from
+/// its own `NodeTimings`) prepended onto whatever `hop_timings` bubbled up
+/// from further down the chain. Returns the merged `meta` — *not* yet
+/// re-encoded — so a caller with phase-specific fields to overlay (prefill's
+/// `more_chunks`/`n_prompt_tokens`, see `handle_prefill`) can add them
+/// before the final `wire::encode`.
+///
+/// `base_meta` carries whatever the phase needs beyond what every relay call
+/// needs (`is_last`/`scale`/`next_hops`, added here): just `session_id` for
+/// `/v1/step`, plus `chunk_index`/`chunk_size`/`is_final_chunk` for
+/// `/v1/prefill`. `attempts` follows the same rule `send_chunk`/`step_ring`
+/// already do at the gateway: `CHUNK_ATTEMPTS` for a prefill chunk (one
+/// attempt, because a lost response makes KV state ambiguous), `1` for a
+/// decode step (which has no retry).
+///
+/// Split out from `handle_step`/`handle_prefill` (both call this with the
+/// same `hops`/tensor shape, differing only in `path` and `base_meta`) so
+/// it's directly testable against a fake next-hop server — see the
+/// `relay_tests` module — without needing a loaded `LlmEngine`.
+pub(super) async fn relay_and_bubble(
+    http: &crate::peer_client::PeerClients,
+    hops: &[PipelineStep],
+    path: &str,
+    mut base_meta: Value,
+    tensor: (&[f32], TensorShape),
+    dtype: WireDtype,
+    attempts: u32,
+    local_processing_ms: Value,
+    local_node_timings: Value,
+) -> std::result::Result<Value, Response> {
+    let next = &hops[0];
+    let remaining = &hops[1..];
+    base_meta["is_last"] = json!(remaining.is_empty());
+    base_meta["scale"] = json!(1.0);
+    base_meta["next_hops"] = json!(remaining);
+    base_meta["exec_start"] = json!(next.exec_start);
+    base_meta["exec_end"] = json!(next.exec_end);
+
+    let mut last_issue_kind = None;
+    let sent = crate::relay::send_frame_or_tunnel(
+        http,
+        next,
+        crate::infer_tunnel::tunnel_sender(),
+        path,
+        &base_meta,
+        Some(tensor),
+        dtype,
+        dtype.frame_encoding(),
+        attempts,
+        &next.node_id,
+        |issue| last_issue_kind = Some(issue.kind),
+    )
+    .await;
+
+    match sent {
+        Ok(sent) => {
+            if sent.tensor.is_some() {
+                // A fully-bubbled reply is always the tail's final answer,
+                // which never carries a tensor — only a *forward* (not yet
+                // relayed) residual does. Getting here means some hop in the
+                // chain didn't relay when it should have; surviving loud
+                // rather than silently dropping the tensor.
+                warn!(
+                    "resposta de {} veio com tensor num retransmissão já borbulhada — descartando",
+                    next.node_id
+                );
+            }
+            let hop_timings = crate::relay::bubble_hop_timings(&sent);
+            let mut bubbled = sent.meta.clone();
+            bubbled["hop_timings"] = json!(hop_timings);
+            // Ours, not the next hop's: our caller needs these to build our
+            // own entry, the same way we just built the next hop's.
+            bubbled["processing_ms"] = local_processing_ms;
+            bubbled["node_timings"] = local_node_timings;
+            Ok(bubbled)
+        }
+        Err(e) => {
+            let failure = crate::relay::extract_relay_failure(&e).unwrap_or_else(|| {
+                crate::relay::RelayFailure {
+                    failed_node_id: next.node_id.clone(),
+                    kind: issue_kind_label(last_issue_kind).to_string(),
+                    message: e.to_string(),
+                }
+            });
+            Err((StatusCode::BAD_GATEWAY, Json(failure)).into_response())
+        }
+    }
+}

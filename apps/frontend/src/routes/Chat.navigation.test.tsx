@@ -78,6 +78,7 @@ vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: null }),
   useInvalidate: () => vi.fn(),
   useServableModels: () => ({ data: [{ id: "qwen" }] }),
+  useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: (nodeIds: string[]) => {
     if (++loop.renders > loop.limit) {

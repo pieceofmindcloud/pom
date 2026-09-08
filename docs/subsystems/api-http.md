@@ -530,6 +530,16 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
+`GET /api/ui/infer/heads?model=<id>` é a leitura dedicada do perfil `infer`:
+retorna somente as máquinas vivas que anunciam uma faixa começando em L0 para
+o modelo pedido, além da cabeça escolhida, carga em voo e RTT/idade de cada
+candidata. O planejador exige cobertura completa; a cobertura vem primeiro e,
+entre faixas equivalentes, um score pondera RTT fresco e carga em voo antes do
+desempate por `node_id`. A medição vale cinco minutos.
+Sem candidata a resposta é `status: "no_candidate"`; com cabeça mas sem
+cobertura completa é `status: "incomplete_pipeline"`. RTT vencido aparece
+para diagnóstico, mas não entra na escolha.
+
 `GET /api/ui/deployments` deduplica as cópias persistidas por `deploy_id` e
 marca `serving` somente quando um peer vivo anuncia o deployment. O registro
 pode continuar visível com `serving: false` para diagnóstico e recuperação,

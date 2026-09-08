@@ -1162,6 +1162,155 @@ pub(super) async fn network_rtt(_auth: ConnectionAuth, State(state): State<Gatew
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct InferenceHeadsQuery {
+    pub(super) model: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct InferenceHeadCandidate {
+    pub(super) node_id: String,
+    pub(super) short_id: String,
+    pub(super) hostname: String,
+    pub(super) start_layer: u32,
+    pub(super) end_layer: u32,
+    pub(super) total_layers: u32,
+    pub(super) load: u32,
+    pub(super) runtime_capacity: Option<crate::network::RuntimeCapacity>,
+    pub(super) rtt_ms: Option<f64>,
+    pub(super) rtt_age_ms: Option<u64>,
+    pub(super) rtt_state: &'static str,
+    pub(super) selected: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct InferenceHeadsResponse {
+    pub(super) model: String,
+    /// `selected`, `incomplete_pipeline`, `no_candidate` or `invalid_model`.
+    pub(super) status: &'static str,
+    pub(super) selected_node_id: Option<String>,
+    pub(super) selection_policy: &'static str,
+    pub(super) rtt_valid_for_secs: u64,
+    pub(super) candidates: Vec<InferenceHeadCandidate>,
+}
+
+/// Gives an infer node only the layer-zero choices for one model. It is a
+/// read-only capability view, not a cluster browser: no peer outside these
+/// candidates crosses this boundary, and the response contains no control
+/// action or authority field.
+pub(super) async fn inference_heads(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(query): Query<InferenceHeadsQuery>,
+) -> Json<InferenceHeadsResponse> {
+    let requested_model = query.model.trim().to_string();
+    let (model, deploy_id) = crate::deployment::split_selector(&requested_model);
+    if model.is_empty() {
+        return Json(InferenceHeadsResponse {
+            model: requested_model,
+            status: "invalid_model",
+            selected_node_id: None,
+            selection_policy: "coverage_then_weighted_rtt_load",
+            rtt_valid_for_secs: crate::route::RTT_INTERVALO_MEDICAO.as_secs(),
+            candidates: Vec::new(),
+        });
+    }
+
+    let peers = state.all_peers().await;
+    let mut heads = crate::pipeline::model_head_candidates(&peers, model, deploy_id);
+    heads.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    let rtt_snapshots = state.network.rtts.snapshot_with_age();
+    let rtts = rtt_snapshots
+        .iter()
+        .filter(|entry| entry.age < crate::route::RTT_INTERVALO_MEDICAO)
+        .map(|entry| {
+            (
+                entry.measurement.target_node_id.clone(),
+                entry.measurement.rtt_ms,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let total_layers = crate::pipeline::model_pipeline_candidates(&peers, model, deploy_id)
+        .iter()
+        .map(|peer| peer.total_layers)
+        .max()
+        .unwrap_or(0);
+    let selected_node_id = if heads.is_empty() || total_layers == 0 {
+        None
+    } else {
+        crate::pipeline::plan_pipeline_with_rtt(
+            &peers,
+            model,
+            deploy_id,
+            total_layers,
+            &state.loads,
+            &rtts,
+        )
+        .await
+        .and_then(|plan| {
+            plan.steps
+                .first()
+                .filter(|step| step.start_layer == 0)
+                .map(|step| step.node_id.clone())
+        })
+    };
+
+    let candidates = if heads.is_empty() {
+        Vec::new()
+    } else {
+        let mut candidates = Vec::with_capacity(heads.len());
+        for peer in heads {
+            let rtt = rtt_snapshots
+                .iter()
+                .find(|entry| entry.measurement.target_node_id == peer.node_id);
+            let (rtt_ms, rtt_age_ms, rtt_state) = match rtt {
+                Some(entry) if entry.age < crate::route::RTT_INTERVALO_MEDICAO => (
+                    Some(entry.measurement.rtt_ms),
+                    Some(entry.age.as_millis().try_into().unwrap_or(u64::MAX)),
+                    "fresh",
+                ),
+                Some(entry) => (
+                    Some(entry.measurement.rtt_ms),
+                    Some(entry.age.as_millis().try_into().unwrap_or(u64::MAX)),
+                    "stale",
+                ),
+                None => (None, None, "unmeasured"),
+            };
+            candidates.push(InferenceHeadCandidate {
+                node_id: peer.node_id.clone(),
+                short_id: peer.node_id.chars().take(8).collect(),
+                hostname: peer.hostname.clone(),
+                start_layer: peer.start_layer,
+                end_layer: peer.end_layer,
+                total_layers: peer.total_layers,
+                load: state.loads.load(&peer.node_id).await,
+                runtime_capacity: peer.runtime_capacity,
+                rtt_ms,
+                rtt_age_ms,
+                rtt_state,
+                selected: selected_node_id.as_deref() == Some(peer.node_id.as_str()),
+            });
+        }
+        candidates
+    };
+
+    Json(InferenceHeadsResponse {
+        model: requested_model,
+        status: if candidates.is_empty() {
+            "no_candidate"
+        } else if selected_node_id.is_some() {
+            "selected"
+        } else {
+            "incomplete_pipeline"
+        },
+        selected_node_id,
+        selection_policy: "coverage_then_weighted_rtt_load",
+        rtt_valid_for_secs: crate::route::RTT_INTERVALO_MEDICAO.as_secs(),
+        candidates,
+    })
+}
+
+#[derive(Debug, Deserialize)]
 pub(super) struct ChatTelemetryRequest {
     #[serde(default)]
     pub(super) node_ids: Vec<String>,
@@ -1332,21 +1481,7 @@ pub(super) async fn clear_chat_history(_auth: ConnectionAuth, State(state): Stat
 }
 
 pub(super) fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
-    let mut measurements = state.network.rtts.snapshot();
-    let measured_targets: std::collections::HashSet<String> = measurements
-        .iter()
-        .map(|measurement| measurement.target_node_id.clone())
-        .collect();
-    for (node_id, route) in state.network.routes.snapshot() {
-        if !measured_targets.contains(&node_id) {
-            measurements.push(crate::route::RttMeasurement {
-                target_node_id: node_id,
-                rtt_ms: route.rtt_ms,
-                transport: "direct-health".to_string(),
-            });
-        }
-    }
-    measurements
+    state.network.rtts.fresh_snapshot()
 }
 
 pub(super) fn append_chat_telemetry_measurements(

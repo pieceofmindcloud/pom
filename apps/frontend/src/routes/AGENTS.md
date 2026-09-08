@@ -27,7 +27,7 @@ Per-file list:
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
   (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,
-  `useServableModels`), `../components/Markdown`,
+  `useServableModels`, `useInferenceHeads`), `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
   connection key by `api`. When the stream finishes, it captures the cluster
   snapshot, directional RTT for each adjacent execution pair and each peer's
@@ -40,6 +40,9 @@ Per-file list:
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
   autorização.
+  No mesmo composer, `InferenceHeadChoice` mostra por qual cabeça de camada 0
+  a próxima inferência entrará e deixa explícito quando não há candidata ou
+  quando a seleção caiu no fallback sem RTT fresco.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
   Phase rows also render

@@ -103,6 +103,11 @@ The `chat.history` message names the bounded conversation list used by the
 `infer` Sidebar. It remains in both CSV columns even though it is primarily an
 accessible label, so the menu has no language-specific copy in the component.
 
+The `chat.head*` messages name the infer-only entry choice: selected head,
+layer-zero alternatives, coverage/RTT/load policy, five-minute RTT validity,
+stale-measurement fallback and the explicit no-candidate/incomplete-pipeline
+states. They stay in the CSV because this panel is visible in both locales.
+
 The slice locale group also covers multipart part lists, summed-size loading
 state and explicit incomplete-set errors in both languages.
 

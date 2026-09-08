@@ -68,8 +68,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   quando o peer muda seus endereços anunciados. Guarda também a **memória de
   falha por `(node_id, URL)`**, que serve tanto ao pipeline quanto ao plano de
   controle - ver `docs/subsystems/rede-p2p.md`, "Endereço que deixou de
-  responder". `RttTable` guarda a medição
-  direcional deste nó para cada destino, sem inferir o sentido inverso.
+  responder". `RttTable` guarda a medição direcional deste nó para cada
+  destino, sem inferir o sentido inverso, e expõe snapshots com idade: só os
+  RTTs com menos de cinco minutos entram em seleção.
 
 ## Funções-chave
 
@@ -236,11 +237,12 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `RouteTable::host_is_discredited` - a mesma pergunta por host, para o gossip
   decidir se herda um candidato antigo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
-  "ainda não medido", e o chamador cai no `inference_url` do plano.
+  "ainda não medido ou vencido", e o chamador cai no `inference_url` do plano.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;
-  `libp2p` é a medição normal e `direct-health` identifica compatibilidade com
-  peers antigos. O endpoint autenticado `/api/ui/network/rtt` publica esse
-  snapshot com o `source_node_id` para o planejador montar arestas direcionais.
+  `libp2p` é a medição normal e `direct-health` identifica o fallback de sonda.
+  `fresh_snapshot` é a única fonte de RTT para seleção; `snapshot_with_age`
+  conserva a idade para diagnósticos. O endpoint autenticado
+  `/api/ui/network/rtt` publica só medições frescas com `source_node_id`.
 
 `pkarr_node.rs`:
 - `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma

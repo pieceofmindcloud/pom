@@ -32,6 +32,7 @@ import type {
   ChatTelemetryNetwork,
   ClusterView,
   ClusterLogResponse,
+  InferenceHeadsResponse,
   Job,
   NodeInfo,
   NetworkOffer,
@@ -82,6 +83,7 @@ export const keys = {
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
+  inferenceHeads: (model: string) => ["inference-heads", model] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
   clusterLogs: (deployId: string | undefined) => ["cluster-logs", deployId ?? "all"] as const,
@@ -268,6 +270,21 @@ export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
     retry: false,
     refetchInterval: 15000,
     staleTime: 10000,
+  });
+}
+
+/** Cabeças do modelo que este nó infer pode escolher, sem abrir a rede toda. */
+export function useInferenceHeads(model: string, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.inferenceHeads(model),
+    queryFn: () =>
+      api.get<InferenceHeadsResponse>(
+        `/api/ui/infer/heads?model=${encodeURIComponent(model)}`,
+      ),
+    enabled: enabled && Boolean(model),
+    retry: false,
+    refetchInterval: 15_000,
+    staleTime: 5_000,
   });
 }
 

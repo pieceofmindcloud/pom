@@ -261,4 +261,136 @@ mod profile_network_tests {
             "infer não pode receber dados de outro nó"
         );
     }
+
+    #[tokio::test]
+    async fn infer_head_response_selects_the_fastest_fresh_candidate() {
+        let mut slow = peer("slow", "salem", 8091);
+        slow.model = "qwen35".into();
+        slow.start_layer = 0;
+        slow.end_layer = 31;
+        slow.total_layers = 32;
+        slow.inference_port = Some(8181);
+        let mut fast = peer("fast", "ksia", 8092);
+        fast.model = "qwen35".into();
+        fast.start_layer = 0;
+        fast.end_layer = 31;
+        fast.total_layers = 32;
+        fast.inference_port = Some(8181);
+        let mut middle = peer("middle", "atena", 8093);
+        middle.model = "qwen35".into();
+        middle.start_layer = 16;
+        middle.end_layer = 31;
+        middle.total_layers = 32;
+        middle.inference_port = Some(8181);
+
+        let state = state_with("eu", vec![slow, fast, middle]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.network.rtts.remember("slow", 80.0, "direct-health");
+        state.network.rtts.remember("fast", 12.0, "libp2p");
+
+        let body = body_of(
+            inference_heads(
+                ConnectionAuth,
+                State(state),
+                Query(InferenceHeadsQuery {
+                    model: "qwen35".into(),
+                }),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+
+        assert_eq!(body["status"], "selected");
+        assert_eq!(body["selected_node_id"], "fast");
+        assert_eq!(body["selection_policy"], "coverage_then_weighted_rtt_load");
+        assert_eq!(body["candidates"].as_array().unwrap().len(), 2);
+        assert!(body["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["node_id"] != "middle"));
+        assert_eq!(
+            body["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|candidate| candidate["node_id"] == "fast")
+                .unwrap()["rtt_state"],
+            "fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn infer_head_response_explains_when_no_candidate_exists() {
+        let state = state_with("eu", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+
+        let body = body_of(
+            inference_heads(
+                ConnectionAuth,
+                State(state),
+                Query(InferenceHeadsQuery {
+                    model: "qwen35".into(),
+                }),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+
+        assert_eq!(body["status"], "no_candidate");
+        assert!(body["selected_node_id"].is_null());
+        assert!(body["candidates"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn infer_head_response_does_not_choose_a_stale_low_rtt() {
+        let mut fresh = peer("fresh", "salem", 8091);
+        fresh.model = "qwen35".into();
+        fresh.start_layer = 0;
+        fresh.end_layer = 31;
+        fresh.total_layers = 32;
+        fresh.inference_port = Some(8181);
+        let mut stale = peer("stale", "ksia", 8092);
+        stale.model = "qwen35".into();
+        stale.start_layer = 0;
+        stale.end_layer = 31;
+        stale.total_layers = 32;
+        stale.inference_port = Some(8181);
+
+        let state = state_with("eu", vec![fresh, stale]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+        state.network.rtts.remember("fresh", 80.0, "direct-health");
+        state.network.rtts.remember_for_test_with_age(
+            "stale",
+            1.0,
+            "libp2p",
+            crate::route::RTT_INTERVALO_MEDICAO + std::time::Duration::from_secs(1),
+        );
+
+        let body = body_of(
+            inference_heads(
+                ConnectionAuth,
+                State(state),
+                Query(InferenceHeadsQuery {
+                    model: "qwen35".into(),
+                }),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+
+        assert_eq!(body["selected_node_id"], "fresh");
+        assert_eq!(
+            body["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|candidate| candidate["node_id"] == "stale")
+                .unwrap()["rtt_state"],
+            "stale"
+        );
+    }
 }

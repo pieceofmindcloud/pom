@@ -139,6 +139,10 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/network/relinquish-node",
         scope: RouteScope::NodeAdmin,
     },
+    RouteRule {
+        prefix: "/api/ui/infer/heads",
+        scope: RouteScope::InferNodeAdmin,
+    },
     // Operações locais do nó e do modelo.
     RouteRule {
         prefix: "/api/ui/models",
@@ -362,6 +366,10 @@ mod policy_tests {
         assert_eq!(
             route_scope("/api/ui/network/relinquish-node"),
             RouteScope::NodeAdmin
+        );
+        assert_eq!(
+            route_scope("/api/ui/infer/heads"),
+            RouteScope::InferNodeAdmin
         );
         assert_eq!(
             route_scope("/v1/chat/completions"),

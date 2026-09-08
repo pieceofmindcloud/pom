@@ -134,6 +134,11 @@ profile policy remains the effective authorization boundary.
   cadeia colada. A validação e a conferência são as de `admin_trust`
   (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
   `pom admin-anchor` usa: não existe segunda política.
+  `GET /api/ui/infer/heads?model=...` é a única leitura dedicada ao perfil
+  infer: entrega apenas as candidatas de layer zero e a escolha do planejador,
+  sem peers gerais nem ações de controle. A validade do RTT é de cinco
+  minutos; valores vencidos aparecem como diagnóstico, mas não entram na
+  seleção da geração.
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline

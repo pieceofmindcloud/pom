@@ -92,6 +92,27 @@ chat.delete,Delete {title},Apagar {title}
 chat.emptyResponse,The network replied without any tokens. Check the Dashboard to make sure layer coverage is complete.,A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.
 chat.errorCopied,Copied,Copiado
 chat.generationSpeed,Generation,Geração
+chat.headAlternatives,Other heads,Outras cabeças
+chat.headCandidateCount,"{count} candidate{count, plural, =1 {} other {s}}","{count} candidata{count, plural, =1 {} other {s}}"
+chat.headCapacity,"context {context} · leg {leg} tokens","contexto {context} · perna {leg} tokens"
+chat.headChoice,Inference entry,Entrada da inferência
+chat.headChoiceDetail,"Coverage comes first; a weighted fresh RTT/load score chooses among equally useful heads.","A cobertura vem primeiro; um score ponderado de RTT fresco e carga escolhe entre cabeças igualmente úteis."
+chat.headFallback,RTT fallback,Fallback de RTT
+chat.headFallbackDetail,"No fresh RTT was available; in-flight load and node id break the tie.","Não havia RTT fresco; a carga em voo e o id do nó desempataram."
+chat.headIncomplete,"Head found, but the pipeline is incomplete","Cabeça encontrada, mas o pipeline está incompleto"
+chat.headIncompleteDetail,"The model has a layer-zero candidate, but no complete path through all its layers is available.","O modelo tem uma candidata na camada zero, mas não há caminho completo por todas as camadas."
+chat.headLayers,L{start}-{end} of L{total},L{start}-{end} de L{total}
+chat.headLoad,"{count} in flight","{count} em voo"
+chat.headLoading,Checking the best entry for {model}…,Consultando a melhor entrada para {model}…
+chat.headNoCandidate,No node announces the head for {model},Nenhum nó anuncia a cabeça de {model}
+chat.headNoCandidateDetail,"Inference cannot start because no live node advertises a range beginning at layer 0 for this model. Ask an administrator to deploy its head.","A inferência não pode começar porque nenhum nó vivo anuncia uma faixa que começa na camada 0 para este modelo. Peça a um administrador para implantar a cabeça."
+chat.headPolicy,"Coverage first · weighted fresh RTT + in-flight load · RTT valid for {validity}","Cobertura primeiro · RTT fresco + carga em voo ponderados · RTT válido por {validity}"
+chat.headRttFresh,"RTT {value} · fresh","RTT {value} · fresco"
+chat.headRttStale,"RTT {value} · stale ({age} old)","RTT {value} · vencido ({age})"
+chat.headRttUnknown,RTT not measured,RTT não medido
+chat.headSelected,Selected entry,Entrada selecionada
+chat.headUnavailable,Head selection unavailable,Escolha da cabeça indisponível
+chat.headUnavailableDetail,"This node could not read the current head candidates. Inference remains protected until a fresh choice is available.","Este nó não conseguiu ler as candidatas atuais à cabeça. A inferência fica protegida até haver uma escolha fresca."
 chat.history,Conversation history,Histórico de conversas
 chat.incomplete,incomplete coverage,cobertura incompleta
 chat.interrupted,Interrupted.,Interrompido.

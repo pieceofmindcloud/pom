@@ -57,6 +57,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the peers in that trace without polling the whole cluster.
   `useNetworkRtt` asks the same authenticated telemetry route for the current
   deployment edges shown on the Dashboard and refreshes them every 15 s.
+  `useInferenceHeads` polls the infer-only model head view every 15 s; this is
+  a capability slice, not a general peer list.
   `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
   por `deploy_id`, e atualiza a consola a cada segundo.
   `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
@@ -352,6 +354,10 @@ would go.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
+- O Chat do perfil `infer` também lê `/api/ui/infer/heads?model=...`, que
+  devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT
+  com idade. RTT fora da validade continua identificável na resposta, mas não
+  entra no mapa usado para escolher.
 
 ## Maintaining this file
 

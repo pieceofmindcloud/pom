@@ -125,6 +125,7 @@ impl RouteTable {
             .read()
             .ok()?
             .get(node_id)
+            .filter(|entry| entry.medido_em.elapsed() < INTERVALO_MEDICAO)
             .map(|e| e.escolha.addr.clone())
     }
 
@@ -267,6 +268,29 @@ impl RouteTable {
         self.mark_success(node_id, addr);
     }
 
+    #[cfg(test)]
+    pub fn remember_for_test_with_age(
+        &self,
+        node_id: &str,
+        addr: &str,
+        rtt_ms: f64,
+        age: Duration,
+    ) {
+        if let Ok(mut table) = self.por_no.write() {
+            table.insert(
+                node_id.to_string(),
+                Entrada {
+                    escolha: RouteChoice {
+                        addr: addr.to_string(),
+                        rtt_ms,
+                    },
+                    medido_em: Instant::now() - age,
+                },
+            );
+        }
+        self.mark_success(node_id, addr);
+    }
+
     /// Se ja passou tempo suficiente desde a ultima medicao deste peer.
     pub fn precisa_medir(&self, node_id: &str) -> bool {
         self.por_no
@@ -365,6 +389,12 @@ pub struct RttMeasurement {
     pub transport: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RttSnapshot {
+    pub measurement: RttMeasurement,
+    pub age: Duration,
+}
+
 struct RttEntry {
     measurement: RttMeasurement,
     measured_at: Instant,
@@ -385,17 +415,40 @@ impl RttTable {
     }
 
     pub fn snapshot(&self) -> Vec<RttMeasurement> {
-        let mut medidas = self
+        self.snapshot_with_age()
+            .into_iter()
+            .map(|entry| entry.measurement)
+            .collect()
+    }
+
+    pub fn snapshot_with_age(&self) -> Vec<RttSnapshot> {
+        let mut snapshots = self
             .por_destino
             .read()
-            .map(|t| {
-                t.values()
-                    .map(|entry| entry.measurement.clone())
+            .map(|table| {
+                table
+                    .values()
+                    .map(|entry| RttSnapshot {
+                        measurement: entry.measurement.clone(),
+                        age: entry.measured_at.elapsed(),
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        medidas.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
-        medidas
+        snapshots.sort_by(|a, b| {
+            a.measurement
+                .target_node_id
+                .cmp(&b.measurement.target_node_id)
+        });
+        snapshots
+    }
+
+    pub fn fresh_snapshot(&self) -> Vec<RttMeasurement> {
+        self.snapshot_with_age()
+            .into_iter()
+            .filter(|entry| entry.age < RTT_INTERVALO_MEDICAO)
+            .map(|entry| entry.measurement)
+            .collect()
     }
 
     pub fn precisa_medir(&self, node_id: &str) -> bool {
@@ -437,10 +490,33 @@ impl RttTable {
     pub fn remember_for_test(&self, node_id: &str, rtt_ms: f64, transport: &str) {
         self.remember(node_id, rtt_ms, transport);
     }
+
+    #[cfg(test)]
+    pub fn remember_for_test_with_age(
+        &self,
+        node_id: &str,
+        rtt_ms: f64,
+        transport: &str,
+        age: Duration,
+    ) {
+        if let Ok(mut table) = self.por_destino.write() {
+            table.insert(
+                node_id.to_string(),
+                RttEntry {
+                    measurement: RttMeasurement {
+                        target_node_id: node_id.to_string(),
+                        rtt_ms,
+                        transport: transport.to_string(),
+                    },
+                    measured_at: Instant::now() - age,
+                },
+            );
+        }
+    }
 }
 
 /// A medição direcional é renovada junto com a rota de endereçamento.
-const RTT_INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
+pub const RTT_INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
 pub mod tests_support {
@@ -563,6 +639,33 @@ mod tests {
         assert!(table.precisa_medir("peer-d"));
     }
 
+    #[test]
+    fn a_stale_rtt_is_visible_but_not_fresh_for_selection() {
+        let table = RttTable::new();
+        table.remember_for_test("fresh", 12.5, "libp2p");
+        table.remember_for_test_with_age(
+            "stale",
+            1.0,
+            "direct-health",
+            RTT_INTERVALO_MEDICAO + Duration::from_secs(1),
+        );
+
+        let with_age = table.snapshot_with_age();
+        assert_eq!(with_age.len(), 2);
+        assert!(with_age.iter().any(|entry| {
+            entry.measurement.target_node_id == "stale"
+                && entry.age >= RTT_INTERVALO_MEDICAO
+        }));
+        assert_eq!(
+            table
+                .fresh_snapshot()
+                .into_iter()
+                .map(|measurement| measurement.target_node_id)
+                .collect::<Vec<_>>(),
+            vec!["fresh"]
+        );
+    }
+
     /// Empate exato entre dois candidatos sem rota atual: vence a ordem
     /// lexicografica, para dois nos chegarem a mesma conclusao em vez de
     /// divergirem por ordem de HashMap.
@@ -605,6 +708,19 @@ mod tests {
         tabela.remember_for_test("n1", "https://172.17.0.1:8092", 1.0);
 
         tabela.invalidate("n1");
+
+        assert_eq!(tabela.resolve("n1"), None);
+    }
+
+    #[test]
+    fn a_stale_route_is_not_used_for_inference_address_selection() {
+        let tabela = RouteTable::new();
+        tabela.remember_for_test_with_age(
+            "n1",
+            "https://172.17.0.1:8092",
+            1.0,
+            INTERVALO_MEDICAO + Duration::from_secs(1),
+        );
 
         assert_eq!(tabela.resolve("n1"), None);
     }

@@ -244,7 +244,7 @@ pinning. A task
 que mede reaplica ao cliente a política TLS atual antes da sonda. `choose_route` só troca de rota
 atual se o ganho passar de 25% relativo **e** 2 ms absolutos (9,6 vs 7,2 ms
 MacBook↔ksia não pode trocar a cada ciclo). `resolve` devolve `None` =
-"ainda não medido", e o chamador cai no `inference_url` do plano.
+"ainda não medido ou vencido", e o chamador cai no `inference_url` do plano.
 
 A **memória de falha** é a segunda metade da tabela, chaveada por
 `(node_id, URL)`: `mark_failure` grava quando uma requisição real falhou naquele
@@ -261,11 +261,25 @@ escolha e **preserva** as falhas; só `forget`, quando o peer expira, as apaga.
 Essa tabela de endereçamento não é a tabela de RTT do mapa. `RttTable` mede
 `GET /health` pelo `TunnelRequest` libp2p/Noise, o mesmo transporte usado pelos
 frames de inferência, e mantém a direção local `origem -> destino`. O peer
-publica seu snapshot em `GET /api/ui/network/rtt`, autenticado pela chave de
-conexão; o gateway agrega os relatórios e só usa a medição de `A -> B` na
-aresta `A -> B`. Se o peer é antigo e não anuncia o túnel, o relatório pode
-marcar `direct-health` como fallback. Nenhuma latência de outro peer é
-transitiva ou reaproveitada como se fosse a aresta real.
+publica somente medições frescas em `GET /api/ui/network/rtt`, autenticado pela
+chave de conexão. `snapshot_with_age` preserva a idade para diagnóstico e
+`fresh_snapshot` é a fonte da seleção. O gateway agrega os relatórios e só usa
+a medição de `A -> B` na aresta `A -> B`. Se o peer não oferece o túnel, o
+relatório pode marcar `direct-health` como fallback. Nenhuma latência de outro
+peer é transitiva ou reaproveitada como se fosse a aresta real.
+
+O anúncio P2P continua sendo capacidade de dados: `capabilities` informa
+modelo/faixa e `runtime_capacity` informa `n_ctx` e `max_new_tokens` apenas
+depois da confirmação de `/health`. `profile` identifica o perfil do nó e
+`authority_pubkey` identifica a chave de assinatura da cadeia; nenhum dos dois
+concede voto ou poder de controle ao infer. Um infer pode ser descoberto e
+escolhido para uma cabeça, mas não ganha voz nas decisões do plano de controle.
+Para o Chat, o endpoint
+`/api/ui/infer/heads` expõe somente as candidatas L0 do modelo pedido, não a
+rede inteira. A cabeça é escolhida por cobertura e, entre faixas igualmente
+úteis, por um score ponderado de RTT fresco e carga em voo, com empate
+determinístico por `node_id`; sem candidata o estado é visível e a inferência
+não começa.
 
 ## 3. Caminho libp2p (internet)
 

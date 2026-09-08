@@ -365,6 +365,31 @@ export interface ChatTelemetryNetwork {
   measurements: ChatTelemetryRtt[];
 }
 
+/** Resposta do recorte de topologia que um nó infer pode consultar. */
+export interface InferenceHeadCandidate {
+  node_id: string;
+  short_id: string;
+  hostname: string;
+  start_layer: number;
+  end_layer: number;
+  total_layers: number;
+  load: number;
+  runtime_capacity: { n_ctx: number; max_new_tokens: number } | null;
+  rtt_ms: number | null;
+  rtt_age_ms: number | null;
+  rtt_state: "fresh" | "stale" | "unmeasured";
+  selected: boolean;
+}
+
+export interface InferenceHeadsResponse {
+  model: string;
+  status: "selected" | "incomplete_pipeline" | "no_candidate" | "invalid_model";
+  selected_node_id: string | null;
+  selection_policy: "coverage_then_weighted_rtt_load";
+  rtt_valid_for_secs: number;
+  candidates: InferenceHeadCandidate[];
+}
+
 export interface ModelCapability {
   model_id: string;
   start_layer: number;

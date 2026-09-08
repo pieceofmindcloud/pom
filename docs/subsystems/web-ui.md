@@ -237,6 +237,14 @@ ausente é livre para `admin` e `node`. Hoje `/implantar`, `/implantacoes` e
 ocultos. A chave casa **segmento inteiro**, então
 `/logs` não cobre `/logs-antigos`.
 
+No Chat, o `infer` recebe um recorte próprio por
+`GET /api/ui/infer/heads?model=...`: a caixa **Entrada da inferência** mostra a
+cabeça selecionada e as outras faixas que começam em L0, com RTT, idade e carga
+em voo. A política fica escrita na tela: cobertura primeiro, score ponderado de
+RTT fresco e carga, e empate por id. RTT sem medição fresca aparece como fallback, e um modelo sem cabeça
+ou sem caminho completo produz um aviso legível em vez de uma falha crua. Esse
+recorte não abre a lista geral de peers nem oferece autoridade de controle.
+
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
 barra compacta aplica filtros por identidade não secreta da API key, texto do
 prompt, nó e período, lista primeiro as entradas mais recentes em páginas e

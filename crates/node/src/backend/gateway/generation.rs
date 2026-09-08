@@ -52,10 +52,10 @@ pub(super) async fn generate_stream_inner(
 
     let route_rtt = state
         .network
-        .routes
-        .snapshot()
+        .rtts
+        .fresh_snapshot()
         .into_iter()
-        .map(|(node_id, route)| (node_id, route.rtt_ms))
+        .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
         .collect::<std::collections::HashMap<_, _>>();
     let Some(mut plan) = plan_pipeline_with_rtt(
         &peers,

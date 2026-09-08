@@ -16,6 +16,11 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`
 `node` can slip past one component's `?.` and crash the next; the maintenance
 pendência está em `TODO.md`, item 23.
 
+- `InferenceHeadChoice.tsx` - aviso compacto do Chat infer: exibe a cabeça
+  escolhida, as alternativas layer-zero, RTT fresco ou vencido, carga em voo e
+  os estados sem candidata e pipeline incompleto. O componente não apresenta
+  peers fora desse recorte.
+
 - `setup-wizard/` - Componentes visuais reutilizáveis do wizard de primeiro
   acesso: layout com progresso e ações, cards de intenção, hardware, nó,
   modelo e rede, além das telas de cada etapa. A navegação e o estado ficam em

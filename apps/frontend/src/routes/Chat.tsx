@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
 import { ExecutionTelemetry, TimingSummary, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
+import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
 import { Badge, Button, Empty } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
@@ -55,6 +56,7 @@ import {
   useCluster,
   useNode,
   usePeerRuntimes,
+  useInferenceHeads,
   useServableModels,
 } from "../lib/queries";
 import { useStableRecord } from "../lib/stableRecord";
@@ -466,6 +468,7 @@ function ChatScreen() {
 
   // A session with no model yet takes whatever the network is serving.
   const model = session.model && available.includes(session.model) ? session.model : available[0] ?? cluster.data?.active_model ?? "";
+  const headQuery = useInferenceHeads(model, profile === "infer");
 
   useEffect(() => {
     const element = thread.current;
@@ -825,6 +828,14 @@ function ChatScreen() {
               <ModelPicker value={model} options={available} onChange={chooseModel} />
               <p className="text-[0.7rem] text-faint">{t("chat.composerHint")}</p>
             </div>
+            {profile === "infer" && model && (
+              <InferenceHeadChoice
+                model={model}
+                response={headQuery.data}
+                loading={headQuery.isLoading}
+                failed={headQuery.isError}
+              />
+            )}
           </div>
         </div>
       </div>

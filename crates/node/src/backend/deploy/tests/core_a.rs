@@ -269,6 +269,7 @@
                 disk_free_mb: s.disk_free_mb,
                 rtt_ms: None,
                 load: 0,
+                load_known: true,
                 held: s
                     .held
                     .iter()
@@ -1207,4 +1208,3 @@
         let values: Vec<_> = p.route_options.iter().map(|route| route.rtt_ms).collect();
         assert_eq!(values, vec![Some(11.5), Some(22.5), Some(33.5)]);
     }
-

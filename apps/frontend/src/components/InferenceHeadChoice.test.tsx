@@ -93,6 +93,18 @@ describe("InferenceHeadChoice", () => {
     expect(screen.getByText(/inferência não pode começar/i)).toBeTruthy();
   });
 
+  it("diz quando a carga da candidata não pôde ser lida", () => {
+    mount({
+      ...selected,
+      candidates: selected.candidates.map((candidate) =>
+        candidate.node_id === "slow" ? { ...candidate, load: null } : candidate,
+      ),
+    });
+
+    expect(screen.getByText("carga em voo indisponível")).toBeTruthy();
+    expect(screen.queryByText("0 em voo")).toBeNull();
+  });
+
   it("identifica o fallback quando ainda não há RTT fresco", () => {
     mount({
       ...selected,

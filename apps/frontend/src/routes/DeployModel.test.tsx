@@ -123,6 +123,7 @@ function planOutOfLayerOrder(): DeployPlan {
       label: id,
       mem_free_mb: 100_000,
       disk_free_mb: 500_000,
+      load: 0,
       holds: ranges,
       taking: null,
     })),

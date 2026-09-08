@@ -159,13 +159,18 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
   nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que
   impede o Painel de pintar "completo" em verde nesse estado. Ver
-  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder".
+  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder". A carga
+  em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
+  zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
   `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
   alternatives and projected load, while `DeployMachine` carries GPU/RAM
-  capacity plus optional live GPU/RAM usage percentages. `DeployStep.parts`
+  capacity plus optional live GPU/RAM usage percentages. Its live load and
+  route load distribution are nullable when the survey could not read the
+  peer, so the deploy screen can say that the value is unavailable.
+  `DeployStep.parts`
   carries merged-slice steps, `primary` marks whoever holds layer 0, and the
   optional `exec_start`/`exec_end` pair identifies the sub-range actually
   executed by that step. `start_layer`/`end_layer` remain the physical range
@@ -372,8 +377,9 @@ would go.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
 - O Chat do perfil `infer` também lê `/api/ui/infer/heads?model=...`, que
   devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT
-  com idade. RTT fora da validade continua identificável na resposta, mas não
-  entra no mapa usado para escolher.
+  com idade. A carga é `null` se o relatório vivo do candidato não chegar, e a
+  UI mostra "indisponível" nesse caso. RTT fora da validade continua
+  identificável na resposta, mas não entra no mapa usado para escolher.
 
 ## Maintaining this file
 

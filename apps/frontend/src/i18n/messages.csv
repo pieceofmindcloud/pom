@@ -320,6 +320,7 @@ dashboard.groupOutside,Elsewhere on the network,No resto da rede
 dashboard.groupOutsideDetail,Connected machines with no slice in the active deployment.,Máquinas conectadas e sem fatia na implantação ativa.
 dashboard.here,here,aqui
 dashboard.inFlight,In flight,Em voo
+dashboard.inFlightUnavailable,in-flight count unavailable,carga em voo indisponível
 dashboard.incompletePipeline,pipeline incomplete,pipeline incompleto
 dashboard.inference,Inference,Inferência
 dashboard.layers,{covered} of {total} layers,{covered} de {total} camadas
@@ -332,6 +333,14 @@ dashboard.leftNode,{hostname} left the network,{hostname} saiu da rede
 dashboard.leftNodeDetail,It stopped announcing. Rejoin from that machine''s own Network screen.,"Parou de anunciar. Para voltar, use a aba Rede da própria máquina."
 dashboard.load,Load · {count} cores,Carga · {count} núcleos
 dashboard.loadParams,llama.cpp load parameters,Parâmetros de carga do llama.cpp
+dashboard.localDataUnavailable,This node's live data is unavailable,Os dados ao vivo deste nó estão indisponíveis
+dashboard.localLoad,Requests on this node,Pedidos neste nó
+dashboard.localLoadDetail,current in-flight requests,requisições em voo agora
+dashboard.localModelUnavailable,The model served by this node is unavailable,O modelo servido por este nó está indisponível
+dashboard.localNoSliceDetail,This node is not serving a layer range,Este nó não está servindo nenhuma faixa de camadas
+dashboard.localServing,serving this model,servindo este modelo
+dashboard.localSlice,This node's slice,Fatia deste nó
+dashboard.localSliceUnavailable,The slice served by this node is unavailable,A fatia servida por este nó está indisponível
 dashboard.machineDetails,Details for {hostname},Detalhes de {hostname}
 dashboard.machines,Machines,Máquinas
 dashboard.middle,intermediate layer,camada intermediária
@@ -354,6 +363,7 @@ dashboard.noSliceDetail,This machine is on the network but is not serving any la
 dashboard.nodeNoResponse,The node did not respond,O nó não respondeu
 dashboard.noneLoaded,none loaded,nenhum carregado
 dashboard.notAdvertised,not advertised,não anunciada
+dashboard.notServing,not serving a model,não está servindo um modelo
 dashboard.paramBatch,n_batch / n_ubatch,n_batch / n_ubatch
 dashboard.paramCacheType,KV cache type (K / V),Tipo do cache KV (K / V)
 dashboard.paramCtx,n_ctx / per sequence,n_ctx / por sequência
@@ -393,6 +403,7 @@ dashboard.thermalWaiting,awaiting cooldown,aguardando resfriar
 dashboard.thisNode,this node: {count},este nó: {count}
 dashboard.title,Dashboard,Painel
 dashboard.tokens,generates tokens,gera os tokens
+dashboard.unknown,unknown,desconhecido
 dashboard.unreachable,"The peer answered from its announced address, but the read failed: {error}. Its layers still count toward coverage, so the coverage above is not confirmed.","O peer atendeu no endereço anunciado, mas a leitura falhou: {error}. As camadas dele continuam contando para a cobertura, então a cobertura acima não está confirmada."
 dashboard.updateDescription,"Fetches main, rebuilds, and restarts every node on this machine.","Puxa o main, recompila e reinicia todos os nós desta máquina."
 dashboard.updateDetail,Code was fetched and the build is running. The machine restarts itself when finished.,O código foi puxado e o build está rodando. A máquina reinicia sozinha ao terminar.

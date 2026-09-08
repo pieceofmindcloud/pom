@@ -525,7 +525,7 @@ export function DeployModel() {
         ram_free_mb: system?.ram.available_mb ?? machine.ram_free_mb,
         gpu_used_pct: gpu?.vram_used_pct ?? machine.gpu_used_pct ?? null,
         ram_used_pct: system?.ram.used_pct ?? machine.ram_used_pct ?? null,
-        load: peer?.load ?? machine.load,
+        load: peer ? peer.load : machine.load,
         // O RTT de uma máquina vem do survey direcional do backend. A rota
         // do cluster é a medição HTTP do gateway e não deve sobrescrevê-lo.
         rtt_ms: machine.rtt_ms,
@@ -1516,7 +1516,7 @@ export function DeployModel() {
             {bottomMachines.map((machine) => (
               <button key={machine.node_id} type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-pom-node", machine.node_id)} onClick={() => addPeerToDeployment(machine.node_id)} onDoubleClick={() => addPeerToDeployment(machine.node_id)} className="flex min-w-[8rem] shrink-0 items-center gap-1.5 rounded-md border border-line bg-ink px-2 py-1 text-left hover:border-iris/60">
                 <ServerCog className="h-3 w-3 shrink-0 text-faint" />
-                <span className="min-w-0"><span className="block truncate text-[0.62rem] text-fg">{machine.label}</span><span className="block font-mono text-[0.54rem] text-faint">{machine.rtt_ms == null ? "RTT -" : `${machine.rtt_ms.toFixed(1)} ms`} · carga {machine.load}</span></span>
+                <span className="min-w-0"><span className="block truncate text-[0.62rem] text-fg">{machine.label}</span><span className="block font-mono text-[0.54rem] text-faint">{machine.rtt_ms == null ? "RTT -" : `${machine.rtt_ms.toFixed(1)} ms`} · {machine.load == null ? t("dashboard.inFlightUnavailable") : t("canvas.inFlight", { count: machine.load })}</span></span>
               </button>
             ))}
             {p && !isWhole && (

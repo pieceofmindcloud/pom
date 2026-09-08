@@ -372,6 +372,7 @@
             disk_free_mb: 500_000,
             rtt_ms: Some(0.0),
             load: 0,
+            load_known: true,
             held: if has {
                 vec![HeldShard {
                     sha256: None,
@@ -936,6 +937,7 @@
             disk_free_mb: 900_000,
             rtt_ms: Some(0.0),
             load: 0,
+            load_known: true,
             held: vec![HeldShard {
                 sha256: None,
                 pom_id: None,

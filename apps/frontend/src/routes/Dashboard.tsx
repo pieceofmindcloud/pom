@@ -183,7 +183,8 @@ export function Dashboard() {
     };
   }, [adding, group]);
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
-  const inFlight = peers.reduce((sum, p) => sum + p.load, 0);
+  const inFlightKnown = peers.every((p) => p.load != null);
+  const inFlight = inFlightKnown ? peers.reduce((sum, p) => sum + (p.load ?? 0), 0) : null;
   // As máquinas que a desimplantação vai alcançar, na ordem do pipeline. O nó
   // re-varre o cluster antes de agir; esta lista é só o que a confirmação
   // mostra, para o operador ver de quem está falando.
@@ -209,20 +210,64 @@ export function Dashboard() {
   const coverageUnconfirmed =
     (c.model_inventory ?? []).find((entry) => entry.model_id === c.active_model)
       ?.unreadable_nodes?.length ?? 0;
+  const localNode = node.data
+    ?? c.peers.find((peer) => peer.is_self || peer.node_id === c.self_id)?.node
+    ?? null;
+  const localModel = localNode?.active_model || localNode?.config?.model_label || null;
+  const localConfig = localNode?.config;
+  const localSlice = localConfig
+    && localConfig.total_layers > 0
+    && localConfig.start_layer <= localConfig.end_layer
+    ? layerRange(localConfig.start_layer, localConfig.end_layer)
+    : null;
+  const localSliceValue = localNode == null
+    ? t("dashboard.unknown")
+    : localSlice ?? t("dashboard.noSlice");
+  const localSliceDetail = localNode == null
+    ? t("dashboard.localDataUnavailable")
+    : localSlice
+      ? localModel ?? t("dashboard.localModelUnavailable")
+      : localModel
+        ? t("dashboard.localSliceUnavailable")
+        : t("dashboard.localNoSliceDetail");
+  const localModelValue = localNode == null
+    ? t("dashboard.unknown")
+    : localModel ?? t("dashboard.noModelAssigned");
+  const localModelDetail = localNode == null
+    ? t("dashboard.localDataUnavailable")
+    : localModel
+      ? isServing(localNode.status.state) ? t("dashboard.localServing") : t("dashboard.notServing")
+      : t("dashboard.localNoSliceDetail");
+  const localLoad = localNode && typeof localNode.load === "number" ? localNode.load : null;
 
   return <div className="flex h-full min-h-0 flex-col bg-ink">
     <div className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-2 shadow-panel backdrop-blur-md">
       <div className="grid min-w-0 flex-1 grid-cols-2 divide-x divide-y divide-line rounded-lg border border-line bg-raised/75 sm:flex sm:divide-y-0">
-        {/*
-          A cobertura sai do que os pares anunciam no gossip, não da leitura de
-          cada um: uma máquina cujo endereço morreu continua contribuindo
-          camadas. Verde de "completo" enquanto metade do modelo está ilegível
-          é o pior estado possível da tela - por isso o âmbar vence.
-        */}
-        <ClusterStat label={t("dashboard.coverage")} value={c.total_layers > 0 ? pct((c.covered_layers / c.total_layers) * 100) : "—"} detail={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : c.total_layers > 0 ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers }) : t("dashboard.noModelAssigned")} progress={c.total_layers > 0 ? (c.covered_layers / c.total_layers) * 100 : null} tone={c.complete && coverageUnconfirmed === 0 ? "aqua" : "amber"} />
-        <ClusterStat label={t("dashboard.machines")} value={num(c.peers.length)} detail={num(serving) + " " + t("dashboard.serving")} tone="iris" />
-        <ClusterStat label={t("dashboard.model")} value={c.active_model || "—"} detail={c.complete ? t("dashboard.closedPipeline") : t("dashboard.incompletePipeline")} tone={c.complete ? "aqua" : "amber"} />
-        <ClusterStat label={t("dashboard.inFlight")} value={num(inFlight)} detail={node.data ? t("dashboard.thisNode", { count: num(node.data.load) }) : t("dashboard.requestsNow")} tone={inFlight > 0 ? "amber" : "neutral"} />
+        {isAdmin ? (
+          <>
+            {/*
+              A cobertura sai do que os pares anunciam no gossip, não da leitura de
+              cada um: uma máquina cujo endereço morreu continua contribuindo
+              camadas. Verde de "completo" enquanto metade do modelo está ilegível
+              é o pior estado possível da tela - por isso o âmbar vence.
+            */}
+            <ClusterStat label={t("dashboard.coverage")} value={c.total_layers > 0 ? pct((c.covered_layers / c.total_layers) * 100) : "—"} detail={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : c.total_layers > 0 ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers }) : t("dashboard.noModelAssigned")} progress={c.total_layers > 0 ? (c.covered_layers / c.total_layers) * 100 : null} tone={c.complete && coverageUnconfirmed === 0 ? "aqua" : "amber"} />
+            <ClusterStat label={t("dashboard.machines")} value={num(c.peers.length)} detail={num(serving) + " " + t("dashboard.serving")} tone="iris" />
+            <ClusterStat label={t("dashboard.model")} value={c.active_model || "—"} detail={c.complete ? t("dashboard.closedPipeline") : t("dashboard.incompletePipeline")} tone={c.complete ? "aqua" : "amber"} />
+            <ClusterStat label={t("dashboard.inFlight")} value={inFlight == null ? t("dashboard.unknown") : num(inFlight)} detail={inFlight == null ? t("dashboard.inFlightUnavailable") : t("dashboard.thisNode", { count: num(node.data?.load) })} tone={inFlight == null ? "amber" : inFlight > 0 ? "amber" : "neutral"} />
+          </>
+        ) : (
+          <>
+            {/*
+              Node and infer profiles own a local fact, not the administrator's
+              cluster verdict. A missing local response is explicit; it never
+              becomes an empty model, an incomplete pipeline, or load zero.
+            */}
+            <ClusterStat label={t("dashboard.localSlice")} value={localSliceValue} detail={localSliceDetail} tone={localNode == null ? "amber" : localSlice ? "aqua" : "neutral"} />
+            <ClusterStat label={t("dashboard.model")} value={localModelValue} detail={localModelDetail} tone={localNode == null ? "amber" : localModel ? "aqua" : "neutral"} />
+            <ClusterStat label={t("dashboard.localLoad")} value={localLoad == null ? t("dashboard.unknown") : num(localLoad)} detail={localLoad == null ? t("dashboard.localDataUnavailable") : t("dashboard.localLoadDetail")} progress={localLoad == null ? null : Math.min(100, (localLoad / 8) * 100)} tone={localLoad == null ? "amber" : localLoad > 0 ? "amber" : "neutral"} />
+          </>
+        )}
       </div>
       <div className="flex items-center gap-2">
         {isAdmin && (

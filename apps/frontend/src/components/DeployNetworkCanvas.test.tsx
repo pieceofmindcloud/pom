@@ -183,6 +183,18 @@ describe("DeployNetworkCanvas", () => {
     view.unmount();
   });
 
+  it("diz quando a carga da máquina não foi observada em vez de mostrar zero", () => {
+    const current = plan([step(0, 3, "a", 1)], []);
+    current.machines = current.machines.map((item) => item.node_id === "a" ? { ...item, load: null } : item);
+
+    const view = renderCanvas(current, [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
+
+    const card = screen.getByText("carga em voo indisponível").closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card!).queryByText("0 em voo")).toBeNull();
+    view.unmount();
+  });
+
   it("ancora a curva no lado correto quando o receptor está à esquerda", () => {
     const from: CanvasPosition = { left: 600, top: 100 };
     const to: CanvasPosition = { left: 100, top: 100 };

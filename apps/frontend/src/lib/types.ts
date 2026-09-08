@@ -234,7 +234,8 @@ export interface PeerView {
   /** Endereço escolhido para falar com este peer, e a latência medida. */
   route: { addr: string; rtt_ms: number } | null;
   gateway_url: string | null;
-  load: number;
+  /** In-flight requests as reported by the peer itself; `null` means it was not readable. */
+  load: number | null;
   is_self: boolean;
   node: NodeInfo | null;
   unreachable: string | null;
@@ -384,7 +385,8 @@ export interface InferenceHeadCandidate {
   start_layer: number;
   end_layer: number;
   total_layers: number;
-  load: number;
+  /** In-flight requests reported by the candidate; null means unreadable. */
+  load: number | null;
   runtime_capacity: { n_ctx: number; max_new_tokens: number } | null;
   rtt_ms: number | null;
   rtt_age_ms: number | null;
@@ -1366,7 +1368,8 @@ export interface DeployMachine {
   ram_used_pct?: number | null;
   disk_free_mb: number;
   rtt_ms: number | null;
-  load: number;
+  /** In-flight requests observed by the survey; `null` means not observed. */
+  load: number | null;
   holds: Array<[number, number]>;
   taking: [number, number] | null;
   /** Post-deployment projection for this machine — the sum of the steps it
@@ -1387,8 +1390,8 @@ export interface DeployRouteOption {
 
 export interface DeployLoadDistribution {
   node_id: string;
-  current: number;
-  projected: number;
+  current: number | null;
+  projected: number | null;
   selected: boolean;
 }
 

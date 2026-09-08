@@ -114,6 +114,12 @@ states. They stay in the CSV because this panel is visible in both locales.
 The slice locale group also covers multipart part lists, summed-size loading
 state and explicit incomplete-set errors in both languages.
 
+The `dashboard.local*` messages describe the node and infer dashboard cards:
+local model, layer slice, in-flight requests and the explicit unavailable state
+when `/api/ui/node` cannot be read. The cluster-wide coverage and pipeline
+verdict remain administrator copy, so a profile with only local evidence never
+gets a translated zero or false incomplete alarm.
+
 ### provider.tsx
 - `LocaleProvider({ children, initialLocale })` - initial state from `initialLocale` or from `localStorage` `codai.locale` + `navigator.languages`; writes `<html lang>` on change; persists the choice.
 - `useI18n()` - `{ locale, setLocale, t }`.

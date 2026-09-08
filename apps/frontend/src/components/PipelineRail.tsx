@@ -196,7 +196,7 @@ function PeerCard({
                 : serverStateLabel(peer.node?.status.state)}
           </span>
         </span>
-        {peer.load > 0 && (
+        {peer.load != null && peer.load > 0 && (
           <span className="shrink-0 font-mono text-[0.68rem] text-amber">
             {t("pipeline.inFlight", { count: peer.load })}
           </span>

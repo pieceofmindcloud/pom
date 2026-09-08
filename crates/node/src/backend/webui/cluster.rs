@@ -15,7 +15,9 @@ pub(super) struct PeerView {
     /// Endereco por onde este no fala com o peer, e a latencia que mediu.
     pub(super) route: Option<RouteView>,
     pub(super) gateway_url: Option<String>,
-    pub(super) load: u32,
+    /// In-flight requests reported by this peer. A remote read that failed is
+    /// `None`, not zero: zero is a real idle measurement.
+    pub(super) load: Option<u32>,
     pub(super) is_self: bool,
     /// Present when the peer answered `/api/ui/node`.
     pub(super) node: Option<serde_json::Value>,
@@ -189,6 +191,18 @@ impl PeerRead {
             ..Self::default()
         }
     }
+}
+
+/// Extract the peer's own load reading from `/api/ui/node`.
+///
+/// `GatewayState.loads` only knows requests travelling through the local
+/// gateway. Using it for a remote peer made every remote card say zero even
+/// while that peer was serving a request. Missing or malformed remote data is
+/// deliberately kept unknown.
+fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
+    node.get("load")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|load| u32::try_from(load).ok())
 }
 
 pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]) -> String {
@@ -396,6 +410,11 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         } else {
             node
         };
+        let load = if is_self {
+            Some(state.loads.load(&p.node_id).await)
+        } else {
+            node.as_ref().and_then(reported_peer_load)
+        };
         views.push(PeerView {
             short_id: p.node_id[..p.node_id.len().min(12)].to_string(),
             node_id: p.node_id.clone(),
@@ -418,7 +437,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             inference_url: p.inference_url(),
             route: route_view_for(&p.node_id, &state.network.routes),
             gateway_url: p.gateway_url(),
-            load: state.loads.load(&p.node_id).await,
+            load,
             is_self,
             node,
             unreachable,
@@ -577,7 +596,10 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
 /// tem `inference_url` como as outras, e é o mesmo caminho que o
 /// `ready_for_pipeline` já percorre - um só código, então o card do nó local
 /// nunca mostra menos que o card de um remoto.
-pub(super) async fn peer_runtime(State(state): State<GatewayState>, Path(node_id): Path<String>) -> Response {
+pub(super) async fn peer_runtime(
+    State(state): State<GatewayState>,
+    Path(node_id): Path<String>,
+) -> Response {
     if !state
         .auth
         .read()
@@ -736,4 +758,17 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
     }
 
     Json(json!({ "peers": out }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reported_peer_load;
+    use serde_json::json;
+
+    #[test]
+    fn remote_load_is_present_only_when_the_peer_reported_it() {
+        assert_eq!(reported_peer_load(&json!({ "load": 3 })), Some(3));
+        assert_eq!(reported_peer_load(&json!({})), None);
+        assert_eq!(reported_peer_load(&json!({ "load": -1 })), None);
+    }
 }

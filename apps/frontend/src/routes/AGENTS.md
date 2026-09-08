@@ -93,8 +93,11 @@ Per-file list:
   while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
   links, search + clear, empty state. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
-- `Dashboard.tsx` — Cluster overview: coverage/machines/model/in-flight stats,
-  a graph view ("minima", `ModelNetworkCanvas`) or a details grid ("estendida").
+- `Dashboard.tsx` — Cluster overview: the admin sees cluster
+  coverage/machines/model/in-flight stats; node and infer see local model,
+  slice and in-flight requests instead. A graph view ("minima",
+  `ModelNetworkCanvas`) or a details grid ("estendida") is used where the
+  profile permits it.
   The details grid lists the **whole network**, not just the pipeline:
   `networkPeers` (`../lib/networkPeers`) splits `c.peers` into the active
   deployment first (in layer order, `dashboard.groupDeployed*`) and the rest of
@@ -125,6 +128,10 @@ Per-file list:
   canvas receives the
   directional RTT measurements for its adjacent routing edges from
   `useNetworkRtt`, with the same badge presentation used by deployment.
+- In `Dashboard`, node and infer profiles do not reuse the administrator's
+  cluster verdict: they show the local model, its real layer slice and local
+  in-flight request count. A missing `/api/ui/node` response is rendered as
+  unavailable, never as an empty model, incomplete pipeline or zero.
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
   Simple/Complete strategy, central peer map, compact property inspector

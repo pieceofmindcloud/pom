@@ -12,14 +12,16 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it } from "vitest";
 import { Dashboard } from "./Dashboard";
 import { LocaleProvider } from "../i18n/provider";
-import { fakeCluster, fakeSlicePeer } from "../test/fixtures";
+import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer } from "../test/fixtures";
 import { keys } from "../lib/queries";
 import { ProfileProvider } from "../lib/profile";
+import type { NodeInfo } from "../lib/types";
 
 function mount(
   cluster = fakeCluster([], "qwen35"),
-  profile: "admin" | "node" = "admin",
+  profile: "admin" | "node" | "infer" = "admin",
   rttMeasurements?: { from_node_id: string; to_node_id: string; rtt_ms: number; transport: string }[],
+  nodeOverride?: Partial<NodeInfo> | null,
 ) {
   // active_model is set, but there are no peers: the estendida view shows
   // "Nenhuma maquina na rede" in its panel.
@@ -36,7 +38,7 @@ function mount(
   if (rttMeasurements) {
     client.setQueryData(keys.networkRtt(["a", "b"]), { measurements: rttMeasurements });
   }
-  client.setQueryData(keys.node, {
+  const defaultNode = {
     node_id: "no-0", short_id: "no-0", hostname: "no-0",
     role: "peer" as const, profile, connection_key: "",
     p2p_port: 42777, gateway_port: 8080, inference_port: 8181,
@@ -45,7 +47,10 @@ function mount(
       log_path: null, reported_total_layers: 0, changed_at: "" },
     system: { hostname: "no-0", os: "linux", arch: "x86_64", cpu_count: 4, load_avg: [], ram: { total_mb: 16384, used_mb: 4096, available_mb: 12288, used_pct: 25 }, gpu_kind: "none", gpu_note: null, gpus: [], gpu_processes: [], wired_mb: 0, disk: { total_mb: 100000, free_mb: 50000, mount_point: "/" }, sampled_at: "2026-08-15T00:00:00Z" }, peer_count: 0, load: 0,
     active_model: "", build_commit: "abc1234", dev_update: false,
-  });
+  } satisfies Partial<NodeInfo>;
+  if (nodeOverride !== null) {
+    client.setQueryData(keys.node, { ...defaultNode, ...nodeOverride });
+  }
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
@@ -194,5 +199,57 @@ describe("Dashboard", () => {
       expect(screen.getByRole("button", { name: "Adicionar" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Desimplantar" })).toBeTruthy();
     });
+  });
+
+  it.each(["node", "infer"] as const)(
+    "mostra a fatia local e não transforma a cobertura do cluster em alarme no perfil %s",
+    async (profile) => {
+      const cluster = fakeCluster([
+        fakeSlicePeer("self", 4, 11, {
+          is_self: true,
+          node: fakeNode({ node_id: "self", short_id: "self", profile }),
+        }),
+      ]);
+      cluster.active_model = "";
+      cluster.total_layers = 0;
+      cluster.covered_layers = 0;
+      cluster.complete = false;
+      cluster.model_inventory = [];
+
+      mount(cluster, profile, undefined, {
+        ...fakeNode({ node_id: "self", short_id: "self", profile, load: 0 }),
+        config: {
+          ...fakeNode().config,
+          model_path: "/models/qwen.gguf",
+          model_label: "qwen35",
+          deploy_id: "deploy-qwen",
+          deployment_name: "qwen35",
+          start_layer: 4,
+          end_layer: 11,
+          total_layers: 32,
+        } as NodeInfo["config"],
+      });
+
+      await waitFor(() => expect(screen.getByText("Fatia deste nó")).toBeTruthy());
+      expect(screen.getAllByText("L4–11").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("qwen35").length).toBeGreaterThan(0);
+      expect(screen.queryByText("pipeline incompleto")).toBeNull();
+      expect(screen.queryByText("nenhum modelo atribuído")).toBeNull();
+    },
+  );
+
+  it("diz que os dados locais são desconhecidos quando o perfil não consegue lê-los", async () => {
+    const cluster = fakeCluster([
+      fakePeer({ node_id: "self", is_self: true, load: null }),
+    ], "");
+    cluster.total_layers = 0;
+    cluster.covered_layers = 0;
+    cluster.complete = false;
+
+    mount(cluster, "infer", undefined, null);
+
+    await waitFor(() => expect(screen.getAllByText("Os dados ao vivo deste nó estão indisponíveis").length).toBeGreaterThan(0));
+    expect(screen.queryByText("pipeline incompleto")).toBeNull();
+    expect(screen.queryByText("nenhum modelo atribuído")).toBeNull();
   });
 });

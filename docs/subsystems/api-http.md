@@ -591,6 +591,8 @@ o modelo pedido, além da cabeça escolhida, carga em voo e RTT/idade de cada
 candidata. O planejador exige cobertura completa; a cobertura vem primeiro e,
 entre faixas equivalentes, um score pondera RTT fresco e carga em voo antes do
 desempate por `node_id`. A medição vale cinco minutos.
+`candidates[].load` vem do `/api/ui/node` da própria candidata; se essa leitura
+não chegar, ele é `null`, não zero.
 Sem candidata a resposta é `status: "no_candidate"`; com cabeça mas sem
 cobertura completa é `status: "incomplete_pipeline"`. RTT vencido aparece
 para diagnóstico, mas não entra na escolha.
@@ -725,6 +727,13 @@ troca o fingerprint e força nova coleta antes do fim do TTL. O `ETag` ignora
 somente `system.sampled_at`, que é ruído de amostragem; métricas e topologia
 continuam invalidando a versão. `x-state-version` é monotônico para snapshots
 alterados.
+
+No payload de `/api/ui/cluster`, `PeerView.load` é a leitura de requisições em
+voo publicada pelo próprio peer. Para o peer local o gateway consulta seu
+`LoadTracker`; para peers remotos usa o campo `load` do respectivo
+`/api/ui/node`. Se a leitura remota não chega ou não contém um número válido,
+o campo é `null`, não zero. O planner de implantação preserva a mesma
+distinção em `DeployMachine.load` e na distribuição de carga.
 
 A leitura do `/api/ui/node` de cada peer percorre `PeerInfo::gateway_candidates()`
 - uma URL por endereço conhecido, o `addr` primeiro - e alimenta a memória de

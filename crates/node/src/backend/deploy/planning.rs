@@ -32,7 +32,9 @@ pub struct MachineView {
     pub(super) ram_free_mb: u64,
     pub(super) disk_free_mb: u64,
     pub(super) rtt_ms: Option<f64>,
-    pub(super) load: u32,
+    /// In-flight requests reported by the machine itself. `None` means the
+    /// survey could not read that machine's live node data.
+    pub(super) load: Option<u32>,
     /// Ranges of this set it already holds.
     pub(super) holds: Vec<[u32; 2]>,
     /// Range it takes in the plan being shown, if any.
@@ -263,8 +265,8 @@ pub struct RouteOption {
 #[derive(Debug, Clone, Serialize)]
 pub struct LoadDistribution {
     pub(super) node_id: String,
-    pub(super) current: u32,
-    pub(super) projected: u32,
+    pub(super) current: Option<u32>,
+    pub(super) projected: Option<u32>,
     pub(super) selected: bool,
 }
 
@@ -580,7 +582,11 @@ pub(super) fn auto_assign(
                     0
                 },
                 if strategy == DeployStrategy::Complete {
-                    m.load
+                    if m.load_known {
+                        m.load
+                    } else {
+                        u32::MAX
+                    }
                 } else {
                     0
                 },
@@ -1619,7 +1625,7 @@ pub(super) fn plan_with_rtt_options(
             ram_free_mb: m.ram_free_mb,
             disk_free_mb: m.disk_free_mb,
             rtt_ms: m.rtt_ms,
-            load: m.load,
+            load: m.load_known.then_some(m.load),
             holds: m
                 .held
                 .iter()
@@ -1642,24 +1648,26 @@ pub(super) fn plan_with_rtt_options(
         .iter()
         .map(|step| step.target_node_id.as_str())
         .collect();
-    let mut projected: std::collections::HashMap<&str, u32> = machines
+    let mut projected: std::collections::HashMap<&str, Option<u32>> = machines
         .iter()
-        .map(|m| (m.node_id.as_str(), m.load))
+        .map(|m| (m.node_id.as_str(), m.load_known.then_some(m.load)))
         .collect();
     for step in &steps {
         if let Some(value) = projected.get_mut(step.target_node_id.as_str()) {
-            *value = value.saturating_add(1);
+            if let Some(load) = value {
+                *load = load.saturating_add(1);
+            }
         }
     }
     let load_distribution = machines
         .iter()
         .map(|machine| LoadDistribution {
             node_id: machine.node_id.clone(),
-            current: machine.load,
+            current: machine.load_known.then_some(machine.load),
             projected: projected
                 .get(machine.node_id.as_str())
-                .copied()
-                .unwrap_or(machine.load),
+                .cloned()
+                .unwrap_or_else(|| machine.load_known.then_some(machine.load)),
             selected: selected_ids.contains(machine.node_id.as_str()),
         })
         .collect();
@@ -1788,7 +1796,11 @@ pub(super) fn gb(mb: u64) -> String {
 /// another range is exactly the one an operator wants to swap with, and hiding
 /// it would make the swap impossible. Picking a busy machine is caught by the
 /// one-range-per-node rule instead, which is the honest place for it.
-pub(super) fn alternatives(c: &Candidate, machines: &[Machine], kind: DeployKind) -> Vec<Alternative> {
+pub(super) fn alternatives(
+    c: &Candidate,
+    machines: &[Machine],
+    kind: DeployKind,
+) -> Vec<Alternative> {
     let need = needed_mb(c.size_bytes);
     machines
         .iter()

@@ -57,11 +57,11 @@ function rangeForEdge(ranges: GraphRange[], edge: RoutingEdge, side: "from" | "t
     ?? ranges.find((range) => range.node_id === id);
 }
 
-function Meter({ label, used, total, unknown = false }: { label: string; used: number | null; total: number | null; unknown?: boolean }) {
+function Meter({ label, used, total, unknown = false, detail }: { label: string; used: number | null; total: number | null; unknown?: boolean; detail?: string }) {
   const { t } = useI18n();
   const percent = used != null && total != null && total > 0 ? Math.min(100, (used / total) * 100) : null;
   const tone = percent != null && percent >= 90 ? "bg-rose" : percent != null && percent >= 70 ? "bg-amber" : "bg-aqua";
-  const value = unknown || percent == null ? t("canvas.meterUnknown") : `${used!.toFixed(1)} / ${total!.toFixed(1)} GiB`;
+  const value = detail ?? (unknown || percent == null ? t("canvas.meterUnknown") : `${used!.toFixed(1)} / ${total!.toFixed(1)} GiB`);
   return <div className="mt-2">
     <div className="mb-1 flex justify-between gap-2 text-[9px] uppercase tracking-[0.12em] text-faint"><span>{label}</span><span className="normal-case tracking-normal text-muted">{value}</span></div>
     <div className={clsx("h-1.5 overflow-hidden rounded-full bg-line", (unknown || percent == null) && "bg-[repeating-linear-gradient(135deg,transparent_0,transparent_4px,rgba(124,135,165,.3)_4px,rgba(124,135,165,.3)_6px)]")} aria-label={`${label}: ${value}`}>
@@ -165,7 +165,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
       </div>
       <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted"><Dot tone={rediscovering ? "amber" : unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={rediscovering || (serving && !unread)} />{rediscovering ? t("pipeline.rediscovering") : unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
     </div>
-    <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
+    <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load != null && range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
     {placement && <LayerPlacementMeter placement={placement} />}
     <Meter label={gpus.length > 1 ? t("canvas.vramTotal", { count: gpus.length }) : "VRAM"} used={vramUsed} total={vramTotal} unknown={vramTotal == null} />
     {gpus.length > 0 ? (
@@ -188,7 +188,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
       />
     )}
     <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
-    <Meter label={t("canvas.load")} used={range.load} total={8} />
+    <Meter label={t("canvas.load")} used={range.load} total={8} detail={range.load == null ? t("canvas.meterUnknown") : t("canvas.inFlight", { count: range.load })} />
   </article>;
 }
 
@@ -206,6 +206,7 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
   // não o abre pelo clique no desenho. A regra é uma só, em `lib/access.ts`.
   const { profile } = useProfile();
   const detailed = canSeePeerDetails(profile);
+  const showClusterCoverage = profile === "admin";
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const modelIds = useMemo(() => Array.from(new Set([
@@ -307,7 +308,7 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
         se está a afirmar: "32 de 32 - será?". A explicação inteira fica no
         `title`, para o distintivo não crescer.
       */}
-      {inventory && <span title={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : undefined} className={clsx("shrink-0 rounded-md px-2 py-1 font-mono text-[10px]", inventory.complete && coverageUnconfirmed === 0 ? "bg-aqua/15 text-aqua" : "bg-amber/15 text-amber")}>L{inventory.covered_layers}/{inventory.total_layers}{coverageUnconfirmed > 0 ? "?" : ""}</span>}
+      {showClusterCoverage && inventory && <span title={coverageUnconfirmed > 0 ? t("dashboard.coverageUnconfirmed", { count: coverageUnconfirmed }) : undefined} className={clsx("shrink-0 rounded-md px-2 py-1 font-mono text-[10px]", inventory.complete && coverageUnconfirmed === 0 ? "bg-aqua/15 text-aqua" : "bg-amber/15 text-amber")}>L{inventory.covered_layers}/{inventory.total_layers}{coverageUnconfirmed > 0 ? "?" : ""}</span>}
       <span className="h-5 w-px bg-line" />
       <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>

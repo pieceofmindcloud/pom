@@ -16,13 +16,11 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`
 `node` can slip past one component's `?.` and crash the next; the maintenance
 pendência está em `TODO.md`, item 23.
 
-- `InferenceHeadChoice.tsx` - no Chat infer, não mostra nada quando existe uma
-  única cabeça disponível; com duas ou mais, usa o mesmo combo nativo do seletor
-  de modelo para inspecionar as candidatas layer-zero. As opções carregam nome,
-  id, RTT e frescura, carga em voo, faixa, capacidade e a marca da escolhida; o
-  critério, fallback e pipeline incompleto ficam nas opções desativadas do menu.
-  Sem candidata, mantém um aviso claro. O componente não apresenta peers fora
-  desse recorte.
+- `InferenceHeadChoice.tsx` - aviso compacto do Chat infer: exibe a cabeça
+  escolhida, as alternativas layer-zero, RTT fresco ou vencido, carga em voo e
+  os estados sem candidata e pipeline incompleto. A carga desconhecida vira
+  "indisponível", nunca zero. O componente não apresenta peers fora desse
+  recorte.
 
 - `setup-wizard/` - Componentes visuais reutilizáveis do wizard de primeiro
   acesso: layout com progresso e ações, cards de intenção, hardware, nó,
@@ -205,7 +203,10 @@ Per-file list:
   `onOpen`, so it neither opens the window nor advertises a double-click in its
   `title` - the same rule that removes the Details tab and its view switch from
   the Dashboard. The graph also renders directional RTT badges using the same
-  label component as the deploy map.
+  label component as the deploy map. The cluster coverage badge is an admin
+  summary; node and infer profiles use their own model and slice data instead.
+  A missing peer load stays visibly unknown in the card meter and is never
+  rendered as zero.
 - `RouteRttLabel.tsx` - selo visual de RTT direcional compartilhado pelo mapa
   do Painel e pelo mapa de implantação. O texto e as classes são os mesmos nos
   dois contextos, inclusive quando a medição ainda não existe (`RTT -`).
@@ -388,7 +389,9 @@ Key logic carriers:
   deixa o RTT da aresta ausente em vez de copiar a medição do nó de destino; o
   card ainda pode mostrar o RTT local anunciado pela própria máquina. Réplicas exatas podem aparecer empilhadas na
   mesma coluna. Em modelo inteiro, o mapa aceita uma única máquina e recusa uma
-  segunda com aviso; em Tensor, o mapa limita os ranks disponíveis.
+  segunda com aviso; em Tensor, o mapa limita os ranks disponíveis. A carga em
+  voo do card vem do relatório vivo da própria máquina; quando esse relatório
+  não chega, o medidor mostra indisponível e não inventa zero.
   O `DeployModel` calcula `mapNodeIds` uma vez e passa essa mesma população
   para os cards e para os seletores primary/workers; TP pré-fatiado aceita
   worker mapeado sem o rank local, enquanto TP de modelo inteiro exige o GGUF

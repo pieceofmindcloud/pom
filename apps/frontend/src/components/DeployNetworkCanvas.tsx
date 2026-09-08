@@ -19,6 +19,7 @@ import type { DeployMachine, DeployPlan, DeploySelection } from "../lib/types";
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { AlertTooltip, Badge, Button, Dot, Progress } from "./ui";
+import { useI18n } from "../i18n/provider";
 
 type DeployNetworkCanvasProps = {
   plan: DeployPlan;
@@ -186,6 +187,7 @@ function NodeCard({
 }) {
   const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
+  const { t } = useI18n();
   return (
     <article
       role="button"
@@ -348,10 +350,10 @@ function NodeCard({
           tone={machine.ram_used_pct != null && machine.ram_used_pct >= 88 ? "amber" : "iris"}
         />
         <CapacityBar
-          label="Carga"
-          value={Math.min(100, (machine.load / 8) * 100)}
-          detail={`${machine.load} em voo`}
-          tone={machine.load >= 7 ? "amber" : "aqua"}
+          label={t("canvas.load")}
+          value={machine.load == null ? null : Math.min(100, (machine.load / 8) * 100)}
+          detail={machine.load == null ? t("dashboard.inFlightUnavailable") : t("canvas.inFlight", { count: machine.load })}
+          tone={machine.load != null && machine.load >= 7 ? "amber" : "aqua"}
         />
       </div>
     </article>

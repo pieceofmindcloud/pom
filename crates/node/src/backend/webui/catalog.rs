@@ -1186,7 +1186,9 @@ pub(super) struct InferenceHeadCandidate {
     pub(super) start_layer: u32,
     pub(super) end_layer: u32,
     pub(super) total_layers: u32,
-    pub(super) load: u32,
+    /// In-flight requests reported by the candidate itself. `None` means the
+    /// candidate's live node view could not be read.
+    pub(super) load: Option<u32>,
     pub(super) runtime_capacity: Option<crate::network::RuntimeCapacity>,
     pub(super) rtt_ms: Option<f64>,
     pub(super) rtt_age_ms: Option<u64>,
@@ -1203,6 +1205,61 @@ pub(super) struct InferenceHeadsResponse {
     pub(super) selection_policy: &'static str,
     pub(super) rtt_valid_for_secs: u64,
     pub(super) candidates: Vec<InferenceHeadCandidate>,
+}
+
+/// Read a candidate's live load from the candidate itself. The local tracker
+/// only knows requests that entered this gateway, so it cannot stand in for a
+/// remote candidate and its unseen entries must not become zero.
+fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
+    node.get("load")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|load| u32::try_from(load).ok())
+}
+
+async fn live_peer_load(
+    state: &GatewayState,
+    peer: &PeerInfo,
+    connection_key: &str,
+) -> Option<u32> {
+    if peer.node_id == state.network.node_id {
+        return Some(state.loads.load(&peer.node_id).await);
+    }
+
+    let client = state.peer_http.for_peer(&peer.node_id).ok()?;
+    for base in peer.gateway_candidates() {
+        let response = tokio::time::timeout(
+            PEER_TIMEOUT,
+            client
+                .get(format!("{base}/api/ui/node"))
+                .bearer_auth(connection_key)
+                .send(),
+        )
+        .await;
+        let Ok(Ok(response)) = response else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(node) = response.json::<serde_json::Value>().await else {
+            continue;
+        };
+        return reported_peer_load(&node);
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reported_peer_load;
+    use serde_json::json;
+
+    #[test]
+    fn infer_load_stays_unknown_when_the_candidate_did_not_report_it() {
+        assert_eq!(reported_peer_load(&json!({ "load": 4 })), Some(4));
+        assert_eq!(reported_peer_load(&json!({})), None);
+        assert_eq!(reported_peer_load(&json!({ "load": -1 })), None);
+    }
 }
 
 /// Gives an infer node only the layer-zero choices for one model. It is a
@@ -1267,11 +1324,18 @@ pub(super) async fn inference_heads(
         })
     };
 
+    let connection_key = state.auth.read().await.connection_key.clone();
+    let loads = futures::future::join_all(
+        heads
+            .iter()
+            .map(|peer| live_peer_load(&state, peer, &connection_key)),
+    )
+    .await;
     let candidates = if heads.is_empty() {
         Vec::new()
     } else {
         let mut candidates = Vec::with_capacity(heads.len());
-        for peer in heads {
+        for (peer, load) in heads.into_iter().zip(loads) {
             let rtt = rtt_snapshots
                 .iter()
                 .find(|entry| entry.measurement.target_node_id == peer.node_id);
@@ -1295,7 +1359,7 @@ pub(super) async fn inference_heads(
                 start_layer: peer.start_layer,
                 end_layer: peer.end_layer,
                 total_layers: peer.total_layers,
-                load: state.loads.load(&peer.node_id).await,
+                load,
                 runtime_capacity: peer.runtime_capacity,
                 rtt_ms,
                 rtt_age_ms,

@@ -70,7 +70,10 @@ pub(super) struct Machine {
     /// `transfer.rs` checks before it writes a byte.
     pub(super) disk_free_mb: u64,
     pub(super) rtt_ms: Option<f64>,
+    /// Numeric fallback used by the planner when a peer did not expose load.
+    /// `load_known` keeps that fallback out of the UI.
     pub(super) load: u32,
+    pub(super) load_known: bool,
     pub(super) held: Vec<HeldShard>,
 }
 
@@ -80,7 +83,11 @@ pub(super) struct PairwiseRtt {
 }
 
 impl PairwiseRtt {
-    pub(super) fn remember(&mut self, from_node_id: &str, measurement: &crate::route::RttMeasurement) {
+    pub(super) fn remember(
+        &mut self,
+        from_node_id: &str,
+        measurement: &crate::route::RttMeasurement,
+    ) {
         self.values.insert(
             (from_node_id.to_string(), measurement.target_node_id.clone()),
             measurement.rtt_ms,
@@ -117,7 +124,13 @@ impl Machine {
             .iter()
             .find(|s| s.start_layer == start && s.end_layer == end && !s.virtual_slice)
     }
-    pub(super) fn holds_tp(&self, start: u32, end: u32, rank: u32, size: u32) -> Option<&HeldShard> {
+    pub(super) fn holds_tp(
+        &self,
+        start: u32,
+        end: u32,
+        rank: u32,
+        size: u32,
+    ) -> Option<&HeldShard> {
         self.held.iter().find(|s| {
             s.start_layer == start
                 && s.end_layer == end
@@ -132,6 +145,16 @@ impl Machine {
             self.hostname.clone()
         }
     }
+}
+
+/// Read the load from the peer's own `/api/ui/node` response.
+///
+/// The coordinator's `LoadTracker` only observes requests through itself. A
+/// missing remote response must not become zero in the deployment preview.
+fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
+    node.get("load")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|load| u32::try_from(load).ok())
 }
 
 /// Ask every peer what it has, in parallel.
@@ -157,7 +180,11 @@ pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize
 /// it describes the peer's whole catalog, while deployment only needs the
 /// selected ranges. The group presence also keeps a slow, unrelated model
 /// from turning into a refusal for this deployment.
-pub(super) fn catalog_contains_group(body: &serde_json::Value, group: &str, kind: DeployKind) -> bool {
+pub(super) fn catalog_contains_group(
+    body: &serde_json::Value,
+    group: &str,
+    kind: DeployKind,
+) -> bool {
     let in_shards = |set: &serde_json::Value| {
         set.get("group").and_then(|value| value.as_str()) == Some(group)
             || set.get("model_label").and_then(|value| value.as_str()) == Some(group)
@@ -382,7 +409,6 @@ pub(super) async fn survey(
                 .insert((self_id.clone(), node_id.clone()), *rtt_ms);
         }
     }
-    let loads = state.loads.clone();
     let connection_key = state.auth.read().await.connection_key.clone();
 
     let futures = peers.into_iter().map(|peer| {
@@ -396,7 +422,6 @@ pub(super) async fn survey(
         } else {
             route_rtt.get(&peer.node_id).copied()
         };
-        let loads = loads.clone();
         let group = group.to_string();
         let connection_key = connection_key.clone();
         async move {
@@ -507,6 +532,7 @@ pub(super) async fn survey(
                 _ => None,
             };
             let (gpu_free_mb, ram_free_mb) = memory_capacity(node.get("system"));
+            let load = reported_peer_load(&node);
 
             let mut held: Vec<HeldShard> = match kind {
                 DeployKind::Shards => body
@@ -629,7 +655,8 @@ pub(super) async fn survey(
                         .map(|v| v as u64)
                         .unwrap_or(peer.disk_free_mb),
                     rtt_ms,
-                    load: loads.load(&peer.node_id).await,
+                    load: load.unwrap_or(0),
+                    load_known: load.is_some(),
                     held,
                 },
                 rtt_report,
@@ -797,3 +824,14 @@ pub(super) fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShar
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::reported_peer_load;
+    use serde_json::json;
+
+    #[test]
+    fn deployment_load_stays_unknown_when_the_peer_did_not_report_it() {
+        assert_eq!(reported_peer_load(&json!({ "load": 2 })), Some(2));
+        assert_eq!(reported_peer_load(&json!({})), None);
+    }
+}

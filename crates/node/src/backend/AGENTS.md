@@ -163,9 +163,11 @@ profile policy remains the effective authorization boundary.
   `pom admin-anchor` usa: não existe segunda política.
   `GET /api/ui/infer/heads?model=...` é a única leitura dedicada ao perfil
   infer: entrega apenas as candidatas de layer zero e a escolha do planejador,
-  sem peers gerais nem ações de controle. A validade do RTT é de cinco
-  minutos; valores vencidos aparecem como diagnóstico, mas não entram na
-  seleção da geração.
+  sem peers gerais nem ações de controle. A carga de cada candidata vem do
+  próprio `/api/ui/node` e fica `null` quando o relatório não chega, para que a
+  UI mostre indisponível em vez de zero. A validade do RTT é de cinco minutos;
+  valores vencidos aparecem como diagnóstico, mas não entram na seleção da
+  geração.
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
@@ -179,6 +181,11 @@ profile policy remains the effective authorization boundary.
   candidato utilizável ela chama `Network::request_peer_addresses` e devolve
   `rediscovering: true` em vez de `unreachable`, e `model_inventory[]` nomeia em
   `unreadable_nodes` os pares de quem a cobertura depende sem conseguir ler.
+  O `PeerView.load` é a carga em voo reportada pelo próprio peer: para o nó
+  local vem do `LoadTracker` local, e para peers remotos vem do JSON de
+  `/api/ui/node`. Leitura remota ausente ou inválida permanece `null`, porque
+  o zero do tracker local significa apenas que nenhuma requisição passou por
+  este gateway.
   Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/rede-p2p.md`,
   "Endereço que deixou de responder".
   `plan` reads the GGUF header from the node that owns `model_path` and, when
@@ -300,6 +307,10 @@ profile policy remains the effective authorization boundary.
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  A carga em voo do survey vem do `/api/ui/node` de cada máquina. A struct
+  interna mantém zero apenas para que o planner ordene máquinas sem leitura,
+  mas `load_known` impede que esse fallback chegue à `MachineView` ou à UI;
+  nesse caso a carga publicada é `null`.
   Depois de montar os passos (e só com `blocked` vazio), `plan_endpoint` chama
   `enrich_capacity_previews`: uma requisição `capacity-preview` por `Step`
   materializado localmente (não `merged`, `target_path` presente), agregada

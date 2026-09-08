@@ -67,5 +67,5 @@ como descartável e não absorve a mudança no produtor do anúncio.
 
 - [x] **Passo 1: Rodar os testes focados e o conjunto proporcional do crate.** Os dois testes da promoção passam; os nove vermelhos completos são o baseline preexistente declarado pelo captain.
 - [x] **Passo 2: Rodar `cargo check -p node` e `cargo clippy -p node --all-targets -- -D warnings`**, separando avisos e falhas preexistentes claramente. `cargo check` passa; o clippy estrito para em diagnósticos preexistentes de `llama-engine` e do crate `node`, fora dos arquivos tocados.
-- [ ] **Passo 3: Fazer `git pull --rebase` sobre `origin/feat/implantar3` antes da publicação**, parando se houver conflito na tabela de escopo.
-- [ ] **Passo 4: Commitar somente estado coerente e reportar o commit e a linha.**
+- [x] **Passo 3: Fazer `git pull --rebase` sobre `origin/feat/implantar3` antes da publicação**, parando se houver conflito na tabela de escopo. O rebase foi limpo.
+- [x] **Passo 4: Commitar somente estado coerente e reportar o commit e a linha.** `ba89c8b` foi publicado em `origin/feat/implantar3` sem force.

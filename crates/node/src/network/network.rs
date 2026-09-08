@@ -1070,7 +1070,7 @@ impl Network {
         self
     }
 
-    pub fn with_authority_pubkey(mut self, pubkey: String) -> Self {
+    pub fn with_authority_pubkey(self, pubkey: String) -> Self {
         *self.authority_pubkey.write().expect("authority key lock") = pubkey;
         self
     }

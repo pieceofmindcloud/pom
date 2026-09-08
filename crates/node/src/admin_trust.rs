@@ -885,7 +885,7 @@ impl AdminTrust {
         )?;
         document.authority_epoch = document.authority_epoch.saturating_add(1);
         document.primary = offer.successor.clone();
-        document.primary_history.push(offer.successor);
+        document.primary_history.push(offer.successor.clone());
         document.pending_transfer = None;
         document.completed_transfers.push(CompletedTransfer { offer, acceptance });
         validate_document(&document)?;

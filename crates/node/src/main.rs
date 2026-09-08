@@ -516,9 +516,10 @@ fn anchor_admin(
         (document, true)
     };
 
-    let expected = crate::admin_trust::fingerprint_of(&document.anchor.principal.pubkey);
+    let expected = crate::admin_trust::anchor_fingerprint(&document);
     println!("impressão digital da autoridade: {expected}");
-    if fingerprint.map(str::trim) != Some(expected.as_str()) {
+    // A mesma conferência que a interface faz. Duas seriam duas políticas.
+    if !fingerprint.is_some_and(|typed| crate::admin_trust::fingerprint_matches(typed, &expected)) {
         bail!(
             "a impressão digital não foi confirmada; confira a linha acima e execute novamente com --fingerprint {expected} --confirm"
         );

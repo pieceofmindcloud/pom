@@ -10,6 +10,14 @@ import { api } from "./api";
 
 export const adminAuthorityPaths = {
   view: "/api/ui/network/admin-authority",
+  /**
+   * A raiz de confiança, e não o roster de autoridade.
+   *
+   * Fica fora da superfície de admin de propósito: antes de ancorar, um nó
+   * com `profile: admin` não tem capacidade efetiva de admin, e é justamente
+   * aí que o operador precisa desta tela. Ver `webui/trust.rs`.
+   */
+  trustAnchor: "/api/ui/network/trust-anchor",
   requestNode: "/api/ui/network/request-node",
   relinquishNode: "/api/ui/network/relinquish-node",
   resign: "/admin/authority/resign",
@@ -18,6 +26,23 @@ export const adminAuthorityPaths = {
   promote: (nodeId: string) =>
     `/admin/nodes/${encodeURIComponent(nodeId)}/promote-admin`,
 } as const;
+
+export const trustAnchorApi = {
+  /**
+   * Instala a âncora transportada pelo operador.
+   *
+   * `fingerprint` é digitado por ele a partir do que leu no admin. A tela
+   * nunca o deriva de `document`: derivá-lo anularia a conferência, que é a
+   * única coisa que faz o arquivo colado valer alguma coisa. O servidor
+   * recusa loopback ausente, nó já ancorado e valor que não corresponde.
+   */
+  install(document: string, fingerprint: string) {
+    return api.post<{ anchored: boolean; fingerprint: string }>(
+      adminAuthorityPaths.trustAnchor,
+      { document, fingerprint },
+    );
+  },
+};
 
 export const adminAuthorityApi = {
   promoteNode(nodeId: string) {

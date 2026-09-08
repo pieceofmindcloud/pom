@@ -148,6 +148,7 @@ mod params;
 mod routes;
 mod setup;
 mod slicing;
+mod trust;
 
 pub use catalog_cache::*;
 pub use cluster::*;
@@ -158,6 +159,7 @@ pub use params::*;
 pub use routes::*;
 pub use setup::*;
 pub use slicing::*;
+pub use trust::*;
 
 include!("tests/early.rs");
 include!("tests/core_a.rs");

@@ -268,7 +268,7 @@ mod undeploy_tests {
 
     #[tokio::test]
     async fn admin_with_valid_connection_key_passes_both_authority_gates() {
-        let mut state = state_with("eu", vec![]).await;
+        let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = NodeProfile::Admin;
         let app = routes().with_state(state);
 

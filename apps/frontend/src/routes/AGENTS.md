@@ -317,6 +317,18 @@ Per-file list:
   administrators, promotion chain and resignation eligibility. Its mutations
   are isolated in `lib/adminAuthority.ts`; pending principal-transfer and
   infer-to-node offers are answered by `Notifications`.
+- `TrustAnchor.tsx` - a raiz de confiança da máquina, os dois lados de ancorar
+  a autoridade, atrás de `GET/POST /api/ui/network/trust-anchor`. Mostra a
+  impressão digital da âncora em grupos de oito com botão de cópia, e o estado
+  **ancorado** ou **por ancorar** num relance. Num nó ainda sem raiz, mostra o
+  formulário que cola a cadeia assinada e recebe a impressão digital **digitada
+  à mão** - o campo nunca é pré-preenchido a partir do conteúdo colado, porque
+  é ele que valida o arquivo. Fora do loopback o formulário dá lugar à
+  explicação; a decisão continua sendo do servidor, que devolve um `reason`
+  estável (`not_loopback`, `already_anchored`, `invalid_document`,
+  `fingerprint_mismatch`, `install_failed`) para a tela traduzir a recusa em
+  vez de repetir o texto do servidor. Vive fora do gate de perfil - ver o
+  cabeçalho do arquivo e `lib/access.ts`. Teste: `TrustAnchor.test.tsx`.
 - `Preferences.tsx` - Local settings screen under Configurações: owns the
   administrative exposure mode and gateway port, displays the generated access
   token only in network mode, and saves them to `pom.json` through

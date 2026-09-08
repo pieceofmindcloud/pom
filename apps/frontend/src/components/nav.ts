@@ -2,6 +2,7 @@ import {
   BookOpen,
   Boxes,
   ChartNoAxesColumn,
+  Fingerprint,
   FolderTree,
   Gauge,
   History,
@@ -113,6 +114,15 @@ export const NAV: NavSection[] = [
     children: [
       { labelKey: "nav.network", to: "/config/rede", icon: Network, promoteProfiles: ["infer"] },
       { labelKey: "nav.administration", to: "/config/administracao", icon: ShieldCheck },
+      // Promovida para o `infer` porque ancorar a confiança é o trabalho que
+      // vem antes de haver autoridade, e um nó de inferência também recebe a
+      // âncora. Ver o cabeçalho de `routes/TrustAnchor.tsx`.
+      {
+        labelKey: "nav.trustAnchor",
+        to: "/config/confianca",
+        icon: Fingerprint,
+        promoteProfiles: ["infer"],
+      },
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
       { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },

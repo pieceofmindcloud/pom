@@ -142,6 +142,7 @@ export const routeLoaders = {
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
+  trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
@@ -172,6 +173,7 @@ const Statistics = lazyRoute(routeLoaders.statistics);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
+const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
 const Preferences = lazyRoute(routeLoaders.preferences);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
@@ -382,6 +384,7 @@ export default function App() {
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                         <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
+                        <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
                         <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />

@@ -118,6 +118,46 @@ qualquer admin, e node para infer é uma decisão local com aviso.
 Os quadros de inferência não recebem assinatura administrativa por quadro; o
 peer é autenticado pelo transporte libp2p e o controle permanece separado.
 
+### Ancorar a raiz pela interface
+
+`pom admin-anchor` continua sendo o gesto do operador na máquina. A interface
+espelha os dois lados dele em `GET/POST /api/ui/network/trust-anchor`
+(`crates/node/src/backend/webui/trust.rs`).
+
+O `GET` mostra o que o operador precisa conferir: `anchored`, `fingerprint` da
+chave ancorada, `cluster_id`, `anchor_node_id`, `is_anchor` (a raiz é a chave
+deste nó), `loopback` e `can_install`. Tudo é público - a impressão digital
+existe para ser transportada e conferida, e conhecê-la não concede nada.
+
+O `POST` recebe `{ document, fingerprint }`: o conteúdo colado do arquivo de
+confiança e a impressão digital **digitada pelo operador**. Três recusas, todas
+no servidor, e nenhuma delas contornável pelo navegador:
+
+| `reason` | HTTP | quando |
+|---|---|---|
+| `not_loopback` | 403 | a ligação não veio do loopback |
+| `already_anchored` | 409 | o nó já tem raiz, ou já há arquivo no disco |
+| `invalid_document` | 400 | o conteúdo colado não é cadeia assinada válida |
+| `fingerprint_mismatch` | 400 | o valor digitado não é o da âncora colada |
+| `install_failed` | 409 | a gravação falhou; nada foi alterado |
+
+O loopback é medido no endereço real do socket (`serve::PeerAddr`), **não** em
+`admin_exposure`, que pode estar deliberadamente aberta à rede, e nunca em
+`X-Forwarded-For` ou afins, que o cliente escreve. Um nó já ancorado recusa
+porque trocar a raiz é reancoragem manual (`pom admin-anchor --replace`), não
+gesto de interface. E o arquivo não se auto-valida: a assinatura só prova
+coerência interna da cadeia; quem a valida é o valor que o operador trouxe pelo
+canal dele, por isso ele nunca é pré-preenchido a partir do conteúdo colado.
+
+A rota é `CommonOrInternal` na tabela de escopo, de propósito: um `profile:
+admin` **por ancorar** não passa em `AdminOnly`, que é exatamente o estado em
+que ele precisa ver a impressão digital, e quem recebe a âncora costuma ser um
+`node` ou um `infer`. Ela também não exige a `connection_key`: a fronteira
+continua sendo `AdminAuth` (loopback em modo local, token humano em modo de
+rede), e somar aquela credencial não protege contra a ameaça que a trava de
+loopback contém - quem alcança o navegador alcança o `localStorage` da mesma
+origem - enquanto deixaria a tela morta num navegador que ainda não a recebeu.
+
 ### Fronteira de exposição
 
 O modo de exposição em Configurações / Preferências vale somente para a

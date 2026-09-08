@@ -45,11 +45,25 @@ describe("canAccessRoute", () => {
     expect(homeRoute("node")).toBe("/");
   });
 
+  /**
+   * A tela da raiz de confiança é o trabalho anterior à autoridade: um nó
+   * `admin` por ancorar ainda não tem capacidade de admin, e quem recebe a
+   * âncora costuma ser `node` ou `infer`. Fechá-la a algum perfil deixaria o
+   * operador sem caminho justamente onde ele precisa dela.
+   */
+  it("abre a raiz de confiança para os três perfis", () => {
+    for (const profile of ["admin", "node", "infer"] as const) {
+      expect(canAccessRoute("/config/confianca", profile)).toBe(true);
+    }
+    expect(routeProfiles("/config/confianca")).toBeNull();
+  });
+
   it("mantém o infer na rede local, conversa, documentação e sua chave", () => {
     expect(canAccessRoute("/chat", "infer")).toBe(true);
     expect(canAccessRoute("/config/keys/api", "infer")).toBe(true);
     expect(canAccessRoute("/config/rede", "infer")).toBe(true);
     expect(canAccessRoute("/documentacao", "infer")).toBe(true);
+    expect(canAccessRoute("/config/confianca", "infer")).toBe(true);
     for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/keys/conexao"]) {
       expect(canAccessRoute(path, "infer")).toBe(false);
     }

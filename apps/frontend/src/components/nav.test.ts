@@ -91,11 +91,24 @@ describe("navForProfile", () => {
   it("deixa a rede no menu principal do infer e move docs/config para o rodapé", () => {
     expect(navForProfile("infer").map((section) => section.labelKey)).toEqual([
       "nav.network",
+      // Ancorar a confiança precede a autoridade: o infer também recebe a
+      // âncora, então a tela não pode depender de um perfil.
+      "nav.trustAnchor",
     ]);
     expect(navFooterForProfile("infer").map((item) => [item.labelKey, item.to])).toEqual([
       ["nav.documentation", "/documentacao"],
       ["nav.settings", "/config/keys/api"],
     ]);
+  });
+
+  it("oferece a raiz de confiança aos três perfis", () => {
+    for (const profile of ["admin", "node", "infer"] as const) {
+      const destinos = navForProfile(profile).flatMap((section) => [
+        section.to,
+        ...(section.children ?? []).map((child) => child.to),
+      ]);
+      expect(destinos).toContain("/config/confianca");
+    }
   });
 
   /** Filtrar não pode reescrever `NAV`: o menu do outro perfil viria podado. */

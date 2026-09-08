@@ -851,6 +851,7 @@ nav.shards,Shards,Fatias
 nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
 nav.transfers,Transfers,Transferências
+nav.trustAnchor,Trust root,Raiz de confiança
 network.addrEffective,Currently advertising,Anunciando agora
 network.addrHint,"Leave empty to auto-detect (a peer-observed public address, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado via libp2p, senão o endereço de rede local desta máquina)."
 network.addrLabel,Pinned address,Endereço fixado
@@ -1469,6 +1470,45 @@ transfers.sendFile,Send a file,Enviar um arquivo
 transfers.sendingTo,sending to {host},enviando para {host}
 transfers.subtitle,"A 10 GB shard takes minutes over a real link, so every transfer resumes and verifies MD5 before using the final file name.","Uma fatia de 10 GB leva minutos no enlace real, então tudo aqui retoma de onde parou e confere o MD5 antes de o arquivo tomar o nome final."
 transfers.title,Transfers,Transferências
+trustAnchor.anchored,This node has a trust root,Este nó tem raiz de confiança
+trustAnchor.anchoredElsewhereDetail,The root was brought in by the operator and this node checks the administrators' chain against it.,A raiz foi trazida pelo operador e este nó confere a cadeia dos administradores contra ela.
+trustAnchor.anchoredHereDetail,The root is this machine's own key. Its fingerprint is what the operator carries to every other node.,A raiz é a chave desta máquina. A impressão digital dela é o que o operador leva a cada outro nó.
+trustAnchor.badgeAnchored,Anchored,Ancorado
+trustAnchor.badgeUnanchored,Not anchored,Por ancorar
+trustAnchor.clusterLabel,Cluster,Cluster
+trustAnchor.copied,Copied,Copiada
+trustAnchor.copy,Copy,Copiar
+trustAnchor.documentHint,Paste the whole content of {file} from the administrator node.,Cole o conteúdo inteiro do {file} vindo do nó administrador.
+trustAnchor.documentLabel,Signed chain,Cadeia assinada
+trustAnchor.documentPlaceholder,Paste the file content here,Cole aqui o conteúdo do arquivo
+trustAnchor.fingerprintFootnote,The fingerprint is public and grants nothing on its own. Carry it to the other node and type it there by hand: it is the check that anchors the trust.,A impressão digital é pública e não concede nada sozinha. Leve-a ao outro nó e digite-a lá à mão: é a conferência que ancora a confiança.
+trustAnchor.fingerprintLabel,Anchor fingerprint (SHA-256),Impressão digital da âncora (SHA-256)
+trustAnchor.installAction,Install trust root,Instalar a raiz de confiança
+trustAnchor.installCaution,"Installing is only possible from this machine, and only once.","Instalar só é possível a partir desta máquina, e só uma vez."
+trustAnchor.installEyebrow,Receive the root,Receber a raiz
+trustAnchor.installFailed,The trust root could not be installed.,Não foi possível instalar a raiz de confiança.
+trustAnchor.installSubtitle,"Copy {file} from the administrator node through a channel you trust, paste it here and type the fingerprint you read there.","Copie o {file} do nó administrador por um canal seu, cole aqui e digite a impressão digital que leu lá."
+trustAnchor.installTitle,Install the chain from the administrator,Instalar a cadeia vinda do administrador
+trustAnchor.installed,Trust root installed,Raiz de confiança instalada
+trustAnchor.installedDetail,This node now checks administrative commands against the anchored chain.,Este nó passa a conferir os comandos administrativos contra a cadeia ancorada.
+trustAnchor.pageFailed,The anchoring state could not be loaded.,Não foi possível carregar o estado de ancoragem.
+trustAnchor.pageLoading,Loading the anchoring state,Carregando o estado de ancoragem
+trustAnchor.pageSubtitle,"Where this node's administrative authority comes from, and how it gets here.","De onde vem a autoridade administrativa deste nó, e como ela chega aqui."
+trustAnchor.pageTitle,Trust root,Raiz de confiança
+trustAnchor.refusal.already_anchored,"This node already has a trust root. Replacing it is manual re-anchoring on the machine, not a screen action.","Este nó já tem raiz de confiança. Substituí-la é reancoragem manual na máquina, não uma ação de tela."
+trustAnchor.refusal.fingerprint_mismatch,The fingerprint you typed does not match the pasted chain. Check the value on the administrator node before trying again.,A impressão digital digitada não corresponde à cadeia colada. Confira o valor no nó administrador antes de tentar de novo.
+trustAnchor.refusal.install_failed,The trust root could not be written. Nothing was changed.,Não foi possível gravar a raiz de confiança. Nada foi alterado.
+trustAnchor.refusal.invalid_document,The pasted content is not a valid signed chain.,O conteúdo colado não é uma cadeia assinada válida.
+trustAnchor.refusal.not_loopback,The trust root is only installed from the machine itself. Open this screen on that machine.,A raiz de confiança só é instalada a partir da própria máquina. Abra esta tela nela.
+trustAnchor.remoteOnly,"You are looking at this node from another machine. The trust root is only installed locally, so that reaching a browser is never enough to choose who administers the network.","Você está vendo este nó de outra máquina. A raiz de confiança só é instalada localmente, para que alcançar um navegador nunca baste para escolher quem administra a rede."
+trustAnchor.rootNodeLabel,Root machine,Máquina da raiz
+trustAnchor.stateEyebrow,This machine,Esta máquina
+trustAnchor.typedFingerprintHint,Type it from what you read on the administrator node. It is never filled in from the pasted content.,Digite a partir do que leu no nó administrador. Ela nunca é preenchida a partir do conteúdo colado.
+trustAnchor.typedFingerprintLabel,Fingerprint you checked,Impressão digital que você conferiu
+trustAnchor.typedFingerprintPlaceholder,64 hexadecimal digits,64 dígitos hexadecimais
+trustAnchor.unanchored,This node has no trust root yet,Este nó ainda não tem raiz de confiança
+trustAnchor.unanchoredDetail,"Without an anchored chain no node here has administrative capability, whatever its profile says.","Sem cadeia ancorada, nenhum nó aqui tem capacidade administrativa, diga o perfil o que disser."
+trustAnchor.unanchoredFootnote,"The authority lives in {file}, next to the configuration and never inside it: editing the profile cannot manufacture a grant.","A autoridade vive no {file}, ao lado da configuração e nunca dentro dela: editar o perfil não fabrica concessão."
 undeploy.adminOnly,Only the administrator can undeploy a deployment.,Somente o administrador pode desimplantar uma implantação.
 undeploy.allReleased,"{count, plural, =1 {1 machine released its memory.} other {{count} machines released their memory.}}","{count, plural, =1 {1 máquina liberou a memória.} other {{count} máquinas liberaram a memória.}}"
 undeploy.button,Undeploy,Desimplantar

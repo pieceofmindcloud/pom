@@ -208,7 +208,7 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
             && path != "/handshake")
 }
 
-pub(super) async fn require_admin_for_surface(
+pub(crate) async fn require_admin_for_surface(
     State(state): State<GatewayState>,
     request: Request,
     next: Next,

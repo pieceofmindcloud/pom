@@ -223,7 +223,19 @@ pub(crate) struct AdminTrust {
 }
 
 impl AdminTrust {
+    /// Um nó sem âncora e sem arquivo, para as bancadas de teste. O binário
+    /// usa `load_or_empty`, que guarda o caminho.
+    #[cfg(test)]
     pub(crate) fn empty() -> Self {
+        Self::empty_at(None)
+    }
+
+    /// O mesmo estado sem âncora, mas ciente de onde a âncora vai ficar.
+    ///
+    /// Um nó por ancorar precisa lembrar o caminho: é ali que a instalação
+    /// pelo operador vai escrever, e sem isso `adopt_anchor` mudaria a
+    /// autoridade em memória sem deixar nada no disco.
+    fn empty_at(path: Option<PathBuf>) -> Self {
         let signing_key = SigningKey::from_bytes(&[0; 32]);
         let principal = AuthorityPrincipal::from_signing_key("", "", &signing_key);
         let anchor = TrustAnchor::for_principal("uninitialized", principal.clone());
@@ -241,7 +253,7 @@ impl AdminTrust {
                 completed_transfers: Vec::new(),
                 replay: Vec::new(),
             })),
-            path: None,
+            path,
         }
     }
 
@@ -249,9 +261,8 @@ impl AdminTrust {
         let path = path.as_ref().to_path_buf();
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("não foi possível ler {}", path.display()))?;
-        let document: AdminTrustDocument = serde_json::from_str(&content)
+        let document = parse_transported(&content)
             .with_context(|| format!("concessão administrativa inválida em {}", path.display()))?;
-        validate_document(&document)?;
         Ok(Self {
             state: Arc::new(Mutex::new(document)),
             path: Some(path),
@@ -259,13 +270,62 @@ impl AdminTrust {
     }
 
     pub(crate) fn load_or_empty(path: impl AsRef<Path>) -> Self {
-        match Self::load(path.as_ref()) {
+        let path = path.as_ref().to_path_buf();
+        match Self::load(&path) {
             Ok(store) => store,
             Err(error) => {
                 tracing::warn!("cadeia de confiança administrativa indisponível: {error:#}");
-                Self::empty()
+                Self::empty_at(Some(path))
             }
         }
+    }
+
+    /// Se este nó já tem raiz de confiança. É o mesmo julgamento que decide a
+    /// capacidade efetiva de admin, e é o que a interface mostra como
+    /// "ancorado" ou "por ancorar".
+    pub(crate) fn is_anchored(&self) -> bool {
+        validate_document(&self.document()).is_ok()
+    }
+
+    /// Se já existe arquivo de confiança no disco, mesmo ilegível. Um arquivo
+    /// ilegível não é âncora, mas também não é coisa que a interface apague:
+    /// a recusa manda o operador para a reancoragem manual na máquina.
+    pub(crate) fn anchor_file_exists(&self) -> bool {
+        self.path.as_deref().is_some_and(Path::exists)
+    }
+
+    /// Adota, num nó ainda sem raiz, a cadeia assinada que o operador
+    /// transportou, depois de ele conferir a impressão digital à mão.
+    ///
+    /// A assinatura só prova que a cadeia é coerente consigo mesma; o arquivo
+    /// não se auto-valida. Quem o valida é `typed_fingerprint`, o valor que o
+    /// operador trouxe pelo canal dele. Trocar uma âncora existente não é
+    /// gesto de interface: é reancoragem manual (`pom admin-anchor
+    /// --replace`), por isso um nó já ancorado recusa aqui.
+    pub(crate) fn adopt_anchor(
+        &self,
+        document: AdminTrustDocument,
+        typed_fingerprint: &str,
+    ) -> Result<()> {
+        if self.anchor_file_exists() {
+            bail!(
+                "este nó já tem um arquivo de confiança administrativa; trocar a raiz é reancoragem manual na máquina"
+            );
+        }
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        if validate_document(&current).is_ok() {
+            bail!(
+                "este nó já está ancorado; trocar a raiz é reancoragem manual na máquina"
+            );
+        }
+        validate_document(&document)?;
+        let expected = anchor_fingerprint(&document);
+        if !fingerprint_matches(typed_fingerprint, &expected) {
+            bail!("a impressão digital conferida não corresponde à âncora desta cadeia");
+        }
+        persist_document(&document, self.path.as_deref())?;
+        *current = document;
+        Ok(())
     }
 
     /// Installs a manually transported, already signed chain at the local
@@ -881,6 +941,38 @@ pub(crate) fn fingerprint_of(pubkey: &str) -> String {
     hex::encode(Sha256::digest(pubkey.as_bytes()))
 }
 
+/// A impressão digital que o operador confere: a da chave ancorada, nunca a
+/// de quem trouxe o arquivo.
+pub(crate) fn anchor_fingerprint(document: &AdminTrustDocument) -> String {
+    fingerprint_of(&document.anchor.principal.pubkey)
+}
+
+/// Lê uma cadeia transportada pelo operador. Decodifica e confere a coerência
+/// interna da cadeia; a conferência que ancora a confiança continua sendo a
+/// impressão digital, que não vem daqui.
+pub(crate) fn parse_transported(content: &str) -> Result<AdminTrustDocument> {
+    let document: AdminTrustDocument =
+        serde_json::from_str(content).context("o conteúdo não é uma cadeia administrativa")?;
+    validate_document(&document)?;
+    Ok(document)
+}
+
+/// A conferência manual da impressão digital, uma só para o comando e para a
+/// interface. Normaliza apenas o que a transcrição humana acrescenta -
+/// espaços, dois-pontos e caixa - e nunca o valor em si: continua sendo
+/// preciso trazer os 64 dígitos certos.
+pub(crate) fn fingerprint_matches(typed: &str, expected: &str) -> bool {
+    fn normalize(value: &str) -> String {
+        value
+            .chars()
+            .filter(|glyph| !glyph.is_whitespace() && *glyph != ':')
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+    let typed = normalize(typed);
+    !typed.is_empty() && typed == normalize(expected)
+}
+
 fn sign_bytes(signing_key: &SigningKey, bytes: &[u8]) -> String {
     hex::encode(signing_key.sign(bytes).to_bytes())
 }
@@ -1442,5 +1534,133 @@ mod tests {
             reloaded.effective_authority(&secondary, NodeProfile::Admin),
             None
         );
+    }
+
+    /// A conferência que ancora a confiança tolera a transcrição humana -
+    /// espaços, dois-pontos, caixa - e nada além disso.
+    #[test]
+    fn a_conferencia_manual_normaliza_transcricao_e_nada_mais() {
+        let esperada = fingerprint_of(&principal(1, "root", "peer-root").pubkey);
+        let com_ruido = format!("  {}  ", esperada.to_uppercase());
+        assert!(fingerprint_matches(&com_ruido, &esperada));
+
+        let separada = esperada
+            .as_bytes()
+            .chunks(8)
+            .map(|parte| String::from_utf8_lossy(parte).to_string())
+            .collect::<Vec<_>>()
+            .join(":");
+        assert!(fingerprint_matches(&separada, &esperada));
+
+        assert!(!fingerprint_matches("", &esperada));
+        assert!(!fingerprint_matches("   ", &esperada));
+        assert!(!fingerprint_matches(&esperada[..63], &esperada));
+        assert!(!fingerprint_matches(&format!("{}0", &esperada[1..]), &esperada));
+    }
+
+    /// O nó que recebe: cadeia colada mais impressão digital conferida
+    /// instala a raiz e a deixa no disco, com a autoridade valendo em memória
+    /// sem reinício.
+    #[test]
+    fn adotar_com_a_impressao_digital_certa_ancora_o_no() {
+        let origem = TempDir::new();
+        let (admin, ..) = boot(&origem.path().join("admin.json"));
+        let document = admin.document();
+        let esperada = anchor_fingerprint(&document);
+
+        let destino = TempDir::new();
+        let path = destino.path().join("recebido.json");
+        let no = AdminTrust::empty_at(Some(path.clone()));
+        assert!(!no.is_anchored());
+
+        no.adopt_anchor(document.clone(), &esperada).unwrap();
+
+        assert!(no.is_anchored());
+        assert_eq!(no.document().anchor, document.anchor);
+        assert_eq!(AdminTrust::load(&path).unwrap().document(), document);
+    }
+
+    /// A recusa que não depende de HTTP: com a impressão digital errada nada
+    /// é escrito, nem em memória nem no disco.
+    #[test]
+    fn adotar_com_a_impressao_digital_errada_nao_escreve_nada() {
+        let origem = TempDir::new();
+        let (admin, ..) = boot(&origem.path().join("admin.json"));
+        let destino = TempDir::new();
+        let path = destino.path().join("recebido.json");
+        let no = AdminTrust::empty_at(Some(path.clone()));
+
+        let erro = no
+            .adopt_anchor(admin.document(), &"0".repeat(64))
+            .unwrap_err();
+
+        assert!(erro.to_string().contains("impressão digital"));
+        assert!(!no.is_anchored());
+        assert!(!path.exists(), "recusa não pode deixar arquivo de confiança");
+    }
+
+    /// Trocar a raiz é reancoragem manual. Nem a cadeia em memória nem um
+    /// arquivo já no disco podem ser substituídos por esta porta.
+    #[test]
+    fn adotar_sobre_um_no_ja_ancorado_e_recusado() {
+        let local = TempDir::new();
+        let path = local.path().join("meu.json");
+        let (meu, ..) = boot(&path);
+        let ancora_original = meu.document().anchor;
+
+        let outro = TempDir::new();
+        let (outro_admin, ..) = {
+            let signing_key = key(3);
+            let root = principal(3, "outro", "peer-outro");
+            let trust = AdminTrust::bootstrap_primary(
+                &outro.path().join("outro.json"),
+                "outro-cluster",
+                root.clone(),
+                &signing_key,
+            )
+            .unwrap();
+            (trust, signing_key, root)
+        };
+        let document = outro_admin.document();
+        let esperada = anchor_fingerprint(&document);
+
+        let erro = meu.adopt_anchor(document, &esperada).unwrap_err();
+        assert!(erro.to_string().contains("reancoragem manual"));
+        assert_eq!(meu.document().anchor, ancora_original);
+    }
+
+    /// Um arquivo ilegível não é âncora, mas também não é coisa que a
+    /// interface apague por cima.
+    #[test]
+    fn adotar_por_cima_de_um_arquivo_existente_e_recusado() {
+        let origem = TempDir::new();
+        let (admin, ..) = boot(&origem.path().join("admin.json"));
+        let destino = TempDir::new();
+        let path = destino.path().join("corrompido.json");
+        std::fs::write(&path, b"{ nao e json }").unwrap();
+
+        let no = AdminTrust::load_or_empty(&path);
+        assert!(!no.is_anchored());
+
+        let document = admin.document();
+        let esperada = anchor_fingerprint(&document);
+        let erro = no.adopt_anchor(document, &esperada).unwrap_err();
+
+        assert!(erro.to_string().contains("reancoragem manual"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ nao e json }");
+    }
+
+    /// Uma cadeia adulterada é recusada na leitura, antes de qualquer
+    /// conferência de impressão digital.
+    #[test]
+    fn uma_cadeia_adulterada_nao_e_lida() {
+        let origem = TempDir::new();
+        let (admin, ..) = boot(&origem.path().join("admin.json"));
+        let mut document = admin.document();
+        document.anchor.cluster_id = "cluster-do-atacante".into();
+        let adulterada = serde_json::to_string(&document).unwrap();
+
+        assert!(parse_transported(&adulterada).is_err());
+        assert!(parse_transported("nem json e").is_err());
     }
 }

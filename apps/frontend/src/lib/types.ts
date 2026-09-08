@@ -910,6 +910,34 @@ export interface AdminAuthorityView {
   };
 }
 
+/**
+ * A raiz de confiança desta máquina.
+ *
+ * Contrato de apresentação, como o de autoridade: a impressão digital é
+ * pública e existe para o operador a conferir a olho; a decisão de instalar
+ * é do servidor, e `can_install` só diz se vale a pena desenhar o formulário.
+ */
+export interface TrustAnchorView {
+  anchored: boolean;
+  fingerprint: string | null;
+  cluster_id: string | null;
+  anchor_node_id: string | null;
+  /** A raiz é a chave deste nó, e não uma que ele recebeu. */
+  is_anchor: boolean;
+  /** Esta ligação chegou pelo loopback, medido no socket real. */
+  loopback: boolean;
+  can_install: boolean;
+  trust_filename: string;
+}
+
+/** Códigos de recusa do servidor ao instalar a âncora, traduzidos na tela. */
+export type TrustAnchorRefusal =
+  | "not_loopback"
+  | "already_anchored"
+  | "invalid_document"
+  | "fingerprint_mismatch"
+  | "install_failed";
+
 export interface ApiKey {
   /** Stable identity used by audit queries, never a secret. */
   id: string;

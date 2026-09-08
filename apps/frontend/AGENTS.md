@@ -96,7 +96,14 @@ perfis.
 - `/config/rede` -> NetworkSettings; `/config/administracao` -> AdminAuthority,
   which shows the principal, secondary administrators and the promotion chain.
   Only the principal gets promotion, demotion and resignation controls; pending
-  authority offers use the activity bell. `/config/preferencias` -> Preferences,
+  authority offers use the activity bell. `/config/confianca` -> TrustAnchor,
+  a raiz de confiança desta máquina: impressão digital da âncora, estado
+  ancorado/por ancorar e, num nó ainda sem raiz, o formulário que instala a
+  cadeia trazida do admin. **Aberta aos três perfis de propósito** - antes de
+  ancorar, um `profile: admin` não tem capacidade efetiva de admin, e quem
+  recebe a âncora costuma ser `node` ou `infer`; a trava é do servidor
+  (loopback real, nó por ancorar, impressão digital conferida).
+  `/config/preferencias` -> Preferences,
   including administrative exposure and gateway port plus the moved TLS choice;
   `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys;
   `/config/pastas` -> ModelPaths

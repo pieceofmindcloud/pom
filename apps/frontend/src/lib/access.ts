@@ -39,7 +39,16 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
  * pedir entrada no processamento, mas o backend retorna somente dados desta
  * máquina.
  */
-const INFER_ROUTES = ["/chat", "/documentacao", "/config/keys/api", "/config/rede"] as const;
+const INFER_ROUTES = [
+  "/chat",
+  "/documentacao",
+  "/config/keys/api",
+  "/config/rede",
+  // Ancorar a confiança precede a autoridade e não é privilégio de perfil
+  // nenhum: um `infer` também recebe a âncora do admin. A trava dessa tela é
+  // do servidor (loopback, nó por ancorar, impressão digital conferida).
+  "/config/confianca",
+] as const;
 
 /** `/implantarx` não está sob `/implantar`. */
 function isUnder(path: string, prefix: string): boolean {

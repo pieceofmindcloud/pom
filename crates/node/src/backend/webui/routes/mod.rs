@@ -123,6 +123,14 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/network/admin-authority",
         scope: RouteScope::CommonOrInternal,
     },
+    // Ancorar a raiz de confiança é o trabalho anterior a existir autoridade:
+    // um `profile: admin` por ancorar não passa em `AdminOnly`, e quem recebe
+    // a âncora costuma ser `node` ou `infer`. As travas reais são de origem e
+    // de estado, no handler; ver `webui/trust.rs`.
+    RouteRule {
+        prefix: "/api/ui/network/trust-anchor",
+        scope: RouteScope::CommonOrInternal,
+    },
     RouteRule {
         prefix: "/api/ui/network/request-node",
         scope: RouteScope::InferNodeAdmin,
@@ -341,6 +349,10 @@ mod policy_tests {
         );
         assert_eq!(
             route_scope("/api/ui/network/admin-authority"),
+            RouteScope::CommonOrInternal
+        );
+        assert_eq!(
+            route_scope("/api/ui/network/trust-anchor"),
             RouteScope::CommonOrInternal
         );
         assert_eq!(

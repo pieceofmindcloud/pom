@@ -32,6 +32,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   padrão bruto, para que uma variável omitida não derrube a tela. Todas as
   chaves e textos existentes, incluindo os grupos de logs de deployment,
   preferências, telemetria e modelos remotos, ficam no CSV.
+- O grupo `trustAnchor.*` cobre a tela da raiz de confiança: estado ancorado e
+  por ancorar, a impressão digital e sua cópia, o formulário de instalação e as
+  cinco recusas do servidor por código (`trustAnchor.refusal.*`). A tela mostra
+  a recusa traduzida e só cai no texto do servidor para um código que ela não
+  conhece.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou

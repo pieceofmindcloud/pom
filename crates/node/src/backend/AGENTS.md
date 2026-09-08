@@ -110,7 +110,7 @@ profile policy remains the effective authorization boundary.
   arquivos locais emprestam o nome a cada iteração.
 - `webui/` - the `/api/ui/*` control API behind the dashboard, split into
   `mod.rs`, `routes/` (common, infer, node and admin), `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
-  `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs` and test fragments:
+  `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs`, `trust.rs` and test fragments:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
@@ -121,6 +121,19 @@ profile policy remains the effective authorization boundary.
   `/api/ui/network/relinquish-node`. Ofertas de autoridade compartilham o feed
   de ofertas para que o sino do browser não escolha o mecanismo de concessão ou
   assinatura.
+  **A raiz de confiança é anterior a tudo isso** e vive em `webui/trust.rs`:
+  `GET/POST /api/ui/network/trust-anchor` mostra a impressão digital da âncora
+  e o estado ancorado/por ancorar, e instala a cadeia que o operador
+  transportou. A rota é `CommonOrInternal` de propósito - um `profile: admin`
+  por ancorar não passa em `AdminOnly`, que é exatamente o estado em que o
+  operador precisa dela - e não exige a chave de conexão do cluster, pelo
+  motivo registrado no cabeçalho do arquivo. As três travas da instalação são
+  do servidor: loopback medido no `serve::PeerAddr` (nunca `admin_exposure`,
+  que pode estar aberta à rede, e nunca `X-Forwarded-For`), nó ainda sem
+  âncora, e a impressão digital digitada pelo operador conferida contra a
+  cadeia colada. A validação e a conferência são as de `admin_trust`
+  (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
+  `pom admin-anchor` usa: não existe segunda política.
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
@@ -241,7 +254,14 @@ profile policy remains the effective authorization boundary.
   the manually anchored root, one-level secondary grants, signed demotions,
   transfer offer and acceptance state, monotonic replay records, and full-chain
   reconciliation. A profile set to `admin` without a valid local chain remains
-  without administrative capability.
+  without administrative capability. `is_anchored`/`anchor_file_exists` are the
+  anchored-versus-not judgement the UI shows; `parse_transported`,
+  `anchor_fingerprint` and `fingerprint_matches` are the single manual check
+  shared by `pom admin-anchor` and the screen (it normalises only human
+  transcription - spaces, colons, case - never the value); `adopt_anchor`
+  writes a transported chain onto a node that has none and refuses a node that
+  already has one, because replacing a root is manual re-anchoring on the
+  machine (`--replace`), not an interface gesture.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de
@@ -707,6 +727,8 @@ profile policy remains the effective authorization boundary.
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
+  The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
+  (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
   `POST /admin/authority/resign`, `POST
   /admin/authority/secondaries/{id}/demote`, and the profile transition routes

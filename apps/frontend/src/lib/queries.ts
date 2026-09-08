@@ -41,6 +41,7 @@ import type {
   RequestLogResponse,
   RequestStats,
   TransferJob,
+  TrustAnchorView,
 } from "./types";
 
 /**
@@ -73,6 +74,7 @@ export const keys = {
   transfers: ["transfers"] as const,
   offers: ["offers"] as const,
   adminAuthority: ["admin-authority"] as const,
+  trustAnchor: ["trust-anchor"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
@@ -405,6 +407,19 @@ export function useAdminAuthority(enabled = true) {
     queryFn: () => api.get<AdminAuthorityView>("/api/ui/network/admin-authority"),
     enabled,
     refetchInterval: 8000,
+  });
+}
+
+/**
+ * O estado de ancoragem desta máquina.
+ *
+ * Sem polling curto: uma raiz de confiança muda por um gesto do operador, não
+ * sozinha, e a tela refaz a leitura depois de instalar.
+ */
+export function useTrustAnchor() {
+  return useQuery({
+    queryKey: keys.trustAnchor,
+    queryFn: () => api.get<TrustAnchorView>("/api/ui/network/trust-anchor"),
   });
 }
 

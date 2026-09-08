@@ -192,6 +192,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   secondary admins, promotion chain, resignation eligibility and notification
   states. `adminAuthority.ts` keeps mutations behind a contract and does not
   encode key, signature or grant-storage decisions.
+- `TrustAnchorView` e `TrustAnchorRefusal` descrevem a raiz de confiança: se o
+  nó está ancorado, a impressão digital pública, o cluster e a máquina da raiz,
+  se a ligação é loopback e se instalar é possível agora. `trustAnchorApi`
+  (também em `adminAuthority.ts`) envia a cadeia colada e a impressão digital
+  digitada; a tela nunca deriva a segunda da primeira, e `can_install` é
+  apresentação - quem recusa é o servidor.
 
 ### queries.ts
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
@@ -216,6 +222,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   is a question waiting on a human, not a progress bar. With the sender no
   longer hashing the file before offering, the active cadence keeps that
   question responsive without charging an idle tab the same rate.
+- `useTrustAnchor()` reads the anchoring state once, sem polling: uma raiz de
+  confiança muda por gesto do operador, e a tela refaz a leitura ao instalar.
 - `useAdminAuthority()` reads the authority presentation contract every 8s;
   `useOffers()` normalizes legacy slice offers and also carries principal
   transfer, infer-to-node approval and node-to-infer notice states for the

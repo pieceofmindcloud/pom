@@ -302,6 +302,31 @@ sino; até a aceitação, nada muda e o principal continua principal. A página 
 o sino consomem contratos de apresentação, sem carregar decisões de chave,
 assinatura ou armazenamento de concessões.
 
+`/config/confianca` é a **raiz de confiança** da máquina, e é o trabalho que
+vem antes de tudo o que está acima. Ela mostra o estado - **Ancorado** ou **Por
+ancorar** - num relance, e, quando há raiz, a impressão digital SHA-256 em
+grupos de oito, com botão de cópia, ao lado do cluster e da máquina da raiz.
+Essa é a informação que o operador leva consigo para conferir noutro nó; é
+pública e não concede nada.
+
+Num nó ainda sem raiz, a mesma tela mostra o outro lado: um campo para colar o
+conteúdo do arquivo de confiança vindo do admin e outro para **digitar** a
+impressão digital que o operador leu lá. O segundo campo nunca é preenchido a
+partir do primeiro - derivá-lo anularia a conferência, que é a única coisa que
+faz o arquivo colado valer alguma coisa. Fora do loopback o formulário dá lugar
+à explicação de por que instalar é local, mas a decisão nunca é da tela: o
+servidor recusa loopback ausente, nó já ancorado e impressão digital que não
+corresponde, e devolve um código estável que a tela traduz (ver
+`api-http.md`, "Ancorar a raiz pela interface").
+
+**Ela é aberta aos três perfis de propósito.** Antes de ancorar, um nó com
+`profile: admin` não tem capacidade efetiva de admin e não abre a superfície
+administrativa - pôr esta tela atrás do perfil de administrador a deixaria
+inalcançável justamente no estado em que ela existe para servir. E quem recebe
+a âncora costuma ser um `node` ou um `infer`. Por isso `/config/confianca` não
+está em `RESTRICTED` (`lib/access.ts`), aparece no menu de Configurações e é
+promovida ao menu principal do `infer`.
+
 A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
 cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em `aqua` quando a política
 está ligada e `ShieldOff` em `amber` quando não. Ele é só ícone, mas o link para

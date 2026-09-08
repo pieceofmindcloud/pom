@@ -341,7 +341,10 @@ pub(crate) fn constant_time_token_eq(expected: &str, supplied: &str) -> bool {
     expected_digest.ct_eq(&supplied_digest).into()
 }
 
-fn is_loopback(peer: std::net::SocketAddr) -> bool {
+/// O endereço real do socket é loopback. Toda decisão que depende de "veio
+/// desta máquina" usa esta, nunca um cabeçalho: `X-Forwarded-For` e afins são
+/// escritos pelo cliente e não provam origem nenhuma.
+pub(crate) fn is_loopback_addr(peer: std::net::SocketAddr) -> bool {
     match peer.ip() {
         std::net::IpAddr::V4(ip) => ip.is_loopback(),
         std::net::IpAddr::V6(ip) => {
@@ -398,7 +401,7 @@ where
         };
 
         if !exposure.requires_token() {
-            return if is_loopback(peer.0) {
+            return if is_loopback_addr(peer.0) {
                 Ok(AdminAuth {
                     session_id_to_set: None,
                 })

@@ -2807,7 +2807,8 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
                                   std::size_t columns) {
         if (tensor.data == nullptr || !valid_dtype(tensor.dtype) ||
             tensor.rows != rows || tensor.columns != columns ||
-            columns == 0 || (dtype == 2 ? columns % 32 != 0 : columns % 256 != 0) ||
+            columns == 0 ||
+            ((tensor.dtype == 2 || tensor.dtype == 39) ? columns % 32 != 0 : columns % 256 != 0) ||
             !std::isfinite(tensor.scale) || !std::isfinite(tensor.input_scale) ||
             !std::isfinite(tensor.secondary_scale) ||
             !std::isfinite(tensor.secondary_input_scale)) {

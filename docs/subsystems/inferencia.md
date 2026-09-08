@@ -26,6 +26,27 @@ em base64, envia-as para o primeiro peer junto do prompt e o prefill usa o
 `mtmd` do llama.cpp. O caminho é intencionalmente separado do prefill textual
 para não reutilizar prefixos ou misturar imagens em batches concorrentes.
 
+### Células de KV e posições lógicas M-RoPE
+
+Uma imagem escreve uma célula de KV por token de embedding, mas em M-RoPE ela
+ocupa apenas `max(nx, ny)` **posições lógicas**: `mtmd_input_chunk_get_n_pos`
+é deliberadamente menor que `mtmd_input_chunk_get_n_tokens`. Uma imagem 28x28
+gera 784 células e avança a posição em 28. As linhas
+`find_slot: non-consecutive token position` que o llama.cpp imprime no lote de
+imagem são a consequência normal desse desenho, não sinal de defeito.
+
+Por isso a sessão do peer guarda as duas grandezas separadas: `n_past` é a
+posição lógica seguinte e `prompt_cells` a contagem de células físicas. Quem
+decide se o prompt tem mais um pedaço compara posição com posição
+(`prefill_has_more_chunks`), e um decode multimodal é sempre completo porque
+`mtmd_helper_eval_chunks` consome todos os chunks numa chamada. Reduzir as
+duas a uma só fazia o head pedir um segundo pedaço de um prompt já ingerido e
+decodificar o preenchimento `vec![0; n_tokens]` de `prompt_tokens` como se
+fossem tokens reais - a resposta saía como uma fila de pontos de exclamação.
+Sessões com mídia também não servem de prefixo reutilizável nem de snapshot
+(`Session::positions_match_cells`): `prompt_tokens` ali é preenchimento, não
+os ids reais das células.
+
 ## Porta de inferência e exposição administrativa
 
 O servidor de inferência (`--inference-port`) mantém a escuta em IPv4 e IPv6,

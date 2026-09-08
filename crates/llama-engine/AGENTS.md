@@ -76,6 +76,13 @@ testes, `llama_engine::llama_cpp_sys_2`), e todo o resto do pipeline
 GGUF `mmproj` separado e transformar imagens em tokens no prefill. O caminho é
 opcional e é validado junto com `NodeConfig.mmproj_path`.
 
+`decode_multimodal` devolve `MultimodalDecode`, que separa `n_tokens`
+(células físicas escritas no KV) de `n_past` (posição lógica seguinte). Em
+M-RoPE as duas divergem por desenho do upstream, e `mrope_positions` carrega a
+coordenada `[t, y, x, z]` de cada célula para que o estado oculto atravesse os
+hops sem reduzir as duas contagens a uma só - ver
+`decode_hidden_with_positions` e `crates/node/src/inference/AGENTS.md`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

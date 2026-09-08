@@ -1246,6 +1246,21 @@ está configurado. O prefill da cabeça transporta as imagens em base64 apenas
 no primeiro chunk; os peers as decodificam e o `mtmd` faz o prefill em ordem.
 Imagens não usam reuso de prefixo nem batching concorrente.
 
+**Célula de KV não é posição lógica.** Uma imagem escreve `n_tokens` células
+de embedding no KV, mas em M-RoPE ocupa apenas
+`mtmd_input_chunk_get_n_pos` = `max(nx, ny)` posições lógicas. As duas
+contagens divergem **de propósito** - é desenho documentado do upstream, não
+defeito, e as linhas `find_slot: non-consecutive token position` que aparecem
+no lote de imagem são a consequência normal disso. `Session` guarda as duas:
+`n_past` é a posição lógica e `prompt_cells` a contagem física.
+`prefill_has_more_chunks` decide a continuação do prompt pelo par certo - um
+decode multimodal consome todos os chunks do `mtmd` numa chamada e é sempre
+completo. Confundi-las fazia o head pedir um segundo pedaço e decodificar o
+preenchimento `vec![0; n_tokens]` de `prompt_tokens` como se fossem tokens
+reais; a resposta saía como uma fila de pontos de exclamação.
+`Session::positions_match_cells` fecha reuso de prefixo e snapshot para
+sessões com mídia, onde `prompt_tokens` não indexa o KV célula a célula.
+
 ## Manutenção deste arquivo
 
 Este arquivo é um mapa de responsabilidades da pasta. Ao mudar uma interface

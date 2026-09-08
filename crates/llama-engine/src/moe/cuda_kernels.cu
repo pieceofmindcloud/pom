@@ -1049,6 +1049,36 @@ __device__ float iq_dot(
     return result;
 }
 
+__device__ float q4_0_value(const uint8_t *encoded, int column) {
+    constexpr int block_elements = 32;
+    constexpr int block_bytes = 18;
+    const uint8_t *block = encoded + (column / block_elements) * block_bytes;
+    const int within = column % block_elements;
+    const uint8_t packed = block[2 + (within % 16)];
+    const uint8_t nibble = within < 16 ? packed & 0x0f : packed >> 4;
+    const float scale = __half2float(__ushort_as_half(
+        static_cast<uint16_t>(block[0]) |
+        (static_cast<uint16_t>(block[1]) << 8)));
+    return scale * (static_cast<float>(nibble) - 8.0f);
+}
+
+__device__ float q4_0_dot(
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    constexpr int block_elements = 32;
+    constexpr int block_bytes = 18;
+    const int row_bytes = (columns / block_elements) * block_bytes;
+    const uint8_t *encoded = matrix + row * row_bytes;
+    float result = 0.0f;
+    for (int index = 0; index < columns; ++index) {
+        result += q4_0_value(encoded, index) * input[index];
+    }
+    return result;
+}
+
 __device__ float heterogeneous_quant_dot(
     const CudaHeterogeneousTensor &tensor,
     int row,
@@ -1057,6 +1087,9 @@ __device__ float heterogeneous_quant_dot(
     float scale,
     float input_scale
 ) {
+    if (tensor.dtype == 2) {
+        return q4_0_dot(tensor.data, row, columns, input) * scale * input_scale;
+    }
     if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14) {
         return k_dot(tensor.dtype, tensor.data, row, columns, input) * scale * input_scale;
     }
@@ -1368,13 +1401,16 @@ __device__ float heterogeneous_quant_partial_dot(
     float scale,
     float input_scale
 ) {
-    if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14 ||
+    if (tensor.dtype == 2 || tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14 ||
         tensor.dtype == 18 || tensor.dtype == 21 || tensor.dtype == 22 ||
         tensor.dtype == 23 || tensor.dtype == 39) {
         float value = 0.0f;
         for (int column = threadIdx.x; column < tensor.columns; column += blockDim.x) {
             float weight;
-            if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14) {
+            if (tensor.dtype == 2) {
+                const std::size_t row_bytes = (tensor.columns / 32) * 18;
+                weight = q4_0_value(tensor.data + row * row_bytes, column);
+            } else if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14) {
                 weight = k_value(tensor.dtype, tensor.data, row, column, tensor.columns);
             } else if (tensor.dtype == 39) {
                 const std::size_t row_bytes = (tensor.columns / 32) * 17;
@@ -2665,8 +2701,7 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     if (experts == nullptr || token_ids == nullptr || weights == nullptr ||
         token_offsets == nullptr || hidden == nullptr || output == nullptr ||
         expert_count == 0 || token_count == 0 || hidden_width == 0 ||
-        intermediate_width == 0 || hidden_width % 256 != 0 ||
-        intermediate_width % 256 != 0 || token_offsets_len != token_count + 1 ||
+        intermediate_width == 0 || token_offsets_len != token_count + 1 ||
         hidden_len != token_count * hidden_width || output_len != hidden_len ||
         token_offsets[0] != 0 || token_offsets[token_count] != expert_count ||
         (activation != 1 && activation != 2)) {
@@ -2674,10 +2709,13 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     }
 
     const auto valid_dtype = [](uint32_t dtype) {
-        return dtype == 10 || dtype == 11 || dtype == 12 || dtype == 14 || dtype == 18 || dtype == 21 ||
+        return dtype == 2 || dtype == 10 || dtype == 11 || dtype == 12 || dtype == 14 || dtype == 18 || dtype == 21 ||
             dtype == 22 || dtype == 23 || dtype == 39;
     };
     const auto row_bytes = [&](uint32_t dtype, std::size_t columns) -> std::size_t {
+        if (dtype == 2) {
+            return (columns / 32) * 18;
+        }
         if (dtype == 39) {
             return (columns / 32) * 17;
         }
@@ -2691,7 +2729,7 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
                                   std::size_t columns) {
         if (tensor.data == nullptr || !valid_dtype(tensor.dtype) ||
             tensor.rows != rows || tensor.columns != columns ||
-            columns == 0 || columns % 256 != 0 ||
+            columns == 0 || (dtype == 2 ? columns % 32 != 0 : columns % 256 != 0) ||
             !std::isfinite(tensor.scale) || !std::isfinite(tensor.input_scale) ||
             !std::isfinite(tensor.secondary_scale) ||
             !std::isfinite(tensor.secondary_input_scale)) {

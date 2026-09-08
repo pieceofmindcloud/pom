@@ -638,6 +638,25 @@ pub async fn run(
     };
 
     if let Some(runtime) = moe.as_ref() {
+        let telemetry = runtime.executor_telemetry();
+        if telemetry.executor == crate::moe::runtime::MoeExecutorKind::CpuReference {
+            tracing::warn!(
+                model = %cfg.model_label,
+                requested_n_gpu_layers = cfg.n_gpu_layers,
+                moe_executor = telemetry.executor.as_str(),
+                dtypes = ?telemetry.dtypes,
+                reason = ?telemetry.reason,
+                "MoE está usando CPUReference; n_gpu_layers não coloca os experts na GPU"
+            );
+        } else {
+            tracing::info!(
+                model = %cfg.model_label,
+                requested_n_gpu_layers = cfg.n_gpu_layers,
+                moe_executor = telemetry.executor.as_str(),
+                dtypes = ?telemetry.dtypes,
+                "executor MoE CUDA selecionado; experts serão admitidos no cache residente"
+            );
+        }
         runtime.start_device_warmup();
         engine.set_moe_runtime(Arc::clone(runtime))?;
     }

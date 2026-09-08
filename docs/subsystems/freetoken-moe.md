@@ -112,10 +112,13 @@ local usa `MemAvailable` no Linux, `vm_stat` no macOS e
 `GlobalMemoryStatusEx` no Windows. Uma futura sonda de VRAM pode implementar a
 mesma trait sem mudar a política.
 
-O primeiro formato é Q4_0 packed em CPU. `format_q4_0.rs` valida a geometria
-GGML, mmapa o GGUF, copia somente os bancos do expert solicitado para o cache,
-decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e down. O
-loader aceita tanto `ffn_gate_up_exps.weight` fundido quanto
+O primeiro formato é Q4_0 packed. `format_q4_0.rs` valida a geometria GGML,
+mmapa o GGUF, copia somente os bancos do expert solicitado para o cache,
+decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e down. Com
+`--features cuda`, `block.rs` mantém o payload admitido no cache residente e a
+ponte heterogênea executa as três fases na GPU; sem CUDA, o mesmo decoder roda
+explicitamente em `CPUReference`. O loader aceita tanto
+`ffn_gate_up_exps.weight` fundido quanto
 `ffn_gate_exps.weight` + `ffn_up_exps.weight` separados, recombinando estes
 últimos no payload interno do executor. `router.rs` escolhe top-k de forma
 determinística e renormaliza os pesos;
@@ -340,8 +343,10 @@ executor de referência.
 
 No Qwen3.6-35B-A3B-UD-IQ3_S real, a ponte agora está autorizada a publicar
 `moe_executor=cuda`, `moe_executor_dtypes=[21,22,23]` e nenhum motivo de
-CPUReference, depois da prova diferencial dos três dtypes na GPU real. A
-prova física desse GGUF ainda não foi executada neste worktree, portanto a
+CPUReference, depois da prova diferencial dos três dtypes na GPU real. Q4_0
+usa o mesmo contrato CUDA com dtype GGML `2`; a validação preserva blocos de 32
+para esse formato, em vez de aplicar a exigência de 256 usada pelos K/IQ-quants.
+A prova física desse GGUF ainda não foi executada neste worktree, portanto a
 telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
 Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute

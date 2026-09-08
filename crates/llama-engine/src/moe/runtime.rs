@@ -744,6 +744,7 @@ fn make_external_executor_plan(
     let single_dtype = dtypes.len() == 1;
     let bridge_supported = match detected {
         ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => cuda_compiled,
+        ExpertFormat::Q4_0 => cuda_compiled,
         ExpertFormat::Nvfp4 => cuda_compiled && !nvfp4_cpu_requested,
         ExpertFormat::Q2K | ExpertFormat::Q3K | ExpertFormat::Q4K | ExpertFormat::Q6K => {
             cuda_compiled
@@ -826,7 +827,8 @@ fn make_external_executor_plan(
 }
 
 fn cuda_heterogeneous_dtype_supported(dtype: u32) -> bool {
-    KQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
+    dtype == 2
+        || KQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
         || IqQuantFormat::from_dtype(dtype)
             .is_ok_and(|format| format.cuda_supported() || matches!(format, IqQuantFormat::Iq3XXS))
         || LowBitFormat::from_dtype(dtype).is_ok_and(|format| matches!(format, LowBitFormat::Mxfp4))
@@ -1024,16 +1026,34 @@ impl MoeRuntime {
                         "GGUF MoE sem camadas",
                     )));
                 }
+                #[cfg(feature = "cuda")]
+                let device_cache = Some(create_measured_device_cache(cuda_compute_bytes)?);
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
-                    blocks.push(MoeBlock::Q4(Q4_0MoeBlock::new(
+                    #[cfg(feature = "cuda")]
+                    let block = Q4_0MoeBlock::new_with_device_cache(
+                        Arc::clone(&cache),
+                        Arc::clone(device_cache.as_ref().expect("cache CUDA Q4_0")),
+                        &model,
+                        layer,
+                        top_k,
+                        source.hidden(),
+                        source.intermediate(),
+                    );
+                    #[cfg(not(feature = "cuda"))]
+                    let block = Q4_0MoeBlock::new(
                         Arc::clone(&cache),
                         &model,
                         layer,
                         top_k,
                         source.hidden(),
                         source.intermediate(),
-                    )?));
+                    );
+                    #[cfg(feature = "cuda")]
+                    let block = block.map_err(MoeRuntimeError::Block)?;
+                    #[cfg(not(feature = "cuda"))]
+                    let block = block?;
+                    blocks.push(MoeBlock::Q4(block));
                 }
                 Ok(Self {
                     source: MoeSource::Q4(source),
@@ -1043,7 +1063,7 @@ impl MoeRuntime {
                     #[cfg(feature = "cuda")]
                     model: model.clone(),
                     #[cfg(feature = "cuda")]
-                    device_cache: None,
+                    device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
@@ -1587,6 +1607,8 @@ impl MoeRuntime {
             #[cfg(feature = "cuda")]
             Some(MoeBlock::Plain(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
             #[cfg(feature = "cuda")]
+            Some(MoeBlock::Q4(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
+            #[cfg(feature = "cuda")]
             Some(MoeBlock::Heterogeneous(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
             Some(_) | None => MoeExecutorKind::CpuReference,
         }
@@ -1646,6 +1668,9 @@ impl MoeRuntime {
                         (block.cuda_diagnostics(), block.resident_cache_stats())
                     }
                     MoeBlock::Plain(block) if block.uses_cuda() => {
+                        (block.cuda_diagnostics(), block.resident_cache_stats())
+                    }
+                    MoeBlock::Q4(block) if block.uses_cuda() => {
                         (block.cuda_diagnostics(), block.resident_cache_stats())
                     }
                     MoeBlock::Heterogeneous(block) if block.uses_cuda() => {
@@ -1915,6 +1940,33 @@ impl MoeRuntime {
                     &token_ids,
                     weights,
                     &token_offsets,
+                    tokens,
+                )?;
+                let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
+                self.runtime_diagnostics
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .runtime_forward_ms += elapsed_ms;
+                return Ok(output);
+            }
+        }
+
+        #[cfg(feature = "cuda")]
+        if let (MoeSource::Q4(source), MoeBlock::Q4(block)) = (&self.source, block) {
+            if block.uses_cuda() {
+                let token_ids = (0..tokens)
+                    .flat_map(|token| std::iter::repeat(token as u32).take(expert_count_used))
+                    .collect::<Vec<_>>();
+                let token_offsets = (0..=tokens)
+                    .map(|token| token.saturating_mul(expert_count_used))
+                    .collect::<Vec<_>>();
+                let output = block.forward_batch_from_source_with_route(
+                    source,
+                    &resolved_ids,
+                    &token_ids,
+                    weights,
+                    &token_offsets,
+                    hidden,
                     tokens,
                 )?;
                 let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
@@ -2310,7 +2362,8 @@ mod tests {
     }
 
     #[test]
-    fn dtype_sem_ponte_cuda_usa_executor_cpu_reference() {
+    fn q4_0_com_ponte_cuda_usa_executor_device() {
+        assert!(cuda_heterogeneous_dtype_supported(2));
         let plan = make_external_executor_plan(ExpertFormat::Q4_0, vec![2], 4, true, false);
         assert!(plan.enabled());
         assert_eq!(plan.layers, vec![1, 1, 1, 1]);

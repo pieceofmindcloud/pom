@@ -325,8 +325,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `Nvfp4Trace`/`run_trace` fica restrito à prova diferencial de testes, enquanto
   o runtime consome somente a saída do expert; `cuda.rs` mais
   `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
-  feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
-  Q6_K (14), IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e MXFP4 (39).
+  feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_0 (2),
+  Q4_K (12), Q6_K (14), IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e
+  MXFP4 (39).
   Todas as entradas FFI do executor externo fixam as alocações, streams e
   eventos no CUDA 0, que é o dispositivo do orçamento do cache, e restauram o
   dispositivo corrente do chamador ao retornar. Isso é obrigatório porque o
@@ -400,8 +401,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   omitidos do llama.cpp; dtypes sem cache device e combinações heterogêneas
   fora do conjunto CUDA validado usam `CPUReference` e registram o dtype na
   telemetria. Somente NVFP4 sem CUDA e sem pedido explícito de CPU permanece
-  indisponível com motivo visível. O
-  fork mantém a lista como metadata
+  indisponível com motivo visível. Q4_0 usa a ponte heterogênea CUDA quando a
+  feature está disponível; sem ela, o decoder CPU continua funcional, mas o log
+  de inicialização registra o
+  `CPUReference` efetivo, os dtypes e a razão, além dos campos equivalentes em
+  `/health`.
+  O fork mantém a lista como metadata
   copiada no modelo e o grafo escolhe external/native pela camada, nunca por
   uma flag global que possa deixar experts sem executor.
   A telemetria `moe_executor_diagnostics` expõe, quando o perfil CUDA está

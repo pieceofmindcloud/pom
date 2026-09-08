@@ -1017,8 +1017,8 @@ impl IqQuantCudaExecutor {
     }
 }
 
-/// Executor CUDA para uma rota cujos tensores podem usar Q4_K, Q6_K, IQ3_XXS,
-/// IQ3_S, IQ2_S, IQ4_XS ou MXFP4 independentemente por papel. Os descritores
+/// Executor CUDA para uma rota cujos tensores podem usar Q4_0, Q4_K, Q6_K,
+/// IQ3_XXS, IQ3_S, IQ2_S, IQ4_XS ou MXFP4 independentemente por papel. Os descritores
 /// carregam ponteiro, tamanho, geometria de uma fatia e dtype de cada tensor;
 /// o cache residente mantém os bytes no device entre tokens.
 pub struct HeterogeneousCudaExecutor {
@@ -1280,9 +1280,10 @@ fn validate_heterogeneous_tensor(
             )))
         }
     };
-    if tensor.data.is_null() || columns == 0 || !columns.is_multiple_of(256) {
+    if tensor.data.is_null() || columns == 0 {
         return Err(CudaMoeError::Geometry(format!(
-            "{label} tem ponte nula ou colunas que não fecham blocos de 256"
+            "{label} tem ponte nula ou colunas que não fecham blocos do dtype GGML {}",
+            tensor.dtype
         )));
     }
     if tensor.bytes != expected {
@@ -1749,7 +1750,7 @@ mod tests {
     use super::super::format_low_bits::{decode_row as decode_low_bit_row, LowBitFormat};
     use super::super::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
     use super::super::format_plain::{PlainExpert, PlainFormat};
-    use super::super::format_q4_0::parse_tensor_table;
+    use super::super::format_q4_0::{pack_payload, parse_tensor_table, Q4_0Expert};
     use super::*;
     use memmap2::Mmap;
 
@@ -1813,6 +1814,26 @@ mod tests {
         payload.extend_from_slice(&gate_up);
         payload.extend_from_slice(&down);
         payload
+    }
+
+    fn q4_rows(rows: usize, columns: usize, nibble: u8) -> Vec<u8> {
+        let row_bytes = columns / 32 * 18;
+        let mut output = vec![0u8; rows * row_bytes];
+        for row in output.chunks_exact_mut(row_bytes) {
+            for block in row.chunks_exact_mut(18) {
+                block[..2].copy_from_slice(&0x3c00u16.to_le_bytes());
+                block[2..].fill(nibble | (nibble << 4));
+            }
+        }
+        output
+    }
+
+    fn q4_payload(hidden: usize, intermediate: usize) -> Vec<u8> {
+        pack_payload(
+            &q4_rows(2 * intermediate, hidden, 9),
+            &q4_rows(hidden, intermediate, 9),
+        )
+        .unwrap()
     }
 
     fn k_payload(format: KQuantFormat, hidden: usize, intermediate: usize) -> Vec<u8> {
@@ -1906,6 +1927,67 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, CudaMoeError::PayloadLength { expected, actual });
+    }
+
+    #[test]
+    fn executor_cuda_q4_0_preserva_o_decoder_cpu_com_geometria_de_32() {
+        let hidden = 64;
+        let intermediate = 64;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 + 1.0) * 0.01)
+            .collect::<Vec<_>>();
+        let payload = q4_payload(hidden, intermediate);
+        let expected = Q4_0Expert::from_payload(hidden, intermediate, &payload)
+            .unwrap()
+            .run(&hidden_values)
+            .unwrap();
+        let executor = HeterogeneousCudaExecutor::new_with_cache(
+            hidden,
+            intermediate,
+            measured_device_cache(4_000_000).unwrap(),
+        );
+        let lease = executor
+            .resident_admit(
+                ExpertKey::new("cuda-q4-0-test", 0, 0, "q4_0"),
+                &payload,
+            )
+            .unwrap();
+        let gate_up_bytes = 2 * intermediate * (hidden / 32 * 18);
+        let descriptor = CudaHeterogeneousExpert {
+            gate_up: CudaHeterogeneousTensor {
+                data: (lease.handle() as *const u8).wrapping_add(8),
+                bytes: gate_up_bytes,
+                rows: 2 * intermediate,
+                columns: hidden,
+                dtype: 2,
+                ..CudaHeterogeneousTensor::default()
+            },
+            down: CudaHeterogeneousTensor {
+                data: (lease.handle() as *const u8).wrapping_add(8 + gate_up_bytes),
+                bytes: hidden * (intermediate / 32 * 18),
+                rows: hidden,
+                columns: intermediate,
+                dtype: 2,
+                ..CudaHeterogeneousTensor::default()
+            },
+            ..CudaHeterogeneousExpert::default()
+        };
+        let actual = executor
+            .run_route_batch_resident(
+                &[descriptor],
+                &[0],
+                &[0],
+                &[1.0],
+                &[0, 1],
+                &hidden_values,
+                1,
+                1,
+            )
+            .unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1.0e-3, "{actual} != {expected}");
+        }
     }
 
     fn plain_payload(format: PlainFormat, hidden: usize, intermediate: usize) -> Vec<u8> {

@@ -1106,20 +1106,20 @@ escolha explícita `dense` ou `moe` vence o ambiente derivado da marca
 override, a metadata escolhe. `moe` recusa um GGUF denso com erro explícito.
 
 O caminho MoE atual aparece como `moe/q4_0` no `/health` quando o seletor
-escolhe esse modo e abre o runtime próprio em `inference/moe/`: o dispatcher
-detecta o dtype do GGUF, calcula o router top-k e usa o LRU global. Hidden states recebidos são transformados
+escolhe esse modo e abre o runtime próprio em `crates/llama-engine/src/moe/`:
+o dispatcher detecta o dtype do GGUF, calcula o router top-k e usa o LRU global.
+Hidden states recebidos são transformados
 antes do decode local; residuals produzidos a partir de tokens passam pela
 mesma ponte antes de seguir ao próximo hop. O wire continua em f16 e nenhum
 peso é transportado. Atenção, operações restantes e sampling final ainda
 delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
-transformer MoE completo. NVFP4, K-quants e IQ-quants usam loaders próprios
-com validação da ordem GGUF `[input, output, experts]` antes do forward. A Fase
-5 ainda não está ativa: não há executor GPU próprio nem perfil medido carregado
-no runtime. O plano de ownership externaliza todos os formatos que o runtime
-próprio consegue executar em CPU, mesmo sem ponte CUDA; só NVFP4 sem feature
-CUDA e sem pedido explícito de CPU fica indisponível. O caminho CUDA continua
-reservado aos dtypes com ponte validada e não há afirmação de sobreposição
-CPU/GPU além da telemetria publicada.
+transformer MoE completo. Q4_0, NVFP4, K-quants e IQ-quants usam loaders
+próprios com validação da ordem GGUF `[input, output, experts]` antes do
+forward. Com a feature `cuda`, Q4_0 usa a ponte heterogênea CUDA e o cache
+residente; sem CUDA, o decoder CPU é uma escolha explícita na telemetria e no
+log de inicialização. O caminho CUDA continua reservado aos dtypes com ponte
+validada, e não há fallback nativo silencioso quando a seleção MoE externa
+falha.
 
 `path/engine mismatch` na UI é um rótulo de telemetria real: o `selected_path`
 registra o caminho escolhido (`moe/q4_0` ou `dense/llama.cpp`) e

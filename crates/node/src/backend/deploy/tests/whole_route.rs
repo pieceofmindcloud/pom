@@ -196,7 +196,7 @@ mod whole_route_tests {
             json!({
                 "group": "qwen3.5-9b",
                 "kind": "whole",
-                "selection": [{ "start_layer": 0, "end_layer": 31 }]
+                "selection": [{ "start_layer": 0, "end_layer": 31, "target_node_id": "ksia" }]
             }),
         )
         .await;
@@ -238,7 +238,7 @@ mod whole_route_tests {
             json!({
                 "group": "qwen3.5-9b",
                 "kind": "whole",
-                "selection": [{ "start_layer": 0, "end_layer": 31 }]
+                "selection": [{ "start_layer": 0, "end_layer": 31, "target_node_id": "ksia" }]
             }),
         )
         .await;
@@ -251,13 +251,26 @@ mod whole_route_tests {
         let mut pending = catalog();
         pending["metadata_complete"] = json!(false);
         pending["shard_sets"][0]["complete"] = json!(true);
+        pending["shard_sets"][0]["shards"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name": "qwen_16_31.gguf",
+                "path": "/models/qwen/qwen_16_31.gguf",
+                "size_bytes": 2_000_000_000u64,
+                "total_layers": 32,
+                "shard_range": [16, 31],
+            }));
         let port = catalog_machine(pending).await;
         let body = plan_body(
             state_seeing_only(port).await,
             json!({
                 "group": "qwen",
                 "kind": "shards",
-                "selection": [{ "start_layer": 0, "end_layer": 15 }]
+                "selection": [
+                    { "start_layer": 0, "end_layer": 15, "target_node_id": "ksia" },
+                    { "start_layer": 16, "end_layer": 31, "target_node_id": "ksia" }
+                ]
             }),
         )
         .await;
@@ -318,4 +331,3 @@ mod whole_route_tests {
         assert!(!motivo.contains("fatias de"), "{motivo}");
     }
 }
-

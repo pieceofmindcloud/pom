@@ -18,7 +18,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 - `llm/` - wrapper FFI do llama.cpp dividido por responsabilidade em captura,
   configuração, modelo, engine, batch, amostragem e testes. É a única
   superfície `unsafe` do produto. Alcança o estado da coletiva TP por
-  `tp_probe` (ver abaixo).
+  `tp_probe` (ver abaixo). Em `llm/config.rs`, `llama_max_devices()` é só a
+  capacidade dos vetores entregues ao C; quantas placas existem é
+  `fit_device_count`, e é ela que posiciona a reserva de KV do contexto MTP na
+  última placa **real** - ver `docs/subsystems/inferencia.md`, seção do fit.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   Quando o modelo alvo usa MoE externo metadata-only, `LlmEngine::set_moe_runtime`

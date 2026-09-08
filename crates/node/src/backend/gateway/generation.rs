@@ -62,6 +62,27 @@ pub(super) async fn generate_stream_inner(
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
+    } else {
+        // Um gateway sem modelo local não tinha admissão nenhuma: o prompt
+        // atravessava inteiro, chegava ao decode do peer e derrubava o
+        // processo com `CUDA error: out of memory` (ksia, 2026-09-08). A
+        // capacidade anunciada pelo peer que serve este modelo é a mesma que
+        // `/v1/models` publica, e vale como teto aqui. Fica antes de qualquer
+        // sondagem de saúde de propósito: um pedido já inadmissível não
+        // justifica uma volta na rede, muito menos um prefill.
+        let (model_name, _) = crate::deployment::split_selector(&model);
+        let (capacity, capacity_pending) =
+            state.runtime_capacity_for_model(Some(model_name)).await;
+        // Capacidade pendente é ausência de informação, não permissão: quem
+        // decide nesse caso continua sendo o peer.
+        if let Some(capacity) = capacity.filter(|_| !capacity_pending) {
+            if let Some(error) =
+                prompt_budget_error_of(capacity.n_ctx, capacity.max_new_tokens, &prompt)
+            {
+                let _ = tx.send(GenEvent::Failed(error)).await;
+                return;
+            }
+        }
     }
     record_gateway_span(
         &mut gateway_spans,
@@ -1758,22 +1779,37 @@ pub(super) fn estimate_tokens(prompt: &str) -> u32 {
     prompt.chars().count().div_ceil(CHARS_PER_TOKEN) as u32
 }
 
-pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Option<String> {
-    let budget = prompt_budget(cfg);
+/// A recusa por prompt acima da capacidade, a partir de números soltos.
+///
+/// Existe separada de [`prompt_budget_error`] porque o gateway que **não**
+/// carrega modelo nenhum precisa da mesma admissão: era exatamente esse o
+/// caminho do defeito de 2026-09-08, em que um prompt de 30 mil caracteres
+/// atravessava o gateway sem config local, chegava ao decode do peer e
+/// derrubava o processo inteiro com `CUDA error: out of memory`. Recusar aqui
+/// é o que mantém o nó vivo para os outros pedidos.
+pub fn prompt_budget_error_of(n_ctx: u32, max_new_tokens: u32, prompt: &str) -> Option<String> {
+    let budget = prompt_budget_of(n_ctx, 1, max_new_tokens);
     let estimated = estimate_tokens(prompt);
     (estimated > budget).then(|| {
         format!(
             "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-             {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
-             vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
-             n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
-             as requisições simultâneas.",
-            cfg.n_ctx,
-            cfg.max_new_tokens,
-            prompt_chunk_tokens(cfg),
-            cfg.n_batch,
+             {budget}. Cada sessão recebe n_ctx ({n_ctx}) menos max_new_tokens \
+             ({max_new_tokens}). Aumente n_ctx em Configurar → ajustes avançados, \
+             reduza max_new_tokens, ou reduza o tamanho do prompt."
         )
     })
+}
+
+pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Option<String> {
+    let error = prompt_budget_error_of(cfg.n_ctx, cfg.max_new_tokens, prompt)?;
+    // O nó que tem o modelo em casa sabe mais: acrescenta por que `n_batch`
+    // não é o limite, que é a confusão que o operador faz primeiro.
+    Some(format!(
+        "{error} O prompt vai em pedaços de {} tokens, então n_batch ({}) não limita \
+         o prompt.",
+        prompt_chunk_tokens(cfg),
+        cfg.n_batch,
+    ))
 }
 
 pub(super) fn rate(tokens: u32, secs: f64) -> f64 {

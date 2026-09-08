@@ -1303,6 +1303,64 @@ mod tests {
     }
 
     #[test]
+    fn prompt_over_capacity_is_rejected_without_local_runtime_config() {
+        let prompt = "a".repeat(30_289);
+        let error = prompt_budget_error_of(7_000, 200, &prompt)
+            .expect("um prompt acima da capacidade do peer precisa ser recusado");
+
+        assert!(error.contains("Prompt grande demais"));
+        assert!(error.contains("~10097"));
+        assert!(error.contains("limite de 6800"));
+        assert!(error.contains("Aumente n_ctx"));
+    }
+
+    /// Reprodução do defeito de 2026-09-08 na ksia, ponta a ponta: um gateway
+    /// **sem modelo local** recebe um prompt de 30 mil caracteres para um
+    /// modelo que só o peer serve. Antes, a admissão só existia quando havia
+    /// config local, o prompt seguia para o prefill e o decode do peer abortava
+    /// o processo inteiro em `ggml-cuda.cu` com `CUDA error: out of memory`.
+    /// Agora a capacidade anunciada pelo peer recusa antes de qualquer peso ser
+    /// tocado, e o nó continua de pé.
+    #[tokio::test]
+    async fn gateway_sem_modelo_local_recusa_prompt_acima_da_capacidade_do_peer() {
+        let mut peer = testkit::peer("peer-gpu", "ksia", 39_991);
+        peer.model = "ornith".into();
+        peer.total_layers = 32;
+        peer.end_layer = 31;
+        let state = testkit::state_with("gateway", vec![peer]).await;
+        assert!(
+            state.runtime.config().await.is_none(),
+            "este gateway não pode ter modelo local, senão o teste cobre o caminho antigo"
+        );
+
+        let error = crate::gateway::generate_blocking_with_stops(
+            "/api/generate",
+            crate::reqlog::Caller::operator(),
+            crate::gateway::GenerationInput {
+                state,
+                inference_token: "test-api-key".into(),
+                model: "ornith".into(),
+                prompt: "a".repeat(30_289),
+                images: Vec::new(),
+                chat_template: false,
+                budget: crate::gateway::OutputBudget::single(200),
+                stops: Vec::new(),
+                cache_key: None,
+                request_details: serde_json::json!({}),
+                trace_id: None,
+            },
+        )
+        .await
+        .expect_err("um prompt acima da capacidade do peer precisa ser recusado");
+
+        assert!(
+            error.contains("Prompt grande demais"),
+            "a recusa precisa ser a mensagem acionável, e não uma falha de transporte: {error}"
+        );
+        assert!(error.contains("Aumente n_ctx"), "{error}");
+    }
+
+    #[test]
     fn rate_is_zero_for_an_instant_generation() {
         assert_eq!(rate(10, 0.0), 0.0);
         assert!((rate(10, 2.0) - 5.0).abs() < 1e-9);

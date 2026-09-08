@@ -446,7 +446,11 @@ profile policy remains the effective authorization boundary.
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
   complete window for each session; `max_sessions` multiplies the runtime KV
   reservation, and `n_batch` deliberately does NOT appear (prefill chunks the
-  prompt); `generate_stream_with_stops`
+  prompt); `prompt_budget_error_of(n_ctx, max_new_tokens, prompt)` is the pure
+  refusal shared by both admission paths, and a gateway with no local model
+  admits against the peer's announced `RuntimeCapacity` before any health probe
+  - without it a 30k-char prompt reached the peer's decode and aborted the
+  whole process on CUDA OOM (ksia, 2026-09-08), see `inferencia.md` §9; `generate_stream_with_stops`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly

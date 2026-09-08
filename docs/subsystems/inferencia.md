@@ -196,6 +196,17 @@ ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
 margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
 vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
+`llama_max_devices()` é a **capacidade de compilação** dos vetores que o
+wrapper C preenche (16 hoje), nunca o número de placas presentes. Os vetores
+entregues ao C continuam com essa capacidade, mas toda decisão física usa
+`fit_device_count`, que conta os handles elegíveis de `llama_rs_get_devices` e
+cai para a contagem do snapshot de memória, com um slot mínimo para o host.
+Confundir os dois tinha duas consequências, ambas observadas na ksia em
+2026-09-08: o aviso `snapshot parcial de memória` disparava em toda máquina com
+menos de 16 GPUs (`reported_devices=2 expected_devices=16`), e - o defeito
+real - a reserva de KV do contexto MTP, que pertence à última placa, caía no
+índice 15, um dispositivo inexistente que o C nunca lê. O fit então planejava
+sobre VRAM que já estava prometida ao contexto MTP.
 Esse encaixe nativo é exclusivo do carregamento real. A pré-visualização de
 capacidade da tela Implantar usa metadata GGUF, `plan::range_cost` e a VRAM
 livre atual para uma estimativa analítica; ela não chama `llama_backend_init`,
@@ -1678,6 +1689,20 @@ gateway mede o prompt
 (`estimate_tokens` ≈ chars/3, pessimista) **antes** de qualquer peer ver o
 prompt e recusa com uma mensagem citando as flags. O `/health` expõe os dois
 valores como `n_ctx_total` e `n_ctx_per_session`.
+
+Essa admissão vale **também no gateway que não carrega modelo nenhum**. Até
+2026-09-08 ela só existia quando havia `NodeConfig` local; um nó gateway-only
+deixava o prompt atravessar inteiro, e o decode do peer abortava o processo com
+`CUDA error: out of memory` em `ggml-cuda.cu` - sem recusa, sem mensagem e
+derrubando junto todos os outros pedidos em curso. Sem config local o gateway
+usa a `RuntimeCapacity` anunciada pelo peer que serve o modelo, a mesma que
+`/v1/models` publica, via `runtime_capacity_for_model`. A verificação fica
+antes da sondagem de saúde e do planejamento: um pedido já inadmissível não
+justifica uma volta na rede, muito menos um prefill. Capacidade **pendente** é
+ausência de informação, não permissão - nesse caso quem decide continua sendo
+o peer. `prompt_budget_error_of(n_ctx, max_new_tokens, prompt)` é a função pura
+compartilhada pelos dois caminhos; a variante local acrescenta a nota de que
+`n_batch` não limita o prompt.
 
 O adaptador OpenAI de chat faz essa mesma verificação antes de iniciar o SSE e responde
 HTTP 413 quando o orçamento foi excedido. Sem esse preflight, a geração emitia

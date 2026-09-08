@@ -130,6 +130,12 @@ pub(super) struct NodeTimings {
     pub(super) token_text_us: u64,
     pub(super) sampling_us: u64,
     pub(super) encode_us: u64,
+    /// Boundary after the engine produced a token-bearing reply. This is
+    /// local to the peer and is never subtracted from a gateway clock.
+    pub(super) first_token_produced_us: u64,
+    /// Boundary just before the peer hands the token-bearing response to its
+    /// HTTP or tunnel adapter.
+    pub(super) first_token_serialized_us: u64,
     pub(super) selected_path: crate::executor::InferencePath,
     pub(super) executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub(super) moe: MoeTimings,
@@ -243,6 +249,8 @@ impl NodeTimings {
             "token_text_ms": ms(self.token_text_us),
             "sampling_ms": ms(self.sampling_us),
             "encode_ms": ms(self.encode_us),
+            "first_token_produced_ms": ms(self.first_token_produced_us),
+            "first_token_serialized_ms": ms(self.first_token_serialized_us),
             "moe_forward_ms": ms(self.moe.forward_us),
             "moe_executor": self.moe_executor(),
             "moe_executors": self

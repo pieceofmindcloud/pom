@@ -922,8 +922,9 @@ async fn conversa_com_hops_fault_kind(
                 budget: crate::gateway::OutputBudget::single(8),
                 stops: Vec::new(),
                 cache_key: Some(cache_key),
-                request_details: serde_json::json!({}),
-            },
+            request_details: serde_json::json!({}),
+            trace_id: None,
+        },
             tx,
         ));
 

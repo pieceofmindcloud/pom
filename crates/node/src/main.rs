@@ -123,6 +123,8 @@ mod runtime;
 mod scheduler;
 #[path = "backend/serve.rs"]
 mod serve;
+#[path = "telemetry.rs"]
+pub(crate) mod telemetry;
 #[path = "backend/session.rs"]
 mod session;
 #[path = "inference/spec_lab.rs"]

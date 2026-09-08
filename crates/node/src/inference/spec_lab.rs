@@ -544,6 +544,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
             stops: Vec::new(),
             cache_key: None,
             request_details: serde_json::json!({}),
+            trace_id: None,
         },
         tx,
     ));

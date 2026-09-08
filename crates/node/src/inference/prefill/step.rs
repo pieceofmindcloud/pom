@@ -21,17 +21,19 @@ pub async fn step(
     direct: Option<&crate::direct::DirectReply>,
     tunnel: Option<&TunnelOutboundSender>,
     speculate: Option<Speculate>,
+    trace_id: Option<&str>,
 ) -> Result<SpeculativeStep> {
     plan.validate_wire_dtype(dtype)?;
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
         return step_direct(
             plan, model, session_id, token_id, dtype, http, routes, direct, tunnel, speculate,
+            trace_id,
         )
         .await;
     }
     if plan.supports_relay_chain() {
         return step_ring(
-            plan, model, session_id, token_id, dtype, http, routes, tunnel, speculate,
+            plan, model, session_id, token_id, dtype, http, routes, tunnel, speculate, trace_id,
         )
         .await;
     }
@@ -42,11 +44,13 @@ pub async fn step(
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, TensorShape)> = None;
     let mut meta = serde_json::Value::Null;
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
 
     for (i, peer) in plan.steps.iter().enumerate() {
         let is_last = i == n_peers - 1;
-        let body_meta = if i == 0 {
+        let mut body_meta = if i == 0 {
             let mut m = json!({
                 "session_id": session_id,
                 "is_last": is_last,
@@ -80,6 +84,9 @@ pub async fn step(
             }
             m
         };
+        if let Some(trace_id) = trace_id {
+            body_meta["trace_id"] = json!(trace_id);
+        }
 
         let payload = tensor.take();
         let sent = crate::relay::send_frame_or_tunnel(
@@ -126,8 +133,11 @@ pub(super) async fn step_ring(
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
     speculate: Option<Speculate>,
+    trace_id: Option<&str>,
 ) -> Result<SpeculativeStep> {
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
     let mut body_meta = json!({
@@ -140,6 +150,9 @@ pub(super) async fn step_ring(
     });
     if let Some(spec) = &speculate {
         body_meta["speculate"] = spec.to_meta();
+    }
+    if let Some(trace_id) = trace_id {
+        body_meta["trace_id"] = json!(trace_id);
     }
 
     let sent = crate::relay::send_frame_or_tunnel(
@@ -192,8 +205,11 @@ pub(super) async fn step_direct(
     direct: &crate::direct::DirectReply,
     tunnel: Option<&TunnelOutboundSender>,
     speculate: Option<Speculate>,
+    trace_id: Option<&str>,
 ) -> Result<SpeculativeStep> {
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
     let mut ticket = direct.ticket_for_hops(plan.steps.len());
@@ -209,6 +225,9 @@ pub(super) async fn step_direct(
     });
     if let Some(spec) = &speculate {
         body_meta["speculate"] = spec.to_meta();
+    }
+    if let Some(trace_id) = trace_id {
+        body_meta["trace_id"] = json!(trace_id);
     }
 
     let ack = crate::relay::send_frame_or_tunnel(
@@ -330,7 +349,11 @@ impl RemoteDecodeStream {
             "transport_fallback": false,
             "node_timings": meta.get("node_timings").cloned().unwrap_or_else(|| json!({})),
         });
-        let mut trace = RequestTrace::from_plan(&self.model, &self.plan);
+        let trace_id = meta
+            .get("trace_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&self.initial_trace.trace_id);
+        let mut trace = RequestTrace::from_plan_with_trace_id(trace_id, &self.model, &self.plan);
         trace.record_hop_from_json(0, Phase::Decode, &entry);
         speculative_step_from_meta(&meta, trace)
     }
@@ -352,6 +375,7 @@ pub(crate) async fn step_stream(
     tunnel: Option<&TunnelOutboundSender>,
     speculate: Option<Speculate>,
     cancellation: &Cancellation,
+    trace_id: Option<&str>,
 ) -> Result<RemoteDecodeStream> {
     plan.validate_wire_dtype(dtype)?;
     let head = &plan.steps[0];
@@ -369,6 +393,9 @@ pub(crate) async fn step_stream(
     });
     if let Some(speculate) = speculate {
         meta["speculate"] = speculate.to_meta();
+    }
+    if let Some(trace_id) = trace_id {
+        meta["trace_id"] = json!(trace_id);
     }
 
     let ack = cancelable(
@@ -403,7 +430,9 @@ pub(crate) async fn step_stream(
         return Err(anyhow!("peer não aceitou o transporte remoto por lotes"));
     }
 
-    let mut initial_trace = RequestTrace::from_plan(model, plan);
+    let mut initial_trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     initial_trace.record_hop_from_sent(0, Phase::Decode, &ack);
     initial_trace.record_transport(0, Phase::Decode, TransportTrace::from_sent(&ack));
     Ok(RemoteDecodeStream {
@@ -435,16 +464,18 @@ pub async fn step_speculative(
     http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
+    trace_id: Option<&str>,
 ) -> Result<SpeculativeStep> {
     plan.validate_wire_dtype(dtype)?;
     if plan.supports_relay_chain() {
         return step_speculative_ring(
             plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel,
+            trace_id,
         )
         .await;
     }
     step_speculative_hub(
-        plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel,
+        plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel, trace_id,
     )
     .await
 }
@@ -484,15 +515,18 @@ pub(super) async fn step_speculative_hub(
     http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
+    trace_id: Option<&str>,
 ) -> Result<SpeculativeStep> {
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, TensorShape)> = None;
     let mut meta = serde_json::Value::Null;
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
 
     for (i, peer) in plan.steps.iter().enumerate() {
         let is_last = i == n_peers - 1;
-        let body_meta = if i == 0 {
+        let mut body_meta = if i == 0 {
             json!({
                 "session_id": session_id,
                 "is_last": is_last,
@@ -517,6 +551,9 @@ pub(super) async fn step_speculative_hub(
             }
             m
         };
+        if let Some(trace_id) = trace_id {
+            body_meta["trace_id"] = json!(trace_id);
+        }
 
         let payload = tensor.take();
         let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), s.clone()));
@@ -561,11 +598,14 @@ pub(super) async fn step_speculative_ring(
     http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
+    trace_id: Option<&str>,
 ) -> Result<SpeculativeStep> {
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
-    let head_meta = json!({
+    let mut head_meta = json!({
         "session_id": session_id,
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
@@ -574,6 +614,9 @@ pub(super) async fn step_speculative_ring(
         "exec_start": head.exec_start,
         "exec_end": head.exec_end,
     });
+    if let Some(trace_id) = trace_id {
+        head_meta["trace_id"] = json!(trace_id);
+    }
 
     let sent = crate::relay::send_frame_or_tunnel(
         http,

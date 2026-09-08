@@ -1,12 +1,41 @@
 use super::*;
 
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn record_gateway_span(
+    spans: &mut Vec<crate::prefill::TraceSpan>,
+    request_started: Instant,
+    span_started: Instant,
+    started_at_ms: u64,
+    name: &'static str,
+) {
+    spans.push(crate::prefill::TraceSpan::new(
+        name,
+        "gateway",
+        None,
+        started_at_ms,
+        span_started
+            .saturating_duration_since(request_started)
+            .as_millis() as u64,
+        span_started.elapsed().as_millis() as u64,
+        None,
+    ));
+}
+
 pub(super) async fn generate_stream_inner(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
     cancellation: crate::prefill::Cancellation,
 ) {
     let request_started = Instant::now();
+    let mut gateway_spans = Vec::new();
     let GenerationInput {
+        trace_id,
         state,
         inference_token: _inference_token,
         model,
@@ -23,19 +52,37 @@ pub(super) async fn generate_stream_inner(
         return;
     }
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
+    let validation_started = Instant::now();
+    let validation_wall = wall_clock_ms();
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = prompt_budget_error(&cfg, &prompt) {
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
     }
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        validation_started,
+        validation_wall,
+        "validation",
+    );
 
+    let orchestration_started = Instant::now();
+    let orchestration_wall = wall_clock_ms();
     let peers = ready_for_pipeline(
         &state.peer_http,
         state.all_peers().await,
         PIPELINE_HEALTH_TIMEOUT,
     )
     .await;
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        orchestration_started,
+        orchestration_wall,
+        "orchestration",
+    );
 
     // `qwen3:8b@d-4f2a91c3` escolhe **qual** implantação atende; o nome pelado
     // deixa a escolha para quem monta o pipeline. Ver `deployment::split_selector`.
@@ -58,6 +105,8 @@ pub(super) async fn generate_stream_inner(
         .into_iter()
         .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
         .collect::<std::collections::HashMap<_, _>>();
+    let selection_started = Instant::now();
+    let selection_wall = wall_clock_ms();
     let Some(mut plan) = plan_pipeline_with_rtt(
         &peers,
         model,
@@ -75,6 +124,13 @@ pub(super) async fn generate_stream_inner(
             .await;
         return;
     };
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        selection_started,
+        selection_wall,
+        "pipeline_selection",
+    );
 
     // The gateway may be a middle or tail peer. Vision is an admission fact
     // of the selected head, so only reject here when this process owns that
@@ -101,6 +157,8 @@ pub(super) async fn generate_stream_inner(
     // candidatos. Resolver aqui, uma vez, fixa o endereco de cada hop para a
     // sessao inteira - o cache KV do outro lado e por sessao, e trocar de
     // endereco na metade e pior que a rota lenta.
+    let route_started = Instant::now();
+    let route_wall = wall_clock_ms();
     {
         let mut fixadas = std::collections::HashMap::new();
         for step in plan.steps.iter_mut() {
@@ -108,6 +166,13 @@ pub(super) async fn generate_stream_inner(
                 crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
         }
     }
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        route_started,
+        route_wall,
+        "route_resolution",
+    );
     let prefix_key = crate::prefix_cache::PrefixRouteKey::new(
         format!(
             "{}|deployment={}|chat_template={chat_template}",
@@ -124,6 +189,8 @@ pub(super) async fn generate_stream_inner(
     // A hit reuses the peer session that stayed parked at the end of the prior
     // prompt. A miss gets a fresh id and is published only after this turn has
     // completed its prefill, so an incomplete session cannot enter the cache.
+    let session_started = Instant::now();
+    let session_wall = wall_clock_ms();
     let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
     let mut prefix_lease = state.prefix_cache.acquire(
         prefix_key.clone(),
@@ -176,6 +243,13 @@ pub(super) async fn generate_stream_inner(
             }
         }
     }
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        session_started,
+        session_wall,
+        "session_acquire",
+    );
 
     // A sessão não pode trocar de réplica depois que o primeiro prefill criou
     // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
@@ -360,6 +434,7 @@ pub(super) async fn generate_stream_inner(
                 reuse,
                 max_inflight_chunks,
                 resume,
+                trace_id.as_deref(),
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
@@ -445,6 +520,17 @@ pub(super) async fn generate_stream_inner(
         let first_token_at = Instant::now();
         let mut next_token = first.token_id;
         let mut trace = first.trace;
+        trace.set_accounted_spans(gateway_spans.clone());
+        trace.request_state = if reuse_prefix {
+            crate::prefill::RequestState::Warm
+        } else {
+            crate::prefill::RequestState::Cold
+        };
+        trace.server_ttft_ms = Some(
+            first_token_at
+                .saturating_duration_since(request_started)
+                .as_millis() as u64,
+        );
         tokens_generated += 1;
         note_leg_boundary(budget, tokens_generated, &mut legs);
         match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
@@ -568,6 +654,7 @@ pub(super) async fn generate_stream_inner(
                 state.tunnel_tx.as_ref(),
                 speculate,
                 &cancellation,
+                trace_id.as_deref(),
             )
             .await
             {
@@ -644,6 +731,7 @@ pub(super) async fn generate_stream_inner(
                                 source: crate::infer_server::DraftSource::Mtp,
                                 draft: stored_draft.take(),
                             }),
+                            trace_id.as_deref(),
                         )
                         .await
                     } else {
@@ -659,6 +747,7 @@ pub(super) async fn generate_stream_inner(
                             &state.peer_http,
                             &state.network.routes,
                             state.tunnel_tx.as_ref(),
+                            trace_id.as_deref(),
                         )
                         .await
                     }
@@ -674,6 +763,7 @@ pub(super) async fn generate_stream_inner(
                         direct.as_ref(),
                         state.tunnel_tx.as_ref(),
                         None,
+                        trace_id.as_deref(),
                     )
                     .await
                 };
@@ -928,6 +1018,7 @@ pub(super) async fn generate_stream_inner(
                     direct.as_ref(),
                     state.tunnel_tx.as_ref(),
                     None,
+                    trace_id.as_deref(),
                 )
                 .await
             };
@@ -1695,7 +1786,10 @@ pub fn spawn_logged_generation_with_stops(
     let logged_prompt = input.prompt.clone();
     let request_details = input.request_details.clone();
     let audit = input.state.audit.clone();
-    let request_id = Uuid::new_v4().simple().to_string();
+    let request_id = input
+        .trace_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     let received_at = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
     audit.begin(crate::reqlog::AuditRequest {

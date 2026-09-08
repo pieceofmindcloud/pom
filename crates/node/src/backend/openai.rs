@@ -834,6 +834,7 @@ async fn blocking_response(
         route,
         caller,
         GenerationInput {
+            trace_id: Some(id.clone()),
             state,
             inference_token,
             model: model.clone(),
@@ -1038,6 +1039,7 @@ fn stream_response(
         route,
         caller,
         GenerationInput {
+            trace_id: Some(id.clone()),
             state,
             inference_token,
             model: model.clone(),

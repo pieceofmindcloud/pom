@@ -627,6 +627,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         reuse_prefix,
         crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS,
         None,
+        None,
     )
     .await
     .expect("prefill");
@@ -657,6 +658,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
             &http,
             &routes,
             reply.as_ref(),
+            None,
             None,
             None,
         )

@@ -1214,6 +1214,7 @@ mod tests {
             response_headers_ms: 4,
             response_body_ms: 5,
             client_decode_ms: 6,
+            connection_state: crate::peer_client::ConnectionState::Unknown,
             tls: false,
             tls_handshake_ms: 0,
             transport: crate::relay::InferenceTransport::Libp2pTunnel,

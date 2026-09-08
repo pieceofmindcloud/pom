@@ -253,7 +253,11 @@ pub(super) async fn handle_prefill(
         Ok(v) => v,
         Err(e) => return err500(e),
     };
+    if local_meta.get("token_id").and_then(|value| value.as_u64()).is_some() {
+        reply.timings.first_token_produced_us = processing_started.elapsed().as_micros() as u64;
+    }
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
+    reply.timings.first_token_serialized_us = processing_started.elapsed().as_micros() as u64;
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
     preserve_batch_identity(&meta, &mut local_meta);

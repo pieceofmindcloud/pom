@@ -22,6 +22,7 @@ pub async fn run_with_options(
     // casos ele recria a sessão a frio desde o pedaço 0. Só hub e resposta
     // direta sabem retomar; o anel ignora e roda do início.
     resume: Option<PrefillResumable>,
+    trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
     plan.validate_wire_dtype(dtype)?;
@@ -49,6 +50,7 @@ pub async fn run_with_options(
             reuse_prefix,
             overlap_window.clone(),
             resume,
+            trace_id,
         )
         .await;
     }
@@ -68,12 +70,15 @@ pub async fn run_with_options(
             cancellation,
             reuse_prefix,
             overlap_window.clone(),
+            trace_id,
         )
         .await;
     }
 
     let started = Instant::now();
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && n_peers > 1;
     trace.prefill_max_inflight_chunks = window as u32;
@@ -126,9 +131,12 @@ pub async fn run_with_options(
                 chat_template,
                 reuse_prefix && idx == 0,
                 start_pos,
+                trace_id,
             );
             let head_meta = add_images_to_head_meta(head_meta, (idx == 0).then_some(images));
-            let mut head_trace = RequestTrace::from_plan(model, plan);
+            let mut head_trace = trace_id
+                .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+                .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
             let (meta, tensor) = match send_chunk(
                 http,
                 routes,
@@ -381,7 +389,11 @@ pub(super) async fn forward_hub_chunk(
     Option<(Vec<f32>, TensorShape)>,
     RequestTrace,
 )> {
-    let mut trace = RequestTrace::from_plan("prefill", plan);
+    let mut trace = meta
+        .get("trace_id")
+        .and_then(|value| value.as_str())
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, "prefill", plan))
+        .unwrap_or_else(|| RequestTrace::from_plan("prefill", plan));
     for (i, step) in plan.steps.iter().enumerate().skip(1) {
         check_cancelled(cancellation)?;
         let is_last = i == plan.steps.len() - 1;
@@ -409,6 +421,9 @@ pub(super) async fn forward_hub_chunk(
         }
         if let Some(prefix_match_tokens) = meta.get("prefix_match_tokens") {
             body_meta["prefix_match_tokens"] = prefix_match_tokens.clone();
+        }
+        if let Some(trace_id) = meta.get("trace_id") {
+            body_meta["trace_id"] = trace_id.clone();
         }
         let (next_meta, next_tensor) = send_chunk(
             http,
@@ -454,6 +469,7 @@ pub(super) async fn run_ring(
     cancellation: &Cancellation,
     reuse_prefix: bool,
     _overlap_window: PrefillOverlapWindow,
+    trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -463,7 +479,9 @@ pub(super) async fn run_ring(
     let mut cached_tokens: u32 = 0;
     let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
 
     loop {
         check_cancelled(cancellation)?;
@@ -476,6 +494,7 @@ pub(super) async fn run_ring(
             chat_template,
             reuse_prefix && chunk_index == 0,
             next_start_pos,
+            trace_id,
         );
         head_meta = add_images_to_head_meta(
             head_meta,
@@ -603,12 +622,15 @@ pub(super) async fn run_direct(
     reuse_prefix: bool,
     overlap_window: PrefillOverlapWindow,
     resume: Option<PrefillResumable>,
+    trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let started = Instant::now();
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && !next_hops.is_empty();
     trace.prefill_max_inflight_chunks = window as u32;
@@ -664,6 +686,7 @@ pub(super) async fn run_direct(
                 cancellation,
                 ticket.id(),
                 &prefill_sequence_id,
+                trace_id,
             )
             .await
             {
@@ -880,6 +903,7 @@ pub(super) async fn dispatch_direct_prefill(
     cancellation: &Cancellation,
     ticket: &str,
     prefill_sequence_id: &str,
+    trace_id: Option<&str>,
 ) -> Result<crate::relay::SentFrame> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -892,6 +916,7 @@ pub(super) async fn dispatch_direct_prefill(
         chat_template,
         reuse_prefix,
         start_pos,
+        trace_id,
     );
     head_meta = add_images_to_head_meta(head_meta, (chunk_index == 0).then_some(images));
     head_meta["next_hops"] = json!(next_hops);

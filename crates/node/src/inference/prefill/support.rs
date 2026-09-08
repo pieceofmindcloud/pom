@@ -550,6 +550,10 @@ pub struct PhaseTrace {
     /// Quase sempre zero: o handshake acontece uma vez por conexão e as
     /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
     pub tls_handshake_ms: u64,
+    /// Contagem do estado do pool reqwest observado nesta fase.
+    pub connection_new_calls: u32,
+    pub connection_reused_calls: u32,
+    pub connection_unknown_calls: u32,
     /// Distribuição limitada das chamadas que cruzaram este hop.
     ///
     /// Min/max são exatos. Depois de 1.024 amostras, os quantis usam um
@@ -590,6 +594,8 @@ pub struct PhaseTrace {
     pub node_token_text_ms: f64,
     pub node_sampling_ms: f64,
     pub node_encode_ms: f64,
+    pub node_first_token_produced_ms: f64,
+    pub node_first_token_serialized_ms: f64,
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
     pub node_p50_ms: f64,
     pub node_p95_ms: f64,
@@ -618,6 +624,17 @@ pub struct PhaseTrace {
 }
 
 impl PhaseTrace {
+    pub(super) fn record_connection_state(
+        &mut self,
+        state: crate::peer_client::ConnectionState,
+    ) {
+        match state {
+            crate::peer_client::ConnectionState::New => self.connection_new_calls += 1,
+            crate::peer_client::ConnectionState::Reused => self.connection_reused_calls += 1,
+            crate::peer_client::ConnectionState::Unknown => self.connection_unknown_calls += 1,
+        }
+    }
+
     pub(super) fn record_transport(&mut self, transport: TransportTrace) {
         self.transport_summary.record(transport);
     }
@@ -731,6 +748,12 @@ impl PhaseTrace {
         self.node_token_text_ms += node_ms("token_text_ms");
         self.node_sampling_ms += node_ms("sampling_ms");
         self.node_encode_ms += node_ms("encode_ms");
+        self.node_first_token_produced_ms = self
+            .node_first_token_produced_ms
+            .max(node_ms("first_token_produced_ms"));
+        self.node_first_token_serialized_ms = self
+            .node_first_token_serialized_ms
+            .max(node_ms("first_token_serialized_ms"));
 
         self.record_node_sample(node_decode_ms);
         self.observe_path(selected_path);
@@ -852,6 +875,9 @@ impl PhaseTrace {
         self.client_decode_ms += next.client_decode_ms;
         self.tls_calls += next.tls_calls;
         self.tls_handshake_ms += next.tls_handshake_ms;
+        self.connection_new_calls += next.connection_new_calls;
+        self.connection_reused_calls += next.connection_reused_calls;
+        self.connection_unknown_calls += next.connection_unknown_calls;
         self.transport_summary.merge(&next.transport_summary);
         self.node_frame_decode_ms += next.node_frame_decode_ms;
         self.node_input_prepare_ms += next.node_input_prepare_ms;
@@ -873,6 +899,12 @@ impl PhaseTrace {
         self.node_token_text_ms += next.node_token_text_ms;
         self.node_sampling_ms += next.node_sampling_ms;
         self.node_encode_ms += next.node_encode_ms;
+        self.node_first_token_produced_ms = self
+            .node_first_token_produced_ms
+            .max(next.node_first_token_produced_ms);
+        self.node_first_token_serialized_ms = self
+            .node_first_token_serialized_ms
+            .max(next.node_first_token_serialized_ms);
         for &sample in &next.node_samples_ms {
             self.record_node_sample(sample);
         }
@@ -1017,6 +1049,7 @@ pub struct FirstTokenTrace {
     pub gateway_stream_at_ms: Option<u64>,
     pub client_received_at_ms: Option<u64>,
     pub engine_ttft_ms: Option<u64>,
+    pub node_serialized_ms: Option<u64>,
     pub node_to_gateway_ms: Option<u64>,
     pub gateway_to_client_ms: Option<u64>,
 }
@@ -1067,6 +1100,7 @@ pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
     pub trace_id: String,
+    pub profile: crate::telemetry::Profile,
     pub request_state: RequestState,
     pub spans: Vec<TraceSpan>,
     pub outside_node_total_ms: Option<u64>,
@@ -1080,6 +1114,9 @@ pub struct RequestTrace {
     pub decode_calls: u64,
     pub generated_tokens: u32,
     pub tokens_per_decode_call: Option<f64>,
+    pub connection_new_calls: u32,
+    pub connection_reused_calls: u32,
+    pub connection_unknown_calls: u32,
     pub model: String,
     pub input_tokens: u32,
     /// Quantos dos `input_tokens` a cabeça **não** reprocessou porque já
@@ -1264,6 +1301,7 @@ impl RequestTrace {
     ) -> Self {
         Self {
             trace_id: trace_id.into(),
+            profile: crate::telemetry::Profile::current(),
             request_state: RequestState::Unknown,
             spans: Vec::new(),
             outside_node_total_ms: None,
@@ -1277,6 +1315,9 @@ impl RequestTrace {
             decode_calls: 0,
             generated_tokens: 0,
             tokens_per_decode_call: None,
+            connection_new_calls: 0,
+            connection_reused_calls: 0,
+            connection_unknown_calls: 0,
             model: model.into(),
             input_tokens: 0,
             cached_tokens: 0,
@@ -1321,11 +1362,20 @@ impl RequestTrace {
     }
 
     pub fn record_span(&mut self, span: TraceSpan) {
+        if !self.profile.collects_spans() {
+            return;
+        }
         self.spans.push(span);
         self.refresh_outside_node_accounting();
     }
 
     pub fn set_accounted_spans(&mut self, spans: Vec<TraceSpan>) {
+        if !self.profile.collects_spans() {
+            self.spans.clear();
+            self.outside_node_accounted_ms = None;
+            self.outside_node_unaccounted_ms = None;
+            return;
+        }
         self.spans = spans;
         self.refresh_outside_node_accounting();
     }
@@ -1339,6 +1389,14 @@ impl RequestTrace {
         self.generated_tokens = tokens;
         self.tokens_per_decode_call = (self.decode_calls > 0)
             .then(|| tokens as f64 / self.decode_calls as f64);
+    }
+
+    pub fn node_processing_ms(&self) -> u64 {
+        self.hops
+            .iter()
+            .flat_map(|hop| [&hop.prefill, &hop.decode])
+            .map(|phase| phase.processing_ms)
+            .sum()
     }
 
     fn refresh_outside_node_accounting(&mut self) {
@@ -1422,6 +1480,14 @@ impl RequestTrace {
         tls: TlsHop,
         node: &serde_json::Value,
     ) {
+        let first_token_produced_ms = node
+            .get("first_token_produced_ms")
+            .and_then(|value| value.as_f64())
+            .filter(|value| *value > 0.0);
+        let first_token_serialized_ms = node
+            .get("first_token_serialized_ms")
+            .and_then(|value| value.as_f64())
+            .filter(|value| *value > 0.0);
         let Some(entry) = self.hops.get_mut(hop) else {
             return;
         };
@@ -1445,6 +1511,17 @@ impl RequestTrace {
             self.decode_calls = self.decode_calls.saturating_add(1);
             self.tokens_per_decode_call = (self.decode_calls > 0)
                 .then(|| self.generated_tokens as f64 / self.decode_calls as f64);
+        }
+        if self.engine_ttft_ms.is_none() {
+            self.engine_ttft_ms = first_token_produced_ms.map(|value| value.round() as u64);
+            self.first_token.engine_ttft_ms = self.engine_ttft_ms;
+            self.first_token.node_serialized_ms =
+                first_token_serialized_ms.map(|value| value.round() as u64);
+            self.first_token.node_to_gateway_ms = Some(
+                round_trip_ms
+                    .saturating_sub(processing_ms)
+                    .saturating_sub(client_decode_ms),
+            );
         }
         self.record_mtp_counts(node);
         self.total_bytes_sent += bytes_sent;
@@ -1505,6 +1582,7 @@ impl RequestTrace {
             sent.hidden_state_bytes_received,
             Some(sent.hidden_state_dtype),
         );
+        self.record_connection_state(hop, phase, sent.connection_state);
     }
 
     pub(super) fn record_transport(&mut self, hop: usize, phase: Phase, transport: TransportTrace) {
@@ -1552,6 +1630,15 @@ impl RequestTrace {
             get("hidden_state_bytes_received"),
             dtype,
         );
+        let connection_state = match entry
+            .get("connection_state")
+            .and_then(|value| value.as_str())
+        {
+            Some("new") => crate::peer_client::ConnectionState::New,
+            Some("reused") => crate::peer_client::ConnectionState::Reused,
+            _ => crate::peer_client::ConnectionState::Unknown,
+        };
+        self.record_connection_state(hop, phase, connection_state);
         if entry.get("transport").is_some() {
             self.record_transport(hop, phase, TransportTrace::from_json(entry));
         }
@@ -1586,6 +1673,26 @@ impl RequestTrace {
         }
     }
 
+    fn record_connection_state(
+        &mut self,
+        hop: usize,
+        phase: Phase,
+        state: crate::peer_client::ConnectionState,
+    ) {
+        let Some(entry) = self.hops.get_mut(hop) else {
+            return;
+        };
+        match phase {
+            Phase::Prefill => entry.prefill.record_connection_state(state),
+            Phase::Decode => entry.decode.record_connection_state(state),
+        }
+        match state {
+            crate::peer_client::ConnectionState::New => self.connection_new_calls += 1,
+            crate::peer_client::ConnectionState::Reused => self.connection_reused_calls += 1,
+            crate::peer_client::ConnectionState::Unknown => self.connection_unknown_calls += 1,
+        }
+    }
+
     pub fn merge(&mut self, other: &RequestTrace) {
         self.total_bytes_sent += other.total_bytes_sent;
         self.total_bytes_received += other.total_bytes_received;
@@ -1600,6 +1707,13 @@ impl RequestTrace {
             .saturating_add(other.mtp_draft_tokens_rejected);
         self.refresh_mtp_acceptance_rate();
         self.transport_trace_complete &= other.transport_trace_complete;
+        self.connection_new_calls += other.connection_new_calls;
+        self.connection_reused_calls += other.connection_reused_calls;
+        self.connection_unknown_calls += other.connection_unknown_calls;
+        if self.engine_ttft_ms.is_none() {
+            self.engine_ttft_ms = other.engine_ttft_ms;
+            self.first_token = other.first_token.clone();
+        }
         if self.prefix_reuse_status.is_none() {
             self.prefix_reuse_status = other.prefix_reuse_status.clone();
         }
@@ -1638,8 +1752,9 @@ pub(super) fn head_prefill_meta(
     chat_template: bool,
     reuse_prefix: bool,
     start_pos: Option<u32>,
+    trace_id: Option<&str>,
 ) -> serde_json::Value {
-    json!({
+    let mut meta = json!({
         "session_id": session_id,
         "chunk_index": chunk_index,
         "chunk_size": chunk_size,
@@ -1649,7 +1764,11 @@ pub(super) fn head_prefill_meta(
         "chat_template": chat_template,
         "reuse_prefix": reuse_prefix,
         "start_pos": start_pos,
-    })
+    });
+    if let Some(trace_id) = trace_id {
+        meta["trace_id"] = json!(trace_id);
+    }
+    meta
 }
 
 /// Codifica as imagens somente no primeiro quadro enviado à cabeça. O projector

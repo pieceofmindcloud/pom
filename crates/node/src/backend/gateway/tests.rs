@@ -1324,6 +1324,15 @@ mod tests {
     }
 
     #[test]
+    fn timing_metrics_reserves_independent_server_engine_and_client_ttft() {
+        let timings = timing_metrics(2_000, 1_200, 1_000, 500, 20);
+
+        assert_eq!(timings.server_ttft_ms, None);
+        assert_eq!(timings.engine_ttft_ms, None);
+        assert_eq!(timings.client_ttft_ms, None);
+    }
+
+    #[test]
     fn timing_metrics_does_not_divide_by_zero_after_full_prefix_reuse() {
         let timings = timing_metrics(1_000, 400, 0, 0, 12);
 

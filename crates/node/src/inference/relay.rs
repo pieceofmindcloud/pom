@@ -141,6 +141,8 @@ pub struct SentFrame {
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
+    /// Estado observável do cliente/pool reqwest usado nesta travessia.
+    pub connection_state: crate::peer_client::ConnectionState,
     /// Se este salto foi cifrado.
     ///
     /// Também é o que denuncia uma virada pela metade, ou um ponto de chamada
@@ -412,6 +414,7 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
                 response_headers_ms: response.response_headers_ms,
                 response_body_ms: response.response_body_ms,
                 client_decode_ms: response.client_decode_ms,
+                connection_state: response.connection_state,
                 tls: response.tls,
                 tls_handshake_ms,
                 transport: response.transport,
@@ -456,6 +459,7 @@ impl SentFrame {
             "response_headers_ms": self.response_headers_ms,
             "response_body_ms": self.response_body_ms,
             "client_decode_ms": self.client_decode_ms,
+            "connection_state": self.connection_state.as_str(),
             "tls": self.tls,
             "tls_handshake_ms": self.tls_handshake_ms,
             "transport": self.transport.as_str(),
@@ -714,6 +718,7 @@ async fn send_frame_in_process(
         response_headers_ms: 0,
         response_body_ms: 0,
         client_decode_ms,
+        connection_state: crate::peer_client::ConnectionState::Unknown,
         tls: false,
         tls_handshake_ms,
         transport: InferenceTransport::Local,
@@ -777,7 +782,7 @@ async fn send_frame_with_protocol(
     // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
     // certificado esperado deste destino, e o pinning é o que distingue o peer
     // de quem se põe no meio dele.
-    let http = &clients.for_peer(peer_id)?;
+    let (http, connection_state) = clients.for_peer_with_state(peer_id)?;
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
@@ -865,6 +870,7 @@ async fn send_frame_with_protocol(
                         response_headers_ms,
                         response_body_ms,
                         client_decode_ms,
+                        connection_state,
                         transport: InferenceTransport::Https,
                         transport_fallback,
                     });
@@ -919,6 +925,7 @@ struct BatchTransportResponse {
     response_headers_ms: u64,
     response_body_ms: u64,
     client_decode_ms: u64,
+    connection_state: crate::peer_client::ConnectionState,
     tls: bool,
     transport: InferenceTransport,
     transport_fallback: bool,
@@ -963,6 +970,7 @@ async fn send_batch_body(
             response_headers_ms: 0,
             response_body_ms: 0,
             client_decode_ms: 0,
+            connection_state: crate::peer_client::ConnectionState::Unknown,
             tls: false,
             transport: InferenceTransport::Local,
             transport_fallback: false,
@@ -1009,6 +1017,7 @@ async fn send_batch_body(
                     response_headers_ms: 0,
                     response_body_ms: 0,
                     client_decode_ms: 0,
+                    connection_state: crate::peer_client::ConnectionState::Unknown,
                     tls: step.inference_url.starts_with("https://"),
                     transport: InferenceTransport::HttpsLink,
                     transport_fallback: false,
@@ -1045,7 +1054,7 @@ async fn send_batch_body(
         }
     }
 
-    let client = clients.for_peer(&step.node_id)?;
+    let (client, connection_state) = clients.for_peer_with_state(&step.node_id)?;
     let mut route_candidates = Vec::with_capacity(step.inference_candidates.len() + 1);
     if !step.inference_url.is_empty() {
         route_candidates.push(step.inference_url.clone());
@@ -1097,6 +1106,7 @@ async fn send_batch_body(
                         response_headers_ms,
                         response_body_ms,
                         client_decode_ms,
+                        connection_state,
                         tls: url.starts_with("https://"),
                         transport: InferenceTransport::Https,
                         transport_fallback,
@@ -1188,6 +1198,7 @@ async fn send_batch_via_tunnel(
         response_headers_ms: started.elapsed().as_millis() as u64,
         response_body_ms: 0,
         client_decode_ms: 0,
+        connection_state: crate::peer_client::ConnectionState::Unknown,
         tls: false,
         transport: InferenceTransport::Libp2pTunnel,
         transport_fallback: false,
@@ -1706,6 +1717,7 @@ async fn send_frame_via_tunnel_with_auth(
         response_headers_ms: round_trip_ms,
         response_body_ms,
         client_decode_ms,
+        connection_state: crate::peer_client::ConnectionState::Unknown,
         transport: InferenceTransport::Libp2pTunnel,
         transport_fallback: false,
     })
@@ -1935,6 +1947,7 @@ mod tests {
             response_headers_ms: 5,
             response_body_ms: 3,
             client_decode_ms: 1,
+            connection_state: crate::peer_client::ConnectionState::Unknown,
             tls,
             tls_handshake_ms: handshake,
             transport: if tls {

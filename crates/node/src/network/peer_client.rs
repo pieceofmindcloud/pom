@@ -61,6 +61,30 @@ pub fn scheme(tls: bool) -> &'static str {
     }
 }
 
+/// Estado observável do pool HTTP do peer.
+///
+/// O reqwest mantém o socket individual sob o pool interno, então esta
+/// distinção identifica construção/reutilização do cliente pinado. Quando o
+/// caminho usa o cliente claro compartilhado, a reutilização de um socket não
+/// pode ser provada nesta camada e fica desconhecida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionState {
+    New,
+    Reused,
+    Unknown,
+}
+
+impl ConnectionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Reused => "reused",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Base de URL para falar com um peer, com o esquema que a flag manda.
 ///
 /// O colchete do IPv6 é responsabilidade daqui: o cluster é IPv6 na prática, e
@@ -247,12 +271,19 @@ impl PeerClients {
     /// Sem TLS devolve o cliente interno compartilhado, que marca as chamadas
     /// de peer para a fronteira administrativa sem alterar a credencial delas.
     pub fn for_peer(&self, node_id: &str) -> Result<reqwest::Client> {
+        self.for_peer_with_state(node_id).map(|(client, _)| client)
+    }
+
+    /// Cliente e observação atômica da entrada no cache. A observação é feita
+    /// junto da inserção para que chamadas concorrentes não rotulem como
+    /// reutilizado um cliente que acabou de ser construído.
+    pub fn for_peer_with_state(&self, node_id: &str) -> Result<(reqwest::Client, ConnectionState)> {
         if !self.tls_enabled() {
-            return Ok(self.internal_plain.clone());
+            return Ok((self.internal_plain.clone(), ConnectionState::Unknown));
         }
         if let Ok(m) = self.per_peer.read() {
             if let Some(c) = m.get(node_id) {
-                return Ok(c.clone());
+                return Ok((c.clone(), ConnectionState::Reused));
             }
         }
         let cfg = crate::tls::client_config(node_id)?;
@@ -266,7 +297,7 @@ impl PeerClients {
         if let Ok(mut m) = self.per_peer.write() {
             m.insert(node_id.to_string(), client.clone());
         }
-        Ok(client)
+        Ok((client, ConnectionState::New))
     }
 
     /// Base de URL para este peer, já com o esquema em vigor.
@@ -630,9 +661,12 @@ mod tests {
     fn com_tls_cada_peer_tem_o_seu_e_e_reaproveitado() {
         let c = PeerClients::new(Duration::from_secs(600));
         c.set_tls(true);
-        c.for_peer("aaaa").unwrap();
-        c.for_peer("aaaa").unwrap();
-        c.for_peer("bbbb").unwrap();
+        let (_, first) = c.for_peer_with_state("aaaa").unwrap();
+        let (_, second) = c.for_peer_with_state("aaaa").unwrap();
+        let (_, third) = c.for_peer_with_state("bbbb").unwrap();
+        assert_eq!(first, ConnectionState::New);
+        assert_eq!(second, ConnectionState::Reused);
+        assert_eq!(third, ConnectionState::New);
         assert_eq!(
             c.cached_peers(),
             vec!["aaaa".to_string(), "bbbb".to_string()]

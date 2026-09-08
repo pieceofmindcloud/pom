@@ -80,9 +80,11 @@ mod tests {
             true,
             false,
             None,
+            Some("trace-a"),
         );
         assert_eq!(meta["prompt"], "Oi, teste");
         assert_eq!(meta["chat_template"], true);
+        assert_eq!(meta["trace_id"], "trace-a");
     }
 
     #[test]
@@ -182,6 +184,33 @@ mod tests {
         assert_eq!(trace.hops[0].prefill.network_ms, 11);
         assert_eq!(trace.hops[0].prefill.bytes_sent, 1_024);
         assert_eq!(trace.hops[0].prefill.bytes_received, 2_048);
+    }
+
+    #[test]
+    fn trace_preserva_marcos_locais_do_primeiro_token_do_peer() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            18,
+            7,
+            1_024,
+            2_048,
+            1,
+            2,
+            3,
+            4,
+            TlsHop::default(),
+            &json!({
+                "first_token_produced_ms": 6.5,
+                "first_token_serialized_ms": 7.0,
+            }),
+        );
+
+        assert_eq!(trace.engine_ttft_ms, Some(7));
+        assert_eq!(trace.first_token.engine_ttft_ms, Some(7));
+        assert_eq!(trace.first_token.node_serialized_ms, Some(7));
+        assert_eq!(trace.first_token.node_to_gateway_ms, Some(7));
     }
 
     #[test]

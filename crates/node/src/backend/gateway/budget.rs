@@ -427,6 +427,9 @@ pub enum GenEvent {
 /// Keeping them together prevents each adapter from growing a subtly
 /// different list of generation parameters.
 pub(crate) struct GenerationInput {
+    /// Correlation ID chosen at the HTTP boundary. When absent (for an
+    /// internal/test caller), the audit adapter creates one before spawning.
+    pub(crate) trace_id: Option<String>,
     pub(crate) state: GatewayState,
     /// API key validated at the client gateway. It is retained only as input
     /// to the generation adapter and is never sent to an inference peer.
@@ -484,6 +487,14 @@ pub struct GenSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GenerationTimings {
     pub ttft_ms: u64,
+    /// TTFT measured by the gateway, from generation ingress to first token
+    /// emitted into the protocol adapter.
+    pub server_ttft_ms: Option<u64>,
+    /// TTFT measured locally by the inference peer. It is absent when the
+    /// peer did not return a first-token marker.
+    pub engine_ttft_ms: Option<u64>,
+    /// TTFT measured by the browser with `performance.now()`.
+    pub client_ttft_ms: Option<u64>,
     pub prefill_ms: u64,
     pub prefill_tokens: u32,
     pub prefill_tokens_per_sec: Option<f64>,
@@ -663,6 +674,9 @@ pub(crate) fn timing_metrics(
     let generation_ms = total_ms.saturating_sub(ttft_ms);
     GenerationTimings {
         ttft_ms,
+        server_ttft_ms: None,
+        engine_ttft_ms: None,
+        client_ttft_ms: None,
         prefill_ms,
         prefill_tokens,
         prefill_tokens_per_sec: rate_if_measurable(prefill_tokens, prefill_ms),
@@ -691,14 +705,22 @@ pub(super) fn summary_for(
         .saturating_duration_since(request_started)
         .as_millis() as u64;
     trace.output_tokens = tokens_generated;
+    trace.set_generated_tokens(tokens_generated);
     trace.complete = !partial;
-    let timings = timing_metrics(
+    trace.server_ttft_ms = Some(ttft_ms);
+    trace.set_outside_node_total_ms(
+        total_ms.saturating_sub(trace.node_processing_ms()),
+    );
+    let mut timings = timing_metrics(
         total_ms,
         ttft_ms,
         trace.prefill_ms,
         trace.input_tokens.saturating_sub(trace.cached_tokens),
         tokens_generated,
     );
+    timings.server_ttft_ms = Some(ttft_ms);
+    timings.engine_ttft_ms = trace.engine_ttft_ms;
+    timings.client_ttft_ms = trace.client_ttft_ms;
     GenSummary {
         source: format!(
             "pipeline:{}{}",

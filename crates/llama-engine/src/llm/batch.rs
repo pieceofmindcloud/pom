@@ -116,6 +116,9 @@ pub struct HiddenBatchEntry {
     pub descriptor: BatchEntry,
     pub hidden: Vec<f32>,
     pub shape: TensorShape,
+    /// Four M-RoPE coordinates per physical embedding cell, in `[t, y, x, z]`
+    /// order. `None` keeps the ordinary one-dimensional position path.
+    pub mrope_positions: Option<Vec<[u32; 4]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

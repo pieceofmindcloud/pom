@@ -344,6 +344,9 @@ pub(super) struct PrefillJob {
     /// Candidato de prefixo comum, inclusive quando a decisão foi fria.
     pub(super) prefix_match_tokens: u32,
     pub(super) start_pos: Option<u32>,
+    /// Posição lógica seguinte produzida pelo head. Necessária nos hops para
+    /// não tentar deduzi-la pela quantidade de células físicas M-RoPE.
+    pub(super) next_pos: Option<u32>,
     /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
     /// por quem tokenizou - ver `Session::stable_len`.
     pub(super) stable_len: Option<u32>,
@@ -357,6 +360,10 @@ pub(super) struct PrefillJob {
     /// Imagens só existem no chunk 0 da cabeça; os hops seguintes recebem
     /// apenas o estado oculto já produzido pelo projector.
     pub(super) images: Option<Vec<Vec<u8>>>,
+    /// Posições físicas M-RoPE produzidas pelo head e ecoadas pelos hops.
+    /// `n_tokens`/células físicas e `n_past`/posição lógica não são
+    /// intercambiáveis neste caminho.
+    pub(super) mrope_positions: Option<Vec<[u32; 4]>>,
     pub(super) chat_template: Option<bool>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
@@ -942,6 +949,7 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.cached_tokens,
                 job.prefix_match_tokens,
                 job.start_pos,
+                job.next_pos,
                 job.stable_len,
                 job.is_last,
                 job.is_final_chunk,
@@ -952,6 +960,7 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.tensor,
                 job.capture_block,
                 job.chunk_tokens,
+                job.mrope_positions,
                 job.queued_at,
             );
             let _ = reply.send(result);

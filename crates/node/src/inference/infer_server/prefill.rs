@@ -97,6 +97,10 @@ pub(super) async fn handle_prefill(
         .get("start_pos")
         .and_then(|v| v.as_u64())
         .map(|value| value as u32);
+    let next_pos = meta
+        .get("next_pos")
+        .and_then(|v| v.as_u64())
+        .and_then(|value| u32::try_from(value).ok());
     // Same next_hops-derives-is_last rule as handle_step — see its comment.
     let next_hops: Option<Vec<PipelineStep>> = meta
         .get("next_hops")
@@ -149,6 +153,13 @@ pub(super) async fn handle_prefill(
     let chunk_tokens: Option<Vec<i32>> = meta
         .get("tokens")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let mrope_positions = match meta.get("mrope_positions") {
+        None => None,
+        Some(value) => match serde_json::from_value::<Vec<[u32; 4]>>(value.clone()) {
+            Ok(positions) => Some(positions),
+            Err(error) => return err400(format!("campo mrope_positions inválido: {error}")),
+        },
+    };
 
     // Scale the hidden state once before moving into spawn_blocking.
     let input_prepare_started = Instant::now();
@@ -201,12 +212,14 @@ pub(super) async fn handle_prefill(
         cached_tokens,
         prefix_match_tokens,
         start_pos,
+        next_pos,
         stable_len,
         is_last,
         is_final_chunk,
         wire_dtype,
         prompt,
         images,
+        mrope_positions,
         chat_template,
         tensor,
         capture_block,
@@ -338,6 +351,9 @@ pub(super) async fn handle_prefill(
         if let Some(tokens) = local_meta.get("tokens") {
             forward["tokens"] = tokens.clone();
         }
+        if let Some(positions) = local_meta.get("mrope_positions") {
+            forward["mrope_positions"] = positions.clone();
+        }
         if chunk_index == 0 {
             if let Some(sequence_id) = &prefill_sequence_id {
                 if let Err(error) = direct_forward_order.ensure_sequence(sequence_id) {
@@ -414,6 +430,9 @@ pub(super) async fn handle_prefill(
             });
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
+            }
+            if let Some(positions) = local_meta.get("mrope_positions") {
+                relay_meta["mrope_positions"] = positions.clone();
             }
             for field in ["start_pos", "next_pos", "stable_len"] {
                 if let Some(value) = local_meta.get(field) {
@@ -515,6 +534,7 @@ pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mu
             "cached_tokens",
             "prefix_match_tokens",
             "stable_len",
+            "mrope_positions",
         ] {
             if let Some(value) = local_meta.get(field) {
                 bubbled[field] = value.clone();
@@ -539,6 +559,7 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
             "cached_tokens": local_meta["cached_tokens"].clone(),
             "prefix_match_tokens": local_meta["prefix_match_tokens"].clone(),
             "stable_len": local_meta["stable_len"].clone(),
+            "mrope_positions": local_meta["mrope_positions"].clone(),
         });
     }
     inbound_meta
@@ -563,6 +584,7 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
         "cached_tokens",
         "prefix_match_tokens",
         "stable_len",
+        "mrope_positions",
     ] {
         if let Some(value) = progress.get(field) {
             if !value.is_null() {
@@ -606,6 +628,52 @@ pub(super) fn guard_chunk_fits_batch(
     Ok(())
 }
 
+/// Decide whether the head has another physical prompt chunk to ingest.
+///
+/// `n_prompt_cells` is the number of embedding/token cells written to KV;
+/// `next_pos` is the logical position returned by the engine. They are equal
+/// for text, but deliberately differ for an M-RoPE image. A multimodal decode
+/// consumes all of its mtmd chunks in one call, so it is complete regardless
+/// of that difference.
+fn prefill_has_more_chunks(
+    owns_tokens: bool,
+    n_prompt_cells: u32,
+    next_pos: u32,
+    multimodal_complete: bool,
+) -> bool {
+    owns_tokens && !multimodal_complete && next_pos < n_prompt_cells
+}
+
+/// Return the logical position after a hidden-state batch whose physical
+/// cells carry M-RoPE coordinates. The largest temporal/spatial coordinate is
+/// the authoritative logical end; the number of embedding rows is not.
+fn logical_end_from_mrope_positions(
+    start_pos: u32,
+    positions: &[[u32; 4]],
+    physical_cells: usize,
+    declared_next_pos: Option<u32>,
+) -> Result<u32> {
+    if positions.len() != physical_cells {
+        bail!(
+            "estado oculto declara {physical_cells} células, mas recebeu {} posições M-RoPE",
+            positions.len()
+        );
+    }
+    let next_pos = declared_next_pos.ok_or_else(|| {
+        anyhow::anyhow!("estado oculto M-RoPE sem next_pos lógico produzido pelo head")
+    })?;
+    if next_pos < start_pos {
+        bail!("next_pos M-RoPE {next_pos} recua da posição inicial {start_pos}");
+    }
+    Ok(next_pos)
+}
+
+fn apply_mrope_positions(meta: &mut Value, positions: Option<&[[u32; 4]]>) {
+    if let Some(positions) = positions {
+        meta["mrope_positions"] = json!(positions);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prefill_blocking(
     state: SharedState,
@@ -616,6 +684,7 @@ pub(super) fn prefill_blocking(
     cached_tokens: u32,
     prefix_match_tokens: u32,
     start_pos: Option<u32>,
+    next_pos: Option<u32>,
     stable_len: Option<u32>,
     is_last: bool,
     is_final_chunk: bool,
@@ -631,6 +700,7 @@ pub(super) fn prefill_blocking(
     // dentro do `decode_hidden`. `None` é peer antigo que não encaminha o
     // campo — o `decode_hidden` desliga o MTP com aviso.
     chunk_tokens: Option<Vec<i32>>,
+    mrope_positions: Option<Vec<[u32; 4]>>,
     queued_at: Instant,
 ) -> Result<TimedReply> {
     let mut is_final_chunk = is_final_chunk;
@@ -657,7 +727,7 @@ pub(super) fn prefill_blocking(
         && chunk_index == 0
         && s.sessions
             .get(&sid_key)
-            .is_some_and(|session| session.retained);
+            .is_some_and(|session| session.retained && session.positions_match_cells());
     s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
     let mut prefix = PrefixDecision::default();
     // Quem não tokeniza recebe a fronteira de quem tokenizou, para partir o
@@ -766,12 +836,14 @@ pub(super) fn prefill_blocking(
 
     let n_tokens;
     let mut multimodal_n_past = None;
+    let mut multimodal_complete = false;
+    let mut mrope_positions = mrope_positions;
     let decode_started = Instant::now();
     let engine_timing;
     if let Some((hidden, shape)) = tensor {
         n_tokens = shape[0];
         guard_chunk_fits_batch(&s.engine, n_tokens, chunk_index)?;
-        engine_timing = s.engine.decode_hidden(
+        engine_timing = s.engine.decode_hidden_with_positions(
             &hidden,
             &shape,
             n_tokens,
@@ -779,6 +851,7 @@ pub(super) fn prefill_blocking(
             seq_id,
             !is_last,
             chunk_tokens.as_deref(),
+            mrope_positions.as_deref(),
         )?;
     } else if has_images {
         if chunk_index != 0 || tensor.is_some() {
@@ -794,16 +867,18 @@ pub(super) fn prefill_blocking(
         } else {
             text.to_string()
         };
-        let (decoded_tokens, decoded_n_past, timing) = s.engine.decode_multimodal(
+        let decoded = s.engine.decode_multimodal(
             &formatted,
             images.as_deref().unwrap_or_default(),
             n_past,
             seq_id,
             !is_last,
         )?;
-        n_tokens = decoded_tokens;
-        multimodal_n_past = Some(decoded_n_past);
-        engine_timing = timing;
+        n_tokens = decoded.n_tokens;
+        multimodal_n_past = Some(decoded.n_past);
+        mrope_positions = decoded.mrope_positions;
+        multimodal_complete = true;
+        engine_timing = decoded.timings;
     } else {
         if tokens_for_chunk.is_empty() {
             bail!("chunk {chunk_index} não tem tokens");
@@ -843,9 +918,20 @@ pub(super) fn prefill_blocking(
         if let Some(decoded_n_past) = multimodal_n_past {
             session.n_past = decoded_n_past;
             session.prompt_tokens = vec![0; n_tokens];
+            session.prompt_cells = n_tokens as u32;
+            session.contains_media = true;
             session.stable_len = decoded_n_past;
+        } else if let Some(positions) = mrope_positions.as_deref() {
+            session.n_past = logical_end_from_mrope_positions(
+                n_past,
+                positions,
+                n_tokens,
+                next_pos,
+            )?;
+            session.prompt_cells = session.prompt_cells.saturating_add(n_tokens as u32);
         } else {
             session.n_past += n_tokens as u32;
+            session.prompt_cells = session.prompt_cells.saturating_add(n_tokens as u32);
         }
         session.last_used = Instant::now();
     }
@@ -855,7 +941,12 @@ pub(super) fn prefill_blocking(
         (session.prompt_tokens.len() as u32, session.n_past)
     };
     let owns_tokens = total_tokens > 0; // this peer has prompt_tokens → token path
-    let more = owns_tokens && (n_past_now < total_tokens);
+    let more = prefill_has_more_chunks(
+        owns_tokens,
+        total_tokens,
+        n_past_now,
+        multimodal_complete,
+    );
     if owns_tokens && !more {
         is_final_chunk = true;
     }
@@ -966,6 +1057,7 @@ pub(super) fn prefill_blocking(
             owns_prompt_tokens,
         );
         apply_stable_len(&mut reply, stable);
+        apply_mrope_positions(&mut reply, mrope_positions.as_deref());
         reply["token_id"] = json!(next_id);
         reply["text"] = json!(text);
         let bytes = wire::encode(&reply, None, wire_dtype)?;
@@ -1006,6 +1098,7 @@ pub(super) fn prefill_blocking(
         owns_prompt_tokens,
     );
     apply_stable_len(&mut reply_meta, stable);
+    apply_mrope_positions(&mut reply_meta, mrope_positions.as_deref());
     // A composição real deste pedaço, para a cauda manter a cabeça `nextn` em
     // dia (ver o doc de `chunk_tokens`). A cabeça conhece os tokens; hops do
     // meio ecoam o que receberam.
@@ -1044,6 +1137,8 @@ pub(super) struct PreparedPrefill {
     pub(super) owns_tokens: bool,
     pub(super) tokens_for_chunk: Vec<i32>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
+    pub(super) mrope_positions: Option<Vec<[u32; 4]>>,
+    pub(super) next_pos: Option<u32>,
     pub(super) input: PreparedPrefillInput,
     pub(super) wire_dtype: WireDtype,
     pub(super) capture_block: Option<u32>,
@@ -1093,6 +1188,8 @@ pub(super) fn prefill_batch_blocking(
             wire_dtype,
             prompt,
             images: _images,
+            mrope_positions,
+            next_pos,
             chat_template,
             tensor,
             capture_block,
@@ -1107,7 +1204,7 @@ pub(super) fn prefill_batch_blocking(
                 && chunk_index == 0
                 && s.sessions
                     .get(&sid_key)
-                    .is_some_and(|session| session.retained);
+                    .is_some_and(|session| session.retained && session.prompt_cells == session.n_past);
             s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
             let mut prefix = PrefixDecision::default();
             // Ver `prefill_blocking`: quem não tokeniza recebe a fronteira.
@@ -1225,6 +1322,8 @@ pub(super) fn prefill_batch_blocking(
                 owns_tokens,
                 tokens_for_chunk: prompt_tokens,
                 chunk_tokens,
+                mrope_positions,
+                next_pos,
                 input,
                 wire_dtype,
                 capture_block,
@@ -1352,6 +1451,7 @@ pub(super) fn prefill_batch_blocking(
                         PreparedPrefillInput::Hidden { shape, .. } => shape.clone(),
                         PreparedPrefillInput::Tokens(_) => Vec::new(),
                     },
+                    mrope_positions: item.mrope_positions.clone(),
                 })
                 .collect();
             s.engine.decode_hidden_batch(&entries, need_residual)
@@ -1372,11 +1472,22 @@ pub(super) fn prefill_batch_blocking(
     for (reply, item) in prepared {
         let result = (|| -> Result<TimedReply> {
             let session = s.sessions.get_mut(&item.sid_key).unwrap();
-            session.n_past = session.n_past.saturating_add(item.n_tokens as u32);
+            if let Some(positions) = item.mrope_positions.as_deref() {
+                session.n_past = logical_end_from_mrope_positions(
+                    session.n_past,
+                    positions,
+                    item.n_tokens,
+                    item.next_pos,
+                )?;
+                session.prompt_cells = session.prompt_cells.saturating_add(item.n_tokens as u32);
+            } else {
+                session.n_past = session.n_past.saturating_add(item.n_tokens as u32);
+                session.prompt_cells = session.prompt_cells.saturating_add(item.n_tokens as u32);
+            }
             session.last_used = Instant::now();
             let total_tokens = session.prompt_tokens.len() as u32;
             let n_past_now = session.n_past;
-            let more = item.owns_tokens && n_past_now < total_tokens;
+            let more = prefill_has_more_chunks(item.owns_tokens, total_tokens, n_past_now, false);
             let mut is_final_chunk = item.is_final_chunk;
             if item.owns_tokens && !more {
                 is_final_chunk = true;
@@ -1410,7 +1521,7 @@ pub(super) fn prefill_batch_blocking(
                         more,
                         total_tokens as usize,
                         item.start_pos,
-                        item.start_pos + item.n_tokens as u32,
+                        n_past_now,
                     );
                     apply_prefix_decision(
                         &mut meta,
@@ -1422,6 +1533,7 @@ pub(super) fn prefill_batch_blocking(
                         item.owns_tokens,
                     );
                     apply_stable_len(&mut meta, item.stable_len);
+                    apply_mrope_positions(&mut meta, item.mrope_positions.as_deref());
                     let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                     timings.encode_us = started.elapsed().as_micros() as u64;
                     return Ok(TimedReply { bytes, timings });
@@ -1491,6 +1603,7 @@ pub(super) fn prefill_batch_blocking(
                     item.owns_tokens,
                 );
                 apply_stable_len(&mut meta, item.stable_len);
+                apply_mrope_positions(&mut meta, item.mrope_positions.as_deref());
                 let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                 timings.token_text_us = token_text_started.elapsed().as_micros() as u64;
                 timings.encode_us = 0;
@@ -1524,6 +1637,7 @@ pub(super) fn prefill_batch_blocking(
                 item.owns_tokens,
             );
             apply_stable_len(&mut meta, item.stable_len);
+            apply_mrope_positions(&mut meta, item.mrope_positions.as_deref());
             if item.owns_tokens {
                 meta["tokens"] = json!(item.tokens_for_chunk);
             } else if let Some(tokens) = &item.chunk_tokens {
@@ -1537,6 +1651,95 @@ pub(super) fn prefill_batch_blocking(
         replies.push((reply, result));
     }
     replies
+}
+
+#[cfg(test)]
+mod multimodal_position_tests {
+    use super::*;
+
+    /// Reproduz a aritmética do defeito de produção: a imagem escreveu 208
+    /// células no KV a partir da posição 26, mas em M-RoPE ela só ocupa
+    /// `max(nx, ny) = 25` posições lógicas, logo o texto seguinte começa em
+    /// 51. Comparar 51 com 208 fazia o head pedir um segundo pedaço de um
+    /// prompt já inteiramente ingerido.
+    #[test]
+    fn mrope_media_does_not_compare_logical_position_with_physical_cells() {
+        let celulas_fisicas = 26 + 208 + 10;
+        let posicao_logica = 26 + 25 + 10;
+        assert!(posicao_logica < celulas_fisicas);
+        assert!(!prefill_has_more_chunks(
+            true,
+            celulas_fisicas,
+            posicao_logica,
+            true
+        ));
+        // Sem mídia as duas grandezas coincidem, e o corte em pedaços continua
+        // a valer: um prompt de texto por ingerir ainda pede outro pedaço.
+        assert!(prefill_has_more_chunks(true, celulas_fisicas, posicao_logica, false));
+        assert!(!prefill_has_more_chunks(true, 244, 244, false));
+        assert!(!prefill_has_more_chunks(false, 244, 51, false));
+    }
+
+    /// O fim lógico de um lote de estado oculto M-RoPE é o `next_pos` que a
+    /// cabeça anunciou, nunca o número de linhas de embedding.
+    #[test]
+    fn mrope_hidden_state_keeps_logical_end_separate_from_cell_count() {
+        let positions: Vec<[u32; 4]> = (0..208).map(|i| [26, 26 + i / 16, 26 + i % 16, 0]).collect();
+
+        assert_eq!(
+            logical_end_from_mrope_positions(26, &positions, 208, Some(51)).unwrap(),
+            51
+        );
+        // Contagem física divergente da tabela de posições é incoerência, não
+        // um dado a arredondar.
+        assert!(logical_end_from_mrope_positions(26, &positions, 207, Some(51)).is_err());
+        // Sem `next_pos` da cabeça não há como inferir o fim lógico: falhar é
+        // melhor que assumir `start + células`.
+        assert!(logical_end_from_mrope_positions(26, &positions, 208, None).is_err());
+        // Recuar da posição inicial é sempre incoerência.
+        assert!(logical_end_from_mrope_positions(26, &positions, 208, Some(25)).is_err());
+    }
+
+    /// Uma sessão cuja contagem física difere da lógica não pode servir de
+    /// prefixo reutilizável: `prompt_tokens` já não indexa o KV célula a
+    /// célula.
+    #[test]
+    fn mrope_session_is_not_a_reusable_prefix() {
+        let mut multimodal = Session::new(0);
+        multimodal.n_past = 51;
+        multimodal.prompt_cells = 244;
+        multimodal.contains_media = true;
+        assert!(!multimodal.positions_match_cells());
+
+        // Mesmo quando o projector não usa M-RoPE e as duas contagens batem,
+        // `prompt_tokens` continua a ser um preenchimento sem os ids reais das
+        // células de mídia: reutilizar esse prefixo compararia lixo.
+        let mut sem_mrope = Session::new(0);
+        sem_mrope.n_past = 244;
+        sem_mrope.prompt_cells = 244;
+        sem_mrope.contains_media = true;
+        assert!(!sem_mrope.positions_match_cells());
+
+        let mut texto = Session::new(0);
+        texto.n_past = 244;
+        texto.prompt_cells = 244;
+        assert!(texto.positions_match_cells());
+    }
+
+    /// As posições M-RoPE atravessam a wire sem perder a forma de quatro eixos.
+    #[test]
+    fn mrope_positions_survive_the_wire() {
+        let positions = vec![[26u32, 27, 28, 0], [26, 27, 29, 0]];
+        let mut meta = json!({});
+        apply_mrope_positions(&mut meta, Some(&positions));
+        let decoded: Vec<[u32; 4]> =
+            serde_json::from_value(meta["mrope_positions"].clone()).unwrap();
+        assert_eq!(decoded, positions);
+
+        let mut vazio = json!({});
+        apply_mrope_positions(&mut vazio, None);
+        assert!(vazio.get("mrope_positions").is_none());
+    }
 }
 
 pub(super) fn step_batch_blocking(
@@ -1755,6 +1958,7 @@ pub(super) fn step_batch_blocking(
                         PreparedStepInput::Hidden { shape, .. } => shape.clone(),
                         PreparedStepInput::Tokens { .. } => Vec::new(),
                     },
+                    mrope_positions: None,
                 })
                 .collect();
             s.engine.decode_hidden_batch(&entries, need_residual)

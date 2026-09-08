@@ -266,9 +266,9 @@ pub(super) struct Session {
     /// Sequência da geração deste turno, aberta na primeira decodificação de
     /// token gerado. `None` entre turnos.
     pub(super) gen_seq: Option<u32>,
-    /// Quantos tokens de prompt estão no KV de `prompt_seq`. É a posição para
-    /// onde a sessão volta no fim do turno, e o que o gateway confirma no
-    /// `/v1/session/rewind`.
+    /// Posição lógica seguinte do prompt em `prompt_seq`. Em M-RoPE, ela pode
+    /// ser menor que `prompt_cells`, porque várias células físicas partilham
+    /// uma posição temporal.
     pub(super) prompt_len: u32,
     /// Onde acaba a parte do prompt que sobrevive ao turno seguinte, e portanto
     /// onde a sequência de geração começa - ver `stable_prefix_len`. Tudo daqui
@@ -276,7 +276,16 @@ pub(super) struct Session {
     /// e some no fim do turno. `u32::MAX` é "ainda não sei", que mantém tudo na
     /// sequência do prompt: é o estado dos hops antes de a cabeça informar.
     pub(super) stable_len: u32,
+    /// Quantas células físicas o prefill escreveu em `prompt_seq`. É separado
+    /// de `n_past`: slots de KV são células, enquanto a posição M-RoPE é
+    /// lógica.
+    pub(super) prompt_cells: u32,
+    /// Próxima posição lógica usada pelo motor neste prompt.
     pub(super) n_past: u32,
+    /// O prompt desta sessão passou pelo `mtmd`. `prompt_tokens` então não são
+    /// os tokens reais das células de mídia, e nada que dependa desse
+    /// mapeamento pode correr - ver `positions_match_cells`.
+    pub(super) contains_media: bool,
     pub(super) recent_tokens: Vec<i32>,
     /// Stored by the first peer so subsequent chunks don't re-tokenize.
     pub(super) prompt_tokens: Vec<i32>,
@@ -292,13 +301,25 @@ pub(super) struct Session {
 }
 
 impl Session {
+    /// Verdadeiro quando cada célula física de KV do prompt corresponde a uma
+    /// posição lógica - o caso de texto puro. Um prompt M-RoPE com mídia
+    /// escreve várias células por posição, e aí `prompt_tokens` deixa de
+    /// indexar o KV célula a célula: nada que dependa desse mapeamento
+    /// (reuso de prefixo, snapshot) pode correr.
+    pub(super) fn positions_match_cells(&self) -> bool {
+        self.prompt_cells == self.n_past && !self.contains_media
+    }
+
+
     pub(super) fn new(seq_id: u32) -> Self {
         Self {
             prompt_seq: seq_id,
             gen_seq: None,
             prompt_len: 0,
             stable_len: u32::MAX,
+            prompt_cells: 0,
             n_past: 0,
+            contains_media: false,
             recent_tokens: Vec::new(),
             prompt_tokens: Vec::new(),
             utf8: crate::llm::Utf8Assembler::new(),

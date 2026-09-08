@@ -185,31 +185,33 @@ impl InferState {
     ) -> Result<PrefixDecision> {
         let mut decision = PrefixDecision::default();
         if requested_reuse {
-            let session = self.sessions.get(sid).ok_or_else(|| {
-                anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
-            })?;
-            let retained = session
-                .prompt_tokens
-                .get(..session.n_past as usize)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "sessão '{sid}' retém {} tokens, mas só conhece {}",
-                        session.n_past,
-                        session.prompt_tokens.len()
-                    )
+            let (retained, n_past, cells, physical_cells_match) = {
+                let session = self.sessions.get(sid).ok_or_else(|| {
+                    anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
                 })?;
-            decision = plan_prefix_reuse(retained, session.n_past, &tokens);
-            if !decision.reused {
+                (
+                    session.prompt_tokens.clone(),
+                    session.n_past,
+                    session.prompt_cells,
+                    session.positions_match_cells()
+                        && session.prompt_tokens.len() as u32 == session.n_past,
+                )
+            };
+            if physical_cells_match {
+                decision = plan_prefix_reuse(&retained, n_past, &tokens);
+            }
+            if !physical_cells_match || !decision.reused {
                 let comum = retained
                     .iter()
                     .zip(&tokens)
                     .take_while(|(old, new)| old == new)
                     .count();
                 debug!(
-                    "prefixo da sessão {}… não serve: comum={comum} retido={} retidos={} novos={}",
+                    "prefixo da sessão {}… não serve: comum={comum} lógico={} células={} retidos={} novos={}",
                     &sid[..8.min(sid.len())],
-                    session.n_past,
-                    session.prompt_tokens.len(),
+                    n_past,
+                    cells,
+                    retained.len(),
                     tokens.len()
                 );
                 self.get_or_create(sid, true)?;
@@ -296,6 +298,12 @@ impl InferState {
         }
         let seq = session.prompt_seq;
         let retained = session.prompt_len;
+        if !session.positions_match_cells() || session.prompt_cells != retained {
+            bail!(
+                "sessão '{sid}' usa {} células para a posição lógica {retained}; snapshots de M-RoPE não são reutilizáveis",
+                session.prompt_cells
+            );
+        }
         // Os tokens reais do prompt retido, quando este peer os conhece (a
         // cabeça). Vazio nos hops que só receberam hidden state.
         let real_tokens: Vec<i32> = session
@@ -374,6 +382,7 @@ impl InferState {
         session.prompt_len = sidecar.retained_tokens;
         session.n_past = sidecar.retained_tokens;
         session.stable_len = sidecar.retained_tokens;
+        session.prompt_cells = sidecar.retained_tokens;
         session.prompt_tokens = if sidecar.prompt_tokens.is_empty() {
             header_tokens
         } else {

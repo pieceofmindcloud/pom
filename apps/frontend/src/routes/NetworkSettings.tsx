@@ -46,6 +46,13 @@ export function NetworkSettings() {
   const node = useNode();
   const cluster = useCluster();
   const isInfer = node.data?.profile === "infer";
+  /*
+   * Ler o retrato da rede é de `node` e de `admin`; bloquear e desbloquear
+   * uma máquina continua sendo ato de administrador, e só com a concessão -
+   * `profile: admin` sozinho não concede capacidade. Oferecer o botão a quem
+   * vai levar 403 é o defeito de menu que esta base já nomeia.
+   */
+  const isAdmin = node.data?.authority_level != null;
   const nodes = useAdminNodes(node.data !== undefined && !isInfer);
   const toast = useToast();
   const invalidate = useInvalidate();
@@ -197,9 +204,18 @@ export function NetworkSettings() {
                   })}
                 </Mono>
               </KeyValue>
-              <KeyValue label={t("network.role")}>{node.data.role}</KeyValue>
               <KeyValue label={t("network.profile")}>
                 {t(`profile.${node.data.profile}`)}
+              </KeyValue>
+              {/* O antigo "Papel" (principal/nó) saiu do `/api/ui/node` com o
+                  modelo de confiança e deixava a célula em branco. O que existe
+                  hoje é a autoridade efetiva, e ela responde à mesma pergunta:
+                  esta máquina manda em quê. `profile: admin` sem concessão
+                  aparece como sem autoridade, que é o que ele é. */}
+              <KeyValue label={t("network.authority")}>
+                {node.data.authority_level
+                  ? t(`network.authority.${node.data.authority_level}`)
+                  : t("network.authorityNone")}
               </KeyValue>
             </dl>
           )}
@@ -341,7 +357,7 @@ export function NetworkSettings() {
                       <Dot tone={n.connected ? "aqua" : "neutral"} />
                       {n.connected ? t("network.connected") : t("network.away")}
                     </span>
-                    {!n.is_self && (
+                    {isAdmin && !n.is_self && (
                       <>
                         <Button
                           size="sm"

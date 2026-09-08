@@ -8,9 +8,11 @@
  * node nobody is watching.
  */
 import { useQueries, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import {
   ApiError,
   api,
+  onAdminSessionLost,
   getRemoteModelDetails,
   getRemoteModelProviderStatus,
   getRemoteModelStorage,
@@ -136,6 +138,23 @@ export type AdminSurfaceState = "setup" | "available" | "requires-token" | "loca
  * return merely because React state was recreated by F5.
  */
 export function useAdminSurface() {
+  const client = useQueryClient();
+  /*
+   * A sonda decide qual casca é segura desenhar e roda uma vez por
+   * carregamento (`staleTime: Infinity`). Só que a sessão administrativa vive
+   * na memória do nó: um reinício, ou as 8 h de validade, a derrubam com a aba
+   * aberta. Sem refazer a sonda, cada tela passava a imprimir o
+   * "missing administrative access token" cru no lugar do seu conteúdo, e o
+   * operador não tinha caminho de volta ao portão que não fosse recarregar na
+   * mão.
+   */
+  useEffect(
+    () =>
+      onAdminSessionLost(() => {
+        void client.invalidateQueries({ queryKey: keys.adminSurface });
+      }),
+    [client],
+  );
   return useQuery<AdminSurfaceState>({
     queryKey: keys.adminSurface,
     queryFn: async () => {

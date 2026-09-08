@@ -107,8 +107,11 @@ Per-file list:
   `c.peers.length === 0` (was `peers.length`) with `dashboard.noMachines`
   ("Nenhuma máquina na rede"). Fetches `POST /api/ui/deploy/plan` to feed the
   "add a machine" dialog. The add trigger, dialog and `UndeployPipeline` are
-  rendered only when `/api/ui/node` reports `profile: "admin"`; the per-machine
-  `RemoveNode` action remains in the cards for every profile. Uses
+  rendered only for `profile: "admin"` (from `useProfile()`, the one source -
+  the context is fed by `/api/ui/node`). The details view itself is gated the
+  same way, by `canSeePeerDetails` (`../lib/access`): outside `admin` the view
+  is forced to the Flow **and the `ViewSwitch` is not rendered at all**, because
+  a single available view is not a choice. Uses
   `../components/{LayerRibbon,PipelineRail,PeerDetailCard,UndeployPipeline,AddNodeDialog,ModelNetworkCanvas,ui}`,
   `../lib/api`, `../lib/networkPeers`, `../lib/queries`, `../lib/types`
   (`PeerView`, `DeployPlan`). The per-machine actions that used to live here
@@ -284,8 +287,14 @@ Per-file list:
 - `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   No perfil `infer`, mostra só a chave ativa deste nó, esconde o seletor de nó
-  e, ao gerar uma chave nova, revoga a anterior. `ConnectionKeys`: the cluster operator key -
-  `POST /admin/regenerate-key`.
+  e, ao gerar uma chave nova, revoga a anterior. As rotas de API key são
+  `infer+node+admin`: são a credencial de quem atende `/v1`, e todo perfil
+  atende. `ConnectionKeys`: the cluster operator key, read from
+  `NodeInfo.connection_key`. Ver a chave é de quem opera esta máquina - ela já
+  está no `pom.json` dela e a tela só existe atrás da fronteira administrativa.
+  **Trocá-la** (`POST /admin/regenerate-key`) é outra coisa: a chave é a mesma
+  no cluster inteiro e girá-la corta todos os outros nós, então o botão só
+  aparece com `authority_level` presente.
 - `Logs.tsx` - tela autenticada de auditoria em largura total. A barra aplica
   filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a tela de
   requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
@@ -305,9 +314,15 @@ Per-file list:
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
   keeps `/config/pastas` as an alias.
-- `NetworkSettings.tsx` - Admin view: this node's membership
-  (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
-  `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
+- `NetworkSettings.tsx` - This node's membership
+  (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving
+  is abdication, not a privilege) and the known-node list from
+  `GET /admin/nodes` (`node+admin`: reading the roster is what this screen
+  shows). Block/unblock (`POST /admin/nodes/:id/block|unblock`) stays
+  `admin-only` and the buttons are rendered only when `authority_level` is
+  present - `profile: admin` alone grants nothing. The "Papel" row was replaced
+  by the effective authority: the old `NodeInfo.role` left `/api/ui/node` with
+  the trust model and was rendering an empty cell.
   O perfil `infer` também abre `/config/rede`, mas o backend devolve somente a
   própria máquina e oferece `POST /api/ui/network/request-node`; o pedido
   aparece no sino para aprovação de qualquer admin. Um `node` pode descer para

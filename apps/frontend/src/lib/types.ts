@@ -172,8 +172,19 @@ export interface NodeInfo {
   short_id: string;
   hostname: string;
   profile: Profile;
-  role: string;
+  /**
+   * A chave de conexão do cluster, que esta interface mostra em "Chave de
+   * Conexão" e guarda para autenticar as chamadas que a exigem.
+   */
   connection_key: string;
+  /**
+   * Autoridade administrativa **efetiva** deste nó, e não o perfil: um
+   * `profile: admin` sem a concessão assinada vem `null`. É o que decide se a
+   * tela oferece um ato administrativo ou só o mostra.
+   */
+  authority_level: "primary" | "secondary" | null;
+  /** Impressão digital do principal ancorado, quando este nó é `admin`. */
+  authority_fingerprint: string | null;
   p2p_port: number;
   gateway_port: number;
   admin_exposure: AdminExposure;

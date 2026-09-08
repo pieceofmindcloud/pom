@@ -290,6 +290,14 @@ export function ConnectionKeys() {
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  /*
+   * Ver a chave é de quem opera esta máquina - ela já está no `pom.json` dela,
+   * e esta tela só é servida atrás da fronteira administrativa. **Trocá-la** é
+   * outra coisa: a chave é a mesma no cluster inteiro, e girá-la corta todos
+   * os outros nós. Continua sendo `/admin/regenerate-key`, e a autoridade
+   * efetiva é o que decide - `profile: admin` sem concessão não a tem.
+   */
+  const canRotate = node.data?.authority_level != null;
 
   async function regenerate() {
     setBusy(true);
@@ -323,13 +331,15 @@ export function ConnectionKeys() {
               title={t("keys.clusterKey")}
               subtitle={t("keys.clusterKeySubtitle")}
               actions={
-                <Button
-                  variant="danger"
-                  icon={<RefreshCw className="h-3.5 w-3.5" />}
-                  onClick={() => setConfirming(true)}
-                >
-                  {t("keys.generateAnother")}
-                </Button>
+                canRotate ? (
+                  <Button
+                    variant="danger"
+                    icon={<RefreshCw className="h-3.5 w-3.5" />}
+                    onClick={() => setConfirming(true)}
+                  >
+                    {t("keys.generateAnother")}
+                  </Button>
+                ) : undefined
               }
             />
             <div className="space-y-4 px-5 py-4">

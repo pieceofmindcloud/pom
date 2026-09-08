@@ -269,8 +269,11 @@ mod tests {
                     state,
                     require_admin_for_surface,
                 ));
+            // Bloquear uma máquina continua administrativo mesmo depois de a
+            // leitura do mesmo prefixo (`GET /admin/nodes`) abrir para `node`.
             let mut request = Request::builder()
-                .uri("/admin/api-keys")
+                .method("POST")
+                .uri("/admin/nodes/outra/block")
                 .header("authorization", "Bearer connection-secret")
                 .header("x-pom-profile", "admin")
                 .body(axum::body::Body::empty())
@@ -370,6 +373,217 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Uma requisição pelo middleware, no perfil pedido, sem credencial
+    /// interna: é assim que o navegador do operador chega ao seu próprio nó.
+    #[cfg(test)]
+    async fn browser_request(
+        profile: crate::profile::NodeProfile,
+        method: &str,
+        path: &str,
+    ) -> StatusCode {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = profile;
+        }
+        let app = Router::new()
+            .merge(crate::admin::admin_routes())
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", "Bearer connection-secret")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+        app.oneshot(request).await.unwrap().status()
+    }
+
+    /// A recusa que interessa é a do perfil. Qualquer outro estado - a rota
+    /// existir, o corpo agradar, o banco responder - é assunto do handler.
+    fn refused_by_profile(status: StatusCode) -> bool {
+        status == StatusCode::FORBIDDEN
+    }
+
+    /// Cada rota que este trabalho reclassificou: quem deve alcançar alcança,
+    /// e quem não deve continua recusado. Uma tabela só, para a próxima
+    /// mudança de escopo ter onde encostar.
+    #[tokio::test]
+    async fn the_reclassified_routes_open_for_the_right_profiles_only() {
+        use crate::profile::NodeProfile::{Admin, Infer, Node};
+
+        // (método, caminho, perfis que **entram**)
+        let cases: &[(&str, &str, &[crate::profile::NodeProfile])] = &[
+            // A tela Rede do `node` lê o retrato da rede.
+            ("GET", "/admin/nodes", &[Node, Admin]),
+            // Administrar aquelas máquinas continua sendo do administrador.
+            ("POST", "/admin/nodes/outra/block", &[Admin]),
+            ("POST", "/admin/nodes/outra/unblock", &[Admin]),
+            ("DELETE", "/admin/nodes/outra", &[Admin]),
+            ("POST", "/admin/nodes/outra/promote-admin", &[Admin]),
+            // Girar a chave do cluster corta todos os outros nós.
+            ("POST", "/admin/regenerate-key", &[Admin]),
+            // A API key é a credencial de quem atende `/v1`, e todo perfil
+            // atende - inclusive o `infer`, cujo rodapé abre esta tela.
+            ("GET", "/admin/api-keys", &[Infer, Node, Admin]),
+            ("POST", "/admin/api-keys", &[Infer, Node, Admin]),
+            ("DELETE", "/admin/api-keys/abc", &[Infer, Node, Admin]),
+            // Sair da rede é abdicar do próprio posto.
+            ("POST", "/api/ui/leave", &[Infer, Node, Admin]),
+            ("POST", "/api/ui/rejoin", &[Infer, Node, Admin]),
+            // O que não foi tocado continua onde estava.
+            ("GET", "/api/ui/deployments", &[Admin]),
+            ("GET", "/api/ui/models", &[Node, Admin]),
+        ];
+
+        for (method, path, allowed) in cases {
+            for profile in [Infer, Node, Admin] {
+                let status = browser_request(profile, method, path).await;
+                if allowed.contains(&profile) {
+                    assert!(
+                        !refused_by_profile(status),
+                        "{profile} devia alcançar {method} {path}, veio {status}"
+                    );
+                } else {
+                    assert!(
+                        refused_by_profile(status),
+                        "{profile} não devia alcançar {method} {path}, veio {status}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Sair é abdicar; mandar **outra** máquina sair é ato de administrador.
+    /// Sem esta trava, o escopo mais largo da rota daria a qualquer nó o poder
+    /// de expulsar um peer - o repasse viaja com a credencial interna, que o
+    /// alvo não julga pelo perfil de quem pediu.
+    #[tokio::test]
+    async fn only_an_administrator_takes_another_machine_off_the_network() {
+        use crate::profile::NodeProfile::{Infer, Node};
+
+        for profile in [Infer, Node] {
+            let state = testkit::state_with("connection-secret", vec![]).await;
+            {
+                let mut auth = state.auth.write().await;
+                auth.connection_key = "connection-secret".into();
+                auth.profile = profile;
+            }
+            let app = Router::new()
+                .merge(crate::webui::routes())
+                .with_state(state.clone())
+                .layer(middleware::from_fn_with_state(
+                    state,
+                    require_admin_for_surface,
+                ));
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/ui/leave")
+                .header("authorization", "Bearer connection-secret")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"node_id":"outra-maquina"}"#))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "perfil={profile}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "só um administrador tira outra máquina da rede");
+        }
+    }
+
+    /// A frase da recusa é para a pessoa e muda com o idioma; o navegador
+    /// precisa de um valor estável para saber que a sessão administrativa
+    /// acabou e voltar ao portão, em vez de imprimir o 401 cru dentro da tela.
+    #[tokio::test]
+    async fn a_dead_administrative_session_names_itself_to_the_browser() {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.profile = crate::profile::NodeProfile::Node;
+            auth.admin_exposure = crate::config::AdminExposure::Network;
+            auth.admin_access_token = Some("person-secret".into());
+        }
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut without = Request::get("/api/ui/paths")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        without
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        let response = app.clone().oneshot(without).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(crate::auth::ADMIN_ERROR_HEADER).unwrap(),
+            crate::auth::ADMIN_ERROR_MISSING_TOKEN
+        );
+
+        let mut wrong = Request::get("/api/ui/paths")
+            .header(crate::auth::ADMIN_ACCESS_TOKEN_HEADER, "outra-coisa")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        wrong
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+        let response = app.oneshot(wrong).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers().get(crate::auth::ADMIN_ERROR_HEADER).unwrap(),
+            crate::auth::ADMIN_ERROR_INVALID_TOKEN
+        );
+    }
+
+    /// A chave de conexão volta ao `/api/ui/node`: a tela "Chave de Conexão" a
+    /// mostra e o navegador a guarda para autenticar o que exige
+    /// `ConnectionAuth`. Sem ela, aquela tela lia `undefined.length`.
+    #[tokio::test]
+    async fn the_node_view_carries_the_connection_key_for_the_operator_browser() {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        state.auth.write().await.connection_key = "connection-secret".into();
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+
+        let mut request = Request::get("/api/ui/node")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["connection_key"], "connection-secret");
     }
 
     #[tokio::test]

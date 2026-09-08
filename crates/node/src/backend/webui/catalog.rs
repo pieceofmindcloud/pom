@@ -13,6 +13,15 @@ pub struct NodeInfo {
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
     pub dev_update: bool,
     pub profile: crate::profile::NodeProfile,
+    /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
+    /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
+    /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
+    /// mesma em todo o cluster e já está no `pom.json` desta máquina, e esta
+    /// rota só é servida atrás da fronteira administrativa
+    /// (`require_admin_for_surface`), então quem a lê já provou ser o
+    /// operador desta máquina. Tirá-la daqui deixou o navegador sem
+    /// credencial e a tela a ler `undefined.length`.
+    pub connection_key: String,
     pub authority_level: Option<crate::admin_trust::AdminLevel>,
     pub authority_fingerprint: Option<String>,
     pub p2p_port: u16,
@@ -67,6 +76,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         .unwrap_or_default();
     let (
         profile,
+        connection_key,
         authority_level,
         authority_fingerprint,
         advertise_addr,
@@ -81,6 +91,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         let cfg = state.auth.read().await;
         (
             cfg.profile,
+            cfg.connection_key.clone(),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
@@ -123,6 +134,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         build_commit: crate::BUILD_COMMIT.to_string(),
         dev_update: crate::devupdate::enabled(),
         profile,
+        connection_key,
         authority_level,
         authority_fingerprint,
         p2p_port: state.network.bind_addr.port(),

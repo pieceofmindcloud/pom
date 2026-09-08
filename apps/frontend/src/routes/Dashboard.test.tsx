@@ -14,6 +14,7 @@ import { Dashboard } from "./Dashboard";
 import { LocaleProvider } from "../i18n/provider";
 import { fakeCluster, fakeSlicePeer } from "../test/fixtures";
 import { keys } from "../lib/queries";
+import { ProfileProvider } from "../lib/profile";
 
 function mount(
   cluster = fakeCluster([], "qwen35"),
@@ -48,7 +49,9 @@ function mount(
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-        <Dashboard />
+        <ProfileProvider initialProfile={profile}>
+          <Dashboard />
+        </ProfileProvider>
       </LocaleProvider>
     </QueryClientProvider>,
   );
@@ -142,9 +145,41 @@ describe("Dashboard", () => {
 
     mount(cluster, "node");
 
-    await waitFor(() => expect(screen.getByText("Fluxo")).toBeTruthy());
+    // O seletor de vista não existe neste perfil: o Fluxo é a única vista.
+    await waitFor(() => expect(screen.getByLabelText("Modelo")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Adicionar" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Desimplantar" })).toBeNull();
+  });
+
+  /**
+   * O Painel tem duas vistas do mesmo cluster, e os Detalhes são operação do
+   * cluster: os cards trazem o estado interno de cada máquina e os botões de
+   * liberar fatia, remover do pipeline e tirar da rede. Fora do `admin` resta
+   * o Fluxo, e onde há uma vista só não há o que escolher.
+   */
+  it("nega os Detalhes ao perfil node e tira o seletor de vista da tela", async () => {
+    const cluster = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+    ], "qwen35");
+
+    mount(cluster, "node");
+
+    await waitFor(() => expect(screen.getByLabelText("Modelo")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /Detalhes/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Fluxo/ })).toBeNull();
+  });
+
+  it("mantém as duas vistas e o seletor para o administrador", async () => {
+    const cluster = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+    ], "qwen35");
+
+    mount(cluster, "admin");
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /Fluxo/ })).toBeTruthy());
+    expect(screen.getByRole("button", { name: /Detalhes/ })).toBeTruthy();
   });
 
   it("mostra adicionar e desimplantar para o administrador", async () => {

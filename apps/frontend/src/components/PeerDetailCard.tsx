@@ -641,7 +641,10 @@ export function PeerDetailCard({
                       : cfg.end_layer + 1 >= cfg.total_layers
                         ? t("dashboard.tokens")
                         : t("dashboard.middle")
-                  : (n?.role ?? "—")}
+                  : /* Sem fatia carregada não há papel na pipeline. O antigo
+                       `node.role` (principal/nó) saiu do `/api/ui/node` com o
+                       modelo de confiança e já vinha sempre indefinido aqui. */
+                    "—"}
               </Badge>
             </KeyValue>
             {/* Logo ao lado do papel, e não escondido no cabeçalho: a pergunta

@@ -2,7 +2,7 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
 import { ChatSessionList } from "./ChatSessionList";
 import { brand } from "../lib/brand";
@@ -404,6 +404,20 @@ function InferenceMainMenu({
     };
   const { profile } = useProfile();
   const sections = navForProfile(profile);
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+
+  /*
+   * Esta lista é o menu principal do perfil `infer`, e é vista de toda rota -
+   * da documentação, das configurações. Trocar a conversa ativa não é
+   * navegar: fora do `/chat` o clique mudava o estado compartilhado e a tela
+   * continuava a mesma, como se o menu tivesse parado de responder. Quem já
+   * está no chat não é enviado de novo, para não empilhar entradas iguais no
+   * histórico do navegador.
+   */
+  const openChat = () => {
+    if (pathname !== "/chat") navigate("/chat");
+  };
 
   return (
     <div
@@ -419,10 +433,12 @@ function InferenceMainMenu({
         collapsed={collapsed}
         onPick={(next) => {
           selectSession(next);
+          openChat();
           onNavigate?.();
         }}
         onNew={() => {
           startNew(session?.model ?? null);
+          openChat();
           onNavigate?.();
         }}
         onDelete={(id) => deleteSession(id, session?.model ?? null)}

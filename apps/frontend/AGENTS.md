@@ -67,7 +67,10 @@ de navegação por telas.
 No Dashboard, os controles de adicionar máquina e desimplantar só aparecem para
 `profile: "admin"`; a API repete o gate e localiza a recusa em inglês. O botão
 de remover a própria máquina segue sendo uma ação separada disponível aos outros
-perfis.
+perfis. A vista Detalhes - os cards por máquina, e o mesmo card que o duplo
+clique no Fluxo abria - também é do administrador (`canSeePeerDetails`, em
+`src/lib/access.ts`): fora dele resta o Fluxo, e **o seletor de vista não é
+desenhado**, porque uma vista só não é uma escolha.
 
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)

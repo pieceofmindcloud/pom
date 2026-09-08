@@ -137,6 +137,10 @@ Per-file list:
   API keys, enquanto a coluna principal é substituída por `ChatSessionList` e
   o link da rede. O histórico mantém o botão de nova conversa e a rede fora da
   área rolável, para uma lista longa não empurrar nenhuma ação para fora.
+  Como esse menu é visto de toda rota, escolher uma conversa ou começar uma
+  nova também **navega para `/chat`**: sem isso, o clique feito das
+  configurações ou da documentação só trocava a sessão ativa e deixava a tela
+  onde estava. Quem já está no chat não é reenviado.
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
   per job with state, named phase, byte heartbeat, rate/ETA when available and
@@ -193,8 +197,12 @@ Per-file list:
   with `isControlTarget` (a click that lands on a `button`/`a`/`input`/etc is
   not a click on the card), and `detailNodeId` stores the `node_id`, not a peer
   copy, so the window shows fresh numbers when the cluster list refreshes
-  under it. Exports `edgeStyle` and `isControlTarget`. The graph also renders
-  directional RTT badges using the same label component as the deploy map.
+  under it. Exports `edgeStyle` and `isControlTarget`. That gesture is gated by
+  `canSeePeerDetails` (`../lib/access`): outside `admin` the card takes no
+  `onOpen`, so it neither opens the window nor advertises a double-click in its
+  `title` - the same rule that removes the Details tab and its view switch from
+  the Dashboard. The graph also renders directional RTT badges using the same
+  label component as the deploy map.
 - `RouteRttLabel.tsx` - selo visual de RTT direcional compartilhado pelo mapa
   do Painel e pelo mapa de implantação. O texto e as classes são os mesmos nos
   dois contextos, inclusive quando a medição ainda não existe (`RTT -`).

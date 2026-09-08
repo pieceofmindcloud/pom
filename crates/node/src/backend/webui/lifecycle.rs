@@ -247,6 +247,13 @@ pub struct LeaveRequest {
 /// em `lib/api.ts`), e um card de peer no Painel precisa alcançar aquela
 /// máquina. Quem se desliga é sempre o dono da rede daquele processo; este nó
 /// não tem como detachar outro por fora.
+///
+/// As duas metades têm donos diferentes, e é por isso que a tabela de escopo
+/// não dá conta sozinha: sair é **abdicar do próprio posto**, e nenhum perfil
+/// precisa de licença para isso; mandar **outra** máquina sair é ato de
+/// administrador, e o repasse viaja com a credencial interna, que o alvo não
+/// julga pelo perfil de quem pediu. Sem esta trava, o escopo mais largo da
+/// rota transformaria "posso sair" em "posso expulsar qualquer um".
 pub(super) async fn leave_network(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -254,6 +261,16 @@ pub(super) async fn leave_network(
 ) -> Response {
     let target = body.and_then(|Json(b)| b.node_id).unwrap_or_default();
     if !target.is_empty() && target != state.network.node_id {
+        if !has_admin_authority(&state).await {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "só um administrador tira outra máquina da rede",
+                    "node_id": target,
+                })),
+            )
+                .into_response();
+        }
         return forward_leave(&state, &target).await;
     }
 
@@ -261,6 +278,16 @@ pub(super) async fn leave_network(
     state.network.detach().await;
     info!("nó saiu da rede pela interface");
     Json(json!({ "detached": true })).into_response()
+}
+
+/// Autoridade administrativa efetiva deste nó. `profile: admin` sozinho não
+/// concede capacidade: é a concessão assinada que decide (ver `admin_trust`).
+async fn has_admin_authority(state: &GatewayState) -> bool {
+    let profile = state.auth.read().await.profile;
+    state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+        .is_some()
 }
 
 /// Repassa o "sair da rede" ao peer escolhido, sem `node_id` — lá ele é local.

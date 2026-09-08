@@ -884,6 +884,10 @@ network.addrSaved,Address updated,Endereço atualizado
 network.addrSavedDetail,Takes effect immediately — no restart needed.,Vale imediatamente — sem reinício.
 network.advertiseSubtitle,The address peers use to reach this node''s HTTP/inference ports.,O endereço que os peers usam para alcançar as portas HTTP/inferência deste nó.
 network.advertiseTitle,Advertised address,Endereço anunciado
+network.authority,Authority,Autoridade
+network.authority.primary,Primary administrator,Administrador principal
+network.authority.secondary,Secondary administrator,Administrador secundário
+network.authorityNone,No authority,Sem autoridade
 network.away,away,ausente
 network.back,Back on the network,De volta à rede
 network.block,Block,Bloquear

@@ -65,12 +65,31 @@ O mesmo `webui/routes/mod.rs` mantém a tabela de dados `ROUTE_RULES`, que é a
 fonte do escopo aplicado pelo gateway:
 
 - `admin-only`: administração, logs, desenvolvimento e ciclo de vida;
-- `node+admin`: modelos, preparação de máquina, fatiamento, provider e
-  transferência;
-- `infer+node+admin`: geração, API `/v1`, histórico do chat e pedido de entrada
-  de infer para nó;
+- `node+admin`: modelos, preparação de máquina, fatiamento, provider,
+  transferência e a **leitura** do retrato da rede (`GET /admin/nodes`), que é
+  o que a tela Rede mostra;
+- `infer+node+admin`: geração, API `/v1`, histórico do chat, pedido de entrada
+  de infer para nó, as API keys (`/admin/api-keys`, a credencial de quem atende
+  `/v1`, e todo perfil atende) e sair/voltar à rede (`/api/ui/leave`,
+  `/api/ui/rejoin`);
 - `common/identity internal`: catálogo próprio, vistas compartilhadas,
   telemetria e protocolo nó-a-nó.
+
+Uma regra pode nomear o **método**, e a mais específica vence: primeiro o
+prefixo mais longo, e no empate a que nomeia o método. É o que deixa
+`GET /admin/nodes` aberto ao `node` enquanto bloquear, desbloquear, remover e
+promover uma máquina - POST e DELETE sob o mesmo prefixo - continuam
+`admin-only`. Sem método declarado, a regra vale para todos.
+
+Uma decisão que a tabela **não** exprime, porque depende do corpo e não do
+caminho, fica no handler: `POST /api/ui/leave` sem `node_id`, ou com o próprio,
+é abdicar do próprio posto, e qualquer perfil o faz; com o `node_id` de
+**outra** máquina o pedido é repassado, e aí exige autoridade administrativa
+efetiva. O repasse viaja com a credencial interna, que o alvo não julga pelo
+perfil de quem pediu, então sem essa trava o escopo mais largo da rota
+transformaria "posso sair" em "posso expulsar qualquer um". Como sempre,
+`profile: admin` sozinho não basta: quem decide é a concessão assinada
+(`admin_trust::effective_authority`).
 
 O middleware lê o `profile` persistido no `pom.json` e recusa um navegador fora
 do escopo com HTTP 403 e JSON nomeando rota e perfil. Uma chamada entre nós que
@@ -185,6 +204,17 @@ O digest da sessão é invalidado ao regenerar o token ou voltar a localhost.
 O valor do token é comparado no servidor e nunca é substituído pela
 `connection_key`. Chamadas de controle entre nós usam um marcador interno junto
 da `connection_key`, sem abrir esse caminho para o navegador.
+
+Toda recusa administrativa se nomeia no cabeçalho `x-pom-admin-error`:
+`missing-token` (401, não havia credencial nenhuma), `invalid-token` (403,
+havia e não confere), `no-peer-address` (403) e `local-only` (403, a página
+autônoma). A frase do corpo é para a pessoa e muda com o idioma; este valor é
+estável e é o que a interface usa. A sessão vive só na memória do nó, então um
+reinício ou o fim das 8 horas a derruba com a aba aberta: ao ver
+`missing-token`/`invalid-token` numa rota administrativa, a interface descarta
+a credencial morta e refaz a sonda de superfície, voltando ao portão de acesso.
+Antes disso cada tela imprimia o 401 cru do servidor no lugar do seu conteúdo,
+sem caminho de volta que não fosse recarregar na mão.
 
 As rotas da pipeline não entram nessa fronteira: `/api/generate`, `/generate`,
 `/v1/**`, `/health`, `/peers` e `/handshake`, além das rotas do servidor de

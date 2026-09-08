@@ -86,3 +86,23 @@ export function canAccessRoute(path: string, profile: Profile): boolean {
 export function homeRoute(profile: Profile): string {
   return canAccessRoute("/", profile) ? "/" : "/chat";
 }
+
+/**
+ * Se este perfil enxerga o detalhe máquina a máquina do Painel.
+ *
+ * O Painel tem duas vistas do mesmo cluster: o **Fluxo**, que é o desenho da
+ * rede, e os **Detalhes**, que são os cards com o estado interno de cada
+ * máquina - runtime, memória, faixa de camadas, e os botões de liberar fatia,
+ * remover do pipeline e tirar da rede. O mesmo card abre pelo Fluxo, ao clicar
+ * numa máquina. Isso é operação do cluster, não do próprio nó: fora do `admin`
+ * resta uma vista só, e onde há uma vista só não há o que escolher - o seletor
+ * também não aparece.
+ *
+ * Fica ao lado da tabela de rotas porque é a mesma pergunta ("o que este perfil
+ * enxerga"), e porque o Painel e o canvas precisam responder igual: esconder o
+ * seletor e continuar abrindo o card pelo clique seria a mesma tela em dois
+ * estados diferentes.
+ */
+export function canSeePeerDetails(profile: Profile): boolean {
+  return profile === "admin";
+}

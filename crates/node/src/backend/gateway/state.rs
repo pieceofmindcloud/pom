@@ -214,6 +214,7 @@ pub(crate) async fn require_admin_for_surface(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_owned();
+    let method = request.method().clone();
     let (mut parts, body) = request.into_parts();
     let internal_node_request =
         crate::auth::InternalNodeAuth::from_request_parts(&mut parts, &state)
@@ -221,7 +222,7 @@ pub(crate) async fn require_admin_for_surface(
             .is_ok();
     let request = Request::from_parts(parts, body);
     let profile = state.auth.read().await.profile;
-    let scope = crate::webui::route_scope(&path);
+    let scope = crate::webui::route_scope(&method, &path);
     let local_admin_authority = state
         .admin_trust
         .effective_authority(&state.authority_principal, profile)

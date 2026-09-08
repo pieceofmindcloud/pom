@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canAccessRoute, homeRoute, routeProfiles } from "./access";
+import { canAccessRoute, canSeePeerDetails, homeRoute, routeProfiles } from "./access";
 
 describe("canAccessRoute", () => {
   it("deixa o administrador entrar nas telas de operação do cluster", () => {
@@ -67,5 +67,19 @@ describe("canAccessRoute", () => {
     for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/keys/conexao"]) {
       expect(canAccessRoute(path, "infer")).toBe(false);
     }
+  });
+
+  /**
+   * Os Detalhes do Painel são operação do cluster: estado interno de cada
+   * máquina, liberar fatia, remover do pipeline, tirar da rede. O `node` abre
+   * o Painel e fica com o Fluxo - e onde há uma vista só, não há o que
+   * escolher.
+   */
+  it("reserva o detalhe máquina a máquina do Painel ao administrador", () => {
+    expect(canSeePeerDetails("admin")).toBe(true);
+    expect(canSeePeerDetails("node")).toBe(false);
+    expect(canSeePeerDetails("infer")).toBe(false);
+    // O Painel em si continua aberto ao `node`: o que muda é a vista.
+    expect(canAccessRoute("/", "node")).toBe(true);
   });
 });

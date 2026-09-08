@@ -63,12 +63,21 @@ mod leave_tests {
         (port, hits)
     }
 
+    /// Um estado de teste que **tem** autoridade administrativa. Repassar o
+    /// "sair da rede" a outra máquina é ato de administrador; sair sozinho não
+    /// é, e por isso os testes de abdicação usam o estado normal.
+    async fn admin_state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
+        let state = state_with(node_id, peers).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        state
+    }
+
     /// O card de um peer manda o nó local repassar: o painel só fala com o
     /// próprio nó, e quem se desliga é sempre o dono daquele processo.
     #[tokio::test]
     async fn leaving_for_a_peer_is_forwarded_to_that_peer() {
         let (port, hits) = fake_machine(StatusCode::OK).await;
-        let state = state_with("eu", vec![peer("outro", "ksia", port)]).await;
+        let state = admin_state_with("eu", vec![peer("outro", "ksia", port)]).await;
 
         let resp = leave_network(
             ConnectionAuth,
@@ -114,7 +123,7 @@ mod leave_tests {
     #[tokio::test]
     async fn a_peer_that_refuses_is_not_reported_as_gone() {
         let (port, _) = fake_machine(StatusCode::INTERNAL_SERVER_ERROR).await;
-        let state = state_with("eu", vec![peer("outro", "ksia", port)]).await;
+        let state = admin_state_with("eu", vec![peer("outro", "ksia", port)]).await;
 
         let resp = leave_network(
             ConnectionAuth,
@@ -137,6 +146,23 @@ mod leave_tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Sair é abdicar do próprio posto: o `infer` e o `node` desligam a
+    /// própria máquina sem licença de ninguém. Só o alvo diferente de si é que
+    /// pede autoridade.
+    #[tokio::test]
+    async fn any_profile_detaches_its_own_machine() {
+        for profile in [
+            crate::profile::NodeProfile::Infer,
+            crate::profile::NodeProfile::Node,
+        ] {
+            let state = state_with("eu", vec![]).await;
+            state.auth.write().await.profile = profile;
+            let resp = leave_network(ConnectionAuth, State(state.clone()), None).await;
+            assert_eq!(resp.status(), StatusCode::OK, "perfil={profile}");
+            assert!(state.network.is_detached(), "perfil={profile}");
+        }
     }
 }
 

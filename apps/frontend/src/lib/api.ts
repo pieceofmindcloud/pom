@@ -31,6 +31,39 @@ let chatApiKey: string | null = null;
 let chatApiKeyRequest: Promise<string> | null = null;
 
 export const ADMIN_ACCESS_TOKEN_HEADER = "X-POM-Access-Token";
+/**
+ * O nó nomeia a recusa administrativa neste cabeçalho (`backend/auth.rs`). A
+ * frase do corpo é para a pessoa e muda com o idioma; este valor é estável, e
+ * é ele que separa "a sessão administrativa acabou" de qualquer outro 401.
+ */
+export const ADMIN_ERROR_HEADER = "x-pom-admin-error";
+const ADMIN_SESSION_LOST = ["missing-token", "invalid-token"];
+
+const adminSessionLostListeners = new Set<() => void>();
+
+/**
+ * Avisa quando a sessão administrativa deixou de valer.
+ *
+ * A sessão vive na memória do nó e o token humano vive na memória desta aba:
+ * um reinício do nó, ou o fim das 8 h da sessão, derruba as duas sem que a
+ * aba perceba. Antes disso cada tela imprimia o 401 cru do servidor e o
+ * operador não tinha caminho de volta ao portão a não ser recarregar na mão.
+ */
+export function onAdminSessionLost(handler: () => void): () => void {
+  adminSessionLostListeners.add(handler);
+  return () => {
+    adminSessionLostListeners.delete(handler);
+  };
+}
+
+/** Descarta a credencial morta e acorda quem sabe voltar ao portão. */
+function noteAdminSessionLost(res: Response, path: string) {
+  if (!isAdminSurfacePath(path)) return;
+  const kind = res.headers.get(ADMIN_ERROR_HEADER);
+  if (!kind || !ADMIN_SESSION_LOST.includes(kind)) return;
+  if (adminAccessToken) setAdminAccessToken("");
+  for (const handler of adminSessionLostListeners) handler();
+}
 
 export function isAdminSurfacePath(path: string): boolean {
   const pathname = path.split("?", 1)[0];
@@ -166,6 +199,7 @@ export async function request<T>(
       continue;
     }
     if (!res.ok) {
+      noteAdminSessionLost(res, path);
       const { message, body: detail } = await explain(res);
       throw new ApiError(res.status, message, detail);
     }
@@ -227,6 +261,7 @@ export async function requestConditional<T>(
     }
     if (res.status === 304 && cached) return cached.data as T;
     if (!res.ok) {
+      noteAdminSessionLost(res, path);
       const { message, body: detail } = await explain(res);
       throw new ApiError(res.status, message, detail);
     }
@@ -497,6 +532,7 @@ export async function* streamSse(
     break;
   }
   if (!res || !res.ok) {
+    if (res) noteAdminSessionLost(res, path);
     const { message, body: detail } = await explain(res!);
     throw new ApiError(res?.status ?? 502, message, detail);
   }

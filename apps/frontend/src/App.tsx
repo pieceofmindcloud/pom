@@ -1,10 +1,11 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { canAccessRoute, homeRoute } from "./lib/access";
 import {
   api,
   clearAdminAccessToken,
+  onAdminSessionLost,
   setAdminAccessToken,
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
@@ -266,6 +267,15 @@ export default function App() {
    */
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
+
+  /*
+   * A sessão administrativa pode morrer com a aba aberta: ela vive na memória
+   * do nó, e um reinício ou as 8 h de validade a levam. Quem refaz a sonda é
+   * o próprio `useAdminSurface`; aqui só se esquece que esta aba já passou
+   * pelo portão, senão a resposta "requires-token" continuaria escondida
+   * atrás de um `adminReady` que ficou de uma sessão que não existe mais.
+   */
+  useEffect(() => onAdminSessionLost(() => setAdminReady(false)), []);
 
   // Undefined means the probe has not answered yet. Rendering either branch on
   // a guess flashes the wrong screen, so hold the paint for one request.

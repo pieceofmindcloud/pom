@@ -5,8 +5,10 @@ import { gpuDisplayName, machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
 import { GpuTemperature } from "./GpuTemperature";
 import { Button, Dot } from "./ui";
+import { canSeePeerDetails } from "../lib/access";
 import { graphFromCluster, type GraphRange } from "../lib/networkGraph";
 import { pipelinePeers } from "../lib/networkPeers";
+import { useProfile } from "../lib/profile";
 import { useI18n } from "../i18n/provider";
 import {
   autoLayout,
@@ -116,7 +118,7 @@ export function isControlTarget(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest("button, a, input, select, textarea, [role='button']") != null;
 }
 
-function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen: () => void }) {
+function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen?: () => void }) {
   const system = range.node?.system;
   /*
    * Uma máquina pode ter mais de uma placa, e o card em miniatura mostrava só
@@ -149,8 +151,9 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
     onPointerMove={onPointerMove}
     onPointerUp={onPointerUp}
     onPointerCancel={onPointerUp}
-    onDoubleClick={(event) => { if (!isControlTarget(event.target)) onOpen(); }}
-    title={t("canvas.openDetails")}
+    onDoubleClick={(event) => { if (onOpen && !isControlTarget(event.target)) onOpen(); }}
+    /* Sem detalhe a abrir, o card não anuncia um duplo clique que não acontece. */
+    title={onOpen ? t("canvas.openDetails") : undefined}
     className={clsx("absolute select-none rounded-xl border bg-ink/95 p-3.5 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unread && "opacity-75")}
     style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: CARD_HEIGHT, touchAction: "none" }}
   >
@@ -199,6 +202,10 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
   // Guarda o `node_id`, e não o peer: a lista se renova a cada refresh do
   // cluster, e uma cópia guardada aqui congelaria os números da janela aberta.
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  // O card de detalhe é o mesmo da aba Detalhes; quem não abre a aba também
+  // não o abre pelo clique no desenho. A regra é uma só, em `lib/access.ts`.
+  const { profile } = useProfile();
+  const detailed = canSeePeerDetails(profile);
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const modelIds = useMemo(() => Array.from(new Set([
@@ -332,11 +339,11 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
         const geometry = routeGeometry(positionOf(from, ranges.indexOf(from)), positionOf(to, ranges.indexOf(to)));
         return <RouteRttLabel key={`rtt-${edgeKey(edge)}-${index}`} rttMs={rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`)} left={geometry.labelX} top={geometry.labelY} />;
       })}
-      {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={() => setDetailNodeId(range.node_id)} />)}
+      {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />)}
     </div>}
     {/* A mesma visão que a aba Detalhes mostra, no mesmo componente. */}
     <PeerDetailDialog
-      peer={detailPeer}
+      peer={detailed ? detailPeer : null}
       group={cluster.active_model}
       otherRanges={pipeline.filter((peer) => peer.node_id !== detailNodeId && peer.total_layers > 0).map((peer) => [peer.start_layer, peer.end_layer] as [number, number])}
       onClose={() => setDetailNodeId(null)}

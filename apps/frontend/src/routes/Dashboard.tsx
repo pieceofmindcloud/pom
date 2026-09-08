@@ -15,9 +15,11 @@ import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
+import { canSeePeerDetails } from "../lib/access";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
 import { useCluster, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
+import { useProfile } from "../lib/profile";
 import type { DeployPlan, PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -137,7 +139,11 @@ export function Dashboard() {
   const cluster = useCluster();
   const node = useNode();
   const invalidateAll = useInvalidate();
-  const isAdmin = node.data?.profile === "admin";
+  const { profile } = useProfile();
+  const isAdmin = profile === "admin";
+  // Sem os Detalhes sobra o Fluxo, e uma vista só não é uma escolha: o seletor
+  // sai da tela junto com a aba que ele abria.
+  const detailed = canSeePeerDetails(profile);
 
   const c = cluster.data;
   // Duas listas: quem serve o modelo ativo, na ordem do pipeline, e o resto da
@@ -233,11 +239,11 @@ export function Dashboard() {
             )}
           </>
         )}
-        <ViewSwitch view={view} onChange={setView} />
+        {detailed && <ViewSwitch view={view} onChange={setView} />}
       </div>
     </div>
 
-    {view === "minima" ? (
+    {!detailed || view === "minima" ? (
       <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} /></div>
     ) : (
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">

@@ -274,23 +274,50 @@ pub enum AdminAuthRejection {
     LocalhostOnly,
 }
 
+/// Cabeçalho que nomeia **qual** recusa administrativa aconteceu.
+///
+/// A frase do corpo é para a pessoa e muda com o idioma; o navegador precisa
+/// de um valor estável para distinguir "a sessão administrativa acabou" de
+/// qualquer outro 401. Sem isso a interface só sabia imprimir a frase crua
+/// dentro da tela, e o operador ficava sem caminho de volta ao portão.
+pub(crate) const ADMIN_ERROR_HEADER: &str = "x-pom-admin-error";
+/// Não havia credencial administrativa nenhuma: sessão expirada, nó
+/// reiniciado (a sessão vive em memória) ou primeira visita.
+pub(crate) const ADMIN_ERROR_MISSING_TOKEN: &str = "missing-token";
+/// Havia credencial e ela não confere.
+pub(crate) const ADMIN_ERROR_INVALID_TOKEN: &str = "invalid-token";
+/// A superfície administrativa deste nó só atende pelo endereço local.
+pub(crate) const ADMIN_ERROR_LOCAL_ONLY: &str = "local-only";
+
 impl IntoResponse for AdminAuthRejection {
     fn into_response(self) -> axum::response::Response {
-        let (status, msg) = match self {
+        let (status, kind, msg) = match self {
             AdminAuthRejection::MissingPeerAddress => (
                 StatusCode::FORBIDDEN,
+                "no-peer-address",
                 "administrative request has no peer address",
             ),
             AdminAuthRejection::MissingToken => (
                 StatusCode::UNAUTHORIZED,
+                ADMIN_ERROR_MISSING_TOKEN,
                 "missing administrative access token",
             ),
-            AdminAuthRejection::InvalidToken => {
-                (StatusCode::FORBIDDEN, "invalid administrative access token")
-            }
+            AdminAuthRejection::InvalidToken => (
+                StatusCode::FORBIDDEN,
+                ADMIN_ERROR_INVALID_TOKEN,
+                "invalid administrative access token",
+            ),
             AdminAuthRejection::LocalhostOnly => return local_only_page(),
         };
-        (status, Json(json!({ "error": msg }))).into_response()
+        (
+            status,
+            [(
+                axum::http::header::HeaderName::from_static(ADMIN_ERROR_HEADER),
+                kind,
+            )],
+            Json(json!({ "error": msg })),
+        )
+            .into_response()
     }
 }
 
@@ -320,8 +347,8 @@ fn local_only_page() -> axum::response::Response {
             (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (axum::http::header::CACHE_CONTROL, "no-store"),
             (
-                axum::http::header::HeaderName::from_static("x-pom-admin-error"),
-                "local-only",
+                axum::http::header::HeaderName::from_static(ADMIN_ERROR_HEADER),
+                ADMIN_ERROR_LOCAL_ONLY,
             ),
         ],
         body,

@@ -460,6 +460,17 @@ máquina, e é **um só**: a aba Detalhes empilha um por máquina e o duplo cliq
 num card do Fluxo abre o mesmo componente numa `PeerDetailDialog`. Duplicar a
 apresentação nos dois lugares é o que se está evitando.
 
+Esse card é **do administrador**, e `canSeePeerDetails` (`src/lib/access.ts`)
+diz quem o vê. Ele traz o estado interno de cada máquina e as ações sobre ela -
+liberar fatia, remover do pipeline, tirar da rede -, que é operação do cluster e
+não do próprio nó. Fora do `admin` resta o Fluxo, e por isso **o seletor de
+vista também não aparece**: onde há uma vista só não há o que escolher. As duas
+portas fecham juntas - o `ViewSwitch` some do Painel e o duplo clique no card do
+canvas deixa de abrir a `PeerDetailDialog` -, porque esconder o seletor e
+continuar abrindo o card pelo desenho seria a mesma tela em dois estados. A
+regra fica ao lado da tabela de rotas por ser a mesma pergunta: o que este
+perfil enxerga.
+
 Detalhes lista a **rede inteira**, não a pipeline: `networkPeers`
 (`src/lib/networkPeers.ts`) separa quem serve o modelo ativo na ordem das
 camadas (`pipelinePeers`) de quem está conectado sem fatia (`others`, por
@@ -581,6 +592,13 @@ Sidebar. No `infer`, a Sidebar usa `ChatSessionList` como menu principal: a
 lista de histórico tem rolagem interna limitada ao espaço disponível, destaca
 a conversa ativa e deixa `Conversa nova` fixa acima dela. Trocar ou apagar uma
 sessão aborta uma geração em andamento antes de mudar a tela.
+
+Esse menu é visto de **toda** rota, então escolher uma conversa ou começar uma
+nova **navega para `/chat`** além de trocar a sessão ativa. Sem isso, o clique
+feito das configurações ou da documentação mudava o estado compartilhado e
+deixava a tela onde estava - o menu parecia ter parado de responder. Quem já
+está no chat não é reenviado, para não empilhar entradas iguais no histórico do
+navegador.
 
 - **A telemetria da execução chega fechada** (`components/ExecutionTelemetry.tsx`): a tabela
   de fases e as seções densas de rede e ambiente ficam embaixo da resposta;

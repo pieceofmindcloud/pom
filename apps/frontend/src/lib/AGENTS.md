@@ -130,6 +130,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   connection key does this automatically so a new node cannot reuse an old
   node's state.
 - `class ApiError` - carries `status` and the decoded JSON `body` so 409-style refusals (e.g. delete warnings list) survive to the caller.
+- `onAdminSessionLost(handler)` - subscribe to "the administrative session is
+  gone". Every refusal path checks the node's `x-pom-admin-error` header
+  (`backend/auth.rs`): `missing-token`/`invalid-token` on an administrative
+  path drops the in-memory token and notifies. The header, not the sentence -
+  the body text is for the person and changes with the locale. A profile 403
+  (`perfil sem autorização para esta rota`) is deliberately not this: sending
+  an authenticated operator back to the gate would only make them re-enter to
+  see the same refusal.
 - `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
 - `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
 - `ensureChatApiKey` / `forgetChatApiKey` - keep the UI-only `pom-[node_id]`
@@ -205,13 +213,21 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
   404 means setup, a valid server session means available, a localhost policy
   refusal means the local-only state, and other refusals keep the token gate.
+  It subscribes to `onAdminSessionLost` and re-probes: the administrative
+  session lives in the node's memory, so a restart or the 8h expiry kills it
+  with the tab open, and a once-per-load probe would leave every screen
+  printing the server's raw 401 with no way back to the gate.
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useAdminAccess()` - public one-shot metadata for the administrative token
   gate; it never receives the token.
 - `useAdminAccessInfo()` - authenticated administrative settings, including the
   token only for the Preferences screen.
 - `useNode()` - polls `/api/ui/node` every 4s after the admin gate, stores
-  `connection_key`.
+  `connection_key`. That field is not decoration: it is what authenticates
+  every later call that needs `ConnectionAuth` (`/admin/*`, `/api/ui/leave`).
+  It also carries `authority_level`, the **effective** administrative
+  authority, which is what decides whether a screen offers an administrative
+  act - `profile: admin` alone grants nothing.
 - `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
   máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar

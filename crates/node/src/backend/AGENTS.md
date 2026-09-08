@@ -28,7 +28,11 @@ inference listener accepts only `connection_key` plus the internal marker and
 remains dual-stack. `/health`, `/peers` and `/handshake` remain dual-stack.
 
 Before that exposure check, `gateway::require_admin_for_surface` consults the
-single `webui/routes/mod.rs` data table with the persisted `Config.profile`.
+single `webui/routes/mod.rs` data table with the request method and the
+persisted `Config.profile`. A rule may name a method, and the most specific
+wins - longest prefix first, then the one that names a method - which is what
+lets `GET /admin/nodes` open to `node` while blocking, removing and promoting a
+machine stay `AdminOnly` under the same prefix.
 A browser profile mismatch returns HTTP 403 with a JSON error, path and profile
 before the handler runs. A valid `InternalNodeAuth` is the explicit exception
 for node-to-node fan-out, so a receiver's local profile cannot reject a
@@ -36,6 +40,21 @@ legitimate pipeline control call; the handler still verifies the signed admin
 mutation where authority changes. Setup and the separate inference listener
 are marked out of scope in the table and are not silently treated as gateway
 routes.
+
+Two decisions the table cannot express, because they depend on the body rather
+than the path, live in their handlers: `POST /api/ui/leave` (leaving is
+abdication and belongs to every profile, but forwarding the request to
+*another* machine needs effective administrative authority - the forward
+travels with the internal credential, which the target does not judge by the
+caller's profile) and the trust anchor. In both, `profile: admin` alone grants
+nothing; `admin_trust::effective_authority` decides.
+
+Every administrative refusal names itself in the `x-pom-admin-error` header
+(`ADMIN_ERROR_*` in `auth.rs`): `missing-token`, `invalid-token`,
+`no-peer-address`, `local-only`. The body sentence is for the person and
+changes with the locale; the header is the stable contract the browser reads to
+know its session died and return to the access gate, instead of printing the
+raw 401 inside whatever screen was open.
 
 The `webui` route registry is organized under `webui/routes/`: `common.rs`
 contains routes shared by every profile, `infer.rs` contains inference-profile

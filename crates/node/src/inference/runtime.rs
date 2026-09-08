@@ -633,8 +633,6 @@ pub struct NodeRuntime {
     tls: Option<crate::serve::TlsServer>,
     /// Configuração viva usada para autorizar chamadas internas de inferência.
     auth: Option<crate::auth::AuthState>,
-    /// Banco compartilhado usado para revalidar API keys na porta de inferência.
-    database: Option<Arc<crate::db::PomDb>>,
     /// Dono do último conjunto de pesos carregado. O servidor de cada geração
     /// conserva sua própria referência até drenar as requisições em voo.
     model_cache: Arc<crate::llm::ModelCache>,
@@ -670,26 +668,6 @@ impl NodeRuntime {
         tls: Option<crate::serve::TlsServer>,
         auth: Option<crate::auth::AuthState>,
     ) -> Arc<Self> {
-        Self::new_with_tls_auth_database(net, assignment, tls, auth, None)
-    }
-
-    pub fn new_with_tls_and_auth_and_database(
-        net: Arc<Network>,
-        assignment: Arc<RwLock<Option<LayerAssignment>>>,
-        tls: Option<crate::serve::TlsServer>,
-        auth: Option<crate::auth::AuthState>,
-        database: Arc<crate::db::PomDb>,
-    ) -> Arc<Self> {
-        Self::new_with_tls_auth_database(net, assignment, tls, auth, Some(database))
-    }
-
-    fn new_with_tls_auth_database(
-        net: Arc<Network>,
-        assignment: Arc<RwLock<Option<LayerAssignment>>>,
-        tls: Option<crate::serve::TlsServer>,
-        auth: Option<crate::auth::AuthState>,
-        database: Option<Arc<crate::db::PomDb>>,
-    ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         Arc::new(Self {
             config: RwLock::new(None),
@@ -702,7 +680,6 @@ impl NodeRuntime {
             generation,
             tls,
             auth,
-            database,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
             operation: Mutex::new(()),
             thermal: Arc::new(Mutex::new(ThermalRuntime {
@@ -1106,9 +1083,7 @@ impl NodeRuntime {
                 .is_some_and(|dir| !dir.is_empty()),
         );
         let capacity_net = self.net.clone();
-        let network = self.net.clone();
         let auth = self.auth.clone();
-        let database = self.database.clone();
         let model_cache = self.model_cache.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
@@ -1182,8 +1157,6 @@ impl NodeRuntime {
                     batching_ready.clone(),
                     tls.clone(),
                     auth.clone(),
-                    database.clone(),
-                    Some(network.clone()),
                     model_cache.clone(),
                     reuse_weights,
                 )

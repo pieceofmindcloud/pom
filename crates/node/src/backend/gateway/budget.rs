@@ -428,8 +428,8 @@ pub enum GenEvent {
 /// different list of generation parameters.
 pub(crate) struct GenerationInput {
     pub(crate) state: GatewayState,
-    /// Validated API key propagated to every inference hop. It never enters
-    /// request details, audit records or logs.
+    /// API key validated at the client gateway. It is retained only as input
+    /// to the generation adapter and is never sent to an inference peer.
     pub(crate) inference_token: String,
     pub(crate) model: String,
     pub(crate) prompt: String,

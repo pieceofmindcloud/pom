@@ -19,7 +19,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   inferência pelo enxame libp2p como transporte preferencial quando o peer
   anuncia essa capability. Se o túnel falhar por transporte, o relay usa o
   cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
-  corpo e cabeçalhos, inclusive a credencial da porta de inferência;
+  corpo e cabeçalhos, inclusive a `connection_key` e o marcador interno da
+  porta de inferência;
   `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
   sonda `/health`. POSTs sem `Content-Type` recebem o padrão binário, mas um
   `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
@@ -48,8 +49,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   que falharam. `route_order` apenas reordena os candidatos: mesmo quando
   todos estão em quarentena, devolve a lista para que a tentativa real decida.
   O cliente destinado a outro nó marca requests de controle com
-  `x-pom-internal-node` e limita a abertura TCP a 2 s; o cliente `plain()` para
-  Ollama e loopback não envia essa marca.
+  `x-pom-internal-node`, usa a `connection_key` nas rotas internas de
+  inferência e limita a abertura TCP a 2 s; o cliente `plain()` para Ollama e
+  loopback não envia essa marca.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o

@@ -520,8 +520,6 @@ pub async fn run(
     batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
     auth: Option<crate::auth::AuthState>,
-    database: Option<Arc<crate::db::PomDb>>,
-    network: Option<Arc<crate::network::Network>>,
     model_cache: Arc<ModelCache>,
     reuse_weights: bool,
 ) -> Result<()> {
@@ -695,7 +693,7 @@ pub async fn run(
         .route("/v1/session/slot", post(handle_slot));
     let inference_routes = if let Some(auth) = auth.clone() {
         inference_routes.layer(middleware::from_fn_with_state(
-            (auth, database.clone(), network.clone()),
+            auth,
             require_inference_auth,
         ))
     } else {
@@ -710,7 +708,7 @@ pub async fn run(
     // pelo enquadramento do canal.
     let link_state = LinkState {
         app: app_state.clone(),
-        auth: auth.clone().map(|auth| (auth, database.clone())),
+        auth: auth.clone(),
     };
     let link_routes = Router::new().route(
         crate::link::LINK_PATH,
@@ -718,7 +716,7 @@ pub async fn run(
     );
     let link_routes = if let Some(auth) = auth.clone() {
         link_routes.layer(middleware::from_fn_with_state(
-            (auth, database.clone(), network.clone()),
+            auth,
             require_inference_auth,
         ))
     } else {
@@ -732,7 +730,7 @@ pub async fn run(
     );
     let tp_routes = if let Some(auth) = auth {
         tp_routes.layer(middleware::from_fn_with_state(
-            (auth, database, network),
+            auth,
             require_inference_auth,
         ))
     } else {
@@ -880,7 +878,7 @@ pub(crate) async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
 /// peer: com o cluster em TLS ele precisa do certificado daquele node_id
 /// fixado. O esquema global (`peer_client::tls_ativo`) é quem diz se há TLS -
 /// este processo é o mesmo do nó, então a política já está aplicada aqui.
-pub(super) fn http_client() -> &'static crate::peer_client::PeerClients {
+pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
     static CLIENT: std::sync::OnceLock<crate::peer_client::PeerClients> =
         std::sync::OnceLock::new();
     let c = CLIENT

@@ -53,13 +53,13 @@ túnel libp2p quando o membro anunciou `PeerId` e capability. Essa ordem é
 necessária para a coletiva: a chamada fica aguardando dentro da barreira e um
 túnel indisponível não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
-As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
-ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
-key ativa quando a chave compartilhada não existe. O loopback do túnel mantém o
+As rotas entre peers aceitam exclusivamente `Authorization: Bearer
+<connection_key>` junto de `x-pom-internal-node: 1`; uma API key de cliente não
+é fallback e não atravessa o pipeline. O loopback do túnel mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
-Quando o processo tem o banco local, a API key é revalidada no `pom.db` a cada
-requisição. Isso faz uma revogação feita por outro processo valer imediatamente,
-mesmo que a cópia de `Config` em memória ainda esteja antiga.
+O gateway valida a API key do cliente na superfície de entrada e pode consultar
+o principal para uma chave desconhecida. Essa consulta não participa da
+autenticação dos hops internos.
 Quando o destino anunciado de um passo é o próprio `node_id` deste processo, o
 relay despacha o quadro diretamente para o handler de inferência em processo.
 Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência
@@ -547,14 +547,11 @@ global do mapa de canais. Cada quadro, nas duas direções:
 - A fila de ida tem 64 quadros: um hop lento segura quem o alimenta em vez de
   deixar a memória crescer. O limite de corpo é desligado nessa rota, porque o
   corpo é a geração inteira, não um quadro.
-- **A credencial é reconferida a cada quadro**, não só na abertura. As rotas de
-  inferência revalidam a chave a cada requisição justamente para que uma
-  revogação feita por outro processo valha na hora; uma conexão de 12 h que
-  autenticasse uma vez manteria válida por 12 h uma chave revogada. O
-  predicado é o mesmo do middleware (`inference_credential_is_valid`), e o
-  custo é o mesmo de hoje: tráfego entre peers casa na `connection_key` e nem
-  chega ao banco. Um quadro recusado é recusa **daquele quadro** - o canal
-  continua servindo os seguintes.
+- **A credencial é reconferida a cada quadro**, não só na abertura. O receptor
+  confere a `connection_key` e o marcador interno; uma conexão de 12 h que
+  autenticou uma vez manteria válido por 12 h um segredo trocado por outro
+  processo. Um quadro recusado é recusa **daquele quadro** - o canal continua
+  servindo os seguintes.
 
 **Degradação.** Falha de transporte no canal não mata a geração: a chamada volta
 pela escada de sempre (túnel libp2p, depois HTTPS por requisição) com

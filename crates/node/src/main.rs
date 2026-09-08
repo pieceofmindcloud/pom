@@ -826,12 +826,11 @@ async fn async_main(
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth_and_database(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
         Some(auth_config.clone()),
-        database.clone(),
     );
     node_runtime
         .start_thermal_monitor(auth_config.clone())
@@ -1550,12 +1549,11 @@ async fn start_gateway_only(
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let hf_token_store =
         huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth_and_database(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
         Some(auth_state.clone()),
-        database.clone(),
     );
     node_runtime.start_thermal_monitor(auth_state.clone()).await;
 

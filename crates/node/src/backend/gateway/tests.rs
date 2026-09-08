@@ -29,14 +29,18 @@ mod tests {
         let app = Router::new()
             .route("/api/generate", post(inference_auth_probe))
             .route("/v1/models", get(inference_auth_probe))
+            .route("/v1/chat/completions", post(inference_auth_probe))
+            .route("/v1/completions", post(inference_auth_probe))
+            .route("/v1/messages", post(inference_auth_probe))
             .with_state(state);
 
-        for path in ["/api/generate", "/v1/models"] {
-            let method = if path == "/api/generate" {
-                "POST"
-            } else {
-                "GET"
-            };
+        for (path, method) in [
+            ("/api/generate", "POST"),
+            ("/v1/models", "GET"),
+            ("/v1/chat/completions", "POST"),
+            ("/v1/completions", "POST"),
+            ("/v1/messages", "POST"),
+        ] {
             let absent = Request::builder()
                 .method(method)
                 .uri(path)
@@ -81,6 +85,66 @@ mod tests {
                 StatusCode::OK
             );
         }
+    }
+
+    #[tokio::test]
+    async fn relay_result_ticket_is_sufficient_without_a_client_api_key() {
+        let state = testkit::state_with("gateway", vec![]).await;
+        let ticket = state.reply_inbox.register();
+        let body = crate::wire::encode(
+            &json!({"ticket": ticket.id(), "token_id": 1234, "done": true}),
+            None,
+            crate::wire::WireDtype::F16,
+        )
+        .unwrap();
+        let app = Router::new()
+            .route(crate::direct::RELAY_RESULT_PATH, post(handle_relay_result))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::post(crate::direct::RELAY_RESULT_PATH)
+                    .header("content-type", "application/octet-stream")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn remote_stream_result_ticket_is_sufficient_without_a_client_api_key() {
+        let state = testkit::state_with("gateway", vec![]).await;
+        let mut ticket = state.reply_inbox.register_stream();
+        let body = crate::wire::encode(
+            &json!({
+                "ticket": ticket.id(),
+                "accepted": [{"token_id": 1234}],
+                "done": true,
+            }),
+            None,
+            crate::wire::WireDtype::F16,
+        )
+        .unwrap();
+        let app = Router::new()
+            .route(
+                crate::direct::REMOTE_STREAM_RESULT_PATH,
+                post(handle_remote_stream_result),
+            )
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::post(crate::direct::REMOTE_STREAM_RESULT_PATH)
+                    .header("content-type", "application/octet-stream")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(ticket.recv().await.unwrap()["accepted"][0]["token_id"], 1234);
     }
 
     #[tokio::test]

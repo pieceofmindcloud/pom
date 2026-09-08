@@ -62,6 +62,7 @@ mod step_blocking;
 pub(super) use core::*;
 pub(super) use prefix::*;
 pub(super) use server::*;
+pub(crate) use server::http_client;
 pub(super) use prefill::*;
 pub(super) use step::*;
 pub(super) use direct::*;

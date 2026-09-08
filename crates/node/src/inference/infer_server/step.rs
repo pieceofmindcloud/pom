@@ -348,13 +348,12 @@ pub(crate) async fn handle_step(
     }
 }
 
-/// Estado do canal persistente: o do servidor de inferência, mais a credencial
-/// que precisa ser reconferida a cada quadro. Ver
-/// [`inference_credential_is_valid`].
+/// Estado do canal persistente: o do servidor de inferência e a configuração
+/// usada para reconferir a `connection_key` a cada quadro.
 #[derive(Clone)]
 pub(super) struct LinkState {
     pub(super) app: InferenceAppState,
-    pub(super) auth: Option<(crate::auth::AuthState, Option<Arc<crate::db::PomDb>>)>,
+    pub(super) auth: Option<crate::auth::AuthState>,
 }
 
 /// Serve a ligação persistente da aresta da pipeline. Cada quadro que chega
@@ -367,22 +366,14 @@ pub(super) async fn handle_link(
     headers: axum::http::HeaderMap,
     body: axum::body::Body,
 ) -> Response {
-    let tokens = inference_credential_candidates(&headers);
     crate::link::serve(body, move |path, bytes| {
         let state = state.clone();
-        let tokens = tokens.clone();
+        let headers = headers.clone();
         async move {
-            if let Some((config, database)) = &state.auth {
-                let mut valid = false;
-                for token in &tokens {
-                    if inference_credential_is_valid(config, database.as_ref(), token).await {
-                        valid = true;
-                        break;
-                    }
-                }
-                if !valid {
-                    return Err(anyhow::anyhow!("credencial de inferência inválida"));
-                }
+            if let Some(config) = &state.auth {
+                crate::auth::validate_internal_node_headers(config, &headers)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("credencial de peer inválida"))?;
             }
             use crate::relay::InProcessInference;
             state.app.dispatch(&path, bytes).await

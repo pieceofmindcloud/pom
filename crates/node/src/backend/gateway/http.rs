@@ -19,8 +19,8 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
             get(cluster_logs_policy),
         )
         .route("/handshake", post(session::handle_handshake))
-        // Onde a cauda de um pipeline entrega o resultado. A API key da sessão
-        // autentica o peer e o ticket limita a entrega ao quadro em andamento.
+        // Onde a cauda de um pipeline entrega o resultado. A rota é interna ao
+        // pipeline: o Ticket é a credencial por quadro.
         .route(
             crate::direct::RELAY_RESULT_PATH,
             post(handle_relay_result).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
@@ -116,7 +116,6 @@ pub(super) async fn cluster_tls(
 }
 
 pub(super) async fn handle_relay_result(
-    _auth: crate::auth::ApiKeyAuth,
     State(state): State<GatewayState>,
     body: Bytes,
 ) -> impl IntoResponse {
@@ -124,7 +123,6 @@ pub(super) async fn handle_relay_result(
 }
 
 pub(super) async fn handle_remote_stream_result(
-    _auth: crate::auth::ApiKeyAuth,
     State(state): State<GatewayState>,
     body: Bytes,
 ) -> impl IntoResponse {

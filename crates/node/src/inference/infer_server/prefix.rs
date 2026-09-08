@@ -737,135 +737,75 @@ pub(super) fn terminal_prefill_meta(
     })
 }
 
-/// The inference listener is API-key-only. Unknown keys are checked against
-/// the principal through the authenticated node-to-node admin channel.
-fn inference_token_from_header(value: &str) -> Option<&str> {
-    let value = value.trim();
-    let mut parts = value.splitn(2, char::is_whitespace);
-    let scheme = parts.next()?;
-    let token = if scheme.eq_ignore_ascii_case("bearer") {
-        parts.next()?.trim()
-    } else {
-        value
-    };
-    (!token.is_empty()).then_some(token)
-}
-
+/// A porta de inferência é um canal entre peers. Ela aceita somente a
+/// `connection_key` compartilhada, com o marcador de request interno; API keys
+/// pertencem às rotas de inferência do cliente no gateway.
 pub(super) async fn require_inference_auth(
-    State((config, database, network)): State<(
-        crate::auth::AuthState,
-        Option<Arc<crate::db::PomDb>>,
-        Option<Arc<crate::network::Network>>,
-    )>,
+    State(config): State<crate::auth::AuthState>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let tokens = inference_credential_candidates(request.headers());
-
-    if tokens.is_empty() {
-        return (StatusCode::UNAUTHORIZED, "missing inference credential").into_response();
-    }
-
-    let session_id = request
-        .headers()
-        .get(crate::auth::INFERENCE_SESSION_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty());
-
-    for token in tokens {
-        if inference_credential_is_valid(&config, database.as_ref(), &token).await {
-            if let Some(session_id) = session_id {
-                crate::infer_server::http_client().remember_inference_token(session_id, &token);
-            }
-            return next.run(request).await;
-        }
-        if let (Some(network), Some(database)) = (network.as_ref(), database.as_ref()) {
-            if let Ok(Some(key)) = crate::admin::validate_api_key_remote_parts(
-                network,
-                crate::infer_server::http_client(),
-                &config,
-                &token,
-            )
-            .await
-            {
-                let origin = if key.origin_node_id.is_empty() {
-                    &key.node_id
-                } else {
-                    &key.origin_node_id
-                };
-                if config
-                    .read()
-                    .await
-                    .blocked_nodes
-                    .iter()
-                    .any(|blocked| blocked == origin)
-                {
-                    continue;
-                }
-                if key.active && key.key == token && database.insert_api_key(&key).is_ok() {
-                    let mut cfg = config.write().await;
-                    cfg.api_keys.retain(|existing| existing.id != key.id);
-                    cfg.api_keys.push(key);
-                    if let Some(session_id) = session_id {
-                        crate::infer_server::http_client()
-                            .remember_inference_token(session_id, &token);
-                    }
-                    return next.run(request).await;
-                }
-            }
-        }
-    }
-    (StatusCode::FORBIDDEN, "invalid inference API key").into_response()
-}
-
-/// A regra de credencial da porta de inferência, isolada do middleware porque
-/// o canal persistente (`/v1/link`) precisa **da mesma regra por quadro**.
-///
-/// Uma conexão longa que autenticasse só na abertura manteria válida por horas
-/// uma API key revogada por outro processo - exatamente o que a revalidação por
-/// requisição existe para impedir. O custo é o mesmo de hoje: tráfego entre
-/// peers carrega a API key da sessão e passa pelo banco local.
-pub(crate) async fn inference_credential_is_valid(
-    config: &crate::auth::AuthState,
-    database: Option<&Arc<crate::db::PomDb>>,
-    token: &str,
-) -> bool {
-    match database {
-        Some(database) => {
-            let Some(key) = database.api_key_for_token(token).ok().flatten() else {
-                return false;
-            };
-            let cfg = config.read().await;
-            let origin = if key.origin_node_id.is_empty() {
-                &key.node_id
-            } else {
-                &key.origin_node_id
-            };
-            key.active && !cfg.blocked_nodes.iter().any(|blocked| blocked == origin)
-        }
-        None => crate::auth::is_valid_inference_token(&*config.read().await, token),
+    let (parts, body) = request.into_parts();
+    match crate::auth::validate_internal_node_headers(&config, &parts.headers).await {
+        Ok(()) => next.run(Request::from_parts(parts, body)).await,
+        Err(rejection) => rejection.into_response(),
     }
 }
 
-/// Return all API-key candidates in the same order as the middleware. Headers
-/// remain independent: a stale Authorization value cannot hide a valid
-/// `x-api-key` value.
-pub(super) fn inference_credential_candidates(headers: &axum::http::HeaderMap) -> Vec<String> {
-    let mut tokens = Vec::with_capacity(2);
-    if let Some(token) = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(inference_token_from_header)
-    {
-        tokens.push(token.to_string());
+#[cfg(test)]
+mod internal_auth_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn inference_listener_accepts_only_the_internal_connection_key() {
+        let state = crate::gateway::testkit::state_with("gateway", vec![]).await;
+        state.auth.write().await.connection_key = "peer-secret".into();
+        let app = Router::new()
+            .route("/v1/prefill", post(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn_with_state(
+                state.auth.clone(),
+                require_inference_auth,
+            ))
+            .with_state(state.auth.clone());
+
+        let request = |authorization: Option<&str>, marker: Option<&str>| {
+            let mut builder = Request::post("/v1/prefill");
+            if let Some(authorization) = authorization {
+                builder = builder.header("authorization", authorization);
+            }
+            if let Some(marker) = marker {
+                builder = builder.header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, marker);
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+
+        assert_eq!(
+            app.clone().oneshot(request(None, None)).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some("Bearer client-api-key"), Some("1")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some("Bearer peer-secret"), None))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.oneshot(request(Some("Bearer peer-secret"), Some("1")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
     }
-    if let Some(token) = headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        .and_then(inference_token_from_header)
-        .filter(|token| !tokens.iter().any(|candidate| candidate == token))
-    {
-        tokens.push(token.to_string());
-    }
-    tokens
 }

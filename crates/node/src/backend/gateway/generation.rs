@@ -8,7 +8,7 @@ pub(super) async fn generate_stream_inner(
     let request_started = Instant::now();
     let GenerationInput {
         state,
-        inference_token,
+        inference_token: _inference_token,
         model,
         prompt,
         chat_template,
@@ -111,10 +111,6 @@ pub(super) async fn generate_stream_inner(
     );
     let mut session_id = prefix_lease.session_id().to_string();
     let mut reuse_prefix = prefix_lease.is_hit();
-    state
-        .peer_http
-        .remember_inference_token(&session_id, &inference_token);
-
     // Camada de disco (Phase 3): um miss em memória que casa um snapshot
     // automático em disco - típico depois de um reinício - restaura o KV em
     // todos os hops em vez de refazer o prefill a frio. Ver
@@ -181,7 +177,6 @@ pub(super) async fn generate_stream_inner(
             state.gateway_port,
         ),
         state.network.node_id.clone(),
-        session_id.clone(),
     );
 
     info!(

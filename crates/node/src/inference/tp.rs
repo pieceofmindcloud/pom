@@ -624,10 +624,10 @@ pub fn broadcast_to(
         let tunnel = crate::infer_tunnel::tunnel_sender();
         let auth_state = auth.clone();
         tokio::spawn(async move {
-            let inference_token = match auth_state {
+            let internal_token = match auth_state {
                 Some(auth) => {
                     let config = auth.read().await;
-                    crate::auth::inference_token(&config)
+                    crate::auth::internal_node_token(&config)
                 }
                 None => None,
             };
@@ -635,7 +635,11 @@ pub fn broadcast_to(
             if let Some(ct) = ct {
                 headers.push(("content-type".to_string(), ct.to_string()));
             }
-            if let Some(token) = inference_token {
+            if let Some(token) = internal_token {
+                headers.push((
+                    crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+                    "1".to_string(),
+                ));
                 headers.push((
                     reqwest::header::AUTHORIZATION.as_str().to_string(),
                     format!("Bearer {token}"),
@@ -724,10 +728,10 @@ async fn post_reduce(
     let request_bytes = corpo.len() as u64;
     let started = std::time::Instant::now();
 
-    let inference_token = match &state.auth {
+    let internal_token = match &state.auth {
         Some(auth) => {
             let config = auth.read().await;
-            crate::auth::inference_token(&config)
+            crate::auth::internal_node_token(&config)
         }
         None => None,
     };
@@ -740,7 +744,13 @@ async fn post_reduce(
         ),
     ]
     .into_iter()
-    .chain(inference_token.as_ref().map(|token| {
+    .chain(internal_token.as_ref().map(|_| {
+        (
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+            "1".to_string(),
+        )
+    }))
+    .chain(internal_token.as_ref().map(|token| {
         (
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),

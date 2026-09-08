@@ -113,28 +113,25 @@ pub const ADMIN_ACCESS_TOKEN_HEADER: &str = "x-pom-access-token";
 /// é uma credencial: só vale junto com uma `connection_key` válida e nunca é
 /// enviada pelo cliente da interface.
 pub const INTERNAL_NODE_REQUEST_HEADER: &str = "x-pom-internal-node";
-/// Opaque session identifier used to select the already authenticated API key
-/// while a request is forwarded between inference peers. It is not itself a
-/// credential and is never accepted by the inference middleware.
+/// Opaque session identifier forwarded with a frame for session correlation. It
+/// is not a credential and is never accepted by the inference middleware.
 pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 
-/// Escolhe uma API key ativa que um nó usa nas chamadas internas de inferência.
-/// O canal de controle entre nós continua usando a `connection_key` em
-/// extratores separados, e nunca cai para ela neste caminho.
-/// Nunca retorna uma chave revogada nem uma string vazia.
-pub fn inference_token(config: &Config) -> Option<String> {
-    config
-        .api_keys
-        .iter()
-        .find(|key| key.active && !key.key.is_empty())
-        .map(|key| key.key.clone())
+/// Escolhe a credencial que um nó usa nas chamadas internas de inferência.
+/// API keys pertencem à superfície do cliente e nunca atravessam um salto
+/// interno; os peers compartilham a `connection_key` para esse canal.
+pub fn internal_node_token(config: &Config) -> Option<String> {
+    (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
 }
 
-/// Valida o token que pode atravessar a porta de inferência.
-///
-/// A chave de conexão é compartilhada por todos os nós do cluster, mas não é
-/// uma credencial de inferência. Não aceitar string vazia evita que um nó em
-/// modo setup trate uma requisição sem credencial como autenticada.
+/// Confere a credencial compartilhada de um peer na porta de inferência.
+pub fn is_valid_internal_node_token(config: &Config, token: &str) -> bool {
+    !token.is_empty() && constant_time_token_eq(&config.connection_key, token)
+}
+
+/// Valida uma API key apresentada pela superfície de inferência do cliente.
+/// Esta regra permanece separada da autenticação entre peers.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn is_valid_inference_token(config: &Config, token: &str) -> bool {
     !token.is_empty()
         && config
@@ -174,23 +171,31 @@ where
         let State(config): State<AuthState> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
-        let supplied = parts
-            .headers
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(authorization_token)
-            .ok_or(AuthRejection::MissingHeader)?;
-        let is_internal = parts
-            .headers
-            .get(INTERNAL_NODE_REQUEST_HEADER)
-            .and_then(|value| value.to_str().ok())
-            == Some("1");
-        let expected = config.read().await.connection_key.clone();
-        if is_internal && constant_time_token_eq(&expected, supplied) {
-            Ok(InternalNodeAuth)
-        } else {
-            Err(AuthRejection::InvalidKey)
-        }
+        validate_internal_node_headers(&config, &parts.headers).await?;
+        Ok(InternalNodeAuth)
+    }
+}
+
+/// Valida um request de peer, incluindo o marcador que impede que a mesma
+/// `Authorization` seja reutilizada como chamada de navegador.
+pub(crate) async fn validate_internal_node_headers(
+    config: &AuthState,
+    headers: &HeaderMap,
+) -> Result<(), AuthRejection> {
+    let supplied = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(authorization_token)
+        .ok_or(AuthRejection::MissingHeader)?;
+    let is_internal = headers
+        .get(INTERNAL_NODE_REQUEST_HEADER)
+        .and_then(|value| value.to_str().ok())
+        == Some("1");
+    let config = config.read().await;
+    if is_internal && is_valid_internal_node_token(&config, supplied) {
+        Ok(())
+    } else {
+        Err(AuthRejection::InvalidKey)
     }
 }
 
@@ -933,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn internal_inference_token_uses_only_an_active_api_key() {
+    fn internal_inference_token_uses_shared_connection_key() {
         let mut cfg = crate::config::Config {
             gpus: None,
             thermal: Default::default(),
@@ -972,10 +977,10 @@ mod tests {
             slot_auto_ttl_secs: None,
         };
 
-        assert_eq!(inference_token(&cfg).as_deref(), Some("sk-active"));
+        assert_eq!(internal_node_token(&cfg).as_deref(), Some("cluster-secret"));
 
         cfg.connection_key.clear();
-        assert_eq!(inference_token(&cfg).as_deref(), Some("sk-active"));
+        assert_eq!(internal_node_token(&cfg), None);
     }
 
     #[tokio::test]

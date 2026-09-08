@@ -167,7 +167,6 @@ struct BatchKey {
     dtype: WireDtype,
     route: String,
     contract: String,
-    auth_partition: String,
 }
 
 struct BatchCall {
@@ -209,7 +208,6 @@ impl BatchCoordinator {
         path: &str,
         meta: &Value,
         dtype: WireDtype,
-        auth_partition: String,
     ) -> BatchKey {
         let route = meta
             .get("next_hops")
@@ -233,7 +231,6 @@ impl BatchCoordinator {
             dtype,
             route,
             contract,
-            auth_partition,
         }
     }
 
@@ -258,12 +255,7 @@ impl BatchCoordinator {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut meta = meta.clone();
         meta["item_id"] = Value::from(item_id.clone());
-        let auth_partition = meta
-            .get("session_id")
-            .and_then(Value::as_str)
-            .and_then(|session_id| clients.inference_token_for_session(session_id))
-            .unwrap_or_default();
-        let key = Self::key(step, path, &meta, dtype, auth_partition);
+        let key = Self::key(step, path, &meta, dtype);
         let (reply, receiver) = oneshot::channel();
         let call = BatchCall {
             clients: clients.clone(),
@@ -1029,7 +1021,7 @@ async fn send_batch_body(
     }
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = session_id.and_then(|id| clients.inference_token_for_session(id));
+        let auth = clients.internal_node_token().await;
         match send_batch_via_tunnel(
             tunnel,
             peer_id,
@@ -1144,6 +1136,10 @@ async fn send_batch_via_tunnel(
 ) -> Result<BatchTransportResponse> {
     let mut headers = Vec::new();
     if let Some(token) = auth_token {
+        headers.push((
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+            "1".to_string(),
+        ));
         headers.push((
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),
@@ -1482,7 +1478,7 @@ pub async fn send_frame_or_tunnel(
     let mut transport_fallback = false;
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = session_id.and_then(|id| clients.inference_token_for_session(id));
+        let auth = clients.internal_node_token().await;
         match send_frame_via_tunnel_with_auth(
             tunnel,
             peer_id,
@@ -1635,6 +1631,10 @@ async fn send_frame_via_tunnel_with_auth(
     let (reply_tx, reply_rx) = oneshot::channel();
     let mut headers = Vec::new();
     if let Some(token) = auth_token {
+        headers.push((
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+            "1".to_string(),
+        ));
         headers.push((
             reqwest::header::AUTHORIZATION.as_str().to_string(),
             format!("Bearer {token}"),

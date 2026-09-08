@@ -311,8 +311,6 @@ pub struct DirectReply {
     /// dá para verificar. Peer em binário antigo não manda o campo, e aí a
     /// entrega cai no cliente sem pinning - ver `deliver_result`.
     node_id: String,
-    /// Session id used to recover the exact API key for the callback.
-    session_id: String,
 }
 
 impl DirectReply {
@@ -323,7 +321,6 @@ impl DirectReply {
         inbox: ReplyInbox,
         urls: Vec<String>,
         node_id: String,
-        session_id: String,
     ) -> Option<Self> {
         if urls.is_empty() {
             return None;
@@ -332,7 +329,6 @@ impl DirectReply {
             inbox,
             urls,
             node_id,
-            session_id,
         })
     }
 
@@ -345,7 +341,6 @@ impl DirectReply {
             "urls": self.urls,
             "ticket": ticket,
             "node_id": self.node_id,
-            "inference_session": self.session_id,
         })
     }
 
@@ -445,10 +440,10 @@ fn is_unroutable_host(host: &str) -> bool {
 
 /// Handler de `/v1/relay-result`: procura o ticket e resolve o canal.
 ///
-/// A rota exige a API key da sessão no gateway e usa também o ticket, um UUID
-/// v4 sorteado por quadro e conhecido apenas pela cadeia. Um resultado sem
-/// ticket vivo é recusado com `410`, que é o que diz a quem entregou que o
-/// gateway já desistiu.
+/// A rota não usa a API key do cliente. O ticket é um UUID v4 sorteado por
+/// quadro e conhecido apenas pela cadeia; ele é a credencial da entrega. Um
+/// resultado sem ticket vivo é recusado com `410`, que é o que diz a quem
+/// entregou que o gateway já desistiu.
 pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     let (mut meta, _tensor) = match crate::wire::decode(&body) {
         Ok(v) => v,
@@ -680,11 +675,6 @@ async fn deliver_meta_at(
         None => http.plain(),
     };
     let ordered = http.route_order(&route_key, &urls);
-    let session_id = reply_to
-        .get("inference_session")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
-    let token = session_id.and_then(|id| http.inference_token_for_session(id));
     let last_index = ordered.len().saturating_sub(1);
     let mut last = String::new();
     for (index, url) in ordered.into_iter().enumerate() {
@@ -697,17 +687,11 @@ async fn deliver_meta_at(
         } else {
             DELIVERY_TIMEOUT
         };
-        let mut request = cliente
+        let request = cliente
             .post(&target)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(body.clone())
             .timeout(ceiling);
-        if let Some(session_id) = session_id {
-            request = request.header(crate::auth::INFERENCE_SESSION_HEADER, session_id);
-        }
-        if let Some(token) = token.as_deref() {
-            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
-        }
         match request.send().await {
             Ok(r) if r.status().is_success() => {
                 http.remember_route_success(&route_key, &url);
@@ -1194,7 +1178,7 @@ mod tests {
             "loopback não alcança outra máquina: {urls:?}"
         );
         assert!(
-            DirectReply::new(ReplyInbox::new(), urls, "n1".into(), "test-session".into(),)
+            DirectReply::new(ReplyInbox::new(), urls, "n1".into())
                 .is_none(),
             "sem endereço utilizável o plano tem que cair no anel"
         );

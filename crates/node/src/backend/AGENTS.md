@@ -19,10 +19,13 @@ The gateway keeps the pipeline transport separate from the administrative
 surface. `/api/ui/**` and `/admin/**` plus the static UI surface pass through
 the same boundary: localhost mode checks the real peer address, network mode
 checks a server-side `HttpOnly` session minted from `X-POM-Access-Token`, and
-  the `connection_key` remains a separate node-to-node credential. `/api/generate`
-and `/v1/**` accept only active inference API keys; `/health`, `/peers`,
-`/handshake` and the inference listener remain
-dual-stack.
+the `connection_key` remains a separate node-to-node credential. The client
+inference routes (`/api/generate`, `/v1/models`, `/v1/chat/completions`,
+`/v1/completions` and `/v1/messages`) accept only active inference API keys.
+The gateway callbacks `/v1/relay-result` and `/v1/remote-stream-result` use
+the per-frame `Ticket` in the body and no client API key. The separate
+inference listener accepts only `connection_key` plus the internal marker and
+remains dual-stack. `/health`, `/peers` and `/handshake` remain dual-stack.
 
 Before that exposure check, `gateway::require_admin_for_surface` consults the
 single `webui/routes/mod.rs` data table with the persisted `Config.profile`.
@@ -53,10 +56,10 @@ profile policy remains the effective authorization boundary.
   `AuthState = Arc<RwLock<Config>>`.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
-  `Caller`. `is_valid_inference_token` aplica a mesma regra na porta 8181 com
-  uma API key ativa lida de `pom.db`, para que criação e revogação entre
-  processos tenham efeito sem reinício. Uma chave desconhecida é consultada no
-  principal pelo canal interno autenticado e falha fechada em timeout ou erro.
+  `Caller`. Uma chave desconhecida é consultada no principal pelo canal interno
+  autenticado e falha fechada em timeout ou erro. A porta de inferência não
+  usa esse fluxo: ela exige a `connection_key` compartilhada e o marcador
+  interno, enquanto os callbacks de resultado validam o `Ticket` por quadro.
 - `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
   geração, snapshots/planejamento, HTTP e testes: `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
@@ -405,7 +408,7 @@ profile policy remains the effective authorization boundary.
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), `POST /v1/relay-result` and
   `POST /v1/remote-stream-result`
-  (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, deliberately no auth -
+  (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, no client API-key auth -
   the per-frame `Ticket` is the credential; handler `handle_relay_result`
   delivers into `reply_inbox`); it serves with
   `axum::serve(...).tcp_nodelay(true)` because Nagle delayed the small SSE
@@ -707,9 +710,9 @@ profile policy remains the effective authorization boundary.
   optional), compares to `connection_key`; `InternalNodeAuth` adds the private
   marker used by admin synchronization. `ApiKeyAuth` accepts `authorization`
   or `x-api-key`, but only for an active API key, and `api_key_identity`
-  supplies the stable non-secret id used by the audit trail. `inference_token`
-  chooses an active API key for internal inference calls and never the
-  connection key.
+  supplies the stable non-secret id used by the audit trail. `internal_node_token`
+  chooses the shared `connection_key` for internal inference calls; client API
+  keys never cross that boundary.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
 - `reqlog.rs` - `AuditLog::begin` records the exact prompt, request body,
   resolved model, entry node, API-key identity and arrival time before

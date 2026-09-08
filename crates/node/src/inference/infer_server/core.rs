@@ -1348,8 +1348,6 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             None,
             None,
-            None,
-            None,
             Arc::new(ModelCache::new()),
             false,
         )

@@ -25,12 +25,15 @@ o modelo acima do limite com estado `thermal`, preserva a configuração para
 retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
 abaixo do limite de religar durante o cooldown. `stop` limpa essa recuperação
 para respeitar uma desimplantação manual.
-As rotas de inferência revalidam somente API keys no `pom.db` compartilhado a
-cada requisição; assim uma revogação feita por outro processo não fica válida
-até o próximo reinício. Uma API key desconhecida localmente é validada no
-principal por uma chamada autenticada com `connection_key` e marcador interno,
-com timeout/retries limitados e falha fechada. A `connection_key` nunca é
-credencial de inferência.
+As rotas de inferência entre peers usam a `connection_key` compartilhada com o
+marcador `x-pom-internal-node: 1`; API keys de cliente não atravessam os hops.
+Cada quadro reconfere localmente esse segredo em tempo constante, sem chamada
+extra à rede. A chave pública e a assinatura Ed25519 pertencem ao handshake e
+à identidade do peer, não substituem a credencial simétrica do canal.
+O gateway valida API keys na superfície do cliente e pode consultar o principal
+para uma chave desconhecida. Esse fluxo remoto não é alcançado pela porta de
+inferência quando falta a credencial interna. Os callbacks de resultado no
+gateway são outra fronteira: o `Ticket` por quadro é a credencial deles.
 O listener HTTP de inferência é dual-stack, ou cai para IPv4 quando a máquina
 não oferece IPv6, independentemente da exposição da interface administrativa:
 ele é a reserva quando o túnel libp2p falha.
@@ -73,9 +76,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   abertura. A abertura ocorre fora da trava global do mapa. Falha de transporte
   degrada para a escada de sempre; o destino que não abriu fica 5 min em
   quarentena. Recusa HTTP do peer é final e não é repetida por outra via.
-  O receptor reconfere a credencial **a cada quadro**
-  (`inference_credential_is_valid`), porque uma conexão longa autenticada só na
-  abertura manteria válida por horas uma chave revogada por outro processo.
+  O receptor reconfere a `connection_key` e o marcador interno **a cada
+  quadro**, porque uma conexão longa autenticada só na abertura manteria
+  válido por horas um segredo que foi trocado por outro processo.
   Ver `docs/subsystems/inferencia.md` §2.1.
 - `link_lab.rs` (520, `#![cfg(test)]`) - a bancada do custo de rede por ficha
   no salto interno: hops falsos servidos por cima de um `TcpStream` com
@@ -510,9 +513,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   pesos entre gerações compatíveis e mantém a anotação da fatia servida
   (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
   ou de parâmetros de carregamento também o invalida.
-  O runtime entrega ao servidor uma referência ao `pom.db` para que API keys
-  revogadas sejam recusadas mesmo quando outro processo ainda conserva uma
-  cópia antiga de `Config` em memória.
+  O runtime mantém o `pom.db` para as decisões do gateway; o servidor de
+  inferência autentica saltos internos pela `connection_key` compartilhada e
+  não consulta API keys de cliente.
   `NodeConfig.inference_mode` preserva a preferência `auto`/`dense`/`moe` que
   veio do deploy; `infer_server::run` a entrega ao seletor antes de carregar o
   modelo. O campo escolhido ainda não substitui a observação: a telemetria
@@ -576,8 +579,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   plano também leva os candidatos UDP do peer para o `TunnelOutbound`, então o
   swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
   tabela local. O `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
-  autorização interna usa a `connection_key` compartilhada e cai para a
-  primeira API key ativa quando a chave de conexão não existe.
+  autorização interna usa exclusivamente a `connection_key` compartilhada e o
+  marcador de nó interno; sem ela, a chamada é recusada em vez de cair para
+  uma API key de cliente.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de
@@ -967,11 +971,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   é o loopback que aparece sozinho, do fallback de `self_dial_host` ou da
   enumeração de interfaces.
 - `handle_relay_result` - handler de `RELAY_RESULT_PATH` (`/v1/relay-result`);
-  exige API key ativa no bearer e o próprio ticket (UUID v4 por quadro, só a
-  própria cadeia conhece); resultado sem ticket vivo é `410 Gone`.
+  não usa API key de cliente: o `Ticket` UUID v4 por quadro, conhecido apenas
+  pela cadeia, é a credencial da entrega; resultado sem ticket vivo é `410
+  Gone`.
 - `handle_remote_stream_result` - recebe `/v1/remote-stream-result` e aguarda o
-  mpsc limitado antes de responder; lote tardio ou ticket cancelado recebe
-  `410 Gone`.
+  mpsc limitado antes de responder. Também usa somente o `Ticket`; lote tardio
+  ou ticket cancelado recebe `410 Gone`.
 - `await_result_with_ack` - `select!` biased entre três coisas: o resultado do inbox
   (caso normal), o ack da cabeça (só interessa quando falha, ou quando um peer
   antigo borbulhou a resposta inteira - `token_id` presente vale como
@@ -1174,7 +1179,7 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 - **Chamado por**: `backend/gateway.rs` (monta `DirectReply` com `ReplyInbox` +
   `self_reply_urls`, registra `/v1/relay-result` e
-  `/v1/remote-stream-result` com a API key da sessão e o ticket, passa
+  `/v1/remote-stream-result` sem API key, usando o `Ticket` por quadro, passa
   `direct.as_ref()` a `prefill::run`/`step`; `step_speculative` vai sem
   direct), `backend/webui.rs` (rollback/release fan-out), `main.rs`
   (`NodeRuntime::apply` no arranque, inclusive com `lastslice::take`),

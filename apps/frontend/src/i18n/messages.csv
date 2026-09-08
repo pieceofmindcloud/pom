@@ -106,6 +106,8 @@ chat.headLoad,"{count} in flight","{count} em voo"
 chat.headLoading,Checking the best entry for {model}…,Consultando a melhor entrada para {model}…
 chat.headNoCandidate,No node announces the head for {model},Nenhum nó anuncia a cabeça de {model}
 chat.headNoCandidateDetail,"Inference cannot start because no live node advertises a range beginning at layer 0 for this model. Ask an administrator to deploy its head.","A inferência não pode começar porque nenhum nó vivo anuncia uma faixa que começa na camada 0 para este modelo. Peça a um administrador para implantar a cabeça."
+chat.headPicker,Inference head,Cabeça de inferência
+chat.headPickerHint,"The selected entry is marked in the list. Open the combo to inspect the RTT, load, layer range and runtime capacity of every candidate.","A entrada escolhida está marcada na lista. Abra o combo para consultar o RTT, a carga, a faixa de camadas e a capacidade de execução de cada candidata."
 chat.headPolicy,"Coverage first · weighted fresh RTT + in-flight load · RTT valid for {validity}","Cobertura primeiro · RTT fresco + carga em voo ponderados · RTT válido por {validity}"
 chat.headRttFresh,"RTT {value} · fresh","RTT {value} · fresco"
 chat.headRttStale,"RTT {value} · stale ({age} old)","RTT {value} · vencido ({age})"

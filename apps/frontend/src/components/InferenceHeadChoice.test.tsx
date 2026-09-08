@@ -54,13 +54,31 @@ function mount(response: InferenceHeadsResponse) {
 }
 
 describe("InferenceHeadChoice", () => {
-  it("mostra a cabeça escolhida e as alternativas com o critério", () => {
+  it("não mostra escolha quando só existe uma candidata", () => {
+    mount({
+      ...selected,
+      candidates: [selected.candidates[0]],
+    });
+
+    expect(screen.queryByRole("combobox", { name: "Cabeça de inferência" })).toBeNull();
+    expect(screen.queryByText("Entrada da inferência")).toBeNull();
+    expect(screen.queryByText("ksia")).toBeNull();
+  });
+
+  it("mostra um combo com todo o diagnóstico quando há várias candidatas", () => {
     mount(selected);
 
-    expect(screen.getByText("ksia")).toBeTruthy();
-    expect(screen.getByText(/RTT 12 ms · fresco/i)).toBeTruthy();
-    expect(screen.getByText("salem")).toBeTruthy();
-    expect(screen.getAllByText(/Cobertura.*RTT fresco.*carga/i)).toHaveLength(2);
+    const combo = screen.getByRole("combobox", { name: "Cabeça de inferência" });
+    expect((combo as HTMLSelectElement).value).toBe("fast");
+    expect(screen.getByRole("option", {
+      name: /ksia.*fast.*RTT 12 ms.*fresco.*1 em voo.*L0-31 de L32.*contexto 8\.192.*perna 256 tokens.*Entrada selecionada/i,
+    })).toBeTruthy();
+    expect(screen.getByRole("option", {
+      name: /salem.*slow.*RTT 80 ms.*fresco.*0 em voo.*L0-31 de L32.*contexto 8\.192.*perna 256 tokens/i,
+    })).toBeTruthy();
+    expect(screen.getByRole("option", {
+      name: /Cobertura primeiro.*RTT fresco.*carga em voo.*RTT válido por 5min 0s/i,
+    })).toBeTruthy();
   });
 
   it("mostra um estado acionável quando nenhum nó pode iniciar", () => {
@@ -85,8 +103,10 @@ describe("InferenceHeadChoice", () => {
       })),
     });
 
-    expect(screen.getByText("Fallback de RTT")).toBeTruthy();
-    expect(screen.getByText(/carga em voo.*id do nó/i)).toBeTruthy();
-    expect(screen.getAllByText(/vencido/i).length).toBe(2);
+    expect(screen.getByRole("combobox", { name: "Cabeça de inferência" })).toBeTruthy();
+    expect(screen.getByRole("option", {
+      name: /Fallback de RTT.*carga em voo.*id do nó/i,
+    })).toBeTruthy();
+    expect(screen.getAllByRole("option", { name: /vencido/i })).toHaveLength(2);
   });
 });

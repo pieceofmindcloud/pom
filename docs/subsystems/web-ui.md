@@ -238,11 +238,14 @@ ocultos. A chave casa **segmento inteiro**, então
 `/logs` não cobre `/logs-antigos`.
 
 No Chat, o `infer` recebe um recorte próprio por
-`GET /api/ui/infer/heads?model=...`: a caixa **Entrada da inferência** mostra a
-cabeça selecionada e as outras faixas que começam em L0, com RTT, idade e carga
-em voo. A política fica escrita na tela: cobertura primeiro, score ponderado de
-RTT fresco e carga, e empate por id. RTT sem medição fresca aparece como fallback, e um modelo sem cabeça
-ou sem caminho completo produz um aviso legível em vez de uma falha crua. Esse
+`GET /api/ui/infer/heads?model=...`: com duas ou mais candidatas, a tela mostra
+um combo nativo com o mesmo visual do seletor de modelo. Ao abrir o combo, cada
+opção traz nome, id, RTT, frescura, carga em voo, faixa de camadas e capacidade
+de execução; a política de cobertura, RTT fresco, carga e desempate fica no
+próprio menu. A candidata usada aparece marcada, mas a escolha continua sendo
+do planejador do backend. Com uma única cabeça o combo some, pois não há
+decisão para o operador tomar; sem cabeça, a tela mantém um aviso legível. RTT
+sem medição fresca e pipeline incompleto também ficam alcançáveis no menu. Esse
 recorte não abre a lista geral de peers nem oferece autoridade de controle.
 
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A

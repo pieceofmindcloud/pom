@@ -668,8 +668,19 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   pedaço, puras e testadas em `prefix_rule_tests`. A regra é só-acrescentar:
   fora dela, a sessão recomeça, o que custa o reuso do turno e nunca a
   requisição.
-- `evict_retained` - uma sessão retida é cache reclamável: quando falta slot de
-  sequência, ela cede antes de a requisição falhar com "seq pool esgotado".
+- `evict_retained` - despeja a sessão retida menos usada. **Não é mais chamado
+  pelo `alloc_seq`**: trocar na hora o KV quente de uma conversa viva pelo
+  prefill que acabou de chegar era o defeito de produção de 2026-09-08, em que
+  um pedido de 35 caracteres despejava 62 mil tokens e a primeira palavra da
+  conversa passava de 2,7 s para 41,1 s. Hoje só o escalonador o chama, e
+  somente depois de `RETAINED_RECLAIM_GRACE` com um prefill de sessão nova
+  esperando - a conversa quente tem a sua chance de voltar, e nenhuma
+  requisição aceita fica pendurada até o `reap_idle`.
+- `new_session_slots(free_slots, retained)` (`infer_server/core.rs`) - a
+  admissão de sessão nova conta **só sequência livre**. Sessão retida é cache
+  quente, não capacidade: contá-la como slot admitia um prefill que, no worker,
+  só entrava destruindo o prefixo de outra conversa.
+  `SchedulerQueue::oldest_new_session_wait` é o relógio dessa carência.
 - `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho

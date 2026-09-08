@@ -30,6 +30,19 @@ fn record_gateway_span(
     ));
 }
 
+/// Regista o desfecho de uma requisição que termina antes de planear a
+/// pipeline.
+///
+/// Todo pedido aceite tem de deixar exatamente uma linha de desfecho. Sem
+/// isto, as saídas antecipadas desta função eram mudas: o registo mostrava o
+/// pedido a chegar, mostrava o ajuste do limite de saída, e depois nada - nem
+/// `Pipeline planejado`, nem erro. Do lado do cliente isso é um pedido
+/// pendurado, e foi o que pôs o agente em recuo exponencial a repetir o mesmo
+/// pedido em produção a 2026-09-08.
+fn log_early_outcome(outcome: &str, reason: &str) {
+    warn!("⛔ requisição encerrada antes do plano ({outcome}): {reason}");
+}
+
 pub(super) async fn generate_stream_inner(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
@@ -52,6 +65,7 @@ pub(super) async fn generate_stream_inner(
     } = input;
     let budget = budget.normalized();
     if cancellation.is_cancelled() {
+        log_early_outcome("cancelado", "o cliente desistiu antes do início");
         return;
     }
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
@@ -59,6 +73,7 @@ pub(super) async fn generate_stream_inner(
     let validation_wall = wall_clock_ms();
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = prompt_budget_error(&cfg, &prompt) {
+            log_early_outcome("recusado", &error);
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
@@ -141,11 +156,11 @@ pub(super) async fn generate_stream_inner(
     )
     .await
     else {
-        let _ = tx
-            .send(GenEvent::Failed(format!(
-                "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
-            )))
-            .await;
+        let error = format!(
+            "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+        );
+        log_early_outcome("recusado", &error);
+        let _ = tx.send(GenEvent::Failed(error)).await;
         return;
     };
     record_gateway_span(
@@ -165,12 +180,9 @@ pub(super) async fn generate_stream_inner(
             .first()
             .is_some_and(|step| step.node_id == state.network.node_id)
     {
-        let mmproj_path = state
-            .runtime
-            .config()
-            .await
-            .and_then(|cfg| cfg.mmproj_path);
+        let mmproj_path = state.runtime.config().await.and_then(|cfg| cfg.mmproj_path);
         if let Some(error) = crate::openai::image_vision_error(&images, mmproj_path.as_deref()) {
+            log_early_outcome("recusado", error);
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
             return;
         }

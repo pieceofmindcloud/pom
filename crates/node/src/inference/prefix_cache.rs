@@ -129,20 +129,15 @@ impl PrefixCache {
                 )
             }
             None => {
-                // A cache miss must not consume a second KV slot when the
-                // runtime has `max_sessions = 1`. Recycle the least-recently
-                // used idle session; the next prefill resets that sequence
-                // before decoding the new prompt. Busy entries stay intact.
-                let recycled_id = state
-                    .entries
-                    .iter()
-                    .filter(|(_, entry)| !entry.busy)
-                    .min_by_key(|(_, entry)| entry.last_used)
-                    .map(|(id, _)| id.clone());
-                let session_id = recycled_id
-                    .and_then(|id| state.entries.remove(&id).map(|entry| entry.session_id))
-                    .unwrap_or(new_session_id);
-                (None, session_id, String::new(), 0)
+                // Um miss estreia com identidade própria. Reciclar aqui a
+                // identidade de uma sessão ociosa era o que fazia um pedido
+                // avulso adotar o `session_id` de uma conversa quente: o
+                // prefixo dela ia embora com o prefill novo e o follow-up
+                // dela voltava com "rewind recusado: sessão desconhecida".
+                // Quem decide se há lugar para uma sessão nova é a admissão
+                // do escalonador (`new_session_slots`), não o cache. As
+                // entradas ociosas continuam limitadas por LRU no `commit`.
+                (None, new_session_id, String::new(), 0)
             }
         };
 
@@ -437,7 +432,8 @@ impl PrefixDiskIndex {
             }
             keep
         });
-        while state.iter().map(|entry| entry.bytes).sum::<u64>() > self.max_bytes && state.len() > 1 {
+        while state.iter().map(|entry| entry.bytes).sum::<u64>() > self.max_bytes && state.len() > 1
+        {
             if let Some(idx) = state
                 .iter()
                 .enumerate()
@@ -545,16 +541,52 @@ mod tests {
     }
 
     #[test]
-    fn a_miss_recycles_an_idle_session_instead_of_needing_a_second_slot() {
+    fn a_miss_keeps_the_retained_session_available_for_a_later_hit() {
         let cache = PrefixCache::new(4);
         cache
             .acquire(key(), "system", "old-session".into())
             .commit("system".into(), 2);
 
-        let lease = cache.acquire(key(), "unrelated", "new-session".into());
-        assert!(!lease.is_hit());
-        assert_eq!(lease.session_id(), "old-session");
-        lease.discard();
+        let miss = cache.acquire(key(), "unrelated", "new-session".into());
+        assert!(!miss.is_hit());
+        assert_eq!(miss.session_id(), "new-session");
+        miss.discard();
+
+        let hit = cache.acquire(key(), "system\nnext", "follow-up".into());
+        assert!(hit.is_hit());
+        assert_eq!(hit.session_id(), "old-session");
+        hit.discard();
+    }
+
+    /// A corrida do incidente de 2026-09-08: um agente com 62 mil tokens
+    /// quentes e, no meio do turno, um pedido avulso de 35 caracteres
+    /// (geração de título). O pedido pequeno estreava com a identidade da
+    /// sessão grande, e o follow-up dela voltava com "rewind recusado: sessão
+    /// desconhecida" e reingeria tudo do zero.
+    #[test]
+    fn a_small_concurrent_request_does_not_take_over_a_hot_sessions_identity() {
+        let cache = PrefixCache::new(4);
+        let agent_prompt = "system\nferramentas\nconversa longa";
+        cache
+            .acquire(key(), agent_prompt, "agent-session".into())
+            .commit(agent_prompt.into(), 62_380);
+
+        // Pedido avulso: uma mensagem, zero ferramentas, prompt curto.
+        let title = cache.acquire(key(), "resuma isto num título", "title-session".into());
+        assert!(!title.is_hit());
+        assert_eq!(title.session_id(), "title-session");
+        title.discard();
+
+        // O turno seguinte do agente reencontra o próprio prefixo inteiro.
+        let follow_up = cache.acquire(
+            key(),
+            &format!("{agent_prompt}\nmais uma pergunta"),
+            "outra".into(),
+        );
+        assert!(follow_up.is_hit());
+        assert_eq!(follow_up.session_id(), "agent-session");
+        assert_eq!(follow_up.cached_tokens, 62_380);
+        follow_up.discard();
     }
 
     #[test]
@@ -591,7 +623,14 @@ mod tests {
         let hops = vec!["h1".to_string(), "h2".to_string()];
         // O longo entra primeiro; o curto depois **não** é supersedido (curto
         // não cobre longo), então os dois coexistem para este teste de match.
-        idx.record("m", &hops, "h_turn2", "system\nuser1\nassist1\nuser2", 8, 1_000);
+        idx.record(
+            "m",
+            &hops,
+            "h_turn2",
+            "system\nuser1\nassist1\nuser2",
+            8,
+            1_000,
+        );
         idx.record("m", &hops, "h_sys", "system", 2, 1_000);
 
         // Dois casam; o mais longo vence.
@@ -624,7 +663,10 @@ mod tests {
         assert!(idx.record("m", &r1, "a", "sys", 1, 1_000).is_empty());
         // Turno seguinte da mesma linhagem: solta o ancestral "a".
         assert_eq!(idx.record("m", &r1, "b", "sys\nu1", 3, 1_000), vec!["a"]);
-        assert_eq!(idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000), vec!["b"]);
+        assert_eq!(
+            idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000),
+            vec!["b"]
+        );
         assert_eq!(idx.stats().0, 1, "uma linhagem, um snapshot");
 
         // Outra rota não é tocada.
@@ -668,7 +710,10 @@ mod tests {
             st.iter_mut().for_each(|e| e.updated_at -= 10);
         }
         let dropped = short.record("m", &["h".to_string()], "new", "p-new", 1, 10);
-        assert!(dropped.contains(&"old".to_string()), "dropped = {dropped:?}");
+        assert!(
+            dropped.contains(&"old".to_string()),
+            "dropped = {dropped:?}"
+        );
         assert_eq!(short.stats().0, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

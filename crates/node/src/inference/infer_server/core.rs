@@ -716,6 +716,24 @@ pub(super) fn spawn_scheduler(
     handle
 }
 
+/// Quanto tempo um prefill de sessão nova espera antes de reclamar o slot de
+/// uma sessão retida.
+///
+/// É o preço de um pedido avulso contra o prefixo de uma conversa viva. Curto
+/// demais e voltamos ao defeito de produção - um pedido de 35 caracteres
+/// despejando 62 mil tokens quentes e reingerindo tudo do zero. Longo demais e
+/// uma segunda janela do cliente demora a ser servida.
+pub(super) const RETAINED_RECLAIM_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Quantas sessões **novas** cabem agora.
+///
+/// Só sequência realmente livre conta. Sessão retida é KV quente de uma
+/// conversa viva, não capacidade: contá-la como slot livre era admitir um
+/// prefill que, no worker, só entrava despejando o prefixo de outra conversa.
+pub(super) fn new_session_slots(free_slots: usize, _retained: usize) -> usize {
+    free_slots
+}
+
 pub(super) async fn run_scheduler(
     mut rx: mpsc::Receiver<InferenceCommand>,
     state: SharedState,
@@ -763,15 +781,19 @@ pub(super) async fn run_scheduler(
         };
 
         // Admissão de sessão: um prefill de sessão nova só entra se houver slot
-        // - livre, ou uma sessão retida despejável (`evict_retained`). Sem
-        // slot, o item fica na fila FIFO em vez de ir ao worker e voltar com
-        // "seq pool esgotado".
-        let (present, new_slots) = {
+        // realmente livre. Sessão retida é cache quente, não capacidade - ver
+        // `new_session_slots`. Sem slot, o item fica na fila FIFO em vez de ir
+        // ao worker e voltar com "seq pool esgotado".
+        let (present, new_slots, retained) = {
             let guard = state.lock().unwrap_or_else(|e| e.into_inner());
             let present: std::collections::HashSet<String> =
                 guard.sessions.keys().cloned().collect();
             let retained = guard.sessions.values().filter(|s| s.retained).count();
-            (present, guard.seq_pool.len() + retained)
+            (
+                present,
+                new_session_slots(guard.seq_pool.len(), retained),
+                retained,
+            )
         };
         let is_existing = |sid: &str| present.contains(sid);
 
@@ -797,8 +819,25 @@ pub(super) async fn run_scheduler(
         }
 
         if selection.items.is_empty() {
-            // Só há prefill de sessão nova esperando slot. Aguarda trabalho
-            // novo OU um slot liberado, sem busy-loop.
+            // Só há prefill de sessão nova esperando slot. Se a espera já
+            // passou da carência e o que segura o slot é uma sessão retida
+            // (cache, não trabalho vivo), reclama uma: a conversa quente teve
+            // a sua chance de voltar, e nenhuma requisição aceita pode ficar
+            // pendurada até o `reap_idle` de 15 minutos.
+            let waited = queue.oldest_new_session_wait(Instant::now(), is_existing);
+            if retained > 0 && waited.is_some_and(|w| w >= RETAINED_RECLAIM_GRACE) {
+                let reclaimed = {
+                    let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.evict_retained()
+                };
+                if reclaimed {
+                    continue;
+                }
+            }
+
+            // Aguarda trabalho novo OU um slot liberado, sem busy-loop. O
+            // `sleep` fecha o laço da carência: sem ele, uma fila parada não
+            // teria quem reavaliasse o prazo.
             stats.queue_depth.store(queue.len(), Ordering::Relaxed);
             tokio::select! {
                 command = rx.recv() => match command {
@@ -808,6 +847,7 @@ pub(super) async fn run_scheduler(
                     None => return,
                 },
                 _ = slot_freed.notified() => {}
+                _ = tokio::time::sleep(RETAINED_RECLAIM_GRACE), if waited.is_some() => {}
             }
             continue;
         }
@@ -978,6 +1018,12 @@ mod tests {
     fn health_reports_the_context_window_per_session() {
         assert_eq!(context_per_session(400_000, 4), 100_000);
         assert_eq!(context_per_session(100_000, 0), 100_000);
+    }
+
+    #[test]
+    fn retained_sessions_do_not_create_capacity_for_a_new_prefill() {
+        assert_eq!(new_session_slots(0, 1), 0);
+        assert_eq!(new_session_slots(2, 1), 2);
     }
 
     #[test]

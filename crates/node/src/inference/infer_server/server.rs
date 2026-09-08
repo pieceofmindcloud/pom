@@ -90,12 +90,13 @@ impl InferState {
         if self.seq_pool.is_empty() {
             self.reap_idle();
         }
-        if self.seq_pool.is_empty() {
-            // Uma sessão retida é só cache de prompt entre turnos: devolvê-la
-            // custa o reuso de um turno, e não devolvê-la custa a requisição
-            // inteira ("seq pool esgotado"). O cache cede primeiro.
-            self.evict_retained();
-        }
+        // Aqui não se despeja sessão retida. Uma sessão retida é KV quente de
+        // uma conversa viva - dezenas de milhares de tokens - e trocá-la na
+        // hora pelo prefill que chegou agora era o que fazia um pedido de 35
+        // caracteres reingerir 60 mil tokens do zero. Quem admite uma sessão
+        // nova é o escalonador, que só conta slot realmente livre
+        // (`new_session_slots`) e só reclama uma sessão retida depois de
+        // `RETAINED_RECLAIM_GRACE` esperando (`reclaim_retained_slot`).
         if self.seq_pool.is_empty() {
             return None;
         }
@@ -251,8 +252,8 @@ impl InferState {
         let _ = session.finish_token_stream();
         session.retained = true;
         session.last_used = Instant::now();
-        // Uma sessão retida vira slot reclamável (`evict_retained`): um prefill
-        // de sessão nova que esperava pode agora entrar.
+        // Uma sessão retida é slot reclamável só depois da carência: acorda o
+        // escalonador para ele reavaliar quem espera.
         self.signal_slot_freed();
         Some(prompt_len)
     }
@@ -715,10 +716,7 @@ pub async fn run(
         .route("/v1/session/rollback", post(handle_rollback))
         .route("/v1/session/slot", post(handle_slot));
     let inference_routes = if let Some(auth) = auth.clone() {
-        inference_routes.layer(middleware::from_fn_with_state(
-            auth,
-            require_inference_auth,
-        ))
+        inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
         inference_routes
     };
@@ -738,10 +736,7 @@ pub async fn run(
         post(handle_link).layer(DefaultBodyLimit::disable()),
     );
     let link_routes = if let Some(auth) = auth.clone() {
-        link_routes.layer(middleware::from_fn_with_state(
-            auth,
-            require_inference_auth,
-        ))
+        link_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
         link_routes
     };
@@ -752,10 +747,7 @@ pub async fn run(
         post(handle_tp_reduce).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
     );
     let tp_routes = if let Some(auth) = auth {
-        tp_routes.layer(middleware::from_fn_with_state(
-            auth,
-            require_inference_auth,
-        ))
+        tp_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
         tp_routes
     };

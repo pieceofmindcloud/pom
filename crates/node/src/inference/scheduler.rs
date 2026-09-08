@@ -132,6 +132,29 @@ impl<T> SchedulerQueue<T> {
         Ok(())
     }
 
+    /// Há quanto tempo espera o prefill de sessão nova mais antigo da fila.
+    ///
+    /// É o relógio da carência de reclamação: enquanto ninguém espera, uma
+    /// sessão retida nunca é despejada; passada a carência, o escalonador
+    /// reclama o slot para que a requisição tenha desfecho em vez de ficar
+    /// pendurada esperando um slot que só sairia do `reap_idle`.
+    pub fn oldest_new_session_wait(
+        &self,
+        now: Instant,
+        is_existing: impl Fn(&str) -> bool,
+    ) -> Option<Duration> {
+        self.pending
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.class,
+                    WorkClass::PrefillTokens | WorkClass::PrefillHidden
+                ) && !is_existing(item.session_id.as_str())
+            })
+            .map(|item| now.saturating_duration_since(item.enqueued_at))
+            .max()
+    }
+
     /// Seleciona um microbatch da classe `class`, respeitando os limites e a
     /// **admissão de sessão**: um `Prefill*` para uma sessão que ainda não
     /// existe no motor (`is_existing` devolve `false`) consome um dos
@@ -231,7 +254,11 @@ mod tests {
         let existing = |sid: &str| sid == "live";
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, existing, 0);
         assert_eq!(
-            batch.items.iter().map(|i| i.session_id.as_str()).collect::<Vec<_>>(),
+            batch
+                .items
+                .iter()
+                .map(|i| i.session_id.as_str())
+                .collect::<Vec<_>>(),
             ["live"],
             "só a continuação da sessão viva entra"
         );
@@ -240,11 +267,40 @@ mod tests {
         // Abre um slot: o próximo da fila entra, o outro continua esperando.
         let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 1);
         assert_eq!(
-            batch.items.iter().map(|i| i.session_id.as_str()).collect::<Vec<_>>(),
+            batch
+                .items
+                .iter()
+                .map(|i| i.session_id.as_str())
+                .collect::<Vec<_>>(),
             ["wait-1"],
             "FIFO: wait-1 antes de wait-2"
         );
         assert_eq!(q.len(), 1);
+    }
+
+    /// O outro lado da corrida do incidente: com `max_sessions=1` e a sessão
+    /// do agente retida, o pedido pequeno não é admitido - fica na fila com a
+    /// espera medida, em vez de entrar despejando o prefixo de 62 mil tokens.
+    #[test]
+    fn prefill_novo_espera_em_vez_de_despejar_a_sessao_retida() {
+        let mut q = SchedulerQueue::new(SchedulerConfig::test(4, 1));
+        q.try_push(QueueItem::test("title", WorkClass::PrefillTokens, 35))
+            .unwrap();
+
+        // Nenhum slot livre: a sessão retida do agente é cache quente, não
+        // capacidade, então `new_session_slots` devolveu zero.
+        let batch = q.take_batch(Instant::now(), WorkClass::PrefillTokens, |_| false, 0);
+        assert!(batch.items.is_empty(), "o pedido pequeno não é admitido");
+        assert_eq!(q.len(), 1, "e continua na fila, sem ser recusado");
+
+        // A espera é observável, que é o relógio da carência de reclamação.
+        let waited = q.oldest_new_session_wait(Instant::now(), |_| false);
+        assert!(waited.is_some(), "a espera do prefill novo é medida");
+
+        // Uma sessão já viva não é contada como espera de sessão nova.
+        assert!(q
+            .oldest_new_session_wait(Instant::now(), |_| true)
+            .is_none());
     }
 
     #[test]

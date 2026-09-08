@@ -284,6 +284,14 @@ profile policy remains the effective authorization boundary.
   (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
   máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
+- `gateway/generation.rs` - `log_early_outcome` garante que toda requisição
+  aceita deixe **exatamente uma** linha de desfecho. As saídas antecipadas de
+  `generate_stream_inner` (cancelamento antes do início, orçamento de prompt,
+  nenhum pipeline válido, visão sem projetor) eram mudas: o registo mostrava o
+  pedido a chegar e o ajuste do limite de saída, e depois nada - nem
+  `Pipeline planejado`, nem erro. Para o cliente isso é um pedido pendurado, e
+  foi o que pôs um agente em recuo exponencial a repetir o mesmo pedido em
+  produção a 2026-09-08.
 - `profile.rs` - `NodeProfile` is the durable product profile and the one source
   for network visibility and profile transitions. The web UI serializes it
   through `GET /api/ui/node`. Infer nodes can read a local-only network view

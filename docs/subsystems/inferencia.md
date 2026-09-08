@@ -958,8 +958,10 @@ remoções possíveis hoje são:
 - reinício do processo, que recria `sessions` vazio;
 - coleta de ociosidade em `reap_idle`, depois de 900 segundos sem uso, chamada
   quando `alloc_seq` precisa de um slot;
-- pressão de capacidade: `max_sessions` é 1 por padrão, e `alloc_seq` despeja
-  primeiro a sessão retida menos usada em `evict_retained`;
+- pressão de capacidade: `max_sessions` é 1 por padrão. Até 2026-09-08 o
+  `alloc_seq` despejava na hora a sessão retida menos usada; hoje não despeja
+  nada, e só o escalonador reclama uma sessão retida, depois da carência (ver
+  "Um pedido avulso não despeja uma conversa quente");
 - remoção ativa por `finish`, usada pelo `/v1/session/release`, pelo cleanup de
   cancelamento/erro e pelo próprio despejo de capacidade.
 
@@ -973,6 +975,40 @@ processo ou remoção explícita/concurrente durante o prefill; TTL e capacidade
 explicam principalmente o cache de prefixo ficar apontando para uma sessão
 perdida entre turnos. O pedido novo funcionar logo depois no mesmo peer prova
 que ele voltou a atender, mas não distingue reinício de remoção.
+
+#### Um pedido avulso não despeja uma conversa quente
+
+Defeito de produção apanhado na ksia em 2026-09-08, com o captain a usar um
+agente de código contra o POM. Um pedido de 35 caracteres, uma mensagem e zero
+ferramentas - geração de título de conversa - despejava o contexto de 62 mil
+tokens do agente. A primeira palavra passava de 2,7 s para 41,1 s e o
+aproveitamento do cache caía de 99% para zero. No mesmo registo: 29 despejos de
+prefixo e 10 recusas de rewind.
+
+Eram dois mecanismos a somar-se, um em cada ponta:
+
+- **No gateway**, um miss do `PrefixCache` reciclava a identidade da sessão
+  ociosa menos usada. O pedido pequeno estreava com o `session_id` da conversa
+  do agente, e o follow-up dela voltava com "rewind recusado: sessão
+  desconhecida". Hoje um miss estreia com identidade própria; as entradas
+  ociosas continuam limitadas por LRU no `commit`, que é quem sempre limitou o
+  tamanho do cache.
+- **No peer**, `alloc_seq` chamava `evict_retained` assim que o `seq_pool`
+  esvaziava, trocando o KV quente pelo prefill recém-chegado. Hoje a admissão é
+  do escalonador: `new_session_slots` conta somente sequência realmente livre,
+  e sessão retida não é capacidade. Um prefill de sessão nova sem slot espera
+  na fila FIFO, e só depois de `RETAINED_RECLAIM_GRACE` (5 s) o escalonador
+  reclama uma sessão retida - para que nenhuma requisição aceita fique
+  pendurada até o `reap_idle` de 900 s.
+
+Com `max_sessions = 1` continua a existir uma só sequência: duas conversas
+verdadeiramente simultâneas alternam-se, e a segunda espera a carência. O que
+deixou de acontecer é a conversa quente ser destruída por um pedido trivial que
+chegou no meio do turno. Para concorrência real o operador aumenta
+`max_sessions`, que multiplica a reserva de KV (ver `total_context_tokens`).
+
+Bancadas: `prefix_cache::tests::a_small_concurrent_request_does_not_take_over_a_hot_sessions_identity`,
+`scheduler::tests::prefill_novo_espera_em_vez_de_despejar_a_sessao_retida`.
 
 Conclusão: a perda da sessão é possível e, em parte, intencional no ciclo de
 vida atual, mas não há telemetria suficiente para dizer qual dos eventos ocorreu

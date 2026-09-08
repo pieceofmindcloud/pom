@@ -102,6 +102,10 @@ frame multi-item e sincronizacao de lotes no Tensor Parallelism).
 `2026-08-24-chat-telemetria-design.md` registra o inventário do fio e a decisão
 de manter os dados no `x_pom`, no `/health` e numa rota autenticada de RTT, sem
 mudar frame entre peers ou planner.
+`2026-09-08-inferencia-trace-outside-node-design.md` registra o desenho do trace
+por inferência, os relógios locais, a matemática de spans paralelos e a
+decomposição de `outside-node`/TTFT; o plano homônimo cobre a execução
+incremental e a publicação.
 `2026-08-26-auditoria-de-requisicoes-design.md` e o plano homônimo registram a
 auditoria persistente de prompts em SQLite, a identidade não secreta da chave,
 o FTS5 e o ciclo em duas etapas do registro.

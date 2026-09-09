@@ -124,6 +124,21 @@ pub struct NetworkSettings {
     pub location: Option<NetworkLocation>,
 }
 
+/// Validate the network block wherever it is edited, not only during setup.
+/// Public networks need the coarse geographic key because discovery groups by
+/// country and city before measuring peer latency.
+pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
+    if settings.visibility == NetworkVisibility::Public {
+        if settings.public_name.trim().is_empty() {
+            anyhow::bail!("redes públicas precisam de um nome público");
+        }
+        if settings.country_code.trim().is_empty() || settings.city.trim().is_empty() {
+            anyhow::bail!("redes públicas precisam de país e cidade");
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourcePolicy {
     /// Percentage of memory kept available for the operating system.
@@ -985,6 +1000,19 @@ mod tests {
         assert_eq!(parsed.thermal.limit_c, 82.0);
         assert_eq!(parsed.thermal.hysteresis_c, 7.0);
         assert_eq!(parsed.thermal.cooldown_secs, 45);
+    }
+
+    #[test]
+    fn public_network_settings_require_country_and_city() {
+        let settings = NetworkSettings {
+            public_name: "Rede aberta".into(),
+            visibility: NetworkVisibility::Public,
+            ..Default::default()
+        };
+
+        let error = validate_network_settings(&settings)
+            .expect_err("uma rede pública sem localização não deve ser salva");
+        assert!(error.to_string().contains("país e cidade"));
     }
 
     #[test]

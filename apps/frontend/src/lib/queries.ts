@@ -38,6 +38,7 @@ import type {
   InferenceHeadsResponse,
   Job,
   NodeInfo,
+  NetworkInfoView,
   NetworkOffer,
   PathsResponse,
   PeerCatalog,
@@ -80,6 +81,7 @@ export const keys = {
   offers: ["offers"] as const,
   adminAuthority: ["admin-authority"] as const,
   trustAnchor: ["trust-anchor"] as const,
+  networkInfo: ["network-info"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
@@ -485,6 +487,15 @@ export function useTrustAnchor() {
   });
 }
 
+export function useNetworkInfo(enabled = true) {
+  return useQuery({
+    queryKey: keys.networkInfo,
+    queryFn: () => api.get<NetworkInfoView>("/api/ui/network/info"),
+    enabled,
+    refetchInterval: 10_000,
+  });
+}
+
 export function useAdminNodes(enabled = true) {
   return useQuery({
     queryKey: keys.adminNodes,
@@ -657,6 +668,7 @@ export function invalidateAfterAction(qc: QueryClient) {
     keys.jobs,
     keys.offers,
     keys.adminAuthority,
+    keys.networkInfo,
     keys.adminNodes,
     keys.models,
     keys.remoteModelProviderStatus,

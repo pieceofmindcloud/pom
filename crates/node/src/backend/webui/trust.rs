@@ -71,6 +71,17 @@ pub struct InstallAnchorRequest {
     pub fingerprint: String,
 }
 
+/// Materials an administrator can hand to the operator of another node.
+/// The trust document is public chain data; the connection key is returned
+/// only for a network that still uses the private shared secret.
+#[derive(Debug, Serialize)]
+pub struct TrustShareView {
+    pub filename: String,
+    pub document: String,
+    pub connection_key: Option<String>,
+    pub visibility: crate::config::NetworkVisibility,
+}
+
 #[derive(Debug)]
 pub(crate) enum AnchorValidationError {
     InvalidDocument(anyhow::Error),
@@ -209,6 +220,49 @@ pub(super) async fn install_trust_anchor(
     }
 }
 
+pub(crate) async fn trust_share(State(state): State<GatewayState>) -> Response {
+    let profile = state.auth.read().await.profile;
+    if state
+        .admin_trust
+        .effective_authority(&state.authority_principal, profile)
+        .is_none()
+    {
+        return refusal(
+            StatusCode::FORBIDDEN,
+            "admin_authority_required",
+            "somente um administrador autorizado pode compartilhar a confiança",
+        );
+    }
+
+    let (visibility, connection_key) = {
+        let config = state.auth.read().await;
+        (
+            config.network.visibility,
+            (config.network.visibility != crate::config::NetworkVisibility::Public)
+                .then(|| config.connection_key.clone())
+                .filter(|key| !key.is_empty()),
+        )
+    };
+    let document = state.admin_trust.document();
+    let document = match serde_json::to_string_pretty(&document) {
+        Ok(document) => document,
+        Err(error) => {
+            return refusal(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "trust_document_unavailable",
+                &format!("não foi possível serializar a raiz de confiança: {error}"),
+            )
+        }
+    };
+    Json(TrustShareView {
+        filename: crate::config::admin_trust_filename(),
+        document,
+        connection_key,
+        visibility,
+    })
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +311,29 @@ mod tests {
         let mut state = state_with(node_id, vec![]).await;
         state.admin_trust = Arc::new(crate::admin_trust::AdminTrust::empty());
         state
+    }
+
+    #[tokio::test]
+    async fn admin_can_download_trust_and_private_connection_secret() {
+        let state = state_with("ksia", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        let mut request = HttpRequest::get("/api/ui/network/trust-share")
+            .header("authorization", "Bearer chave")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
+        let response = app(state)
+            .oneshot(request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert!(body["filename"].as_str().unwrap().ends_with("trust.json"));
+        assert!(body["document"].as_str().unwrap().contains("anchor"));
+        assert_eq!(body["connection_key"], "chave");
     }
 
     fn instalar(peer: &str, document: &str, fingerprint: &str) -> HttpRequest<Body> {

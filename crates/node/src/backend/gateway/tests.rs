@@ -2367,6 +2367,7 @@ pub(crate) mod testkit {
             model_service: Arc::new(crate::model_provider_backend::ModelService::new(Arc::new(
                 crate::huggingface::HuggingFaceProvider::new(),
             ))),
+            pkarr_publisher: None,
         }
     }
 

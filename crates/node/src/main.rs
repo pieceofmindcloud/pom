@@ -925,7 +925,7 @@ async fn async_main(
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
     let network_chat = stack.network_chat;
-    let pkarr_node = stack.pkarr_node;
+    let pkarr_node = stack.pkarr_node.map(Arc::new);
     let disc_dial_tx = stack.disc_dial_tx;
     let p2p_port = net.bind_addr.port();
     display::print_node_info(&node_id, &pubkey, p2p_port);
@@ -1010,6 +1010,17 @@ async fn async_main(
         let mut a = assignment_shared.write().await;
         *a = Some(assignment.clone());
     }
+
+    let pkarr_publisher = pkarr_node.as_ref().map(|node| {
+        Arc::new(crate::gateway::PkarrPublishHandle::new(
+            node.clone(),
+            pkarr_multiaddr.clone(),
+            inference_port,
+            profile.name.clone(),
+            assignment_shared.clone(),
+            args.serve_relay,
+        ))
+    });
 
     net.announce(Some(&assignment)).await?;
 
@@ -1126,6 +1137,7 @@ async fn async_main(
                 )),
                 hf_token_store,
             )),
+            pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1225,42 +1237,13 @@ async fn async_main(
     }
 
     // ── Publish pkarr record and schedule 30-min republish ───────────────────
-    let serve_relay = args.serve_relay;
-    if let Some(pn) = pkarr_node {
-        let pn = std::sync::Arc::new(pn);
-        let addr = pkarr_multiaddr.clone();
-        let inf_port = inference_port;
-        let model_name_pk = profile.name.clone();
-        let asgn_pk = assignment_shared.clone();
-        let geo_label_pk = app_config.network.geo_label.clone();
-
+    if let Some(publisher) = pkarr_publisher {
         // Initial publish (best-effort, does not block startup)
         {
-            let pn2 = pn.clone();
-            let addr2 = addr.clone();
-            let mn2 = model_name_pk.clone();
-            let asgn2 = asgn_pk.clone();
-            let geo2 = geo_label_pk.clone();
+            let publisher = publisher.clone();
+            let geo_label = app_config.network.geo_label.clone();
             tokio::spawn(async move {
-                let (start_l, end_l, total_l) = {
-                    let a = asgn2.read().await;
-                    a.as_ref()
-                        .map(|asgn| (asgn.start_layer, asgn.end_layer, asgn.total_layers))
-                        .unwrap_or((0, 0, 0))
-                }; // guard dropped here
-                if let Err(e) = pn2
-                    .publish(
-                        &addr2,
-                        inf_port,
-                        &mn2,
-                        start_l,
-                        end_l,
-                        total_l,
-                        serve_relay,
-                        (!geo2.is_empty()).then_some(geo2.as_str()),
-                    )
-                    .await
-                {
+                if let Err(e) = publisher.publish_geo_label(&geo_label).await {
                     warn!("pkarr initial publish failed: {}", e);
                 }
             });
@@ -1272,26 +1255,10 @@ async fn async_main(
             ticker.tick().await; // skip first immediate tick
             loop {
                 ticker.tick().await;
-                let (start_l, end_l, total_l) = {
-                    let a = asgn_pk.read().await;
-                    match *a {
-                        Some(ref asgn) => (asgn.start_layer, asgn.end_layer, asgn.total_layers),
-                        None => continue,
-                    }
-                }; // guard dropped here
-                if let Err(e) = pn
-                    .publish(
-                        &addr,
-                        inf_port,
-                        &model_name_pk,
-                        start_l,
-                        end_l,
-                        total_l,
-                        serve_relay,
-                        (!geo_label_pk.is_empty()).then_some(geo_label_pk.as_str()),
-                    )
-                    .await
-                {
+                let geo_label = crate::config::Config::load()
+                    .map(|config| config.network.geo_label)
+                    .unwrap_or_default();
+                if let Err(e) = publisher.publish_geo_label(&geo_label).await {
                     warn!("pkarr republish failed: {}", e);
                 }
             }
@@ -1891,28 +1858,26 @@ async fn start_gateway_only(
 
     // A gateway-only public admin still needs a pkarr record so the public
     // network directory can find it before a model is deployed.
-    let pkarr_node = stack.pkarr_node;
+    let pkarr_node = stack.pkarr_node.map(Arc::new);
     let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
         advertise_addr.as_deref(),
         pkarr_node::detect_local_ip(),
         app_config.p2p_port,
     );
-    if let Some(pn) = pkarr_node {
+    let pkarr_publisher = pkarr_node.as_ref().map(|node| {
+        Arc::new(crate::gateway::PkarrPublishHandle::new(
+            node.clone(),
+            pkarr_multiaddr.clone(),
+            None,
+            String::new(),
+            assignment_shared.clone(),
+            false,
+        ))
+    });
+    if let Some(publisher) = pkarr_publisher.clone() {
         let geo_label = app_config.network.geo_label.clone();
         tokio::spawn(async move {
-            if let Err(error) = pn
-                .publish(
-                    &pkarr_multiaddr,
-                    None,
-                    "",
-                    0,
-                    0,
-                    0,
-                    false,
-                    (!geo_label.is_empty()).then_some(geo_label.as_str()),
-                )
-                .await
-            {
+            if let Err(error) = publisher.publish_geo_label(&geo_label).await {
                 warn!("pkarr gateway-only publish failed: {error}");
             }
         });
@@ -2023,6 +1988,7 @@ async fn start_gateway_only(
             )),
             hf_token_store,
         )),
+        pkarr_publisher,
     };
 
     info!(

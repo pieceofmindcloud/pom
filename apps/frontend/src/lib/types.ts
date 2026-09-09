@@ -231,6 +231,42 @@ export interface NodeInfo {
   thermal: ThermalPolicy;
 }
 
+export type NetworkVisibility = "local" | "private" | "public";
+export type NetworkAccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
+
+export interface NetworkLocation {
+  latitude: number;
+  longitude: number;
+  accuracy_m?: number | null;
+}
+
+export interface NetworkSettings {
+  public_name: string;
+  organization: string;
+  description: string;
+  rules: string;
+  channels: string;
+  country_code: string;
+  country_name: string;
+  city: string;
+  geo_label: string;
+  visibility: NetworkVisibility;
+  access_policy: NetworkAccessPolicy;
+  location: NetworkLocation | null;
+}
+
+export interface NetworkInfoView {
+  network: NetworkSettings;
+  can_edit: boolean;
+}
+
+export interface TrustShareView {
+  filename: string;
+  document: string;
+  connection_key: string | null;
+  visibility: NetworkVisibility;
+}
+
 export type NetworkChatKind = "text" | "file" | "typing" | "typing_stopped";
 
 export interface NetworkChatRequest {

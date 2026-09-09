@@ -951,6 +951,10 @@ nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
 nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
+network.accessAnyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
+network.accessAuthorized,Authorized people,Pessoas autorizadas
+network.accessLocalOnly,This machine only,Apenas esta máquina
+network.accessPolicy,Who can access,Quem pode acessar
 network.addrEffective,Currently advertising,Anunciando agora
 network.addrHint,"Leave empty to auto-detect (a peer-observed public address, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado via libp2p, senão o endereço de rede local desta máquina)."
 network.addrLabel,Pinned address,Endereço fixado
@@ -974,16 +978,35 @@ network.blockFailed,The node was not blocked,O nó não foi bloqueado
 network.blockTitle,Block {hostname}?,Bloquear {hostname}?
 network.blocked,Node blocked,Nó bloqueado
 network.blockedLabel,blocked,bloqueado
+network.channels,Discord or Telegram,Discord ou Telegram
+network.city,City,Cidade
+network.cityRequired,Required for a public network,Obrigatório para uma rede pública
 network.connected,connected,conectado
+network.connectionKey,Connection key,Chave de conexão
+network.copied,Copied,Copiado
+network.copy,Copy,Copiar
+network.country,Country,País
+network.countryCode,Country code,Código do país
+network.countryCodeHint,Use the two-letter country code,Use o código de duas letras do país
+network.countryRequired,Required for a public network,Obrigatório para uma rede pública
+network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
+network.download,Download,Baixar
+network.geoLabel,Discovery label,Rótulo de descoberta
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."
 network.inferPromotionDetail,This node sees only itself on the network. Promote it when you want it to share its hardware.,Este nó enxerga somente a si mesmo na rede. Promova-o quando quiser que ele compartilhe o hardware.
 network.inferRequestDetail,This node can request access to the network. A principal or secondary administrator must approve the request from the notification bell.,Este nó pode pedir acesso à rede. O principal ou um admin secundário precisa aprovar o pedido pelo sino de notificações.
+network.infoSave,Save network details,Salvar detalhes da rede
+network.infoSaveFailed,Could not save network details,Não foi possível salvar os detalhes da rede
+network.infoSaved,Network details saved,Detalhes da rede salvos
+network.infoSavedDetail,Peers will receive the new information and public discovery will be refreshed.,Os peers receberão as novas informações e a descoberta pública será atualizada.
 network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}}","{count}{count, plural, =1 { nó conhecido} other { nós conhecidos}}"
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
+network.location,Location,Localização
+network.locationCoordinates,"{latitude}, {longitude}","{latitude}, {longitude}"
 network.logsDisable,Turn logs off,Desligar logs
 network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
@@ -1010,14 +1033,21 @@ network.networkChatPropagates,No restart needed. Other nodes confirm the policy 
 network.networkChatState,Network chat,Chat da rede
 network.networkChatSubtitle,A low-priority conversation channel for the participants in this network.,Um canal de conversa de baixa prioridade para os participantes desta rede.
 network.networkChatTitle,Network chat,Chat da rede
+network.networkInfoEditSubtitle,These details are shared with every peer. You can edit them because this node is an authorized administrator.,Estas informações são compartilhadas com todos os peers. Você pode editá-las porque este nó é um administrador autorizado.
+network.networkInfoEyebrow,Network information,Informações da rede
+network.networkInfoReadOnlySubtitle,"These details are shared with every peer. This view is read-only on this node.","Estas informações são compartilhadas com todos os peers. Neste nó, a visualização é somente leitura."
+network.networkInfoTitle,About this network,Sobre esta rede
 network.noAddress,no address,sem endereço
 network.noNodes,No known nodes,Nenhum nó conhecido
 network.noNodesDetail,"Not even this machine appears, which usually means it has not announced itself yet.","Nem esta máquina aparece, o que normalmente quer dizer que ela ainda não está anunciando."
 network.nodePromoted,Node promoted,Node promovido
 network.nodePromotedDetail,The administrator profile is now active on the selected machine.,O perfil Administrador agora está ativo na máquina selecionada.
+network.notProvided,Not provided,Não informado
+network.notPublished,Not published,Não publicado
 network.offlineDetail,Off the network: stopped announcing and forgot known peers.,Fora da rede: parou de anunciar e esqueceu os peers que conhecia.
 network.onlineDetail,"On the network, announcing every five seconds.","Na rede, anunciando a cada cinco segundos."
 network.operationFailed,The node did not accept the operation,A operação não foi aceita pelo nó
+network.organization,Organization,Organização
 network.portValues,P2P {p2p} · gateway {gateway} · inference {inference},P2P {p2p} · gateway {gateway} · inferência {inference}
 network.ports,Ports,Portas
 network.profile,Profile,Perfil
@@ -1028,6 +1058,11 @@ network.promoteSelf,Become a node,Promover a node
 network.promoted,Node profile enabled,Perfil node ativado
 network.promotedDetail,This machine now shares its hardware with the network.,Esta máquina agora compartilha o hardware com a rede.
 network.promotionFailed,The profile promotion was refused,A promoção de perfil foi recusada
+network.publicInfoPropagation,Changing these details updates the public directory and shares the new network card with connected peers.,Alterar estes dados atualiza o diretório público e compartilha o novo cartão da rede com os peers conectados.
+network.publicName,Public name,Nome público
+network.publicNameRequired,Required for a public network,Obrigatório para uma rede pública
+network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
+network.readOnly,Read-only,Somente leitura
 network.rejoin,Rejoin network,Voltar para a rede
 network.relinquishNode,Become an infer node,Virar um nó infer
 network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
@@ -1040,6 +1075,11 @@ network.requestNodePending,Request pending,Pedido pendente
 network.requestNodeRejected,The node request was rejected,O pedido para virar node foi recusado
 network.requestNodeSent,Request sent to the administrators,Pedido enviado aos administradores
 network.role,Role,Papel
+network.rules,Network rules,Regras da rede
+network.shareEyebrow,Share network access,Compartilhar acesso à rede
+network.shareLoading,Loading the sharing materials,Carregando os materiais para compartilhar
+network.shareSubtitle,Download the trust document for any network. Private networks also have a connection key.,Baixe o documento de confiança de qualquer rede. Redes privadas também têm uma chave de conexão.
+network.shareTitle,Give another node what it needs,Entregue a outro nó o que ele precisa
 network.subtitle,Which machines this node sees and which it refuses to serve.,"Quem este nó enxerga, e quem ele se recusa a atender."
 network.thermalCooldownLabel,Cooldown (seconds),Tempo de resfriamento (segundos)
 network.thermalHint,Automatic recovery starts only when all GPU readings are known and safe.,A retomada automática só começa quando todas as leituras das GPUs são conhecidas e seguras.
@@ -1067,10 +1107,15 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
+network.trustDocument,Trust document,Documento de confiança
 network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado
 network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
+network.visibility,Visibility,Visibilidade
+network.visibilityLocal,Local only,Apenas local
+network.visibilityPrivate,Private network,Rede privada
+network.visibilityPublic,Public network,Rede pública
 networkChat.attach,Attach a file,Anexar arquivo
 networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
 networkChat.disabledTitle,Network chat is disabled,Chat da rede está desligado

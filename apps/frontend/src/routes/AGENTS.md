@@ -35,6 +35,14 @@ Per-file list:
   documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
+- `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
+  preferências locais. Node e infer recebem uma leitura somente leitura com
+  nome, descrição, regras, organização, canais, visibilidade e localização;
+  um administrador autorizado pode editar o bloco completo. A edição grava
+  no nó, propaga o envelope assinado aos peers e atualiza a descoberta pública.
+  O administrador também pode copiar ou baixar a raiz de confiança e, em
+  redes privadas, a chave de conexão.
+
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
   and the shared active-session controller) and `../components/ChatSessionList`,

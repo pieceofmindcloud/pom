@@ -1051,6 +1051,21 @@ impressão digital é só modelo + conjunto de faixas.
   de disponibilidade levam o começo do `node_id` quando o nome se repete
   (`uniqueName`, `routes/Shards.tsx`).
 
+### Informações da rede e materiais de entrada
+
+`/config/rede` busca `GET /api/ui/network/info` e mostra o mesmo cartão para
+todos os perfis. Node e infer veem nome, descrição, regras, organização,
+canais, visibilidade, país, cidade e localização em modo somente leitura. O
+administrador autorizado edita esses campos e salva em
+`POST /api/ui/network/settings`; o backend grava a configuração local,
+propaga a mutação assinada aos peers e republica o rótulo geo público.
+
+O mesmo administrador tem, nessa tela, os controles de copiar e baixar o
+documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a
+chave de conexão para copiar ou baixar. O wizard real oferece os mesmos
+materiais na etapa de convite. `SetupWizard.tsx` continua sendo apenas o
+protótipo visual e não participa dessas chamadas.
+
 ## Defeitos anotados
 
 - `AddNodeDialog` re-semeia as escolhas **na transição para aberto**, não a cada

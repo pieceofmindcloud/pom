@@ -376,6 +376,15 @@ histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
 ### networkGraph.ts
 - `graphFromCluster(cluster)` - groups each peer's `capabilities` by `model_id` into `GraphRange[]` sorted by `start_layer`, for the model network canvas.
 
+### network information
+
+`types.ts` define o retrato compartilhado `NetworkSettings` e o envelope de
+leitura `NetworkInfoView`. `useNetworkInfo` em `queries.ts` consulta
+`/api/ui/network/info` para todos os perfis e `invalidateAfterAction` invalida
+esse retrato após mutações de configuração. A UI nunca guarda a chave de
+conexão no cache: os materiais de compartilhamento são buscados pelo admin
+somente em `/api/ui/network/trust-share`.
+
 ### networkPeers.ts
 The panel asks two questions, and the screen needs both: "who serves the
 active model, in execution order" and "who is on the network" - the second

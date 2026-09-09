@@ -11,6 +11,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster/models", get(cluster_models))
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
+        .route("/api/ui/network/info", get(network_info))
         .route("/api/ui/chat/telemetry", post(chat_telemetry))
         .route(
             "/api/ui/network-chat",

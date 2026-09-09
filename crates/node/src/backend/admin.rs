@@ -367,6 +367,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(internal_accept_node_promotion),
         )
         .route("/api/internal/reload_model", post(internal_reload_model))
+        .route(
+            "/api/internal/network/settings",
+            post(crate::webui::internal_network_settings),
+        )
 }
 
 /// Named node-to-node event used to wake all idle peers in one planned

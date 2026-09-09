@@ -435,7 +435,9 @@ profile policy remains the effective authorization boundary.
   lado, inclusive lendo o SSE byte a byte. Prova que a saída volta inteira, que
   a costura não aparece como `finish_reason` intermediário nem como segundo
   `[DONE]`, que a chamada de ferramenta chega com JSON completo, e que o teto
-  absoluto para um modelo em laço.
+  absoluto para um modelo em laço. A prova de fragmentação não depende de uma
+  fração fixa do relógio de parede, pois o scheduler e o agrupamento do socket
+  não fazem parte do contrato do SSE.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` - control plane do operador: nós, bloqueio, chaves e autoridade.
@@ -887,6 +889,15 @@ faz o download autenticado do blob persistido.
   `/api/ui/network/request-node` and `/api/ui/network/relinquish-node`.
   Internal profile mutations carry signed authority commands; a promotion
   delivers and validates the complete trust document at the target.
+- `webui/network.rs` - `GET /api/ui/network/info` entrega o bloco `network`
+  salvo no banco para todos os perfis, com `can_edit` derivado da cadeia de
+  autoridade. `POST /api/ui/network/settings` é exclusivo do administrador,
+  grava `pom.json` e SQLite, atualiza o rótulo geo do pkarr e envia a nova
+  configuração em um envelope assinado aos peers. O envelope leva a
+  `connection_key` somente como segredo de transporte de redes privadas; a
+  mutação remota exige a assinatura da autoridade. `GET
+  /api/ui/network/trust-share` entrega ao administrador a raiz de confiança
+  para cópia ou download e, quando aplicável, a chave de conexão.
 - `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=
   POM_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
   when closed. Routes `POST /api/ui/dev/update` (preflight: refuses non-main

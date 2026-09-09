@@ -86,6 +86,66 @@ pub(crate) struct ClusterSnapshotCache {
     pub(super) next_version: u64,
 }
 
+/// Handle shared by the gateway and the network-settings editor. It keeps the
+/// existing pkarr record fields intact and changes only the geo metadata when
+/// an administrator edits the network description.
+pub(crate) struct PkarrPublishHandle {
+    node: Arc<crate::pkarr_node::PkarrNode>,
+    addr: String,
+    inference_port: Option<u16>,
+    model_name: String,
+    assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
+    serve_relay: bool,
+}
+
+impl PkarrPublishHandle {
+    pub(crate) fn new(
+        node: Arc<crate::pkarr_node::PkarrNode>,
+        addr: String,
+        inference_port: Option<u16>,
+        model_name: String,
+        assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
+        serve_relay: bool,
+    ) -> Self {
+        Self {
+            node,
+            addr,
+            inference_port,
+            model_name,
+            assignment,
+            serve_relay,
+        }
+    }
+
+    pub(crate) async fn publish_geo_label(&self, geo_label: &str) -> anyhow::Result<()> {
+        let (start_layer, end_layer, total_layers) = self
+            .assignment
+            .read()
+            .await
+            .as_ref()
+            .map(|assignment| {
+                (
+                    assignment.start_layer,
+                    assignment.end_layer,
+                    assignment.total_layers,
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        self.node
+            .publish(
+                &self.addr,
+                self.inference_port,
+                &self.model_name,
+                start_layer,
+                end_layer,
+                total_layers,
+                self.serve_relay,
+                (!geo_label.trim().is_empty()).then_some(geo_label),
+            )
+            .await
+    }
+}
+
 impl ClusterSnapshotCache {
     pub(crate) fn get(
         &self,
@@ -205,6 +265,8 @@ pub struct GatewayState {
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
+    /// Best-effort pkarr republisher used when network metadata changes.
+    pub(crate) pkarr_publisher: Option<Arc<PkarrPublishHandle>>,
 }
 
 impl GatewayState {

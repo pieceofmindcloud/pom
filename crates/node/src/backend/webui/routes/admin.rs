@@ -9,6 +9,8 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(admin_access_info).post(save_admin_access),
         )
         .route("/api/ui/network/tls", post(save_tls))
+        .route("/api/ui/network/settings", post(save_network_settings))
+        .route("/api/ui/network/trust-share", get(trust_share))
         .route("/api/ui/network/logs", post(save_cluster_logs))
         .route("/api/ui/network/chat", post(save_network_chat))
         .route("/api/ui/cluster-logs", get(cluster_logs))

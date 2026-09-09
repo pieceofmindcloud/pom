@@ -109,7 +109,7 @@ pub(crate) fn clamp_setup_percent(value: f64) -> f64 {
     }
 }
 
-fn fresh_connection_key() -> String {
+pub(crate) fn fresh_connection_key() -> String {
     let raw = format!("{}-{}", uuid::Uuid::new_v4(), std::process::id());
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
@@ -401,12 +401,10 @@ pub async fn save_setup(
     network.country_code = network.country_code.trim().to_ascii_uppercase();
     network.country_name = network.country_name.trim().to_string();
     network.city = network.city.trim().to_string();
-    if network.visibility == crate::config::NetworkVisibility::Public
-        && (network.country_code.is_empty() || network.city.is_empty())
-    {
+    if let Err(error) = crate::config::validate_network_settings(&network) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "redes públicas precisam de país e cidade" })),
+            Json(json!({ "error": error.to_string() })),
         )
             .into_response();
     }

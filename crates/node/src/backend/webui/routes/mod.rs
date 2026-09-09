@@ -142,6 +142,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/ui/network/info",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
         prefix: "/api/ui/network-chat",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -216,6 +221,16 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/network/advertise-addr",
         method: None,
         scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/settings",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/trust-share",
+        method: Some(Method::GET),
+        scope: RouteScope::AdminOnly,
     },
     RouteRule {
         prefix: "/api/ui/network/leave",

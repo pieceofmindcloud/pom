@@ -105,6 +105,12 @@ the disabled state, participants, files and typing indicator. They must remain
 paired in both CSV locale columns because this route is reachable from the same
 AI chat shell.
 
+As chaves `network.networkInfo*`, `network.share*`, `network.publicName*`,
+`network.visibility*`, `network.access*` e os campos geográficos cobrem a tela
+de informações da rede e o compartilhamento da confiança. Cada nova chave
+desse fluxo precisa continuar presente nas colunas `en` e `pt-BR` do CSV;
+textos de documento e de chave são dados do servidor, não mensagens de locale.
+
 Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
 velocidade de pré-processamento do prompt, velocidade de geração da saída,
 tempo total, tokens/s e o rótulo explícito de taxa não mensurável usado para

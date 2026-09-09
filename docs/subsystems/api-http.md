@@ -916,6 +916,26 @@ confirmou o ciclo, não pede outra ficha, libera a sessão e fecha o fluxo.
 
 ## 5. Testes de rota - o andaime é um só (`gateway::testkit`)
 
+### Informações compartilhadas da rede
+
+`GET /api/ui/network/info` usa `ConnectionAuth` e fica disponível para
+administrador, node e infer. Ele devolve o bloco `network` persistido no
+SQLite, com fallback para `pom.json`, e `can_edit`, que só é verdadeiro para
+uma autoridade administrativa efetiva. Node e infer usam esse retrato como
+informação somente leitura.
+
+`POST /api/ui/network/settings` é uma mutação administrativa. O servidor
+normaliza e valida nome, visibilidade, país e cidade, grava o bloco em
+`pom.json` e SQLite, republica o rótulo geo no registro pkarr e envia a mesma
+configuração a cada peer. A chamada entre nós usa o envelope de controle
+assinado; uma rede privada acrescenta a `connection_key` apenas como guarda de
+transporte. O receptor verifica a autoridade do emissor antes de persistir.
+
+`GET /api/ui/network/trust-share` é somente do administrador autorizado. Ele
+retorna o documento da raiz com o nome real do arquivo para download e inclui a
+`connection_key` apenas quando a rede é local ou privada. A raiz pode ser
+compartilhada em qualquer rede; redes públicas não distribuem segredo.
+
 `gateway::testkit` (`#[cfg(test)]` em `gateway.rs`) monta um `GatewayState`
 inteiro com a tabela de peers semeada à mão: `peer(node_id, hostname,
 gateway_port)` constrói um `PeerInfo` de loopback, `state_with(node_id, peers)`

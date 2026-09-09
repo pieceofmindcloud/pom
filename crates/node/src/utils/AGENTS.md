@@ -144,6 +144,11 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 GPU unificada fica explicitamente sem leitura. `None` significa temperatura
 desconhecida e nunca é convertido em alarme pela proteção térmica.
 
+`config.rs` mantém `validate_network_settings` como a validação única do bloco
+de rede. Ela é usada tanto pelo wizard quanto pela edição posterior e exige
+nome público, país e cidade quando a visibilidade é pública; redes locais e
+privadas podem deixar esses campos vazios.
+
 ## Ligações
 
 - **`config`** é usado por quase tudo: `main.rs`, `network/identity.rs`

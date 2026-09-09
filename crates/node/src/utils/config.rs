@@ -46,6 +46,84 @@ impl AdminExposure {
     }
 }
 
+/// Visibility chosen during first access. It describes the operator's intent
+/// for the network and does not replace the transport or administrator trust
+/// policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkVisibility {
+    Local,
+    Private,
+    Public,
+}
+
+impl Default for NetworkVisibility {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkAccessPolicy {
+    Authorized,
+    AnyoneWithAnchor,
+    LocalOnly,
+}
+
+impl Default for NetworkAccessPolicy {
+    fn default() -> Self {
+        Self::Authorized
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetworkLocation {
+    pub latitude: f64,
+    pub longitude: f64,
+    #[serde(default)]
+    pub accuracy_m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NetworkSettings {
+    #[serde(default)]
+    pub public_name: String,
+    #[serde(default)]
+    pub organization: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub rules: String,
+    #[serde(default)]
+    pub channels: String,
+    #[serde(default)]
+    pub visibility: NetworkVisibility,
+    #[serde(default)]
+    pub access_policy: NetworkAccessPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<NetworkLocation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResourcePolicy {
+    /// Percentage of memory kept available for the operating system.
+    #[serde(default = "default_resource_reserve_pct")]
+    pub ram_reserve_pct: f64,
+    /// Percentage of CPU capacity kept available for the operating system.
+    #[serde(default = "default_resource_reserve_pct")]
+    pub cpu_reserve_pct: f64,
+}
+
+impl Default for ResourcePolicy {
+    fn default() -> Self {
+        Self {
+            ram_reserve_pct: default_resource_reserve_pct(),
+            cpu_reserve_pct: default_resource_reserve_pct(),
+        }
+    }
+}
+
 /// Tipos de dados aceitos pelo cache KV do llama.cpp desta instalação.
 ///
 /// A definição mudou para `llama-engine` (`kv_cache.rs`) porque o lado FFI
@@ -104,6 +182,9 @@ pub struct Config {
     /// address that has stopped answering. See `network::advertised_addr`.
     #[serde(default)]
     pub advertise_addr: Option<String>,
+    /// Human-facing network settings captured during first access.
+    #[serde(default)]
+    pub network: NetworkSettings,
     #[serde(default)]
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
@@ -143,6 +224,13 @@ pub struct Config {
     /// Maximum disk space reserved for generated model slices, in GB.
     #[serde(default = "default_shard_max_gb")]
     pub shard_max_gb: f64,
+    /// Local resource reservation selected during first access.
+    #[serde(default)]
+    pub resources: ResourcePolicy,
+    /// Optional model selected by the first-access catalog. Loading remains a
+    /// later deployment action and is deliberately not started by setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_model: Option<String>,
     /// Quais GPUs desta máquina a inferência pode usar, pelo `index` que o nó
     /// publica em `system.gpus[]` - o mesmo número que o painel mostra.
     ///
@@ -228,6 +316,7 @@ impl fmt::Debug for Config {
             .field("inference_port", &self.inference_port)
             .field("bootstrap_nodes", &self.bootstrap_nodes)
             .field("advertise_addr", &self.advertise_addr)
+            .field("network", &self.network)
             .field("api_key_count", &self.api_keys.len())
             .field("blocked_nodes", &self.blocked_nodes)
             .field("tls_required", &self.tls_required)
@@ -236,6 +325,8 @@ impl fmt::Debug for Config {
             .field("model_dirs", &self.model_dirs)
             .field("shard_dir", &self.shard_dir)
             .field("shard_max_gb", &self.shard_max_gb)
+            .field("resources", &self.resources)
+            .field("setup_model", &self.setup_model)
             .field("gpus", &self.gpus)
             .field("thermal", &self.thermal)
             .field("cache_type_k", &self.cache_type_k)
@@ -267,6 +358,10 @@ fn default_p2p_port() -> u16 {
 
 fn default_shard_max_gb() -> f64 {
     crate::storage::DEFAULT_SHARD_MAX_GB
+}
+
+fn default_resource_reserve_pct() -> f64 {
+    20.0
 }
 
 /// Put a peer address the operator typed into the form the resolver accepts.
@@ -557,7 +652,18 @@ impl Config {
 
 /// `<project_root>/models` — where every slice has always landed.
 pub fn default_shard_dir() -> PathBuf {
-    project_root().join("models")
+    crate::catalog::home_dir()
+        .unwrap_or_else(project_root)
+        .join(".pom")
+        .join("models_sliced")
+}
+
+/// `~/.pom/models` is the first-access destination for whole models.
+pub fn default_model_dir() -> PathBuf {
+    crate::catalog::home_dir()
+        .unwrap_or_else(project_root)
+        .join(".pom")
+        .join("models")
 }
 
 /// Where the built web interface (`apps/frontend/dist`) is read from at
@@ -672,11 +778,14 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -739,11 +848,14 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -795,9 +907,10 @@ mod tests {
 
     #[test]
     fn cache_types_are_persisted_as_installation_settings() {
-        let cfg: Config =
-            serde_json::from_str(r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
-                .unwrap();
+        let cfg: Config = serde_json::from_str(
+            r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(cfg).unwrap();
 
         assert_eq!(json["cache_type_k"], "q8_0");
@@ -844,6 +957,7 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
             tls_required: false,
@@ -852,6 +966,8 @@ mod tests {
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -905,7 +1021,8 @@ mod tests {
     /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
     #[test]
     fn config_antiga_parseia_sem_tls_required() {
-        let cfg: Config = serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
+        let cfg: Config =
+            serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
     }
 
@@ -933,6 +1050,14 @@ mod tests {
     }
 
     #[test]
+    fn setup_defaults_keep_models_and_slices_in_the_pom_home() {
+        let model_dir = default_model_dir();
+        let shard_dir = default_shard_dir();
+        assert!(model_dir.ends_with(Path::new(".pom").join("models")));
+        assert!(shard_dir.ends_with(Path::new(".pom").join("models_sliced")));
+    }
+
+    #[test]
     fn test_active_api_key() {
         let cfg = Config {
             gpus: None,
@@ -951,6 +1076,7 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![
                 ApiKey {
                     id: "old-id".into(),
@@ -975,6 +1101,8 @@ mod tests {
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,

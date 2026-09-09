@@ -40,6 +40,7 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
  * máquina.
  */
 const INFER_ROUTES = [
+  "/redes-publicas",
   "/chat",
   "/documentacao",
   "/config/keys/api",

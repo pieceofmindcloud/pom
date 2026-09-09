@@ -248,7 +248,9 @@ impl Deployment {
 
     /// A versão que está no ar.
     pub fn active(&self) -> Option<&DeploymentVersion> {
-        self.versions.iter().find(|v| v.version == self.active_version)
+        self.versions
+            .iter()
+            .find(|v| v.version == self.active_version)
     }
 
     /// Escreve `self.nodes` de volta no snapshot da versão ativa. Usado depois

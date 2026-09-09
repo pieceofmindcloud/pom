@@ -22,6 +22,11 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   para não destruir a cópia de segurança antiga. O campo obrigatório
   `profile` é o perfil oficial do nó; um `pom.json` antigo sem ele exige novo
   setup, sem migração.
+  `NetworkSettings` guarda nome, organização, descrição, regras, canais,
+  visibilidade (`local`, `private`, `public`) e política de acesso.
+  `ResourcePolicy` guarda os percentuais de RAM e CPU reservados ao sistema.
+  O primeiro acesso usa `~/.pom/models` e `~/.pom/models_sliced` como padrões
+  e grava `shard_max_gb` para limitar as fatias compartilhadas.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque.
@@ -59,10 +64,10 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 - `ui_dist_dir` - `$POM_UI_DIST` ou `<project_root>/apps/frontend/dist`
   (a UI é lida do disco em runtime por `webapp.rs`).
 - `model_dir_paths`/`shard_dir_path` - onde procurar modelos inteiros e onde
-  escrever/ler fatias. `model_dirs` ausente = detectar (LM Studio + Ollama);
-  lista **vazia** = não procure em lugar nenhum; `shard_dir` em branco cai para
-  `<project_root>/models`. `shard_max_gb` limita somente a pasta de fatias e
-  assume 100 GB quando falta em um `pom.json` antigo.
+  escrever/ler fatias. A configuração criada pelo wizard usa `~/.pom/models` e
+  `~/.pom/models_sliced`; configurações existentes ainda conservam sua escolha.
+  `model_dirs` vazio não procura em lugar nenhum. `shard_max_gb` limita somente
+  a pasta de fatias e assume 100 GB quando falta em um `pom.json` antigo.
 - A configuração não possui teto absoluto de saída. A capacidade efetiva é
   observada no runtime depois do carregamento do modelo e chega ao gateway por
   `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite

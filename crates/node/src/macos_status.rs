@@ -134,8 +134,8 @@ mod tests {
         // Se o derivador em `scripts/derive-macos-status-icon.py` deixar de
         // ser corrido depois de mexer na marca, o item de barra cai para um
         // rótulo de texto - em silêncio. Este teste é o aviso.
-        let brand = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/brand/macos");
+        let brand =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/brand/macos");
         for name in [
             "pom-status-template.png",
             "pom-status-template@2x.png",

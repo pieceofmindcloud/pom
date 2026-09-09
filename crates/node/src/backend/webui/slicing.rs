@@ -44,7 +44,10 @@ pub struct TpSlicePlan {
 /// Validate a TP cut once and give the UI a useful preview without writing
 /// any shard. Every rank contains the complete layer range; the tensor
 /// columns and rows, not the layers, are what differ between ranks.
-pub(super) fn tensor_slice_plan(path: &std::path::Path, tp_size: u32) -> anyhow::Result<TpSlicePlan> {
+pub(super) fn tensor_slice_plan(
+    path: &std::path::Path,
+    tp_size: u32,
+) -> anyhow::Result<TpSlicePlan> {
     if !(2..=64).contains(&tp_size) {
         anyhow::bail!("escolha entre 2 e 64 ranks TP");
     }
@@ -147,7 +150,9 @@ pub struct SlicePlanRequest {
 ///
 /// The builder screen asks for a preview on every keystroke; re-reading the
 /// header each time would make typing a size feel heavy.
-pub(super) async fn layout_of(path: &std::path::Path) -> Result<Arc<crate::gguf::GgufLayout>, String> {
+pub(super) async fn layout_of(
+    path: &std::path::Path,
+) -> Result<Arc<crate::gguf::GgufLayout>, String> {
     type Key = (String, u64, u64);
     static CACHE: std::sync::OnceLock<Mutex<HashMap<Key, Arc<crate::gguf::GgufLayout>>>> =
         std::sync::OnceLock::new();
@@ -214,7 +219,10 @@ pub(super) fn signed_space_margin(free_bytes: u64, required_bytes: u64) -> i64 {
         .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
-pub(super) fn valid_range_error(layout: &crate::gguf::GgufLayout, range: &SliceRange) -> Option<String> {
+pub(super) fn valid_range_error(
+    layout: &crate::gguf::GgufLayout,
+    range: &SliceRange,
+) -> Option<String> {
     let total = layout.layer_count();
     if range.start_layer > range.end_layer {
         return Some(format!(

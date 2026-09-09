@@ -749,7 +749,11 @@ pub(super) fn seal_single_part(
         .into_owned())
 }
 
-pub(super) async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
+pub(super) async fn run_apply(
+    state: GatewayState,
+    req: ApplyRequest,
+    job_id: &str,
+) -> anyhow::Result<String> {
     let model_path = if let Some(tp) = tp_shard_to_extract(&req) {
         set_job(
             job_id,

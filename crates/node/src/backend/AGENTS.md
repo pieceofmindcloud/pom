@@ -19,13 +19,17 @@ The gateway keeps the pipeline transport separate from the administrative
 surface. `/api/ui/**` and `/admin/**` plus the static UI surface pass through
 the same boundary: localhost mode checks the real peer address, network mode
 checks a server-side `HttpOnly` session minted from `X-POM-Access-Token`, and
-the `connection_key` remains a separate node-to-node credential. The client
+the `connection_key` remains the private-network transport credential. Public
+network control calls carry an Ed25519-signed `x-pom-control-signature`
+envelope whose issuer must be a current authority in the trust chain. The client
 inference routes (`/api/generate`, `/v1/models`, `/v1/chat/completions`,
 `/v1/completions` and `/v1/messages`) accept only active inference API keys.
 The gateway callbacks `/v1/relay-result` and `/v1/remote-stream-result` use
 the per-frame `Ticket` in the body and no client API key. The separate
-inference listener accepts only `connection_key` plus the internal marker and
-remains dual-stack. `/health`, `/peers` and `/handshake` remain dual-stack.
+inference listener accepts the connection key on private networks; public
+networks use TLS transport without a shared secret. Inference frames are not
+wrapped in control signatures. `/health`, `/peers` and `/handshake` remain
+dual-stack.
 
 Before that exposure check, `gateway::require_admin_for_surface` consults the
 single `webui/routes/mod.rs` data table with the request method and the
@@ -684,10 +688,10 @@ faz o download autenticado do blob persistido.
   (arquivo temporário com sufixo único, `read_layout` validado antes do rename
   e de `finalize_run`; reuses an already-complete output, preserves the source
   `pom_id`, and invalidates the catalog),
-  `run_apply`/`run_slice`/`release_slice`, and `get_setup_key`/`save_setup`
-  which are deliberately NOT registered here - the setup mode router in
-  `main.rs` serves them only while there is no `pom.json` (they cannot be
-  authenticated and would rotate the connection key on a configured node).
+  `run_apply`/`run_slice`/`release_slice`, and the setup handlers for hardware,
+  models, trust-anchor, health and save, which are deliberately NOT registered
+  here - the setup mode router in `main.rs` serves them only while there is no
+  `pom.json`.
   Os testes que chamam `apply_cluster_policy` também seguram
   `peer_client::POLITICA_GLOBAL`, porque o esquema TLS global é compartilhado
   por toda a suíte.
@@ -849,6 +853,12 @@ faz o download autenticado do blob persistido.
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
+  Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
+  `/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
+  `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
+  installs the trust document and `pom.json` before respawning. `GET
+  /api/public/network(s)` exposes only public metadata and gathers live public
+  records through the existing pkarr-backed discovery table.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
@@ -868,13 +878,14 @@ faz o download autenticado do blob persistido.
   restarting - `runtime.rs` owns that lifecycle (apply writes `Pending`, the
   `/health` watcher promotes to `Serving`); a `devupdate` write could only
   lie.
-- `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
-  optional), compares to `connection_key`; `InternalNodeAuth` adds the private
-  marker used by admin synchronization. `ApiKeyAuth` accepts `authorization`
-  or `x-api-key`, but only for an active API key, and `api_key_identity`
-  supplies the stable non-secret id used by the audit trail. `internal_node_token`
-  chooses the shared `connection_key` for internal inference calls; client API
-  keys never cross that boundary.
+- `auth.rs` - `ConnectionAuth` accepts the private connection key or a signed
+  control envelope; `InternalNodeAuth` verifies envelope metadata and resolves
+  its issuer against the local authority or a live peer. The gateway middleware
+  hashes the actual body before a mutating handler runs. `ApiKeyAuth` accepts
+  `authorization` or `x-api-key`, but only for an active API key, and
+  `api_key_identity` supplies the stable non-secret id used by the audit trail.
+  `internal_node_token` remains the private-network credential for inference
+  transport; client API keys never cross that boundary.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
 - `reqlog.rs` - `AuditLog::begin` records the exact prompt, request body,
   resolved model, entry node, API-key identity and arrival time before
@@ -940,7 +951,7 @@ faz o download autenticado do blob persistido.
   `peer_without_sliced_mtp_wire` when a peer lacks the MTP wire capability.
   `routing_contract` capability types.
 - Who calls it: `crate::main` (`start_gateway` spawns the router, `warm_catalog`
-  runs at startup, setup mode mounts only `webui::get_setup_key`/`save_setup`);
+  runs at startup, setup mode mounts only the dedicated `/api/setup/*` handlers);
   the frontend bundle in `apps/frontend/dist` hits `/api/ui/*`; harnesses hit
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
   gateway HTTP for transfers, deploy forwarding, and cancel notices.

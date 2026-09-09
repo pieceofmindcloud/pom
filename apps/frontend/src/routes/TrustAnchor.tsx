@@ -9,14 +9,14 @@
  * rota que a alimenta é `CommonOrInternal` - quem recebe a âncora costuma ser
  * um `node` ou um `infer`.
  *
- * **O que a tela decide: nada.** Mostrar a impressão digital é seguro porque
- * ela é pública e não concede nada. Instalar é decidido no servidor, que
- * exige loopback real, nó ainda sem âncora e a impressão digital conferida.
+ * **O que a tela decide: nada.** Mostrar a impressão digital calculada é seguro
+ * porque ela é pública e não concede nada. Instalar é decidido no servidor,
+ * que exige loopback real, nó ainda sem âncora e a impressão digital conferida.
  * `can_install` aqui é só o que evita desenhar um formulário que vai ser
  * recusado; não é a trava.
  */
 import { Check, Copy, Fingerprint, Laptop, ShieldAlert, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   Button,
@@ -24,7 +24,6 @@ import {
   ErrorState,
   Field,
   Footnote,
-  Input,
   KeyValue,
   PageHeader,
   Panel,
@@ -37,6 +36,7 @@ import { useTrustAnchor } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { TrustAnchorRefusal } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 
 const REFUSALS: readonly TrustAnchorRefusal[] = [
   "not_loopback",
@@ -57,11 +57,6 @@ function refusalOf(error: unknown): TrustAnchorRefusal | null {
   }
   const reason = (error.body as { reason?: unknown }).reason;
   return REFUSALS.find((known) => known === reason) ?? null;
-}
-
-/** A impressão digital em blocos de oito, que é como se confere a olho. */
-function grouped(fingerprint: string): string {
-  return (fingerprint.match(/.{1,8}/g) ?? [fingerprint]).join(" ");
 }
 
 function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
@@ -87,7 +82,7 @@ function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
         // entre eles, a quebra cai na fronteira dos grupos.
         className="min-w-0 flex-1 select-all break-words rounded-lg border border-line bg-ink px-3 py-2 font-mono text-[0.78rem] leading-6 tracking-tight text-fg"
       >
-        {grouped(fingerprint)}
+        {groupFingerprint(fingerprint)}
       </code>
       <Button
         size="sm"
@@ -108,10 +103,32 @@ export function TrustAnchor() {
   // Não `document`: o nome sombreia o global do DOM.
   const [chain, setChain] = useState("");
   const [fingerprint, setFingerprint] = useState("");
+  const [fingerprintPending, setFingerprintPending] = useState(false);
+  const [fingerprintConfirmed, setFingerprintConfirmed] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [refusal, setRefusal] = useState<{ reason: TrustAnchorRefusal | null; message: string } | null>(
     null,
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!chain.trim()) {
+      setFingerprint("");
+      setFingerprintConfirmed(false);
+      setFingerprintPending(false);
+      return;
+    }
+    setFingerprintPending(true);
+    setFingerprintConfirmed(false);
+    void fingerprintFromTrustDocument(chain).then((value) => {
+      if (cancelled) return;
+      setFingerprint(value ?? "");
+      setFingerprintPending(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chain]);
 
   async function install(event: React.FormEvent) {
     event.preventDefault();
@@ -121,6 +138,7 @@ export function TrustAnchor() {
       await trustAnchorApi.install(chain, fingerprint);
       setChain("");
       setFingerprint("");
+      setFingerprintConfirmed(false);
       toast.success(t("trustAnchor.installed"), t("trustAnchor.installedDetail"));
       await anchor.refetch();
     } catch (error) {
@@ -159,7 +177,7 @@ export function TrustAnchor() {
   }
 
   const state = anchor.data;
-  const canSubmit = chain.trim().length > 0 && fingerprint.trim().length > 0 && !installing;
+  const canSubmit = chain.trim().length > 0 && fingerprint.trim().length > 0 && fingerprintConfirmed && !fingerprintPending && !installing;
 
   return (
     <>
@@ -238,23 +256,14 @@ export function TrustAnchor() {
                     className="w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 font-mono text-[0.75rem] leading-5 text-fg placeholder:text-faint transition-colors duration-150 hover:border-line-strong focus:border-iris focus:outline-none focus:ring-2 focus:ring-iris/25"
                   />
                 </Field>
-                <Field
-                  label={t("trustAnchor.typedFingerprintLabel")}
-                  hint={t("trustAnchor.typedFingerprintHint")}
-                >
-                  <Input
-                    data-testid="anchor-typed-fingerprint"
-                    id="trust-anchor-fingerprint"
-                    name="trust-anchor-fingerprint"
-                    value={fingerprint}
-                    onChange={(event) => setFingerprint(event.target.value)}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    placeholder={t("trustAnchor.typedFingerprintPlaceholder")}
-                    className="font-mono"
-                  />
-                </Field>
+                <div className="rounded-lg border border-line bg-raised px-3 py-3">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-faint">{t("trustAnchor.fingerprintCalculated")}</p>
+                  {fingerprintPending ? <p className="mt-2 text-sm text-muted">{t("trustAnchor.fingerprintWaiting")}</p> : fingerprint ? <code data-testid="anchor-calculated-fingerprint" className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{groupFingerprint(fingerprint)}</code> : <p className="mt-2 text-sm text-muted">{t("trustAnchor.fingerprintWaiting")}</p>}
+                  <label className="mt-3 flex items-start gap-3 text-sm text-fg">
+                    <input data-testid="anchor-fingerprint-confirm" type="checkbox" checked={fingerprintConfirmed} disabled={!fingerprint || fingerprintPending} onChange={(event) => setFingerprintConfirmed(event.target.checked)} className="mt-0.5 h-4 w-4 accent-iris" />
+                    <span>{t("trustAnchor.fingerprintConfirm")}</span>
+                  </label>
+                </div>
                 {refusal && (
                   <p
                     role="alert"

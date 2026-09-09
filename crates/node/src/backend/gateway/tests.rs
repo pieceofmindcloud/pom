@@ -144,7 +144,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(ticket.recv().await.unwrap()["accepted"][0]["token_id"], 1234);
+        assert_eq!(
+            ticket.recv().await.unwrap()["accepted"][0]["token_id"],
+            1234
+        );
     }
 
     #[tokio::test]
@@ -312,14 +315,8 @@ mod tests {
             auth.admin_exposure = crate::config::AdminExposure::Network;
         }
         let app = Router::new()
-            .route(
-                "/api/ui/deployments",
-                get(|| async { StatusCode::OK }),
-            )
-            .route(
-                "/api/ui/stop-inference",
-                get(|| async { StatusCode::OK }),
-            )
+            .route("/api/ui/deployments", get(|| async { StatusCode::OK }))
+            .route("/api/ui/stop-inference", get(|| async { StatusCode::OK }))
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
                 state,
@@ -349,7 +346,11 @@ mod tests {
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
             assert_eq!(
-                app.clone().oneshot(internal_request).await.unwrap().status(),
+                app.clone()
+                    .oneshot(internal_request)
+                    .await
+                    .unwrap()
+                    .status(),
                 StatusCode::OK,
                 "authenticated node request must reach {path}"
             );
@@ -708,7 +709,10 @@ mod tests {
                 .await
                 .unwrap();
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"], "só um administrador tira outra máquina da rede");
+            assert_eq!(
+                body["error"],
+                "só um administrador tira outra máquina da rede"
+            );
         }
     }
 
@@ -741,7 +745,10 @@ mod tests {
         let response = app.clone().oneshot(without).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            response.headers().get(crate::auth::ADMIN_ERROR_HEADER).unwrap(),
+            response
+                .headers()
+                .get(crate::auth::ADMIN_ERROR_HEADER)
+                .unwrap(),
             crate::auth::ADMIN_ERROR_MISSING_TOKEN
         );
 
@@ -755,7 +762,10 @@ mod tests {
         let response = app.oneshot(wrong).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
-            response.headers().get(crate::auth::ADMIN_ERROR_HEADER).unwrap(),
+            response
+                .headers()
+                .get(crate::auth::ADMIN_ERROR_HEADER)
+                .unwrap(),
             crate::auth::ADMIN_ERROR_INVALID_TOKEN
         );
     }
@@ -2144,12 +2154,17 @@ pub(crate) mod testkit {
 
     /// Um peer alcançável no `gateway_port` dado, na loopback.
     pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
+        let authority_pubkey = hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .as_bytes(),
+        );
         PeerInfo {
             deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: "pk".into(),
-            authority_pubkey: String::new(),
+            authority_pubkey,
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -2169,7 +2184,7 @@ pub(crate) mod testkit {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
-            libp2p_peer_id: None,
+            libp2p_peer_id: Some("peer-eu".into()),
             tp: None,
             runtime_capacity: Some(RuntimeCapacity {
                 n_ctx: 8_192,
@@ -2218,7 +2233,9 @@ pub(crate) mod testkit {
             .authority_pubkey
             .write()
             .expect("chave de autoridade do testkit") = secondary.pubkey.clone();
-        state.network.set_profile(crate::profile::NodeProfile::Admin);
+        state
+            .network
+            .set_profile(crate::profile::NodeProfile::Admin);
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         state.admin_trust = Arc::new(admin_trust);
         state

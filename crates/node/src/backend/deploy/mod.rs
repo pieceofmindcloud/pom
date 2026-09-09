@@ -78,25 +78,26 @@ use crate::webui::{
 
 const MIB: u64 = 1024 * 1024;
 
-#[path = "routes.rs"] mod routes_impl;
-mod types;
-mod survey;
-mod planning;
-mod preview;
 mod launch;
 mod lifecycle;
 mod node;
+mod planning;
+mod preview;
+#[path = "routes.rs"]
+mod routes_impl;
+mod survey;
+mod types;
 
-pub use routes_impl::*;
-pub use types::*;
-use survey::*;
-#[cfg(test)]
-pub(crate) use survey::survey_for_tests;
-pub use planning::*;
-use preview::*;
 use launch::*;
 pub use lifecycle::*;
 pub use node::*;
+pub use planning::*;
+use preview::*;
+pub use routes_impl::*;
+#[cfg(test)]
+pub(crate) use survey::survey_for_tests;
+use survey::*;
+pub use types::*;
 
 include!("tests/deployments.rs");
 include!("tests/whole_route.rs");

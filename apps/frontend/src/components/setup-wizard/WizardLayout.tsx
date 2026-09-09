@@ -100,10 +100,26 @@ export function WizardLayout({
   );
 }
 
-export function ContinueButton({ onClick, label = "wizard.continue" }: { onClick: () => void; label?: string }) {
+export function ContinueButton({
+  onClick,
+  label = "wizard.continue",
+  disabled = false,
+  loading = false,
+}: {
+  onClick: () => void;
+  label?: string;
+  disabled?: boolean;
+  loading?: boolean;
+}) {
   const { t } = useI18n();
   return (
-    <Button variant="primary" icon={<ArrowRight className="h-4 w-4" />} onClick={onClick}>
+    <Button
+      variant="primary"
+      icon={<ArrowRight className="h-4 w-4" />}
+      onClick={onClick}
+      disabled={disabled}
+      loading={loading}
+    >
       {t(label)}
     </Button>
   );

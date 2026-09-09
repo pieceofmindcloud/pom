@@ -11,6 +11,8 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/api/generate", post(handle_generate))
         .route("/generate", post(handle_generate)) // alias
         .route("/api/access", get(admin_access_status))
+        .route("/api/public/network", get(public_network))
+        .route("/api/public/networks", get(public_networks))
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
@@ -52,8 +54,12 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         // through this router (see inference/infer_server.rs), so there is
         // no risk of compressing binary inference frames here.
         .layer(middleware::from_fn_with_state(
-            state,
+            state.clone(),
             require_admin_for_surface,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state,
+            verify_control_request,
         ))
         .layer(tower_http::compression::CompressionLayer::new());
 
@@ -96,6 +102,122 @@ pub(super) async fn network_chat_policy(
     }))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PublicNetworkView {
+    pub cluster_id: String,
+    pub name: String,
+    pub fingerprint: String,
+    pub address: String,
+    pub organization: String,
+    pub description: String,
+    pub access_policy: crate::config::NetworkAccessPolicy,
+    pub location: Option<crate::config::NetworkLocation>,
+    pub discovered_via: String,
+}
+
+fn endpoint_for_public_network(state: &GatewayState) -> String {
+    let host = state
+        .network
+        .advertised_host()
+        .or_else(|| crate::pkarr_node::detect_local_ip())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{}", state.gateway_port)
+    } else {
+        format!("{host}:{}", state.gateway_port)
+    }
+}
+
+async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView> {
+    let (visibility, configured_network) = {
+        let config = state.auth.read().await;
+        (config.network.visibility, config.network.clone())
+    };
+    if visibility != crate::config::NetworkVisibility::Public || !state.admin_trust.is_anchored() {
+        return None;
+    }
+    let network = state
+        .database
+        .network_settings()
+        .ok()
+        .flatten()
+        .unwrap_or(configured_network);
+    let document = state.admin_trust.document();
+    let fingerprint = crate::admin_trust::anchor_fingerprint(&document);
+    Some(PublicNetworkView {
+        cluster_id: document.anchor.cluster_id.clone(),
+        name: network.public_name.clone(),
+        fingerprint,
+        address: endpoint_for_public_network(state),
+        organization: network.organization.clone(),
+        description: network.description.clone(),
+        access_policy: network.access_policy,
+        location: network
+            .location
+            .clone()
+            .map(|location| crate::config::NetworkLocation {
+                latitude: location.latitude,
+                longitude: location.longitude,
+                accuracy_m: None,
+            }),
+        discovered_via: "pkarr".to_string(),
+    })
+}
+
+/// Public metadata only. It intentionally excludes the trust document: the
+/// operator still receives that document out of band from the network owner.
+pub(super) async fn public_network(State(state): State<GatewayState>) -> impl IntoResponse {
+    match local_public_network(&state).await {
+        Some(network) => (StatusCode::OK, Json(network)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Return the local public network and public networks visible through live
+/// pkarr-backed peers. The peer records are already the result of the existing
+/// discovery layer, so this endpoint does not introduce a second discovery
+/// protocol or change the P2P wire format.
+pub(super) async fn public_networks(State(state): State<GatewayState>) -> impl IntoResponse {
+    let mut networks = Vec::new();
+    if let Some(local) = local_public_network(&state).await {
+        networks.push(local);
+    }
+
+    for peer in state.network.alive_peers().await {
+        if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
+            continue;
+        }
+        let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
+            continue;
+        };
+        for base in peer.gateway_candidates() {
+            let response = client
+                .get(format!("{base}/api/public/network"))
+                .timeout(Duration::from_millis(500))
+                .send()
+                .await;
+            let Ok(response) = response else {
+                continue;
+            };
+            if !response.status().is_success() {
+                continue;
+            }
+            let Ok(network) = response.json::<PublicNetworkView>().await else {
+                continue;
+            };
+            if !networks
+                .iter()
+                .any(|known: &PublicNetworkView| known.fingerprint == network.fingerprint)
+            {
+                networks.push(network);
+            }
+            break;
+        }
+    }
+
+    Json(networks).into_response()
+}
+
 /// Probe the same IPv6 dual-stack bind used by the gateway before any model
 /// loading starts. This makes invalid or occupied configured ports fail at
 /// process startup instead of leaving a half-running node without its control
@@ -117,8 +239,10 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
 
 /// O que o principal responde à catraca dos outros nós.
 ///
-/// Autenticada pela chave de conexão: é isso que impede um intruso de responder
-/// pelo principal e rebaixar o cluster para texto claro. Ver `tls_policy`.
+/// Autenticada pelo envelope assinado da cadeia de confiança. Em rede privada
+/// a chave compartilhada pode acompanhar a assinatura como guarda de transporte;
+/// isso impede um intruso de responder pelo principal e rebaixar o cluster para
+/// texto claro. Ver `tls_policy`.
 pub(super) async fn cluster_tls(
     _auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,

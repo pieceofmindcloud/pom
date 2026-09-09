@@ -157,13 +157,10 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/estatisticas` -> Statistics, tela própria dos agregados da auditoria;
   `/logs/estatisticas` redireciona para a rota nova
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
-- `/setup` -> `SetupWizard`, protótipo navegável do primeiro acesso, **em tela
-  inteira**: sem Sidebar e sem Topbar, como o `Setup` do bootstrap. O
-  assistente guia a configuração do zero, e o menu ao lado convidava a sair
-  pelo meio para uma tela que ainda não faz sentido. Em um nó já configurado, a
-  rota continua disponível para rever os seis caminhos; em modo setup, a
-  decisão de `/api/ui/node` retorna antes e mantém `Setup`, o bootstrap real
-  que escolhe `admin`, `node` ou `infer` e gera a chave de conexão.
+- `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
+  sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
+  decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
+  save. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
 - `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
   `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
@@ -438,20 +435,23 @@ primeiro abre a interface administrativa, enquanto a segunda autentica nós e
 clientes da pipeline. Chamadas de controle entre nós usam a segunda com um
 marcador interno próprio, que o navegador nunca envia.
 
-`GET /api/ui/node` devolve a `connection_key` do cluster depois da catraca, e o
-`useNode()` guarda a chave em `localStorage` (`codai.connectionKey`) para
-assinar somente as requisições administrativas com `Authorization: Bearer
-<key>`. A inferência usa exclusivamente a API key dedicada `pom-[node_id]`,
+`GET /api/ui/node` devolve a `connection_key` somente para redes privadas, depois
+da catraca. A inferência usa exclusivamente a API key dedicada `pom-[node_id]`,
 obtida em `POST /api/ui/chat-key` e enviada como `X-API-Key` em cada chamada
 `/api/generate` ou `/v1`. Se ela for revogada, a próxima tentativa cria uma
-substituta e repete a mensagem uma única vez. `POST
-/api/setup/key` e `/api/setup/save` **não** estão no router normal de
-propósito: só o modo setup (sem `pom.json`) as serve, porque `GET
-/api/setup/key` rotacionaria a credencial num nó já configurado.
-/api/setup/key` rotacionaria a credencial num nó já configurado. A mesma
-resposta publica `addr_candidates`, `libp2p_peer_id` e as capabilities do
-túnel, usados pelo deploy TP para transportar o endereço correto até cada
-rank.
+substituta e repete a mensagem uma única vez. O primeiro acesso não usa mais
+O router de setup (sem `pom.json`) serve hardware, modelos, prévia da raiz
+administrativa, token administrativo, instalação da raiz, verificações e `POST /api/setup/save`. O save
+instala a raiz de confiança separada e grava `pom.json` antes do respawn. A
+resposta de nó configurado publica `addr_candidates`, `libp2p_peer_id` e as
+capabilities do túnel, usados pelo deploy TP para transportar o endereço correto
+até cada rank.
+
+`GET /api/public/networks` lista metadados de redes públicas conhecidos pela
+descoberta pkarr existente. A página `/redes-publicas` mostra nome, impressão
+digital e endereço e leva ao fluxo de ancoragem. O documento de confiança não é
+publicado por esta lista; o operador recebe-o do responsável da rede por um
+canal próprio.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
 local do navegador e não vale como credencial. As rotas administrativas usam a

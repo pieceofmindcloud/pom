@@ -3771,7 +3771,9 @@ mod tests {
         let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
         let mut params = unsafe { llama_engine::llama_cpp_sys_2::llama_model_default_params() };
         params.n_gpu_layers = 0;
-        let model = unsafe { llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        let model = unsafe {
+            llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params)
+        };
         assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
         unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
@@ -3802,7 +3804,9 @@ mod tests {
         let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
         let mut params = unsafe { llama_engine::llama_cpp_sys_2::llama_model_default_params() };
         params.n_gpu_layers = 0;
-        let model = unsafe { llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        let model = unsafe {
+            llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params)
+        };
         assert!(
             !model.is_null(),
             "uma fatia intermediária DeepSeek4 deveria carregar"

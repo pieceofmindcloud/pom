@@ -6,7 +6,7 @@
 //! an explicit operation provided by `scripts/migrate_pom_db.py`.
 
 use crate::catalog::{Catalog, DiscoveredModel};
-use crate::config::ApiKey;
+use crate::config::{ApiKey, NetworkSettings};
 use crate::deployment::Deployment;
 use crate::thermal::ThermalPolicy;
 use anyhow::{Context, Result};
@@ -493,6 +493,25 @@ impl PomDb {
     pub fn save_thermal_policy(&self, policy: ThermalPolicy) -> Result<()> {
         policy.validate().context("validar política térmica")?;
         self.save_setting("thermal_policy", &policy)
+    }
+
+    pub fn network_settings(&self) -> Result<Option<NetworkSettings>> {
+        self.with_read("ler detalhes da rede", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'network_settings'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| serde_json::from_str(&value).context("interpretar detalhes da rede"))
+                .transpose()
+        })
+    }
+
+    pub fn save_network_settings(&self, settings: &NetworkSettings) -> Result<()> {
+        self.save_setting("network_settings", settings)
     }
 
     /// Read the stored credential without logging, formatting or returning it

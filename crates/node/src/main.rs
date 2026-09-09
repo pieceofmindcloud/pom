@@ -14,10 +14,10 @@ mod auth;
 // usam. Ver `docs/subsystems/build-execucao.md`.
 use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
-#[path = "backend/capabilities.rs"]
-mod capabilities;
 #[path = "admin_trust.rs"]
 mod admin_trust;
+#[path = "backend/capabilities.rs"]
+mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "network/cluster_logs.rs"]
@@ -30,11 +30,6 @@ mod network_chat;
 mod network_chat_policy;
 #[path = "utils/config.rs"]
 mod config;
-#[path = "profile.rs"]
-pub(crate) mod profile;
-#[cfg(test)]
-#[path = "profile_tests.rs"]
-mod profile_tests;
 #[cfg(test)]
 #[path = "network/network_chat_tests.rs"]
 mod network_chat_tests;
@@ -116,6 +111,11 @@ mod prefix_cache_lab;
 #[cfg(test)]
 #[path = "inference/prefix_reuse_lab.rs"]
 mod prefix_reuse_lab;
+#[path = "profile.rs"]
+pub(crate) mod profile;
+#[cfg(test)]
+#[path = "profile_tests.rs"]
+mod profile_tests;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
@@ -130,8 +130,6 @@ mod runtime;
 mod scheduler;
 #[path = "backend/serve.rs"]
 mod serve;
-#[path = "telemetry.rs"]
-pub(crate) mod telemetry;
 #[path = "backend/session.rs"]
 mod session;
 #[path = "inference/spec_lab.rs"]
@@ -140,6 +138,8 @@ mod spec_lab;
 mod splitter;
 #[path = "models/storage.rs"]
 mod storage;
+#[path = "telemetry.rs"]
+pub(crate) mod telemetry;
 #[path = "utils/thermal.rs"]
 mod thermal;
 #[path = "network/tls.rs"]
@@ -485,8 +485,12 @@ fn anchor_admin(
     }
 
     let (document, local_root) = if let Some(source) = from_file {
-        let source_store = crate::admin_trust::AdminTrust::load(source)
-            .with_context(|| format!("não foi possível ler a cadeia transportada em {}", source.display()))?;
+        let source_store = crate::admin_trust::AdminTrust::load(source).with_context(|| {
+            format!(
+                "não foi possível ler a cadeia transportada em {}",
+                source.display()
+            )
+        })?;
         let document = source_store.document();
         if let Some(expected_cluster) = cluster_id {
             if expected_cluster != document.anchor.cluster_id {
@@ -502,11 +506,9 @@ fn anchor_admin(
         let cluster_id = cluster_id
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("--cluster-id é obrigatório ao criar a raiz local"))?;
-        let (_signing_key, principal) = local_authority_identity()?;
-        let anchor = crate::admin_trust::TrustAnchor::for_principal(
-            cluster_id.to_string(),
-            principal,
-        );
+        let (_signing_key, principal) = crate::admin_trust::local_authority_identity()?;
+        let anchor =
+            crate::admin_trust::TrustAnchor::for_principal(cluster_id.to_string(), principal);
         let root_principal = anchor.principal.clone();
         let document = crate::admin_trust::AdminTrustDocument {
             version: crate::admin_trust::TRUST_VERSION,
@@ -539,7 +541,7 @@ fn anchor_admin(
     }
 
     if local_root {
-        let (signing_key, principal) = local_authority_identity()?;
+        let (signing_key, principal) = crate::admin_trust::local_authority_identity()?;
         let anchor = crate::admin_trust::TrustAnchor::manual(
             document.anchor.cluster_id.clone(),
             principal,
@@ -560,27 +562,11 @@ fn anchor_admin(
     } else {
         crate::admin_trust::AdminTrust::install_document(&destination, document)?;
     }
-    println!("âncora administrativa instalada em {}", destination.display());
-    Ok(())
-}
-
-fn local_authority_identity() -> Result<(
-    ed25519_dalek::SigningKey,
-    crate::admin_trust::AuthorityPrincipal,
-)> {
-    let local_identity = identity::Identity::load_or_create(&identity::key_path());
-    let pkarr = pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path())
-        .context("não foi possível carregar a identidade libp2p para a âncora")?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&pkarr.secret_key_bytes());
-    let mut seed = signing_key.to_bytes();
-    let keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
-        .context("a identidade local não pôde ser convertida em chave libp2p")?;
-    let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
-        local_identity.node_id.0,
-        keypair.public().to_peer_id().to_string(),
-        &signing_key,
+    println!(
+        "âncora administrativa instalada em {}",
+        destination.display()
     );
-    Ok((signing_key, principal))
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -595,7 +581,9 @@ fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
 
 #[cfg(target_os = "macos")]
 fn configured_gateway_port(args: &Args) -> u16 {
-    let persisted = config::Config::load().ok().map(|config| config.gateway_port);
+    let persisted = config::Config::load()
+        .ok()
+        .map(|config| config.gateway_port);
     select_gateway_port(persisted, args.gateway_port)
 }
 
@@ -604,7 +592,6 @@ async fn async_main(
     log_capture: Arc<cluster_logs::LogCapture>,
     log_receiver: tokio::sync::mpsc::Receiver<cluster_logs::LogEntry>,
 ) -> Result<()> {
-
     info!(
         "Project root: {} (config: {})",
         config::project_root().display(),
@@ -625,6 +612,9 @@ async fn async_main(
     let mut app_config = config::Config::load()?;
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
     app_config.api_keys = database.api_keys()?;
+    if let Err(error) = database.save_network_settings(&app_config.network) {
+        warn!("não foi possível guardar os detalhes da rede no banco: {error:#}");
+    }
     app_config.thermal = database
         .thermal_policy()?
         .unwrap_or_else(crate::thermal::ThermalPolicy::default);
@@ -1067,12 +1057,18 @@ async fn async_main(
             peer_clients.clone(),
             auth_config.clone(),
             tls_server.clone(),
+            authority_signing_key.clone(),
+            authority_principal.clone(),
+            admin_trust.clone(),
         );
         cluster_logs_policy::spawn_ratchet(
             net.clone(),
             peer_clients.clone(),
             auth_config.clone(),
             cluster_logs.clone(),
+            authority_signing_key.clone(),
+            authority_principal.clone(),
+            admin_trust.clone(),
         );
         network_chat_policy::spawn_ratchet(
             net.clone(),
@@ -1413,6 +1409,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         inference_port: None,
         bootstrap_nodes: vec![],
         advertise_addr: None,
+        network: Default::default(),
         api_keys: vec![],
         blocked_nodes: vec![],
         // Um nó recém-configurado sobe com as bibliotecas detectadas; a tela de
@@ -1420,6 +1417,8 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         model_dirs: None,
         shard_dir: None,
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+        resources: Default::default(),
+        setup_model: None,
         node_name: None,
         huggingface_token: None,
         slot_save_path: None,
@@ -1432,7 +1431,24 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     // look-and-feel to maintain. The app notices it is in setup mode because
     // `/api/ui/node` is not among the routes here.
     let app = Router::new()
-        .route("/api/setup/key", get(webui::get_setup_key))
+        .route("/api/setup/hardware", get(webui::get_setup_hardware))
+        .route("/api/setup/models", get(webui::get_setup_models))
+        .route(
+            "/api/setup/admin-anchor/preview",
+            axum::routing::post(webui::preview_setup_anchor),
+        )
+        .route(
+            "/api/setup/admin-token",
+            axum::routing::post(webui::generate_setup_admin_token),
+        )
+        .route(
+            "/api/setup/trust-anchor",
+            axum::routing::post(webui::install_setup_trust_anchor),
+        )
+        .route(
+            "/api/setup/health",
+            axum::routing::post(webui::get_setup_health),
+        )
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
         .merge(crate::webapp::routes())
         .with_state(config)
@@ -1562,9 +1578,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let authority_signing_key = pkarr_node
         .as_ref()
         .map(|pn| ed25519_dalek::SigningKey::from_bytes(&pn.secret_key_bytes()))
-        .unwrap_or_else(|| {
-            ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)
-        });
+        .unwrap_or_else(|| ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng));
     let mut authority_seed = authority_signing_key.to_bytes();
     let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut authority_seed[..])
         .expect("a chave Ed25519 da autoridade deve ser uma identidade libp2p válida");
@@ -1839,12 +1853,18 @@ async fn start_gateway_only(
         peer_clients.clone(),
         auth_state.clone(),
         tls_server.clone(),
+        authority_signing_key.clone(),
+        authority_principal.clone(),
+        admin_trust.clone(),
     );
     cluster_logs_policy::spawn_ratchet(
         net.clone(),
         peer_clients.clone(),
         auth_state.clone(),
         cluster_logs.clone(),
+        authority_signing_key.clone(),
+        authority_principal.clone(),
+        admin_trust.clone(),
     );
     network_chat_policy::spawn_ratchet(
         net.clone(),

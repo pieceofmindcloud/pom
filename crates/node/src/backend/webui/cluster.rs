@@ -310,8 +310,6 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             snapshot.version,
         );
     }
-    let connection_key = state.auth.read().await.connection_key.clone();
-
     // Fan out to every peer at once; a slow peer must not serialise the others.
     //
     // Cada peer é lido pelos **candidatos**, não por um endereço só, e o
@@ -320,6 +318,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     // Painel de rediscar para sempre um endereço que morreu: quem falha sai de
     // uso e é reavaliado depois do `FAILURE_COOLDOWN`; quem responde limpa a
     // marca na hora e vira o preferido da próxima leitura.
+    let peer_state = state.clone();
     let futures: Vec<_> = peers
         .iter()
         .map(|p| {
@@ -331,7 +330,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             // chamada de controle falharia - foi assim que a tela de implantar
             // parou de enxergar as fatias dos outros nós.
             let http = state.peer_http.for_peer(&p.node_id);
-            let connection_key = connection_key.clone();
+            let state = peer_state.clone();
             let routes = state.network.routes.clone();
             let network = state.network.clone();
             async move {
@@ -353,11 +352,18 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 let mut ultimo_erro = None;
                 for base in &utilizaveis {
                     let url = format!("{base}/api/ui/node");
-                    let resposta = tokio::time::timeout(
-                        PEER_TIMEOUT,
-                        http.get(&url).bearer_auth(connection_key.clone()).send(),
-                    )
-                    .await;
+                    let request = match state
+                        .control_get_request(http.get(&url), "/api/ui/node")
+                        .await
+                    {
+                        Ok(request) => request,
+                        Err(error) => {
+                            ultimo_erro =
+                                Some(format!("assinatura de controle indisponível: {error}"));
+                            continue;
+                        }
+                    };
+                    let resposta = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
                     match resposta {
                         Ok(Ok(r)) if r.status().is_success() => match r.json().await {
                             Ok(v) => {
@@ -529,7 +535,11 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     let active_mmproj_path = views.iter().find_map(|view| {
         let node = view.node.as_ref()?;
         let config = node.get("config")?;
-        if config.get("start_layer").and_then(serde_json::Value::as_u64) != Some(0) {
+        if config
+            .get("start_layer")
+            .and_then(serde_json::Value::as_u64)
+            != Some(0)
+        {
             return None;
         }
         let serves_active_model = view.model == active
@@ -537,8 +547,12 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 .capabilities
                 .iter()
                 .any(|capability| capability.model_id == active)
-            || node.get("active_model").and_then(serde_json::Value::as_str) == Some(active.as_str())
-            || config.get("model_label").and_then(serde_json::Value::as_str) == Some(active.as_str());
+            || node.get("active_model").and_then(serde_json::Value::as_str)
+                == Some(active.as_str())
+            || config
+                .get("model_label")
+                .and_then(serde_json::Value::as_str)
+                == Some(active.as_str());
         if !serves_active_model {
             return None;
         }
@@ -622,8 +636,7 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
             peer.is_alive()
                 && ((peer.node_id == local_id
                     && local_config.as_ref().is_some_and(|config| {
-                        config.start_layer == 0
-                            && config.model_label == active_model
+                        config.start_layer == 0 && config.model_label == active_model
                     }))
                     || peer.model == active_model
                     || peer
@@ -701,7 +714,6 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
         .iter()
         .filter(|peer| peer.start_layer == 0)
         .collect();
-    let connection_key = state.auth.read().await.connection_key.clone();
     let mut vision_supported = false;
     let mut vision_unknown = false;
     let mut vision_candidate = false;
@@ -727,13 +739,13 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
                 .usable(&peer.node_id, &peer.gateway_candidates());
             let mut result = None;
             for base in candidates {
-                let response = tokio::time::timeout(
-                    PEER_TIMEOUT,
-                    http.get(format!("{base}/api/ui/node"))
-                        .bearer_auth(connection_key.clone())
-                        .send(),
-                )
-                .await;
+                let Ok(request) = state
+                    .control_get_request(http.get(format!("{base}/api/ui/node")), "/api/ui/node")
+                    .await
+                else {
+                    continue;
+                };
+                let response = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
                 if let Ok(Ok(response)) = response {
                     if response.status().is_success() {
                         if let Ok(value) = response.json::<serde_json::Value>().await {
@@ -874,11 +886,11 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                 || peer.node_id == self_id
         })
         .collect::<Vec<_>>();
-    let connection_key = state.auth.read().await.connection_key.clone();
     let local = local_catalog(&state).await;
     // O nome que este nó anuncia, não o hostname cru do SO. Ver `models`.
     let local_host = state.network.hostname.clone();
 
+    let peer_state = state.clone();
     let futures: Vec<_> = peers
         .iter()
         .filter(|p| p.node_id != self_id)
@@ -886,7 +898,7 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
             let url = p.gateway_url();
             let http = state.peer_http.for_peer(&p.node_id);
             let node_id = p.node_id.clone();
-            let connection_key = connection_key.clone();
+            let state = peer_state.clone();
             async move {
                 let Some(base) = url else {
                     return (
@@ -900,12 +912,20 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
                     Err(e) => return (node_id, None, Some(format!("sem cliente: {e}"))),
                 };
                 let url = format!("{base}/api/ui/models");
-                match tokio::time::timeout(
-                    PEER_TIMEOUT * 3,
-                    http.get(&url).bearer_auth(connection_key).send(),
-                )
-                .await
+                let request = match state
+                    .control_get_request(http.get(&url), "/api/ui/models")
+                    .await
                 {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return (
+                            node_id,
+                            None,
+                            Some(format!("assinatura indisponível: {error}")),
+                        )
+                    }
+                };
+                match tokio::time::timeout(PEER_TIMEOUT * 3, request.send()).await {
                     Ok(Ok(r)) if r.status().is_success() => {
                         match r.json::<serde_json::Value>().await {
                             Ok(v) => (node_id, Some(v), None),

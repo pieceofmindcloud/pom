@@ -1925,15 +1925,24 @@ pub(super) async fn tp_shardability_check(
     // máquina, porque isto não depende de quem é o primary. `for_peer` resolve
     // só o TLS (cliente pinado por node_id); credencial é por requisição, como
     // no resto do arquivo.
-    let key = state.auth.read().await.connection_key.clone();
-    let resp = match http
-        .post(format!("{base}/api/ui/tp/check"))
-        .timeout(PEER_TIMEOUT * 4)
-        .bearer_auth(&key)
-        .json(&json!({ "model_path": path, "tp_size": tp.size }))
-        .send()
+    let body = json!({ "model_path": path, "tp_size": tp.size });
+    let request = match state
+        .control_json_request(
+            http.post(format!("{base}/api/ui/tp/check"))
+                .timeout(PEER_TIMEOUT * 4),
+            "/api/ui/tp/check",
+            &body,
+        )
         .await
     {
+        Ok(request) => request,
+        Err(error) => {
+            return Some(format!(
+                "não foi possível assinar a checagem de shard: {error}"
+            ))
+        }
+    };
+    let resp = match request.send().await {
         Ok(r) => r,
         Err(e) => {
             return Some(format!(

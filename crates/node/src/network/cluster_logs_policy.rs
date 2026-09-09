@@ -41,16 +41,29 @@ struct LogsReply {
     logs_enabled: bool,
 }
 
-pub async fn fetch_from_principal(
+pub(crate) async fn fetch_from_principal(
     clients: &PeerClients,
     principal_id: &str,
     base_url: &str,
     connection_key: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    authority_principal: &crate::admin_trust::AuthorityPrincipal,
+    trust: &crate::admin_trust::AdminTrust,
 ) -> Result<bool> {
     let http = clients.for_peer(principal_id)?;
-    let response = http
-        .get(format!("{base_url}{CLUSTER_LOGS_POLICY_PATH}"))
-        .bearer_auth(connection_key)
+    let mut request = http.get(format!("{base_url}{CLUSTER_LOGS_POLICY_PATH}"));
+    request = request.headers(crate::gateway::GatewayState::signed_control_headers_for(
+        signing_key,
+        authority_principal.clone(),
+        trust,
+        "GET",
+        CLUSTER_LOGS_POLICY_PATH,
+        &[],
+    )?);
+    if !connection_key.is_empty() {
+        request = request.bearer_auth(connection_key);
+    }
+    let response = request
         .timeout(crate::webui::PEER_TIMEOUT)
         .send()
         .await
@@ -76,11 +89,14 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
     }
 }
 
-pub fn spawn_ratchet(
+pub(crate) fn spawn_ratchet(
     net: Arc<crate::network::Network>,
     _clients: Arc<PeerClients>,
     auth: Arc<RwLock<crate::config::Config>>,
     logs: Arc<ClusterLogs>,
+    signing_key: Arc<ed25519_dalek::SigningKey>,
+    authority_principal: crate::admin_trust::AuthorityPrincipal,
+    trust: Arc<crate::admin_trust::AdminTrust>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
     net.set_cluster_logs_probe(tx);
@@ -109,7 +125,16 @@ pub fn spawn_ratchet(
             };
             let probe = PeerClients::new(std::time::Duration::from_secs(10));
             probe.set_tls(announced);
-            let fetched = fetch_from_principal(&probe, &principal, &base, &connection_key).await;
+            let fetched = fetch_from_principal(
+                &probe,
+                &principal,
+                &base,
+                &connection_key,
+                &signing_key,
+                &authority_principal,
+                &trust,
+            )
+            .await;
             if let PolicyOutcome::Adopt(value) = adopt_or_keep(local, fetched) {
                 {
                     let mut cfg = auth.write().await;

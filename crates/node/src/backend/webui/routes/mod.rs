@@ -53,6 +53,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/public/",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/peers",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -459,7 +464,10 @@ mod policy_tests {
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
-        assert_eq!(scope_of("/api/ui/model-provider/status"), RouteScope::NodeAdmin);
+        assert_eq!(
+            scope_of("/api/ui/model-provider/status"),
+            RouteScope::NodeAdmin
+        );
         assert_eq!(
             scope_of("/api/ui/network/advertise-addr"),
             RouteScope::InferNodeAdmin
@@ -491,7 +499,10 @@ mod policy_tests {
             scope_of("/api/ui/chat/capabilities"),
             RouteScope::CommonOrInternal
         );
-        assert_eq!(scope_of("/api/ui/chat/history/abc"), RouteScope::InferNodeAdmin);
+        assert_eq!(
+            scope_of("/api/ui/chat/history/abc"),
+            RouteScope::InferNodeAdmin
+        );
         assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::InferNodeAdmin);
         assert_eq!(
             scope_of("/api/internal/api-keys/validate"),
@@ -504,9 +515,15 @@ mod policy_tests {
         assert_eq!(scope_of("/api/ui/models-old"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/admin"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/api/ui"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/requests/stats/today"), RouteScope::AdminOnly);
+        assert_eq!(
+            scope_of("/api/ui/requests/stats/today"),
+            RouteScope::AdminOnly
+        );
         assert_eq!(scope_of("/api/new-control"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/chat/telemetry"), RouteScope::CommonOrInternal);
+        assert_eq!(
+            scope_of("/api/ui/chat/telemetry"),
+            RouteScope::CommonOrInternal
+        );
     }
 
     /// A tela Rede do perfil `node` lê o retrato da rede; mudar o que ela
@@ -514,7 +531,10 @@ mod policy_tests {
     /// o mesmo prefixo.
     #[test]
     fn reading_the_roster_is_wider_than_administering_it() {
-        assert_eq!(route_scope(&Method::GET, "/admin/nodes"), RouteScope::NodeAdmin);
+        assert_eq!(
+            route_scope(&Method::GET, "/admin/nodes"),
+            RouteScope::NodeAdmin
+        );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/block"),
             RouteScope::AdminOnly

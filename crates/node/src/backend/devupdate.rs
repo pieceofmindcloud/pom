@@ -213,7 +213,6 @@ async fn update_endpoint(
             )
                 .into_response();
         };
-        let key = { state.auth.read().await.connection_key.clone() };
         let url = format!("{base}/api/ui/dev/update");
         let cliente = match state.peer_http.for_peer(&alvo) {
             Ok(c) => c,
@@ -225,13 +224,25 @@ async fn update_endpoint(
                     .into_response()
             }
         };
-        return match cliente
-            .post(&url)
-            .bearer_auth(&key)
-            .timeout(crate::webui::PEER_TIMEOUT)
-            .send()
+        let request = match state
+            .authorize_control_request(
+                cliente.post(&url).timeout(crate::webui::PEER_TIMEOUT),
+                "POST",
+                "/api/ui/dev/update",
+                &[],
+            )
             .await
         {
+            Ok(request) => request,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": error.to_string() })),
+                )
+                    .into_response()
+            }
+        };
+        return match request.send().await {
             Ok(resp) => {
                 let status = resp.status();
                 let corpo = resp.text().await.unwrap_or_else(|e| {
@@ -343,7 +354,6 @@ async fn update_endpoint(
                 )
             })
             .collect();
-        let key = { state.auth.read().await.connection_key.clone() };
         let alvos = sibling_urls(&me, &tuples, same_machine);
 
         // Máquina de outra pessoa: um irmão que não responde não pode
@@ -358,13 +368,21 @@ async fn update_endpoint(
                 falharam.push(url.clone());
                 continue;
             };
-            match cliente
-                .post(format!("{url}/api/ui/dev/restart"))
-                .bearer_auth(&key)
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
+            let Ok(request) = state
+                .authorize_control_request(
+                    cliente
+                        .post(format!("{url}/api/ui/dev/restart"))
+                        .timeout(std::time::Duration::from_secs(10)),
+                    "POST",
+                    "/api/ui/dev/restart",
+                    &[],
+                )
                 .await
-            {
+            else {
+                falharam.push(url.clone());
+                continue;
+            };
+            match request.send().await {
                 Ok(resp) if resp.status().is_success() => reiniciados += 1,
                 Ok(resp) => {
                     tracing::warn!("irmão {url} recusou o reinício: {}", resp.status());

@@ -135,6 +135,7 @@ function AdminAccessUnavailable() {
 export const routeLoaders = {
   setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
   setupWizard: () => import("./routes/SetupWizard").then(({ SetupWizard }) => SetupWizard),
+  publicNetworks: () => import("./routes/PublicNetworks").then(({ PublicNetworks }) => PublicNetworks),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
@@ -166,6 +167,7 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
 
 const Setup = lazyRoute(routeLoaders.setup);
 const SetupWizard = lazyRoute(routeLoaders.setupWizard);
+const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
@@ -261,9 +263,9 @@ export default function App() {
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
    *
-   * Deliberately not probed with `/api/setup/key`: that route *mints* a new
-   * connection key, so asking it "are we in setup?" would rotate the cluster
-   * credential on every page load.
+   * Deliberately not probed with a setup mutation endpoint. Setup mode is
+   * detected by the normal surface probe, while `/api/setup/*` is reserved for
+   * the real first-access wizard.
    */
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
@@ -377,6 +379,7 @@ export default function App() {
                     <AnimatePresence mode="wait">
                       <Routes location={location} key={location.pathname}>
                         <Route path="/" element={<Page><Dashboard /></Page>} />
+                        <Route path="/redes-publicas" element={<Page><PublicNetworks /></Page>} />
                         <Route path="/modelos" element={<Page><WholeModels /></Page>} />
                         <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
                         <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />

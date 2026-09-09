@@ -1,8 +1,8 @@
-use crate::auth::{AuthState, ConnectionAuth, InternalNodeAuth};
 use crate::admin_trust::{
     AdminTransferAcceptance, AdminTransferOffer, AdminTrustDocument, AuthorityPrincipal,
     EffectiveAuthority, NodePromotionCommand, NodePromotionRequest,
 };
+use crate::auth::{AuthState, ConnectionAuth, InternalNodeAuth};
 use crate::config::ApiKey;
 use crate::profile::{NodeProfile, ProfileAction};
 use axum::{
@@ -123,19 +123,22 @@ async fn post_internal_json<T: Serialize>(
         anyhow::bail!("o peer não anuncia porta de gateway");
     }
     let client = state.peer_http.for_peer(&peer.node_id)?;
+    let body_bytes = serde_json::to_vec(body)?;
+    let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
     let connection_key = state.auth.read().await.connection_key.clone();
-    if connection_key.is_empty() {
-        anyhow::bail!("node-to-node trust is not configured");
-    }
 
     let mut last_error = "nenhum endereço de gateway respondeu".to_string();
     for base in &urls {
-        match client
+        let mut request = client
             .post(format!("{base}{path}"))
             .timeout(timeout)
-            .bearer_auth(&connection_key)
-            .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-            .json(body)
+            .headers(control_headers.clone());
+        if !connection_key.is_empty() {
+            request = request.bearer_auth(&connection_key);
+        }
+        match request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body_bytes.clone())
             .send()
             .await
         {
@@ -159,19 +162,22 @@ async fn sync_json<T: Serialize>(
         .ok_or_else(|| anyhow::anyhow!("central admin node is unavailable"))?;
     let urls = gateway_urls(&peer);
     let client = state.peer_http.for_peer(&peer.node_id)?;
+    let body_bytes = serde_json::to_vec(body)?;
+    let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
     let connection_key = state.auth.read().await.connection_key.clone();
-    if connection_key.is_empty() {
-        anyhow::bail!("node-to-node trust is not configured");
-    }
     let mut last_error = "central admin synchronization failed".to_string();
     for attempt in 0..SYNC_ATTEMPTS {
         for base in &urls {
-            let result = client
+            let mut request = client
                 .post(format!("{base}{path}"))
                 .timeout(SYNC_TIMEOUT)
-                .bearer_auth(&connection_key)
-                .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-                .json(body)
+                .headers(control_headers.clone());
+            if !connection_key.is_empty() {
+                request = request.bearer_auth(&connection_key);
+            }
+            let result = request
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body_bytes.clone())
                 .send()
                 .await;
             match result {
@@ -259,7 +265,20 @@ pub(crate) async fn validate_api_key_remote(
     state: &crate::gateway::GatewayState,
     token: &str,
 ) -> anyhow::Result<Option<ApiKey>> {
-    validate_api_key_remote_parts(&state.network, &state.peer_http, &state.auth, token).await
+    validate_api_key_remote_parts(
+        &state.network,
+        &state.peer_http,
+        &state.auth,
+        token,
+        Some(state.signed_control_headers(
+            "POST",
+            "/api/internal/api-keys/validate",
+            &serde_json::to_vec(&ValidateRequest {
+                token: token.to_string(),
+            })?,
+        )?),
+    )
+    .await
 }
 
 pub(crate) async fn validate_api_key_remote_parts(
@@ -267,29 +286,37 @@ pub(crate) async fn validate_api_key_remote_parts(
     peer_http: &crate::peer_client::PeerClients,
     auth: &AuthState,
     token: &str,
+    control_headers: Option<reqwest::header::HeaderMap>,
 ) -> anyhow::Result<Option<ApiKey>> {
-    let peer = network.alive_peers().await.into_iter().find(|peer| {
-        peer.node_id != network.node_id
-            && peer.profile == NodeProfile::Admin
-            && peer.gateway_port.is_some()
-    })
+    let peer = network
+        .alive_peers()
+        .await
+        .into_iter()
+        .find(|peer| {
+            peer.node_id != network.node_id
+                && peer.profile == NodeProfile::Admin
+                && peer.gateway_port.is_some()
+        })
         .ok_or_else(|| anyhow::anyhow!("central admin node is unavailable"))?;
     let client = peer_http.for_peer(&peer.node_id)?;
-    let connection_key = auth.read().await.connection_key.clone();
-    if connection_key.is_empty() {
-        anyhow::bail!("node-to-node trust is not configured");
-    }
     let body = ValidateRequest {
         token: token.to_string(),
     };
+    let body_bytes = serde_json::to_vec(&body)?;
+    let control_headers = control_headers;
+    let connection_key = auth.read().await.connection_key.clone();
     for attempt in 0..SYNC_ATTEMPTS {
         for base in gateway_urls(&peer) {
-            let result = client
+            let mut request = client
                 .post(format!("{base}/api/internal/api-keys/validate"))
                 .timeout(SYNC_TIMEOUT)
-                .bearer_auth(&connection_key)
-                .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-                .json(&body)
+                .headers(control_headers.clone().unwrap_or_default());
+            if !connection_key.is_empty() {
+                request = request.bearer_auth(&connection_key);
+            }
+            let result = request
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body_bytes.clone())
                 .send()
                 .await;
             if let Ok(response) = result {
@@ -379,7 +406,19 @@ async fn require_principal(state: &crate::gateway::GatewayState) -> Result<(), S
         .effective_authority(&state.authority_principal, profile)
         == Some(crate::admin_trust::EffectiveAuthority::Primary))
     .then_some(())
-        .ok_or(StatusCode::FORBIDDEN)
+    .ok_or(StatusCode::FORBIDDEN)
+}
+
+/// Every control-plane mutation is signed by an authority in the current
+/// chain. The shared connection key remains useful for private transport, but
+/// it is not itself authorization to mutate control state.
+async fn require_signed_admin(
+    state: &crate::gateway::GatewayState,
+    auth: &InternalNodeAuth,
+) -> bool {
+    auth.principal().is_some_and(|issuer| {
+        crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), issuer)
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -479,7 +518,9 @@ async fn admin_authority_view(
         let cfg = state.auth.read().await;
         (
             cfg.profile,
-            cfg.node_name.clone().unwrap_or_else(|| state.network.node_id.clone()),
+            cfg.node_name
+                .clone()
+                .unwrap_or_else(|| state.network.node_id.clone()),
         )
     };
     let document = state.admin_trust.document();
@@ -519,8 +560,18 @@ async fn admin_authority_view(
         .iter()
         .filter(|grant| grant.level == crate::admin_trust::AdminLevel::Secondary)
         .map(|grant| {
-            let node = member_view(&grant.subject, &state.network.node_id, &local_hostname, &peers);
-            let issuer = member_view(&grant.issuer, &state.network.node_id, &local_hostname, &peers);
+            let node = member_view(
+                &grant.subject,
+                &state.network.node_id,
+                &local_hostname,
+                &peers,
+            );
+            let issuer = member_view(
+                &grant.issuer,
+                &state.network.node_id,
+                &local_hostname,
+                &peers,
+            );
             AuthorityGrantView {
                 sequence: grant.promotion_seq,
                 node_id: grant.subject.node_id.clone(),
@@ -549,8 +600,18 @@ async fn admin_authority_view(
         }
     };
     let pending_transfer = document.pending_transfer.as_ref().map(|offer| {
-        let from = member_view(&offer.issuer, &state.network.node_id, &local_hostname, &peers);
-        let target = member_view(&offer.successor, &state.network.node_id, &local_hostname, &peers);
+        let from = member_view(
+            &offer.issuer,
+            &state.network.node_id,
+            &local_hostname,
+            &peers,
+        );
+        let target = member_view(
+            &offer.successor,
+            &state.network.node_id,
+            &local_hostname,
+            &peers,
+        );
         AdminTransferOfferView {
             kind: "principal_transfer",
             id: offer.offer_id.clone(),
@@ -589,13 +650,10 @@ async fn request_node_promotion(
         )
             .into_response();
     }
-    let request = match state
-        .admin_trust
-        .node_promotion_request(
-            &state.authority_signing_key,
-            state.authority_principal.clone(),
-        )
-    {
+    let request = match state.admin_trust.node_promotion_request(
+        &state.authority_signing_key,
+        state.authority_principal.clone(),
+    ) {
         Ok(request) => request,
         Err(error) => {
             return (
@@ -657,10 +715,13 @@ async fn request_node_promotion(
 }
 
 async fn internal_authorize_node(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<NodePromotionRequest>,
 ) -> axum::response::Response {
+    if auth.principal().is_none() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if state
         .admin_trust
         .effective_authority(&state.authority_principal, state.auth.read().await.profile)
@@ -672,17 +733,11 @@ async fn internal_authorize_node(
         )
             .into_response();
     }
-    let Some(peer) = state
-        .network
-        .alive_peers()
-        .await
-        .into_iter()
-        .find(|peer| {
-            peer.node_id == request.subject.node_id
-                && peer.authority_pubkey == request.subject.pubkey
-                && peer.libp2p_peer_id.as_deref() == Some(request.subject.peer_id.as_str())
-        })
-    else {
+    let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
+        peer.node_id == request.subject.node_id
+            && peer.authority_pubkey == request.subject.pubkey
+            && peer.libp2p_peer_id.as_deref() == Some(request.subject.peer_id.as_str())
+    }) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "o nó solicitante não está ativo" })),
@@ -721,23 +776,28 @@ async fn internal_authorize_node(
         }
         Err(error) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("a autorização não chegou ao nó solicitante: {error}") })),
+            Json(
+                json!({ "error": format!("a autorização não chegou ao nó solicitante: {error}") }),
+            ),
         )
             .into_response(),
     }
 }
 
 async fn internal_accept_node_promotion(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(command): Json<NodePromotionCommand>,
 ) -> axum::response::Response {
+    if !require_signed_admin(&state, &auth).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let mut cfg = state.auth.write().await;
-    if let Err(error) = state.admin_trust.apply_node_promotion(
-        command,
-        &state.authority_principal,
-        cfg.profile,
-    ) {
+    if let Err(error) =
+        state
+            .admin_trust
+            .apply_node_promotion(command, &state.authority_principal, cfg.profile)
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": format!("autorização administrativa recusada: {error}") })),
@@ -788,11 +848,11 @@ async fn relinquish_node(
 }
 
 async fn internal_upsert_api_key(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(key): Json<ApiKey>,
 ) -> impl IntoResponse {
-    if require_principal(&state).await.is_err() || key.key.is_empty() || key.id.is_empty() {
+    if !require_signed_admin(&state, &auth).await || key.key.is_empty() || key.id.is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state.database.insert_api_key(&key) {
@@ -805,11 +865,11 @@ async fn internal_upsert_api_key(
 }
 
 async fn internal_revoke_api_key(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeRequest>,
 ) -> impl IntoResponse {
-    if require_principal(&state).await.is_err() {
+    if !require_signed_admin(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
@@ -825,11 +885,11 @@ async fn internal_revoke_api_key(
 }
 
 async fn internal_revoke_origin(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<RevokeOriginRequest>,
 ) -> impl IntoResponse {
-    if require_principal(&state).await.is_err() {
+    if !require_signed_admin(&state, &auth).await {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
@@ -845,11 +905,11 @@ async fn internal_revoke_origin(
 }
 
 async fn internal_validate_api_key(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(request): Json<ValidateRequest>,
 ) -> impl IntoResponse {
-    if require_principal(&state).await.is_err() {
+    if !require_signed_admin(&state, &auth).await {
         return (
             StatusCode::FORBIDDEN,
             Json(ValidateResponse {
@@ -1093,9 +1153,9 @@ async fn promote_node_to_admin(
     State(state): State<crate::gateway::GatewayState>,
     Path(node_id): Path<String>,
 ) -> axum::response::Response {
-    let (profile, connection_key) = {
+    let profile = {
         let cfg = state.auth.read().await;
-        (cfg.profile, cfg.connection_key.clone())
+        cfg.profile
     };
     if !profile.allows(ProfileAction::PromoteNodeToAdmin)
         || require_principal(&state).await.is_err()
@@ -1126,23 +1186,6 @@ async fn promote_node_to_admin(
             Json(json!({ "error": "nó desconhecido ou fora da rede" })),
         )
             .into_response();
-    };
-    let Some(base) = peer.gateway_url() else {
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o nó não anuncia uma porta de gateway" })),
-        )
-            .into_response();
-    };
-    let client = match state.peer_http.for_peer(&node_id) {
-        Ok(client) => client,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("não foi possível alcançar o nó: {error}") })),
-            )
-                .into_response();
-        }
     };
     let Some(peer_id) = peer.libp2p_peer_id.clone() else {
         return (
@@ -1188,13 +1231,14 @@ async fn promote_node_to_admin(
             .into_response();
     }
     let trust_document = state.admin_trust.document();
-    let response = client
-        .post(format!("{base}/api/internal/admin-trust/reconcile"))
-        .bearer_auth(connection_key)
-        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-        .json(&trust_document)
-        .send()
-        .await;
+    let response = post_internal_json(
+        &state,
+        &peer,
+        "/api/internal/admin-trust/reconcile",
+        &trust_document,
+        SYNC_TIMEOUT,
+    )
+    .await;
     match response {
         Ok(response) if response.status().is_success() => {
             Json(json!({ "profile": "admin", "node_id": node_id })).into_response()
@@ -1216,10 +1260,13 @@ async fn promote_node_to_admin(
 }
 
 async fn internal_reconcile_admin_trust(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(document): Json<AdminTrustDocument>,
 ) -> axum::response::Response {
+    if !require_signed_admin(&state, &auth).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let mut cfg = state.auth.write().await;
     if !document
         .grants
@@ -1272,10 +1319,13 @@ struct TransferCompletion {
 }
 
 async fn internal_complete_transfer(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<crate::gateway::GatewayState>,
     Json(completion): Json<TransferCompletion>,
 ) -> axum::response::Response {
+    if !require_signed_admin(&state, &auth).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if completion.offer.issuer != state.authority_principal {
         return (
             StatusCode::FORBIDDEN,
@@ -1331,28 +1381,23 @@ async fn resign_authority(
                 .into_response()
         }
     };
-    let Some(peer) = state
-        .network
-        .alive_peers()
-        .await
-        .into_iter()
-        .find(|peer| {
-            peer.node_id == successor.node_id
-                && peer.libp2p_peer_id.as_deref() == Some(successor.peer_id.as_str())
-                && peer.authority_pubkey == successor.pubkey
-                && peer.profile == NodeProfile::Admin
-        })
-    else {
+    let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
+        peer.node_id == successor.node_id
+            && peer.libp2p_peer_id.as_deref() == Some(successor.peer_id.as_str())
+            && peer.authority_pubkey == successor.pubkey
+            && peer.profile == NodeProfile::Admin
+    }) else {
         return (
             StatusCode::CONFLICT,
             Json(json!({ "error": "o último secundário promovido não está ativo" })),
         )
             .into_response();
     };
-    let offer = match state
-        .admin_trust
-        .begin_transfer(&state.authority_signing_key, successor, peer.is_alive())
-    {
+    let offer = match state.admin_trust.begin_transfer(
+        &state.authority_signing_key,
+        successor,
+        peer.is_alive(),
+    ) {
         Ok(offer) => offer,
         Err(error) => {
             return (
@@ -1362,31 +1407,15 @@ async fn resign_authority(
                 .into_response()
         }
     };
-    let Some(base) = peer.gateway_url() else {
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "o sucessor não anuncia porta de gateway" })),
-        )
-            .into_response();
-    };
-    let client = match state.peer_http.for_peer(&peer.node_id) {
-        Ok(client) => client,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("não foi possível alcançar o sucessor: {error}") })),
-            )
-                .into_response()
-        }
-    };
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .post(format!("{base}/api/internal/admin-trust/reconcile"))
-        .bearer_auth(key)
-        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-        .json(&state.admin_trust.document())
-        .send()
-        .await;
+    let document = state.admin_trust.document();
+    let response = post_internal_json(
+        &state,
+        &peer,
+        "/api/internal/admin-trust/reconcile",
+        &document,
+        SYNC_TIMEOUT,
+    )
+    .await;
     match response {
         Ok(response) if response.status().is_success() => {
             Json(json!({ "pending": true, "offer_id": offer.offer_id })).into_response()
@@ -1463,35 +1492,15 @@ pub(crate) async fn accept_authority_transfer(
         }))
         .into_response();
     };
-    let Some(base) = peer.gateway_url() else {
-        return Json(json!({
-            "accepted": true,
-            "offer_id": offer.offer_id,
-            "synchronized": false,
-            "reason": "o principal anterior não anuncia porta de gateway"
-        }))
-        .into_response();
-    };
-    let client = match state.peer_http.for_peer(&peer.node_id) {
-        Ok(client) => client,
-        Err(error) => {
-            return Json(json!({
-                "accepted": true,
-                "offer_id": offer.offer_id,
-                "synchronized": false,
-                "reason": error.to_string()
-            }))
-            .into_response()
-        }
-    };
     let completion = TransferCompletion { offer, acceptance };
-    match client
-        .post(format!("{base}/api/internal/admin-trust/complete-transfer"))
-        .bearer_auth(state.auth.read().await.connection_key.clone())
-        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-        .json(&completion)
-        .send()
-        .await
+    match post_internal_json(
+        state,
+        &peer,
+        "/api/internal/admin-trust/complete-transfer",
+        &completion,
+        SYNC_TIMEOUT,
+    )
+    .await
     {
         Ok(response) if response.status().is_success() => {
             Json(json!({ "accepted": true, "offer_id": offer_id, "synchronized": true }))
@@ -1563,28 +1572,18 @@ async fn demote_secondary(
         .into_iter()
         .find(|peer| peer.node_id == subject.node_id)
     else {
-        return Json(json!({ "demoted": true, "node_id": node_id, "offline": true })).into_response();
+        return Json(json!({ "demoted": true, "node_id": node_id, "offline": true }))
+            .into_response();
     };
-    let Some(base) = peer.gateway_url() else {
-        return Json(json!({ "demoted": true, "node_id": node_id, "offline": true })).into_response();
-    };
-    let client = match state.peer_http.for_peer(&peer.node_id) {
-        Ok(client) => client,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("não foi possível alcançar o secundário: {error}") })),
-            )
-                .into_response()
-        }
-    };
-    let response = client
-        .post(format!("{base}/api/internal/admin-trust/reconcile"))
-        .bearer_auth(state.auth.read().await.connection_key.clone())
-        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-        .json(&state.admin_trust.document())
-        .send()
-        .await;
+    let document = state.admin_trust.document();
+    let response = post_internal_json(
+        &state,
+        &peer,
+        "/api/internal/admin-trust/reconcile",
+        &document,
+        SYNC_TIMEOUT,
+    )
+    .await;
     match response {
         Ok(response) if response.status().is_success() => {
             Json(json!({ "demoted": true, "node_id": node_id })).into_response()
@@ -1879,12 +1878,8 @@ mod tests {
             vec![crate::gateway::testkit::peer("outro", "salem", 8081)],
         )
         .await;
-        let response = promote_node_to_admin(
-            ConnectionAuth,
-            State(state),
-            Path("outro".to_string()),
-        )
-        .await;
+        let response =
+            promote_node_to_admin(ConnectionAuth, State(state), Path("outro".to_string())).await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
@@ -1898,10 +1893,9 @@ mod tests {
         .await;
         assert_eq!(state.admin_trust.current_primary().node_id, "primary");
         assert_eq!(
-            state.admin_trust.effective_authority(
-                &state.authority_principal,
-                NodeProfile::Admin,
-            ),
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, NodeProfile::Admin,),
             Some(crate::admin_trust::EffectiveAuthority::Secondary)
         );
         let response =
@@ -2009,9 +2003,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn internal_key_transitions_are_authenticated_and_idempotent() {
+    async fn internal_key_transitions_require_signed_control_and_are_idempotent() {
         let state = crate::gateway::testkit::state_with("principal", vec![]).await;
         state.auth.write().await.profile = NodeProfile::Admin;
+        let signed_request = |path: &str, body: Vec<u8>| {
+            let headers = state
+                .signed_control_headers("POST", path, &body)
+                .expect("assinar comando de teste");
+            Request::post(path)
+                .header("content-type", "application/json")
+                .header(
+                    crate::auth::INTERNAL_NODE_REQUEST_HEADER,
+                    headers
+                        .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
+                        .expect("marcador interno")
+                        .to_str()
+                        .unwrap(),
+                )
+                .header(
+                    crate::auth::CONTROL_SIGNATURE_HEADER,
+                    headers
+                        .get(crate::auth::CONTROL_SIGNATURE_HEADER)
+                        .expect("assinatura interna")
+                        .to_str()
+                        .unwrap(),
+                )
+                .body(Body::from(body))
+                .unwrap()
+        };
         let key = ApiKey {
             id: "retry-safe".into(),
             key: "sk-retry-safe".into(),
@@ -2024,14 +2043,10 @@ mod tests {
         for _ in 0..2 {
             let response = admin_routes()
                 .with_state(state.clone())
-                .oneshot(
-                    Request::post("/api/internal/api-keys/upsert")
-                        .header("authorization", "Bearer chave")
-                        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-                        .header("content-type", "application/json")
-                        .body(Body::from(serde_json::to_vec(&key).unwrap()))
-                        .unwrap(),
-                )
+                .oneshot(signed_request(
+                    "/api/internal/api-keys/upsert",
+                    serde_json::to_vec(&key).unwrap(),
+                ))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -2050,20 +2065,14 @@ mod tests {
         for _ in 0..2 {
             let response = admin_routes()
                 .with_state(state.clone())
-                .oneshot(
-                    Request::post("/api/internal/api-keys/revoke")
-                        .header("authorization", "Bearer chave")
-                        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-                        .header("content-type", "application/json")
-                        .body(Body::from(
-                            serde_json::to_vec(&RevokeRequest {
-                                key_or_id: key.id.clone(),
-                                revoked_by: "principal".into(),
-                            })
-                            .unwrap(),
-                        ))
-                        .unwrap(),
-                )
+                .oneshot(signed_request(
+                    "/api/internal/api-keys/revoke",
+                    serde_json::to_vec(&RevokeRequest {
+                        key_or_id: key.id.clone(),
+                        revoked_by: "principal".into(),
+                    })
+                    .unwrap(),
+                ))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -2149,23 +2158,16 @@ mod tests {
     ) -> (crate::gateway::GatewayState, crate::gateway::GatewayState) {
         let admin_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let infer_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let admin_principal = AuthorityPrincipal::from_signing_key(
-            "admin",
-            "peer-admin",
+        let admin_principal =
+            AuthorityPrincipal::from_signing_key("admin", "peer-admin", &admin_key);
+        let infer_principal =
+            AuthorityPrincipal::from_signing_key("infer", "peer-infer", &infer_key);
+        let admin_trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "promotion-lab",
+            admin_principal.clone(),
             &admin_key,
-        );
-        let infer_principal = AuthorityPrincipal::from_signing_key(
-            "infer",
-            "peer-infer",
-            &infer_key,
-        );
-        let admin_trust =
-            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
-                "promotion-lab",
-                admin_principal.clone(),
-                &admin_key,
-            )
-            .expect("admin ancorado no laboratório");
+        )
+        .expect("admin ancorado no laboratório");
         let infer_trust = crate::admin_trust::AdminTrust::in_memory(admin_trust.document())
             .expect("âncora transportada para o infer");
 
@@ -2224,7 +2226,9 @@ mod tests {
             .merge(crate::webapp::routes())
             .with_state(state);
         tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("gateway do laboratório");
+            axum::serve(listener, app)
+                .await
+                .expect("gateway do laboratório");
         });
         address
     }
@@ -2250,8 +2254,7 @@ mod tests {
             .expect("listener infer");
         let infer_port = infer_listener.local_addr().unwrap().port();
 
-        let (admin, infer) =
-            promotion_state_pair(admin_port, infer_port, "[2001:db8::dead]").await;
+        let (admin, infer) = promotion_state_pair(admin_port, infer_port, "[2001:db8::dead]").await;
         {
             let mut peers = infer.network.peers.write().await;
             let admin_peer = peers.get_mut("admin").expect("admin no infer");
@@ -2287,7 +2290,10 @@ mod tests {
         );
         assert_eq!(infer.auth.read().await.profile, NodeProfile::Node);
         assert_eq!(infer.network.profile(), NodeProfile::Node);
-        assert_eq!(crate::config::Config::load().unwrap().profile, NodeProfile::Node);
+        assert_eq!(
+            crate::config::Config::load().unwrap().profile,
+            NodeProfile::Node
+        );
 
         let _ = std::fs::remove_file(config_path);
     }

@@ -282,11 +282,14 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: blocked,
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+            resources: Default::default(),
+            setup_model: None,
         }))
     }
 

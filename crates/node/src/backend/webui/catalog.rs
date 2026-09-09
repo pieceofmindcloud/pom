@@ -359,7 +359,7 @@ pub(super) async fn save_admin_access(
     .into_response()
 }
 
-pub(super) fn new_admin_access_token() -> String {
+pub(crate) fn new_admin_access_token() -> String {
     let raw = uuid::Uuid::new_v4().simple().to_string();
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
@@ -498,7 +498,11 @@ pub(super) async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
 }
 
 /// Publish header metadata, reconciling it with whichever inventory is current.
-pub(super) fn spawn_enrichment(database: Arc<crate::db::PomDb>, roots: CatalogRoots, partial: Arc<Catalog>) {
+pub(super) fn spawn_enrichment(
+    database: Arc<crate::db::PomDb>,
+    roots: CatalogRoots,
+    partial: Arc<Catalog>,
+) {
     tokio::spawn(async move {
         let started = Instant::now();
         info!(
@@ -915,7 +919,10 @@ pub(super) fn check_dir(raw: &str, what: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-pub(super) fn reject_nested_shard_dir(model_dirs: &[String], shard_dir: &str) -> Result<(), String> {
+pub(super) fn reject_nested_shard_dir(
+    model_dirs: &[String],
+    shard_dir: &str,
+) -> Result<(), String> {
     let shard = std::path::Path::new(shard_dir)
         .canonicalize()
         .map_err(|e| format!("Pasta de modelos fatiados: não deu para resolver o caminho: {e}"))?;
@@ -1130,7 +1137,11 @@ pub(super) async fn save_cluster_logs(
     state.cluster_logs.set_enabled(req.logs_enabled);
     info!(
         "logs de processo do cluster {} pela interface",
-        if req.logs_enabled { "ligados" } else { "desligados" }
+        if req.logs_enabled {
+            "ligados"
+        } else {
+            "desligados"
+        }
     );
     Json(json!({ "logs_enabled": req.logs_enabled })).into_response()
 }
@@ -1249,7 +1260,10 @@ pub(super) struct RttReport {
 /// Publica apenas as medições feitas por este nó. A autenticação é necessária
 /// porque o relatório faz parte da telemetria interna usada para escolher
 /// rotas de inferência.
-pub(super) async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Json<RttReport> {
+pub(super) async fn network_rtt(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Json<RttReport> {
     if !state
         .auth
         .read()
@@ -1314,25 +1328,18 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
         .and_then(|load| u32::try_from(load).ok())
 }
 
-async fn live_peer_load(
-    state: &GatewayState,
-    peer: &PeerInfo,
-    connection_key: &str,
-) -> Option<u32> {
+async fn live_peer_load(state: &GatewayState, peer: &PeerInfo) -> Option<u32> {
     if peer.node_id == state.network.node_id {
         return Some(state.loads.load(&peer.node_id).await);
     }
 
     let client = state.peer_http.for_peer(&peer.node_id).ok()?;
     for base in peer.gateway_candidates() {
-        let response = tokio::time::timeout(
-            PEER_TIMEOUT,
-            client
-                .get(format!("{base}/api/ui/node"))
-                .bearer_auth(connection_key)
-                .send(),
-        )
-        .await;
+        let request = state
+            .control_get_request(client.get(format!("{base}/api/ui/node")), "/api/ui/node")
+            .await
+            .ok()?;
+        let response = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
         let Ok(Ok(response)) = response else {
             continue;
         };
@@ -1422,13 +1429,8 @@ pub(super) async fn inference_heads(
         })
     };
 
-    let connection_key = state.auth.read().await.connection_key.clone();
-    let loads = futures::future::join_all(
-        heads
-            .iter()
-            .map(|peer| live_peer_load(&state, peer, &connection_key)),
-    )
-    .await;
+    let loads =
+        futures::future::join_all(heads.iter().map(|peer| live_peer_load(&state, peer))).await;
     let candidates = if heads.is_empty() {
         Vec::new()
     } else {
@@ -1539,7 +1541,6 @@ pub(super) async fn chat_telemetry(
 
     let self_id = state.network.node_id.clone();
     let peers = state.all_peers().await;
-    let connection_key = state.auth.read().await.connection_key.clone();
     let mut measurements = Vec::new();
 
     append_chat_telemetry_measurements(
@@ -1562,12 +1563,17 @@ pub(super) async fn chat_telemetry(
         let Ok(http) = state.peer_http.for_peer(&peer.node_id) else {
             continue;
         };
-        let response = http
-            .get(format!("{base}/api/ui/network/rtt"))
-            .timeout(PEER_TIMEOUT)
-            .bearer_auth(&connection_key)
-            .send()
-            .await;
+        let Ok(request) = state
+            .control_get_request(
+                http.get(format!("{base}/api/ui/network/rtt"))
+                    .timeout(PEER_TIMEOUT),
+                "/api/ui/network/rtt",
+            )
+            .await
+        else {
+            continue;
+        };
+        let response = request.send().await;
         let Ok(response) = response else {
             continue;
         };
@@ -1588,7 +1594,10 @@ pub(super) async fn chat_telemetry(
     Json(ChatTelemetryResponse { measurements })
 }
 
-pub(super) async fn chat_history(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn chat_history(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     match state.database.chat_sessions() {
         Ok(sessions) => Json(sessions).into_response(),
         Err(error) => {
@@ -1738,7 +1747,10 @@ pub(super) async fn delete_chat_history(
     }
 }
 
-pub(super) async fn clear_chat_history(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn clear_chat_history(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     match state.database.clear_chat_sessions() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => {

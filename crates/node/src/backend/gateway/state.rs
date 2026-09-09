@@ -1,4 +1,6 @@
 use super::*;
+use axum::body::Body;
+use axum::http::Method;
 
 /// Tokens `/api/generate` will produce before stopping on its own.
 pub const DEFAULT_MAX_TOKENS: u32 = 512;
@@ -45,10 +47,10 @@ impl AdmissionHealth {
     }
 
     async fn note_failure(&self, node_id: &str) {
-        self.quarantine
-            .write()
-            .await
-            .insert(node_id.to_string(), Instant::now() + ADMISSION_FAILURE_COOLDOWN);
+        self.quarantine.write().await.insert(
+            node_id.to_string(),
+            Instant::now() + ADMISSION_FAILURE_COOLDOWN,
+        );
     }
 
     async fn note_success(&self, node_id: &str) {
@@ -205,6 +207,96 @@ pub struct GatewayState {
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
 }
 
+impl GatewayState {
+    pub(crate) fn signed_control_headers_for(
+        signing_key: &ed25519_dalek::SigningKey,
+        principal: crate::admin_trust::AuthorityPrincipal,
+        trust: &crate::admin_trust::AdminTrust,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> anyhow::Result<reqwest::header::HeaderMap> {
+        let envelope = crate::admin_trust::sign_control_envelope(
+            signing_key,
+            principal,
+            &trust.document(),
+            method,
+            path,
+            body,
+        )?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER,
+            reqwest::header::HeaderValue::from_static("1"),
+        );
+        headers.insert(
+            crate::auth::CONTROL_SIGNATURE_HEADER,
+            reqwest::header::HeaderValue::from_str(&serde_json::to_string(&envelope)?)?,
+        );
+        Ok(headers)
+    }
+
+    /// Build the authenticated headers for a node-to-node control request.
+    /// Public networks use only the signed envelope; private networks may
+    /// still carry the legacy shared secret as an additional transport guard.
+    pub(crate) fn signed_control_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> anyhow::Result<reqwest::header::HeaderMap> {
+        Self::signed_control_headers_for(
+            &self.authority_signing_key,
+            self.authority_principal.clone(),
+            &self.admin_trust,
+            method,
+            path,
+            body,
+        )
+    }
+
+    /// Add the chain signature to a peer control request. The shared key is
+    /// intentionally only an optional private-network transport guard; the
+    /// receiver authorizes the operation from the signed envelope.
+    pub(crate) async fn authorize_control_request(
+        &self,
+        request: reqwest::RequestBuilder,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
+        let mut request = request.headers(self.signed_control_headers(method, path, body)?);
+        let connection_key = self.auth.read().await.connection_key.clone();
+        if !connection_key.is_empty() {
+            request = request.bearer_auth(connection_key);
+        }
+        Ok(request)
+    }
+
+    pub(crate) async fn control_get_request(
+        &self,
+        request: reqwest::RequestBuilder,
+        path: &str,
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
+        self.authorize_control_request(request, "GET", path, &[])
+            .await
+    }
+
+    pub(crate) async fn control_json_request<T: serde::Serialize>(
+        &self,
+        request: reqwest::RequestBuilder,
+        path: &str,
+        body: &T,
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
+        let bytes = serde_json::to_vec(body)?;
+        Ok(self
+            .authorize_control_request(request, "POST", path, &bytes)
+            .await?
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(bytes))
+    }
+}
+
 #[derive(Serialize)]
 pub(super) struct AdminAccessStatus {
     pub(super) admin_exposure: crate::config::AdminExposure,
@@ -230,6 +322,7 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == "/generate"
         || path == "/peers"
         || path == "/health"
+        || path.starts_with("/api/public/")
         || path == "/handshake"
         || path == crate::tls_policy::TLS_POLICY_PATH
         || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
@@ -301,6 +394,13 @@ pub(crate) async fn require_admin_for_surface(
         return next.run(request).await;
     }
 
+    // A signed peer request already proved its transport/control identity. It
+    // must not be forced through the browser-only session gate, especially on
+    // a public network where there is intentionally no shared secret.
+    if internal_node_request {
+        return next.run(request).await;
+    }
+
     let (mut parts, body) = request.into_parts();
     if is_public_ui_static_path(&path) {
         let network_exposure = state.auth.read().await.admin_exposure.requires_token();
@@ -326,6 +426,84 @@ pub(crate) async fn require_admin_for_surface(
         }
     }
     response
+}
+
+/// Check the body hash covered by a signed control envelope before any handler
+/// can mutate state. The extractor still validates the header metadata so
+/// direct unit-test routers get a useful refusal; this layer closes the gap
+/// that only exists while axum has not handed the body to `Json` yet.
+pub(crate) async fn verify_control_request(
+    State(state): State<GatewayState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !request
+        .headers()
+        .contains_key(crate::auth::CONTROL_SIGNATURE_HEADER)
+    {
+        return next.run(request).await;
+    }
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, 16 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "controle assinado excede o limite" })),
+            )
+                .into_response()
+        }
+    };
+    let raw = parts
+        .headers
+        .get(crate::auth::CONTROL_SIGNATURE_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let Some(raw) = raw else {
+        return next
+            .run(Request::from_parts(parts, Body::from(bytes)))
+            .await;
+    };
+    let envelope = match serde_json::from_str::<crate::admin_trust::ControlEnvelope>(raw) {
+        Ok(envelope) => envelope,
+        Err(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "assinatura de controle inválida" })),
+            )
+                .into_response()
+        }
+    };
+    if crate::auth::validate_signed_control_metadata(&state, &parts.headers, &method, &path)
+        .await
+        .is_err()
+        || crate::admin_trust::verify_control_envelope(
+            &envelope,
+            &state.admin_trust.document(),
+            method.as_str(),
+            &path,
+            &bytes,
+        )
+        .is_err()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "assinatura de controle inválida" })),
+        )
+            .into_response();
+    }
+    if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        if let Err(error) = state.admin_trust.consume_control_replay(&envelope) {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": format!("comando de controle recusado: {error:#}") })),
+            )
+                .into_response();
+        }
+    }
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }
 
 #[cfg(test)]

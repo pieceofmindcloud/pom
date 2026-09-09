@@ -411,7 +411,10 @@ pub fn render_prompt_with_images(
     Ok((out, images))
 }
 
-pub(crate) fn image_vision_error(images: &[Vec<u8>], mmproj_path: Option<&str>) -> Option<&'static str> {
+pub(crate) fn image_vision_error(
+    images: &[Vec<u8>],
+    mmproj_path: Option<&str>,
+) -> Option<&'static str> {
     if !images.is_empty() && mmproj_path.is_none() {
         Some("este modelo não tem visão")
     } else {
@@ -1503,7 +1506,10 @@ mod tests {
             image_vision_error(&[vec![0xFF, 0xD8]], None),
             Some("este modelo não tem visão")
         );
-        assert_eq!(image_vision_error(&[vec![0xFF, 0xD8]], Some("mmproj.gguf")), None);
+        assert_eq!(
+            image_vision_error(&[vec![0xFF, 0xD8]], Some("mmproj.gguf")),
+            None
+        );
         assert_eq!(image_vision_error(&[], None), None);
     }
 

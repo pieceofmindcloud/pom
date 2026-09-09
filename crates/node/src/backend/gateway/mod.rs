@@ -22,22 +22,21 @@ pub(crate) use tokio::sync::{mpsc, Mutex};
 pub(crate) use tracing::{debug, info, warn};
 pub(crate) use uuid::Uuid;
 
-
-#[path = "state.rs"]
-mod state;
 #[path = "budget.rs"]
 mod budget;
 #[path = "generation.rs"]
 mod generation;
 #[path = "http.rs"]
 mod http;
+#[path = "state.rs"]
+mod state;
 #[path = "tests.rs"]
 mod tests;
 
-pub(super) use state::*;
 pub(super) use budget::*;
 pub(super) use generation::*;
 pub(super) use http::*;
+pub(super) use state::*;
 
 #[cfg(test)]
 pub(crate) use tests::testkit;

@@ -5,6 +5,7 @@ import {
   Fingerprint,
   FolderTree,
   Gauge,
+  Globe2,
   History,
   KeyRound,
   Layers,
@@ -61,6 +62,7 @@ export interface NavFooterItem {
  * to it, then feed it models, move files, read what happened, and configure.
  */
 export const NAV: NavSection[] = [
+  { labelKey: "nav.publicNetworks", icon: Globe2, to: "/redes-publicas" },
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["infer"] },
   {

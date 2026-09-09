@@ -310,7 +310,6 @@ impl Session {
         self.prompt_cells == self.n_past && !self.contains_media
     }
 
-
     pub(super) fn new(seq_id: u32) -> Self {
         Self {
             prompt_seq: seq_id,
@@ -767,6 +766,23 @@ pub(super) async fn require_inference_auth(
     next: Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
+    let public_transport = {
+        let cfg = config.read().await;
+        cfg.connection_key.is_empty()
+            && cfg.network.visibility == crate::config::NetworkVisibility::Public
+            && parts
+                .extensions
+                .get::<crate::serve::TransportSecurity>()
+                .is_some_and(|transport| transport.0)
+            && parts
+                .headers
+                .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
+                .and_then(|value| value.to_str().ok())
+                == Some("1")
+    };
+    if public_transport {
+        return next.run(Request::from_parts(parts, body)).await;
+    }
     match crate::auth::validate_internal_node_headers(&config, &parts.headers).await {
         Ok(()) => next.run(Request::from_parts(parts, body)).await,
         Err(rejection) => rejection.into_response(),
@@ -802,7 +818,11 @@ mod internal_auth_tests {
         };
 
         assert_eq!(
-            app.clone().oneshot(request(None, None)).await.unwrap().status(),
+            app.clone()
+                .oneshot(request(None, None))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(

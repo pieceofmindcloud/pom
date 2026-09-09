@@ -104,7 +104,14 @@ pub(super) async fn deploy_endpoint(
     let ranges: Vec<(String, u32, u32, Option<u32>)> = if !plan.tp_targets.is_empty() {
         plan.tp_targets
             .iter()
-            .map(|t| (t.target_node_id.clone(), t.start_layer, t.end_layer, Some(t.rank)))
+            .map(|t| {
+                (
+                    t.target_node_id.clone(),
+                    t.start_layer,
+                    t.end_layer,
+                    Some(t.rank),
+                )
+            })
             .collect()
     } else {
         plan.steps
@@ -757,20 +764,28 @@ pub(super) async fn whole_layer_options_for_plan(
                 reason: Some(format!("não foi possível falar com {}", machine.label())),
             });
         };
-        let key = state.auth.read().await.connection_key.clone();
-        let response = client
-            .post(format!("{base}/api/ui/model-layer-options"))
-            .bearer_auth(key)
-            .json(&crate::webui::ModelLayerOptionsRequest { path })
-            .timeout(PEER_TIMEOUT * 4)
-            .send()
+        let request_body = crate::webui::ModelLayerOptionsRequest { path };
+        let response = match state
+            .control_json_request(
+                client
+                    .post(format!("{base}/api/ui/model-layer-options"))
+                    .timeout(PEER_TIMEOUT * 4),
+                "/api/ui/model-layer-options",
+                &request_body,
+            )
             .await
-            .map_err(|error| {
+        {
+            Ok(request) => request.send().await.map_err(|error| {
                 format!(
                     "não foi possível ler as regras de fatiamento em {}: {error}",
                     machine.label()
                 )
-            });
+            }),
+            Err(error) => Err(format!(
+                "não foi possível assinar as regras de fatiamento em {}: {error}",
+                machine.label()
+            )),
+        };
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -949,20 +964,27 @@ pub(super) async fn materialize_slices_on_peer(
         .peer_http
         .for_peer(source_node_id)
         .map_err(|error| format!("sem cliente para {}: {error}", peer.hostname))?;
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .post(format!("{base}/api/ui/slice-ranges"))
-        .bearer_auth(key)
-        .timeout(Duration::from_secs(3600))
-        .json(request)
-        .send()
+    let request = state
+        .control_json_request(
+            client
+                .post(format!("{base}/api/ui/slice-ranges"))
+                .timeout(Duration::from_secs(3600)),
+            "/api/ui/slice-ranges",
+            request,
+        )
         .await
         .map_err(|error| {
             format!(
-                "não foi possível fatiar o modelo em {}: {error}",
+                "não foi possível assinar o fatiamento em {}: {error}",
                 peer.hostname
             )
         })?;
+    let response = request.send().await.map_err(|error| {
+        format!(
+            "não foi possível fatiar o modelo em {}: {error}",
+            peer.hostname
+        )
+    })?;
     let status = response.status();
     let body: serde_json::Value = response.json().await.map_err(|error| {
         format!(
@@ -1007,15 +1029,21 @@ pub(super) async fn model_identity_on_peer(
         .peer_http
         .for_peer(node_id)
         .map_err(|e| format!("sem cliente para {node_id}: {e}"))?;
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .post(format!("{base}/api/ui/model-identity"))
-        .bearer_auth(key)
-        .timeout(PEER_TIMEOUT)
-        .json(&crate::webui::ModelIdentityRequest {
-            path: path.to_string(),
-            hash,
-        })
+    let request_body = crate::webui::ModelIdentityRequest {
+        path: path.to_string(),
+        hash,
+    };
+    let request = state
+        .control_json_request(
+            client
+                .post(format!("{base}/api/ui/model-identity"))
+                .timeout(PEER_TIMEOUT),
+            "/api/ui/model-identity",
+            &request_body,
+        )
+        .await
+        .map_err(|e| format!("não foi possível assinar a identidade em {node_id}: {e}"))?;
+    let response = request
         .send()
         .await
         .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e}"))?;
@@ -1156,11 +1184,21 @@ pub(super) async fn peer_node_snapshot(
         .peer_http
         .for_peer(&peer.node_id)
         .map_err(|e| format!("sem cliente para {}: {e}", peer.hostname))?;
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .get(format!("{base}/api/ui/node"))
-        .bearer_auth(key)
-        .timeout(PEER_TIMEOUT)
+    let request = state
+        .control_get_request(
+            client
+                .get(format!("{base}/api/ui/node"))
+                .timeout(PEER_TIMEOUT),
+            "/api/ui/node",
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "não foi possível assinar a leitura de {}: {e}",
+                peer.hostname
+            )
+        })?;
+    let response = request
         .send()
         .await
         .map_err(|e| format!("{} não respondeu: {e}", peer.hostname))?;

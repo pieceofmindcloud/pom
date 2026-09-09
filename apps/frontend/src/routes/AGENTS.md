@@ -387,12 +387,20 @@ Per-file list:
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
   it again and the receiver sees only an opaque grant.
-- `Setup.tsx` — First run (no `pom.json`): choose the initial profile
-  `admin`, `node` or `infer`; `admin` mints the key via `GET /api/setup/key`,
-  while the other two paste the key + `ip:port` bootstrap, then
-  `POST /api/setup/save`; the node writes config, respawns, and the screen
-  reloads itself after 4 s. Uses `../components/Logo` and `LanguageSelect` from
-  the i18n provider.
+- `Setup.tsx` - First run (no `pom.json`): real wizard backed by
+  `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
+  `/api/setup/admin-token`, `/api/setup/health` and `/api/setup/save`. It shows hardware first, then
+  resource reserves, local and Hugging Face reference models, the standard
+  `~/.pom/models` and `~/.pom/models_sliced` paths, shared slice space and the
+  trust-root flow. Public networks use signed control without a shared secret;
+  private networks also carry one connection secret. The node saves config and
+  trust root, respawns and the screen reloads. It reuses `WizardLayout` but is
+  separate from the mock-only `SetupWizard.tsx`. The joining screen derives the
+  anchor fingerprint from the pasted document and asks the operator to confirm
+  it against a separate channel; it never asks the operator to retype it.
+- `PublicNetworks.tsx` - initial public-network directory. It reads
+  `GET /api/public/networks`, shows name, fingerprint and address, and opens the
+  existing trust-root joining screen. It has no network administration.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and
@@ -478,8 +486,9 @@ Key logic carriers:
   `rememberDeploy`, and tracks the returned job id.
 - `SliceModels.asPlan` (SliceModels.tsx:56) - shape guard on pipeline and TP
   plan responses; the one screen rendering straight off a POST body.
-- `Setup.save` (Setup.tsx:56) — posts the role/key/bootstrap, then reloads; the
-  node respawns itself, so there is no second response to wait for.
+- `Setup.save` (Setup.tsx) - posts the complete first-access payload, including
+  trust document, typed fingerprint, resource policy, storage and network
+  visibility, then reloads after the node respawns.
 - `ModelPaths.save` (ModelPaths.tsx:55) — trims/filters the folder list, posts,
   and re-syncs state from the server's answer (which is authoritative).
 
@@ -493,7 +502,9 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/transfer/send`, `/api/transfer/jobs`, `/api/transfer/jobs/:id/cancel`,
 `/api/transfer/offers`, `/api/transfer/offers/:id/accept|reject`,
 `/admin/nodes`, `/admin/nodes/:id/block|unblock`, `/admin/api-keys`,
-`/admin/regenerate-key`, `/api/setup/key`, `/api/setup/save`,
+`/admin/regenerate-key`, `/api/setup/hardware`, `/api/setup/models`,
+`/api/setup/admin-anchor/preview`, `/api/setup/health`, `/api/setup/save`,
+`/api/public/networks`, `/api/public/network`,
 `/api/ui/model-provider/search`, `/api/ui/model-provider/details`,
 `/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` e
 `/api/ui/model-provider/downloads/:id/{cancel,retry}`.

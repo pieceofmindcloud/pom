@@ -4,7 +4,10 @@ use super::*;
 /// Stop the inference server on this node, announce the node as idle,
 /// and free the inference port. Called by `launch` before reconfiguring
 /// peers so no stale endpoint receives inference requests mid-transition.
-pub(super) async fn stop_inference(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn stop_inference(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     info!("stop-inference recebido — parando servidor neste nó");
     state.runtime.stop().await;
     Json(json!({ "stopped": true })).into_response()
@@ -23,7 +26,10 @@ pub(super) async fn stop_inference(_auth: ConnectionAuth, State(state): State<Ga
 /// Mechanically the same work `stop-inference` does during a launch, but that
 /// route exists for the launch orchestration and says nothing back about what
 /// was released — which is the whole answer the operator is waiting for here.
-pub(super) async fn unload_model(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn unload_model(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     let unloaded = state.runtime.config().await;
     if unloaded.is_none() {
         return Json(json!({ "unloaded": false, "reason": "nenhum modelo carregado" }))
@@ -146,8 +152,7 @@ pub(crate) async fn reconfigure_local(
             // parte por conteúdo (`part_sha256`); o catálogo local casando
             // rótulo + faixa de camadas. Só quando as três falham é erro.
             let shard_dir = state.shard_dir().await;
-            let model_path = if let Some(path) =
-                slice.model_path.clone().filter(|p| !p.is_empty())
+            let model_path = if let Some(path) = slice.model_path.clone().filter(|p| !p.is_empty())
             {
                 path
             } else if let Some(path) = slice
@@ -304,18 +309,24 @@ pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Respon
     else {
         return bad_request("peer desconhecido ou sem porta de gateway anunciada");
     };
-    let key = state.auth.read().await.connection_key.clone();
     let Ok(cliente) = state.peer_http.for_peer(node_id) else {
         return bad_request(format!("sem cliente para o peer {node_id}"));
     };
-    match cliente
-        .post(format!("{base}/api/ui/leave"))
-        .bearer_auth(&key)
-        .json(&json!({}))
-        .timeout(PEER_TIMEOUT)
-        .send()
+    let body = json!({});
+    let request = match state
+        .control_json_request(
+            cliente
+                .post(format!("{base}/api/ui/leave"))
+                .timeout(PEER_TIMEOUT),
+            "/api/ui/leave",
+            &body,
+        )
         .await
     {
+        Ok(request) => request,
+        Err(error) => return bad_request(format!("não foi possível assinar a saída: {error}")),
+    };
+    match request.send().await {
         Ok(r) if r.status().is_success() => {
             info!("{node_id} saiu da rede a pedido deste nó");
             Json(json!({ "detached": true, "node_id": node_id })).into_response()
@@ -358,10 +369,11 @@ pub(super) struct Candidate {
 ///
 /// Matching is by layer range plus shard group, not by file name: the same slice
 /// legitimately sits under different paths on different machines.
-pub(super) async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Option<Candidate> {
+pub(super) async fn find_release_candidate(
+    state: &GatewayState,
+    cfg: &NodeConfig,
+) -> Option<Candidate> {
     let self_id = state.network.node_id.clone();
-    let key = state.auth.read().await.connection_key.clone();
-
     for peer in state.all_peers().await {
         if peer.node_id == self_id {
             continue;
@@ -375,13 +387,18 @@ pub(super) async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfi
         };
 
         // Busy peers are out: a node serves one range at a time.
-        match cliente
-            .get(format!("{base}/api/ui/node"))
-            .bearer_auth(&key)
-            .timeout(PEER_TIMEOUT)
-            .send()
+        let Ok(request) = state
+            .control_get_request(
+                cliente
+                    .get(format!("{base}/api/ui/node"))
+                    .timeout(PEER_TIMEOUT),
+                "/api/ui/node",
+            )
             .await
-        {
+        else {
+            continue;
+        };
+        match request.send().await {
             Ok(r) if r.status().is_success() => {
                 let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
                 if !body.get("config").map(|c| c.is_null()).unwrap_or(true) {
@@ -391,13 +408,18 @@ pub(super) async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfi
             _ => continue,
         }
 
-        let Ok(r) = cliente
-            .get(format!("{base}/api/ui/models"))
-            .bearer_auth(&key)
-            .timeout(PEER_TIMEOUT * 3)
-            .send()
+        let Ok(request) = state
+            .control_get_request(
+                cliente
+                    .get(format!("{base}/api/ui/models"))
+                    .timeout(PEER_TIMEOUT * 3),
+                "/api/ui/models",
+            )
             .await
         else {
+            continue;
+        };
+        let Ok(r) = request.send().await else {
             continue;
         };
         if !r.status().is_success() {
@@ -450,7 +472,10 @@ pub(super) async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfi
 /// Read-only, and the reason the confirmation dialog can promise something true:
 /// warning "the model will stop answering" only when it actually will beats a
 /// blanket scare that the operator learns to click through.
-pub(super) async fn release_candidate(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn release_candidate(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     let Some(cfg) = state.runtime.config().await else {
         return Json(json!({ "serving": false })).into_response();
     };
@@ -562,18 +587,24 @@ pub(super) async fn release_slice(
         params: RuntimeParams::from(&cfg),
     };
 
-    let key = state.auth.read().await.connection_key.clone();
     let cliente = match state.peer_http.for_peer(&candidate.node_id) {
         Ok(c) => c,
         Err(e) => return bad_request(format!("sem cliente para {}: {e}", candidate.node_id)),
     };
-    match cliente
-        .post(format!("{}/api/ui/apply", candidate.gateway))
-        .bearer_auth(&key)
-        .json(&apply_req)
-        .send()
+    let request = match state
+        .control_json_request(
+            cliente.post(format!("{}/api/ui/apply", candidate.gateway)),
+            "/api/ui/apply",
+            &apply_req,
+        )
         .await
     {
+        Ok(request) => request,
+        Err(error) => {
+            return bad_request(format!("não foi possível assinar a reassociação: {error}"))
+        }
+    };
+    match request.send().await {
         Ok(r) if r.status().is_success() => {
             info!(
                 "fatia L{}-{} assumida por {}",
@@ -609,7 +640,10 @@ pub(super) async fn release_slice(
 }
 
 /// Announce again and go looking for the bootstrap nodes.
-pub(super) async fn rejoin_network(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn rejoin_network(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     let assignment = state.local_assignment.read().await.clone();
     match state.network.rejoin(assignment.as_ref()).await {
         Ok(()) => Json(json!({ "detached": false })).into_response(),
@@ -835,7 +869,6 @@ pub(crate) async fn launch(
     // Phase 1: stop inference on every target peer so no stale endpoint
     // receives inference requests mid-transition, and to free ports before
     // the new inference servers try to bind.
-    let key = state.auth.read().await.connection_key.clone();
     for target in &req.targets {
         if target.node_id == self_id {
             state.runtime.stop().await;
@@ -854,13 +887,25 @@ pub(crate) async fn launch(
             warn!("sem cliente para {} em stop-inference", target.node_id);
             continue;
         };
-        match cliente
-            .post(&url)
-            .bearer_auth(&key)
-            .timeout(PEER_TIMEOUT)
-            .send()
+        let request = match state
+            .authorize_control_request(
+                cliente.post(&url).timeout(PEER_TIMEOUT),
+                "POST",
+                "/api/ui/stop-inference",
+                &[],
+            )
             .await
         {
+            Ok(request) => request,
+            Err(error) => {
+                warn!(
+                    "não foi possível assinar stop-inference para {}: {error}",
+                    target.node_id
+                );
+                continue;
+            }
+        };
+        match request.send().await {
             Ok(r) if r.status().is_success() => {
                 info!("peer {} parou inferencia", target.node_id);
             }
@@ -936,7 +981,6 @@ pub(crate) async fn launch(
         // cluster shares the same connection key, so forward ours — without it
         // the remote leg of a launch always came back 401.
         let url = format!("{base}/api/ui/apply");
-        let key = state.auth.read().await.connection_key.clone();
         let cliente = match state.peer_http.for_peer(&target.node_id) {
             Ok(c) => c,
             Err(e) => {
@@ -948,13 +992,21 @@ pub(crate) async fn launch(
                 continue;
             }
         };
-        match cliente
-            .post(&url)
-            .bearer_auth(&key)
-            .json(&apply_req)
-            .send()
+        let request = match state
+            .control_json_request(cliente.post(&url), "/api/ui/apply", &apply_req)
             .await
         {
+            Ok(request) => request,
+            Err(error) => {
+                results.push(json!({
+                    "node_id": target.node_id,
+                    "dispatched": false,
+                    "error": format!("não foi possível assinar o apply: {error}"),
+                }));
+                continue;
+            }
+        };
+        match request.send().await {
             Ok(r) if r.status().is_success() => {
                 let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
                 results.push(json!({

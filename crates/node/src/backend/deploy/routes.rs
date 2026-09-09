@@ -97,8 +97,6 @@ pub(super) async fn list_deployments(
     }
 
     let peers = state.all_peers().await;
-    let key = state.auth.read().await.connection_key.clone();
-
     // Por `deploy_id`, ficando com a cópia mais recentemente ativada.
     let mut por_id: HashMap<String, crate::deployment::Deployment> = HashMap::new();
     let mut guardado_por: HashMap<String, Vec<String>> = HashMap::new();
@@ -132,21 +130,24 @@ pub(super) async fn list_deployments(
     };
     absorve(&self_id, local, &mut por_id, &mut guardado_por);
 
+    let peer_state = state.clone();
     let buscas = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
         let http = state.peer_http.for_peer(&peer.node_id);
-        let key = key.clone();
+        let state = peer_state.clone();
         let node_id = peer.node_id.clone();
         let base = peer.gateway_url();
         async move {
             let base = base?;
-            let resp = http
-                .ok()?
-                .get(format!("{base}/api/ui/deployments?local=true"))
-                .bearer_auth(&key)
-                .timeout(PEER_TIMEOUT)
-                .send()
+            let request = state
+                .control_get_request(
+                    http.ok()?
+                        .get(format!("{base}/api/ui/deployments?local=true"))
+                        .timeout(PEER_TIMEOUT),
+                    "/api/ui/deployments",
+                )
                 .await
                 .ok()?;
+            let resp = request.send().await.ok()?;
             let body: serde_json::Value = resp.json().await.ok()?;
             let registros: Vec<crate::deployment::Deployment> =
                 serde_json::from_value(body.get("deployments")?.clone()).ok()?;

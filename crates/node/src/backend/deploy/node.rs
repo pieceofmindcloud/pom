@@ -640,7 +640,6 @@ pub(super) async fn remove_node_endpoint(
 
     // Quem libera a memoria e o dono dela, como no botao "Liberar fatia": este
     // no so encaminha o pedido.
-    let key = state.auth.read().await.connection_key.clone();
     if req.target_node_id == state.network.node_id {
         state.runtime.stop().await;
     } else {
@@ -651,13 +650,23 @@ pub(super) async fn remove_node_endpoint(
             Ok(c) => c,
             Err(e) => return bad(json!({ "error": format!("sem cliente para o peer: {e}") })),
         };
-        match cliente
-            .post(format!("{base}/api/ui/unload"))
-            .bearer_auth(&key)
-            .timeout(PEER_TIMEOUT)
-            .send()
+        let request = match state
+            .authorize_control_request(
+                cliente
+                    .post(format!("{base}/api/ui/unload"))
+                    .timeout(PEER_TIMEOUT),
+                "POST",
+                "/api/ui/unload",
+                &[],
+            )
             .await
         {
+            Ok(request) => request,
+            Err(error) => {
+                return bad(json!({ "error": format!("não foi possível assinar: {error}") }))
+            }
+        };
+        match request.send().await {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
                 return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }))
@@ -950,7 +959,7 @@ pub(super) fn resolve_target(
 pub(super) async fn release_one(
     state: &GatewayState,
     peer: &PeerInfo,
-    key: &str,
+    _key: &str,
     self_id: &str,
 ) -> Result<(), String> {
     if peer.node_id == self_id {
@@ -964,13 +973,18 @@ pub(super) async fn release_one(
         .peer_http
         .for_peer(&peer.node_id)
         .map_err(|e| format!("sem cliente para a máquina: {e}"))?;
-    match cliente
-        .post(format!("{base}/api/ui/unload"))
-        .bearer_auth(key)
-        .timeout(PEER_TIMEOUT)
-        .send()
+    let request = state
+        .authorize_control_request(
+            cliente
+                .post(format!("{base}/api/ui/unload"))
+                .timeout(PEER_TIMEOUT),
+            "POST",
+            "/api/ui/unload",
+            &[],
+        )
         .await
-    {
+        .map_err(|error| format!("não foi possível assinar a liberação: {error}"))?;
+    match request.send().await {
         Ok(r) if r.status().is_success() => Ok(()),
         Ok(r) => Err(format!("a máquina recusou: HTTP {}", r.status())),
         Err(e) => Err(format!("máquina inacessível: {e}")),
@@ -1018,7 +1032,7 @@ pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<St
 /// wait and then finish in a blink.
 pub(super) async fn wait_for_transfers(
     state: &GatewayState,
-    key: &str,
+    _key: &str,
     watching: &[(String, String, String)],
     job_id: &str,
 ) -> Result<(), String> {
@@ -1031,10 +1045,16 @@ pub(super) async fn wait_for_transfers(
                 .peer_http
                 .for_peer(node_id)
                 .map_err(|e| format!("sem cliente para {gateway}: {e}"))?;
-            let body: serde_json::Value = cliente
-                .get(format!("{gateway}/api/transfer/jobs"))
-                .bearer_auth(key)
-                .timeout(PEER_TIMEOUT)
+            let request = state
+                .control_get_request(
+                    cliente
+                        .get(format!("{gateway}/api/transfer/jobs"))
+                        .timeout(PEER_TIMEOUT),
+                    "/api/transfer/jobs",
+                )
+                .await
+                .map_err(|e| format!("não foi possível assinar a consulta de {gateway}: {e}"))?;
+            let body: serde_json::Value = request
                 .send()
                 .await
                 .map_err(|e| format!("perdi contato com {gateway}: {e}"))?

@@ -607,9 +607,7 @@ pub(crate) fn find_mmproj_sibling(model: &Path) -> Option<String> {
                 return None;
             }
             let distance = match (model_bits, parse_quant_bits(&name)) {
-                (Some(model_bits), Some(projector_bits)) => {
-                    model_bits.abs_diff(projector_bits)
-                }
+                (Some(model_bits), Some(projector_bits)) => model_bits.abs_diff(projector_bits),
                 _ => u32::MAX,
             };
             Some((distance, name, path))
@@ -627,7 +625,12 @@ fn parse_quant_bits(filename: &str) -> Option<u32> {
         .strip_prefix("IQ")
         .or_else(|| quant.strip_prefix('Q'))
         .or_else(|| quant.strip_prefix('F'))?;
-    digits.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok()
+    digits
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 fn file_mtime_fingerprint(meta: &std::fs::Metadata) -> u64 {
@@ -829,6 +832,9 @@ pub fn default_model_dirs() -> Vec<PathBuf> {
             out.push(p);
         }
     };
+    if let Some(home) = home_dir() {
+        push(home.join(".pom").join("models"));
+    }
     for home in lmstudio_homes() {
         push(lmstudio_models_dir(&home));
     }

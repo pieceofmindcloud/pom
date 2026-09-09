@@ -1270,7 +1270,6 @@ fn notify_offerer(
     let base_url = normaliza_esquema(&offer.from_gateway);
     let from_host = offer.from_host.clone();
     tokio::spawn(async move {
-        let key = state.auth.read().await.connection_key.clone();
         let cliente = match state.peer_http.for_peer(&from_node_id) {
             Ok(c) => c,
             Err(e) => {
@@ -1284,17 +1283,22 @@ fn notify_offerer(
             "accepted": accepted,
             "job_id": job_id,
         });
-        match cliente
-            .post(format!("{base_url}/api/transfer/offers/answer"))
-            .bearer_auth(&key)
-            .json(&body)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => {}
-            Ok(r) => warn!("{from_host} respondeu {} ao veredito", r.status()),
-            Err(e) => warn!("não deu para avisar {from_host} do veredito: {e}"),
+        let request = state
+            .control_json_request(
+                cliente
+                    .post(format!("{base_url}/api/transfer/offers/answer"))
+                    .timeout(Duration::from_secs(30)),
+                "/api/transfer/offers/answer",
+                &body,
+            )
+            .await;
+        match request {
+            Ok(request) => match request.send().await {
+                Ok(r) if r.status().is_success() => {}
+                Ok(r) => warn!("{from_host} respondeu {} ao veredito", r.status()),
+                Err(e) => warn!("não deu para avisar {from_host} do veredito: {e}"),
+            },
+            Err(e) => warn!("não deu para assinar o veredito para {from_host}: {e}"),
         }
     });
 }
@@ -1557,18 +1561,28 @@ async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host:
         warn!("não deu para avisar {peer_host}: peer não anuncia porta de gateway");
         return;
     };
-    let key = state.auth.read().await.connection_key.clone();
     let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
         warn!("não deu para avisar {peer_host}: sem cliente para o peer");
         return;
     };
-    let sent = cliente
-        .post(format!("{base}/api/transfer/jobs/{id}/cancel"))
-        .bearer_auth(&key)
-        .json(&json!({ "by": by, "from_peer": true }))
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await;
+    let body = json!({ "by": by, "from_peer": true });
+    let sent: Result<(), String> = match state
+        .control_json_request(
+            cliente
+                .post(format!("{base}/api/transfer/jobs/{id}/cancel"))
+                .timeout(Duration::from_secs(10)),
+            &format!("/api/transfer/jobs/{id}/cancel"),
+            &body,
+        )
+        .await
+    {
+        Ok(request) => request
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
     if let Err(e) = sent {
         warn!("aviso de cancelamento não chegou em {peer_host}: {e}");
     }
@@ -1816,7 +1830,6 @@ async fn send_to_peer(
         "end_layer": shard.map(|(_, b)| b),
     });
 
-    let key = state.auth.read().await.connection_key.clone();
     let cliente = match state.peer_http.for_peer(&req.to_node_id) {
         Ok(c) => c,
         Err(e) => {
@@ -1827,26 +1840,35 @@ async fn send_to_peer(
                 .into_response()
         }
     };
-    match cliente
-        .post(format!("{peer_base}/api/transfer/offer"))
-        .bearer_auth(&key)
-        .json(&body)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => {
-            info!("📤 fatia {name} oferecida a {}", peer.node_id);
-            Json(json!({ "offered": true })).into_response()
-        }
-        Ok(r) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("peer respondeu {}", r.status()) })),
+    let request = state
+        .control_json_request(
+            cliente
+                .post(format!("{peer_base}/api/transfer/offer"))
+                .timeout(Duration::from_secs(30)),
+            "/api/transfer/offer",
+            &body,
         )
-            .into_response(),
+        .await;
+    match request {
+        Ok(request) => match request.send().await {
+            Ok(r) if r.status().is_success() => {
+                info!("📤 fatia {name} oferecida a {}", peer.node_id);
+                Json(json!({ "offered": true })).into_response()
+            }
+            Ok(r) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("peer respondeu {}", r.status()) })),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("não deu para oferecer: {e}") })),
+            )
+                .into_response(),
+        },
         Err(e) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("não deu para oferecer: {e}") })),
+            Json(json!({ "error": format!("não foi possível assinar a oferta: {e}") })),
         )
             .into_response(),
     }
@@ -2185,21 +2207,20 @@ async fn fetch_pom(
     state: &GatewayState,
     peer_id: &str,
     base_url: &str,
-    key: &str,
+    _key: &str,
     sha256: &str,
 ) -> Option<crate::pom::PomManifest> {
-    let resp = state
-        .peer_http
-        // Pinado no node_id do destino, como todo o resto: com o cluster em
-        // TLS um cliente genérico falharia calado.
-        .for_peer(peer_id)
-        .ok()?
-        .get(format!("{base_url}/api/transfer/pom?sha={sha256}"))
-        .bearer_auth(key)
-        .timeout(MANIFEST_TIMEOUT)
-        .send()
+    let client = state.peer_http.for_peer(peer_id).ok()?;
+    let request = state
+        .control_get_request(
+            client
+                .get(format!("{base_url}/api/transfer/pom?sha={sha256}"))
+                .timeout(MANIFEST_TIMEOUT),
+            "/api/transfer/pom",
+        )
         .await
         .ok()?;
+    let resp = request.send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -2219,19 +2240,26 @@ async fn fetch_manifest(
     state: &GatewayState,
     peer_id: &str,
     base_url: &str,
-    key: &str,
+    _key: &str,
     locator: &[(&str, String)],
     from_host: &str,
     name: &str,
 ) -> Result<(u64, String), String> {
-    let resp = state
+    let client = state
         .peer_http
         .for_peer(peer_id)
-        .map_err(|e| e.to_string())?
-        .get(format!("{base_url}/api/transfer/manifest"))
-        .bearer_auth(key)
-        .query(locator)
-        .timeout(MANIFEST_TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    let request = state
+        .control_get_request(
+            client
+                .get(format!("{base_url}/api/transfer/manifest"))
+                .query(locator)
+                .timeout(MANIFEST_TIMEOUT),
+            "/api/transfer/manifest",
+        )
+        .await
+        .map_err(|e| format!("não foi possível assinar a consulta em {from_host}: {e}"))?;
+    let resp = request
         .send()
         .await
         .map_err(|e| format!("não deu para falar com {from_host}: {e}"))?;
@@ -2282,7 +2310,7 @@ async fn run_download(
     job_id: &str,
     peer_id: &str,
     base_url: &str,
-    key: &str,
+    _key: &str,
     locator: &[(&str, String)],
     part: &Path,
     dest: &Path,
@@ -2302,14 +2330,20 @@ async fn run_download(
         .unwrap_or(0);
     let already = already.min(total);
 
-    let mut req = state
+    let client = state
         .peer_http
         .for_peer(peer_id)
-        .map_err(|e| e.to_string())?
-        .get(format!("{base_url}/api/transfer/download"))
-        .bearer_auth(key)
-        .query(locator)
-        .timeout(Duration::from_secs(60 * 60 * 6));
+        .map_err(|e| e.to_string())?;
+    let mut req = state
+        .control_get_request(
+            client
+                .get(format!("{base_url}/api/transfer/download"))
+                .query(locator)
+                .timeout(Duration::from_secs(60 * 60 * 6)),
+            "/api/transfer/download",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     if already > 0 {
         info!("retomando {} a partir de {} bytes", dest.display(), already);
         req = req.header(header::RANGE, format!("bytes={already}-"));
@@ -3371,7 +3405,11 @@ mod pom_travels_tests {
         let raiz = std::env::temp_dir().join(format!("pom-tr-{}", uuid::Uuid::new_v4().simple()));
         let disco_origem = raiz.join("origem");
         let disco_destino = raiz.join("destino");
-        let (_origem, porta, manifesto, sha) = no_com_parte(&disco_origem).await;
+        let (origem, porta, manifesto, sha) = no_com_parte(&disco_origem).await;
+        origem.network.peers.write().await.insert(
+            "destino".into(),
+            crate::gateway::testkit::peer("destino", "destino", 0),
+        );
 
         let cliente = crate::gateway::testkit::state_with(
             "destino",

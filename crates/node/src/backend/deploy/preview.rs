@@ -81,19 +81,20 @@ pub(super) async fn plan_endpoint(
 ///
 /// Uma máquina que serve duas faixas não-adjacentes soma os dois passos sobre
 /// o mesmo inventário de GPUs - são dois processos na mesma placa física.
-pub(super) async fn enrich_capacity_previews(state: &GatewayState, machines: &[Machine], plan: &mut Plan) {
+pub(super) async fn enrich_capacity_previews(
+    state: &GatewayState,
+    machines: &[Machine],
+    plan: &mut Plan,
+) {
     if plan.kind == DeployKind::TensorParallel || plan.steps.is_empty() {
         return;
     }
     let peer_count = plan.steps.len() as u32;
-    let key = state.auth.read().await.connection_key.clone();
-
     let calls = plan
         .steps
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            let key = key.clone();
             let http = state.peer_http.for_peer(&step.target_node_id);
             let base = machines
                 .iter()
@@ -114,35 +115,30 @@ pub(super) async fn enrich_capacity_previews(state: &GatewayState, machines: &[M
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
             };
-            (
-                index,
-                key,
-                http,
-                base,
-                model_path,
-                eligible,
-                total_layers,
-                req,
-            )
+            (index, http, base, model_path, eligible, total_layers, req)
         })
         .collect::<Vec<_>>()
         .into_iter()
         .map(
-            |(index, key, http, base, model_path, eligible, total_layers, req)| async move {
+            |(index, http, base, model_path, eligible, total_layers, req)| async move {
                 let (Some(base), Ok(http), Some(model_path), Some(_)) =
                     (base, http, model_path, total_layers.filter(|_| eligible))
                 else {
                     return (index, None);
                 };
                 let req = CapacityPreviewRequest { model_path, ..req };
-                let resp = http
-                    .post(format!("{base}/api/ui/deploy/capacity-preview"))
-                    .bearer_auth(&key)
-                    .timeout(PEER_TIMEOUT)
-                    .json(&req)
-                    .send()
+                let Ok(request) = state
+                    .control_json_request(
+                        http.post(format!("{base}/api/ui/deploy/capacity-preview"))
+                            .timeout(PEER_TIMEOUT),
+                        "/api/ui/deploy/capacity-preview",
+                        &req,
+                    )
                     .await
-                    .ok();
+                else {
+                    return (index, None);
+                };
+                let resp = request.send().await.ok();
                 let Some(resp) = resp.filter(|r| r.status().is_success()) else {
                     return (index, None);
                 };
@@ -212,4 +208,3 @@ pub(super) async fn enrich_capacity_previews(state: &GatewayState, machines: &[M
         });
     }
 }
-

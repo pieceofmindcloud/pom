@@ -709,9 +709,7 @@ pub(super) fn summary_for(
     trace.set_generated_tokens(tokens_generated);
     trace.complete = !partial;
     trace.server_ttft_ms = Some(ttft_ms);
-    trace.set_outside_node_total_ms(
-        total_ms.saturating_sub(trace.node_processing_ms()),
-    );
+    trace.set_outside_node_total_ms(total_ms.saturating_sub(trace.node_processing_ms()));
     let mut timings = timing_metrics(
         total_ms,
         ttft_ms,

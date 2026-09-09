@@ -19,11 +19,12 @@ passa por este gateway). O
 `/health` do servidor de inferência responde `model_loaded` (o que promove a
 anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
 a condição de a cabeça rascunhar na decodificação especulativa.
-As rotas internas desse listener exigem `Authorization: Bearer <connection_key>`
-e `x-pom-internal-node: 1`; elas não aceitam API keys de cliente.
-Essa reconferência é local e em tempo constante sobre o segredo compartilhado;
-não abre uma requisição adicional. A chave pública e a assinatura Ed25519 são
-usadas separadamente no handshake para provar a identidade do peer.
+As rotas internas desse listener exigem a `connection_key` e
+`x-pom-internal-node: 1` em redes privadas; em redes públicas exigem o
+transporte TLS e o marcador, sem segredo compartilhado. Elas não aceitam API
+keys de cliente. Essa reconferência não assina os quadros de inferência. A
+chave pública e a assinatura Ed25519 são usadas separadamente no handshake para
+provar a identidade do peer.
 
 ## 1. O router e os grupos de rotas
 
@@ -109,8 +110,15 @@ do escopo com HTTP 403 e JSON nomeando rota e perfil. Uma chamada entre nós que
 prova `InternalNodeAuth` pode atravessar o perfil local do receptor para o
 fan-out de controle; o handler ainda exige a assinatura administrativa quando
 a operação muda autoridade. Nas rotas `common/identity internal`, as chamadas
-entre nós exigem a `connection_key` correta e o marcador interno validado pelo
-handler, nunca o marcador sozinho. `/api/setup/key`, `/api/setup/save` e as rotas da porta 8181
+entre nós privados exigem a `connection_key` correta e o marcador interno
+validado pelo handler, nunca o marcador sozinho. Em redes públicas, o controle
+usa `x-pom-control-signature`: um envelope Ed25519 cobre método, caminho,
+nonce, epoch e hash do corpo, e o emissor precisa ser uma autoridade vigente na
+cadeia. Os quadros de inferência ficam fora dessa assinatura e dependem do
+transporte TLS. `/api/setup/hardware`, `/api/setup/models`,
+`/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
+`/api/setup/health` e `/api/setup/save` só existem no router de primeiro acesso;
+`/api/setup/save` instala a raiz e o `pom.json` antes de reiniciar. As rotas da porta 8181
 (`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
 `/v1/tp/reduce`, `/health`) ficam explicitamente fora do escopo desta política.
 
@@ -236,10 +244,10 @@ que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
 é a única exceção pública da administração, pois informa apenas o modo, a
 necessidade de token e a porta para a tela decidir se deve mostrar a catraca.
 
-Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: só
-`/api/setup/key`, `/api/setup/save` e a UI. As duas rotas de setup não estão no
-router principal e não podem ser autenticadas - existem justamente antes de
-haver chave.
+Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: as rotas
+`/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
+`/api/setup/admin-token`, `/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` e a UI. Elas
+não estão no router principal e só existem antes da configuração inicial.
 
 ## 2. Rotas por grupo
 
@@ -796,8 +804,9 @@ incluído em logs de erro.
 Há uma credencial de operador, uma credencial de inferência e um extractor
 privado para sincronização entre nós:
 
-- **`ConnectionAuth`** - lê só `authorization` (prefixo `Bearer` opcional) e
-  compara com `connection_key`. É a credencial de operador: cobre `/admin/*`,
+- **`ConnectionAuth`** - lê `authorization` (prefixo `Bearer` opcional) ou um
+  envelope `x-pom-control-signature` válido e compara com `connection_key` quando
+  a rede é privada. É a credencial de operador: cobre `/admin/*`,
   `/api/ui/*` (mutáveis), `/api/transfer/*` e `/api/ui/deploy/*`. Sem header =
   401 `missing Authorization header`; chave errada = 403.
 - **`ApiKeyAuth(pub Caller)`** - aceita `authorization` **ou** `x-api-key`
@@ -807,10 +816,11 @@ privado para sincronização entre nós:
   `node_id`. O `Caller` construído aqui é o único lugar que vê a credencial e
   alimenta a auditoria com essa identidade; o segredo nunca é salvo nem
   devolvido pela rota de auditoria.
-- **`InternalNodeAuth`** - exige a `connection_key` compartilhada mais o
-  marcador `x-pom-internal-node: 1`; cobre a sincronização autenticada de API
-  keys no principal e as chamadas entre peers na porta de inferência. Nunca é
-  aceito nas rotas de inferência do cliente.
+- **`InternalNodeAuth`** - exige o envelope assinado e o marcador em chamadas
+  de controle públicas; em redes privadas aceita também a chave compartilhada.
+  O emissor assinado precisa ser conhecido e mutações de controle precisam
+  estar cobertas por uma autoridade vigente. Nunca é aceito nas rotas de
+  inferência do cliente.
 
 `POST /admin/regenerate-key` troca a `connection_key` (SHA256 de um UUID);
 mintar chaves **acumula** em vez de substituir - um token por nó/harness, e o
@@ -834,9 +844,9 @@ fica disponível nas próximas requisições até a revogação.
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router. `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`,
 `/v1/session/release`, `/v1/session/rollback`, `/v1/session/slot` e
-`/v1/tp/reduce` exigem `Authorization: Bearer <connection_key>` mais
-`x-pom-internal-node: 1`; API keys de cliente são recusadas. `/health` continua
-público para sondas de readiness.
+`/v1/tp/reduce` exigem a credencial privada em redes privadas ou TLS mais o
+marcador em redes públicas; API keys de cliente são recusadas. `/health`
+continua público para sondas de readiness.
 
 O identificador `x-pom-inference-session` continua sendo apenas contexto opaco
 de sessão. Ele não é credencial, não guarda API key e não substitui a

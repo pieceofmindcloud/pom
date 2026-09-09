@@ -90,6 +90,7 @@ describe("navForProfile", () => {
 
   it("deixa a rede no menu principal do infer e move docs/config para o rodapé", () => {
     expect(navForProfile("infer").map((section) => section.labelKey)).toEqual([
+      "nav.publicNetworks",
       "nav.network",
       // Ancorar a confiança precede a autoridade: o infer também recebe a
       // âncora, então a tela não pode depender de um perfil.

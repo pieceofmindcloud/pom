@@ -2,7 +2,7 @@ use crate::config::Config;
 use async_trait::async_trait;
 use axum::{
     extract::{FromRequestParts, State},
-    http::{request::Parts, HeaderMap, StatusCode},
+    http::{request::Parts, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Json},
 };
 use base64::Engine;
@@ -107,12 +107,15 @@ fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
 
 /// Cabeçalho da credencial da pessoa que abre a superfície administrativa.
 /// Deliberadamente diferente de `Authorization`, que continua sendo usado
-/// pela connection key e pelas APIs compatíveis com OpenAI/Anthropic.
+/// pela API key de inferência compatível com OpenAI/Anthropic.
 pub const ADMIN_ACCESS_TOKEN_HEADER: &str = "x-pom-access-token";
 /// Marca requests de controle emitidos pelo próprio nó para outro nó. Ela não
 /// é uma credencial: só vale junto com uma `connection_key` válida e nunca é
 /// enviada pelo cliente da interface.
 pub const INTERNAL_NODE_REQUEST_HEADER: &str = "x-pom-internal-node";
+/// Signed control-plane envelope. It replaces the shared connection secret on
+/// public networks while leaving inference frames on their transport path.
+pub const CONTROL_SIGNATURE_HEADER: &str = "x-pom-control-signature";
 /// Opaque session identifier forwarded with a frame for session correlation. It
 /// is not a credential and is never accepted by the inference middleware.
 pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
@@ -155,24 +158,89 @@ pub fn api_key_identity(key: &crate::config::ApiKey) -> String {
 pub struct ConnectionAuth;
 
 /// Authenticator for node-to-node control calls. The marker separates these
-/// calls from browser traffic, while the shared connection key remains the
-/// actual trust credential. It is never accepted by inference middleware.
-pub struct InternalNodeAuth;
+/// calls from browser traffic, while the signed chain is the trust credential.
+/// A private network may add its shared connection key as a transport guard.
+/// It is never accepted by inference middleware.
+pub struct InternalNodeAuth {
+    pub(crate) principal: Option<crate::admin_trust::AuthorityPrincipal>,
+}
+
+impl InternalNodeAuth {
+    pub(crate) fn principal(&self) -> Option<&crate::admin_trust::AuthorityPrincipal> {
+        self.principal.as_ref()
+    }
+}
+
+async fn known_control_principal(
+    state: &crate::gateway::GatewayState,
+    issuer: &crate::admin_trust::AuthorityPrincipal,
+) -> bool {
+    if issuer == &state.authority_principal {
+        return true;
+    }
+    state.network.alive_peers().await.into_iter().any(|peer| {
+        peer.node_id == issuer.node_id
+            && peer.authority_pubkey == issuer.pubkey
+            && peer.libp2p_peer_id.as_deref() == Some(issuer.peer_id.as_str())
+    })
+}
+
+/// Validate a signed control header without consuming the request body. The
+/// outer gateway middleware performs the second half, comparing the signed
+/// body hash with the bytes delivered to the handler.
+pub(crate) async fn validate_signed_control_metadata(
+    state: &crate::gateway::GatewayState,
+    headers: &HeaderMap,
+    method: &Method,
+    path: &str,
+) -> Result<crate::admin_trust::AuthorityPrincipal, AuthRejection> {
+    let raw = headers
+        .get(CONTROL_SIGNATURE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AuthRejection::MissingHeader)?;
+    let envelope: crate::admin_trust::ControlEnvelope =
+        serde_json::from_str(raw).map_err(|_| AuthRejection::InvalidKey)?;
+    let document = state.admin_trust.document();
+    crate::admin_trust::verify_control_envelope_metadata(
+        &envelope,
+        &document,
+        method.as_str(),
+        path,
+    )
+    .map_err(|_| AuthRejection::InvalidKey)?;
+    if !known_control_principal(state, &envelope.issuer).await {
+        return Err(AuthRejection::InvalidKey);
+    }
+    Ok(envelope.issuer)
+}
 
 #[async_trait]
 impl<S> FromRequestParts<S> for InternalNodeAuth
 where
     S: Send + Sync,
-    AuthState: axum::extract::FromRef<S>,
+    crate::gateway::GatewayState: axum::extract::FromRef<S>,
 {
     type Rejection = AuthRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let State(config): State<AuthState> = State::from_request_parts(parts, state)
-            .await
-            .map_err(|_| AuthRejection::MissingHeader)?;
-        validate_internal_node_headers(&config, &parts.headers).await?;
-        Ok(InternalNodeAuth)
+        let State(gateway): State<crate::gateway::GatewayState> =
+            State::from_request_parts(parts, state)
+                .await
+                .map_err(|_| AuthRejection::MissingHeader)?;
+        if parts.headers.contains_key(CONTROL_SIGNATURE_HEADER) {
+            let principal = validate_signed_control_metadata(
+                &gateway,
+                &parts.headers,
+                &parts.method,
+                parts.uri.path(),
+            )
+            .await?;
+            return Ok(InternalNodeAuth {
+                principal: Some(principal),
+            });
+        }
+        validate_internal_node_headers(&gateway.auth, &parts.headers).await?;
+        Ok(InternalNodeAuth { principal: None })
     }
 }
 
@@ -437,10 +505,10 @@ where
             };
         }
 
-        // Node-to-node control calls still use the shared connection key. The
-        // marker keeps that protocol distinct from a browser request: a
-        // browser without the human access token never reaches an admin route,
-        // while cluster surveys and deployment fan-out keep working.
+        // Node-to-node control calls carry a signed envelope. A private
+        // network may also carry its shared connection key as a transport
+        // guard. The marker keeps the protocol distinct from a browser
+        // request, while the chain authorizes the mutation itself.
         if parts.headers.get(ADMIN_ACCESS_TOKEN_HEADER).is_none()
             && parts.uri.path() != "/api/ui/access"
             && is_authenticated_internal_node_request(&parts.headers, &connection_key)
@@ -489,14 +557,33 @@ where
 impl<S> FromRequestParts<S> for ConnectionAuth
 where
     S: Send + Sync,
-    AuthState: axum::extract::FromRef<S>,
+    crate::gateway::GatewayState: axum::extract::FromRef<S>,
 {
     type Rejection = AuthRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let State(config): State<AuthState> = State::from_request_parts(parts, state)
-            .await
-            .map_err(|_| AuthRejection::MissingHeader)?;
+        let State(gateway): State<crate::gateway::GatewayState> =
+            State::from_request_parts(parts, state)
+                .await
+                .map_err(|_| AuthRejection::MissingHeader)?;
+        if gateway.auth.read().await.connection_key.is_empty()
+            && parts
+                .extensions
+                .get::<crate::serve::PeerAddr>()
+                .is_some_and(|peer| is_loopback_addr(peer.0))
+        {
+            return Ok(ConnectionAuth);
+        }
+        if parts.headers.contains_key(CONTROL_SIGNATURE_HEADER) {
+            validate_signed_control_metadata(
+                &gateway,
+                &parts.headers,
+                &parts.method,
+                parts.uri.path(),
+            )
+            .await?;
+            return Ok(ConnectionAuth);
+        }
         let header = parts
             .headers
             .get("authorization")
@@ -505,7 +592,7 @@ where
 
         let token = authorization_token(header).ok_or(AuthRejection::MissingHeader)?;
 
-        let cfg = config.read().await;
+        let cfg = gateway.auth.read().await;
         if token == cfg.connection_key {
             Ok(ConnectionAuth)
         } else {
@@ -926,6 +1013,7 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![
                 crate::config::ApiKey {
                     id: "active-id".into(),
@@ -953,6 +1041,8 @@ mod tests {
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: 1.0,
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -983,6 +1073,7 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![crate::config::ApiKey {
                 id: "active-id".into(),
                 key: "sk-active".into(),
@@ -999,6 +1090,8 @@ mod tests {
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: 1.0,
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,

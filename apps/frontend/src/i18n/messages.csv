@@ -941,6 +941,7 @@ nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
 nav.network,Network,Rede
 nav.preferences,Preferences,Preferências
+nav.publicNetworks,Public networks,Redes públicas
 nav.remoteModels,Find HF models,Encontrar Modelos HF
 nav.sendFile,Send a file,Enviar um arquivo
 nav.settings,Settings,Configurações
@@ -1217,6 +1218,21 @@ preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
+publicNetworks.address,Address,Endereço
+publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
+publicNetworks.discoveredTitle,Networks found,Redes encontradas
+publicNetworks.distance,{value} km away,{value} km de distância
+publicNetworks.emptyDetail,Keep POM open on a network or try again in a moment. Public networks announce themselves through the existing discovery layer.,Deixe o POM aberto em uma rede ou tente novamente em instantes. Redes públicas se anunciam pela camada de descoberta existente.
+publicNetworks.emptyTitle,No public networks found,Não encontramos redes públicas
+publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
+publicNetworks.fingerprint,Fingerprint,Impressão digital
+publicNetworks.join,Open joining,Entrar na rede
+publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
+publicNetworks.pkarr,pkarr,pkarr
+publicNetworks.refresh,Refresh,Atualizar
+publicNetworks.securityNote,Joining still requires the network trust document and its fingerprint from the network owner.,Entrar ainda exige o documento de confiança e a impressão digital enviados pelo responsável da rede.
+publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
+publicNetworks.title,Public networks,Redes públicas
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada
@@ -1349,6 +1365,168 @@ setup.subtitle,This machine is not part of a network yet. Choose its role to beg
 setup.title,Initial setup,Configuração inicial
 setup.wherePrincipal,Where the principal is,Onde fica o principal
 setup.wherePrincipalDetail,Ask the person who configured the first machine for both values.,Peça os dois valores a quem configurou a primeira máquina.
+setupWizard.accessPolicy,Who can access this network?,Quem pode acessar esta rede?
+setupWizard.accessPolicyHint,The trust root is still required to enter.,A raiz de confiança ainda é necessária para entrar.
+setupWizard.admin,Administrator,Administrador
+setupWizard.adminDetail,Create a network and decide how other machines may join.,Crie uma rede e decida como outras máquinas podem entrar.
+setupWizard.adminExposure,Interface exposure,Exposição da interface
+setupWizard.adminExposureHint,Choose whether the admin screen is reachable only here or from other machines on the network.,Escolha se a tela administrativa ficará acessível só aqui ou também por outras máquinas da rede.
+setupWizard.adminExposureLocalhost,Only this machine,Apenas esta máquina
+setupWizard.adminExposureNetwork,This network,Esta rede
+setupWizard.adminToken,Administrative access token,Token de acesso administrativo
+setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
+setupWizard.adminTokenMissing,The token will be generated here,O token será gerado aqui
+setupWizard.advertiseAddress,Address this machine will announce,Endereço que esta máquina anunciará
+setupWizard.advertiseAddressHint,Use a stable public host and port when this machine is behind a router.,Use um host e uma porta públicos estáveis quando esta máquina estiver atrás de um roteador.
+setupWizard.advertiseAddressPlaceholder,example.com:8080,exemplo.com:8080
+setupWizard.anchorFailed,The trust root could not be created,Não foi possível criar a raiz de confiança
+setupWizard.anyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
+setupWizard.authorizedPeople,People approved by the administrator,Pessoas aprovadas pelo administrador
+setupWizard.available,available,disponíveis
+setupWizard.bootstrapAddress,Network address,Endereço da rede
+setupWizard.bootstrapAddressHint,Use the administrator's P2P address so this node can find the network.,Use o endereço P2P do administrador para este nó encontrar a rede.
+setupWizard.bootstrapPlaceholder,example.com:42777,exemplo.com:42777
+setupWizard.channels,Discord or Telegram channels,Canais do Discord ou Telegram
+setupWizard.checkConfig,Initial configuration ready,Configuração inicial pronta
+setupWizard.checkCuda,CUDA working,CUDA funcionando
+setupWizard.checkGpu,GPU detected,GPU detectada
+setupWizard.checkIpv6,Public IPv6 enabled,IPv6 público habilitado
+setupWizard.checkP2p,P2P discovery working,Descoberta P2P funcionando
+setupWizard.checkVulkan,Vulkan working,Vulkan funcionando
+setupWizard.connectionSecret,Connection secret,Segredo de conexão
+setupWizard.connectionSecretHint,Only needed for private or local networks.,Necessário apenas em redes privadas ou locais.
+setupWizard.copied,Copied,Copiado
+setupWizard.copy,Copy,Copiar
+setupWizard.cpu,CPU,CPU
+setupWizard.cpuReserve,CPU available for the system,CPU disponível para o sistema
+setupWizard.cpuReserveDetail,More means POM yields more often to other work.,Mais significa que o POM cede mais vezes a outras tarefas.
+setupWizard.cpuValue,{count} logical cores,{count} núcleos lógicos
+setupWizard.cudaAvailable,CUDA ready,CUDA disponível
+setupWizard.description,Description,Descrição
+setupWizard.discoveryAvailable,Discovery ready,Descoberta disponível
+setupWizard.diskAvailable,{value} GB available,{value} GB disponíveis
+setupWizard.diskTotal,{value} GB total,{value} GB no total
+setupWizard.edit,Edit,Editar
+setupWizard.fingerprint,Fingerprint,Impressão digital
+setupWizard.fingerprintCalculated,Calculated from the document,Calculada a partir do documento
+setupWizard.fingerprintConfirm,I checked this fingerprint against the separate value the administrator gave me.,Conferi esta impressão digital com o valor separado que o administrador me passou.
+setupWizard.fingerprintEntered,Fingerprint entered,Impressão digital informada
+setupWizard.fingerprintHint,Compare the calculated fingerprint with the value you received separately.,Compare a impressão digital calculada com o valor que você recebeu separadamente.
+setupWizard.fingerprintInvite,Ask invitees to type this fingerprint from a separate message instead of trusting a pasted value.,Peça às pessoas convidadas que digitem esta impressão digital a partir de outra mensagem em vez de confiar no valor colado.
+setupWizard.fingerprintMissing,Fingerprint missing,Impressão digital ausente
+setupWizard.fingerprintPlaceholder,The fingerprint appears after you paste the document.,A impressão digital aparece depois que você cola o documento.
+setupWizard.fingerprintWaiting,Paste a valid document to calculate its fingerprint.,Cole um documento válido para calcular a impressão digital.
+setupWizard.finish,Save and restart,Salvar e reiniciar
+setupWizard.generated,Generated,Gerado
+setupWizard.gpu,GPU,GPU
+setupWizard.gpuDetected,GPU detected,GPU detectada
+setupWizard.gpuMaxNote,GPU capacity is always offered at its maximum. You only choose how much RAM and CPU to keep for the system.,A capacidade da GPU é sempre oferecida no máximo. Você só escolhe quanta RAM e CPU manter para o sistema.
+setupWizard.hardwareDetail,These readings describe what this machine can share right now.,Estas informações mostram o que esta máquina pode compartilhar agora.
+setupWizard.hardwareTitle,This is what POM found,Isso foi o que o POM encontrou
+setupWizard.hardwareUnavailable,Hardware detection is not available yet.,A detecção de hardware ainda não está disponível.
+setupWizard.healthDetail,These are general checks only. Model inference is checked after the node joins the network.,Estas são apenas verificações gerais. A inferência do modelo será verificada depois que o nó entrar na rede.
+setupWizard.healthFailed,The general checks could not run,Não foi possível executar as verificações gerais
+setupWizard.healthModelLater,The model check happens after setup so a missing model never blocks first access.,A verificação do modelo acontece depois da configuração para que um modelo ausente nunca bloqueie o primeiro acesso.
+setupWizard.healthTitle,A quick check before restart,Uma verificação rápida antes de reiniciar
+setupWizard.infer,Inference node,Nó de inferência
+setupWizard.inferDetail,Use this machine to send prompts through a trusted network.,Use esta máquina para enviar prompts por uma rede confiável.
+setupWizard.installedHere,Already on this machine,Já está nesta máquina
+setupWizard.inviteDetail,Share the trust document and public key. Keep the fingerprint available through a separate channel.,Compartilhe o documento de confiança e a chave pública. Envie a impressão digital por um canal separado.
+setupWizard.inviteTitle,Your network is ready to invite people,Sua rede está pronta para convidar pessoas
+setupWizard.loadFailed,The setup information could not be loaded,Não foi possível carregar as informações da configuração inicial
+setupWizard.localOnly,Only this local network,Apenas esta rede local
+setupWizard.locationAsking,Asking for permission to use this machine's approximate location...,Pedindo permissão para usar a localização aproximada desta máquina...
+setupWizard.locationDenied,Location permission was not granted. The network can still be published.,A permissão de localização não foi concedida. A rede ainda poderá ser publicada.
+setupWizard.locationIdle,Location will help order nearby networks.,A localização ajudará a ordenar as redes próximas.
+setupWizard.locationPrompt,"For a public network, POM can save this machine's approximate location so nearby networks are easier to find.","Para uma rede pública, o POM pode salvar a localização aproximada desta máquina para facilitar encontrar redes próximas."
+setupWizard.locationSaved,Location saved for nearby network ordering.,Localização salva para ordenar redes próximas.
+setupWizard.locationUnavailable,Location is unavailable. The network can still be published.,A localização não está disponível. A rede ainda poderá ser publicada.
+setupWizard.memory,Memory,Memória
+setupWizard.modelDetail,Local models are ready now. Reference models from Hugging Face are suggestions for later download.,Modelos locais já estão prontos. Modelos de referência do Hugging Face são sugestões para baixar depois.
+setupWizard.modelLabel,Model,Modelo
+setupWizard.modelLater,Choose a model later,Escolher um modelo depois
+setupWizard.modelSelectionOptional,This step is optional. You can start without selecting a model.,Este passo é opcional. Você pode começar sem escolher um modelo.
+setupWizard.modelTitle,Choose a starting model,Escolha um modelo inicial
+setupWizard.modelsFolder,Models folder,Pasta de modelos
+setupWizard.modelsFolderHint,Default: ~/.pom/models, Padrão: ~/.pom/models
+setupWizard.networkDetail,People should understand what they are joining before they receive an invitation.,As pessoas devem entender em que estão entrando antes de receber um convite.
+setupWizard.networkIdentity,Network details,Detalhes da rede
+setupWizard.networkIdentityDetail,These details are shown to people discovering the public network.,Estes detalhes aparecem para quem descobrir a rede pública.
+setupWizard.networkKind,What kind of network are you joining?,Que tipo de rede você está entrando?
+setupWizard.networkKindHint,Public means no shared secret. Private means the administrator also gives you one.,Pública significa sem segredo compartilhado. Privada significa que o administrador também fornecerá um.
+setupWizard.networkLabel,Network,Rede
+setupWizard.networkTitle,Give this network a clear identity,Dê uma identidade clara a esta rede
+setupWizard.noGpu,No GPU detected,Nenhuma GPU detectada
+setupWizard.noModelSelected,No model selected,Nenhum modelo selecionado
+setupWizard.noModels,No model was found yet. You can choose one after setup.,Nenhum modelo foi encontrado ainda. Você poderá escolher um depois da configuração.
+setupWizard.node,Network node,Nó da rede
+setupWizard.nodeDetail,Share this machine's resources with a network you already trust.,Compartilhe os recursos desta máquina com uma rede em que você confia.
+setupWizard.notAvailable,Not available,Não disponível
+setupWizard.ok,OK,OK
+setupWizard.organization,Organization,Organização
+setupWizard.pasteTrust,Confirm the network before joining,Confirme a rede antes de entrar
+setupWizard.pasteTrustDetail,Get the document and a separate fingerprint message from the administrator.,Receba o documento e uma mensagem separada com a impressão digital do administrador.
+setupWizard.privateInternet,Private over the internet,Privada pela internet
+setupWizard.profileLabel,Role,Função
+setupWizard.publicInternet,Public over the internet,Pública pela internet
+setupWizard.publicKey,Generated public key,Chave pública gerada
+setupWizard.publicName,Public network name,Nome público da rede
+setupWizard.publicNameHint,This name also identifies the trust root.,Este nome também identifica a raiz de confiança.
+setupWizard.ramReserve,RAM available for the system,RAM disponível para o sistema
+setupWizard.ramReserveDetail,More means more room for your other apps.,Mais significa mais espaço para seus outros aplicativos.
+setupWizard.recommended,Recommended,Recomendado
+setupWizard.referenceHuggingFace,Hugging Face reference,Referência do Hugging Face
+setupWizard.resourcesDetail,The default keeps a comfortable margin for your desktop while sharing the rest with the network.,O padrão mantém uma margem confortável para o seu computador e compartilha o restante com a rede.
+setupWizard.resourcesLabel,Resources,Recursos
+setupWizard.resourcesTitle,How much should POM leave for the system?,Quanto o POM deve deixar para o sistema?
+setupWizard.reviewDetail,Review the essentials once. POM will save the configuration and restart this node.,Revise o essencial uma vez. O POM salvará a configuração e reiniciará este nó.
+setupWizard.reviewNote,The trust document is stored separately from pom.json so changing the profile cannot create authority.,O documento de confiança fica separado do pom.json para que mudar a função não crie autoridade.
+setupWizard.reviewTitle,Everything looks ready,Está tudo pronto
+setupWizard.roleHint,You can change the machine role later from the administration screens.,Você poderá mudar o papel da máquina depois pelas telas de administração.
+setupWizard.rules,Network rules,Regras da rede
+setupWizard.saveFailed,The configuration was not saved,A configuração não foi salva
+setupWizard.savedDetail,This node is restarting with its new identity. The interface will return automatically.,Este nó está reiniciando com sua nova identidade. A interface voltará automaticamente.
+setupWizard.savedTitle,Configuration saved,Configuração salva
+setupWizard.securityDetail,Protect the interface and make the node-to-node connection policy explicit.,Proteja a interface e deixe clara a política de conexão entre nós.
+setupWizard.securityTitle,Secure this network,Proteja esta rede
+setupWizard.shardSpace,Disk space to share,Espaço em disco para compartilhar
+setupWizard.shardSpaceHint,This is the maximum space POM may use for model slices.,Este é o espaço máximo que o POM poderá usar para fatias de modelos.
+setupWizard.shardsFolder,Shared slices folder,Pasta de fatias compartilhadas
+setupWizard.shardsFolderHint,Default: ~/.pom/models_sliced, Padrão: ~/.pom/models_sliced
+setupWizard.stepHardware,Your machine,Sua máquina
+setupWizard.stepHealth,Checks,Verificações
+setupWizard.stepInvite,Invite,Convite
+setupWizard.stepModel,Model,Modelo
+setupWizard.stepNetwork,Network,Rede
+setupWizard.stepProfile,Role,Função
+setupWizard.stepResources,Resources,Recursos
+setupWizard.stepReview,Review,Revisão
+setupWizard.stepSecurity,Security,Segurança
+setupWizard.stepStorage,Storage,Armazenamento
+setupWizard.stepTrust,Trust,Confiança
+setupWizard.storageDetail,The defaults use your home folder so setup stays predictable and easy to back up.,Os padrões usam sua pasta pessoal para manter a configuração previsível e fácil de salvar.
+setupWizard.storageLabel,Shared disk space,Espaço em disco compartilhado
+setupWizard.storagePaths,Storage paths,Caminhos de armazenamento
+setupWizard.storagePathsDetail,You can change these later in Settings.,Você poderá mudar estes caminhos depois em Configurações.
+setupWizard.storageTitle,Where should models and shared slices live?,Onde devem ficar os modelos e as fatias compartilhadas?
+setupWizard.thermalDetail,A limit around 85°C is a comfortable target. POM stops using the GPU before it stays too hot.,Um limite perto de 85°C é um alvo confortável. O POM para de usar a GPU antes que ela fique quente demais.
+setupWizard.thermalLimit,GPU temperature limit,Limite de temperatura da GPU
+setupWizard.tlsDetail,Encrypted links keep control messages private while nodes talk to each other.,Conexões criptografadas mantêm privadas as mensagens de controle entre os nós.
+setupWizard.tlsPublicRequired,Public networks require encryption between nodes.,Redes públicas exigem criptografia entre nós.
+setupWizard.tlsRequired,Encrypt connections between nodes,Criptografar conexões entre nós
+setupWizard.trustDocument,Trust document,Documento de confiança
+setupWizard.trustDocumentHint,Copy the complete JSON document from the administrator.,Cole o documento JSON completo enviado pelo administrador.
+setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
+setupWizard.trustLabel,Trust root,Raiz de confiança
+setupWizard.trustPrivateDetail,Private networks use the trust root and one shared connection secret.,Redes privadas usam a raiz de confiança e um único segredo compartilhado.
+setupWizard.trustPublicDetail,Public networks do not use a shared secret. The trust document authenticates control between machines.,Redes públicas não usam segredo compartilhado. O documento de confiança autentica o controle entre as máquinas.
+setupWizard.trustTitle,Bring the network's trust root,Traga a raiz de confiança da rede
+setupWizard.visibility,Who can find this network?,Quem pode encontrar esta rede?
+setupWizard.visibilityHint,Public networks use signed control and no shared secret.,Redes públicas usam controle assinado e não têm segredo compartilhado.
+setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
+setupWizard.welcomeDetail,POM will ask one clear question at a time and save a real configuration at the end.,O POM fará uma pergunta clara por vez e salvará uma configuração real no final.
+setupWizard.welcomeEyebrow,Your first step,Seu primeiro passo
+setupWizard.welcomeTitle,Let us set up this machine,Vamos configurar esta máquina
 shards.complete,covers model,cobre o modelo
 shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
 shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.
@@ -1618,13 +1796,16 @@ trustAnchor.copy,Copy,Copiar
 trustAnchor.documentHint,Paste the whole content of {file} from the administrator node.,Cole o conteúdo inteiro do {file} vindo do nó administrador.
 trustAnchor.documentLabel,Signed chain,Cadeia assinada
 trustAnchor.documentPlaceholder,Paste the file content here,Cole aqui o conteúdo do arquivo
+trustAnchor.fingerprintCalculated,Calculated from the document,Calculada a partir do documento
+trustAnchor.fingerprintConfirm,I checked this fingerprint against the separate value the administrator gave me.,Conferi esta impressão digital com o valor separado que o administrador me passou.
 trustAnchor.fingerprintFootnote,The fingerprint is public and grants nothing on its own. Carry it to the other node and type it there by hand: it is the check that anchors the trust.,A impressão digital é pública e não concede nada sozinha. Leve-a ao outro nó e digite-a lá à mão: é a conferência que ancora a confiança.
 trustAnchor.fingerprintLabel,Anchor fingerprint (SHA-256),Impressão digital da âncora (SHA-256)
+trustAnchor.fingerprintWaiting,Paste a valid document to calculate its fingerprint.,Cole um documento válido para calcular a impressão digital.
 trustAnchor.installAction,Install trust root,Instalar a raiz de confiança
 trustAnchor.installCaution,"Installing is only possible from this machine, and only once.","Instalar só é possível a partir desta máquina, e só uma vez."
 trustAnchor.installEyebrow,Receive the root,Receber a raiz
 trustAnchor.installFailed,The trust root could not be installed.,Não foi possível instalar a raiz de confiança.
-trustAnchor.installSubtitle,"Copy {file} from the administrator node through a channel you trust, paste it here and type the fingerprint you read there.","Copie o {file} do nó administrador por um canal seu, cole aqui e digite a impressão digital que leu lá."
+trustAnchor.installSubtitle,"Copy {file} from the administrator node through a channel you trust, paste it here and confirm the fingerprint calculated from it.","Copie o {file} do nó administrador por um canal seu, cole aqui e confirme a impressão digital calculada a partir dele."
 trustAnchor.installTitle,Install the chain from the administrator,Instalar a cadeia vinda do administrador
 trustAnchor.installed,Trust root installed,Raiz de confiança instalada
 trustAnchor.installedDetail,This node now checks administrative commands against the anchored chain.,Este nó passa a conferir os comandos administrativos contra a cadeia ancorada.

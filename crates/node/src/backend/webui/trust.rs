@@ -71,14 +71,47 @@ pub struct InstallAnchorRequest {
     pub fingerprint: String,
 }
 
+#[derive(Debug)]
+pub(crate) enum AnchorValidationError {
+    InvalidDocument(anyhow::Error),
+    FingerprintMismatch,
+}
+
+/// Shared validation path for the configured gateway and the loopback-only
+/// setup router. The HTTP handlers own their transport policy; this function
+/// owns the document and fingerprint rules.
+pub(crate) fn validate_transported_anchor(
+    body: &InstallAnchorRequest,
+) -> Result<(crate::admin_trust::AdminTrustDocument, String), AnchorValidationError> {
+    let document = crate::admin_trust::parse_transported(&body.document)
+        .map_err(AnchorValidationError::InvalidDocument)?;
+    let expected = crate::admin_trust::anchor_fingerprint(&document);
+    if !crate::admin_trust::fingerprint_matches(&body.fingerprint, &expected) {
+        return Err(AnchorValidationError::FingerprintMismatch);
+    }
+    Ok((document, expected))
+}
+
+/// Shared durable adoption path for the configured gateway and setup router.
+pub(crate) fn adopt_transported_anchor(
+    trust: &crate::admin_trust::AdminTrust,
+    body: &InstallAnchorRequest,
+) -> anyhow::Result<String> {
+    let (document, expected) = match validate_transported_anchor(body) {
+        Ok(value) => value,
+        Err(AnchorValidationError::InvalidDocument(error)) => return Err(error),
+        Err(AnchorValidationError::FingerprintMismatch) => {
+            anyhow::bail!("a impressão digital conferida não corresponde à âncora desta cadeia")
+        }
+    };
+    trust.adopt_anchor(document, &body.fingerprint)?;
+    Ok(expected)
+}
+
 /// Recusa com um código estável ao lado da frase, para a interface traduzir a
 /// mensagem em vez de mostrar o texto do servidor cru.
 fn refusal(status: StatusCode, reason: &'static str, message: &str) -> Response {
-    (
-        status,
-        Json(json!({ "error": message, "reason": reason })),
-    )
-        .into_response()
+    (status, Json(json!({ "error": message, "reason": reason }))).into_response()
 }
 
 fn is_loopback(peer: Option<&crate::serve::PeerAddr>) -> bool {
@@ -138,25 +171,23 @@ pub(super) async fn install_trust_anchor(
             "este nó já tem raiz de confiança; trocar a raiz é reancoragem manual na máquina",
         );
     }
-    let document = match crate::admin_trust::parse_transported(&body.document) {
-        Ok(document) => document,
-        // O erro do parser nomeia o defeito da cadeia, nunca o conteúdo dela.
-        Err(error) => {
+    let (document, expected) = match validate_transported_anchor(&body) {
+        Ok(value) => value,
+        Err(AnchorValidationError::InvalidDocument(error)) => {
             return refusal(
                 StatusCode::BAD_REQUEST,
                 "invalid_document",
                 &format!("{error:#}"),
             );
         }
+        Err(AnchorValidationError::FingerprintMismatch) => {
+            return refusal(
+                StatusCode::BAD_REQUEST,
+                "fingerprint_mismatch",
+                "a impressão digital conferida não corresponde à âncora desta cadeia",
+            );
+        }
     };
-    let expected = crate::admin_trust::anchor_fingerprint(&document);
-    if !crate::admin_trust::fingerprint_matches(&body.fingerprint, &expected) {
-        return refusal(
-            StatusCode::BAD_REQUEST,
-            "fingerprint_mismatch",
-            "a impressão digital conferida não corresponde à âncora desta cadeia",
-        );
-    }
     // As recusas acima existem para dar a frase certa ao operador; a que não
     // pode ser contornada é esta, que refaz as três sob o mesmo cadeado antes
     // de escrever. Chegar aqui com erro é corrida ou disco, não navegador.
@@ -204,7 +235,9 @@ mod tests {
     fn cadeia_do_admin() -> (String, String) {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
-            "ksia", "peer-ksia", &signing_key,
+            "ksia",
+            "peer-ksia",
+            &signing_key,
         );
         let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
             "cluster-do-operador",
@@ -235,8 +268,7 @@ mod tests {
             .header("x-forwarded-for", "127.0.0.1")
             .header("x-real-ip", "127.0.0.1")
             .body(Body::from(
-                serde_json::json!({ "document": document, "fingerprint": fingerprint })
-                    .to_string(),
+                serde_json::json!({ "document": document, "fingerprint": fingerprint }).to_string(),
             ))
             .unwrap();
         request

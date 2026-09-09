@@ -220,21 +220,27 @@ pub(super) async fn run(
                 .peer_http
                 .for_peer(&pull.target_node_id)
                 .map_err(|e| format!("{}: sem cliente para o peer: {e}", pull.target_host))?;
-            let body: serde_json::Value = cliente
-                .post(format!("{gateway}/api/transfer/pull"))
-                .bearer_auth(&key)
+            let pull_body = json!({
+                "node_id": pull.source_node_id,
+                "sha256": pull.source_sha256,
+                "model": plan.group,
+                "remote_path": pull.source_path,
+                "name": pull.name,
+            });
+            let request = state
+                .control_json_request(
+                    cliente.post(format!("{gateway}/api/transfer/pull")),
+                    "/api/transfer/pull",
+                    &pull_body,
+                )
+                .await
+                .map_err(|e| format!("{} não aceitou puxar a fatia: {e}", pull.target_host))?;
+            let body: serde_json::Value = request
                 // Por hash sempre que a origem souber o dela. É o que faz a
                 // fatia cair em `<shard_dir>/<modelo>/<sha>.gguf` com o `.pom`
                 // ao lado, em vez de solta na raiz parecendo um modelo
                 // inteiro. O pedido por caminho fica para a fatia sem hash -
                 // um arquivo que ninguém endereçou por conteúdo ainda.
-                .json(&json!({
-                    "node_id": pull.source_node_id,
-                    "sha256": pull.source_sha256,
-                    "model": plan.group,
-                    "remote_path": pull.source_path,
-                    "name": pull.name,
-                }))
                 .send()
                 .await
                 .map_err(|e| format!("{} não aceitou puxar a fatia: {e}", pull.target_host))?
@@ -303,7 +309,9 @@ pub(super) async fn run(
         let head = targets
             .iter_mut()
             .find(|target| target.start_layer == 0)
-            .ok_or_else(|| "a implantação com visão precisa de um alvo que comece na camada 0".to_string())?;
+            .ok_or_else(|| {
+                "a implantação com visão precisa de um alvo que comece na camada 0".to_string()
+            })?;
         head.use_mmproj = true;
     }
     if params.no_embeddings {
@@ -494,7 +502,6 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
         );
     }
 
-    let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
     let peers = state.all_peers().await;
 
@@ -509,13 +516,23 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
         let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
             continue;
         };
-        let envio = cliente
-            .post(format!("{base}/api/ui/deployments"))
-            .bearer_auth(&key)
-            .timeout(PEER_TIMEOUT)
-            .json(registro)
-            .send()
-            .await;
+        let envio = match state
+            .control_json_request(
+                cliente.post(format!("{base}/api/ui/deployments")),
+                "/api/ui/deployments",
+                registro,
+            )
+            .await
+        {
+            Ok(request) => request.timeout(PEER_TIMEOUT).send().await,
+            Err(error) => {
+                warn!(
+                    "{} não aceitou assinar o registro da implantação: {error}",
+                    no.node_id
+                );
+                continue;
+            }
+        };
         if let Err(e) = envio {
             warn!("{} não aceitou o registro da implantação: {e}", peer.node_id);
         }
@@ -534,7 +551,6 @@ pub(super) async fn find_record(
 ) -> Option<crate::deployment::Deployment> {
     let local = state.database.deployment(deploy_id).ok().flatten();
 
-    let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
     let buscas = state.all_peers().await.into_iter().filter_map(|peer| {
         if peer.node_id == self_id {
@@ -542,12 +558,17 @@ pub(super) async fn find_record(
         }
         let http = state.peer_http.for_peer(&peer.node_id).ok()?;
         let base = peer.gateway_url()?;
-        let key = key.clone();
+        let peer_state = state.clone();
         let alvo = deploy_id.to_string();
         Some(async move {
-            let body: serde_json::Value = http
-                .get(format!("{base}/api/ui/deployments?local=true"))
-                .bearer_auth(&key)
+            let request = peer_state
+                .control_get_request(
+                    http.get(format!("{base}/api/ui/deployments?local=true")),
+                    "/api/ui/deployments",
+                )
+                .await
+                .ok()?;
+            let body: serde_json::Value = request
                 .timeout(PEER_TIMEOUT)
                 .send()
                 .await
@@ -557,10 +578,13 @@ pub(super) async fn find_record(
                 .ok()?;
             let registros: Vec<crate::deployment::Deployment> =
                 serde_json::from_value(body.get("deployments")?.clone()).ok()?;
-            registros.into_iter().find(|d| d.deploy_id == alvo).map(|mut d| {
-                d.ensure_versions();
-                d
-            })
+            registros
+                .into_iter()
+                .find(|d| d.deploy_id == alvo)
+                .map(|mut d| {
+                    d.ensure_versions();
+                    d
+                })
         })
     });
 
@@ -627,7 +651,11 @@ pub struct RedeployRequest {
 impl RedeployRequest {
     /// Resolve o pedido contra o registro: escolhe/cria a versão, muta o
     /// registro para refleti-la e devolve os parâmetros base de cada máquina.
-    pub(super) fn resolve(&self, registro: &mut crate::deployment::Deployment, autor: &str) -> Result<RuntimeParams, String> {
+    pub(super) fn resolve(
+        &self,
+        registro: &mut crate::deployment::Deployment,
+        autor: &str,
+    ) -> Result<RuntimeParams, String> {
         registro.ensure_versions();
         if let Some(v) = self.version {
             registro.set_active_version(v).map_err(|e| e.to_string())?;
@@ -698,8 +726,7 @@ pub(super) async fn redeploy_endpoint(
     }
     if let Some(v) = req.version {
         if !registro.versions.iter().any(|ver| ver.version == v) {
-            let disponiveis: Vec<u32> =
-                registro.versions.iter().map(|ver| ver.version).collect();
+            let disponiveis: Vec<u32> = registro.versions.iter().map(|ver| ver.version).collect();
             return bad(json!({
                 "error": format!("versão {v} não existe (há {disponiveis:?})")
             }));
@@ -795,10 +822,8 @@ pub(super) async fn run_redeploy(
     // não guarda o `TpLaunch` inteiro, só o `tp_rank` de cada nó. Mantém o
     // caminho antigo (reconfigure no lugar), que exige o rank já servindo.
     if registro.kind == crate::deployment::DeploymentKind::TensorParallel {
-        return run_redeploy_in_place(
-            &state, &peers, &mut registro, &req, &self_id, &key, job_id,
-        )
-        .await;
+        return run_redeploy_in_place(&state, &peers, &mut registro, &req, &self_id, &key, job_id)
+            .await;
     }
 
     // ── 1. Fotografa a identidade viva de cada nó antes de derrubar nada ──────
@@ -1030,12 +1055,13 @@ pub(super) async fn relaunch_one(
     peers: &[PeerInfo],
     no: &crate::deployment::DeploymentNode,
     self_id: &str,
-    key: &str,
+    _key: &str,
     params: &RuntimeParams,
     slice: ReconfigureSlice,
 ) -> Option<String> {
     if no.node_id == self_id {
-        if let Err(e) = crate::webui::reconfigure_local(state.clone(), params.clone(), Some(slice)).await
+        if let Err(e) =
+            crate::webui::reconfigure_local(state.clone(), params.clone(), Some(slice)).await
         {
             return Some(e);
         }
@@ -1050,12 +1076,21 @@ pub(super) async fn relaunch_one(
         let Ok(cliente) = state.peer_http.for_peer(&no.node_id) else {
             return Some("sem cliente para o peer".to_string());
         };
-        match cliente
-            .post(format!("{base}/api/ui/reconfigure"))
-            .bearer_auth(key)
+        let corpo = json!({ "params": params, "slice": slice });
+        let request = match state
+            .control_json_request(
+                cliente.post(format!("{base}/api/ui/reconfigure")),
+                "/api/ui/reconfigure",
+                &corpo,
+            )
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => return Some(format!("não foi possível assinar a chamada: {error}")),
+        };
+        match request
             // Recarregar pesos é minutos, não segundos.
             .timeout(REDEPLOY_READY_TIMEOUT)
-            .json(&json!({ "params": params, "slice": slice }))
             .send()
             .await
         {
@@ -1071,7 +1106,9 @@ pub(super) async fn relaunch_one(
 
     // A chamada só dispara a carga; espera a máquina reportar `ready`.
     if let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) {
-        if let Err(e) = wait_for_peer_serving_with_timeout(state, peer, REDEPLOY_READY_TIMEOUT).await {
+        if let Err(e) =
+            wait_for_peer_serving_with_timeout(state, peer, REDEPLOY_READY_TIMEOUT).await
+        {
             return Some(e);
         }
     }
@@ -1152,7 +1189,6 @@ pub(super) async fn validate_redeploy_wire_dtype(
     }
 
     let mut blocked = Vec::new();
-    let key = state.auth.read().await.connection_key.clone();
     for node in nodes {
         if node.node_id == self_id {
             continue;
@@ -1169,13 +1205,20 @@ pub(super) async fn validate_redeploy_wire_dtype(
             blocked.push(format!("{}: cliente do peer indisponível", node.hostname));
             continue;
         };
-        let response = match client
-            .get(format!("{base}/api/ui/node"))
-            .bearer_auth(&key)
-            .timeout(PEER_TIMEOUT)
-            .send()
+        let request = match state
+            .control_get_request(client.get(format!("{base}/api/ui/node")), "/api/ui/node")
             .await
         {
+            Ok(request) => request,
+            Err(error) => {
+                blocked.push(format!(
+                    "{}: não foi possível assinar /api/ui/node: {error}",
+                    node.hostname
+                ));
+                continue;
+            }
+        };
+        let response = match request.timeout(PEER_TIMEOUT).send().await {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
                 blocked.push(format!(
@@ -1236,14 +1279,13 @@ pub(super) async fn reconfigure_one(
     peers: &[PeerInfo],
     node_id: &str,
     self_id: &str,
-    key: &str,
+    _key: &str,
     params: &RuntimeParams,
 ) -> Option<String> {
     let corpo = json!({ "params": params });
 
     if node_id == self_id {
-        let resposta =
-            crate::webui::reconfigure_local(state.clone(), params.clone(), None).await;
+        let resposta = crate::webui::reconfigure_local(state.clone(), params.clone(), None).await;
         return resposta.err();
     }
 
@@ -1252,14 +1294,19 @@ pub(super) async fn reconfigure_one(
         .find(|p| p.node_id == node_id)
         .and_then(|p| p.gateway_url())?;
     let cliente = state.peer_http.for_peer(node_id).ok()?;
-    match cliente
-        .post(format!("{base}/api/ui/reconfigure"))
-        .bearer_auth(key)
+    let request = state
+        .control_json_request(
+            cliente.post(format!("{base}/api/ui/reconfigure")),
+            "/api/ui/reconfigure",
+            &corpo,
+        )
+        .await
+        .ok()?;
+    match request
         // Recarregar pesos é minutos, não segundos: o `PEER_TIMEOUT` de uma
         // chamada de controle mataria a conexão no meio de um carregamento que
         // vai terminar bem.
         .timeout(Duration::from_secs(1800))
-        .json(&corpo)
         .send()
         .await
     {

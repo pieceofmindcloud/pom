@@ -563,6 +563,11 @@ maiores que 1 são recusadas; dimensões posteriores iguais a 1 são ignoradas.
 Se mais de um eixo tiver a contagem de tokens, o menor eixo que também fecha os
 strides contíguos é escolhido de forma determinística. Geometria ou stride que
 não fecha essa regra é recusado com o shape no erro.
+Em prefill multimodal, o callback pode separar o trecho textual das células
+expandidas pela imagem; nesse caso a captura identifica a quantidade física de
+cada callback e acumula os trechos até o total esperado, sem confundir essa
+contagem com a posição lógica `n_past`. No caminho hub, as posições M-RoPE
+seguem no metadata junto do residual para os hops seguintes.
 
 Na recepção, a validação usa `n_embd_inp` para a forma 2D e para dimensões
 extras singleton. Quando há um eixo extra não singleton, a largura efetiva é

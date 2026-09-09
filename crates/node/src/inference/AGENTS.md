@@ -859,6 +859,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   último. Todo caminho de decode chama `reset_capture_slot` antes, senão a sobra
   de uma requisição entraria concatenada na próxima. A ordem é a de
   `split_simple`, que `kv_unified=true` mantém para o transporte do residual.
+  Em prefill multimodal, um callback pode trazer só parte das células físicas
+  (por exemplo, o texto antes das células expandidas pela imagem); a captura
+  infere o eixo físico desse callback e acumula até o total esperado, sem usar
+  `n_past` como contagem de linhas.
 - `profile_backend_sync_enabled` - perfil do backend síncrono, `POM_PROFILE_SYNC`
   (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
   `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os
@@ -1265,6 +1269,8 @@ preenchimento `vec![0; n_tokens]` de `prompt_tokens` como se fossem tokens
 reais; a resposta saía como uma fila de pontos de exclamação.
 `Session::positions_match_cells` fecha reuso de prefixo e snapshot para
 sessões com mídia, onde `prompt_tokens` não indexa o KV célula a célula.
+No hand-off hub, `mrope_positions` segue no metadata junto do residual para
+que cada fatia a jusante preserve as posições lógicas da cabeça.
 
 ## Manutenção deste arquivo
 

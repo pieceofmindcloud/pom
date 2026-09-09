@@ -99,6 +99,17 @@ mod tests {
     }
 
     #[test]
+    fn hub_preserva_posicoes_mrope_ao_encaminhar_estado_oculto() {
+        let positions = json!([[0, 0, 0, 0], [0, 1, 1, 0]]);
+        let meta = json!({"mrope_positions": positions.clone()});
+        let mut body_meta = json!({"chunk_index": 0});
+
+        copy_mrope_positions(&meta, &mut body_meta);
+
+        assert_eq!(body_meta["mrope_positions"], positions);
+    }
+
+    #[test]
     fn missing_absolute_prefill_position_is_an_error_not_a_chunk_index() {
         let error = required_prefill_position(&json!({"start_pos": 42}), "next_pos", 1)
             .expect_err("a continuation without next_pos must not invent position 512");

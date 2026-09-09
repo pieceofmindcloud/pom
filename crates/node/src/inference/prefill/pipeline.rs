@@ -419,6 +419,7 @@ pub(super) async fn forward_hub_chunk(
         if let Some(tokens) = meta.get("tokens") {
             body_meta["tokens"] = tokens.clone();
         }
+        copy_mrope_positions(&meta, &mut body_meta);
         if let Some(prefix_match_tokens) = meta.get("prefix_match_tokens") {
             body_meta["prefix_match_tokens"] = prefix_match_tokens.clone();
         }
@@ -445,6 +446,17 @@ pub(super) async fn forward_hub_chunk(
         tensor = next_tensor;
     }
     Ok((meta, tensor, trace))
+}
+
+/// Keeps the physical cells and their logical M-RoPE positions together when
+/// a hub forwards a hidden-state chunk to the next slice.
+pub(super) fn copy_mrope_positions(
+    meta: &serde_json::Value,
+    body_meta: &mut serde_json::Value,
+) {
+    if let Some(positions) = meta.get("mrope_positions") {
+        body_meta["mrope_positions"] = positions.clone();
+    }
 }
 
 /// Same chunk-by-chunk loop as `run`, but each chunk makes exactly one

@@ -5,6 +5,7 @@ pub(super) struct CaptureSlot {
     pub(super) buf: Option<Vec<f32>>,
     pub(super) expected_tokens: usize,
     pub(super) max_microbatch_tokens: usize,
+    pub(super) allow_physical_chunks: bool,
     pub(super) n_embd: usize,
     pub(super) expected_floats: Option<usize>,
     pub(super) layout: Option<ResidualCaptureLayout>,
@@ -1125,7 +1126,28 @@ pub(super) fn residual_capture_layout(
     n_tokens: usize,
     n_embd: usize,
 ) -> Result<ResidualCaptureLayout> {
-    if n_tokens == 0 {
+    residual_capture_layout_with_token_count(tensor_shape, tensor_strides, Some(n_tokens), n_embd)
+}
+
+/// Resolve a residual layout when a multimodal decode has split the physical
+/// cells into multiple graph chunks. `mtmd` can present the text chunk first
+/// and the image chunk after it, so neither chunk dimension is necessarily the
+/// whole decode's `n_tokens`.
+fn residual_capture_layout_for_physical_chunk(
+    tensor_shape: [i64; 4],
+    tensor_strides: [usize; 4],
+    n_embd: usize,
+) -> Result<ResidualCaptureLayout> {
+    residual_capture_layout_with_token_count(tensor_shape, tensor_strides, None, n_embd)
+}
+
+fn residual_capture_layout_with_token_count(
+    tensor_shape: [i64; 4],
+    tensor_strides: [usize; 4],
+    expected_tokens: Option<usize>,
+    n_embd: usize,
+) -> Result<ResidualCaptureLayout> {
+    if expected_tokens == Some(0) {
         bail!("residual capture: quantidade de tokens vazia");
     }
     let dims = tensor_shape
@@ -1147,7 +1169,7 @@ pub(super) fn residual_capture_layout(
     let mut saw_unsupported_trailing = false;
     let mut saw_invalid_stride = false;
     for token_axis in 1..dims.len() {
-        if dims[token_axis] != n_tokens {
+        if expected_tokens.is_some_and(|n_tokens| dims[token_axis] != n_tokens) {
             continue;
         }
         saw_token_axis = true;
@@ -1202,28 +1224,25 @@ pub(super) fn residual_capture_layout(
         bail!(
             "residual capture: shape {:?} não é contígua no eixo de tokens {}",
             tensor_shape,
-            n_tokens
+            expected_tokens.unwrap_or_default()
         );
     }
-    bail!(
-        "residual capture: shape {:?} não expõe o número de tokens {}",
-        tensor_shape,
-        n_tokens
-    )
+    if let Some(n_tokens) = expected_tokens {
+        bail!(
+            "residual capture: shape {:?} não expõe o número de tokens {}",
+            tensor_shape,
+            n_tokens
+        )
+    } else {
+        bail!(
+            "residual capture: shape {:?} não expõe um eixo de tokens físico",
+            tensor_shape
+        )
+    }
 }
 
-pub(super) fn capture_microbatch_tokens(slot: &CaptureSlot) -> Result<usize> {
-    // `expected_tokens` is the batch count supplied by the decode caller. The
-    // callback sees only the tensor, so after the first capture the accumulated
-    // feature rows tell us how many tokens already arrived; the next physical
-    // microbatch is the remaining count capped by `n_ubatch`.
-    if slot.expected_tokens == 0 {
-        bail!("residual capture: quantidade esperada de tokens vazia");
-    }
-    if slot.max_microbatch_tokens == 0 {
-        bail!("residual capture: limite de microlote vazio");
-    }
-    let captured_tokens = match &slot.layout {
+fn captured_tokens(slot: &CaptureSlot) -> Result<usize> {
+    match &slot.layout {
         Some(layout) => {
             let feature_values = layout
                 .feature_shape
@@ -1241,10 +1260,24 @@ pub(super) fn capture_microbatch_tokens(slot: &CaptureSlot) -> Result<usize> {
                     feature_values
                 );
             }
-            current / feature_values
+            Ok(current / feature_values)
         }
-        None => 0,
-    };
+        None => Ok(0),
+    }
+}
+
+pub(super) fn capture_microbatch_tokens(slot: &CaptureSlot) -> Result<usize> {
+    // `expected_tokens` is the batch count supplied by the decode caller. The
+    // callback sees only the tensor, so after the first capture the accumulated
+    // feature rows tell us how many tokens already arrived; the next physical
+    // microbatch is the remaining count capped by `n_ubatch`.
+    if slot.expected_tokens == 0 {
+        bail!("residual capture: quantidade esperada de tokens vazia");
+    }
+    if slot.max_microbatch_tokens == 0 {
+        bail!("residual capture: limite de microlote vazio");
+    }
+    let captured_tokens = captured_tokens(slot)?;
     let remaining = slot
         .expected_tokens
         .checked_sub(captured_tokens)
@@ -1267,9 +1300,42 @@ pub(super) fn record_capture(
             return Ok(());
         }
     }
-    let microbatch_tokens = capture_microbatch_tokens(slot)?;
-    let layout =
-        residual_capture_layout(tensor_shape, tensor_strides, microbatch_tokens, slot.n_embd)?;
+    let expected_microbatch_tokens = capture_microbatch_tokens(slot)?;
+    let captured = captured_tokens(slot)?;
+    let remaining = slot.expected_tokens.checked_sub(captured).ok_or_else(|| {
+        anyhow::anyhow!("residual capture: microlotes excederam o batch esperado")
+    })?;
+    let layout = match residual_capture_layout(
+        tensor_shape,
+        tensor_strides,
+        expected_microbatch_tokens,
+        slot.n_embd,
+    ) {
+        Ok(layout) => layout,
+        Err(strict_error) if slot.allow_physical_chunks => {
+            let layout = residual_capture_layout_for_physical_chunk(
+                tensor_shape,
+                tensor_strides,
+                slot.n_embd,
+            )?;
+            let physical_tokens = usize::try_from(tensor_shape[layout.token_axis])
+                .map_err(|_| anyhow::anyhow!("residual capture: dimensão negativa"))?;
+            if physical_tokens == 0 || physical_tokens > remaining {
+                return Err(strict_error);
+            }
+            layout
+        }
+        Err(strict_error) => return Err(strict_error),
+    };
+    let microbatch_tokens = usize::try_from(tensor_shape[layout.token_axis])
+        .map_err(|_| anyhow::anyhow!("residual capture: dimensão negativa"))?;
+    if microbatch_tokens == 0 || microbatch_tokens > remaining {
+        bail!(
+            "residual capture: microlote físico de {} células excede as {} restantes",
+            microbatch_tokens,
+            remaining
+        );
+    }
     let captured_bytes = floats
         .len()
         .checked_mul(std::mem::size_of::<f32>())

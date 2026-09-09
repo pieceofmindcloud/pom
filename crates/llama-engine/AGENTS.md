@@ -86,6 +86,9 @@ M-RoPE as duas divergem por desenho do upstream, e `mrope_positions` carrega a
 coordenada `[t, y, x, z]` de cada célula para que o estado oculto atravesse os
 hops sem reduzir as duas contagens a uma só - ver
 `decode_hidden_with_positions` e `crates/node/src/inference/AGENTS.md`.
+A captura de residual acumula microlotes pelo número de células físicas: o
+`mtmd` pode entregar o trecho textual e o trecho expandido da imagem em
+callbacks separados, enquanto `n_past` continua sendo apenas a posição lógica.
 
 ## Maintaining this file
 

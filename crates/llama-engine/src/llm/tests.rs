@@ -60,6 +60,7 @@ mod tests {
             buf: None,
             expected_tokens: 11,
             max_microbatch_tokens: 11,
+            allow_physical_chunks: false,
             n_embd: 4096,
             expected_floats: None,
             layout: None,
@@ -103,6 +104,46 @@ mod tests {
         .expect("o receptor deve aceitar exatamente a forma emitida");
         assert_eq!(received_shape, vec![11, 4096, 4]);
         assert_eq!(width, 16_384);
+    }
+
+    #[test]
+    fn captura_multimodal_acumula_microlotes_pelas_celulas_fisicas() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            expected_tokens: 257,
+            max_microbatch_tokens: 512,
+            allow_physical_chunks: true,
+            n_embd: 2048,
+            expected_floats: None,
+            layout: None,
+            error: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
+            copy_us: 0,
+        };
+        let record = |slot: &mut CaptureSlot, tokens: usize, start: usize| {
+            let values = (start..start + tokens * 2048)
+                .map(|value| value as f32)
+                .collect::<Vec<_>>();
+            record_capture(
+                slot,
+                [2048, tokens as i64, 1, 1],
+                [4, 2048 * 4, 2048 * tokens * 4, 2048 * tokens * 4],
+                values.len() * 4,
+                values,
+            )
+        };
+
+        record(&mut slot, 39, 0).expect("o microlote textual deve ser capturado");
+        record(&mut slot, 218, 39 * 2048)
+            .expect("o microlote expandido pela imagem deve ser capturado");
+
+        let captured = take_captured_residual(&mut slot).expect("a sequência física completa");
+        assert_eq!(captured.shape, vec![257, 2048]);
+        assert_eq!(captured.values.len(), 257 * 2048);
+        assert_eq!(captured.values[39 * 2048], (39 * 2048) as f32);
     }
 
     #[test]

@@ -400,6 +400,7 @@ impl LlmEngine {
             buf: None,
             expected_tokens: 0,
             max_microbatch_tokens: effective_n_ubatch(cfg) as usize,
+            allow_physical_chunks: false,
             n_embd,
             expected_floats: None,
             layout: None,
@@ -726,7 +727,7 @@ impl LlmEngine {
         let n_tokens = unsafe { sys::mtmd_helper_get_n_tokens(chunks.0) };
         let mrope_positions = self.multimodal_mrope_positions(chunks.0, n_past)?;
         let mut new_n_past = n_past as sys::llama_pos;
-        self.reset_capture_slot(n_tokens);
+        self.reset_capture_slot_with_physical_chunks(n_tokens, true);
         let started = Instant::now();
         self.begin_moe_callback();
         let rc = unsafe {
@@ -1324,8 +1325,8 @@ impl LlmEngine {
         let input_width_i32 = i32::try_from(input_width)
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
         let enqueue_started = Instant::now();
-        self.reset_capture_slot(layout.total_tokens());
         let has_mrope_positions = entries.iter().any(|entry| entry.mrope_positions.is_some());
+        self.reset_capture_slot_with_physical_chunks(layout.total_tokens(), has_mrope_positions);
         let mut flattened_positions = has_mrope_positions.then(|| {
             vec![0 as sys::llama_pos; layout.total_tokens().saturating_mul(4)]
         });
@@ -1389,11 +1390,20 @@ impl LlmEngine {
     }
 
     pub(super) fn reset_capture_slot(&self, n_tokens: usize) {
+        self.reset_capture_slot_with_physical_chunks(n_tokens, false);
+    }
+
+    pub(super) fn reset_capture_slot_with_physical_chunks(
+        &self,
+        n_tokens: usize,
+        allow_physical_chunks: bool,
+    ) {
         let mut capture = self.capture.lock().unwrap();
         capture.buf = None;
         capture.expected_tokens = n_tokens;
         capture.expected_floats = None;
         capture.layout = None;
+        capture.allow_physical_chunks = allow_physical_chunks;
         capture.error = None;
         capture.last_shape = None;
         capture.last_strides = None;
@@ -1635,7 +1645,7 @@ impl LlmEngine {
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
-        self.reset_capture_slot(n_tokens);
+        self.reset_capture_slot_with_physical_chunks(n_tokens, mrope_positions.is_some());
         let enqueue_started = Instant::now();
         let input_width = validate_hidden_tensor(
             hidden.len(),

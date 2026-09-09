@@ -34,7 +34,6 @@ export function TimingSummary({ timings }: { timings: GenerationTimings }) {
   const { t } = useI18n();
   const timing = (value: number | null | undefined) => value == null ? t("chat.telemetry.notMeasured") : ms(value);
   const pipelineTtft = timings.pipeline_first_token_ms ?? timings.ttft_ms;
-  const serverTtft = timings.server_ttft_ms ?? timings.ttft_ms;
   return (
     <div className="mt-2 grid max-w-[38rem] grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[0.68rem]">
       <span className="text-faint">{t("chat.generationSpeed")}</span>
@@ -49,10 +48,8 @@ export function TimingSummary({ timings }: { timings: GenerationTimings }) {
       <span className="font-mono text-muted">{timing(timings.server_ttft_ms)}</span>
       <span className="text-faint">{t("chat.telemetry.engineTtft")}</span>
       <span className="font-mono text-muted">{timing(timings.engine_ttft_ms)}</span>
-      <span className="text-faint">{t("chat.telemetry.clientTtft")}</span>
+      <span className="text-faint">{t("chat.ttftClient")}</span>
       <span className="font-mono text-muted">{timing(timings.client_ttft_ms)}</span>
-      <span className="text-faint">{t("chat.ttftServer")}</span>
-      <span className="font-mono text-muted">{timing(serverTtft)}</span>
       <span className="text-faint">{t("chat.totalTime")}</span>
       <span className="font-mono text-muted">{ms(timings.total_ms)} · {num(timings.total_tokens_per_sec, 1)} {t("chat.tokensPerSecondUnit")}</span>
     </div>

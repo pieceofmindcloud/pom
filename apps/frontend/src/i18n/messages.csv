@@ -203,8 +203,8 @@ chat.telemetry.cpuBackedLayers,CPU-backed layers: {count},Camadas com peso em CP
 chat.telemetry.criticalPath,Critical path,Caminho crítico
 chat.telemetry.currentPath,current state: selected path: {value},estado atual: caminho selecionado: {value}
 chat.telemetry.decode,decode,decode
-chat.telemetry.decodeSummary,decode calls: {calls} · tokens: {tokens} · tokens/call: {perCall},chamadas de decode: {calls} · tokens: {tokens} · tokens/chamada: {perCall}
 chat.telemetry.decodeCoverage,Decode spans observed / expected,Spans de decode observados / esperados
+chat.telemetry.decodeSummary,decode calls: {calls} · tokens: {tokens} · tokens/call: {perCall},chamadas de decode: {calls} · tokens: {tokens} · tokens/chamada: {perCall}
 chat.telemetry.distributedTitle,Distributed execution,Execução distribuída
 chat.telemetry.effectivePlacement,Effective layer placement,Colocação efetiva das camadas
 chat.telemetry.engine,engine: {value},motor: {value}
@@ -303,15 +303,15 @@ chat.telemetry.spanRouteResolution,route resolution,resolução da rota
 chat.telemetry.spanSessionAcquire,session acquire,aquisição da sessão
 chat.telemetry.spanUnknown,{name},{name}
 chat.telemetry.spanValidation,validation,validação
-chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk: {firstChunk} · duration: {duration} · last token to end: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk: {firstChunk} · duração: {duration} · último token até fim: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
-chat.telemetry.timelineTitle,Execution timeline,Linha do tempo da execução
-chat.telemetry.timelineUnavailable,Detailed spans are not available for this trace. The missing time remains unaccounted.,Spans detalhados indisponíveis para este trace. O tempo ausente continua não atribuído.
 chat.telemetry.status.collecting,collecting,coletando
 chat.telemetry.status.complete,complete,completa
 chat.telemetry.status.incomplete,incomplete,incompleta
 chat.telemetry.status.response_complete,response complete,resposta completa
 chat.telemetry.status.timeout,timeout,expirada
 chat.telemetry.statusLabel,Trace status: {status},Estado do trace: {status}
+chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk: {firstChunk} · duration: {duration} · last token to end: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk: {firstChunk} · duração: {duration} · último token até fim: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
+chat.telemetry.timelineTitle,Execution timeline,Linha do tempo da execução
+chat.telemetry.timelineUnavailable,Detailed spans are not available for this trace. The missing time remains unaccounted.,Spans detalhados indisponíveis para este trace. O tempo ausente continua não atribuído.
 chat.telemetry.title,Execution telemetry,Telemetria da execução
 chat.telemetry.tlsIdle,channel: no calls in this phase,canal: nenhuma chamada nesta fase
 chat.telemetry.tlsOff,channel: in the clear,canal: texto claro
@@ -339,8 +339,8 @@ chat.telemetry.transportSummary,{transport}: {calls} calls · sent {sent} · rec
 chat.telemetry.transportSwitch,transport switch {from} -> {to} ({calls}),troca de transporte {from} -> {to} ({calls})
 chat.telemetry.transportTraceIncomplete,Transport trace incomplete: the result arrived before every traversal receipt.,Telemetria de transporte incompleta: o resultado chegou antes de todas as travessias.
 chat.telemetry.transportValue,transport: {value},transporte: {value}
-chat.telemetry.unaccounted,unaccounted,não atribuído
 chat.telemetry.trueResidual,True residual,Residual verdadeiro
+chat.telemetry.unaccounted,unaccounted,não atribuído
 chat.telemetry.unattributed,unattributed {ms} ms,não atribuído {ms} ms
 chat.telemetry.unknownLayers,Unclassified layers: {count},Camadas não classificadas: {count}
 chat.thinking,Thinking,Pensamento

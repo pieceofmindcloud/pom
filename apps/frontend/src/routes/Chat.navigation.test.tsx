@@ -59,6 +59,10 @@ vi.mock("../lib/api", async (importOriginal) => {
   };
 });
 
+vi.mock("../lib/imageResize", () => ({
+  resizeImageForVision: async () => "data:image/jpeg;base64,ZmFrZQ==",
+}));
+
 /**
  * Um laço de render trava o worker para sempre - o defeito original queimava
  * 100% de CPU sem nunca devolver -, e teste que não termina não avisa ninguém.
@@ -225,7 +229,7 @@ describe("navegação depois do chat", () => {
   );
 
   it.each(["node", "infer"] as const)(
-    "mantém visão e cobertura servida no perfil %s quando a rede agregada confirma o modelo",
+    "libera anexo de imagem no perfil %s quando a rede agregada confirma visão e cobertura",
     async (profile) => {
       chatScenario.cluster = {
         active_model: "qwen",
@@ -239,6 +243,15 @@ describe("navegação depois do chat", () => {
 
       expect(await screen.findByRole("button", { name: "Anexar ficheiro" })).toBeTruthy();
       expect(screen.queryByText("cobertura incompleta")).toBeNull();
+
+      const dropTarget = screen.getByRole("group", { name: "Campo de mensagem" });
+      const file = new File(["fake"], "foto.png", { type: "image/png" });
+      fireEvent.drop(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [file] },
+      });
+
+      expect(await screen.findByText("foto.png")).toBeTruthy();
+      expect(screen.queryByText("este modelo não tem visão")).toBeNull();
     },
   );
 

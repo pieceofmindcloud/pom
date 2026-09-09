@@ -755,7 +755,7 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
                     }
                 }
             }
-            result
+            result.and_then(|body| body.get("config").cloned())
         };
 
         let Some(config) = config else {

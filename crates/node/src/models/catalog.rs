@@ -1265,6 +1265,23 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
                 .chain(tp_parts.iter())
                 .find_map(|s| s.model_label.clone())
                 .unwrap_or_else(|| group.clone());
+            let pom_id = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.pom_id.clone())
+                .unwrap_or_default();
+            let origin_name = pom_id
+                .is_empty()
+                .then(|| group.clone())
+                .or_else(|| {
+                    let suffix = format!("-{}", crate::pom::short_id(&pom_id));
+                    group.strip_suffix(&suffix).map(str::to_string)
+                })
+                .unwrap_or_else(|| group.clone());
+            let origin_quant = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.quant.as_deref());
             let mmproj_path = shards
                 .iter()
                 .chain(tp_parts.iter())
@@ -1274,10 +1291,21 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
                         .iter()
                         .filter(|model| !model.is_shard())
                         .find(|model| {
-                            model.name == model_label
-                                || model.name == group
-                                || model.name.strip_suffix(".gguf").unwrap_or(&model.name)
-                                    == model_label
+                            let stem = model
+                                .name
+                                .strip_suffix(".gguf")
+                                .or_else(|| model.name.strip_suffix(".GGUF"))
+                                .unwrap_or(&model.name);
+                            let exact = [model.name.as_str(), stem]
+                                .into_iter()
+                                .any(|name| {
+                                    name == model_label || name == group || name == origin_name
+                                });
+                            let quantized = origin_quant.is_some_and(|quant| {
+                                stem == format!("{origin_name}-{quant}")
+                                    || stem == format!("{origin_name}_{quant}")
+                            });
+                            exact || quantized
                         })
                         .and_then(|model| model.mmproj_path.clone())
                 });
@@ -1285,11 +1313,7 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
             ShardSet {
                 model_label,
                 mmproj_path,
-                pom_id: shards
-                    .iter()
-                    .chain(tp_parts.iter())
-                    .find_map(|s| s.pom_id.clone())
-                    .unwrap_or_default(),
+                pom_id,
                 group,
                 total_layers,
                 total_layers_inferred: declared.is_none(),
@@ -1525,6 +1549,57 @@ mod tests {
         let sets = build_shard_sets(&[source, slice, second]);
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0].mmproj_path.as_deref(), Some("/models/mmproj-vision-model.gguf"));
+    }
+
+    #[test]
+    fn shard_set_finds_projector_for_a_quantized_original_model() {
+        let source = DiscoveredModel {
+            id: "source".into(),
+            name: "vision-model-Q4_K_M.gguf".into(),
+            source: ModelSource::Local,
+            source_label: "Local",
+            path: "/models/vision-model-Q4_K_M.gguf".into(),
+            mmproj_path: Some("/models/mmproj-vision-model-f16.gguf".into()),
+            size_bytes: 4096,
+            architecture: None,
+            is_moe: false,
+            total_layers: Some(32),
+            quant: Some("Q4_K_M".into()),
+            shard_range: None,
+            shard_group: None,
+            sha256: None,
+            model_label: None,
+            pom_id: None,
+            tensor_parallel: false,
+            tp_rank: None,
+            tp_size: None,
+            capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
+            metadata_error: None,
+            metadata_identity: None,
+        };
+        let mut slice = source.clone();
+        slice.id = "slice".into();
+        slice.name = "vision-part-0.gguf".into();
+        slice.path = "/shards/vision-part-0.gguf".into();
+        slice.mmproj_path = None;
+        slice.shard_range = Some((0, 15));
+        slice.shard_group = Some("vision-model-aaaaaaaa".into());
+        slice.model_label = Some("vision-model".into());
+        slice.pom_id = Some("a".repeat(64));
+        let mut second = slice.clone();
+        second.id = "slice-2".into();
+        second.name = "vision-part-1.gguf".into();
+        second.path = "/shards/vision-part-1.gguf".into();
+        second.shard_range = Some((16, 31));
+
+        let sets = build_shard_sets(&[source, slice, second]);
+        assert_eq!(
+            sets[0].mmproj_path.as_deref(),
+            Some("/models/mmproj-vision-model-f16.gguf")
+        );
     }
 
     #[test]

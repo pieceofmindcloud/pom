@@ -7,7 +7,7 @@
  * quem ainda não sabe o que o POM pode compartilhar.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, Cpu, Database, Landmark, Monitor, Server, ShieldCheck, Sparkles } from "lucide-react";
+import { Check, Copy, Cpu, Database, Download, Landmark, Monitor, Server, ShieldCheck, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { WizardLayout, ContinueButton } from "../components/setup-wizard/WizardLayout";
 import type { WizardStage } from "./setupWizardTypes";
@@ -153,7 +153,7 @@ const INITIAL: SetupState = {
   setupModel: "",
   adminAccessToken: "",
   adminExposure: "localhost",
-  tlsRequired: true,
+  tlsRequired: false,
 };
 
 export function Setup() {
@@ -214,21 +214,36 @@ export function Setup() {
     if (!clusterId) return;
     setBusy(true);
     try {
-      const [preview, token] = await Promise.all([
-        api.post<AnchorPreview>("/api/setup/admin-anchor/preview", { cluster_id: clusterId }, { auth: false }),
-        api.post<{ token: string }>("/api/setup/admin-token", {}, { auth: false }),
-      ]);
+      const preview = await api.post<AnchorPreview>(
+        "/api/setup/admin-anchor/preview",
+        { cluster_id: clusterId, visibility: setup.network.visibility },
+        { auth: false },
+      );
       setAnchor(preview);
       update({
         trustDocument: preview.document,
         trustFingerprint: preview.fingerprint,
         trustConfirmed: true,
-        adminAccessToken: token.token,
+        adminAccessToken: "",
         connectionKey: setup.network.visibility === "public" ? "" : preview.private_connection_key ?? "",
       });
       setStage("setup-security");
     } catch (error) {
       toast.fromError(t("setupWizard.anchorFailed"), error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeAdminExposure(exposure: AdminExposure) {
+    update({ adminExposure: exposure, adminAccessToken: exposure === "network" ? setup.adminAccessToken : "" });
+    if (exposure !== "network" || setup.adminAccessToken) return;
+    setBusy(true);
+    try {
+      const token = await api.post<{ token: string }>("/api/setup/admin-token", {}, { auth: false });
+      update({ adminAccessToken: token.token });
+    } catch (error) {
+      toast.fromError(t("setupWizard.adminTokenFailed"), error);
     } finally {
       setBusy(false);
     }
@@ -265,7 +280,7 @@ export function Setup() {
         resources: { ram_reserve_pct: setup.ramReservePct, cpu_reserve_pct: setup.cpuReservePct },
         thermal_limit_c: setup.thermalLimitC,
         admin_exposure: setup.adminExposure,
-        admin_access_token: setup.adminAccessToken,
+        admin_access_token: setup.adminExposure === "network" ? setup.adminAccessToken : "",
         tls_required: setup.tlsRequired,
         model_dirs: modelDirsForSave(setup.modelDirs, selectedLocalModel?.path),
         shard_dir: setup.shardDir.trim(),
@@ -332,7 +347,7 @@ export function Setup() {
           )
         }
       >
-        {loading ? <LoadingScreen /> : <Screen stage={stage} setup={setup} hardware={hardware} models={models} anchor={anchor} health={health} update={update} updateNetwork={updateNetwork} setStage={setStage} t={t} />}
+        {loading ? <LoadingScreen /> : <Screen stage={stage} setup={setup} hardware={hardware} models={models} anchor={anchor} health={health} update={update} updateNetwork={updateNetwork} onExposureChange={changeAdminExposure} setStage={setStage} t={t} />}
       </WizardLayout>
     </div>
   );
@@ -347,6 +362,7 @@ function Screen({
   health,
   update,
   updateNetwork,
+  onExposureChange,
   setStage,
   t,
 }: {
@@ -358,6 +374,7 @@ function Screen({
   health: HealthResponse | null;
   update: (patch: Partial<SetupState>) => void;
   updateNetwork: (patch: Partial<SetupState["network"]>) => void;
+  onExposureChange: (exposure: AdminExposure) => Promise<void>;
   setStage: (stage: WizardStage) => void;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
@@ -368,9 +385,9 @@ function Screen({
     case "setup-model": return <ModelScreen models={models} selected={setup.setupModel} onSelect={(setupModel) => update({ setupModel })} t={t} />;
     case "setup-storage": return <StorageScreen setup={setup} update={update} models={models} t={t} />;
     case "setup-network": return <NetworkScreen setup={setup} updateNetwork={updateNetwork} update={update} t={t} />;
-    case "setup-security": return <SecurityScreen setup={setup} update={update} t={t} />;
+    case "setup-security": return <SecurityScreen setup={setup} onExposureChange={onExposureChange} update={update} t={t} />;
     case "setup-trust": return <TrustScreen setup={setup} update={update} updateNetwork={updateNetwork} t={t} />;
-    case "setup-invite": return <InviteScreen anchor={anchor} t={t} />;
+    case "setup-invite": return <InviteScreen anchor={anchor} visibility={setup.network.visibility} connectionKey={setup.connectionKey} t={t} />;
     case "setup-health": return <HealthScreen health={health} hardware={hardware} t={t} />;
     case "setup-review": return <ReviewScreen setup={setup} models={models} setStage={setStage} t={t} />;
     default: return null;
@@ -459,8 +476,9 @@ function NetworkScreen({ setup, update, updateNetwork, t }: { setup: SetupState;
   return <Intro eyebrow={t("setupWizard.stepNetwork")} title={t("setupWizard.networkTitle")} detail={t("setupWizard.networkDetail")}><Panel><PanelHeader title={t("setupWizard.networkIdentity")} subtitle={t("setupWizard.networkIdentityDetail")} /><div className="grid gap-4 px-5 py-5 md:grid-cols-2"><Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input autoFocus value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field><Field label={t("setupWizard.organization")}><Input value={setup.network.organization} onChange={(event) => updateNetwork({ organization: event.target.value })} /></Field><TextAreaField label={t("setupWizard.description")} value={setup.network.description} onChange={(value) => updateNetwork({ description: value })} /><TextAreaField label={t("setupWizard.rules")} value={setup.network.rules} onChange={(value) => updateNetwork({ rules: value })} /><TextAreaField label={t("setupWizard.channels")} value={setup.network.channels} onChange={(value) => updateNetwork({ channels: value })} /><Field label={t("setupWizard.visibility")} hint={t("setupWizard.visibilityHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : setup.network.access_policy })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option><option value="local">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.accessPolicy")} hint={t("setupWizard.accessPolicyHint")}><Select value={setup.network.access_policy} onChange={(event) => updateNetwork({ access_policy: event.target.value as AccessPolicy })}><option value="authorized">{t("setupWizard.authorizedPeople")}</option><option value="anyone_with_anchor">{t("setupWizard.anyoneWithAnchor")}</option><option value="local_only">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.advertiseAddress")} hint={t("setupWizard.advertiseAddressHint")}><Input value={setup.advertiseAddr} placeholder={t("setupWizard.advertiseAddressPlaceholder")} onChange={(event) => update({ advertiseAddr: event.target.value })} /></Field>{publicNetwork && <div className="md:col-span-2 rounded-lg border border-aqua/25 bg-aqua/7 px-3 py-3 text-sm text-muted"><p>{t("setupWizard.locationPrompt")}</p><p className="mt-1 text-xs text-faint">{t(`setupWizard.location${locationStatus[0].toUpperCase()}${locationStatus.slice(1)}`)}</p></div>}</div></Panel></Intro>;
 }
 
-function SecurityScreen({ setup, update, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; t: (key: string) => string }) {
-  return <Intro eyebrow={t("setupWizard.stepSecurity")} title={t("setupWizard.securityTitle")} detail={t("setupWizard.securityDetail")}><Panel><PanelHeader title={t("setupWizard.securityTitle")} subtitle={t("setupWizard.securityDetail")} /><div className="space-y-5 px-5 py-5"><Field label={t("setupWizard.adminExposure")} hint={t("setupWizard.adminExposureHint")}><Select value={setup.adminExposure} onChange={(event) => update({ adminExposure: event.target.value as AdminExposure })}><option value="localhost">{t("setupWizard.adminExposureLocalhost")}</option><option value="network">{t("setupWizard.adminExposureNetwork")}</option></Select></Field><Field label={t("setupWizard.adminToken")} hint={t("setupWizard.adminTokenDetail")}><Input readOnly value={setup.adminAccessToken} placeholder={t("setupWizard.adminTokenMissing")} className="font-mono" /></Field><label className="flex items-start gap-3 rounded-lg border border-line bg-raised px-3 py-3 text-sm text-fg"><input type="checkbox" checked={setup.tlsRequired} onChange={(event) => update({ tlsRequired: event.target.checked })} className="mt-0.5 h-4 w-4 accent-iris" /><span><span className="block font-medium">{t("setupWizard.tlsRequired")}</span><span className="mt-1 block text-xs leading-relaxed text-faint">{t("setupWizard.tlsDetail")}</span>{setup.network.visibility === "public" && <span className="mt-2 block text-xs font-medium text-aqua">{t("setupWizard.tlsPublicRequired")}</span>}</span></label></div></Panel></Intro>;
+function SecurityScreen({ setup, onExposureChange, update, t }: { setup: SetupState; onExposureChange: (exposure: AdminExposure) => Promise<void>; update: (patch: Partial<SetupState>) => void; t: (key: string) => string }) {
+  const networkExposure = setup.adminExposure === "network";
+  return <Intro eyebrow={t("setupWizard.stepSecurity")} title={t("setupWizard.securityTitle")} detail={t("setupWizard.securityDetail")}><Panel><PanelHeader title={t("setupWizard.securityTitle")} subtitle={t("setupWizard.securityDetail")} /><div className="space-y-5 px-5 py-5"><Field label={t("setupWizard.adminExposure")} hint={t("setupWizard.adminExposureHint")}><Select value={setup.adminExposure} onChange={(event) => void onExposureChange(event.target.value as AdminExposure)}><option value="localhost">{t("setupWizard.adminExposureLocalhost")}</option><option value="network">{t("setupWizard.adminExposureNetwork")}</option></Select></Field>{networkExposure && <Field label={t("setupWizard.adminToken")} hint={t("setupWizard.adminTokenDetail")}><Input readOnly value={setup.adminAccessToken} placeholder={t("setupWizard.adminTokenMissing")} className="font-mono" /></Field>}<label className="flex items-start gap-3 rounded-lg border border-line bg-raised px-3 py-3 text-sm text-fg"><input type="checkbox" checked={setup.tlsRequired} onChange={(event) => update({ tlsRequired: event.target.checked })} className="mt-0.5 h-4 w-4 accent-iris" /><span><span className="block font-medium">{t("setupWizard.tlsRequired")}</span><span className="mt-1 block text-xs leading-relaxed text-faint">{t("setupWizard.tlsDetail")}</span></span></label></div></Panel></Intro>;
 }
 
 function TrustScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
@@ -486,9 +504,9 @@ function TrustScreen({ setup, update, updateNetwork, t }: { setup: SetupState; u
   return <Intro eyebrow={t("setupWizard.stepTrust")} title={t("setupWizard.trustTitle")} detail={t(publicNetwork ? "setupWizard.trustPublicDetail" : "setupWizard.trustPrivateDetail")}><Panel><PanelHeader title={t("setupWizard.pasteTrust")} subtitle={t("setupWizard.pasteTrustDetail")} /><div className="space-y-4 px-5 py-5"><Field label={t("setupWizard.networkKind")} hint={t("setupWizard.networkKindHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : "authorized" })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option></Select></Field><Field label={t("setupWizard.trustDocument")} hint={t("setupWizard.trustDocumentHint")}><textarea autoFocus value={setup.trustDocument} onChange={(event) => update({ trustDocument: event.target.value, trustConfirmed: false })} className="min-h-44 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 font-mono text-xs text-fg outline-none transition-colors focus:border-iris focus:ring-2 focus:ring-iris/25" /></Field><div className="rounded-lg border border-line bg-raised px-3 py-3"><p className="text-xs font-medium uppercase tracking-[0.14em] text-faint">{t("setupWizard.fingerprintCalculated")}</p>{fingerprintPending ? <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p> : setup.trustFingerprint ? <code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{groupFingerprint(setup.trustFingerprint)}</code> : <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p>}<label className="mt-3 flex items-start gap-3 text-sm text-fg"><input type="checkbox" checked={setup.trustConfirmed} disabled={!setup.trustFingerprint || fingerprintPending} onChange={(event) => update({ trustConfirmed: event.target.checked })} className="mt-0.5 h-4 w-4 accent-iris" /><span>{t("setupWizard.fingerprintConfirm")}</span></label></div>{!publicNetwork && <Field label={t("setupWizard.connectionSecret")} hint={t("setupWizard.connectionSecretHint")}><Input type="password" value={setup.connectionKey} onChange={(event) => update({ connectionKey: event.target.value })} /></Field>}<Field label={t("setupWizard.bootstrapAddress")} hint={t("setupWizard.bootstrapAddressHint")}><Input value={setup.bootstrap} onChange={(event) => update({ bootstrap: event.target.value })} placeholder={t("setupWizard.bootstrapPlaceholder")} /></Field></div></Panel></Intro>;
 }
 
-function InviteScreen({ anchor, t }: { anchor: AnchorPreview | null; t: (key: string, values?: Record<string, string | number>) => string }) {
+function InviteScreen({ anchor, visibility, connectionKey, t }: { anchor: AnchorPreview | null; visibility: NetworkVisibility; connectionKey: string; t: (key: string, values?: Record<string, string | number>) => string }) {
   if (!anchor) return <Intro eyebrow={t("setupWizard.stepInvite")} title={t("setupWizard.inviteTitle")} detail={t("setupWizard.anchorFailed")} />;
-  return <Intro eyebrow={t("setupWizard.stepInvite")} title={t("setupWizard.inviteTitle")} detail={t("setupWizard.inviteDetail")}><div className="space-y-4"><CopyBlock label={t("setupWizard.trustDocument")} value={anchor.document} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} /><CopyBlock label={t("setupWizard.publicKey")} value={anchor.public_key} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} /><div className="rounded-xl border border-aqua/35 bg-aqua/8 px-4 py-4"><p className="text-xs font-medium uppercase tracking-[0.14em] text-aqua">{t("setupWizard.fingerprint")}</p><code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{anchor.fingerprint}</code><p className="mt-2 text-xs leading-relaxed text-muted">{t("setupWizard.fingerprintInvite")}</p></div><p className="text-xs text-faint">{t("setupWizard.trustFilename", { filename: anchor.trust_filename })}</p></div></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepInvite")} title={t("setupWizard.inviteTitle")} detail={t("setupWizard.inviteDetail")}><div className="space-y-4"><CopyBlock label={t("setupWizard.trustDocument")} value={anchor.document} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} downloadLabel={t("setupWizard.download")} downloadName={anchor.trust_filename} /><CopyBlock label={t("setupWizard.publicKey")} value={anchor.public_key} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} />{visibility !== "public" && connectionKey && <CopyBlock label={t("setupWizard.connectionSecret")} value={connectionKey} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} />}<div className="rounded-xl border border-aqua/35 bg-aqua/8 px-4 py-4"><p className="text-xs font-medium uppercase tracking-[0.14em] text-aqua">{t("setupWizard.fingerprint")}</p><code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{anchor.fingerprint}</code><p className="mt-2 text-xs leading-relaxed text-muted">{t("setupWizard.fingerprintInvite")}</p></div><p className="text-xs text-faint">{t("setupWizard.trustFilename", { filename: anchor.trust_filename })}</p></div></Intro>;
 }
 
 function HealthScreen({ health, hardware, t }: { health: HealthResponse | null; hardware: HardwareResponse | null; t: (key: string) => string }) {
@@ -502,7 +520,7 @@ function HealthScreen({ health, hardware, t }: { health: HealthResponse | null; 
 
 function ReviewScreen({ setup, models, setStage, t }: { setup: SetupState; models: ModelsResponse | null; setStage: (stage: WizardStage) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   const selected = models?.models.find((model) => model.id === setup.setupModel);
-  return <Intro eyebrow={t("setupWizard.stepReview")} title={t("setupWizard.reviewTitle")} detail={t("setupWizard.reviewDetail")}><Panel><SummaryRow label={t("setupWizard.profileLabel")} value={setup.profile ? t(`setupWizard.${setup.profile}`) : "-"} onEdit={() => setStage("setup-profile")} />{setup.profile !== "infer" && <SummaryRow label={t("setupWizard.resourcesLabel")} value={`${setup.ramReservePct}% RAM · ${setup.cpuReservePct}% CPU${setup.profile === "node" ? ` · ${setup.shardMaxGb} GB` : ""}`} onEdit={() => setStage("setup-resources")} />}{setup.profile === "admin" && <><SummaryRow label={t("setupWizard.modelLabel")} value={selected?.name ?? t("setupWizard.noModelSelected")} onEdit={() => setStage("setup-model")} /><SummaryRow label={t("setupWizard.storageLabel")} value={`${setup.shardMaxGb} GB`} onEdit={() => setStage("setup-storage")} /><SummaryRow label={t("setupWizard.networkLabel")} value={setup.network.public_name || "-"} onEdit={() => setStage("setup-network")} /><SummaryRow label={t("setupWizard.adminToken")} value={setup.adminAccessToken ? t("setupWizard.generated") : t("setupWizard.adminTokenMissing")} onEdit={() => setStage("setup-security")} /></>}{setup.profile !== "admin" && <SummaryRow label={t("setupWizard.trustLabel")} value={setup.trustFingerprint ? t("setupWizard.fingerprintEntered") : t("setupWizard.fingerprintMissing")} onEdit={() => setStage("setup-trust")} />}</Panel><p className="mt-4 text-xs text-faint">{t("setupWizard.reviewNote")}</p></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepReview")} title={t("setupWizard.reviewTitle")} detail={t("setupWizard.reviewDetail")}><Panel><SummaryRow label={t("setupWizard.profileLabel")} value={setup.profile ? t(`setupWizard.${setup.profile}`) : "-"} onEdit={() => setStage("setup-profile")} />{setup.profile !== "infer" && <SummaryRow label={t("setupWizard.resourcesLabel")} value={`${setup.ramReservePct}% RAM · ${setup.cpuReservePct}% CPU${setup.profile === "node" ? ` · ${setup.shardMaxGb} GB` : ""}`} onEdit={() => setStage("setup-resources")} />}{setup.profile === "admin" && <><SummaryRow label={t("setupWizard.modelLabel")} value={selected?.name ?? t("setupWizard.noModelSelected")} onEdit={() => setStage("setup-model")} /><SummaryRow label={t("setupWizard.storageLabel")} value={`${setup.shardMaxGb} GB`} onEdit={() => setStage("setup-storage")} /><SummaryRow label={t("setupWizard.networkLabel")} value={setup.network.public_name || "-"} onEdit={() => setStage("setup-network")} />{setup.adminExposure === "network" && <SummaryRow label={t("setupWizard.adminToken")} value={setup.adminAccessToken ? t("setupWizard.generated") : t("setupWizard.adminTokenMissing")} onEdit={() => setStage("setup-security")} />}</>}{setup.profile !== "admin" && <SummaryRow label={t("setupWizard.trustLabel")} value={setup.trustFingerprint ? t("setupWizard.fingerprintEntered") : t("setupWizard.fingerprintMissing")} onEdit={() => setStage("setup-trust")} />}</Panel><p className="mt-4 text-xs text-faint">{t("setupWizard.reviewNote")}</p></Intro>;
 }
 
 function SavedScreen() {
@@ -526,10 +544,19 @@ function TextAreaField({ label, value, onChange }: { label: string; value: strin
   return <Field label={label}><textarea value={value} onChange={(event) => onChange(event.target.value)} className="min-h-20 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 text-sm text-fg outline-none transition-colors focus:border-iris focus:ring-2 focus:ring-iris/25" /></Field>;
 }
 
-function CopyBlock({ label, value, copyLabel, copied }: { label: string; value: string; copyLabel: string; copied: string }) {
+function CopyBlock({ label, value, copyLabel, copied, downloadLabel, downloadName }: { label: string; value: string; copyLabel: string; copied: string; downloadLabel?: string; downloadName?: string }) {
   const [isCopied, setIsCopied] = useState(false);
   async function copy() { try { await navigator.clipboard.writeText(value); setIsCopied(true); window.setTimeout(() => setIsCopied(false), 1800); } catch { /* o conteúdo continua selecionável */ } }
-  return <Panel><PanelHeader title={label} actions={<Button size="sm" onClick={() => void copy()} icon={isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}>{isCopied ? copied : copyLabel}</Button>} /><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-5 py-4 font-mono text-[0.7rem] leading-5 text-muted">{value}</pre></Panel>;
+  function download() {
+    if (!downloadName) return;
+    const url = URL.createObjectURL(new Blob([value], { type: "application/json;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = downloadName;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+  return <Panel><PanelHeader title={label} actions={<div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => void copy()} icon={isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}>{isCopied ? copied : copyLabel}</Button>{downloadName && downloadLabel && <Button size="sm" onClick={download} icon={<Download className="h-3.5 w-3.5" />}>{downloadLabel}</Button>}</div>} /><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-5 py-4 font-mono text-[0.7rem] leading-5 text-muted">{value}</pre></Panel>;
 }
 
 function SummaryRow({ label, value, onEdit }: { label: string; value: string; onEdit: () => void }) {
@@ -553,7 +580,7 @@ function clusterIdFromDocument(document: string): string {
 function isReadyToSave(setup: SetupState): boolean {
   if (!setup.profile || !setup.trustDocument.trim() || !setup.trustFingerprint.trim() || !setup.trustConfirmed) return false;
   if (setup.profile !== "admin" && setup.network.visibility !== "public" && !setup.connectionKey.trim()) return false;
-  if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || !setup.adminAccessToken.trim())) return false;
+  if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || (setup.adminExposure === "network" && !setup.adminAccessToken.trim()))) return false;
   return true;
 }
 
@@ -562,7 +589,7 @@ function canContinue(stage: WizardStage, setup: SetupState): boolean {
     return Boolean(setup.network.public_name.trim() && setup.advertiseAddr.trim());
   }
   if (stage === "setup-security" && setup.profile === "admin") {
-    return Boolean(setup.adminAccessToken.trim() && (setup.network.visibility !== "public" || setup.tlsRequired));
+    return Boolean(setup.adminExposure !== "network" || setup.adminAccessToken.trim());
   }
   if (stage === "setup-trust") {
     return Boolean(setup.trustFingerprint.trim() && setup.trustConfirmed && (setup.network.visibility === "public" || setup.connectionKey.trim()));

@@ -1375,6 +1375,7 @@ setupWizard.adminExposureLocalhost,Only this machine,Apenas esta máquina
 setupWizard.adminExposureNetwork,This network,Esta rede
 setupWizard.adminToken,Administrative access token,Token de acesso administrativo
 setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
+setupWizard.adminTokenFailed,The administrative token could not be generated,O token administrativo não pôde ser gerado
 setupWizard.adminTokenMissing,The token will be generated here,O token será gerado aqui
 setupWizard.advertiseAddress,Address this machine will announce,Endereço que esta máquina anunciará
 setupWizard.advertiseAddressHint,Use a stable public host and port when this machine is behind a router.,Use um host e uma porta públicos estáveis quando esta máquina estiver atrás de um roteador.
@@ -1406,13 +1407,14 @@ setupWizard.description,Description,Descrição
 setupWizard.discoveryAvailable,Discovery ready,Descoberta disponível
 setupWizard.diskAvailable,{value} GB available,{value} GB disponíveis
 setupWizard.diskTotal,{value} GB total,{value} GB no total
+setupWizard.download,Download,Baixar
 setupWizard.edit,Edit,Editar
 setupWizard.fingerprint,Fingerprint,Impressão digital
 setupWizard.fingerprintCalculated,Calculated from the document,Calculada a partir do documento
 setupWizard.fingerprintConfirm,I checked this fingerprint against the separate value the administrator gave me.,Conferi esta impressão digital com o valor separado que o administrador me passou.
 setupWizard.fingerprintEntered,Fingerprint entered,Impressão digital informada
 setupWizard.fingerprintHint,Compare the calculated fingerprint with the value you received separately.,Compare a impressão digital calculada com o valor que você recebeu separadamente.
-setupWizard.fingerprintInvite,Ask invitees to type this fingerprint from a separate message instead of trusting a pasted value.,Peça às pessoas convidadas que digitem esta impressão digital a partir de outra mensagem em vez de confiar no valor colado.
+setupWizard.fingerprintInvite,Send this fingerprint through a separate channel so invitees can compare it with the document they received.,Envie esta impressão digital por um canal separado para que as pessoas convidadas possam compará-la com o documento recebido.
 setupWizard.fingerprintMissing,Fingerprint missing,Impressão digital ausente
 setupWizard.fingerprintPlaceholder,The fingerprint appears after you paste the document.,A impressão digital aparece depois que você cola o documento.
 setupWizard.fingerprintWaiting,Paste a valid document to calculate its fingerprint.,Cole um documento válido para calcular a impressão digital.
@@ -1511,9 +1513,9 @@ setupWizard.storagePathsDetail,You can change these later in Settings.,Você pod
 setupWizard.storageTitle,Where should models and shared slices live?,Onde devem ficar os modelos e as fatias compartilhadas?
 setupWizard.thermalDetail,A limit around 85°C is a comfortable target. POM stops using the GPU before it stays too hot.,Um limite perto de 85°C é um alvo confortável. O POM para de usar a GPU antes que ela fique quente demais.
 setupWizard.thermalLimit,GPU temperature limit,Limite de temperatura da GPU
-setupWizard.tlsDetail,Encrypted links keep control messages private while nodes talk to each other.,Conexões criptografadas mantêm privadas as mensagens de controle entre os nós.
-setupWizard.tlsPublicRequired,Public networks require encryption between nodes.,Redes públicas exigem criptografia entre nós.
-setupWizard.tlsRequired,Encrypt connections between nodes,Criptografar conexões entre nós
+setupWizard.tlsDetail,Optional extra encryption for control links. Libp2p already protects peer connections.,Criptografia extra opcional para os links de controle. O libp2p já protege as conexões entre nós.
+setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A criptografia extra é opcional em redes públicas.
+setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
 setupWizard.trustDocument,Trust document,Documento de confiança
 setupWizard.trustDocumentHint,Copy the complete JSON document from the administrator.,Cole o documento JSON completo enviado pelo administrador.
 setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}

@@ -58,6 +58,8 @@ pub struct SetupAdminTokenResponse {
 #[derive(Debug, Deserialize)]
 pub struct SetupAnchorPreviewRequest {
     pub cluster_id: String,
+    #[serde(default)]
+    pub visibility: crate::config::NetworkVisibility,
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,7 +252,9 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
                 fingerprint,
                 public_key,
                 trust_filename: crate::config::admin_trust_filename(),
-                private_connection_key: Some(fresh_connection_key()),
+                private_connection_key: (request.visibility
+                    != crate::config::NetworkVisibility::Public)
+                    .then(fresh_connection_key),
             })
             .into_response(),
             Err(error) => (
@@ -376,17 +380,6 @@ pub async fn save_setup(
             .into_response();
     }
 
-    if profile == crate::profile::NodeProfile::Admin
-        && visibility == crate::config::NetworkVisibility::Public
-        && !req.tls_required
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "redes públicas exigem criptografia entre nós" })),
-        )
-            .into_response();
-    }
-
     let trust_document = if req.trust_document.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -470,10 +463,12 @@ pub async fn save_setup(
 
     if profile == crate::profile::NodeProfile::Admin {
         cfg.admin_exposure = req.admin_exposure;
-        cfg.admin_access_token = Some(if req.admin_access_token.trim().is_empty() {
-            crate::webui::new_admin_access_token()
-        } else {
-            req.admin_access_token.trim().to_string()
+        cfg.admin_access_token = req.admin_exposure.requires_token().then(|| {
+            if req.admin_access_token.trim().is_empty() {
+                crate::webui::new_admin_access_token()
+            } else {
+                req.admin_access_token.trim().to_string()
+            }
         });
     }
 

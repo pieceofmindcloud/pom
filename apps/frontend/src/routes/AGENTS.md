@@ -404,7 +404,12 @@ Per-file list:
   trust root, respawns and the screen reloads. It reuses `WizardLayout` but is
   separate from the mock-only `SetupWizard.tsx`. The joining screen derives the
   anchor fingerprint from the pasted document and asks the operator to confirm
-  it against a separate channel; it never asks the operator to retype it.
+  it against a separate channel; it never asks the operator to retype it. The
+  administrator invitation downloads the actual trust filename returned by the
+  server and copies a connection secret only for local/private networks. An
+  admin token is generated only when the interface is exposed to the network;
+  optional peer-link TLS starts disabled because libp2p already protects the
+  peer connection.
 - `PublicNetworks.tsx` - initial public-network directory. It reads
   `GET /api/public/networks`, shows name, fingerprint and address, and opens the
   existing trust-root joining screen. It has no network administration.

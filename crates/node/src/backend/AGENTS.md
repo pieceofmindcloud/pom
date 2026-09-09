@@ -856,7 +856,10 @@ faz o download autenticado do blob persistido.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
   `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
-  installs the trust document and `pom.json` before respawning. `GET
+  installs the trust document and `pom.json` before respawning. The setup
+  anchor preview returns a private connection key only for local/private
+  visibility; the admin access token is persisted only for network exposure.
+  `GET
   /api/public/network(s)` exposes only public metadata and gathers live public
   records through the existing pkarr-backed discovery table.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`

@@ -160,7 +160,11 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
   sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
   decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
-  save. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
+  save. No admin, a exposição da interface na rede é a única opção que gera
+  token administrativo; a criptografia TLS entre peers é opcional e começa
+  desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
+  `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
+  privadas. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
 - `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
   `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths

@@ -604,6 +604,12 @@ mas não publica modelo para os clientes de inferência. `?local=true` responde
 somente o registro local e não faz fan-out; `/v1/models` usa a lista viva do
 gateway, não esse catálogo persistido.
 
+`POST /api/ui/deploy/node/options` consulta o catálogo e a configuração da
+máquina indicada em `target_node_id`. Devolve as opções de fatia e de modelo
+inteiro disponíveis nessa máquina, além de defaults de GPU/KV e os tipos de
+cache aceitos. A tela chama a rota novamente quando o operador troca o
+dropdown, evitando reutilizar um plano de outro peer.
+
 `POST /api/ui/deploy/node` (somar uma máquina a uma implantação) e
 `POST /api/ui/undeploy` (tirar a implantação inteira do ar) exigem, além da
 `ConnectionAuth`, que o `profile` persistido deste nó seja `admin`. A recusa é
@@ -612,6 +618,11 @@ adicionar uma máquina ou desimplantar a implantação. A interface esconde os
 dois controles para os perfis `node` e `infer`, mas o servidor mantém a
 autoridade. `POST /api/ui/deploy/node/remove` é diferente: libera uma única
 máquina pelo botão do próprio card e continua disponível para qualquer perfil.
+Adicionar ou remover com `deploy_id` anexa uma nova versão com o conjunto de
+máquinas resultante. A remoção parcial mantém `serving: true`; a última grava
+uma versão vazia, que continua no histórico mas não é uma implantação viva.
+O `kind` do registro passa a `mixed` quando uma cabeça de modelo inteiro e uma
+cabeça fatiada coexistem no mesmo deployment.
 
 As rotas remotas `/api/ui/model-provider/search`, `/details`, `/storage` e
 `/downloads` expõem o catálogo e os jobs do `ModelProvider` sem repassar

@@ -492,6 +492,7 @@ export function PeerDetailCard({
                 <RemoveNode
                   nodeId={peer.node_id}
                   group={group}
+                  deployId={peer.node?.config?.deploy_id || undefined}
                   range={range}
                   existingRanges={otherRanges}
                 />

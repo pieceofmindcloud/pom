@@ -109,8 +109,11 @@ Per-file list:
   double-click; `GroupHeading` renders the two group labels and `otherRangesFor`
   feeds `RemoveNode` the ranges of the *other* pipeline peers. Empty state is
   `c.peers.length === 0` (was `peers.length`) with `dashboard.noMachines`
-  ("Nenhuma máquina na rede"). Fetches `POST /api/ui/deploy/plan` to feed the
-  "add a machine" dialog. The add trigger, dialog and `UndeployPipeline` are
+  ("Nenhuma máquina na rede"). Derives the active `deploy_id` from
+  `useDeployments` and passes it to the add/remove dialogs. The add dialog
+  fetches the selected target's catalog and cache options from
+  `POST /api/ui/deploy/node/options`; it no longer uses a fixed cluster plan.
+  The add trigger, dialog and `UndeployPipeline` are
   rendered only for `profile: "admin"` (from `useProfile()`, the one source -
   the context is fed by `/api/ui/node`). The details view itself is gated the
   same way, by `canSeePeerDetails` (`../lib/access`): outside `admin` the view

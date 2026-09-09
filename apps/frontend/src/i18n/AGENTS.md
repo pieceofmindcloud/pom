@@ -69,6 +69,11 @@ usam essas chaves, nunca literais cravados nos componentes.
 - O CSV entra no bundle por importação `?raw`; não use fetch, estado assíncrono ou carregamento por rota.
 - Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump gerado antes da migração.
 
+- O grupo deploy.addNode* cobre o diálogo incremental: catálogo da máquina
+  alvo, modelo inteiro, localização do cache KV e tipos K/V. Toda chave nova
+  desse fluxo precisa existir em en e pt-BR, inclusive o rótulo
+  deployments.kind.mixed usado pelo histórico.
+
 ## Key functions
 
 ### locales.ts

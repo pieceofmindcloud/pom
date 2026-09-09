@@ -55,6 +55,7 @@ const KIND_TONE: Record<DeploymentKind, "iris" | "aqua" | "sky"> = {
   shards: "iris",
   whole: "aqua",
   tensor_parallel: "sky",
+  mixed: "iris",
 };
 
 function dateTimeLabel(iso: string, locale: string) {

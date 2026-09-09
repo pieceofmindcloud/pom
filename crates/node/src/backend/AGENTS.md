@@ -284,6 +284,18 @@ profile policy remains the effective authorization boundary.
   (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
   máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
+- `POST /api/ui/deploy/node/options` revarre o catálogo do `target_node_id` e
+  devolve as faixas fatiadas, o GGUF inteiro disponível nessa máquina e os
+  defaults locais de GPU/KV. `POST /api/ui/deploy/node` valida novamente essa
+  opção no alvo, aplica `cache_type_k`/`cache_type_v` pela API local ou remota e
+  lança somente a máquina escolhida. Quando há `deploy_id`, a operação anexa
+  uma versão de topologia e muda `kind` para `mixed` quando uma cabeça whole e
+  uma fatiada passam a coexistir. `POST /api/ui/deploy/node/remove` descarrega
+  somente o alvo e anexa uma versão com as máquinas restantes; remoção parcial
+  mantém o registro servindo, enquanto a última grava uma versão vazia e o
+  deixa fora da seleção de deployments ativos. O snapshot vazio é encaminhado
+  aos peers que já conheceram o deployment para retirar a máquina removida sem
+  tocar a inferência dos demais.
 - `gateway/generation.rs` - `log_early_outcome` garante que toda requisição
   aceita deixe **exatamente uma** linha de desfecho. As saídas antecipadas de
   `generate_stream_inner` (cancelamento antes do início, orçamento de prompt,
@@ -706,7 +718,8 @@ profile policy remains the effective authorization boundary.
 - `deploy/` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST
-  /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove`, `POST
+  /api/ui/deploy/node/options`, `POST /api/ui/deploy/node`, `POST
+  /api/ui/deploy/node/remove`, `POST
   /api/ui/undeploy` (take a whole pipeline out of the air). The planner is a
   suggestion; the operator's `selection` in the request is authoritative.
   Rules from the architecture: pipeline order = layer order (layer 0 takes

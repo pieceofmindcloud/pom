@@ -443,9 +443,15 @@ dashboard.usedOf,{used} of {total},{used} de {total}
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
 deploy.addNode,Add,Adicionar
+deploy.addNodeCacheK,KV cache K,Cache KV K
+deploy.addNodeCacheV,KV cache V,Cache KV V
+deploy.addNodeKvPlacement,KV cache location,Local do cache KV
+deploy.addNodeLoading,Loading this machine catalog…,Carregando o catálogo desta máquina…
 deploy.addNodeMachine,Machine,Máquina
+deploy.addNodeMachineOptions,Machine options,Opções da máquina
 deploy.addNodeSlice,Slice,Fatia
 deploy.addNodeTitle,Add a machine to this model,Somar uma máquina a este modelo
+deploy.addNodeWhole,Whole model,Modelo inteiro
 deploy.adminOnlyAdd,Only the administrator can add a machine to a deployment.,Somente o administrador pode adicionar uma máquina à implantação.
 deploy.advancedDetail,"Each request accepts up to {prompt} prompt tokens, in chunks of {chunk}. More is rejected before reaching llama.cpp.","Cada requisição aceita até {prompt} tokens de prompt, em pedaços de {chunk}. Passar disso é recusado antes de chegar ao llama.cpp."
 deploy.allRanges,"All ranges available in the cluster, including ones from different slicing runs. Select the ones to launch and choose each destination.","Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
@@ -677,6 +683,7 @@ deployments.emptyTitle,Nothing deployed yet,Nada implantado ainda
 deployments.expandVersions,Show versions,Ver versões
 deployments.id,Id,Id
 deployments.idle,Not serving,Fora do ar
+deployments.kind.mixed,Mixed whole + slices,Misto: inteiro + fatias
 deployments.kind.shards,Slices,Fatias
 deployments.kind.tensor_parallel,Tensor parallel,Tensor parallel
 deployments.kind.whole,Whole model,Modelo inteiro

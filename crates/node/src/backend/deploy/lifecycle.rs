@@ -498,19 +498,15 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
     let self_id = state.network.node_id.clone();
     let peers = state.all_peers().await;
 
-    for no in &registro.nodes {
-        if no.node_id == self_id {
-            continue;
-        }
-        let Some(base) = peers
-            .iter()
-            .find(|p| p.node_id == no.node_id)
-            .and_then(|p| p.gateway_url())
-        else {
-            warn!("{} não anuncia gateway; sem cópia do registro", no.node_id);
+    // Atualizações de topologia também precisam alcançar quem saiu. O peer
+    // só aceita a cópia se já conhecia o deployment, então fan-out não cria
+    // registros em máquinas que nunca participaram.
+    for peer in peers.iter().filter(|peer| peer.node_id != self_id) {
+        let Some(base) = peer.gateway_url() else {
+            warn!("{} não anuncia gateway; sem cópia do registro", peer.node_id);
             continue;
         };
-        let Ok(cliente) = state.peer_http.for_peer(&no.node_id) else {
+        let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
             continue;
         };
         let envio = cliente
@@ -521,7 +517,7 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
             .send()
             .await;
         if let Err(e) = envio {
-            warn!("{} não aceitou o registro da implantação: {e}", no.node_id);
+            warn!("{} não aceitou o registro da implantação: {e}", peer.node_id);
         }
     }
 }

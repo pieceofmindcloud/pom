@@ -7,20 +7,19 @@ import {
   Route as RouteIcon,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { LayerRibbon, PipelineRail } from "../components/PipelineRail";
 import { PeerDetailCard } from "../components/PeerDetailCard";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../components/ui";
-import { api } from "../lib/api";
 import { canSeePeerDetails } from "../lib/access";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
-import { useCluster, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
-import type { DeployPlan, PeerView } from "../lib/types";
+import type { PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 type View = "minima" | "estendida";
@@ -133,11 +132,9 @@ export function Dashboard() {
   const [view, setView] = useState<View>("minima");
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  // As fatias oferecidas vêm do plano do próprio nó, não de um palpite da
-  // tela: é ele quem sabe o que existe em disco em cada máquina.
-  const [addSlices, setAddSlices] = useState<{ start_layer: number; end_layer: number; label: string }[]>([]);
   const cluster = useCluster();
   const node = useNode();
+  const deployments = useDeployments();
   const invalidateAll = useInvalidate();
   const { profile } = useProfile();
   const isAdmin = profile === "admin";
@@ -153,6 +150,12 @@ export function Dashboard() {
     ? networkPeers(c)
     : { pipeline: [] as PeerView[], others: [] as PeerView[] };
   const group = c?.active_model ?? "";
+  const activeDeployment = deployments.data?.deployments.find(
+    (row) => row.serving && row.deployment.model.label === group,
+  )?.deployment;
+  const activeDeployId =
+    activeDeployment?.deploy_id
+    ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
   const rttNodeIds = useMemo(() => {
     if (!c) return [];
     return Array.from(new Set(
@@ -162,26 +165,6 @@ export function Dashboard() {
   }, [c]);
   const networkRtt = useNetworkRtt(rttNodeIds, c != null);
 
-  useEffect(() => {
-    if (!adding || !group) return;
-    let live = true;
-    void api
-      .post<DeployPlan>("/api/ui/deploy/plan", { group })
-      .then((plan) => {
-        if (!live) return;
-        setAddSlices(
-          plan.steps.map((step) => ({
-            start_layer: step.start_layer,
-            end_layer: step.end_layer,
-            label: layerRange(step.start_layer, step.end_layer),
-          })),
-        );
-      })
-      .catch(() => setAddSlices([]));
-    return () => {
-      live = false;
-    };
-  }, [adding, group]);
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlightKnown = peers.every((p) => p.load != null);
   const inFlight = inFlightKnown ? peers.reduce((sum, p) => sum + (p.load ?? 0), 0) : null;
@@ -280,7 +263,11 @@ export function Dashboard() {
                 soma uma máquina à pipeline, a outra desfaz a pipeline inteira. Só
                 aparece quando há uma no ar - um botão que só sabe recusar é ruído. */}
             {undeployTargets.length > 0 && (
-              <UndeployPipeline group={group} targets={undeployTargets} />
+              <UndeployPipeline
+                group={group}
+                deployId={activeDeployId}
+                targets={undeployTargets}
+              />
             )}
           </>
         )}
@@ -337,8 +324,9 @@ export function Dashboard() {
       <AddNodeDialog
         open={adding}
         group={group}
+        deployId={activeDeployId}
         peers={c.peers.map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
-        slices={addSlices}
+        slices={[]}
         existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
         onClose={() => setAdding(false)}
         onDone={() => invalidateAll()}

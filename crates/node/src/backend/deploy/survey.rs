@@ -4,6 +4,10 @@ use super::*;
 /// One slice of the chosen set, as it exists on one machine.
 #[derive(Debug, Clone)]
 pub(super) struct HeldShard {
+    /// O mesmo intervalo pode existir como GGUF inteiro e como fatia. A
+    /// distinção precisa sobreviver ao survey para o diálogo não oferecer a
+    /// escolha errada quando os dois arquivos estão na máquina.
+    pub(super) kind: HeldKind,
     pub(super) start_layer: u32,
     pub(super) end_layer: u32,
     /// How many layers the *original* model had, when the slice says so.
@@ -41,6 +45,12 @@ pub(super) struct HeldShard {
     pub(super) is_moe: bool,
     /// Evidência do modelo lida no GGUF, quando o peer conseguiu apurá-la.
     pub(super) model_capabilities: Option<crate::gguf::ModelCapabilityEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HeldKind {
+    Shard,
+    Whole,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -117,9 +127,20 @@ pub(super) struct RttReport {
 
 impl Machine {
     pub(super) fn holds(&self, start: u32, end: u32) -> Option<&HeldShard> {
-        self.held
-            .iter()
-            .find(|s| s.start_layer == start && s.end_layer == end)
+        self.holds_kind(start, end, None)
+    }
+
+    pub(super) fn holds_kind(
+        &self,
+        start: u32,
+        end: u32,
+        kind: Option<HeldKind>,
+    ) -> Option<&HeldShard> {
+        self.held.iter().find(|s| {
+            s.start_layer == start
+                && s.end_layer == end
+                && kind.is_none_or(|wanted| s.kind == wanted)
+        })
     }
     pub(super) fn holds_ready(&self, start: u32, end: u32) -> Option<&HeldShard> {
         self.held
@@ -626,7 +647,7 @@ pub(super) async fn survey(
             // holder of it. The whole-model path meets this the moment the same
             // GGUF is reachable through two scanned folders — the captain's
             // `~/.ollama/models` is a symlink into the LM Studio library.
-            held.dedup_by_key(|s| (s.start_layer, s.end_layer, s.tp_rank, s.tp_size));
+            held.dedup_by_key(|s| (s.start_layer, s.end_layer, s.kind, s.tp_rank, s.tp_size));
 
             Some((
                 Machine {
@@ -740,6 +761,7 @@ pub(super) fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) 
 pub(super) fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option<HeldShard> {
     let range = v.get("shard_range")?.as_array()?;
     Some(HeldShard {
+        kind: HeldKind::Shard,
         start_layer: range.first()?.as_u64()? as u32,
         end_layer: range.get(1)?.as_u64()? as u32,
         total_layers: v
@@ -808,6 +830,7 @@ pub(super) fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShar
         .and_then(|t| t.as_u64())
         .filter(|t| *t > 0)? as u32;
     Some(HeldShard {
+        kind: HeldKind::Whole,
         start_layer: 0,
         end_layer: total - 1,
         total_layers: Some(total),

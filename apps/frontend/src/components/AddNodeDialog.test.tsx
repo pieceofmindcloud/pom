@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AddNodeDialog } from "./AddNodeDialog";
 import { LocaleProvider } from "../i18n/provider";
+import { api } from "../lib/api";
 
 describe("AddNodeDialog", () => {
   afterEach(cleanup);
@@ -156,5 +157,84 @@ describe("AddNodeDialog", () => {
     );
 
     expect((screen.getByDisplayValue("maq1") as HTMLSelectElement).value).toBe("n1");
+  });
+
+  it("reoferece as fatias e o modelo inteiro da maquina escolhida", async () => {
+    const post = vi.spyOn(api, "post").mockImplementation(async (path, body) => {
+      if (path === "/api/ui/deploy/node") {
+        return { overlapping_layers: [] } as never;
+      }
+      if (path !== "/api/ui/deploy/node/options") {
+        throw new Error(`rota inesperada: ${path}`);
+      }
+      const target = (body as { target_node_id: string }).target_node_id;
+      return (target === "n1"
+        ? {
+            options: [{ kind: "shards", start_layer: 0, end_layer: 9, label: "0-9" }],
+            cache_types: { cache_type_k: "f16", cache_type_v: "f16", choices: ["f16", "q8_0"] },
+            defaults: { n_gpu_layers: 99, offload_kqv: true },
+          }
+        : {
+            options: [
+              { kind: "whole", start_layer: 0, end_layer: 39, label: "whole" },
+              { kind: "shards", start_layer: 20, end_layer: 39, label: "20-39" },
+            ],
+            cache_types: { cache_type_k: "q8_0", cache_type_v: "bf16", choices: ["f16", "q8_0", "bf16"] },
+            defaults: { n_gpu_layers: 24, offload_kqv: false },
+          }) as never;
+    });
+
+    try {
+      render(
+        <LocaleProvider initialLocale="pt-BR">
+          <AddNodeDialog
+            open
+            group="modelo"
+            peers={[
+              { node_id: "n1", short_id: "n1", hostname: "maq1" },
+              { node_id: "n2", short_id: "n2", hostname: "maq2" },
+            ]}
+            slices={[]}
+            existingRanges={[]}
+            onClose={() => {}}
+          />
+        </LocaleProvider>,
+      );
+
+      await waitFor(() => expect(screen.getByDisplayValue("0-9")).toBeTruthy());
+      const machine = screen.getByDisplayValue("maq1") as HTMLSelectElement;
+      fireEvent.change(machine, { target: { value: "n2" } });
+
+      await waitFor(() => {
+        expect(screen.getByRole("option", { name: /modelo inteiro/i })).toBeTruthy();
+        expect(screen.getByRole("option", { name: "20-39" })).toBeTruthy();
+      });
+      expect(screen.getByText("Opções da máquina")).toBeTruthy();
+      const comboboxes = screen.getAllByRole("combobox");
+      fireEvent.change(comboboxes[1], { target: { value: "whole:0-39" } });
+      fireEvent.change(comboboxes[2], { target: { value: "cpu" } });
+      fireEvent.change(comboboxes[3], { target: { value: "q8_0" } });
+      fireEvent.change(comboboxes[4], { target: { value: "bf16" } });
+      fireEvent.click(screen.getByRole("button", { name: "Adicionar" }));
+      await waitFor(() => {
+        expect(post).toHaveBeenLastCalledWith(
+          "/api/ui/deploy/node",
+          expect.objectContaining({
+            kind: "whole",
+            start_layer: 0,
+            end_layer: 39,
+            offload_kqv: false,
+            cache_type_k: "q8_0",
+            cache_type_v: "bf16",
+          }),
+        );
+      });
+      expect(post).toHaveBeenLastCalledWith(
+        "/api/ui/deploy/node",
+        expect.objectContaining({ target_node_id: "n2" }),
+      );
+    } finally {
+      post.mockRestore();
+    }
   });
 });

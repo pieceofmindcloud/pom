@@ -375,6 +375,7 @@
             load_known: true,
             held: if has {
                 vec![HeldShard {
+                    kind: HeldKind::Whole,
                     sha256: None,
                     pom_id: None,
                     virtual_slice: false,
@@ -402,6 +403,7 @@
     fn tp_machine(id: &'static str, rank: u32) -> Machine {
         let mut machine = whole_machine(id, 900_000, false);
         machine.held.push(HeldShard {
+            kind: HeldKind::Shard,
             start_layer: 0,
             end_layer: 31,
             total_layers: Some(32),
@@ -941,6 +943,7 @@
             load: 0,
             load_known: true,
             held: vec![HeldShard {
+                kind: HeldKind::Whole,
                 sha256: None,
                 pom_id: None,
                 virtual_slice: false,

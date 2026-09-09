@@ -16,7 +16,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment` - `{ params }` ou
   `{ version }` para reimplantar uma versão registrada -, `activateDeployment`),
-  além do status autenticado do provider remoto.
+  além do status autenticado do provider remoto. `addNodeOptions` consulta o
+  catálogo e a configuração da máquina alvo para o diálogo incremental;
+  `addNode` envia o tipo whole/shards e os overrides por máquina, enquanto
+  `removeNode` recebe o `deploy_id` para versionar a topologia correta.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
@@ -51,7 +54,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   is shared by the remote-model and transfers screens.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; the deployment inspector applies combo changes through
-  the same endpoint, not as a per-machine launch parameter.
+  the same endpoint. The add-machine dialog reads and updates the selected
+  peer's representation through the target-aware deploy flow, so cache choices
+  are applied on that machine before launch.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
   RTT snapshot after a chat stream, and `usePeerRuntimes` reads `/health` for
   the peers in that trace without polling the whole cluster.
@@ -149,7 +154,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `/v1/chat/completions`, with one replacement-key retry.
 - `api.get/post/del` - typed conveniences over `request`.
 - `devUpdate(nodeId)` - update+restart a machine, repassing to a peer when `node_id` is not this node (`src/devupdate.rs`).
-- `addNode` / `removeNode` - add/remove one machine to a deployed model (`/api/ui/deploy/node{,/remove}`).
+- `addNodeOptions` / `addNode` / `removeNode` - query the selected machine's
+  local catalog and cache settings, then add/remove one machine to a deployed
+  model (`/api/ui/deploy/node{,/remove}`). Add and remove responses carry the
+  deployment version when a persisted deployment is being edited.
 - `undeployPipeline(group)` - take the whole pipeline out of service: `POST /api/ui/undeploy` asks every machine serving the model to release RAM/VRAM at once and returns an `UndeployReport` (machine by machine; `released` only when that node confirmed). Nothing is deleted from disk.
 - `leaveNetwork(nodeId?)` - `POST /api/ui/leave`. Without `nodeId` this node leaves; with a peer's `node_id` this node forwards the request to that peer (`webui::forward_leave`) - the panel only uses relative paths, so acting on another machine is always a relay through the local node.
 

@@ -274,6 +274,7 @@
                     .held
                     .iter()
                     .map(|(a, b)| HeldShard {
+                        kind: HeldKind::Shard,
                         start_layer: *a,
                         end_layer: *b,
                         total_layers: s.declares,

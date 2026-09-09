@@ -26,9 +26,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   um grupo entra na cadeia. Devolve `None` no primeiro buraco executável.
 - `plan_pipeline` - chama a variante acima sem medições de RTT.
 - `model_pipeline_candidates` e `model_head_candidates` - o primeiro aplica o
-  filtro de modelo, implantação, liveness e primary; o segundo recorta somente
-  as faixas que começam em L0 para a visão limitada do perfil infer. Nenhum
-  deles publica a topologia completa.
+  filtro de modelo, implantação e liveness; o segundo recorta somente as
+  faixas que começam em L0 para a visão limitada do perfil infer. Um deployment
+  misto pode, portanto, expor simultaneamente a cabeça do GGUF inteiro e a
+  cabeça de fatias. Nenhum deles publica a topologia completa.
 - `PipelineStep::exec_start`/`exec_end` - faixa que o hop executa, distinta da
   faixa que ele carregou; `PipelineEdge` só existe quando essas sub-faixas são
   contíguas.

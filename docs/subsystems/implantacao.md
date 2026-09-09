@@ -468,15 +468,23 @@ placa somam. `Step.capacity` (`CapacityPreview`) é o passo isolado.
 | `POST /api/ui/deploy/plan` | prévia (leitura, chamada a cada edição); enriquece os passos com a projeção de capacidade |
 | `POST /api/ui/deploy/capacity-preview` | prévia por passo, local ao peer: estima por metadata GGUF e VRAM livre, sem chamar o fit nativo, e devolve a VRAM projetada por GPU (`webui.rs`) |
 | `POST /api/ui/deploy` | executa (re-varre, recusa `blocked`/vazio, job) |
+| `POST /api/ui/deploy/node/options` | catálogo e opções locais da máquina escolhida para uma alteração incremental |
 | `POST /api/ui/deploy/node` | adiciona uma máquina a um pipeline já no ar |
 | `POST /api/ui/deploy/node/remove` | tira uma máquina do modelo (libera a memória) |
 | `POST /api/ui/undeploy` | tira a pipeline inteira do ar |
 
 ## 6. Adicionar e remover máquina
 
-`add_node_endpoint` recebe uma faixa + máquina alvo e chama `webui::launch` com
-um único `LaunchTarget` (`skip_split: true` - a fatia já existe e o passo é só
-carregar). Dois detalhes escondidos na chamada:
+`add_node_options_endpoint` revarre somente o catálogo da máquina selecionada
+e devolve as fatias que ela tem, o modelo inteiro correspondente quando existe
+e os defaults locais de GPU/KV. Ao trocar a máquina no Painel, a tela refaz
+essa consulta e não reaproveita as opções de outro peer.
+
+`add_node_endpoint` recebe uma opção + máquina alvo e chama `webui::launch` com
+um único `LaunchTarget` (`skip_split: true` - o arquivo já existe e o passo é
+só carregar). `cache_type_k`/`cache_type_v` são aplicados no `pom.json` local
+ou pela API do peer antes do launch; `n_gpu_layers` e `offload_kqv` seguem como
+overrides efetivos da máquina. Dois detalhes escondidos na chamada:
 
 - **`peer_index`/`peer_count`** - a posição é a do pipeline, não "este nó sozinho":
   sem isso o nó somado se diz o último da divisão.
@@ -486,13 +494,23 @@ carregar). Dois detalhes escondidos na chamada:
 - Resposta `{applied, overlapping_layers, peer_index, peer_count}` - sobreposição
   é reportada, não recusada (a máquina entra e a tela mostra o que colide).
 
+Quando o pedido identifica um deployment persistido, a resposta de
+`add_node_endpoint` também traz `deploy_id`, `version` e `kind`. Sobreposição é
+reportada, não recusada. Uma máquina inteira e uma ou mais fatias podem
+coexistir no mesmo deployment, que passa a usar `kind: "mixed"` e expõe as
+duas cabeças de camada 0 como entradas possíveis para o mesmo modelo.
+
 `remove_node_endpoint` ("essa máquina não está servindo este modelo" se o alvo não
 serve) calcula `uncovered_after_removal` contra as máquinas restantes. **Quem
 libera a memória é o dono dela**: alvo == self usa `runtime.stop()`; senão
 encaminha `POST /api/ui/unload` ao gateway do alvo (a mesma rota do botão de
 descarregar uma máquina). Resposta `{removed, uncovered_layers}`; vazio significa
 que outra máquina cobre a mesma faixa - a rede perde uma rota paralela e segue
-servindo; não-vazio é buraco, e a confirmação é explícita.
+servindo; não-vazio é buraco, e a confirmação é explícita. A resposta também
+informa `deploy_id`, `version` e `serving`. A remoção anexa uma versão com o
+alvo fora do conjunto. Enquanto restar uma máquina, `serving` continua
+verdadeiro; a última remoção grava uma versão ativa vazia, encerra a seleção
+como deployment vivo e preserva todo o histórico.
 
 ## 7. Desimplantar (undeploy)
 
@@ -527,6 +545,13 @@ ativa. O que distingue uma versão é o `RuntimeParams` do deployment inteiro -
 ajustes por máquina (`n_gpu_layers`/`offload_kqv`) entram no snapshot da versão
 mas não forkam versão. Um registro v1 legado (sem `versions`) ganha a v1
 sintetizada por `ensure_versions` em toda leitura.
+
+Alterações incrementais de topologia são eventos de histórico independentes dos
+parâmetros: adicionar ou remover máquina usa `append_version`, com
+`active_version` novo e o conjunto de `nodes` daquela versão. O coordenador
+publica o snapshot aos participantes atuais e aos peers que já conheceram o
+deployment, para que uma máquina removida limpe seu registro sem descarregar
+nem reiniciar as demais.
 
 `POST /api/ui/deploy` faz uma pré-verificação antes de copiar qualquer arquivo
 ou chamar `launch`. Para fatias, a prova é o `pom_id` do manifesto; para um GGUF

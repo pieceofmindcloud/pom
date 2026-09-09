@@ -891,6 +891,7 @@ pub(super) fn add_virtual_whole_slices(
             continue;
         }
         source.held.push(HeldShard {
+            kind: HeldKind::Shard,
             start_layer,
             end_layer,
             total_layers: Some(options.total_layers),

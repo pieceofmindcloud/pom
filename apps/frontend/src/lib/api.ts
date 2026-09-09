@@ -15,12 +15,14 @@ import { storageKey } from "./brand";
 import { modelSearchPath, type ModelSearchPathOptions } from "./modelProvider";
 import type {
   Deployment,
+  AddNodeOptionsResponse,
   HuggingFaceTokenConfig,
   RemoteModelDetails,
   RemoteModelProviderStatus,
   RemoteModelSearchResponse,
   RemoteStorage,
   RuntimeParams,
+  KvCacheType,
 } from "./types";
 
 const KEY_STORAGE = storageKey("connectionKey");
@@ -375,13 +377,33 @@ export function devUpdate(nodeId?: string) {
  */
 export function addNode(req: {
   group: string;
+  deploy_id?: string;
+  kind?: "shards" | "whole";
   target_node_id: string;
   start_layer: number;
   end_layer: number;
+  n_gpu_layers?: number;
+  offload_kqv?: boolean;
+  cache_type_k?: KvCacheType;
+  cache_type_v?: KvCacheType;
 }) {
-  return api.post<{ applied: boolean; overlapping_layers: number[] }>(
+  return api.post<{
+    applied: boolean;
+    overlapping_layers: number[];
+    deploy_id?: string;
+    version?: number;
+  }>(
     "/api/ui/deploy/node",
     req,
+  );
+}
+
+/** Inventário e configurações da máquina atualmente escolhida no diálogo. */
+export function addNodeOptions(group: string, targetNodeId: string, signal?: AbortSignal) {
+  return api.post<AddNodeOptionsResponse>(
+    "/api/ui/deploy/node/options",
+    { group, target_node_id: targetNodeId },
+    { signal },
   );
 }
 
@@ -391,10 +413,16 @@ export function addNode(req: {
  * `uncovered_layers` vazio significa que outra máquina serve a mesma faixa: a
  * rede perde uma rota paralela e continua servindo.
  */
-export function removeNode(nodeId: string, group: string) {
-  return api.post<{ removed: boolean; uncovered_layers: number[] }>(
+export function removeNode(nodeId: string, group: string, deployId?: string) {
+  return api.post<{
+    removed: boolean;
+    uncovered_layers: number[];
+    deploy_id?: string;
+    version?: number;
+    serving?: boolean;
+  }>(
     "/api/ui/deploy/node/remove",
-    { group, target_node_id: nodeId },
+    { group, target_node_id: nodeId, ...(deployId ? { deploy_id: deployId } : {}) },
   );
 }
 

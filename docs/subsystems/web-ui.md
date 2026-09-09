@@ -501,6 +501,20 @@ sempre) e atualizar/reiniciar quando o peer anuncia `dev_update`. Estavam
 espalhadas pelo pé do card, uma por seção, e reiniciar uma máquina era rolar
 até o fim de tudo o que ela reporta.
 
+O diálogo `AddNodeDialog` consulta `POST /api/ui/deploy/node/options` depois de
+cada troca de máquina. Assim, o seletor mostra as fatias e o modelo inteiro
+que o alvo realmente tem, além dos controles de camadas na GPU, localização
+do cache KV e tipos K/V daquela máquina. Confirmar chama
+`POST /api/ui/deploy/node` somente no alvo e preserva a inferência dos outros
+peers. Com um `deploy_id` ativo, a alteração cria uma nova versão; selecionar
+um GGUF inteiro ao lado de fatias produz o rótulo `mixed` no Histórico e duas
+cabeças de entrada possíveis.
+
+`RemoveNode` também recebe o `deploy_id`. A remoção parcial cria uma versão com
+as máquinas restantes e mantém a implantação ativa. A última remoção cria uma
+versão vazia, que permanece no Histórico para auditoria, mas deixa de aparecer
+como implantação servindo.
+
 O card é denso de propósito, para caber numa tela: o que é útil sem precisar
 estar sempre visível mora num `[i]` (a razão de "sem fatia", o aviso do
 `gpu_note`, a nota do fit, o caminho do modelo, pid e reinícios), e

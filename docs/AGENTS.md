@@ -40,6 +40,10 @@ gated e a licença antes do download.
 - `subsystems/rede-p2p.md` - descoberta, identidade, TLS e o canal unidirecional
   de logs de processo enviado ao principal.
 
+O fluxo incremental de topologia de deployments, incluindo o modo misto e as
+versões criadas ao adicionar ou remover máquinas, é detalhado em
+`subsystems/implantacao.md`, `subsystems/api-http.md` e `subsystems/web-ui.md`.
+
 ## subsystems/
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `rede-p2p.md`

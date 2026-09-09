@@ -3,6 +3,10 @@ pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/deploy/plan", post(plan_endpoint))
         .route("/api/ui/deploy", post(deploy_endpoint))
+        .route(
+            "/api/ui/deploy/node/options",
+            post(add_node_options_endpoint),
+        )
         .route("/api/ui/deploy/node", post(add_node_endpoint))
         .route("/api/ui/deploy/node/remove", post(remove_node_endpoint))
         .route("/api/ui/undeploy", post(undeploy_endpoint))
@@ -204,10 +208,17 @@ pub(super) async fn receive_deployment(
     Json(registro): Json<crate::deployment::Deployment>,
 ) -> Response {
     let self_id = state.network.node_id.clone();
-    // Um registro que não menciona esta máquina não é dela para guardar. Sem
-    // isto, qualquer peer autenticado encheria o disco dos outros de registros
-    // de implantações que não os incluem.
-    if registro.node(&self_id).is_none() {
+    // Um registro que não menciona esta máquina não é dela para guardar. A
+    // exceção é uma atualização que ela já conhecia: depois de remover uma
+    // máquina, o snapshot precisa chegar também ao peer removido para que ele
+    // não anuncie uma versão antiga no próximo fan-out.
+    let ja_conhecia = state
+        .database
+        .deployment(&registro.deploy_id)
+        .ok()
+        .flatten()
+        .is_some();
+    if registro.node(&self_id).is_none() && !ja_conhecia {
         return bad(json!({
             "error": "este nó não faz parte da implantação"
         }));
@@ -267,4 +278,3 @@ pub fn uncovered_after_removal(restantes: &[(u32, u32)], removida: (u32, u32)) -
         .filter(|c| !restantes.iter().any(|(i, f)| c >= i && c <= f))
         .collect()
 }
-

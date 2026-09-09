@@ -510,7 +510,7 @@ export interface DiscoveredModel {
 export const isWholeModel = (m: DiscoveredModel): boolean => m.shard_range == null;
 
 /** `src/models/deployment.rs` — de que forma um modelo está no ar. */
-export type DeploymentKind = 'shards' | 'whole' | 'tensor_parallel';
+export type DeploymentKind = 'shards' | 'whole' | 'tensor_parallel' | 'mixed';
 
 /** `src/models/deployment.rs` — um nó da implantação, e a config com que subiu. */
 export interface DeploymentNode {
@@ -657,6 +657,24 @@ export interface CacheTypesResponse {
   cache_type_k: KvCacheType;
   cache_type_v: KvCacheType;
   choices: KvCacheType[];
+}
+
+/** Inventário da máquina escolhida no diálogo de adicionar. */
+export interface AddNodeOption {
+  kind: "shards" | "whole";
+  start_layer: number;
+  end_layer: number;
+  label: string;
+}
+
+export interface AddNodeOptionsResponse {
+  node_id: string;
+  options: AddNodeOption[];
+  cache_types: CacheTypesResponse;
+  defaults: {
+    n_gpu_layers: number;
+    offload_kqv: boolean;
+  };
 }
 
 /** A slicing or apply run. `src/webui.rs` — `Job`. */

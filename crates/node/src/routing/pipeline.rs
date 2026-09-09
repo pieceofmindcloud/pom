@@ -1267,6 +1267,28 @@ mod ipv6_tests {
         );
     }
 
+    #[test]
+    fn mixed_deployment_exposes_whole_and_sliced_heads() {
+        let mut whole = peer("whole", 0, 31);
+        whole.node_id = "whole".into();
+        whole.deploy_id = "d-aaaaaaaa".into();
+        let mut shard_head = peer("shard-head", 0, 15);
+        shard_head.node_id = "shard-head".into();
+        shard_head.deploy_id = "d-aaaaaaaa".into();
+        let mut shard_tail = peer("shard-tail", 16, 31);
+        shard_tail.node_id = "shard-tail".into();
+        shard_tail.deploy_id = "d-aaaaaaaa".into();
+
+        let peers = [whole, shard_head, shard_tail];
+        let heads = model_head_candidates(&peers, "qwen35", Some("d-aaaaaaaa"));
+        let ids = heads
+            .iter()
+            .map(|peer| peer.node_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["whole", "shard-head"]);
+    }
+
     #[tokio::test]
     async fn plan_exposes_handoffs_for_the_selected_steps() {
         let mut first = peer("192.168.1.10:42777", 0, 15);

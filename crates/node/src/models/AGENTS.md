@@ -161,6 +161,13 @@ função pura que decide se um `POST /api/ui/deploy` reaproveita um `deploy_id`:
 mesmo `kind`, mesma `DeploymentIdentity` provada e o mesmo conjunto de
 `(node_id, faixa, tp_rank)`. Sem identidade provada, cunha id novo.
 
+`DeploymentKind::Mixed` representa um GGUF inteiro e uma cabeça fatiada no mesmo
+deployment. `Deployment::append_version` sempre cria `max+1` para alterações de
+topologia, mesmo com os mesmos `RuntimeParams`, e mantém o conjunto de máquinas
+da nova versão no histórico. A remoção parcial preserva a versão como ativa; a
+última remoção grava uma versão ativa vazia, que é válida para o histórico mas
+não é escolhida por `active()` como deployment vivo.
+
 A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
 de armazenamento vale somente para a pasta de fatias; pastas de modelos
 inteiros são somente leitura e nunca entram na retenção automática.

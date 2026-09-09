@@ -374,7 +374,7 @@ mod tests {
             )
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
-                state,
+                state.clone(),
                 require_admin_for_surface,
             ));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -390,6 +390,9 @@ mod tests {
             "principal",
             &base,
             "chave",
+            state.authority_signing_key.as_ref(),
+            &state.authority_principal,
+            state.admin_trust.as_ref(),
         )
         .await
         .unwrap());
@@ -398,6 +401,9 @@ mod tests {
             "principal",
             &base,
             "chave",
+            state.authority_signing_key.as_ref(),
+            &state.authority_principal,
+            state.admin_trust.as_ref(),
         )
         .await
         .unwrap());
@@ -2290,6 +2296,7 @@ pub(crate) mod testkit {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             profile: crate::profile::NodeProfile::Node,
+            setup_pending: false,
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -2312,6 +2319,9 @@ pub(crate) mod testkit {
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+            network: Default::default(),
+            resources: Default::default(),
+            setup_model: None,
         }));
         let (network_chat, _) = crate::network_chat::NetworkChat::new(
             database.clone(),

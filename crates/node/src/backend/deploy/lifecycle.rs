@@ -528,7 +528,7 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
             Err(error) => {
                 warn!(
                     "{} não aceitou assinar o registro da implantação: {error}",
-                    no.node_id
+                    peer.node_id
                 );
                 continue;
             }

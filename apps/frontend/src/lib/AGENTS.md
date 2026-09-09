@@ -41,9 +41,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   and owns the active stream so route unmounts preserve live partial replies.
   Direct Chat consumers get an isolated provider wrapper.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+  `chatStream.ts` also carries trace spans, outside-node accounting,
+  first-token boundaries, connection counts, decode counts, browser-local stream
+  observations and distributed `TelemetrySummary`/`TelemetrySpan`. TTFT keeps
+  separate pipeline/server/client meanings; backend completion timing must not
+  be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
-  processamento medido no nó antes de nomear o gargalo. Derives the observed
+  processamento medido no nó antes de nomear o gargalo. It refuses to label
+  a distributed gap as `outside-node` while telemetry is incomplete and keeps
+  the fixed/per-token regression as an analysis helper only. Derives the observed
   execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer
   counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.

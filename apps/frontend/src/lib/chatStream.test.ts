@@ -59,6 +59,7 @@ describe("chat stream parsing", () => {
       tokens_per_sec: 2,
       tokens_generated: 20,
       duration_ms: 10000,
+      client_ttft_ms: 2510,
       timings: {
         ttft_ms: 2400,
         prefill_ms: 2000,
@@ -73,6 +74,7 @@ describe("chat stream parsing", () => {
     });
 
     expect(state.timings?.ttft_ms).toBe(2400);
+    expect(state.timings?.client_ttft_ms).toBe(2510);
     expect(state.timings?.prefill_tokens_per_sec).toBe(50);
     expect(state.timings?.generation_tokens_per_sec).toBe(20 / 7.6);
     expect(state.timings?.total_tokens_per_sec).toBe(2);

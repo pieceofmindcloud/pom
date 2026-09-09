@@ -407,11 +407,19 @@ pub(crate) async fn handle_step_stream(
     if tensor.is_some() {
         return err400("transporte remoto por lotes não aceita estado oculto");
     }
-    let Some(reply_to) = meta.get("reply_to").cloned() else {
+    let Some(mut reply_to) = meta.get("reply_to").cloned() else {
         return err400("transporte remoto por lotes sem reply_to");
     };
     if reply_to.get("ticket").and_then(Value::as_str).is_none() {
         return err400("transporte remoto por lotes sem ticket");
+    }
+    // The callback is the only response path for this stream. Carry the
+    // request identity alongside its ticket so profiling spans from the
+    // remote head remain correlated after the control request returns.
+    for field in ["trace_id", "request_id", "pipeline_id"] {
+        if let Some(value) = meta.get(field) {
+            reply_to[field] = value.clone();
+        }
     }
     let Some(dtype) = meta
         .get("dtype")
@@ -428,11 +436,12 @@ pub(crate) async fn handle_step_stream(
 
     let loads = app.loads.clone();
     let load_node_id = app.load_node_id.clone();
+    let stream_started = Instant::now();
     let (producer_tx, producer_rx) = mpsc::channel(16);
     tokio::spawn(async move {
         let _load_guard = loads.acquire(&load_node_id).await;
         let producer = remote_stream_producer(app, meta, dtype, producer_tx);
-        let emitter = remote_stream_emitter(reply_to, producer_rx);
+        let emitter = remote_stream_emitter(reply_to, producer_rx, stream_started);
         let _ = tokio::join!(producer, emitter);
     });
 
@@ -457,6 +466,10 @@ pub(super) struct RemoteStreamToken {
     pub(super) done: bool,
     pub(super) processing_ms: u64,
     pub(super) node_timings: Option<Value>,
+    /// Contributions from peers after the remote head. The head's own
+    /// processing remains in `processing_ms`/`node_timings`; these entries
+    /// preserve the rest of the ordered pipeline for the callback batch.
+    pub(super) hop_timings: Option<Value>,
     pub(super) speculated: bool,
     pub(super) speculation_active: bool,
     pub(super) speculation_disabled_reason: Option<String>,
@@ -575,6 +588,20 @@ pub(super) async fn remote_stream_producer(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let hop_timings = reply_meta
+            .get("hop_timings")
+            .and_then(Value::as_array)
+            .map(|hops| {
+                Value::Array(
+                    hops.iter()
+                        .map(|hop| {
+                            let mut hop = hop.clone();
+                            hop["span_count"] = json!(accepted.len().max(1));
+                            hop
+                        })
+                        .collect(),
+                )
+            });
         let requested_mtp = Speculate::from_meta(&step_meta)
             .is_some_and(|speculate| speculate.source == DraftSource::Mtp);
         let next_draft = reply_meta
@@ -625,6 +652,7 @@ pub(super) async fn remote_stream_producer(
                         done: done && index + 1 == accepted.len(),
                         processing_ms: if index == 0 { processing_ms } else { 0 },
                         node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
+                        hop_timings: (index == 0).then(|| hop_timings.clone()).flatten(),
                         speculated,
                         speculation_active,
                         speculation_disabled_reason: speculation_disabled_reason.clone(),
@@ -668,6 +696,7 @@ pub(super) async fn remote_stream_producer(
                 done,
                 processing_ms,
                 node_timings,
+                hop_timings,
                 speculated,
                 speculation_active,
                 speculation_disabled_reason,
@@ -723,6 +752,62 @@ pub(super) fn aggregate_remote_node_timings(items: &[RemoteStreamItem]) -> Value
     Value::Object(merged)
 }
 
+fn add_remote_timing_value(target: &mut Value, incoming: &Value) {
+    let (Some(target), Value::Object(incoming)) = (target.as_object_mut(), incoming) else {
+        return;
+    };
+    for (key, value) in incoming {
+        if key == "node_timings" {
+            let nested = target.entry(key.clone()).or_insert_with(|| json!({}));
+            add_remote_timing_value(nested, value);
+        } else if key == "engine_mismatch" {
+            let mismatch = target.get(key).and_then(Value::as_bool).unwrap_or(false)
+                || value.as_bool().unwrap_or(false);
+            target.insert(key.clone(), json!(mismatch));
+        } else if key.ends_with("_ms")
+            || matches!(
+                key.as_str(),
+                "round_trip_ms"
+                    | "bytes_sent"
+                    | "bytes_received"
+                    | "hidden_state_bytes_sent"
+                    | "hidden_state_bytes_received"
+                    | "span_count"
+            )
+        {
+            let total = target.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+                + value.as_f64().unwrap_or(0.0);
+            target.insert(key.clone(), json!(total));
+        } else if !target.contains_key(key) {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn aggregate_remote_hop_timings(items: &[RemoteStreamItem]) -> Value {
+    let mut merged: Vec<Value> = Vec::new();
+    for item in items {
+        let RemoteStreamItem::Token(token) = item else {
+            continue;
+        };
+        let Some(Value::Array(hops)) = &token.hop_timings else {
+            continue;
+        };
+        for (index, hop) in hops.iter().enumerate() {
+            if let Some(current) = merged.get_mut(index) {
+                add_remote_timing_value(current, hop);
+            } else {
+                let mut hop = hop.clone();
+                if hop.get("span_count").is_none() {
+                    hop["span_count"] = json!(1);
+                }
+                merged.push(hop);
+            }
+        }
+    }
+    Value::Array(merged)
+}
+
 pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<String>, bool) {
     let mut tokens = Vec::new();
     let mut processing_ms = 0_u64;
@@ -759,6 +844,8 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
         "done": done && error.is_none(),
         "processing_ms": processing_ms,
         "node_timings": aggregate_remote_node_timings(items),
+        "hop_timings": aggregate_remote_hop_timings(items),
+        "span_count": tokens.len(),
         "speculated": speculated,
         "speculation_active": speculation_active,
         "speculation_disabled_reason": speculation_disabled_reason,
@@ -770,9 +857,39 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
 pub(super) async fn remote_stream_emitter(
     reply_to: Value,
     receiver: mpsc::Receiver<RemoteStreamItem>,
+    stream_started: Instant,
 ) {
-    emit_remote_stream_batches(reply_to, receiver, |reply_to, batch| async move {
-        crate::direct::deliver_stream_batch(http_client(), &reply_to, batch).await
+    let stream_id = reply_to
+        .get("ticket")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let mut frames_sent = 0_u64;
+    let mut previous_frame_at = None;
+    emit_remote_stream_batches(reply_to, receiver, |reply_to, mut batch| {
+        let stream_id = stream_id.clone();
+        let frame_index = frames_sent;
+        frames_sent = frames_sent.saturating_add(1);
+        let now = Instant::now();
+        let frame_latency_ms = previous_frame_at
+            .map(|previous: Instant| now.saturating_duration_since(previous).as_millis() as u64)
+            .unwrap_or_else(|| now.saturating_duration_since(stream_started).as_millis() as u64);
+        previous_frame_at = Some(now);
+        batch["stream_id"] = json!(stream_id);
+        for field in ["trace_id", "request_id", "pipeline_id"] {
+            if let Some(value) = reply_to.get(field) {
+                batch[field] = value.clone();
+            }
+        }
+        batch["remote_stream_frame_index"] = json!(frame_index);
+        batch["remote_stream_frames_sent"] = json!(frames_sent);
+        batch["remote_stream_lifetime_ms"] =
+            json!(now.saturating_duration_since(stream_started).as_millis() as u64);
+        batch["remote_stream_frame_latency_ms"] = json!(frame_latency_ms);
+        if frame_index == 0 {
+            batch["remote_stream_first_frame_latency_ms"] = json!(frame_latency_ms);
+        }
+        async move { crate::direct::deliver_stream_batch(http_client(), &reply_to, batch).await }
     })
     .await;
 }
@@ -797,9 +914,12 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
     F: FnMut(Value, Value) -> Fut,
     Fut: Future<Output = crate::direct::Delivery>,
 {
+    let mut wait_started = Instant::now();
     while let Some(first) = receiver.recv().await {
+        let wait_ms = wait_started.elapsed().as_millis() as u64;
         let items = crate::prefill::drain_opportunistic_batch(first, &mut receiver);
-        let (batch, error, terminal) = remote_stream_batch(&items);
+        let (mut batch, error, terminal) = remote_stream_batch(&items);
+        batch["remote_stream_wait_ms"] = json!(wait_ms);
         let has_tokens = batch
             .get("accepted")
             .and_then(Value::as_array)
@@ -841,6 +961,7 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
         if terminal {
             return;
         }
+        wait_started = Instant::now();
     }
 }
 
@@ -866,6 +987,7 @@ mod remote_stream_tests {
             done,
             processing_ms: 3,
             node_timings: Some(json!({"decode_ms": 2, "engine_mismatch": false})),
+            hop_timings: None,
             speculated,
             speculation_active,
             speculation_disabled_reason: None,
@@ -885,6 +1007,34 @@ mod remote_stream_tests {
         assert_eq!(batch["done"], true);
         assert!(error.is_none());
         assert!(terminal);
+    }
+
+    #[test]
+    fn lote_remoto_preserva_tempos_dos_hops_downstream() {
+        let mut first = token_state(4, "A", false, false, false, None);
+        if let RemoteStreamItem::Token(token) = &mut first {
+            token.hop_timings = Some(json!([
+                {
+                    "processing_ms": 7,
+                    "round_trip_ms": 11,
+                    "span_count": 2,
+                },
+                {
+                    "processing_ms": 13,
+                    "round_trip_ms": 17,
+                    "span_count": 2,
+                }
+            ]));
+        }
+        let (batch, error, terminal) =
+            remote_stream_batch(&[first, token_state(9, "ção", true, false, false, None)]);
+
+        assert!(error.is_none());
+        assert!(terminal);
+        assert_eq!(batch["span_count"], 2);
+        assert_eq!(batch["hop_timings"][0]["processing_ms"], 7);
+        assert_eq!(batch["hop_timings"][0]["span_count"], 2);
+        assert_eq!(batch["hop_timings"][1]["processing_ms"], 13);
     }
 
     #[test]
@@ -915,6 +1065,7 @@ mod remote_stream_tests {
             done: false,
             processing_ms: 0,
             node_timings: Some(node_timings),
+            hop_timings: None,
             speculated: true,
             speculation_active: true,
             speculation_disabled_reason: None,
@@ -930,6 +1081,14 @@ mod remote_stream_tests {
             done: false,
             processing_ms: 3,
             node_timings: None,
+            hop_timings: Some(json!([
+                {
+                    "processing_ms": 11,
+                    "round_trip_ms": 17,
+                    "transport": "remote-stream",
+                    "node_timings": {"decode_ms": 9}
+                }
+            ])),
             speculated: false,
             speculation_active: true,
             speculation_disabled_reason: None,
@@ -941,6 +1100,7 @@ mod remote_stream_tests {
         assert_eq!(batch["next_draft"], json!([5, 6]));
         assert_eq!(batch["speculated"], false);
         assert_eq!(batch["speculation_active"], true);
+        assert_eq!(batch["hop_timings"][0]["processing_ms"], 11);
         assert!(error.is_none());
         assert!(!terminal);
     }
@@ -1120,7 +1280,15 @@ pub(super) fn step_forward_meta(
         "exec_end": next.exec_end,
     });
     preserve_batch_identity(request_meta, &mut meta);
-    for field in ["draft", "tokens", "mtp_k", "remote_stream"] {
+    for field in [
+        "draft",
+        "tokens",
+        "mtp_k",
+        "remote_stream",
+        "trace_id",
+        "request_id",
+        "pipeline_id",
+    ] {
         if let Some(value) = local_meta.get(field).or_else(|| request_meta.get(field)) {
             meta[field] = value.clone();
         }

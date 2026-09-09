@@ -230,21 +230,34 @@ pub(super) async fn step_direct(
         body_meta["trace_id"] = json!(trace_id);
     }
 
-    let ack = crate::relay::send_frame_or_tunnel(
-        http,
-        head,
-        tunnel,
-        "/v1/step",
-        &body_meta,
-        None,
-        dtype,
-        dtype.frame_encoding(),
-        1, // decode has never retried — see relay::send_frame's doc comment
-        &head.node_id,
-        |_issue| {},
-    );
-    let meta = crate::direct::await_result_with_ack(ack, &mut ticket, &head.node_id, |sent| {
-        direct.record_transport(&ticket_id, 0, sent);
+    // Own the ACK future so it can keep running if the tail's direct result
+    // wins the select below. Otherwise the first hop's transport receipt is
+    // lost precisely in the latency ordering this telemetry is meant to
+    // explain.
+    let ack_http = http.clone();
+    let ack_head = head.clone();
+    let ack_tunnel = tunnel.cloned();
+    let ack_body_meta = body_meta.clone();
+    let ack = async move {
+        crate::relay::send_frame_or_tunnel(
+            &ack_http,
+            &ack_head,
+            ack_tunnel.as_ref(),
+            "/v1/step",
+            &ack_body_meta,
+            None,
+            dtype,
+            dtype.frame_encoding(),
+            1, // decode has never retried - see relay::send_frame's doc comment
+            &ack_head.node_id,
+            |_issue| {},
+        )
+        .await
+    };
+    let ack_direct = direct.clone();
+    let ack_ticket_id = ticket_id.clone();
+    let meta = crate::direct::await_result_with_ack(ack, &mut ticket, &head.node_id, move |sent| {
+        ack_direct.record_transport(&ack_ticket_id, 0, sent);
     })
     .await
     .map_err(|e| {
@@ -336,7 +349,21 @@ impl RemoteDecodeStream {
             .get("stream_batch_bytes")
             .and_then(|value| value.as_u64())
             .unwrap_or(0);
-        let entry = json!({
+        let span_count = meta
+            .get("span_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_else(|| {
+                meta.get("accepted")
+                    .and_then(|value| value.as_array())
+                    .map_or(1, Vec::len) as u64
+            });
+        let trace_id = meta
+            .get("trace_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&self.initial_trace.trace_id);
+        let mut trace = RequestTrace::from_plan_with_trace_id(trace_id, &self.model, &self.plan);
+        if trace.record_remote_stream_batch(&meta) {
+            let entry = json!({
             "round_trip_ms": 0,
             "processing_ms": meta.get("processing_ms").cloned().unwrap_or_else(|| json!(0)),
             "bytes_sent": 0,
@@ -348,13 +375,15 @@ impl RemoteDecodeStream {
             "transport": "remote-stream",
             "transport_fallback": false,
             "node_timings": meta.get("node_timings").cloned().unwrap_or_else(|| json!({})),
-        });
-        let trace_id = meta
-            .get("trace_id")
-            .and_then(|value| value.as_str())
-            .unwrap_or(&self.initial_trace.trace_id);
-        let mut trace = RequestTrace::from_plan_with_trace_id(trace_id, &self.model, &self.plan);
-        trace.record_hop_from_json(0, Phase::Decode, &entry);
+            "span_count": span_count,
+            });
+            trace.record_hop_from_json(0, Phase::Decode, &entry);
+            if let Some(hops) = meta.get("hop_timings").and_then(|value| value.as_array()) {
+                for (index, hop) in hops.iter().enumerate() {
+                    trace.record_hop_from_json(index + 1, Phase::Decode, hop);
+                }
+            }
+        }
         speculative_step_from_meta(&meta, trace)
     }
 }
@@ -381,8 +410,14 @@ pub(crate) async fn step_stream(
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
     let ticket = direct.stream_ticket();
+    let request_trace_id = trace_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut meta = json!({
         "session_id": session_id,
+        "trace_id": request_trace_id,
+        "request_id": session_id,
+        "pipeline_id": plan.hop_chain(),
         "is_last": next_hops.is_empty(),
         "remote_stream": true,
         "token_id": token_id,
@@ -394,10 +429,8 @@ pub(crate) async fn step_stream(
     if let Some(speculate) = speculate {
         meta["speculate"] = speculate.to_meta();
     }
-    if let Some(trace_id) = trace_id {
-        meta["trace_id"] = json!(trace_id);
-    }
 
+    let stream_opened_at = Instant::now();
     let ack = cancelable(
         cancellation,
         crate::relay::send_frame_or_tunnel(
@@ -430,11 +463,15 @@ pub(crate) async fn step_stream(
         return Err(anyhow!("peer não aceitou o transporte remoto por lotes"));
     }
 
-    let mut initial_trace = trace_id
-        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
-        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
-    initial_trace.record_hop_from_sent(0, Phase::Decode, &ack);
-    initial_trace.record_transport(0, Phase::Decode, TransportTrace::from_sent(&ack));
+    let mut initial_trace = RequestTrace::from_plan_with_trace_id(&request_trace_id, model, plan);
+    initial_trace.record_remote_stream_open(stream_opened_at.elapsed().as_millis() as u64);
+    initial_trace.record_control_transport(
+        0,
+        Phase::Decode,
+        TransportTrace::from_sent(&ack),
+        ack.bytes_sent,
+        ack.bytes_received,
+    );
     Ok(RemoteDecodeStream {
         ticket,
         model: model.to_string(),

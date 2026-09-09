@@ -538,7 +538,12 @@ faz o download autenticado do blob persistido.
   budget; a chunk that fails after earlier chunks were accepted is rebuilt from
   chunk 0 because the lost response makes partial KV removal unsafe, while the
   ring stays serialized by its nested response contract; the request trace
-  reports pipeline depth, prefix reuse and transport per traversal;
+  reports pipeline depth, prefix reuse and transport per traversal. It also
+  carries distributed telemetry status, peer/span coverage and bounded
+  `remote-stream` frame aggregates. A response may reach the client while
+  transport receipts remain pending; this is represented as
+  `response_complete` until the retained trace is complete, not as an
+  invented `unaccounted` duration;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
   the tail produces `next_draft` and the remote head installs it in the next
   internal `step` metadata before continuing its owned loop. The existing
@@ -648,6 +653,8 @@ faz o download autenticado do blob persistido.
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+
   `x_pom` extension with source/tps/duration/partial/trace/finish_reason/stop_sequence),
+  including semantic pipeline/server/client TTFT and distributed telemetry
+  completeness when the backend provides them,
   `cors_headers` (allow `*`). Routes: `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and

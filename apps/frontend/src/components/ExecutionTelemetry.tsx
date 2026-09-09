@@ -33,6 +33,8 @@ function metricRate(
 export function TimingSummary({ timings }: { timings: GenerationTimings }) {
   const { t } = useI18n();
   const timing = (value: number | null | undefined) => value == null ? t("chat.telemetry.notMeasured") : ms(value);
+  const pipelineTtft = timings.pipeline_first_token_ms ?? timings.ttft_ms;
+  const serverTtft = timings.server_ttft_ms ?? timings.ttft_ms;
   return (
     <div className="mt-2 grid max-w-[38rem] grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[0.68rem]">
       <span className="text-faint">{t("chat.generationSpeed")}</span>
@@ -41,15 +43,63 @@ export function TimingSummary({ timings }: { timings: GenerationTimings }) {
       <span className="font-mono text-muted">{metricRate(timings.prefill_tokens_per_sec, t)} · {timings.prefill_tokens} {t("chat.promptTokensUnit")}</span>
       <span className="text-faint">{t("chat.ttft")}</span>
       <span className="font-mono text-muted">{ms(timings.ttft_ms)}</span>
+      <span className="text-faint">{t("chat.ttftPipeline")}</span>
+      <span className="font-mono text-muted">{timing(pipelineTtft)}</span>
       <span className="text-faint">{t("chat.telemetry.serverTtft")}</span>
       <span className="font-mono text-muted">{timing(timings.server_ttft_ms)}</span>
       <span className="text-faint">{t("chat.telemetry.engineTtft")}</span>
       <span className="font-mono text-muted">{timing(timings.engine_ttft_ms)}</span>
       <span className="text-faint">{t("chat.telemetry.clientTtft")}</span>
       <span className="font-mono text-muted">{timing(timings.client_ttft_ms)}</span>
+      <span className="text-faint">{t("chat.ttftServer")}</span>
+      <span className="font-mono text-muted">{timing(serverTtft)}</span>
       <span className="text-faint">{t("chat.totalTime")}</span>
       <span className="font-mono text-muted">{ms(timings.total_ms)} · {num(timings.total_tokens_per_sec, 1)} {t("chat.tokensPerSecondUnit")}</span>
     </div>
+  );
+}
+
+function DistributedTelemetry({ trace }: { trace: RequestTrace }) {
+  const { t } = useI18n();
+  const telemetry = trace.telemetry;
+  if (!telemetry) return null;
+  const status = t(`chat.telemetry.status.${telemetry.status}`);
+  const remote = telemetry.remote_stream;
+  const hasRemote = remote.frames_received > 0 || remote.open_ms != null;
+  return (
+    <section className="mt-3 rounded-lg border border-line/70 bg-surface/30 px-3 py-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-medium text-fg">{t("chat.telemetry.distributedTitle")}</h3>
+        <span className={clsx("font-mono text-[0.66rem]", telemetry.status === "complete" ? "text-emerald-300" : "text-amber-300")}>
+          {t("chat.telemetry.statusLabel", { status })}
+        </span>
+      </div>
+      <div className="mt-2 grid min-w-0 gap-x-4 gap-y-1 text-[0.68rem] sm:grid-cols-2">
+        <span className="text-faint">{t("chat.telemetry.peersCoverage")}</span>
+        <span className="font-mono text-muted">{telemetry.reported_peers}/{telemetry.expected_peers}</span>
+        <span className="text-faint">{t("chat.telemetry.decodeCoverage")}</span>
+        <span className="font-mono text-muted">{telemetry.reported_decode_spans}/{telemetry.expected_decode_spans} · {num(telemetry.completeness_percent, 1)}%</span>
+        <span className="text-faint">{t("chat.telemetry.criticalPath")}</span>
+        <span className="font-mono text-muted">{telemetry.critical_path_ms == null ? t("chat.telemetry.noMeasurement") : ms(telemetry.critical_path_ms)}</span>
+        <span className="text-faint">{t("chat.telemetry.accumulatedCompute")}</span>
+        <span className="font-mono text-muted">{ms(telemetry.accumulated_compute_ms)}</span>
+        <span className="text-faint">{t("chat.telemetry.accumulatedTransport")}</span>
+        <span className="font-mono text-muted">{ms(telemetry.accumulated_transport_ms)}</span>
+        <span className="text-faint">{t("chat.telemetry.overlapMeasured")}</span>
+        <span className="font-mono text-muted">{telemetry.overlap_ms == null ? t("chat.telemetry.noMeasurement") : ms(telemetry.overlap_ms)}</span>
+        <span className="text-faint">{t("chat.telemetry.trueResidual")}</span>
+        <span className="font-mono text-muted">{telemetry.true_residual_ms == null ? t("chat.telemetry.noMeasurement") : ms(telemetry.true_residual_ms)}</span>
+      </div>
+      {telemetry.missing_peers.length > 0 && <p className="mt-2 break-words text-[0.68rem] text-amber-300">{t("chat.telemetry.missingPeers", { peers: telemetry.missing_peers.join(", ") })}</p>}
+      {hasRemote && <div className="mt-2 border-t border-line/50 pt-2 text-[0.68rem]">
+        <p className="font-medium uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.remoteStreamTitle")}</p>
+        <p className="mt-1 font-mono text-muted">{t("chat.telemetry.remoteStreamFrames", { received: remote.frames_received, sent: remote.frames_sent, bytes: bytes(remote.bytes_received) })}</p>
+        <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamLatency", { first: remote.first_frame_latency_ms ?? 0, p50: remote.frame_latency_p50_ms, p95: remote.frame_latency_p95_ms, max: remote.frame_latency_max_ms })}</p>
+        <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamCompute", { total: remote.remote_compute_total_ms, p50: remote.remote_compute_p50_ms, p95: remote.remote_compute_p95_ms })}</p>
+        <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamWait", { total: remote.remote_stream_wait_total_ms, p50: remote.remote_stream_wait_p50_ms, p95: remote.remote_stream_wait_p95_ms })}</p>
+      </div>}
+      {(telemetry.duplicate_spans > 0 || telemetry.late_spans > 0 || telemetry.orphan_spans > 0) && <p className="mt-2 font-mono text-[0.66rem] text-faint">{t("chat.telemetry.integrity", { duplicates: telemetry.duplicate_spans, late: telemetry.late_spans, orphan: telemetry.orphan_spans })}</p>}
+    </section>
   );
 }
 
@@ -374,7 +424,7 @@ function PhaseRow({
     phase.node_lock_wait_ms +
     phase.node_setup_ms + phase.node_decode_ms + phase.node_residual_ms +
     phase.node_sampling_ms + phase.node_encode_ms;
-  const unattributed = Math.max(0, phase.processing_ms - named);
+  const nodeResidual = Math.max(0, phase.processing_ms - named);
   const idle = phase.calls === 0;
   const hiddenStateSent = phase.hidden_state_bytes_sent ?? 0;
   const hiddenStateReceived = phase.hidden_state_bytes_received ?? 0;
@@ -410,7 +460,7 @@ function PhaseRow({
     </tr>
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={9}>
-        <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, frameOut: phase.node_encode_ms })}{unattributed > 0 ? ` · ${t("chat.telemetry.unattributed", { ms: unattributed })}` : ""}</span>
+        <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, frameOut: phase.node_encode_ms })}{nodeResidual > 0 ? ` · ${t("chat.telemetry.nodeResidual", { ms: nodeResidual })}` : ""}</span>
         <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
         <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>
@@ -432,7 +482,7 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
     hop.node_frame_decode_ms + hop.node_input_prepare_ms + hop.node_queue_ms +
     hop.node_setup_ms + hop.node_decode_ms + hop.node_residual_ms +
     hop.node_sampling_ms + hop.node_encode_ms;
-  const unattributed = Math.max(0, hop.prefill_ms + hop.decode_ms - named);
+  const nodeResidual = Math.max(0, hop.prefill_ms + hop.decode_ms - named);
 
   return <>
     <tr className="border-t border-line/70">
@@ -453,7 +503,7 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={9}>
         <span className="block">{t("chat.telemetry.legacyNote", { prefillCalls: hop.prefill_calls, decodeCalls: hop.decode_calls })}</span>
-        <span className="block">{t("chat.telemetry.legacyNodeRow", { frame: hop.node_frame_decode_ms, prepare: hop.node_input_prepare_ms, queue: hop.node_queue_ms, setup: hop.node_setup_ms, frameOut: hop.node_encode_ms, unattributed })}</span>
+        <span className="block">{t("chat.telemetry.legacyNodeRow", { frame: hop.node_frame_decode_ms, prepare: hop.node_input_prepare_ms, queue: hop.node_queue_ms, setup: hop.node_setup_ms, frameOut: hop.node_encode_ms, unattributed: nodeResidual })}</span>
         <span className="block">{t("chat.telemetry.legacyDecodeRow", { decodeP50: hop.node_decode_p50_ms, decodeP95: hop.node_decode_p95_ms, encode: hop.client_encode_ms, headers: hop.response_headers_ms, body: hop.response_body_ms, decode: hop.client_decode_ms })}</span>
       </td>
     </tr>
@@ -629,6 +679,7 @@ export function ExecutionTelemetry({
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}{trace.prefix_match_tokens != null ? <span>{t("chat.telemetry.prefixCandidate", { count: trace.prefix_match_tokens })}</span> : null}{trace.prompt_tokens_transmitted != null ? <span>{t("chat.telemetry.tokensTransmitted", { count: trace.prompt_tokens_transmitted })}</span> : null}{trace.prefix_reuse_status ? <span>{t("chat.telemetry.prefixStatus", { status: trace.prefix_reuse_status })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
     {timings && <TimingSummary timings={timings} />}
     {hasDetailedTrace(trace) && <ExecutionTimeline trace={trace} />}
+    <DistributedTelemetry trace={trace} />
     {trace.prefill_overlap_enabled && <p className="mt-1 font-mono text-[0.68rem] text-faint">{t("chat.telemetry.overlap", { chunks: trace.prefill_overlapped_chunks ?? 0, depth: trace.prefill_pipeline_depth_max ?? 1, limit: trace.prefill_max_inflight_chunks ?? 8 })}</p>}
     {trace.transport_trace_complete === false && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>

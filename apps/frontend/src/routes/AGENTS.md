@@ -54,7 +54,9 @@ Per-file list:
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
   connection key by `api`. When the stream finishes, it captures the cluster
   snapshot, directional RTT for each adjacent execution pair and each peer's
-  inference health. `ExecutionEnvironment` keeps requested configuration
+  inference health. It also measures browser dispatch-to-first-token TTFT
+  separately from the server-reported pipeline TTFT and stores it only in the
+  client-side timing view. `ExecutionEnvironment` keeps requested configuration
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
   from the explicit per-peer health field; health shows the selected path,
   while the request trace shows the executed engine and mixed/mismatch flags.

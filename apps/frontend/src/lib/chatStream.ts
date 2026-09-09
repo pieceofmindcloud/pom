@@ -8,6 +8,8 @@ export interface StreamMetrics {
   tokens_generated?: number;
   duration_ms?: number;
   timings?: GenerationTimings;
+  /** TTFT measured by the browser from request dispatch to first token. */
+  client_ttft_ms?: number | null;
   trace?: RequestTrace;
   source?: string;
 }
@@ -87,6 +89,8 @@ export interface RequestTrace {
   total_bytes_received: number;
   hops: HopTrace[];
   transport_trace_complete?: boolean;
+  telemetry?: TelemetrySummary;
+  profiling_spans?: TelemetrySpan[];
   prefill_overlap_enabled?: boolean;
   prefill_max_inflight_chunks?: number;
   prefill_overlapped_chunks?: number;
@@ -150,6 +154,69 @@ export function withClientStreamTiming(
   return { ...metrics, trace, timings };
 }
 
+export type TelemetryStatus = "collecting" | "response_complete" | "complete" | "incomplete" | "timeout";
+
+export interface RemoteStreamTelemetry {
+  open_ms?: number;
+  lifetime_ms?: number;
+  frames_sent: number;
+  frames_received: number;
+  bytes_sent: number;
+  bytes_received: number;
+  first_frame_latency_ms?: number;
+  frame_latency_min_ms: number;
+  frame_latency_p50_ms: number;
+  frame_latency_p95_ms: number;
+  frame_latency_p99_ms: number;
+  frame_latency_max_ms: number;
+  remote_compute_total_ms: number;
+  remote_compute_min_ms: number;
+  remote_compute_p50_ms: number;
+  remote_compute_p95_ms: number;
+  remote_compute_p99_ms: number;
+  remote_compute_max_ms: number;
+  remote_stream_wait_total_ms: number;
+  remote_stream_wait_p50_ms: number;
+  remote_stream_wait_p95_ms: number;
+}
+
+export interface TelemetrySummary {
+  status: TelemetryStatus;
+  response_complete?: boolean;
+  expected_peers: number;
+  reported_peers: number;
+  missing_peers: string[];
+  expected_decode_spans: number;
+  reported_decode_spans: number;
+  completeness_percent: number;
+  duplicate_spans: number;
+  late_spans: number;
+  orphan_spans: number;
+  wall_clock_ms?: number;
+  critical_path_ms?: number;
+  accumulated_compute_ms: number;
+  accumulated_transport_ms: number;
+  overlap_ms?: number;
+  true_residual_ms?: number;
+  remote_stream: RemoteStreamTelemetry;
+}
+
+export interface TelemetrySpan {
+  trace_id: string;
+  request_id: string;
+  pipeline_id: string;
+  peer_id: string;
+  span_id: string;
+  parent_span_id?: string;
+  phase: "prefill" | "decode";
+  token_index?: number;
+  start_ns: number;
+  end_ns: number;
+  duration_ns: number;
+  transport?: string;
+  clock_domain: string;
+}
+
 export interface TransportSummaryEntry {
   transport:
     | "local"
@@ -208,6 +275,7 @@ export interface PhaseTrace {
   bytes_sent: number;
   bytes_received: number;
   calls: number;
+  reported_spans?: number;
   client_encode_ms: number;
   response_headers_ms: number;
   response_body_ms: number;
@@ -419,7 +487,14 @@ export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetr
   if (metrics?.tokens_per_sec != null) state = { ...state, tokensPerSecond: metrics.tokens_per_sec };
   if (metrics?.tokens_generated != null) state = { ...state, tokensGenerated: metrics.tokens_generated };
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
-  if (metrics?.timings) state = { ...state, timings: metrics.timings };
+  if (metrics?.timings) {
+    state = {
+      ...state,
+      timings: metrics.client_ttft_ms === undefined
+        ? metrics.timings
+        : { ...metrics.timings, client_ttft_ms: metrics.client_ttft_ms },
+    };
+  }
   if (metrics?.trace) state = { ...state, trace: metrics.trace };
   if (metrics?.source != null) state = { ...state, source: metrics.source };
   return state;

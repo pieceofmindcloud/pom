@@ -45,10 +45,10 @@ use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
@@ -88,6 +88,10 @@ const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_millis(600);
 
+/// A resposta já pode ter sido liberada quando o recibo de transporte chega.
+/// Mantemos apenas o snapshot pequeno por este período, sem segurar a geração.
+const TELEMETRY_RETENTION: Duration = Duration::from_secs(30);
+
 // ── Inbox ─────────────────────────────────────────────────────────────────────
 
 /// Os quadros que este nó despachou e ainda espera resultado.
@@ -105,17 +109,23 @@ struct InboxState {
 }
 
 struct ReplyState {
-    sender: oneshot::Sender<Value>,
+    sender: Option<oneshot::Sender<Value>>,
+    result: Option<Value>,
+    delivered: bool,
     expected_transport: usize,
     transport: Vec<Option<Value>>,
+    late_transport: u64,
+    expires_at: Option<Instant>,
 }
 
 /// Bounded on purpose: a slow gateway must apply backpressure to the remote
 /// emitter and, through it, to the inference producer.
 const REMOTE_STREAM_QUEUE_CAPACITY: usize = 16;
+const REMOTE_STREAM_DEDUPE_WINDOW: usize = 1_024;
 
 struct StreamState {
     sender: mpsc::Sender<Value>,
+    seen_frames: HashSet<String>,
 }
 
 impl ReplyInbox {
@@ -137,14 +147,19 @@ impl ReplyInbox {
     /// chegam depois deixam a amostra explicitamente incompleta, sem colocar
     /// telemetria no caminho crítico da geração.
     pub fn register_with_expected_transport(&self, expected_transport: usize) -> Ticket {
+        self.cleanup_expired();
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.0.lock().unwrap().replies.insert(
             id.clone(),
             ReplyState {
-                sender: tx,
+                sender: Some(tx),
+                result: None,
+                delivered: false,
                 expected_transport,
                 transport: vec![None; expected_transport],
+                late_transport: 0,
+                expires_at: None,
             },
         );
         Ticket {
@@ -156,13 +171,16 @@ impl ReplyInbox {
 
     /// Opens a ticket that can receive several remote decode batches.
     pub fn register_stream(&self) -> StreamTicket {
+        self.cleanup_expired();
         let id = uuid::Uuid::new_v4().to_string();
         let (sender, receiver) = mpsc::channel(REMOTE_STREAM_QUEUE_CAPACITY);
-        self.0
-            .lock()
-            .unwrap()
-            .streams
-            .insert(id.clone(), StreamState { sender });
+        self.0.lock().unwrap().streams.insert(
+            id.clone(),
+            StreamState {
+                sender,
+                seen_frames: HashSet::new(),
+            },
+        );
         StreamTicket {
             id,
             inbox: self.clone(),
@@ -173,17 +191,29 @@ impl ReplyInbox {
     /// Entrega um resultado. `false` quando o ticket não existe mais — o
     /// gateway já desistiu, e quem entregou precisa saber que chegou tarde.
     pub fn deliver(&self, ticket: &str, meta: Value) -> bool {
+        self.cleanup_expired();
         let mut state = self.0.lock().unwrap();
-        let Some(entry) = state.replies.remove(ticket) else {
+        let Some(entry) = state.replies.get_mut(ticket) else {
             return false;
         };
+        if entry.delivered {
+            return false;
+        }
         let meta = complete_transport_trace(&entry, meta);
-        meta_sender_send(meta, entry.sender)
+        entry.result = Some(meta.clone());
+        entry.delivered = true;
+        entry.expires_at = Some(Instant::now() + TELEMETRY_RETENTION);
+        let sender = entry.sender.take();
+        if entry.expected_transport == 0 {
+            state.replies.remove(ticket);
+        }
+        sender.is_some_and(|sender| meta_sender_send(meta, sender))
     }
 
     /// Registra a resposta de uma travessia sem transformá-la em resultado.
     /// Retorna `false` quando o ticket já expirou ou foi removido.
     pub fn record_transport(&self, ticket: &str, hop_index: usize, meta: Value) -> bool {
+        self.cleanup_expired();
         let mut state = self.0.lock().unwrap();
         let Some(entry) = state.replies.get_mut(ticket) else {
             return false;
@@ -191,19 +221,65 @@ impl ReplyInbox {
         if hop_index >= entry.expected_transport {
             return false;
         }
+        if entry.transport[hop_index].is_some() {
+            return false;
+        }
+        if entry.delivered {
+            entry.late_transport = entry.late_transport.saturating_add(1);
+        }
         entry.transport[hop_index] = Some(meta);
+        if entry.delivered {
+            let Some(previous) = entry.result.take() else {
+                return true;
+            };
+            let mut updated = complete_transport_trace(entry, previous);
+            updated["telemetry_late_spans"] = json!(entry.late_transport);
+            entry.result = Some(updated);
+        }
         true
+    }
+
+    /// Snapshota a versão mais recente da telemetria sem bloquear a resposta.
+    pub fn trace_snapshot(&self, ticket: &str) -> Option<Value> {
+        self.cleanup_expired();
+        self.0
+            .lock()
+            .unwrap()
+            .replies
+            .get(ticket)
+            .and_then(|entry| entry.result.clone())
+    }
+
+    fn cleanup_expired(&self) {
+        let now = Instant::now();
+        let mut state = self.0.lock().unwrap();
+        state
+            .replies
+            .retain(|_, entry| entry.expires_at.is_none_or(|expires_at| expires_at > now));
     }
 
     fn cancel(&self, ticket: &str) {
         let mut state = self.0.lock().unwrap();
-        state.replies.remove(ticket);
+        if state
+            .replies
+            .get(ticket)
+            .is_some_and(|entry| !entry.delivered)
+        {
+            state.replies.remove(ticket);
+        }
         state.streams.remove(ticket);
     }
 
     /// Quantos quadros estão em voo. Só para teste e diagnóstico.
     pub fn outstanding(&self) -> usize {
-        self.0.lock().unwrap().replies.len()
+        self.cleanup_expired();
+        self.0
+            .lock()
+            .unwrap()
+            .replies
+            .values()
+            .filter(|entry| !entry.delivered)
+            .count()
     }
 
     #[cfg(test)]
@@ -215,17 +291,32 @@ impl ReplyInbox {
     /// terminal batch removes the stream after its value has entered the
     /// consumer queue.
     pub async fn deliver_stream(&self, ticket: &str, meta: Value) -> bool {
+        self.cleanup_expired();
         let terminal = meta.get("done").and_then(Value::as_bool).unwrap_or(false)
             || meta.get("error").and_then(Value::as_str).is_some();
         let sender = {
-            let state = self.0.lock().unwrap();
-            state
-                .streams
-                .get(ticket)
-                .map(|stream| stream.sender.clone())
-        };
-        let Some(sender) = sender else {
-            return false;
+            let mut state = self.0.lock().unwrap();
+            let Some(stream) = state.streams.get_mut(ticket) else {
+                return false;
+            };
+            let frame_id = meta
+                .get("stream_id")
+                .and_then(Value::as_str)
+                .zip(
+                    meta.get("remote_stream_frame_index")
+                        .and_then(Value::as_u64),
+                )
+                .map(|(stream_id, index)| format!("{stream_id}:{index}"));
+            if let Some(frame_id) = frame_id {
+                if stream.seen_frames.contains(&frame_id) {
+                    return true;
+                }
+                if stream.seen_frames.len() >= REMOTE_STREAM_DEDUPE_WINDOW {
+                    stream.seen_frames.clear();
+                }
+                stream.seen_frames.insert(frame_id);
+            }
+            stream.sender.clone()
         };
         if sender.send(meta).await.is_err() {
             self.0.lock().unwrap().streams.remove(ticket);
@@ -317,11 +408,7 @@ impl DirectReply {
     /// `None` quando este nó não sabe nenhum endereço de si mesmo: sem isso a
     /// cauda não teria para onde responder, e o certo é cair no anel de sempre
     /// em vez de despachar um quadro que nunca volta.
-    pub fn new(
-        inbox: ReplyInbox,
-        urls: Vec<String>,
-        node_id: String,
-    ) -> Option<Self> {
+    pub fn new(inbox: ReplyInbox, urls: Vec<String>, node_id: String) -> Option<Self> {
         if urls.is_empty() {
             return None;
         }
@@ -507,19 +594,21 @@ pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Res
 }
 
 /// Espera o resultado e executa uma ação síncrona quando o ack da cabeça
-/// chega. Se o resultado chegar primeiro, ele é liberado sem esperar a
-/// telemetria atrasada.
+/// chega. Se o resultado chegar primeiro, o ack continua em uma tarefa
+/// destacada: ele é liberado sem esperar, mas a evidência do primeiro hop não
+/// é perdida quando a resposta da cauda vence a resposta HTTP da cabeça.
 pub async fn await_result_with_ack<F, C>(
     ack: F,
     ticket: &mut Ticket,
     head_label: &str,
-    mut on_ack: C,
+    on_ack: C,
 ) -> Result<Value>
 where
-    F: Future<Output = Result<crate::relay::SentFrame>>,
-    C: FnMut(&crate::relay::SentFrame),
+    F: Future<Output = Result<crate::relay::SentFrame>> + Send + 'static,
+    C: FnOnce(&crate::relay::SentFrame) + Send + 'static,
 {
-    tokio::pin!(ack);
+    let mut ack = Box::pin(ack);
+    let mut on_ack = Some(on_ack);
     let deadline = tokio::time::sleep(DIRECT_REPLY_DEADLINE);
     tokio::pin!(deadline);
     let mut acked = false;
@@ -528,6 +617,13 @@ where
         tokio::select! {
             biased;
             got = &mut ticket.rx => {
+                if let Some(on_ack) = on_ack.take() {
+                    tokio::spawn(async move {
+                        if let Ok(frame) = ack.await {
+                            on_ack(&frame);
+                        }
+                    });
+                }
                 return got.map_err(|_| anyhow!("resultado direto perdido antes de chegar"));
             }
             sent = &mut ack, if !acked => {
@@ -538,10 +634,16 @@ where
                     // um cluster meio atualizado funcionando mesmo se a
                     // negociação de capacidade escapar.
                     Ok(frame) if frame.meta.get("token_id").is_some() => {
-                        on_ack(&frame);
+                        if let Some(on_ack) = on_ack.take() {
+                            on_ack(&frame);
+                        }
                         return Ok(frame.meta)
                     }
-                    Ok(frame) => on_ack(&frame),
+                    Ok(frame) => {
+                        if let Some(on_ack) = on_ack.take() {
+                            on_ack(&frame);
+                        }
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -997,7 +1099,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_result_does_not_wait_for_late_transport_receipts() {
+    async fn a_result_does_not_wait_but_late_transport_receipts_close_the_trace() {
         let inbox = ReplyInbox::new();
         let mut ticket = inbox.register_with_expected_transport(2);
         let id = ticket.id().to_string();
@@ -1006,16 +1108,92 @@ mod tests {
         let got = (&mut ticket.rx).await.expect("resultado");
         assert_eq!(got["transport_trace_complete"], false);
         assert!(got["transport_traversals"].as_array().unwrap().is_empty());
-        assert!(!inbox.record_transport(
+        assert!(inbox.record_transport(
             &id,
             1,
             json!({"hop_index": 1, "transport": "https", "round_trip_ms": 23})
         ));
-        assert!(!inbox.record_transport(
+        assert!(inbox.record_transport(
             &id,
             0,
             json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
         ));
+        let snapshot = inbox.trace_snapshot(&id).expect("snapshot atualizado");
+        assert_eq!(snapshot["transport_trace_complete"], true);
+        assert_eq!(snapshot["transport_traversals"][0]["hop_index"], 0);
+        assert_eq!(snapshot["transport_traversals"][1]["hop_index"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_result_first_keeps_the_head_ack_for_transport_reconciliation() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_with_expected_transport(1);
+        let ticket_id = ticket.id().to_string();
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_on_ack = notify.clone();
+        let inbox_for_ack = inbox.clone();
+        let ticket_for_ack = ticket_id.clone();
+        let ack = async move {
+            tokio::task::yield_now().await;
+            Ok(crate::relay::SentFrame {
+                meta: json!({"accepted": true}),
+                tensor: None,
+                round_trip_ms: 17,
+                bytes_sent: 100,
+                bytes_received: 20,
+                hidden_state_bytes_sent: 0,
+                hidden_state_bytes_received: 0,
+                hidden_state_dtype: crate::wire::WireDtype::F16,
+                client_encode_ms: 1,
+                response_headers_ms: 2,
+                response_body_ms: 3,
+                client_decode_ms: 4,
+                tls: false,
+                tls_handshake_ms: 0,
+                transport: crate::relay::InferenceTransport::Libp2pTunnel,
+                transport_fallback: false,
+            })
+        };
+        let deliver_inbox = inbox.clone();
+        let deliver_ticket = ticket_id.clone();
+        tokio::spawn(async move {
+            deliver_inbox.deliver(&deliver_ticket, json!({"token_id": 7}));
+        });
+
+        let got =
+            await_result_with_ack(ack, &mut ticket, "head", move |sent| {
+                assert_eq!(sent.round_trip_ms, 17);
+                assert!(inbox_for_ack.record_transport(
+                    &ticket_for_ack,
+                    0,
+                    transport_receipt(0, sent),
+                ));
+                notify_on_ack.notify_one();
+            })
+            .await
+            .expect("resultado direto");
+        assert_eq!(got["token_id"], 7);
+        assert_eq!(got["transport_trace_complete"], false);
+
+        tokio::time::timeout(Duration::from_secs(1), notify.notified())
+            .await
+            .expect("ACK tardio processado");
+        let snapshot = inbox
+            .trace_snapshot(&ticket_id)
+            .expect("snapshot atualizado");
+        assert_eq!(snapshot["transport_trace_complete"], true);
+        assert_eq!(snapshot["transport_traversals"][0]["round_trip_ms"], 17);
+    }
+
+    #[test]
+    fn duplicate_transport_receipts_are_not_counted_twice() {
+        let inbox = ReplyInbox::new();
+        let ticket = inbox.register_with_expected_transport(1);
+        let id = ticket.id().to_string();
+        let receipt = json!({"hop_index": 0, "transport": "https", "round_trip_ms": 23});
+
+        assert!(inbox.record_transport(&id, 0, receipt.clone()));
+        assert!(!inbox.record_transport(&id, 0, receipt));
     }
 
     #[tokio::test]
@@ -1178,8 +1356,7 @@ mod tests {
             "loopback não alcança outra máquina: {urls:?}"
         );
         assert!(
-            DirectReply::new(ReplyInbox::new(), urls, "n1".into())
-                .is_none(),
+            DirectReply::new(ReplyInbox::new(), urls, "n1".into()).is_none(),
             "sem endereço utilizável o plano tem que cair no anel"
         );
 

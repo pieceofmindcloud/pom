@@ -490,6 +490,11 @@ pub struct GenSummary {
 /// Cada taxa usa seu próprio relógio e conjunto de tokens.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GenerationTimings {
+    /// Primeiro evento observável do motor local. Nulo quando o backend não
+    /// publicou uma marca temporal explícita.
+    pub local_engine_first_event_ms: Option<u64>,
+    /// Primeiro token que atravessou o pipeline até o gateway.
+    pub pipeline_first_token_ms: u64,
     pub ttft_ms: u64,
     /// TTFT measured by the gateway, from generation ingress to first token
     /// emitted into the protocol adapter.
@@ -677,6 +682,8 @@ pub(crate) fn timing_metrics(
 ) -> GenerationTimings {
     let generation_ms = total_ms.saturating_sub(ttft_ms);
     GenerationTimings {
+        local_engine_first_event_ms: None,
+        pipeline_first_token_ms: ttft_ms,
         ttft_ms,
         server_ttft_ms: None,
         engine_ttft_ms: None,
@@ -723,6 +730,7 @@ pub(super) fn summary_for(
     timings.server_ttft_ms = Some(ttft_ms);
     timings.engine_ttft_ms = trace.engine_ttft_ms;
     timings.client_ttft_ms = trace.client_ttft_ms;
+    trace.refresh_telemetry(total_ms);
     GenSummary {
         source: format!(
             "pipeline:{}{}",

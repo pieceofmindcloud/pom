@@ -84,7 +84,11 @@ Per-file list:
   pelo Chat e pelo inspetor de Logs. Mantém a tabela de fases, tempos por hop,
   rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza
   também os timings ponta a ponta com o processamento medido no nó, para não
-  chamar de gargalo do backend uma espera que ocorreu fora dele. Mostra também
+  chamar de gargalo do backend uma espera que ocorreu fora dele. A seção
+  distribuída mostra estado de coleta, cobertura de peers/spans, caminho
+  crítico, compute/transporte acumulados, overlap somente quando medido e os
+  histogramas agregados do `remote-stream`; não deduz `outside-node` por
+  subtração do wall-clock. Mostra também
   o executor MoE efetivo e o motivo publicado pelo runtime quando há fallback
   CPU ou indisponibilidade. O cartão distingue o caminho selecionado no
   snapshot atual de `/health` do caminho observado no trace desta requisição;

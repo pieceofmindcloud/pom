@@ -1113,6 +1113,8 @@ export interface ApiKey {
 
 /** Request-level performance, aggregated over the whole inference pipeline. */
 export interface GenerationTimings {
+  local_engine_first_event_ms?: number | null;
+  pipeline_first_token_ms?: number;
   ttft_ms: number;
   /** Gateway TTFT from request ingress to protocol emission. */
   server_ttft_ms?: number | null;

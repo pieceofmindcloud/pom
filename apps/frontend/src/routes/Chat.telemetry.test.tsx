@@ -154,6 +154,9 @@ describe("ExecutionTelemetry", () => {
 
   it("shows request-level TTFT, prefill speed, generation speed and total time", () => {
     const timings: GenerationTimings = {
+      pipeline_first_token_ms: 2400,
+      server_ttft_ms: 2400,
+      client_ttft_ms: 2510,
       ttft_ms: 2400,
       prefill_ms: 2000,
       prefill_tokens: 100,
@@ -167,7 +170,9 @@ describe("ExecutionTelemetry", () => {
 
     mount(<ExecutionTelemetry trace={trace} timings={timings} />);
 
-    expect(screen.getByText("Primeiro token (TTFT)")).toBeTruthy();
+    expect(screen.getByText("Primeiro token do pipeline")).toBeTruthy();
+    expect(screen.getByText("TTFT do servidor")).toBeTruthy();
+    expect(screen.getByText("Primeiro token no cliente")).toBeTruthy();
     expect(screen.getByText("50,0 tokens/s · 100 tokens do prompt")).toBeTruthy();
     expect(screen.getByText("2,6 tokens/s · 20 tokens")).toBeTruthy();
     expect(screen.getByText("10,0 s · 2,0 tokens/s")).toBeTruthy();

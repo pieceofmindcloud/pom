@@ -194,6 +194,23 @@ O contrato e o plano incremental estão em
 `docs/superpowers/specs/2026-09-08-inferencia-trace-outside-node-design.md` e
 `docs/superpowers/plans/2026-09-08-inferencia-trace-outside-node.md`.
 
+`RequestTrace::telemetry` separa o fim da resposta do fim da coleta. O status
+é `collecting`, `response_complete`, `complete` ou `incomplete`, e o objeto
+publica peers esperados/observados, spans de decode esperados/observados,
+duplicatas, recibos tardios, peers ausentes, wall-clock, caminho crítico e
+acumulados de compute/transporte. Esses acumulados não são uma decomposição
+exclusiva do wall-clock: a UI não calcula `outside-node` por
+`E2E - soma(processing)`. `overlap_ms` e `true_residual_ms` ficam ausentes
+enquanto não houver intervalos sincronizáveis para sustentá-los.
+
+No `remote-stream`, o head envia `hop_timings` dos peers downstream junto ao
+lote de tokens. O modo normal agrega frames, bytes, abertura, lifetime,
+primeira entrega, latências, processamento remoto e espera com histogramas de
+amostra limitada. `POM_TELEMETRY_PROFILE=1` acrescenta spans de frame e
+eventos por token, mantendo duração zero para um evento cujo lote não mede um
+intervalo individual. O relógio publicado identifica o domínio monotônico do
+peer e nunca é subtraído de um relógio de outra máquina.
+
 ### Cache KV e fallback de VRAM
 
 `n_gpu_layers` continua controlando onde ficam os pesos. O contexto tenta
@@ -480,6 +497,9 @@ tradicionais:
    `next_draft` no mesmo callback e o head instala o draft no próximo `step`
    interno. O callback também informa `speculated`, `speculation_active` e
    `speculation_disabled_reason`, sem travessia ou chamada adicional por token.
+   Cada lote também preserva `hop_timings` e `span_count` dos peers downstream,
+   além de `stream_id`, índice do frame, lifetime, latência, bytes e espera;
+   assim o head não é o único hop visível no trace.
 2. **Resposta direta** (`relay/v2-direct`, `run_direct`/`step_direct`) - quando
    `PipelinePlan::supports_direct_reply()`: todos os passos anunciam
    `relay/v2-direct` **e** a cadeia tem pelo menos 2 hops. O gateway despacha
@@ -1446,17 +1466,19 @@ devolve ao chamador é só um aceite imediato (`direct_ack`, `{"accepted": true}
 wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket.
 
 - `ReplyInbox`/`Ticket`: mapa ticket → canal oneshot que vive no `GatewayState`.
-  O `Drop` do `Ticket` remove o ticket do inbox em **qualquer** caminho de saída
-  (erro, prazo estourado) - impede ticket órfão de segurar memória e um
-  resultado atrasado de cair no token seguinte. Resultado para ticket já
-  desistido é **410 Gone**, e como o ticket é único por quadro nunca pode ser
-  confundido com o do quadro seguinte.
+  O `Drop` do `Ticket` remove o ticket ainda não entregue em **qualquer** caminho
+  de saída (erro, prazo estourado). Quando há travessias esperadas, `deliver`
+  libera o resultado e retém apenas o snapshot por 30 s para recibos tardios;
+  depois disso o ticket desconhecido é **410 Gone**, e como o ticket é único
+  por quadro nunca pode ser confundido com o do quadro seguinte.
 - `DirectReply::new` devolve `None` quando o nó não conhece nenhum endereço de
   si mesmo - aí o anel assume em vez de despachar um quadro que nunca volta.
 - `await_result_with_ack`: `select!` biased entre o resultado do inbox (caso normal), o
   ack da cabeça (só interessa quando falha, ou quando um peer antigo borbulhou
   a resposta inteira - `token_id` presente vale como resultado), e o prazo
-  `DIRECT_REPLY_DEADLINE = 600 s` (hop morreu depois de aceitar).
+  `DIRECT_REPLY_DEADLINE = 600 s` (hop morreu depois de aceitar). Se o
+  resultado vence, o ack continua em tarefa destacada para não perder a
+  evidência de transporte do primeiro hop.
 - `deliver_result`: a cauda tenta cada URL de `reply_to` em ordem; candidatos
   intermediários têm `DELIVERY_TIMEOUT = 500 ms` e o último tem 30 s.
   Três falhas seguidas movem a URL para o fim por 5 min. `410` para de tentar
@@ -1514,7 +1536,9 @@ fase correspondentes, sem lançar o residual no primeiro hop. O resultado não
 espera recibos atrasados: se uma evidência ainda não chegou, o pedido segue com
 `transport_trace_complete=false` e a UI deixa a ausência visível. Um hop local
 na mesma máquina pode ter zero de rede corretamente; isso não é uma atribuição
-ao primeiro hop.
+ao primeiro hop. Se o resultado direto vencer o ACK da cabeça,
+`await_result_with_ack` mantém o ACK em tarefa destacada e reconcilia o recibo
+quando ele chegar, sem atrasar o cliente.
 
 ## 5. Decodificação especulativa
 
@@ -1960,6 +1984,13 @@ Chat.
   para quantis são limitadas internamente, portanto a resposta de produção não
   cresce com o número de tokens.
 
+- **`telemetry`** - resumo da integridade da coleta distribuída. O callback
+  `remote-stream` preserva a participação de cada hop e seus `span_count`,
+  enquanto o `ReplyInbox` mantém um snapshot por uma janela curta para anexar
+  recibos de transporte que chegam depois da resposta. Duplicatas não entram
+  duas vezes; depois da expiração, uma entrega tardia é recusada e não vira
+  tempo desconhecido retroativamente.
+
 - **`tls` / `tls_calls`** - se o salto foi cifrado. Na `PhaseTrace` é uma
   **contagem**, não um booleano: uma fase soma várias chamadas, e se só parte
   delas foi por TLS a tela mostra a fração (`TLS em 3/4 chamadas`) em vez de
@@ -1998,8 +2029,11 @@ No transporte remoto, o registro `remote-stream` representa um callback de
 lote, não uma nova ida e volta de inferência. `bytes_received` é o corpo do
 lote e `processing_ms`/`node_timings` são agregados dos tokens contidos nele;
 `round_trip_ms` fica zero porque o callback é entregue ao inbox do gateway, que
-já separa a espera do cliente da geração. O primeiro control frame mantém a
-medição do transporte usado para iniciar o stream.
+já separa a espera do cliente da geração. O resumo também publica abertura,
+lifetime, frames e bytes, primeira entrega, latências de frame min/p50/p95/p99/
+máximo, compute remoto total/min/p50/p95/p99/máximo e espera do stream
+total/p50/p95. O primeiro control frame mantém a medição do transporte usado
+para iniciar o stream.
 
 ## 11. Defeitos anotados
 

@@ -64,7 +64,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
   por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; também mantém
   o inbox limitado do transporte remoto por lotes, entregue por
-  `/v1/remote-stream-result`.
+  `/v1/remote-stream-result`. O resultado direto pode ser liberado antes de
+  recibos de transporte tardios; o `ReplyInbox` retém um snapshot limitado,
+  deduplica por ticket e índice de hop e o reconcilia até a expiração.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
@@ -271,8 +273,20 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
   travessia. `RequestTrace` acrescenta o `trace_id`, spans locais do gateway,
   atribuição de `outside_node`, estado cold/warm, conexões novas/reutilizadas,
-  marcos do primeiro token e contadores de decode; o perfil `off|basic|trace`
-  controla apenas o detalhamento novo e não substitui `POM_PROFILE_SYNC`.
+  marcos do primeiro token e contadores de decode. `RequestTrace::telemetry`
+  separa `response_complete` de `trace complete`: publica peers e spans
+  esperados/observados, duplicatas, atrasos e o estado
+  `collecting`/`response_complete`/`complete`/`incomplete`. A soma de compute e
+  transporte é acumulada, nunca subtraída do wall-clock para fabricar
+  `outside-node`; overlap e residual verdadeiro só aparecem quando há
+  intervalos explícitos. O `remote-stream` carrega os `hop_timings` do head e
+  dos peers downstream, além de contadores e histogramas limitados de frames,
+  espera e processamento remoto. O modo normal não serializa spans por token;
+  `POM_TELEMETRY_PROFILE=1` acrescenta spans de frame e eventos de token com
+  IDs de trace, request, pipeline e peer. Eventos de token sem intervalo
+  individual permanecem com duração zero, sem repetir artificialmente o custo
+  do lote. O perfil `off|basic|trace` controla apenas o detalhamento novo e
+  não substitui `POM_PROFILE_SYNC`.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
@@ -1004,9 +1018,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `direct.rs`:
 - `ReplyInbox`/`Ticket` - mapa ticket→canal oneshot que vive no `GatewayState`
   (é o gateway que abre a requisição); `register` sorteia UUID v4 por quadro;
-  `Drop` remove o ticket do inbox em qualquer caminho de saída (erro, prazo) -
-  é o que impede um ticket órfão de segurar memória e um resultado atrasado de
-  cair no token seguinte. `deliver` devolve `false` para ticket já desistido.
+  `Drop` remove o ticket ainda não entregue do inbox em qualquer caminho de
+  saída (erro, prazo). Quando há travessias esperadas, `deliver` libera o
+  resultado e retém só o snapshot por 30 s para recibos tardios; depois disso
+  o ticket desconhecido vira `410` e nunca cai no token seguinte.
 - `StreamTicket`/`deliver_stream` - canal mpsc limitado a 16 lotes; um emissor
   remoto aguarda o receptor quando a fila enche, e `Drop` remove o ticket para
   que cancelamento, stop, ciclo ou erro não deixem entregas pendentes.
@@ -1033,7 +1048,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   antigo borbulhou a resposta inteira - `token_id` presente vale como
   resultado), e o prazo `DIRECT_REPLY_DEADLINE=600 s` (hop morreu depois de
   aceitar). Se o resultado chega antes do ack, ele não espera telemetria
-  atrasada.
+  atrasada: o futuro do ack continua em tarefa destacada para registrar a
+  evidência do primeiro hop.
 - `deliver_result` - a cauda (ou o hop que falhou) tenta cada URL de `reply_to`
   em ordem de preferência, com memória de três falhas seguidas e quarentena
   por 5 min. Candidatos intermediários têm `DELIVERY_TIMEOUT=500 ms`; o último

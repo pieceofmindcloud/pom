@@ -261,7 +261,9 @@ não estão no router principal e só existem antes da configuração inicial.
   com `response`, `source` (`"pipeline:<cadeia>"`, `"local"`,
   `"peer:<node_id>"` ou `"none"`/`"error"`), `tokens_generated`,
   `tokens_per_sec`, `duration_ms`, `timings`, `trace`. `timings` agrega o
-  pipeline inteiro e separa `ttft_ms` (fila + prefill até o primeiro token),
+  pipeline inteiro e separa `pipeline_first_token_ms`/`server_ttft_ms` (fila +
+  prefill até o primeiro token), `client_ttft_ms` quando o cliente o mede,
+  e `ttft_ms` por compatibilidade,
   `prefill_ms`/`prefill_tokens_per_sec` (tokens efetivamente processados, após
   reuso de prefixo), `generation_ms`/`generation_tokens_per_sec` (saída desde
   o primeiro token) e `total_ms`/`total_tokens_per_sec`. Uma taxa sem tokens ou
@@ -324,9 +326,13 @@ não estão no router principal e só existem antes da configuração inicial.
   lote terminal encerra o stream; ticket desconhecido responde `410 Gone`.
   Além de `accepted`, `done`, tempos e `node_timings`, o lote pode trazer
   `next_draft`, `speculated`, `speculation_active` e
-  `speculation_disabled_reason`. O draft viaja nesse mesmo callback, mas a
-  cabeça remota o instala internamente no próximo `step`; o gateway não faz
-  uma chamada de reinjeção. Peers antigos sem esses campos continuam válidos.
+  `speculation_disabled_reason`, identidade de trace e métricas agregadas de
+  frame (`stream_id`, índice, lifetime, primeira entrega, latência e bytes).
+  O trace do gateway resume essas métricas em min/p50/p95/p99/máximo para
+  latência de frame, min/p50/p95/p99/máximo para compute remoto e total/p50/p95
+  para espera. O draft viaja nesse mesmo callback, mas a cabeça remota o
+  instala internamente no próximo `step`; o gateway não faz uma chamada de
+  reinjeção. Peers antigos sem esses campos continuam válidos.
 - **`GET /api/cluster/tls`** - `{ tls_required }`. É o que a catraca dos outros
   nós consulta no principal. Exige `InternalNodeAuth`, isto é, a chave de
   conexão e `x-pom-internal-node: 1`; isso impede um intruso de responder pelo
@@ -908,6 +914,10 @@ conexão, marcos do primeiro token, métricas de streaming e os quatro campos
 de aceitação MTP por requisição. `x_pom.timings` separa TTFT legado,
 `server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`; campo ausente significa
 que a fronteira não foi medida, não zero. A auditoria em
+e o resumo `telemetry` de integridade distribuída, com peers e spans esperados
+e observados, duplicatas, recibos tardios, ausências e agregados do
+`remote-stream`. Campo ausente significa que a fronteira não foi medida, não
+zero. A auditoria em
 `GET /api/ui/requests` preserva esse mesmo objeto em `telemetry`, ao lado de
 `timings` de geração.
 

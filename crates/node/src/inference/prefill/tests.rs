@@ -269,6 +269,207 @@ mod tests {
     }
 
     #[test]
+    fn remote_stream_aggregation_is_order_independent_and_deduplicates_frames() {
+        let mut trace = RequestTrace::new(
+            "qwen",
+            &[("head", 0, 15), ("middle", 16, 31), ("tail", 32, 47)],
+        );
+        let frame = |index: u64, accepted: usize| {
+            json!({
+                "trace_id": "trace-1",
+                "request_id": "request-1",
+                "pipeline_id": "pipeline-1",
+                "stream_id": "stream-1",
+                "remote_stream_frame_index": index,
+                "accepted": (0..accepted).map(|_| 1).collect::<Vec<_>>(),
+                "stream_batch_bytes": 128,
+                "remote_stream_frames_sent": index + 1,
+                "remote_stream_frame_latency_ms": 9 + index,
+                "remote_stream_remote_compute_ms": 4,
+                "remote_stream_wait_ms": 20 + index,
+            })
+        };
+        let hop = |span_count: u64, processing_ms: u64| {
+            json!({
+                "processing_ms": processing_ms,
+                "round_trip_ms": processing_ms + 2,
+                "span_count": span_count,
+            })
+        };
+
+        // Frame 2 arrives before frame 1. Arrival order must not change the
+        // expected count or peer coverage, and a repeated frame is ignored.
+        assert!(trace.record_remote_stream_batch(&frame(2, 1)));
+        assert!(trace.record_remote_stream_batch(&frame(1, 2)));
+        assert!(!trace.record_remote_stream_batch(&frame(1, 2)));
+        for (span_count, processing_ms) in [(1, 7), (2, 8)] {
+            for hop_index in 0..trace.hops.len() {
+                trace.record_hop_from_json(
+                    hop_index,
+                    Phase::Decode,
+                    &hop(span_count, processing_ms),
+                );
+            }
+        }
+
+        trace.complete = true;
+        trace.refresh_telemetry(123);
+
+        assert_eq!(trace.telemetry.expected_peers, 3);
+        assert_eq!(trace.telemetry.reported_peers, 3);
+        assert_eq!(trace.telemetry.expected_decode_spans, 9);
+        assert_eq!(trace.telemetry.reported_decode_spans, 9);
+        assert_eq!(trace.telemetry.completeness_percent, 100.0);
+        assert_eq!(trace.telemetry.duplicate_spans, 1);
+        assert_eq!(trace.telemetry.remote_stream.frames_received, 2);
+        assert_eq!(trace.telemetry.remote_stream.bytes_received, 256);
+        assert_eq!(
+            trace.telemetry.remote_stream.remote_stream_wait_total_ms,
+            43
+        );
+        assert_eq!(trace.telemetry.remote_stream.remote_stream_wait_p95_ms, 22);
+        assert_eq!(trace.telemetry.status, "complete");
+    }
+
+    #[test]
+    fn missing_remote_peer_stays_response_complete_but_not_trace_complete() {
+        let mut trace = RequestTrace::new(
+            "qwen",
+            &[("head", 0, 15), ("middle", 16, 31), ("tail", 32, 47)],
+        );
+        trace.record_remote_stream_batch(&json!({
+            "stream_id": "stream-2",
+            "remote_stream_frame_index": 0,
+            "accepted": [1, 2],
+        }));
+        for hop_index in 0..2 {
+            trace.record_hop_from_json(
+                hop_index,
+                Phase::Decode,
+                &json!({"span_count": 2, "node_timings": {}}),
+            );
+        }
+
+        trace.complete = true;
+        trace.refresh_telemetry(800);
+
+        assert_eq!(trace.telemetry.status, "response_complete");
+        assert!(trace.telemetry.response_complete);
+        assert_eq!(trace.telemetry.reported_peers, 2);
+        assert_eq!(trace.telemetry.missing_peers, vec!["tail"]);
+        assert_eq!(trace.telemetry.expected_decode_spans, 6);
+        assert_eq!(trace.telemetry.reported_decode_spans, 4);
+        assert!(trace.telemetry.completeness_percent < 100.0);
+    }
+
+    #[test]
+    fn remote_stream_open_ack_is_not_counted_as_a_decode_span() {
+        let mut trace = RequestTrace::new("qwen", &[("head", 0, 15), ("tail", 16, 31)]);
+        trace.record_hop(
+            1,
+            Phase::Prefill,
+            12,
+            5,
+            100,
+            200,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+        trace.record_control_transport(
+            0,
+            Phase::Decode,
+            TransportTrace {
+                transport: crate::relay::InferenceTransport::Libp2pTunnel,
+                fallback: false,
+                round_trip_ms: 20,
+                bytes_sent: 40,
+                bytes_received: 60,
+            },
+            40,
+            60,
+        );
+        trace.record_remote_stream_batch(&json!({
+            "stream_id": "stream-3",
+            "remote_stream_frame_index": 0,
+            "accepted": [1],
+        }));
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({"span_count": 1, "node_timings": {}}),
+        );
+
+        trace.complete = true;
+        trace.refresh_telemetry(100);
+
+        assert_eq!(trace.hops[0].decode.calls, 1);
+        assert_eq!(trace.telemetry.expected_decode_spans, 2);
+        assert_eq!(trace.telemetry.reported_decode_spans, 1);
+        assert_eq!(trace.telemetry.reported_peers, 1);
+        assert_eq!(trace.telemetry.missing_peers, vec!["tail"]);
+        assert_eq!(trace.telemetry.status, "response_complete");
+    }
+
+    #[test]
+    fn profiling_trace_keeps_frame_parent_and_token_events_bounded() {
+        let mut trace = RequestTrace::new("qwen", &[("head", 0, 15)]);
+        trace.profiling_spans = Some(Vec::new());
+        trace.record_remote_stream_batch(&json!({
+            "trace_id": "trace-profile",
+            "request_id": "request-profile",
+            "pipeline_id": "head",
+            "stream_id": "stream-profile",
+            "remote_stream_frame_index": 4,
+            "remote_stream_lifetime_ms": 12,
+            "remote_stream_frame_latency_ms": 3,
+            "accepted": [1, 2],
+        }));
+
+        let spans = trace.profiling_spans.as_ref().unwrap();
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].token_index, None);
+        assert_eq!(spans[1].token_index, Some(0));
+        assert_eq!(spans[2].token_index, Some(1));
+        assert_eq!(spans[1].parent_span_id, Some(spans[0].span_id.clone()));
+        assert_eq!(spans[1].duration_ns, 0);
+        assert_eq!(spans[2].duration_ns, 0);
+    }
+
+    #[test]
+    fn profiling_token_indices_continue_across_remote_stream_callbacks() {
+        let frame = |index: u64| {
+            json!({
+                "trace_id": "trace-profile-merge",
+                "request_id": "request-profile-merge",
+                "pipeline_id": "head",
+                "stream_id": "stream-profile-merge",
+                "remote_stream_frame_index": index,
+                "accepted": [1, 2],
+            })
+        };
+        let mut first = RequestTrace::new("qwen", &[("head", 0, 15)]);
+        first.profiling_spans = Some(Vec::new());
+        first.record_remote_stream_batch(&frame(0));
+        let mut second = RequestTrace::new("qwen", &[("head", 0, 15)]);
+        second.profiling_spans = Some(Vec::new());
+        second.record_remote_stream_batch(&frame(1));
+
+        first.merge(&second);
+
+        let token_indices = first
+            .profiling_spans
+            .unwrap()
+            .into_iter()
+            .filter_map(|span| span.token_index)
+            .collect::<Vec<_>>();
+        assert_eq!(token_indices, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
     fn trace_agrega_aceitacao_mtp_por_requisicao() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         let node_timings = |proposed, accepted, rejected| {
@@ -861,7 +1062,11 @@ mod tests {
                 {"from": "libp2p-tunnel", "to": "local", "calls": 1},
             ])
         );
-        assert!(serde_json::to_string(&trace).unwrap().len() < 4_000);
+        // The normal trace now carries request-level integrity and remote
+        // stream aggregates, but it must still avoid one serialized item per
+        // token. The detailed span vector is profiling-only.
+        assert!(trace.profiling_spans.is_none());
+        assert!(serde_json::to_string(&trace).unwrap().len() < 12_000);
     }
 
     #[test]

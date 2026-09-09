@@ -5,6 +5,11 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 
 ## scripts/
 
+- `build-env.sh` - helper opt-in, carregado com `source`, que detecta
+  `sccache` e exporta o cache CAS compartilhado, o limite de 80G, os wrappers
+  Rust/CMake/CUDA, `CCACHE`, o socket dedicado e um `CARGO_TARGET_DIR` comum.
+  Sem `sccache` no `PATH`, nao altera o ambiente do build.
+  `test-build-env.sh` verifica os dois caminhos e a preservacao de overrides.
 - `bench-rotas.sh` - executa a bateria reproduzivel de medicao da geracao
   distribuida: quatro origens, cinco prompts, aquecimento por origem, CSV com
   as telemetrias de timings/trace/decode/prefill e tabela de medianas. O CSV

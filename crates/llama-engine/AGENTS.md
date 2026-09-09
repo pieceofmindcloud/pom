@@ -13,6 +13,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 `cuda`/`metal`/`vulkan`) é o mesmo de antes, agora declarado aqui. Ver
 `docs/subsystems/build-execucao.md`.
 
+`build.rs` aceita `CCACHE` como comando wrapper para o `nvcc`; portanto
+`CCACHE=sccache` e valido. As pontes C/C++ compiladas por `cc` tambem herdam o
+`RUSTC_WRAPPER` e o helper comum de `scripts/build-env.sh` cobre os dois casos.
+
 ## Módulos (`src/`)
 
 - `llm/` - wrapper FFI do llama.cpp dividido por responsabilidade em captura,

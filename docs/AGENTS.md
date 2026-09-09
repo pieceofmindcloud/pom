@@ -58,7 +58,8 @@ cabeçalho do catálogo, inclusive para o modelo selecionado. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `build-execucao.md` documenta também a
 geração em tempo de compilação da lista MTP a partir do fork local do
-`llama.cpp`. `inferencia.md` e `web-ui.md` também
+`llama.cpp`, o helper condicional de sccache e a medição do target compartilhado.
+`inferencia.md` e `web-ui.md` também
 documentam o RTT observado do Chat, o RTT direcional por aresta, a leitura
 efetiva de colocação e configuração por peer, a reserva do segundo contexto MTP
 e o recuo dele para a RAM. Em `inferencia.md`, o fit do modelo principal é a

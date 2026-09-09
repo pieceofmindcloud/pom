@@ -47,7 +47,12 @@ fn build_moe_cuda() {
                 .map(|path| path.join("bin/nvcc"))
         })
         .unwrap_or_else(|| PathBuf::from("nvcc"));
-    let mut compile = if let Some(wrapper) = std::env::var_os("CCACHE") {
+    // `CCACHE` is a command wrapper, not a ccache-specific feature. In
+    // particular, `CCACHE=sccache` produces `sccache nvcc ...` and uses the
+    // same shared cache as the Rust and CMake builds.
+    let mut compile = if let Some(wrapper) =
+        std::env::var_os("CCACHE").filter(|wrapper| !wrapper.to_string_lossy().is_empty())
+    {
         let mut command = Command::new(wrapper);
         command.arg(&nvcc);
         command

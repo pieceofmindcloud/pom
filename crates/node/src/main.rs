@@ -1085,6 +1085,9 @@ async fn async_main(
             peer_clients.clone(),
             auth_config.clone(),
             network_chat.clone(),
+            authority_signing_key.clone(),
+            authority_principal.clone(),
+            admin_trust.clone(),
         );
 
         let gw_state = GatewayState {
@@ -1973,6 +1976,9 @@ async fn start_gateway_only(
         peer_clients.clone(),
         auth_state.clone(),
         network_chat.clone(),
+        authority_signing_key.clone(),
+        authority_principal.clone(),
+        admin_trust.clone(),
     );
 
     let gw_state = GatewayState {

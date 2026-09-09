@@ -612,6 +612,15 @@ impl PeerInfo {
     /// Painel, o `deploy` e a transferência sem para onde cair, mesmo com um
     /// endereço vivo já anunciado em `addr_candidates`.
     pub fn gateway_candidates(&self) -> Vec<String> {
+        self.gateway_candidates_with_tls(crate::peer_client::tls_ativo())
+    }
+
+    /// URLs do gateway usando explicitamente o esquema de um anúncio.
+    ///
+    /// As catracas de TLS, logs e Chat consultam o principal antes de adotar o
+    /// valor anunciado localmente, então não podem depender da flag global que
+    /// ainda está em processo de confirmação.
+    pub fn gateway_candidates_with_tls(&self, tls: bool) -> Vec<String> {
         let Some(porta) = self.gateway_port else {
             return Vec::new();
         };
@@ -622,12 +631,7 @@ impl PeerInfo {
             if !is_valid_destination(a) {
                 continue;
             }
-            let url = format!(
-                "{}://{}:{}",
-                crate::peer_client::peer_scheme(),
-                ip_host(a),
-                porta
-            );
+            let url = crate::peer_client::peer_base_url(&ip_host(a), porta, tls);
             if !urls.contains(&url) {
                 urls.push(url);
             }

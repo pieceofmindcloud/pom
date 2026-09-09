@@ -50,27 +50,45 @@ pub(crate) async fn fetch_from_principal(
     authority_principal: &crate::admin_trust::AuthorityPrincipal,
     trust: &crate::admin_trust::AdminTrust,
 ) -> Result<bool> {
-    let http = clients.for_peer(principal_id)?;
-    let mut request = http.get(format!("{base_url}{CLUSTER_LOGS_POLICY_PATH}"));
-    request = request.headers(crate::gateway::GatewayState::signed_control_headers_for(
+    fetch_from_principal_candidates(
+        clients,
+        principal_id,
+        &[base_url.to_string()],
+        connection_key,
+        signing_key,
+        authority_principal,
+        trust,
+    )
+    .await
+}
+
+pub(crate) async fn fetch_from_principal_candidates(
+    clients: &PeerClients,
+    principal_id: &str,
+    base_urls: &[String],
+    connection_key: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    authority_principal: &crate::admin_trust::AuthorityPrincipal,
+    trust: &crate::admin_trust::AdminTrust,
+) -> Result<bool> {
+    let headers = crate::gateway::GatewayState::signed_control_headers_for(
         signing_key,
         authority_principal.clone(),
         trust,
         "GET",
         CLUSTER_LOGS_POLICY_PATH,
         &[],
-    )?);
-    if !connection_key.is_empty() {
-        request = request.bearer_auth(connection_key);
-    }
-    let response = request
-        .timeout(crate::webui::PEER_TIMEOUT)
-        .send()
+    )?;
+    let response = clients
+        .get_internal_from_candidates(
+            principal_id,
+            base_urls,
+            CLUSTER_LOGS_POLICY_PATH,
+            connection_key,
+            &headers,
+        )
         .await
         .context("não deu para falar com o principal")?;
-    if !response.status().is_success() {
-        anyhow::bail!("principal respondeu {}", response.status());
-    }
     let body: LogsReply = response
         .json()
         .await
@@ -110,25 +128,21 @@ pub(crate) fn spawn_ratchet(
             else {
                 continue;
             };
-            let Some(port) = peer.gateway_port else {
+            let candidates = peer.gateway_candidates_with_tls(announced);
+            if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política de logs não pôde ser confirmada");
                 continue;
-            };
-            let base = crate::peer_client::peer_base_url(
-                &crate::network::ip_host(&peer.addr),
-                port,
-                announced,
-            );
+            }
             let (local, connection_key) = {
                 let cfg = auth.read().await;
                 (net.cluster_logs_enabled(), cfg.connection_key.clone())
             };
             let probe = PeerClients::new(std::time::Duration::from_secs(10));
             probe.set_tls(announced);
-            let fetched = fetch_from_principal(
+            let fetched = fetch_from_principal_candidates(
                 &probe,
                 &principal,
-                &base,
+                &candidates,
                 &connection_key,
                 &signing_key,
                 &authority_principal,
@@ -157,8 +171,36 @@ pub(crate) fn spawn_ratchet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
 
     const PRINCIPAL: &str = "principal-1";
+
+    #[derive(Clone)]
+    struct PrincipalPolicyState {
+        network: std::sync::Arc<crate::network::Network>,
+    }
+
+    async fn principal_logs_route(
+        axum::extract::State(state): axum::extract::State<PrincipalPolicyState>,
+        request: axum::extract::Request,
+    ) -> axum::response::Response {
+        let bearer = request
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok());
+        if request
+            .headers()
+            .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
+            .is_none()
+            || bearer != Some("Bearer cluster-key")
+        {
+            return axum::http::StatusCode::FORBIDDEN.into_response();
+        }
+        axum::Json(serde_json::json!({
+            "logs_enabled": state.network.cluster_logs_enabled(),
+        }))
+        .into_response()
+    }
 
     #[test]
     fn anuncio_do_principal_discordante_dispara_busca() {
@@ -188,5 +230,130 @@ mod tests {
             adopt_or_keep(false, Err(anyhow::anyhow!("principal fora do ar"))),
             PolicyOutcome::Unchanged
         );
+    }
+
+    /// Dois nós reais do testkit usam listeners TCP reais. O endereço primário
+    /// do principal aponta para um processo fantasma que responde 403, enquanto
+    /// o candidato anunciado aponta para o gateway correto. A sonda precisa
+    /// manter a identidade do principal, o marcador interno e a chave ao cair
+    /// para o segundo endereço.
+    #[tokio::test]
+    async fn probe_from_secondary_retries_a_ghost_gateway_candidate() {
+        let principal = std::sync::Arc::new(
+            crate::network::Network::testkit(
+                PRINCIPAL.into(),
+                "principal-authority".into(),
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+        principal.set_cluster_logs_enabled(true);
+        let secondary = crate::network::Network::testkit(
+            "secondary-1".into(),
+            "secondary-authority".into(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let state = PrincipalPolicyState {
+            network: principal.clone(),
+        };
+        let wrong_listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let gateway_port = wrong_listener.local_addr().unwrap().port();
+        let right_listener = tokio::net::TcpListener::bind(("127.0.0.1", gateway_port))
+            .await
+            .unwrap();
+        let wrong_app =
+            axum::Router::new().fallback(|| async { axum::http::StatusCode::FORBIDDEN });
+        let right_app = axum::Router::new()
+            .route(
+                CLUSTER_LOGS_POLICY_PATH,
+                axum::routing::get(principal_logs_route),
+            )
+            .with_state(state);
+        let wrong_task = tokio::spawn(async move {
+            axum::serve(wrong_listener, wrong_app).await.unwrap();
+        });
+        let right_task = tokio::spawn(async move {
+            axum::serve(right_listener, right_app).await.unwrap();
+        });
+
+        secondary.peers.write().await.insert(
+            PRINCIPAL.into(),
+            crate::network::PeerInfo {
+                node_id: PRINCIPAL.into(),
+                pubkey: "principal-pubkey".into(),
+                authority_pubkey: "principal-authority".into(),
+                addr: format!("[::1]:{gateway_port}"),
+                addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
+                model: "model".into(),
+                deploy_id: String::new(),
+                start_layer: 0,
+                end_layer: 1,
+                total_layers: 2,
+                memory_mb: 1.0,
+                last_seen: chrono::Utc::now(),
+                ollama_port: None,
+                inference_port: None,
+                inference_frame_capabilities: Vec::new(),
+                gateway_port: Some(gateway_port),
+                profile: crate::profile::NodeProfile::Admin,
+                tls: false,
+                hostname: "principal".into(),
+                capabilities: Vec::new(),
+                connection_verified: true,
+                disk_total_mb: 0,
+                disk_free_mb: 0,
+                api_keys_active: 0,
+                libp2p_peer_id: None,
+                tp: None,
+                runtime_capacity: None,
+                idle: false,
+            },
+        );
+        let candidates = secondary
+            .peers
+            .read()
+            .await
+            .get(PRINCIPAL)
+            .unwrap()
+            .gateway_candidates_with_tls(false);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            PRINCIPAL,
+            "principal-authority",
+            &signing_key,
+        );
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "cluster",
+            authority_principal.clone(),
+            &signing_key,
+        )
+        .unwrap();
+        let clients = PeerClients::new(std::time::Duration::from_secs(2));
+        let fetched = fetch_from_principal_candidates(
+            &clients,
+            PRINCIPAL,
+            &candidates,
+            "cluster-key",
+            &signing_key,
+            &authority_principal,
+            &trust,
+        )
+        .await
+        .unwrap();
+
+        assert!(fetched);
+        assert_eq!(candidates.len(), 2);
+        wrong_task.abort();
+        right_task.abort();
     }
 }

@@ -174,9 +174,11 @@ Hoje:
   anunciados depois; `gateway_url()` é só o primeiro dela. Mesma disciplina de
   `pipeline::resolve_step_url`. O plano de controle de promoção usa a lista
   inteira nas duas direções: o primeiro destino que falhar no transporte cede
-  lugar ao próximo, enquanto uma resposta HTTP permanece uma recusa do peer.
-  O anúncio futuro deve atualizar essa lista; o endereço guardado não é uma
-  âncora permanente.
+  lugar ao próximo. As catracas autenticadas de TLS, logs e Chat também usam
+  a lista inteira: uma resposta HTTP 401/403 pode vir de um processo fantasma
+  naquele endereço e não prova que o principal recusou a chave. O anúncio
+  futuro deve atualizar essa lista; o endereço guardado não é uma âncora
+  permanente.
 - O caminho de inferência (`inference_candidates`) e a descoberta UDP
   (`dialable_addrs`) também preservam todos os endereços válidos. O transporte
   ordena os candidatos pela memória de falha, tenta o próximo quando o anterior

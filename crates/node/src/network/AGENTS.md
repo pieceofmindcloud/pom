@@ -68,6 +68,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   quem colcheta IPv6, além da preferência e da quarentena temporária de rotas
   que falharam. `route_order` apenas reordena os candidatos: mesmo quando
   todos estão em quarentena, devolve a lista para que a tentativa real decida.
+  `get_internal_from_candidates` percorre todos os gateways anunciados para
+  uma rota de controle autenticada; inclusive 401/403 fazem a sonda tentar o
+  próximo endereço, porque um endereço fantasma pode responder como outro nó.
   O cliente destinado a outro nó marca requests de controle com
   `x-pom-internal-node`, usa a `connection_key` nas rotas internas de
   inferência e limita a abertura TCP a 2 s; o cliente `plain()` para Ollama e

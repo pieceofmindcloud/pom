@@ -385,10 +385,10 @@ mod tests {
 
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(2));
         let base = format!("http://{address}");
-        assert!(!crate::tls_policy::fetch_from_principal(
+        assert!(!crate::tls_policy::fetch_from_principal_candidates(
             &clients,
             "principal",
-            &base,
+            std::slice::from_ref(&base),
             "chave",
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
@@ -396,10 +396,10 @@ mod tests {
         )
         .await
         .unwrap());
-        assert!(crate::cluster_logs_policy::fetch_from_principal(
+        assert!(crate::cluster_logs_policy::fetch_from_principal_candidates(
             &clients,
             "principal",
-            &base,
+            std::slice::from_ref(&base),
             "chave",
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
@@ -407,11 +407,14 @@ mod tests {
         )
         .await
         .unwrap());
-        assert!(crate::network_chat_policy::fetch_from_principal(
+        assert!(crate::network_chat_policy::fetch_from_principal_candidates(
             &clients,
             "principal",
-            &base,
+            std::slice::from_ref(&base),
             "chave",
+            state.authority_signing_key.as_ref(),
+            &state.authority_principal,
+            state.admin_trust.as_ref(),
         )
         .await
         .unwrap());

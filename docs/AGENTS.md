@@ -48,7 +48,10 @@ versões criadas ao adicionar ou remover máquinas, é detalhado em
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `rede-p2p.md`
 documenta também que os testes usam o `Network::testkit` em loopback, com
-destino de anúncio injetável e sem broadcast global. `fatiamento.md`
+destino de anúncio injetável e sem broadcast global.
+As sondas autenticadas das políticas de cluster usam listeners reais no
+testkit e percorrem os candidatos de gateway quando um endereço fantasma
+responde 401/403. `fatiamento.md`
 documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas,
 o rebase de metadata de camadas para a numeração local e a leitura somente de
 cabeçalho do catálogo, inclusive para o modelo selecionado. `paralelismo.md`

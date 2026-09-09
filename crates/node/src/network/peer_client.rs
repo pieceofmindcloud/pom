@@ -274,6 +274,49 @@ impl PeerClients {
         self.for_peer_with_state(node_id).map(|(client, _)| client)
     }
 
+    /// Busca uma rota de controle autenticada em todos os endereços anunciados
+    /// para o mesmo peer.
+    ///
+    /// Um endereço antigo pode continuar aceitando TCP e responder 403 porque
+    /// caiu em outro nó (ou num processo fantasma), portanto uma resposta HTTP
+    /// de erro também precisa deixar a sonda tentar o próximo candidato. A
+    /// identidade TLS continua fixada no peer_id para todas as tentativas.
+    pub(crate) async fn get_internal_from_candidates(
+        &self,
+        peer_id: &str,
+        base_urls: &[String],
+        path: &str,
+        connection_key: &str,
+        extra_headers: &reqwest::header::HeaderMap,
+    ) -> Result<reqwest::Response> {
+        let http = self.for_peer(peer_id)?;
+        let mut failures = Vec::with_capacity(base_urls.len());
+        for base in base_urls {
+            let url = format!("{base}{path}");
+            let mut request = http.get(&url).headers(extra_headers.clone());
+            if !connection_key.is_empty() {
+                request = request.bearer_auth(connection_key);
+            }
+            match request
+                .timeout(crate::webui::PEER_TIMEOUT)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => failures.push(format!("{url}: {}", response.status())),
+                Err(error) => failures.push(format!("{url}: {error}")),
+            }
+        }
+        anyhow::bail!(
+            "nenhum candidato respondeu à rota interna {path}: {}",
+            if failures.is_empty() {
+                "nenhum endereço anunciado".to_string()
+            } else {
+                failures.join(", ")
+            }
+        )
+    }
+
     /// Cliente e observação atômica da entrada no cache. A observação é feita
     /// junto da inserção para que chamadas concorrentes não rotulem como
     /// reutilizado um cliente que acabou de ser construído.

@@ -68,27 +68,45 @@ pub(crate) async fn fetch_from_principal(
     authority_principal: &crate::admin_trust::AuthorityPrincipal,
     trust: &crate::admin_trust::AdminTrust,
 ) -> Result<bool> {
-    let http = clients.for_peer(principal_id)?;
-    let mut request = http.get(format!("{base_url}{TLS_POLICY_PATH}"));
-    request = request.headers(crate::gateway::GatewayState::signed_control_headers_for(
+    fetch_from_principal_candidates(
+        clients,
+        principal_id,
+        &[base_url.to_string()],
+        connection_key,
+        signing_key,
+        authority_principal,
+        trust,
+    )
+    .await
+}
+
+pub(crate) async fn fetch_from_principal_candidates(
+    clients: &PeerClients,
+    principal_id: &str,
+    base_urls: &[String],
+    connection_key: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    authority_principal: &crate::admin_trust::AuthorityPrincipal,
+    trust: &crate::admin_trust::AdminTrust,
+) -> Result<bool> {
+    let headers = crate::gateway::GatewayState::signed_control_headers_for(
         signing_key,
         authority_principal.clone(),
         trust,
         "GET",
         TLS_POLICY_PATH,
         &[],
-    )?);
-    if !connection_key.is_empty() {
-        request = request.bearer_auth(connection_key);
-    }
-    let resp = request
-        .timeout(crate::webui::PEER_TIMEOUT)
-        .send()
+    )?;
+    let resp = clients
+        .get_internal_from_candidates(
+            principal_id,
+            base_urls,
+            TLS_POLICY_PATH,
+            connection_key,
+            &headers,
+        )
         .await
         .context("não deu para falar com o principal")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("principal respondeu {}", resp.status());
-    }
     let body: TlsReply = resp
         .json()
         .await
@@ -139,15 +157,11 @@ pub(crate) fn spawn_ratchet(
             else {
                 continue;
             };
-            let Some(porta) = peer.gateway_port else {
+            let candidates = peer.gateway_candidates_with_tls(anunciado);
+            if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política de TLS não pôde ser confirmada");
                 continue;
-            };
-            let base = crate::peer_client::peer_base_url(
-                &crate::network::ip_host(&peer.addr),
-                porta,
-                anunciado,
-            );
+            }
 
             let (local, chave) = {
                 let cfg = auth.read().await;
@@ -158,10 +172,10 @@ pub(crate) fn spawn_ratchet(
             // a política nova para o cache antes de ela ser confirmada.
             let sonda = PeerClients::new(std::time::Duration::from_secs(10));
             sonda.set_tls(anunciado);
-            let buscado = fetch_from_principal(
+            let buscado = fetch_from_principal_candidates(
                 &sonda,
                 &principal,
-                &base,
+                &candidates,
                 &chave,
                 &signing_key,
                 &authority_principal,

@@ -49,23 +49,54 @@ struct NetworkChatReply {
     network_chat_enabled: bool,
 }
 
-pub async fn fetch_from_principal(
+pub(crate) async fn fetch_from_principal(
     clients: &PeerClients,
     principal_id: &str,
     base_url: &str,
     connection_key: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    authority_principal: &crate::admin_trust::AuthorityPrincipal,
+    trust: &crate::admin_trust::AdminTrust,
 ) -> Result<bool> {
-    let http = clients.for_peer(principal_id)?;
-    let response = http
-        .get(format!("{base_url}{NETWORK_CHAT_POLICY_PATH}"))
-        .bearer_auth(connection_key)
-        .timeout(crate::webui::PEER_TIMEOUT)
-        .send()
+    fetch_from_principal_candidates(
+        clients,
+        principal_id,
+        &[base_url.to_string()],
+        connection_key,
+        signing_key,
+        authority_principal,
+        trust,
+    )
+    .await
+}
+
+pub(crate) async fn fetch_from_principal_candidates(
+    clients: &PeerClients,
+    principal_id: &str,
+    base_urls: &[String],
+    connection_key: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    authority_principal: &crate::admin_trust::AuthorityPrincipal,
+    trust: &crate::admin_trust::AdminTrust,
+) -> Result<bool> {
+    let headers = crate::gateway::GatewayState::signed_control_headers_for(
+        signing_key,
+        authority_principal.clone(),
+        trust,
+        "GET",
+        NETWORK_CHAT_POLICY_PATH,
+        &[],
+    )?;
+    let response = clients
+        .get_internal_from_candidates(
+            principal_id,
+            base_urls,
+            NETWORK_CHAT_POLICY_PATH,
+            connection_key,
+            &headers,
+        )
         .await
         .context("não deu para falar com o principal")?;
-    if !response.status().is_success() {
-        anyhow::bail!("principal respondeu {}", response.status());
-    }
     Ok(response
         .json::<NetworkChatReply>()
         .await
@@ -78,6 +109,9 @@ pub fn spawn_ratchet(
     _clients: Arc<PeerClients>,
     auth: Arc<RwLock<crate::config::Config>>,
     chat: Arc<NetworkChat>,
+    signing_key: Arc<ed25519_dalek::SigningKey>,
+    authority_principal: crate::admin_trust::AuthorityPrincipal,
+    trust: Arc<crate::admin_trust::AdminTrust>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
     net.set_network_chat_probe(tx);
@@ -91,22 +125,27 @@ pub fn spawn_ratchet(
             else {
                 continue;
             };
-            let Some(port) = peer.gateway_port else {
+            let candidates = peer.gateway_candidates_with_tls(announced_tls);
+            if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política do Chat da rede não pôde ser confirmada");
                 continue;
-            };
-            let base = crate::peer_client::peer_base_url(
-                &crate::network::ip_host(&peer.addr),
-                port,
-                announced_tls,
-            );
+            }
             let (local, connection_key) = {
                 let cfg = auth.read().await;
                 (net.network_chat_enabled(), cfg.connection_key.clone())
             };
             let probe = PeerClients::new(std::time::Duration::from_secs(10));
             probe.set_tls(announced_tls);
-            let fetched = fetch_from_principal(&probe, &principal, &base, &connection_key).await;
+            let fetched = fetch_from_principal_candidates(
+                &probe,
+                &principal,
+                &candidates,
+                &connection_key,
+                &signing_key,
+                &authority_principal,
+                &trust,
+            )
+            .await;
             if let PolicyOutcome::Adopt(value) = adopt_or_keep(local, fetched) {
                 {
                     let mut cfg = auth.write().await;

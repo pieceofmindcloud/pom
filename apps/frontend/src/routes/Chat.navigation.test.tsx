@@ -177,7 +177,7 @@ describe("navegação depois do chat", () => {
         dataTransfer: { types: ["Files"], files: [] },
       });
     });
-    expect(screen.getByText("Solte uma imagem ou um ficheiro de texto")).toBeTruthy();
+    expect(screen.getByText("Solte um ficheiro")).toBeTruthy();
 
     const file = new File(["{\"ok\":true}"], "dados.json", { type: "application/json" });
     Object.defineProperty(file, "text", { value: async () => "{\"ok\":true}" });
@@ -189,23 +189,24 @@ describe("navegação depois do chat", () => {
 
     expect(await screen.findByText("dados.json")).toBeTruthy();
     expect(screen.getByLabelText("Formato JSON")).toBeTruthy();
-    expect(screen.queryByText("Solte uma imagem ou um ficheiro de texto")).toBeNull();
+    expect(screen.queryByText("Solte um ficheiro")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Remover dados.json" }));
     expect(screen.queryByText("dados.json")).toBeNull();
     expect((composer as HTMLTextAreaElement).value).toBe("texto antes do anexo");
   });
 
-  it("recusa uma largada que não seja imagem ou texto com mensagem legível", async () => {
+  it("aceita uma largada de qualquer tipo de ficheiro", async () => {
     mount();
 
     const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
     const file = new File([new Uint8Array([0, 1, 2])], "dados.bin", { type: "application/octet-stream" });
+    Object.defineProperty(file, "text", { value: async () => "AAEC" });
     fireEvent.drop(dropTarget, {
       dataTransfer: { types: ["Files"], files: [file] },
     });
 
-    expect(await screen.findByText("aceite imagens ou ficheiros de texto")).toBeTruthy();
+    expect(await screen.findByText("dados.bin")).toBeTruthy();
   });
 
   it.each(["admin", "node", "infer"] as const)(
@@ -236,7 +237,7 @@ describe("navegação depois do chat", () => {
 
       mount(profile);
 
-      expect(await screen.findByRole("button", { name: "Anexar imagem" })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Anexar ficheiro" })).toBeTruthy();
       expect(screen.queryByText("cobertura incompleta")).toBeNull();
     },
   );
@@ -255,7 +256,7 @@ describe("navegação depois do chat", () => {
 
       expect(await screen.findByText("cobertura indisponível")).toBeTruthy();
       expect(screen.queryByText("cobertura incompleta")).toBeNull();
-      expect(screen.queryByRole("button", { name: "Anexar imagem" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Anexar ficheiro" })).toBeTruthy();
     },
   );
 });

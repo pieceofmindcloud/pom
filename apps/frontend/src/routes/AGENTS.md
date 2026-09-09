@@ -21,11 +21,10 @@ Per-file list:
   no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22. O `Setup.tsx` continua
   sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
 
-- `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
-  exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
-  and the shared active-session controller) and `../components/ChatSessionList`,
-  `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
-  (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
+- `Chat.tsx` - The chat composer and transcript for `POST /v1/chat/completions`
+  with `stream: true`, exactly what a harness gets. It consumes the shared
+  `../lib/chatStore` session/stream controller and `../components/ChatSessionList`,
+  `../lib/chatScroll` (`isNearBottom`), `../lib/queries`
   (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatCapabilities`,
   `useChatTelemetryNetwork`, `useServableModels`, `useInferenceHeads`),
   `../components/Markdown`,
@@ -430,12 +429,12 @@ Per-file list:
 
 Key logic carriers:
 
-- `Chat.send` (Chat.tsx:469) — the streaming loop: snapshots turns before the
-  placeholder reply, streams deltas into `consumeChatDelta` (keeps
+- `ChatSessionProvider.startStream` (`lib/chatStore.ts`) - snapshots turns
+  before the placeholder reply, streams deltas into `consumeChatDelta` (keeps
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
-  measures browser-local first chunk/token and delivery timing, aborts via
-  `AbortController`, persists the session on finish. The only screen that
-  talks to the OpenAI-compatible surface.
+  measures browser-local first chunk/token and delivery timing, and persists
+  the partial session after every delta. Route unmounts do not abort it;
+  `stopStream` and a new message do.
 - `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
   closed-by-default telemetry card shared by Chat and Logs: per-hop
   prefill/decode phases, selected
@@ -489,14 +488,18 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 ### Deploy e chat multimodais
 
 `DeployModel.tsx` só exibe a opção de visão quando o plano devolve
-`mmproj_path`, e envia a escolha para a implantação. `Chat.tsx` esconde o
-seletor de imagem sem visão, aceita arquivos de texto sempre, suporta botão e
-arrastar e largar com retorno visual e redimensiona imagens antes de enviá-las
-ao endpoint OpenAI. A visão e a cobertura do Chat vêm de
+`mmproj_path`, e envia a escolha para a implantação. `Chat.tsx` usa um único
+campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
+visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens
+exigem visão disponível; outros tipos são convertidos para texto no pedido.
+A soma dos anexos é validada contra o contexto efetivo do modelo, usando
+`context_length` de `/v1/models` ou o `n_ctx` local como fallback. A visão e a
+cobertura do Chat vêm de
 `GET /api/ui/chat/capabilities`, uma leitura agregada da implantação que também
 funciona nos perfis `node` e `infer`; recusa ou falha fica como indisponível,
-nunca como modelo vazio ou cobertura zero. Cada anexo tem miniatura e remoção
-própria.
+nunca como modelo vazio ou cobertura zero. Imagens enviadas ficam inteiras na
+bolha da mensagem, com legenda e texto alternativo. O botão de ditado só é
+renderizado quando o navegador expõe Web Speech e usa o locale da interface.
 
 ## Maintaining this file
 

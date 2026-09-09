@@ -20,9 +20,30 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
+import { ApiError, streamSse } from "./api";
 import { getActiveLocale } from "../i18n/locales";
-import type { GenerationTimings, RequestTrace } from "./chatStream";
+import {
+  consumeChatDelta,
+  consumeChatError,
+  emptyChatStream,
+  finishChatStream,
+  streamErrorMessage,
+  withClientStreamTiming,
+  type GenerationTimings,
+  type RequestTrace,
+  type StreamMetrics,
+} from "./chatStream";
 import { storageKey } from "./brand";
+import type { ClusterView } from "./types";
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  kind: "image" | "text" | "file";
+  data: string;
+  mediaType?: string;
+  size?: number;
+}
 
 export interface ChatMessage {
   id: string;
@@ -36,6 +57,8 @@ export interface ChatMessage {
    */
   role: "user" | "assistant" | "event";
   content: string;
+  /** Files shown in the user bubble, including the original image data. */
+  attachments?: ChatAttachment[];
   /** Content sent to the model when the visible bubble is a compact summary. */
   requestContent?: ChatRequestContent;
   /** Set when the answer failed; the turn stays visible with its reason. */
@@ -77,6 +100,25 @@ export interface ChatSession {
   modelAtStart?: string | null;
   messages: ChatMessage[];
   updatedAt: string;
+}
+
+export interface StartChatStreamOptions {
+  session: ChatSession;
+  history: ChatMessage[];
+  replyId: string;
+  model: string;
+  maxTokens?: number;
+  emptyResponseMessage: string;
+  interruptedMessage: string;
+  cluster: ClusterView | null;
+  onUnauthorized?: () => void;
+}
+
+export interface ChatStreamResult {
+  sessionId: string;
+  messageId: string;
+  trace: RequestTrace;
+  cluster: ClusterView | null;
 }
 
 /** What the model is allowed to see: the turns, without the marks around them. */
@@ -173,6 +215,10 @@ export interface ChatSessionController {
   startNew: (model: string | null) => void;
   deleteSession: (id: string, model: string | null) => void;
   registerBeforeChange: (handler: (kind: "select" | "new" | "delete") => void) => () => void;
+  streamingSessionId: string | null;
+  lastStreamResult: ChatStreamResult | null;
+  startStream: (options: StartChatStreamOptions) => void;
+  stopStream: () => void;
 }
 
 const ChatSessionContext = createContext<ChatSessionController | null>(null);
@@ -189,6 +235,10 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
   );
   const beforeChange = useRef<((kind: "select" | "new" | "delete") => void) | null>(null);
   const activeSessionId = useRef(session.id);
+  const streamAbort = useRef<AbortController | null>(null);
+  const deletedStreamSessions = useRef(new Set<string>());
+  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
+  const [lastStreamResult, setLastStreamResult] = useState<ChatStreamResult | null>(null);
   activeSessionId.current = session.id;
 
   const registerBeforeChange = useCallback((handler: (kind: "select" | "new" | "delete") => void) => {
@@ -200,21 +250,175 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
 
   const selectSession = useCallback((next: ChatSession) => {
     beforeChange.current?.("select");
+    activeSessionId.current = next.id;
     setSession(next);
   }, []);
 
   const startNew = useCallback((model: string | null) => {
     beforeChange.current?.("new");
-    setSession(emptySession(model));
+    const next = emptySession(model);
+    activeSessionId.current = next.id;
+    setSession(next);
   }, []);
 
   const deleteSession = useCallback((id: string, model: string | null) => {
+    deletedStreamSessions.current.add(id);
     remove(id);
     if (activeSessionId.current === id) {
       beforeChange.current?.("delete");
-      setSession(emptySession(model));
+      const next = emptySession(model);
+      activeSessionId.current = next.id;
+      setSession(next);
     }
   }, [remove]);
+
+  const stopStream = useCallback(() => {
+    streamAbort.current?.abort();
+  }, []);
+
+  const startStream = useCallback((options: StartChatStreamOptions) => {
+    streamAbort.current?.abort();
+    deletedStreamSessions.current.delete(options.session.id);
+    const controller = new AbortController();
+    streamAbort.current = controller;
+    setStreamingSessionId(options.session.id);
+    setLastStreamResult(null);
+
+    void (async () => {
+      let live = options.session;
+      const patchReply = (patch: Partial<ChatMessage>) => {
+        live = {
+          ...live,
+          messages: live.messages.map((message) =>
+            message.id === options.replyId ? { ...message, ...patch } : message,
+          ),
+        };
+        // A new message owns the controller from this point on. Do not let a
+        // late delta from the aborted request overwrite its newer transcript.
+        if (streamAbort.current !== controller) return;
+        if (activeSessionId.current === options.session.id) setSession(live);
+        // A route can disappear while the response is arriving. Persisting the
+        // partial transcript here lets the next mount render exactly what was
+        // already received, even before the stream finishes.
+        upsert(live);
+      };
+
+      try {
+        let streamed = emptyChatStream();
+        const requestStartedAt = performance.now();
+        let firstChunkAt: number | undefined;
+        let firstTokenAt: number | undefined;
+        let lastTokenAt: number | undefined;
+        let clientReceivedAtMs: number | undefined;
+        let streamChunks = 0;
+        let streamBytes = 0;
+        let finalMetrics: StreamMetrics | undefined;
+        for await (const data of streamSse(
+          "/v1/chat/completions",
+          {
+            model: options.model,
+            stream: true,
+            ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+            messages: turnsOnly(options.history).map((message) => ({
+              role: message.role,
+              content: message.content,
+            })),
+          },
+          controller.signal,
+        )) {
+          if (data === "[DONE]") break;
+          const receivedAt = performance.now();
+          firstChunkAt ??= receivedAt;
+          streamChunks += 1;
+          streamBytes += new TextEncoder().encode(data).byteLength;
+          try {
+            const chunk = JSON.parse(data);
+            const streamError = streamErrorMessage(chunk);
+            if (streamError) {
+              streamed = consumeChatError(streamed, streamError);
+              patchReply({ error: streamed.error });
+              continue;
+            }
+            const delta = chunk?.choices?.[0]?.delta?.content;
+            const toolDelta = chunk?.choices?.[0]?.delta?.tool_calls;
+            const reasoningDelta = chunk?.choices?.[0]?.delta?.reasoning_content;
+            const hasToken = (typeof delta === "string" && delta.length > 0)
+              || (typeof reasoningDelta === "string" && reasoningDelta.length > 0)
+              || (Array.isArray(toolDelta) && toolDelta.length > 0);
+            if (hasToken) {
+              firstTokenAt ??= receivedAt;
+              clientReceivedAtMs ??= Date.now();
+              lastTokenAt = receivedAt;
+            }
+            if (typeof delta === "string" && delta) {
+              streamed = consumeChatDelta(streamed, delta);
+              patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+            }
+            const metrics = chunk?.x_pom;
+            if (metrics && typeof metrics === "object") finalMetrics = metrics;
+          } catch {
+            /* Keep-alive or partial JSON frame. */
+          }
+        }
+        const responseEndedAt = performance.now();
+        if (finalMetrics) {
+          const measuredMetrics = withClientStreamTiming(finalMetrics, {
+            requestStartedAt,
+            firstChunkAt,
+            firstTokenAt,
+            lastTokenAt,
+            responseEndedAt,
+            clientReceivedAtMs,
+            chunks: streamChunks,
+            bytes: streamBytes,
+          });
+          streamed = finishChatStream(streamed, measuredMetrics);
+          patchReply({
+            content: streamed.content,
+            reasoning: streamed.reasoning || undefined,
+            tokensPerSecond: streamed.tokensPerSecond,
+            tokensGenerated: streamed.tokensGenerated,
+            durationMs: streamed.durationMs,
+            timings: streamed.timings,
+            trace: streamed.trace,
+            source: typeof finalMetrics.source === "string" ? finalMetrics.source : undefined,
+          });
+        } else {
+          streamed = finishChatStream(streamed);
+        }
+        patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+        if (streamAbort.current === controller && streamed.trace) {
+          setLastStreamResult({
+            sessionId: options.session.id,
+            messageId: options.replyId,
+            trace: streamed.trace,
+            cluster: options.cluster,
+          });
+        }
+        if (!streamed.content && !streamed.reasoning && !streamed.error) {
+          patchReply({ error: options.emptyResponseMessage });
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          patchReply({ error: options.interruptedMessage });
+        } else {
+          const detail = error instanceof Error ? error.message : String(error);
+          patchReply({ error: detail });
+          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+            options.onUnauthorized?.();
+          }
+        }
+      } finally {
+        if (streamAbort.current === controller) {
+          streamAbort.current = null;
+          setStreamingSessionId(null);
+        }
+        if (streamAbort.current === controller && !deletedStreamSessions.current.delete(live.id)) {
+          upsert(live);
+        }
+      }
+    })();
+  }, [setSession, upsert]);
 
   const value = useMemo<ChatSessionController>(() => ({
     sessions,
@@ -225,6 +429,10 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     startNew,
     deleteSession,
     registerBeforeChange,
+    streamingSessionId,
+    lastStreamResult,
+    startStream,
+    stopStream,
   }), [
     sessions,
     upsert,
@@ -233,6 +441,10 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     startNew,
     deleteSession,
     registerBeforeChange,
+    streamingSessionId,
+    lastStreamResult,
+    startStream,
+    stopStream,
   ]);
 
   return createElement(ChatSessionContext.Provider, { value }, children);

@@ -1,0 +1,227 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Bubble, Chat } from "./Chat";
+import { LocaleProvider } from "../i18n/provider";
+import { ProfileProvider } from "../lib/profile";
+import { ThemeProvider } from "../lib/theme";
+import { ToastProvider } from "../lib/toast";
+import { ChatSessionProvider, type ChatMessage } from "../lib/chatStore";
+
+const streamScenario = vi.hoisted(() => ({
+  release: null as (() => void) | null,
+  signalAborted: false,
+}));
+
+vi.mock("../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/api")>();
+  return {
+    ...actual,
+    // eslint-disable-next-line require-yield
+    streamSse: async function* (_path: string, _body: unknown, signal: AbortSignal) {
+      yield JSON.stringify({ choices: [{ delta: { content: "primeiro" } }] });
+      if (streamScenario.release) {
+        await new Promise<void>((resolve) => {
+          const release = streamScenario.release;
+          streamScenario.release = () => {
+            release?.();
+            resolve();
+          };
+        });
+      }
+      streamScenario.signalAborted = signal.aborted;
+      yield JSON.stringify({ choices: [{ delta: { content: " segundo" } }] });
+      yield "[DONE]";
+    },
+  };
+});
+
+vi.mock("../lib/queries", () => ({
+  useNode: () => ({
+    data: {
+      active_model: "qwen",
+      config: { n_ctx: 4, max_new_tokens: 64 },
+    },
+    isLoading: false,
+    isError: false,
+  }),
+  useCluster: () => ({ data: null }),
+  useChatCapabilities: () => ({ data: { vision: "supported", coverage: "complete" } }),
+  useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
+  useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
+  useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
+  usePeerRuntimes: () => [],
+}));
+
+vi.mock("../components/Logo", () => ({
+  LogoFull: () => <div aria-hidden="true" />,
+  LogoMark: () => <div aria-hidden="true" />,
+}));
+
+function mountChat() {
+  return render(
+    <LocaleProvider initialLocale="pt-BR">
+      <ProfileProvider initialProfile="admin">
+        <ThemeProvider>
+          <ToastProvider>
+            <ChatSessionProvider>
+              <Chat />
+            </ChatSessionProvider>
+          </ToastProvider>
+        </ThemeProvider>
+      </ProfileProvider>
+    </LocaleProvider>,
+  );
+}
+
+function resetBrowserSpeech() {
+  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: undefined });
+  Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: undefined });
+}
+
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+  resetBrowserSpeech();
+  streamScenario.release = null;
+  streamScenario.signalAborted = false;
+});
+
+describe("Chat", () => {
+  it("continua o stream e mostra o buffer ao remontar a rota", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    streamScenario.release = () => release();
+
+    function Toggle() {
+      const [visible, setVisible] = useState(true);
+      return (
+        <>
+          <button type="button" onClick={() => setVisible(false)}>sair da rota</button>
+          <button type="button" onClick={() => setVisible(true)}>voltar ao chat</button>
+          {visible && <Chat />}
+        </>
+      );
+    }
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile="admin">
+          <ThemeProvider>
+            <ToastProvider>
+              <ChatSessionProvider>
+                <Toggle />
+              </ChatSessionProvider>
+            </ToastProvider>
+          </ThemeProvider>
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+
+    const composer = await screen.findByRole("textbox");
+    fireEvent.change(composer, { target: { value: "oi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    expect(await screen.findByText("primeiro")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "sair da rota" }));
+    expect(screen.getByText("voltar ao chat")).toBeTruthy();
+    expect(streamScenario.signalAborted).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "voltar ao chat" }));
+    expect(screen.getByText("primeiro")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Parar" })).toBeTruthy();
+
+    act(() => streamScenario.release?.());
+    await pending;
+    await waitFor(() => expect(screen.getByText(/segundo/)).toBeTruthy());
+    expect(streamScenario.signalAborted).toBe(false);
+  });
+
+  it("renderiza a imagem inteira e mantém o nome como legenda", () => {
+    const message: ChatMessage = {
+      id: "user-1",
+      role: "user",
+      content: "Veja isto",
+      attachments: [{ id: "image-1", name: "paisagem.png", kind: "image", data: "data:image/png;base64,abc" }],
+      at: new Date().toISOString(),
+    };
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile="admin">
+          <Bubble message={message} streaming={false} />
+        </ProfileProvider>
+      </LocaleProvider>,
+    );
+
+    const image = screen.getByRole("img", { name: "Imagem enviada: paisagem.png" });
+    expect(image.getAttribute("src")).toBe(message.attachments?.[0].data);
+    expect(image.className).toContain("max-h");
+    expect(screen.getByText("paisagem.png")).toBeTruthy();
+  });
+
+  it("transcreve ditado quando o navegador oferece Web Speech", () => {
+    class FakeRecognition {
+      lang = "";
+      continuous = false;
+      interimResults = false;
+      onresult: ((event: unknown) => void) | null = null;
+      onend: (() => void) | null = null;
+      start = vi.fn();
+      stop = vi.fn(() => this.onend?.());
+
+      emit(text: string) {
+        this.onresult?.({ resultIndex: 0, results: [{ 0: { transcript: text }, isFinal: true }] });
+      }
+    }
+    let instance: FakeRecognition | undefined;
+    class RecognitionConstructor extends FakeRecognition {
+      constructor() {
+        super();
+        instance = this;
+      }
+    }
+    vi.stubGlobal("SpeechRecognition", RecognitionConstructor);
+
+    mountChat();
+    const microphone = screen.getByRole("button", { name: "Iniciar ditado" });
+    fireEvent.click(microphone);
+    expect(screen.getByRole("button", { name: "Parar ditado" })).toBeTruthy();
+    expect(instance?.lang).toBe("pt-BR");
+    act(() => instance?.emit("Olá, rede"));
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Olá, rede");
+
+    fireEvent.click(screen.getByRole("button", { name: "Parar ditado" }));
+    expect(instance?.stop).toHaveBeenCalled();
+  });
+
+  it("oculta o microfone quando Web Speech não existe", () => {
+    resetBrowserSpeech();
+    mountChat();
+    expect(screen.queryByRole("button", { name: /ditado/i })).toBeNull();
+  });
+
+  it("usa um único seletor sem accept restritivo e recusa anexos acima do contexto", async () => {
+    const { container } = mountChat();
+    const inputs = container.querySelectorAll<HTMLInputElement>('input[type="file"]');
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].getAttribute("accept")).toBeNull();
+
+    const file = new File(["12345678901234567"], "dados.bin", { type: "application/octet-stream" });
+    Object.defineProperty(file, "text", { value: async () => "12345678901234567" });
+    fireEvent.change(inputs[0], { target: { files: [file] } });
+    expect(await screen.findByText("Anexo grande demais")).toBeTruthy();
+    expect(screen.getByText(/excede o contexto disponível/i)).toBeTruthy();
+    expect(screen.queryByText("dados.bin")).toBeNull();
+  });
+
+  it("aceita um arquivo de qualquer tipo quando cabe no contexto", async () => {
+    const { container } = mountChat();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const file = new File(["ok"], "dados.bin", { type: "application/octet-stream" });
+    Object.defineProperty(file, "text", { value: async () => "ok" });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(await screen.findByText("dados.bin")).toBeTruthy();
+  });
+});

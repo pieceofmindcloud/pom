@@ -23,10 +23,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
-  synced; keeps the initial model mark and private request content for telemetry
-  analysis. `ChatSessionProvider` shares the active session and selection/new/
-  delete actions between `Chat` and the infer Sidebar; direct Chat consumers get
-  an isolated provider wrapper.
+  synced; keeps the initial model mark, attachment structure and private request
+  content for telemetry analysis. `ChatSessionProvider` shares the active
+  session and selection/new/delete actions between `Chat` and the infer Sidebar,
+  and owns the active stream so route unmounts preserve live partial replies.
+  Direct Chat consumers get an isolated provider wrapper.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
@@ -256,8 +257,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key,
   prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key,
   prompt, from, to}, enabled)` 30s while the statistics tab is open,
-  `useServableModels()` 30s. A refusal or transport failure in the capability
-  read becomes the explicit `unavailable` state, never an empty capability.
+  `useServableModels()` 30s. The latter preserves `context_length` and
+  `max_input_tokens` from `/v1/models` for the Chat attachment guard. A refusal
+  or transport failure in the capability read becomes the explicit
+  `unavailable` state, never an empty capability.
 - `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
@@ -277,7 +280,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `ChatSessionProvider` / `useChatSessionController()` - one active session
   and the store actions shared by the Chat screen and `Sidebar`. The controller
   invokes the registered pre-change hook before a menu selection, new session or
-  deletion so a live stream is aborted and the Chat clears transient state.
+  deletion so the Chat clears transient state; changing routes does not abort a
+  live stream. `startStream` aborts the previous request when a new message is
+  sent, while `stopStream` is the explicit user cancellation. Deltas are
+  persisted in the session as they arrive, and deleting a session prevents a
+  finishing stream from recreating it.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
@@ -286,7 +293,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 `imageResize.ts` reduz imagens para no máximo 2048 px no lado maior e preserva
 a proporção antes de montar o pedido multimodal. `chatStore` preserva as partes
-estruturadas do pedido para que anexos de texto e imagem sobrevivam ao histórico.
+estruturadas do pedido para que anexos de imagem e de outros tipos sobrevivam ao
+histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
 
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
@@ -389,7 +397,9 @@ would go.
 ## Links to the rest of the app
 
 - Routes/components importing `lib/*` (counted by import): `queries` (19), `format` (17), `toast` (16), `api` (16), `types` (12).
-- `routes/Chat.tsx` is the only consumer of `chatStream`, `chatStore` and `chatScroll`, plus `streamSse` against `/v1/chat/completions`.
+- `routes/Chat.tsx` renders the composer/transcript and consumes `chatStore` and
+  `chatScroll`; `chatStore` owns the `chatStream` parsing and `streamSse` call
+  against `/v1/chat/completions` so the stream survives route unmounts.
 - `routes/DeployModel.tsx` is the only consumer of `deployMemory`.
 - `components/ModelNetworkCanvas.tsx` is the only consumer of `networkGraph` + `networkLayout`.
 - `networkPeers` is used by `components/ModelNetworkCanvas.tsx`,

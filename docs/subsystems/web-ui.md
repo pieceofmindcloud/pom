@@ -614,27 +614,36 @@ apresentar uma visão incompleta como se fosse o fluxo integral.
 `src/routes/Chat.tsx` fala com o cluster por `POST /v1/chat/completions` com
 `stream: true`, igual a qualquer harness - o que aparece ali é o que um
 harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
-cap 50 sessões, sincronizado entre abas), não do nó. Três coisas a conversa
-guarda além das falas:
+cap 50 sessões, sincronizado entre abas), não do nó. O `ChatSessionProvider`
+também mantém o stream e grava a resposta parcial a cada delta, por isso sair
+da rota não interrompe a geração: ao voltar, a conversa mostra o texto já
+recebido e o estado ao vivo. Só o botão de parar ou o envio de uma nova
+mensagem aborta o pedido anterior. Três coisas a conversa guarda além das falas:
 
-- A caixa de imagem lê `GET /api/ui/chat/capabilities`, que agrega a cabeça
-  ativa e a cobertura sem reutilizar a topologia que o perfil `infer` não pode
-  consultar. Ela aparece quando `vision` é `supported`; `unsupported` mantém o
-  modelo sem visão e `unavailable` informa que a leitura foi recusada ou não
-  pôde terminar, sem inventar um modelo vazio. Imagens são redimensionadas no navegador para
-  no máximo 2048 px no lado maior, preservando a proporção, antes de virar
-  base64 no pedido. O mesmo campo aceita arrastar e largar e mostra um alvo
-  visual durante a passagem do ficheiro.
-- Arquivos de texto podem ser anexados com ou sem visão. O conteúdo textual e
-  as partes multimodais ficam em `requestContent`, para o histórico reenviar o
-  mesmo pedido estruturado. Cada anexo aparece como miniatura e pode ser
+- O único campo de ficheiro lê `GET /api/ui/chat/capabilities`, que agrega a
+  cabeça ativa e a cobertura sem reutilizar a topologia que o perfil `infer` não
+  pode consultar. Ele aceita qualquer tipo de ficheiro, botão e arrastar e
+  largar. Imagens exigem `vision: supported`; `unsupported` mantém o modelo sem
+  visão e `unavailable` informa que a leitura foi recusada ou não pôde terminar,
+  sem inventar um modelo vazio. Imagens são redimensionadas no navegador para no
+  máximo 2048 px no lado maior, preservando a proporção, antes de virar base64
+  no pedido, e aparecem inteiras na bolha da fala com legenda e alt.
+- O lote é recusado antes do envio quando o tamanho bruto ultrapassa o contexto
+  efetivo do modelo: primeiro `context_length` de `/v1/models`, depois `n_ctx`
+  do nó ativo, com a estimativa conservadora de quatro bytes por token. O
+  conteúdo textual e as partes multimodais ficam em `requestContent`, para o
+  histórico reenviar o mesmo pedido estruturado. Cada anexo pendente pode ser
   removido sem apagar o rascunho.
+- O botão de microfone só aparece quando existe `SpeechRecognition` ou
+  `webkitSpeechRecognition`; a transcrição usa o locale da interface quando
+  possível e entra diretamente no campo de texto.
 
 `ChatSessionProvider` compartilha a sessão ativa e as ações entre o Chat e a
 Sidebar. No `infer`, a Sidebar usa `ChatSessionList` como menu principal: a
 lista de histórico tem rolagem interna limitada ao espaço disponível, destaca
 a conversa ativa e deixa `Conversa nova` fixa acima dela. Trocar ou apagar uma
-sessão aborta uma geração em andamento antes de mudar a tela.
+sessão não aborta uma geração em andamento; apagar a sessão apenas impede que
+o stream termine recriando-a.
 
 Esse menu é visto de **toda** rota, então escolher uma conversa ou começar uma
 nova **navega para `/chat`** além de trocar a sessão ativa. Sem isso, o clique

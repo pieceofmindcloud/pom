@@ -571,7 +571,14 @@ export function useServableModels() {
   return useQuery({
     queryKey: keys.openaiModels,
     queryFn: () =>
-      api.get<{ data: Array<{ id: string }> }>("/v1/models").then((r) => r.data ?? []),
+      api.get<{
+        data: Array<{
+          id: string;
+          context_length?: number | null;
+          max_input_tokens?: number | null;
+          max_tokens?: number | null;
+        }>;
+      }>("/v1/models").then((r) => r.data ?? []),
     staleTime: 20_000,
     refetchInterval: 30_000,
   });

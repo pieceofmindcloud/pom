@@ -15,7 +15,8 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
-  ImagePlus,
+  Mic,
+  MicOff,
   MessagesSquare,
   Paperclip,
   Pencil,
@@ -30,17 +31,7 @@ import { ChatSessionList } from "../components/ChatSessionList";
 import { ExecutionTelemetry, TimingSummary, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
 import { Badge, Button, Empty } from "../components/ui";
-import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
-import {
-  consumeChatDelta,
-  consumeChatError,
-  emptyChatStream,
-  finishChatStream,
-  streamErrorMessage,
-  type StreamMetrics,
-  withClientStreamTiming,
-} from "../lib/chatStream";
 import {
   buildTelemetryAnalysisPrompt,
 } from "../lib/telemetryAnalysis";
@@ -51,6 +42,7 @@ import {
   turnsOnly,
   useChatSessionController,
   useOptionalChatSessionController,
+  type ChatAttachment,
   type ChatMessage,
   type ChatRequestPart,
   type ChatSession,
@@ -85,13 +77,6 @@ type WebKitWindow = Window & {
   };
 };
 
-type ChatAttachment = {
-  id: string;
-  name: string;
-  kind: "image" | "text";
-  data: string;
-};
-
 function isTextFile(file: File): boolean {
   if (file.type.startsWith("text/")) return true;
   return /\.(c|cc|cpp|css|csv|go|h|hpp|html?|ini|java|js|json|jsx|log|md|py|rs|sh|sql|toml|ts|tsx|txt|xml|yaml|yml)$/i.test(file.name);
@@ -102,6 +87,48 @@ function attachmentFormat(attachment: ChatAttachment): string {
   const extension = attachment.name.match(/\.([^.]+)$/)?.[1];
   if (extension) return extension.slice(0, 6).toUpperCase();
   return "TXT";
+}
+
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  [index: number]: { transcript: string };
+};
+
+type SpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLike>;
+};
+
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+type SpeechWindow = Window & {
+  SpeechRecognition?: SpeechRecognitionConstructor;
+  webkitSpeechRecognition?: SpeechRecognitionConstructor;
+};
+
+function speechRecognitionConstructor(): SpeechRecognitionConstructor | undefined {
+  if (typeof window === "undefined") return undefined;
+  const speechWindow = window as SpeechWindow;
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+}
+
+function speechLanguage(locale: string): string {
+  return locale === "pt-BR" ? "pt-BR" : "en-US";
+}
+
+function estimatedAttachmentBytes(attachment: ChatAttachment): number {
+  return attachment.size ?? new TextEncoder().encode(attachment.data).byteLength;
 }
 
 function nativeWindowHandler() {
@@ -228,9 +255,28 @@ export function Bubble({
     >
       {isUser ? (
         <div className="max-w-[min(42rem,85%)] rounded-2xl rounded-br-md border border-line bg-raised px-4 py-2.5">
-          <p className="whitespace-pre-wrap text-[0.9rem] leading-relaxed text-fg">
-            {message.content}
-          </p>
+          {message.content && (
+            <p className="whitespace-pre-wrap text-[0.9rem] leading-relaxed text-fg">
+              {message.content}
+            </p>
+          )}
+          {message.attachments?.map((attachment) => attachment.kind === "image" ? (
+            <figure key={attachment.id} className={clsx(message.content && "mt-3", "max-w-full")}>
+              <img
+                src={attachment.data}
+                alt={t("chat.attachmentAlt", { name: attachment.name })}
+                className="max-h-[28rem] max-w-full rounded-xl border border-line object-contain"
+              />
+              <figcaption className="mt-1.5 truncate text-[0.7rem] text-faint" title={attachment.name}>
+                {attachment.name}
+              </figcaption>
+            </figure>
+          ) : (
+            <div key={attachment.id} className={clsx(message.content && "mt-2", "flex items-center gap-2 text-[0.75rem] text-muted")}>
+              <Paperclip className="h-3.5 w-3.5 shrink-0 text-faint" />
+              <span className="truncate" title={attachment.name}>{attachment.name}</span>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="min-w-0 flex-1">
@@ -406,6 +452,10 @@ function ChatScreen() {
     startNew: startNewSession,
     deleteSession: removeSession,
     registerBeforeChange,
+    streamingSessionId,
+    lastStreamResult,
+    startStream,
+    stopStream,
   } = useChatSessionController();
   const models = useServableModels();
   const cluster = useCluster();
@@ -425,25 +475,24 @@ function ChatScreen() {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
-  const [streaming, setStreaming] = useState(false);
   const [telemetryCapture, setTelemetryCapture] = useState<{
     messageId: string;
     trace: RequestTrace;
     cluster: ClusterView | null;
   } | null>(null);
   const [telemetrySnapshots, setTelemetrySnapshots] = useState<Record<string, ExecutionTelemetryEnvironment>>({});
-  const abort = useRef<AbortController | null>(null);
-  const deletedSessions = useRef(new Set<string>());
   const thread = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
-  const imageInput = useRef<HTMLInputElement>(null);
-  const textInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+  const recognition = useRef<SpeechRecognitionLike | null>(null);
+  const speechBaseDraft = useRef("");
+  const speechTranscript = useRef("");
+  const [listening, setListening] = useState(false);
 
   useEffect(
     () => registerBeforeChange((kind) => {
-      abort.current?.abort();
       setTelemetryCapture(null);
       if (kind === "new") {
         setDraft("");
@@ -507,6 +556,7 @@ function ChatScreen() {
   const model = session.model && available.includes(session.model)
     ? session.model
     : available[0] ?? node.data?.active_model ?? cluster.data?.active_model ?? "";
+  const streaming = streamingSessionId === session.id;
   const headQuery = useInferenceHeads(model, profile === "infer");
 
   useEffect(() => {
@@ -514,7 +564,19 @@ function ChatScreen() {
     if (element && autoFollow.current) element.scrollTop = element.scrollHeight;
   }, [session.messages, streaming]);
 
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => {
+    if (!showTelemetry || lastStreamResult?.sessionId !== session.id) return;
+    setTelemetryCapture({
+      messageId: lastStreamResult.messageId,
+      trace: lastStreamResult.trace,
+      cluster: lastStreamResult.cluster,
+    });
+  }, [lastStreamResult, session.id, showTelemetry]);
+
+  useEffect(() => () => {
+    recognition.current?.stop();
+    recognition.current = null;
+  }, []);
 
   const grow = useCallback(() => {
     const el = composer.current;
@@ -524,33 +586,124 @@ function ChatScreen() {
   }, []);
 
   const visionAvailable = chatCapabilities.data?.vision === "supported";
+  const servedModel = models.data?.find((candidate) => candidate.id === model);
+  const contextLength = servedModel?.context_length
+    ?? servedModel?.max_input_tokens
+    ?? (node.data?.active_model === model ? node.data?.config?.n_ctx : undefined);
 
   async function addFiles(files: FileList | File[]) {
+    const selectedFiles = Array.from(files);
+    const contextBytes = contextLength != null ? contextLength * 4 : undefined;
+    const currentBytes = attachments.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
+    const selectedBytes = selectedFiles.reduce((total, file) => total + file.size, 0);
+    if (contextBytes != null && currentBytes + selectedBytes > contextBytes) {
+      toast.error(
+        t("chat.attachmentTooLarge"),
+        t("chat.attachmentTooLargeDetail", {
+          bytes: currentBytes + selectedBytes,
+          context: contextLength ?? 0,
+        }),
+      );
+      return;
+    }
+
     const added: ChatAttachment[] = [];
-    for (const file of Array.from(files)) {
+    for (const file of selectedFiles) {
       if (file.type.startsWith("image/")) {
         if (!visionAvailable) {
-          toast.error("Imagem recusada", "este modelo não tem visão");
+          toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
           continue;
         }
         try {
-          added.push({ id: newId(), name: file.name, kind: "image", data: await resizeImageForVision(file) });
+          added.push({
+            id: newId(),
+            name: file.name,
+            kind: "image",
+            data: await resizeImageForVision(file),
+            mediaType: file.type,
+            size: file.size,
+          });
         } catch (error) {
-          toast.error("Imagem recusada", error instanceof Error ? error.message : String(error));
+          toast.error(t("chat.imageRejected"), error instanceof Error ? error.message : String(error));
         }
         continue;
       }
       if (isTextFile(file)) {
         try {
-          added.push({ id: newId(), name: file.name, kind: "text", data: await file.text() });
+          added.push({
+            id: newId(),
+            name: file.name,
+            kind: "text",
+            data: await file.text(),
+            mediaType: file.type,
+            size: file.size,
+          });
         } catch (error) {
-          toast.error("Ficheiro recusado", error instanceof Error ? error.message : String(error));
+          toast.error(t("chat.fileRejected"), error instanceof Error ? error.message : String(error));
         }
         continue;
       }
-      toast.error("Ficheiro recusado", "aceite imagens ou ficheiros de texto");
+      try {
+        added.push({
+          id: newId(),
+          name: file.name,
+          kind: "file",
+          data: await file.text(),
+          mediaType: file.type || "application/octet-stream",
+          size: file.size,
+        });
+      } catch (error) {
+        toast.error(t("chat.fileRejected"), error instanceof Error ? error.message : String(error));
+      }
     }
     if (added.length > 0) setAttachments((current) => [...current, ...added]);
+  }
+
+  const speechSupported = speechRecognitionConstructor() != null;
+
+  function stopDictation() {
+    recognition.current?.stop();
+    recognition.current = null;
+    setListening(false);
+  }
+
+  function startDictation() {
+    const Constructor = speechRecognitionConstructor();
+    if (!Constructor) return;
+    recognition.current?.stop();
+    const instance = new Constructor();
+    speechBaseDraft.current = draft.trim();
+    speechTranscript.current = "";
+    instance.lang = speechLanguage(locale);
+    instance.continuous = true;
+    instance.interimResults = true;
+    instance.onresult = (event) => {
+      let interim = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const text = result?.[0]?.transcript ?? "";
+        if (result?.isFinal) {
+          speechTranscript.current = [speechTranscript.current, text].filter(Boolean).join(" ");
+        } else {
+          interim += text;
+        }
+      }
+      const transcript = [speechTranscript.current, interim].filter(Boolean).join(" ");
+      const next = [speechBaseDraft.current, transcript].filter(Boolean).join(" ");
+      setDraft(next);
+      window.requestAnimationFrame(grow);
+    };
+    instance.onerror = () => {
+      recognition.current = null;
+      setListening(false);
+    };
+    instance.onend = () => {
+      recognition.current = null;
+      setListening(false);
+    };
+    recognition.current = instance;
+    setListening(true);
+    instance.start();
   }
 
   function hasFiles(dataTransfer: DataTransfer): boolean {
@@ -582,7 +735,7 @@ function ChatScreen() {
     dragDepth.current = 0;
     setDragActive(false);
     if (event.dataTransfer.files.length === 0) {
-      toast.error("Ficheiro recusado", "solte uma imagem ou um ficheiro de texto");
+      toast.error(t("chat.fileRejected"), t("chat.dropRejectedDetail"));
       return;
     }
     void addFiles(event.dataTransfer.files);
@@ -591,8 +744,9 @@ function ChatScreen() {
   async function send(options?: { visibleText?: string; requestContent?: string }) {
     const text = options?.visibleText ?? draft.trim();
     if ((!text && attachments.length === 0) || streaming || !model) return;
+    if (listening) stopDictation();
     if (attachments.some((attachment) => attachment.kind === "image") && !visionAvailable) {
-      toast.error("Imagem recusada", "este modelo não tem visão");
+      toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
       return;
     }
 
@@ -602,7 +756,10 @@ function ChatScreen() {
       if (attachment.kind === "image") {
         requestParts.push({ type: "image_url", image_url: { url: attachment.data } });
       } else {
-        requestParts.push({ type: "text", text: `Arquivo ${attachment.name}:\n${attachment.data}` });
+        requestParts.push({
+          type: "text",
+          text: t("chat.filePrompt", { name: attachment.name, content: attachment.data }),
+        });
       }
     }
     const requestContent = options?.requestContent ?? (
@@ -610,15 +767,13 @@ function ChatScreen() {
         ? requestParts[0].text
         : requestParts
     );
-    const visibleText = text || "Arquivos anexados";
-    const visibleWithAttachments = attachments.length > 0
-      ? `${visibleText}\n\n${attachments.map((attachment) => `📎 ${attachment.name}`).join("\n")}`
-      : visibleText;
+    const titleText = text || t("chat.attachments");
 
     const user: ChatMessage = {
       id: newId(),
       role: "user",
-      content: visibleWithAttachments,
+      content: text,
+      attachments,
       requestContent,
       at: new Date().toISOString(),
     };
@@ -641,146 +796,27 @@ function ChatScreen() {
       title:
         session.titled || turnsOnly(session.messages).length > 0
           ? session.title
-          : titleFrom(text),
+          : titleFrom(titleText),
       messages: [...history, reply],
     };
     setSession(live);
     setDraft("");
     setAttachments([]);
     setTelemetryCapture(null);
-    setStreaming(true);
     autoFollow.current = true;
     window.requestAnimationFrame(grow);
 
-    const controller = new AbortController();
-    abort.current = controller;
-
-    const patchReply = (patch: Partial<ChatMessage>) => {
-      live = {
-        ...live,
-        messages: live.messages.map((m) => (m.id === reply.id ? { ...m, ...patch } : m)),
-      };
-      setSession(live);
-    };
-
-    try {
-      let streamed = emptyChatStream();
-      const requestStartedAt = performance.now();
-      let firstChunkAt: number | undefined;
-      let firstTokenAt: number | undefined;
-      let lastTokenAt: number | undefined;
-      let clientReceivedAtMs: number | undefined;
-      let streamChunks = 0;
-      let streamBytes = 0;
-      let finalMetrics: StreamMetrics | undefined;
-      for await (const data of streamSse(
-        "/v1/chat/completions",
-        {
-          model,
-          stream: true,
-          // Otherwise the server falls back to its own conservative default
-          // (openai.rs's DEFAULT_MAX_TOKENS = 512), independent of whatever
-          // the operator actually configured for this node — a response
-          // could never run longer than that no matter the deployment.
-          // `config` is null before a model is deployed; omitting the field
-          // then just leaves that same server-side default in place.
-          ...(node.data?.config?.max_new_tokens
-            ? { max_tokens: node.data.config.max_new_tokens }
-            : {}),
-          messages: turnsOnly(history).map((m) => ({ role: m.role, content: m.content })),
-        },
-        controller.signal,
-      )) {
-        if (data === "[DONE]") break;
-        const receivedAt = performance.now();
-        firstChunkAt ??= receivedAt;
-        streamChunks += 1;
-        streamBytes += new TextEncoder().encode(data).byteLength;
-        try {
-          const chunk = JSON.parse(data);
-          const streamError = streamErrorMessage(chunk);
-          if (streamError) {
-            streamed = consumeChatError(streamed, streamError);
-            patchReply({ error: streamed.error });
-            continue;
-          }
-          const delta = chunk?.choices?.[0]?.delta?.content;
-          const toolDelta = chunk?.choices?.[0]?.delta?.tool_calls;
-          const reasoningDelta = chunk?.choices?.[0]?.delta?.reasoning_content;
-          const hasToken = (typeof delta === "string" && delta.length > 0)
-            || (typeof reasoningDelta === "string" && reasoningDelta.length > 0)
-            || (Array.isArray(toolDelta) && toolDelta.length > 0);
-          if (hasToken) {
-            firstTokenAt ??= receivedAt;
-            clientReceivedAtMs ??= Date.now();
-            lastTokenAt = receivedAt;
-          }
-          if (typeof delta === "string" && delta) {
-            streamed = consumeChatDelta(streamed, delta);
-            patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
-          }
-          const metrics = chunk?.x_pom;
-          if (metrics && typeof metrics === "object") {
-            finalMetrics = metrics;
-          }
-        } catch {
-          /* a keep-alive or a partial frame — nothing to render */
-        }
-      }
-      const responseEndedAt = performance.now();
-      if (finalMetrics) {
-        const measuredMetrics = withClientStreamTiming(finalMetrics, {
-          requestStartedAt,
-          firstChunkAt,
-          firstTokenAt,
-          lastTokenAt,
-          responseEndedAt,
-          clientReceivedAtMs,
-          chunks: streamChunks,
-          bytes: streamBytes,
-        });
-        streamed = finishChatStream(streamed, measuredMetrics);
-        patchReply({
-          content: streamed.content,
-          reasoning: streamed.reasoning || undefined,
-          tokensPerSecond: streamed.tokensPerSecond,
-          tokensGenerated: streamed.tokensGenerated,
-          durationMs: streamed.durationMs,
-          timings: streamed.timings,
-          trace: streamed.trace,
-          source: typeof finalMetrics.source === "string" ? finalMetrics.source : undefined,
-        });
-      } else {
-        streamed = finishChatStream(streamed);
-      }
-      patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
-      if (showTelemetry && streamed.trace) {
-        setTelemetryCapture({ messageId: reply.id, trace: streamed.trace, cluster: cluster.data ?? null });
-      }
-      if (!streamed.content && !streamed.reasoning && !streamed.error) {
-        patchReply({
-          error:
-            t("chat.emptyResponse"),
-        });
-      }
-    } catch (e) {
-      if (controller.signal.aborted) {
-        patchReply({ error: t("chat.interrupted") });
-      } else {
-        const detail = e instanceof Error ? e.message : String(e);
-        patchReply({ error: detail });
-        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-          toast.error(
-            t("chat.keyRejected"),
-            t("chat.keyRejectedDetail"),
-          );
-        }
-      }
-    } finally {
-      setStreaming(false);
-      abort.current = null;
-      if (!deletedSessions.current.delete(live.id)) upsert(live);
-    }
+    startStream({
+      session: live,
+      history,
+      replyId: reply.id,
+      model,
+      maxTokens: node.data?.config?.max_new_tokens,
+      emptyResponseMessage: t("chat.emptyResponse"),
+      interruptedMessage: t("chat.interrupted"),
+      cluster: cluster.data ?? null,
+      onUnauthorized: () => toast.error(t("chat.keyRejected"), t("chat.keyRejectedDetail")),
+    });
   }
 
   function analyzeTrace(trace: RequestTrace) {
@@ -831,7 +867,6 @@ function ChatScreen() {
   }
 
   function deleteChatSession(id: string) {
-    if (id === session.id) deletedSessions.current.add(id);
     setTelemetrySnapshots((previous) => {
       if (!(id in previous)) return previous;
       const next = { ...previous };
@@ -963,7 +998,7 @@ function ChatScreen() {
                     {attachment.kind === "image" ? (
                       <img
                         src={attachment.data}
-                        alt={`Miniatura de ${attachment.name}`}
+                        alt={t("chat.attachmentThumbnail", { name: attachment.name })}
                         className="h-10 w-10 shrink-0 rounded-md border border-line object-cover"
                       />
                     ) : (
@@ -977,7 +1012,7 @@ function ChatScreen() {
                     <span className="max-w-[16rem] truncate" title={attachment.name}>{attachment.name}</span>
                     <button
                       type="button"
-                      aria-label={`Remover ${attachment.name}`}
+                      aria-label={t("chat.removeAttachment", { name: attachment.name })}
                       onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
                       className="rounded p-0.5 text-faint hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
                     >
@@ -1004,13 +1039,12 @@ function ChatScreen() {
                   aria-live="polite"
                   className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-lg border border-dashed border-iris bg-ink/90 px-4 text-center text-sm font-medium text-iris shadow-lift"
                 >
-                  Solte uma imagem ou um ficheiro de texto
+                  {t("chat.dropHint")}
                 </div>
               )}
               <input
-                ref={textInput}
+                ref={fileInput}
                 type="file"
-                accept="text/*,.md,.csv,.json,.yaml,.yml,.xml,.toml,.log,.rs,.py,.js,.ts,.tsx,.jsx,.css,.sql,.sh"
                 multiple
                 className="hidden"
                 onChange={(event) => {
@@ -1019,41 +1053,16 @@ function ChatScreen() {
                   event.currentTarget.value = "";
                 }}
               />
-              {visionAvailable && (
-                <input
-                  ref={imageInput}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => {
-                    const files = event.currentTarget.files;
-                    if (files) void addFiles(files);
-                    event.currentTarget.value = "";
-                  }}
-                />
-              )}
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   type="button"
-                  aria-label="Anexar ficheiro de texto"
-                  title="Anexar ficheiro de texto"
-                  onClick={() => textInput.current?.click()}
+                  aria-label={t("chat.attach")}
+                  title={t("chat.attach")}
+                  onClick={() => fileInput.current?.click()}
                   className="rounded-md p-1.5 text-faint transition-colors hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
                 >
                   <Paperclip className="h-4 w-4" />
                 </button>
-                {visionAvailable && (
-                  <button
-                    type="button"
-                    aria-label="Anexar imagem"
-                    title="Anexar imagem"
-                    onClick={() => imageInput.current?.click()}
-                    className="rounded-md p-1.5 text-faint transition-colors hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
-                  >
-                    <ImagePlus className="h-4 w-4" />
-                  </button>
-                )}
               </div>
               <textarea
                 ref={composer}
@@ -1076,20 +1085,36 @@ function ChatScreen() {
                 <Button
                   variant="outline"
                   icon={<Square className="h-3.5 w-3.5" />}
-                  onClick={() => abort.current?.abort()}
+                  onClick={stopStream}
                 >
                   {t("chat.stop")}
                 </Button>
               ) : (
-                <Button
-                  variant="primary"
-                  disabled={!draft.trim() && attachments.length === 0}
-                  onClick={() => void send()}
-                  aria-label={t("chat.send")}
-                  className="w-9 px-0"
-                >
-                  <ArrowUp className="h-4 w-4" />
-                </Button>
+                <>
+                  {speechSupported && (
+                    <button
+                      type="button"
+                      aria-label={listening ? t("chat.dictationStop") : t("chat.dictationStart")}
+                      title={listening ? t("chat.dictationStop") : t("chat.dictationStart")}
+                      onClick={listening ? stopDictation : startDictation}
+                      className={clsx(
+                        "rounded-md p-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris",
+                        listening ? "bg-rose/15 text-rose" : "text-faint hover:bg-raised hover:text-fg",
+                      )}
+                    >
+                      {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                    </button>
+                  )}
+                  <Button
+                    variant="primary"
+                    disabled={!draft.trim() && attachments.length === 0}
+                    onClick={() => void send()}
+                    aria-label={t("chat.send")}
+                    className="w-9 px-0"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                  </Button>
+                </>
               )}
             </div>
             {/* Under the box, on the same baseline: what answers on the left,

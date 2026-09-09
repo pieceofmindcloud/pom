@@ -139,6 +139,10 @@ gets a translated zero or false incomplete alarm.
 - Imported by nearly every route and component (28 files use `useI18n`).
 - `api.ts` and `chatStore.ts` import `getActiveLocale` from `locales` for non-React strings.
 - `index.html` has a pre-paint script that stamps `document.documentElement.lang` from the same `codai.locale` + browser-locale logic, so the first render is already in the right language before `LocaleProvider` mounts.
+- Chat attachment, context-limit, drop-zone and Web Speech labels live in
+  `messages.csv` in both locales. `locales.ts` remains the parser and fallback
+  layer; new Chat copy should be added to the CSV rather than hard-coded in the
+  route.
 
 ## Maintaining this file
 

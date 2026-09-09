@@ -165,7 +165,10 @@ pub(crate) fn spawn_ratchet(
 
             let (local, chave) = {
                 let cfg = auth.read().await;
-                (cfg.tls_required, cfg.connection_key.clone())
+                (
+                    cfg.tls_required,
+                    crate::auth::internal_node_token(&cfg).unwrap_or_default(),
+                )
             };
             // A sonda precisa falar o esquema que a URL diz, e o cache local
             // ainda está na política antiga. Um cliente próprio evita empurrar

@@ -31,10 +31,12 @@ retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
 abaixo do limite de religar durante o cooldown. `stop` limpa essa recuperação
 para respeitar uma desimplantação manual.
 As rotas de inferência entre peers usam a `connection_key` compartilhada com o
-marcador `x-pom-internal-node: 1`; API keys de cliente não atravessam os hops.
-Cada quadro reconfere localmente esse segredo em tempo constante, sem chamada
-extra à rede. A chave pública e a assinatura Ed25519 pertencem ao handshake e
-à identidade do peer, não substituem a credencial simétrica do canal.
+marcador `x-pom-internal-node: 1` em redes privadas; em redes públicas usam
+transporte TLS e o marcador, sem segredo compartilhado. API keys de cliente não
+atravessam os hops. Cada quadro privado reconfere localmente o segredo em tempo
+constante, sem chamada extra à rede. A chave pública e a assinatura Ed25519
+pertencem ao handshake e à identidade do peer, não substituem a credencial
+simétrica do canal privado.
 O gateway valida API keys na superfície do cliente e pode consultar o principal
 para uma chave desconhecida. Esse fluxo remoto não é alcançado pela porta de
 inferência quando falta a credencial interna. Os callbacks de resultado no
@@ -541,8 +543,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
   ou de parâmetros de carregamento também o invalida.
   O runtime mantém o `pom.db` para as decisões do gateway; o servidor de
-  inferência autentica saltos internos pela `connection_key` compartilhada e
-  não consulta API keys de cliente.
+  inferência autentica saltos internos pela `connection_key` compartilhada em
+  redes privadas e por TLS em redes públicas. Não consulta API keys de cliente.
   `NodeConfig.inference_mode` preserva a preferência `auto`/`dense`/`moe` que
   veio do deploy; `infer_server::run` a entrega ao seletor antes de carregar o
   modelo. O campo escolhido ainda não substitui a observação: a telemetria
@@ -608,9 +610,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   plano também leva os candidatos UDP do peer para o `TunnelOutbound`, então o
   swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
   tabela local. O `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
-  autorização interna usa exclusivamente a `connection_key` compartilhada e o
-  marcador de nó interno; sem ela, a chamada é recusada em vez de cair para
-  uma API key de cliente.
+  autorização interna usa a `connection_key` compartilhada e o marcador de nó
+  interno em redes privadas. Em redes públicas usa transporte TLS com o
+  marcador, sem a chave local do admin; sem a prova correspondente, a chamada
+  é recusada em vez de cair para uma API key de cliente.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de

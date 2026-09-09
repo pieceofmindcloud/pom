@@ -628,6 +628,13 @@ async fn async_main(
 
     // ── Load existing config ─────────────────────────────────────────────────
     let mut app_config = existing_config.expect("config já carregada antes do modo completo");
+    if app_config.connection_key.trim().is_empty() {
+        app_config.connection_key = crate::webui::fresh_connection_key();
+        app_config.save()?;
+        info!(
+            "Generated a local admin credential for the configured node"
+        );
+    }
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
@@ -1015,6 +1022,7 @@ async fn async_main(
         Arc::new(crate::gateway::PkarrPublishHandle::new(
             node.clone(),
             pkarr_multiaddr.clone(),
+            Some(gateway_port),
             inference_port,
             profile.name.clone(),
             assignment_shared.clone(),
@@ -1868,6 +1876,7 @@ async fn start_gateway_only(
         Arc::new(crate::gateway::PkarrPublishHandle::new(
             node.clone(),
             pkarr_multiaddr.clone(),
+            Some(gateway_port),
             None,
             String::new(),
             assignment_shared.clone(),

@@ -768,8 +768,7 @@ pub(super) async fn require_inference_auth(
     let (parts, body) = request.into_parts();
     let public_transport = {
         let cfg = config.read().await;
-        cfg.connection_key.is_empty()
-            && cfg.network.visibility == crate::config::NetworkVisibility::Public
+        cfg.network.visibility == crate::config::NetworkVisibility::Public
             && parts
                 .extensions
                 .get::<crate::serve::TransportSecurity>()
@@ -847,6 +846,44 @@ mod internal_auth_tests {
                 .unwrap()
                 .status(),
             StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn public_inference_uses_secure_transport_without_the_local_admin_key() {
+        let state = crate::gateway::testkit::state_with("gateway", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.connection_key = "local-admin-credential".into();
+            config.network.visibility = crate::config::NetworkVisibility::Public;
+        }
+        let app = Router::new()
+            .route("/v1/prefill", post(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn_with_state(
+                state.auth.clone(),
+                require_inference_auth,
+            ))
+            .with_state(state.auth.clone());
+
+        let mut secure_request = Request::post("/v1/prefill")
+            .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        secure_request
+            .extensions_mut()
+            .insert(crate::serve::TransportSecurity(true));
+        assert_eq!(
+            app.clone().oneshot(secure_request).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let insecure_request = Request::post("/v1/prefill")
+            .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(insecure_request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
         );
     }
 }

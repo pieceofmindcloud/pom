@@ -21,8 +21,9 @@ pub struct NetworkInfoView {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct NetworkSettingsEnvelope {
     pub network: NetworkSettings,
-    /// The shared secret follows the signed control envelope only when the
-    /// network is private. It is never part of the read-only network card.
+    /// Only the shared secret for private networks follows the signed control
+    /// envelope. A public node keeps a local admin credential in its config,
+    /// but that credential is never sent to peers or shown in this card.
     pub connection_key: String,
 }
 
@@ -96,14 +97,12 @@ async fn apply_network_settings_with_key(
     let connection_key = {
         let mut cfg = state.auth.write().await;
         cfg.network = settings.clone();
-        if settings.visibility == NetworkVisibility::Public {
-            cfg.connection_key.clear();
-        } else if let Some(incoming) = incoming_connection_key {
-            if incoming.trim().is_empty() {
-                return Err("redes privadas precisam de uma chave de conexão".to_string());
+        if let Some(incoming) = incoming_connection_key {
+            if !incoming.trim().is_empty() {
+                cfg.connection_key = incoming.trim().to_string();
             }
-            cfg.connection_key = incoming.trim().to_string();
-        } else if cfg.connection_key.trim().is_empty() {
+        }
+        if cfg.connection_key.trim().is_empty() {
             cfg.connection_key = crate::webui::fresh_connection_key();
         }
         cfg.save()
@@ -157,7 +156,11 @@ async fn fanout_network_settings(
                     NETWORK_SETTINGS_PATH,
                     &NetworkSettingsEnvelope {
                         network: settings.clone(),
-                        connection_key: connection_key.to_string(),
+                        connection_key: if settings.visibility != NetworkVisibility::Public {
+                            connection_key.to_string()
+                        } else {
+                            String::new()
+                        },
                     },
                 )
                 .await
@@ -274,5 +277,60 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn changing_visibility_never_removes_the_internal_credential() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
+        let state = state_with("admin", vec![]).await;
+        let config_path = std::env::temp_dir().join(format!(
+            "pom-network-visibility-{}-{}.json",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let previous_config = std::env::var_os("POM_CONFIG");
+        std::env::set_var("POM_CONFIG", &config_path);
+
+        let private = NetworkSettings {
+            public_name: "Rede de teste".into(),
+            visibility: NetworkVisibility::Private,
+            ..NetworkSettings::default()
+        };
+        apply_network_settings_with_key(&state, private.clone(), false, None)
+            .await
+            .expect("rede privada inicial");
+        assert_eq!(state.auth.read().await.connection_key, "chave");
+
+        let public = NetworkSettings {
+            country_code: "BR".into(),
+            country_name: "Brasil".into(),
+            city: "Curitiba".into(),
+            visibility: NetworkVisibility::Public,
+            ..private.clone()
+        };
+        apply_network_settings_with_key(&state, public, false, None)
+            .await
+            .expect("transição para rede pública");
+        let public_config = state.auth.read().await;
+        assert_eq!(public_config.connection_key, "chave");
+        assert_eq!(crate::auth::internal_node_token(&public_config), None);
+        drop(public_config);
+
+        apply_network_settings_with_key(&state, private, false, None)
+            .await
+            .expect("retorno para rede privada");
+        let private_config = state.auth.read().await;
+        assert_eq!(private_config.connection_key, "chave");
+        assert_eq!(
+            crate::auth::internal_node_token(&private_config).as_deref(),
+            Some("chave")
+        );
+        drop(private_config);
+
+        match previous_config {
+            Some(value) => std::env::set_var("POM_CONFIG", value),
+            None => std::env::remove_var("POM_CONFIG"),
+        }
+        std::fs::remove_file(config_path).ok();
     }
 }

@@ -159,10 +159,14 @@ async fn target_json(
         .peer_http
         .for_peer(target_node_id)
         .map_err(|e| format!("sem cliente para o peer: {e}"))?;
-    let key = state.auth.read().await.connection_key.clone();
-    client
-        .get(format!("{base}/api/ui/{path}"))
-        .bearer_auth(key)
+    let request = state
+        .control_get_request(
+            client.get(format!("{base}/api/ui/{path}")),
+            &format!("/api/ui/{path}"),
+        )
+        .await
+        .map_err(|e| format!("não foi possível assinar a consulta ao peer: {e}"))?;
+    request
         .timeout(PEER_TIMEOUT)
         .send()
         .await
@@ -221,12 +225,16 @@ async fn apply_target_cache_types(
         .peer_http
         .for_peer(target_node_id)
         .map_err(|e| format!("sem cliente para o peer: {e}"))?;
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .post(format!("{base}/api/ui/cache-types"))
-        .bearer_auth(key)
+    let request = state
+        .control_json_request(
+            client.post(format!("{base}/api/ui/cache-types")),
+            "/api/ui/cache-types",
+            &json!({ "cache_type_k": cache_type_k, "cache_type_v": cache_type_v }),
+        )
+        .await
+        .map_err(|e| format!("não foi possível assinar a configuração do peer: {e}"))?;
+    let response = request
         .timeout(PEER_TIMEOUT)
-        .json(&json!({ "cache_type_k": cache_type_k, "cache_type_v": cache_type_v }))
         .send()
         .await
         .map_err(|e| format!("peer inacessível: {e}"))?;

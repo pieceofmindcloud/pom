@@ -135,7 +135,10 @@ pub(crate) fn spawn_ratchet(
             }
             let (local, connection_key) = {
                 let cfg = auth.read().await;
-                (net.cluster_logs_enabled(), cfg.connection_key.clone())
+                (
+                    net.cluster_logs_enabled(),
+                    crate::auth::internal_node_token(&cfg).unwrap_or_default(),
+                )
             };
             let probe = PeerClients::new(std::time::Duration::from_secs(10));
             probe.set_tls(announced);

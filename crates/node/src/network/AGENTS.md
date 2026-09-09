@@ -72,8 +72,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   uma rota de controle autenticada; inclusive 401/403 fazem a sonda tentar o
   próximo endereço, porque um endereço fantasma pode responder como outro nó.
   O cliente destinado a outro nó marca requests de controle com
-  `x-pom-internal-node`, usa a `connection_key` nas rotas internas de
-  inferência e limita a abertura TCP a 2 s; o cliente `plain()` para Ollama e
+  `x-pom-internal-node`, usa a `connection_key` somente nas rotas privadas de
+  inferência e limita a abertura TCP a 2 s; em rede pública a inferência direta
+  usa TLS e o mesmo marcador sem segredo compartilhado. O cliente `plain()` para
+  Ollama e
   loopback não envia essa marca. `for_peer_with_state` informa ao trace se o
   cliente TLS foi criado ou reutilizado; transporte local, túnel e cliente
   sem TLS permanecem explicitamente desconhecidos.

@@ -125,7 +125,10 @@ async fn post_internal_json<T: Serialize>(
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
     let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
-    let connection_key = state.auth.read().await.connection_key.clone();
+    let connection_key = {
+        let config = state.auth.read().await;
+        crate::auth::internal_node_token(&config)
+    };
 
     let mut last_error = "nenhum endereço de gateway respondeu".to_string();
     for base in &urls {
@@ -133,8 +136,8 @@ async fn post_internal_json<T: Serialize>(
             .post(format!("{base}{path}"))
             .timeout(timeout)
             .headers(control_headers.clone());
-        if !connection_key.is_empty() {
-            request = request.bearer_auth(&connection_key);
+        if let Some(connection_key) = &connection_key {
+            request = request.bearer_auth(connection_key);
         }
         match request
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -164,7 +167,10 @@ async fn sync_json<T: Serialize>(
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
     let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
-    let connection_key = state.auth.read().await.connection_key.clone();
+    let connection_key = {
+        let config = state.auth.read().await;
+        crate::auth::internal_node_token(&config)
+    };
     let mut last_error = "central admin synchronization failed".to_string();
     for attempt in 0..SYNC_ATTEMPTS {
         for base in &urls {
@@ -172,8 +178,8 @@ async fn sync_json<T: Serialize>(
                 .post(format!("{base}{path}"))
                 .timeout(SYNC_TIMEOUT)
                 .headers(control_headers.clone());
-            if !connection_key.is_empty() {
-                request = request.bearer_auth(&connection_key);
+            if let Some(connection_key) = &connection_key {
+                request = request.bearer_auth(connection_key);
             }
             let result = request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -304,15 +310,18 @@ pub(crate) async fn validate_api_key_remote_parts(
     };
     let body_bytes = serde_json::to_vec(&body)?;
     let control_headers = control_headers;
-    let connection_key = auth.read().await.connection_key.clone();
+    let connection_key = {
+        let config = auth.read().await;
+        crate::auth::internal_node_token(&config)
+    };
     for attempt in 0..SYNC_ATTEMPTS {
         for base in gateway_urls(&peer) {
             let mut request = client
                 .post(format!("{base}/api/internal/api-keys/validate"))
                 .timeout(SYNC_TIMEOUT)
                 .headers(control_headers.clone().unwrap_or_default());
-            if !connection_key.is_empty() {
-                request = request.bearer_auth(&connection_key);
+            if let Some(connection_key) = &connection_key {
+                request = request.bearer_auth(connection_key);
             }
             let result = request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -1873,6 +1882,41 @@ mod tests {
             .api_keys
             .iter()
             .any(|key| key.id == key_id && !key.active));
+    }
+
+    #[tokio::test]
+    async fn public_admin_keeps_access_to_api_key_management() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.profile = NodeProfile::Admin;
+            config.network.visibility = crate::config::NetworkVisibility::Public;
+            config.connection_key = "local-admin-credential".into();
+        }
+        let response = admin_routes()
+            .with_state(state.clone())
+            .oneshot(
+                Request::post("/admin/api-keys")
+                    .header("authorization", "Bearer local-admin-credential")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"label":"public-admin"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let response = admin_routes()
+            .with_state(state)
+            .oneshot(
+                Request::get("/admin/api-keys")
+                    .header("authorization", "Bearer local-admin-credential")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

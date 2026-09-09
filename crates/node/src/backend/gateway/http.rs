@@ -258,26 +258,58 @@ pub(super) async fn public_networks(
     }
 
     let mut geo_cache = state.database.public_network_geo_cache().unwrap_or_default();
+    let mut candidates = state.network.alive_peers().await;
+    for peer in state.network.public_discovered_peers().await {
+        if !candidates.iter().any(|known| known.node_id == peer.node_id) {
+            candidates.push(peer);
+        }
+    }
+    let pkarr = state.pkarr_publisher.as_ref();
+    let public_client = if state.peer_http.tls_enabled() {
+        state.peer_http.probe().ok()
+    } else {
+        Some(state.peer_http.plain())
+    };
 
-    for peer in state.network.alive_peers().await {
+    for peer in candidates {
         if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
             continue;
         }
-        if has_geo_filter
-            && !geo_cache.iter().any(|entry| {
-                entry.node_id == peer.node_id && matches_geo_label(&entry.geo_label, &query)
-            })
-        {
-            // A filtered lookup is intentionally conservative: only peers
-            // already indexed by a prior pkarr-backed observation are probed.
-            // An unfiltered lookup refreshes the index and discovers new
-            // records without ever scanning an unrelated world-wide set.
-            continue;
-        }
-        let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
+
+        // The announce is only a candidate locator. Resolve the signed pkarr
+        // record before touching the public HTTP endpoint. This keeps public
+        // discovery open without turning an unadmitted peer into a cluster
+        // member, and makes the geo filter apply to the DHT record itself.
+        let Some(pkarr) = pkarr else {
             continue;
         };
-        for base in peer.gateway_candidates() {
+        let Some(pkarr_record) = pkarr.resolve_public_peer(&peer.authority_pubkey).await else {
+            continue;
+        };
+        if has_geo_filter
+            && !pkarr_record
+                .geo_label
+                .as_deref()
+                .is_some_and(|label| matches_geo_label(label, &query))
+        {
+            continue;
+        }
+        let Some(client) = public_client.clone() else {
+            continue;
+        };
+        let mut bases = Vec::new();
+        if let (Some(host), Some(port)) = (
+            crate::pkarr_node::PkarrNode::host_from_multiaddr(&pkarr_record.multiaddr),
+            pkarr_record.gateway_port.or(peer.gateway_port),
+        ) {
+            bases.push(crate::peer_client::peer_base_url(
+                &host,
+                port,
+                state.peer_http.tls_enabled(),
+            ));
+        }
+        bases.extend(peer.gateway_candidates_with_tls(state.peer_http.tls_enabled()));
+        for base in bases {
             let response = client
                 .get(format!("{base}/api/public/network"))
                 .timeout(Duration::from_millis(500))

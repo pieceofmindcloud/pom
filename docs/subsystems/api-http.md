@@ -21,7 +21,8 @@ anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`
 a condição de a cabeça rascunhar na decodificação especulativa.
 As rotas internas desse listener exigem a `connection_key` e
 `x-pom-internal-node: 1` em redes privadas; em redes públicas exigem o
-transporte TLS e o marcador, sem segredo compartilhado. Elas não aceitam API
+transporte TLS e o marcador, sem segredo compartilhado. A chave local que o
+admin mantém para a UI pública não é enviada aos peers. Elas não aceitam API
 keys de cliente. Essa reconferência não assina os quadros de inferência. A
 chave pública e a assinatura Ed25519 são usadas separadamente no handshake para
 provar a identidade do peer.
@@ -139,8 +140,10 @@ apresentação e não definem chave, assinatura ou armazenamento de concessões.
 
 ## 2.1 Autoridade administrativa
 
-`connection_key` é apenas credencial de transporte entre nós. A capacidade de
-admin vem do arquivo separado `config::admin_trust_path()`, protegido com modo
+`connection_key` é credencial de transporte entre nós privados e credencial
+local da superfície administrativa. Em rede pública, ela não é um segredo de
+admissão nem é compartilhada. A capacidade de admin vem do arquivo separado
+`config::admin_trust_path()`, protegido com modo
 0600 e contendo a âncora manual, a concessão raiz, a cadeia de concessões
 secundárias, despromoções, sucessão e registros persistidos de replay. O
 `profile: admin` sozinho não cria capacidade: sem cadeia válida o nó permanece
@@ -223,8 +226,9 @@ servidor então emite uma sessão em memória identificada por cookie `HttpOnly`
 `SameSite=Strict`, com validade de 8 horas e caminhos somente administrativos.
 O digest da sessão é invalidado ao regenerar o token ou voltar a localhost.
 O valor do token é comparado no servidor e nunca é substituído pela
-`connection_key`. Chamadas de controle entre nós usam um marcador interno junto
-da `connection_key`, sem abrir esse caminho para o navegador.
+`connection_key`. Em rede pública, chamadas de controle entre nós usam somente
+o envelope assinado; em rede privada usam também o marcador interno junto da
+`connection_key`, sem abrir esse caminho para o navegador.
 
 Toda recusa administrativa se nomeia no cabeçalho `x-pom-admin-error`:
 `missing-token` (401, não havia credencial nenhuma), `invalid-token` (403,

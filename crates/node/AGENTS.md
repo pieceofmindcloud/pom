@@ -115,7 +115,9 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    `/handshake`; rede pública exige `cluster_id` e uma principal/concessão da
    cadeia em `.pom-admin-trust.json`. Isso garante que a primeira sonda use o
    mesmo esquema anunciado pela UI e que nenhum Announce não autenticado entre
-   em `peers`; `--no-discovery` → `detach`.
+   em `peers`; a rede pública ainda conserva uma `connection_key` local para a
+   UI do administrador, mas ela não é compartilhada nem usada na admissão;
+   `--no-discovery` → `detach`.
 10. Faixa de camadas, por precedência: `--start-layer/--end-layer` → nome do
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
     `calculate_assignment` (gap-filling). `lastslice::take()` é consumido

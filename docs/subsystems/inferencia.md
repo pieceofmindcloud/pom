@@ -91,8 +91,10 @@ necessária para a coletiva: a chamada fica aguardando dentro da barreira e um
 túnel indisponível não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas entre peers aceitam exclusivamente `Authorization: Bearer
-<connection_key>` junto de `x-pom-internal-node: 1`; uma API key de cliente não
-é fallback e não atravessa o pipeline. O loopback do túnel mantém o
+<connection_key>` junto de `x-pom-internal-node: 1` em redes privadas; em redes
+ públicas o transporte TLS e o marcador substituem o segredo compartilhado. Uma
+API key de cliente não é fallback e não atravessa o pipeline. O loopback do túnel
+mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
 O gateway valida a API key do cliente na superfície de entrada e pode consultar
 o principal para uma chave desconhecida. Essa consulta não participa da

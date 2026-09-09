@@ -71,7 +71,6 @@ async fn reload_idle_pipeline_with_timeout(
     }) {
         return Ok(());
     }
-    let key = state.auth.read().await.connection_key.clone();
     let requests = plan
         .steps
         .iter()
@@ -99,11 +98,10 @@ async fn reload_idle_pipeline_with_timeout(
                 Err(error) => return Some(Err(error)),
             };
             let urls = peer.gateway_candidates();
-            let key = key.clone();
-            if urls.is_empty() || key.is_empty() {
+            if urls.is_empty() {
                 return Some(Ok(async move {
                     Err(anyhow::anyhow!(
-                        "peer {node_id} sem endpoint de gateway ou chave"
+                        "peer {node_id} sem endpoint de gateway"
                     ))
                 }
                 .boxed()));
@@ -111,14 +109,21 @@ async fn reload_idle_pipeline_with_timeout(
             Some(Ok(async move {
                 let mut last_error = None;
                 for base in urls {
-                    match client
-                        .post(format!("{base}/api/internal/reload_model"))
-                        .bearer_auth(&key)
-                        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
-                        .json(&serde_json::json!({ "event": "reload_model" }))
-                        .send()
-                        .await
-                    {
+                    let request = state
+                        .control_json_request(
+                            client.post(format!("{base}/api/internal/reload_model")),
+                            "/api/internal/reload_model",
+                            &serde_json::json!({ "event": "reload_model" }),
+                        )
+                        .await;
+                    let response = match request {
+                        Ok(request) => request.send().await,
+                        Err(error) => {
+                            last_error = Some(error.to_string());
+                            continue;
+                        }
+                    };
+                    match response {
                         Ok(response) if response.status().is_success() => return Ok(()),
                         Ok(response) => {
                             last_error = Some(format!("HTTP {}", response.status()));

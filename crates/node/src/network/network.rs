@@ -657,6 +657,13 @@ pub struct Network {
     pub inference_port: Option<u16>,
     /// Port of this node's HTTP API / web UI.
     pub gateway_port: Option<u16>,
+    /// Anúncios públicos que ainda não provaram pertencimento à rede local.
+    ///
+    /// Esta tabela é deliberadamente separada de `peers`: candidatos públicos
+    /// podem ser consultados pelo diretório e pelo pkarr, mas nunca entram no
+    /// Painel, no planejamento de pipeline ou em qualquer superfície de
+    /// controle de membro antes da admissão normal.
+    public_discovery: Arc<RwLock<HashMap<String, PeerInfo>>>,
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
     pub profile: Arc<std::sync::RwLock<crate::profile::NodeProfile>>,
@@ -1131,6 +1138,7 @@ impl Network {
             ollama_port: init.ollama_port,
             inference_port: init.inference_port,
             gateway_port: init.gateway_port,
+            public_discovery: Arc::new(RwLock::new(HashMap::new())),
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Node)),
             hostname: String::new(),
             advertise_addr: std::sync::RwLock::new(None),
@@ -2315,6 +2323,7 @@ impl Network {
                     idle,
                 };
 
+                self.remember_public_discovery_peer(&peer).await;
                 if !self.admit_peer(&peer).await {
                     debug!(
                         "Announce de {} descartado: peer sem prova de pertencimento",
@@ -2442,6 +2451,7 @@ impl Network {
                         continue;
                     }
 
+                    self.remember_public_discovery_peer(&peer).await;
                     if !self.admit_peer(&peer).await {
                         debug!(
                             "PeerList descartou {}: peer sem prova de pertencimento",
@@ -2542,6 +2552,10 @@ impl Network {
             peers.retain(|_, p| p.is_alive());
             mortos
         };
+        self.public_discovery
+            .write()
+            .await
+            .retain(|_, peer| peer.is_alive());
         if mortos.is_empty() {
             return;
         }
@@ -2694,11 +2708,11 @@ impl Network {
                 config.network.visibility == crate::config::NetworkVisibility::Public,
             )
         };
-        if connection_key.is_empty() {
-            if !is_public_network {
-                return false;
-            }
+        if is_public_network {
             return Self::public_peer_is_admitted(peer, admission);
+        }
+        if connection_key.is_empty() {
+            return false;
         }
 
         let cache_key = self.admission_cache_key(peer, &connection_key);
@@ -2727,6 +2741,45 @@ impl Network {
             );
         }
         allowed
+    }
+
+    /// A rede pública tem uma porta de descoberta aberta, mas isso não é uma
+    /// concessão para participar do enxame. Guardamos somente candidatos que
+    /// conseguem provar a ligação entre identidade, chave de autoridade e
+    /// PeerId. A cadeia de confiança continua sendo exigida por
+    /// `admit_peer` antes de qualquer efeito de membro.
+    fn is_public_discovery_candidate(peer: &PeerInfo) -> bool {
+        peer.gateway_port.is_some()
+            && peer
+                .cluster_id
+                .as_deref()
+                .is_some_and(|cluster| !cluster.trim().is_empty())
+            && Self::legacy_identity_matches(&peer.node_id, &peer.pubkey)
+            && Self::authority_peer_id_matches(peer)
+    }
+
+    /// Keep a public announcement available to the public-network directory
+    /// without adding it to the admitted peer table.
+    pub(crate) async fn remember_public_discovery_peer(&self, peer: &PeerInfo) {
+        if peer.node_id == self.node_id || !Self::is_public_discovery_candidate(peer) {
+            return;
+        }
+        self.public_discovery
+            .write()
+            .await
+            .insert(peer.node_id.clone(), peer.clone());
+    }
+
+    /// Candidates that are still fresh enough to be probed by the public
+    /// directory. They are intentionally not returned by `alive_peers`.
+    pub(crate) async fn public_discovered_peers(&self) -> Vec<PeerInfo> {
+        self.public_discovery
+            .read()
+            .await
+            .values()
+            .filter(|peer| peer.is_alive())
+            .cloned()
+            .collect()
     }
 
     pub(crate) async fn insert_admitted_peer(&self, mut peer: PeerInfo) {
@@ -2768,6 +2821,7 @@ impl Network {
 
     /// Insert or update a peer discovered via libp2p (gossipsub / mDNS).
     pub async fn insert_peer(&self, peer: PeerInfo) {
+        self.remember_public_discovery_peer(&peer).await;
         if !self.admit_peer(&peer).await {
             debug!("peer {} recusado pela catraca de admissão", short(&peer.node_id));
             return;
@@ -4120,7 +4174,10 @@ mod tests {
         .await
         .unwrap()
         .with_admission(
-            admission_config("", crate::config::NetworkVisibility::Public),
+            admission_config(
+                "local-admin-credential",
+                crate::config::NetworkVisibility::Public,
+            ),
             Arc::new(trust),
         );
         peer.authority_pubkey = principal.pubkey;
@@ -4130,6 +4187,48 @@ mod tests {
         assert_eq!(trusted.peer_count().await, 1);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn public_directory_keeps_unadmitted_public_candidates_out_of_pipeline() {
+        let identity = crate::identity::Identity::generate();
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("", crate::config::NetworkVisibility::Public),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+
+        let mut peer = admission_peer(8080);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut seed = signing_key.to_bytes();
+        let peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+            .unwrap()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            peer.node_id.clone(),
+            peer_id.clone(),
+            &signing_key,
+        );
+        peer.authority_pubkey = principal.pubkey;
+        peer.libp2p_peer_id = Some(peer_id);
+        peer.cluster_id = Some("public-network".into());
+
+        assert!(!network.admit_peer(&peer).await);
+        network.remember_public_discovery_peer(&peer).await;
+
+        assert_eq!(network.peer_count().await, 0);
+        assert_eq!(network.public_discovered_peers().await.len(), 1);
     }
 
     /// A descoberta transitiva era de tiro único: `PeerRequest` só saía no

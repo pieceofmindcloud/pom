@@ -92,6 +92,7 @@ pub(crate) struct ClusterSnapshotCache {
 pub(crate) struct PkarrPublishHandle {
     node: Arc<crate::pkarr_node::PkarrNode>,
     addr: String,
+    gateway_port: Option<u16>,
     inference_port: Option<u16>,
     model_name: String,
     assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
@@ -102,6 +103,7 @@ impl PkarrPublishHandle {
     pub(crate) fn new(
         node: Arc<crate::pkarr_node::PkarrNode>,
         addr: String,
+        gateway_port: Option<u16>,
         inference_port: Option<u16>,
         model_name: String,
         assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
@@ -110,6 +112,7 @@ impl PkarrPublishHandle {
         Self {
             node,
             addr,
+            gateway_port,
             inference_port,
             model_name,
             assignment,
@@ -134,6 +137,7 @@ impl PkarrPublishHandle {
         self.node
             .publish(
                 &self.addr,
+                self.gateway_port,
                 self.inference_port,
                 &self.model_name,
                 start_layer,
@@ -143,6 +147,16 @@ impl PkarrPublishHandle {
                 (!geo_label.trim().is_empty()).then_some(geo_label),
             )
             .await
+    }
+
+    /// Resolve a public directory candidate with this node's Mainline/relay
+    /// client. The public key is announced as hex because the P2P announce
+    /// already carries that identity; no new wire field is needed.
+    pub(crate) async fn resolve_public_peer(
+        &self,
+        authority_pubkey: &str,
+    ) -> Option<crate::pkarr_node::ResolvedPeer> {
+        self.node.resolve_public_peer(authority_pubkey).await
     }
 }
 
@@ -300,7 +314,7 @@ impl GatewayState {
 
     /// Build the authenticated headers for a node-to-node control request.
     /// Public networks use only the signed envelope; private networks may
-    /// still carry the legacy shared secret as an additional transport guard.
+    /// still carry the shared secret as an additional transport guard.
     pub(crate) fn signed_control_headers(
         &self,
         method: &str,
@@ -328,8 +342,8 @@ impl GatewayState {
         body: &[u8],
     ) -> anyhow::Result<reqwest::RequestBuilder> {
         let mut request = request.headers(self.signed_control_headers(method, path, body)?);
-        let connection_key = self.auth.read().await.connection_key.clone();
-        if !connection_key.is_empty() {
+        let config = self.auth.read().await;
+        if let Some(connection_key) = crate::auth::internal_node_token(&config) {
             request = request.bearer_auth(connection_key);
         }
         Ok(request)

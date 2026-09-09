@@ -114,6 +114,16 @@ pub(crate) fn fresh_connection_key() -> String {
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
+fn connection_key_after_setup(existing: &str, supplied: &str) -> String {
+    if !supplied.trim().is_empty() {
+        supplied.trim().to_string()
+    } else if !existing.trim().is_empty() {
+        existing.to_string()
+    } else {
+        fresh_connection_key()
+    }
+}
+
 async fn setup_hardware(config: AuthState) -> SetupHardwareResponse {
     let system = sysmon::sample().await;
     let gpu_detected = !system.gpus.is_empty();
@@ -528,10 +538,12 @@ pub async fn save_setup(
         });
     }
 
-    if profile == crate::profile::NodeProfile::Admin {
-        cfg.connection_key = req.connection_key.trim().to_string();
-    } else {
-        cfg.connection_key = req.connection_key.trim().to_string();
+    let supplied_connection_key = req.connection_key.trim();
+    // Public networks do not have a shared admission secret, but the local
+    // admin surface still needs a durable credential after setup.
+    cfg.connection_key = connection_key_after_setup(&cfg.connection_key, supplied_connection_key);
+
+    if profile != crate::profile::NodeProfile::Admin {
         if !req.bootstrap.is_empty() {
             cfg.bootstrap_nodes = req
                 .bootstrap
@@ -542,9 +554,6 @@ pub async fn save_setup(
         }
     }
 
-    if requires_connection_key && cfg.connection_key.is_empty() {
-        cfg.connection_key = fresh_connection_key();
-    }
     cfg.advertise_addr =
         (!req.advertise_addr.trim().is_empty()).then(|| req.advertise_addr.trim().to_string());
     cfg.network = network;
@@ -775,5 +784,16 @@ mod tests {
                     .as_deref()
                     .is_some_and(|repo| repo.contains('/'))
         }));
+    }
+
+    #[test]
+    fn setup_keeps_or_generates_a_local_credential_without_a_public_secret() {
+        assert_eq!(
+            connection_key_after_setup("old-local-key", " "),
+            "old-local-key"
+        );
+        assert_eq!(connection_key_after_setup("old-local-key", "new-key"), "new-key");
+        let generated = connection_key_after_setup("", "");
+        assert!(!generated.is_empty());
     }
 }

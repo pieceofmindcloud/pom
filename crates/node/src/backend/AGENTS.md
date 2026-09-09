@@ -27,7 +27,9 @@ inference routes (`/api/generate`, `/v1/models`, `/v1/chat/completions`,
 The gateway callbacks `/v1/relay-result` and `/v1/remote-stream-result` use
 the per-frame `Ticket` in the body and no client API key. The separate
 inference listener accepts the connection key on private networks; public
-networks use TLS transport without a shared secret. Inference frames are not
+networks use TLS transport without a shared secret. A public node keeps a
+local `connection_key` for the browser/admin boundary, but it is never
+shared with peers or used for public admission. Inference frames are not
 wrapped in control signatures. `/health`, `/peers` and `/handshake` remain
 dual-stack.
 
@@ -98,8 +100,9 @@ profile policy remains the effective authorization boundary.
   one cannot hide a valid one; a valid API key still supplies its non-secret
   `Caller`. Uma chave desconhecida é consultada no principal pelo canal interno
   autenticado e falha fechada em timeout ou erro. A porta de inferência não
-  usa esse fluxo: ela exige a `connection_key` compartilhada e o marcador
-  interno, enquanto os callbacks de resultado validam o `Ticket` por quadro.
+  usa a `connection_key` compartilhada somente em redes privadas; em redes
+  públicas exige transporte TLS e o marcador interno, enquanto os callbacks de
+  resultado validam o `Ticket` por quadro.
 - `/handshake` é a prova de admissão da descoberta privada. A comparação exige
   que a chave configurada e a recebida sejam ambas não vazias; chave vazia
   nunca transforma um processo de setup em membro do enxame.
@@ -896,8 +899,9 @@ faz o download autenticado do blob persistido.
   autoridade. `POST /api/ui/network/settings` é exclusivo do administrador,
   grava `pom.json` e SQLite, atualiza o rótulo geo do pkarr e envia a nova
   configuração em um envelope assinado aos peers. O envelope leva a
-  `connection_key` somente como segredo de transporte de redes privadas; a
-  mutação remota exige a assinatura da autoridade. `GET
+  `connection_key` somente como segredo de transporte de redes privadas; em uma
+  rede pública o valor local do admin não entra no envelope. A mutação remota
+  exige a assinatura da autoridade. `GET
   /api/ui/network/trust-share` entrega ao administrador a raiz de confiança
   para cópia ou download e, quando aplicável, a chave de conexão.
 - `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=

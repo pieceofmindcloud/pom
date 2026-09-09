@@ -30,6 +30,7 @@ pub struct PkarrNode {
 #[derive(Debug, Clone)]
 pub struct ResolvedPeer {
     pub multiaddr: String,
+    pub gateway_port: Option<u16>,
     pub inference_port: Option<u16>,
     pub model: String,
     pub start_layer: u32,
@@ -48,6 +49,9 @@ pub struct ResolvedPeer {
 struct TxtPayload {
     /// Multiaddr / address string (e.g. "192.168.1.5:42777")
     a: String,
+    /// HTTP gateway port for the public metadata endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    h: Option<u16>,
     /// Optional inference server port
     #[serde(skip_serializing_if = "Option::is_none")]
     i: Option<u16>,
@@ -71,6 +75,11 @@ struct TxtPayload {
 // ── PkarrNode impl ────────────────────────────────────────────────────────────
 
 impl PkarrNode {
+    #[cfg(test)]
+    pub(crate) fn from_client_for_test(client: Client, keypair: Keypair) -> Self {
+        Self { client, keypair }
+    }
+
     /// Load an existing keypair from `key_path`, or generate a fresh one and
     /// persist it there.
     pub fn load_or_create(key_path: &Path) -> Result<Self> {
@@ -98,6 +107,37 @@ impl PkarrNode {
         self.keypair.to_uri_string()
     }
 
+    /// Derive the pkarr URI from the public authority key carried by an
+    /// announce. The authority uses the same Ed25519 key as the pkarr record,
+    /// so a public candidate does not need a second discovery credential.
+    pub fn public_key_uri_from_hex(public_key_hex: &str) -> Option<String> {
+        let bytes: [u8; 32] = hex::decode(public_key_hex).ok()?.try_into().ok()?;
+        let public_key = pkarr::PublicKey::try_from(&bytes).ok()?;
+        Some(public_key.to_uri_string())
+    }
+
+    /// Resolve a public candidate's pkarr record from its announced authority
+    /// key. This is deliberately independent of network admission: the record
+    /// is public metadata, while membership still goes through `admit_peer`.
+    pub async fn resolve_public_peer(&self, authority_pubkey_hex: &str) -> Option<ResolvedPeer> {
+        let uri = Self::public_key_uri_from_hex(authority_pubkey_hex)?;
+        resolve_one(&self.client, &uri).await
+    }
+
+    /// Extract the host from the address published in a pkarr record. The
+    /// record carries the public P2P port; the caller supplies the advertised
+    /// gateway port for the public metadata endpoint.
+    pub fn host_from_multiaddr(addr: &str) -> Option<String> {
+        for protocol in addr.parse::<libp2p::Multiaddr>().ok()?.iter() {
+            match protocol {
+                libp2p::multiaddr::Protocol::Ip4(ip) => return Some(ip.to_string()),
+                libp2p::multiaddr::Protocol::Ip6(ip) => return Some(format!("[{ip}]")),
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Raw 32-byte Ed25519 seed backing this identity.
     ///
     /// Lets the libp2p swarm derive a *stable* `PeerId` from the same
@@ -113,6 +153,7 @@ impl PkarrNode {
     pub async fn publish(
         &self,
         addr: &str,
+        gateway_port: Option<u16>,
         inference_port: Option<u16>,
         model: &str,
         start_layer: u32,
@@ -123,6 +164,7 @@ impl PkarrNode {
     ) -> Result<()> {
         let payload = TxtPayload {
             a: addr.to_string(),
+            h: gateway_port,
             i: inference_port,
             m: model.to_string(),
             s: start_layer,
@@ -175,6 +217,7 @@ fn parse_signed_packet(sp: &SignedPacket) -> Option<ResolvedPeer> {
                 if let Ok(payload) = serde_json::from_str::<TxtPayload>(&json) {
                     return Some(ResolvedPeer {
                         multiaddr: payload.a,
+                        gateway_port: payload.h,
                         inference_port: payload.i,
                         model: payload.m,
                         start_layer: payload.s,
@@ -235,6 +278,7 @@ mod tests {
     fn roundtrip_txt_payload() {
         let payload = TxtPayload {
             a: "/ip4/1.2.3.4/tcp/52777".to_string(),
+            h: None,
             i: Some(8181),
             m: "llama3:8b".to_string(),
             s: 0,
@@ -259,6 +303,7 @@ mod tests {
     fn roundtrip_no_inference_port() {
         let payload = TxtPayload {
             a: "10.0.0.2:42777".to_string(),
+            h: None,
             i: None,
             m: "gemma3".to_string(),
             s: 16,
@@ -336,6 +381,7 @@ mod tests {
     fn roundtrip_relay_field() {
         let with_relay = TxtPayload {
             a: "1.2.3.4:42777".to_string(),
+            h: None,
             i: None,
             m: "llama3:8b".to_string(),
             s: 0,
@@ -356,6 +402,7 @@ mod tests {
 
         let no_relay = TxtPayload {
             a: "1.2.3.4:42777".to_string(),
+            h: None,
             i: None,
             m: "llama3:8b".to_string(),
             s: 0,
@@ -369,6 +416,68 @@ mod tests {
             !json2.contains("\"r\""),
             "relay flag should be absent: {}",
             json2
+        );
+    }
+
+    #[test]
+    fn authority_public_key_derives_the_pkarr_uri() {
+        let keypair = Keypair::random();
+        let authority = hex::encode(keypair.public_key().as_bytes());
+        let derived = PkarrNode::public_key_uri_from_hex(&authority).unwrap();
+
+        assert_eq!(derived, keypair.to_uri_string());
+    }
+
+    #[tokio::test]
+    async fn a_public_record_published_by_one_client_is_resolved_by_another() {
+        let testnet = pkarr::mainline::Testnet::builder(5).build().unwrap();
+        let mut builder = Client::builder();
+        builder
+            .no_default_network()
+            .bootstrap(&testnet.bootstrap)
+            .dht(|dht| dht.bind_address(std::net::Ipv4Addr::LOCALHOST))
+            .request_timeout(std::time::Duration::from_millis(500));
+        let publisher = builder.build().unwrap();
+
+        let mut resolver_builder = Client::builder();
+        resolver_builder
+            .no_default_network()
+            .bootstrap(&testnet.bootstrap)
+            .dht(|dht| dht.bind_address(std::net::Ipv4Addr::LOCALHOST))
+            .request_timeout(std::time::Duration::from_millis(500));
+        let resolver = resolver_builder.build().unwrap();
+        let keypair = Keypair::random();
+        let publisher = PkarrNode {
+            client: publisher,
+            keypair: keypair.clone(),
+        };
+        let resolver = PkarrNode {
+            client: resolver,
+            keypair: Keypair::random(),
+        };
+
+        publisher
+            .publish(
+                "/ip6/2001:db8::1/tcp/52777",
+                Some(8080),
+                None,
+                "",
+                0,
+                0,
+                0,
+                false,
+                Some("com.br.curitiba.public-network"),
+            )
+            .await
+            .unwrap();
+
+        let authority = hex::encode(keypair.public_key().as_bytes());
+        let resolved = resolver.resolve_public_peer(&authority).await.unwrap();
+        assert_eq!(resolved.multiaddr, "/ip6/2001:db8::1/tcp/52777");
+        assert_eq!(resolved.gateway_port, Some(8080));
+        assert_eq!(
+            resolved.geo_label.as_deref(),
+            Some("com.br.curitiba.public-network")
         );
     }
 }

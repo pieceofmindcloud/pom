@@ -675,6 +675,7 @@ async fn handle_event(
                     runtime_capacity,
                     idle,
                 };
+                network.remember_public_discovery_peer(&peer).await;
                 if !network.admit_peer(&peer).await {
                     debug!(
                         "libp2p: descartei Announce de {} sem prova de pertencimento",

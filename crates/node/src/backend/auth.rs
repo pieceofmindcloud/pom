@@ -110,8 +110,9 @@ fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
 /// pela API key de inferência compatível com OpenAI/Anthropic.
 pub const ADMIN_ACCESS_TOKEN_HEADER: &str = "x-pom-access-token";
 /// Marca requests de controle emitidos pelo próprio nó para outro nó. Ela não
-/// é uma credencial: só vale junto com uma `connection_key` válida e nunca é
-/// enviada pelo cliente da interface.
+/// é uma credencial: em redes privadas acompanha a `connection_key`; em redes
+/// públicas acompanha o envelope assinado. Nunca é enviada pelo cliente da
+/// interface.
 pub const INTERNAL_NODE_REQUEST_HEADER: &str = "x-pom-internal-node";
 /// Signed control-plane envelope. It replaces the shared connection secret on
 /// public networks while leaving inference frames on their transport path.
@@ -122,9 +123,14 @@ pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 
 /// Escolhe a credencial que um nó usa nas chamadas internas de inferência.
 /// API keys pertencem à superfície do cliente e nunca atravessam um salto
-/// interno; os peers compartilham a `connection_key` para esse canal.
+/// interno. Em redes privadas, os peers compartilham a `connection_key` para
+/// esse canal. Em redes públicas, a chave que permanece local para o admin
+/// não é um segredo de entrada entre peers: o transporte seguro e a cadeia
+/// assinada fazem esse trabalho.
 pub fn internal_node_token(config: &Config) -> Option<String> {
-    (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+    (config.network.visibility != crate::config::NetworkVisibility::Public
+        && !config.connection_key.is_empty())
+        .then(|| config.connection_key.clone())
 }
 
 /// Confere a credencial compartilhada de um peer na porta de inferência.
@@ -1103,6 +1109,9 @@ mod tests {
         };
 
         assert_eq!(internal_node_token(&cfg).as_deref(), Some("cluster-secret"));
+
+        cfg.network.visibility = crate::config::NetworkVisibility::Public;
+        assert_eq!(internal_node_token(&cfg), None);
 
         cfg.connection_key.clear();
         assert_eq!(internal_node_token(&cfg), None);

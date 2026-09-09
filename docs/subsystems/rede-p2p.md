@@ -43,7 +43,9 @@ consomem a tabela depois desse ponto.
   A admissão exige também a tupla exata `{node_id, libp2p peer_id,
   authority_pubkey}` presente como principal atual ou concessão secundária
   não demovida. A chave pública legada precisa derivar o `node_id`, e a chave
-  de autoridade precisa derivar o `libp2p peer_id`. Sem trust local, nenhum
+  de autoridade precisa derivar o `libp2p peer_id`. A `connection_key` local do
+  admin não participa dessa admissão nem é enviada aos peers. Sem trust local,
+  nenhum
   peer público é membro.
 - `connection_verified` é uma marca produzida pelo gate local. O valor vindo
   de `PeerList` nunca é aceito como prova e a lista transitiva é revalidada

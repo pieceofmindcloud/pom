@@ -1183,15 +1183,22 @@ async fn forward_network_chat_to_primary(
     let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
         return bad_request("sem cliente para o nó principal");
     };
-    let key = state.auth.read().await.connection_key.clone();
-    match client
-        .post(format!("{base}/api/ui/network/chat"))
-        .bearer_auth(key)
-        .timeout(PEER_TIMEOUT)
-        .json(req)
-        .send()
+    let request = match state
+        .control_json_request(
+            client.post(format!("{base}/api/ui/network/chat")),
+            "/api/ui/network/chat",
+            req,
+        )
         .await
     {
+        Ok(request) => request.timeout(PEER_TIMEOUT),
+        Err(error) => {
+            return bad_request(format!(
+                "não foi possível assinar a decisão do Chat: {error}"
+            ))
+        }
+    };
+    match request.send().await {
         Ok(response) if response.status().is_success() => {
             Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
         }

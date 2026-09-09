@@ -12,6 +12,14 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/chat/telemetry", post(chat_telemetry))
+        .route(
+            "/api/ui/network-chat",
+            get(network_chat_snapshot).post(network_chat_action),
+        )
+        .route(
+            "/api/ui/network-chat/file/:message_id",
+            get(network_chat_file),
+        )
         // Ancorar a confiança de admin é o único trabalho que precisa de tela
         // **antes** de existir autoridade: ver o cabeçalho de `webui/trust.rs`.
         .route(

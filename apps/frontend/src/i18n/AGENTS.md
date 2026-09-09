@@ -100,6 +100,11 @@ environment value.
 Chat capability read is refused or cannot be completed. It must not be replaced
 with the incomplete or empty-coverage message.
 
+The `networkChat.*` messages cover the separate Network chat surface, including
+the disabled state, participants, files and typing indicator. They must remain
+paired in both CSV locale columns because this route is reachable from the same
+AI chat shell.
+
 Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
 velocidade de pré-processamento do prompt, velocidade de geração da saída,
 tempo total, tokens/s e o rótulo explícito de taxa não mensurável usado para

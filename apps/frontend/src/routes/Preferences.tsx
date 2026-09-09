@@ -2,7 +2,7 @@
  * Preferências locais deste nó: fronteira administrativa, TLS entre nós,
  * proteção térmica e credencial opcional do provedor Hugging Face.
  */
-import { Ban, Check, Copy, Lock, ScrollText, ShieldCheck, ShieldOff, Thermometer } from "lucide-react";
+import { Ban, Check, Copy, Lock, MessagesSquare, ScrollText, ShieldCheck, ShieldOff, Thermometer } from "lucide-react";
 import { useEffect, useState } from "react";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
@@ -134,6 +134,57 @@ export function ClusterLogsPanel({
         {!authority && (
           <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
             {t("network.logsNotAuthority")}
+          </Footnote>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+export function NetworkChatPanel({
+  enabled,
+  authority,
+  busy = false,
+  onToggle,
+}: {
+  enabled: boolean;
+  authority: boolean;
+  busy?: boolean;
+  onToggle?: (next: boolean) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Panel>
+      <PanelHeader
+        title={t("network.networkChatTitle")}
+        subtitle={t("network.networkChatSubtitle")}
+        actions={
+          <Button
+            variant={enabled ? "danger" : "primary"}
+            role="switch"
+            aria-checked={enabled}
+            disabled={!authority || busy}
+            loading={busy}
+            icon={<MessagesSquare className="h-3.5 w-3.5" />}
+            onClick={() => onToggle?.(!enabled)}
+          >
+            {t(enabled ? "network.networkChatDisable" : "network.networkChatEnable")}
+          </Button>
+        }
+      />
+      <div className="space-y-3 px-5 py-4">
+        <KeyValue label={t("network.networkChatState")}>
+          <Badge tone={enabled ? "aqua" : "amber"}>
+            <MessagesSquare className="h-3.5 w-3.5" />
+            {t(enabled ? "network.networkChatOn" : "network.networkChatOff")}
+          </Badge>
+        </KeyValue>
+        <Footnote icon={<MessagesSquare className="h-3.5 w-3.5" />}>
+          {t("network.networkChatHowItWorks")}
+        </Footnote>
+        {!authority && (
+          <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
+            {t("network.networkChatNotAuthority")}
           </Footnote>
         )}
       </div>
@@ -362,6 +413,7 @@ export function Preferences() {
   const [thermalSaving, setThermalSaving] = useState(false);
   const [tlsSaving, setTlsSaving] = useState(false);
   const [logsSaving, setLogsSaving] = useState(false);
+  const [networkChatSaving, setNetworkChatSaving] = useState(false);
 
   async function saveThermal(next: ThermalPolicy) {
     setThermalSaving(true);
@@ -408,6 +460,22 @@ export function Preferences() {
     }
   }
 
+  async function toggleNetworkChat(next: boolean) {
+    setNetworkChatSaving(true);
+    try {
+      await api.post("/api/ui/network/chat", { network_chat_enabled: next });
+      toast.success(
+        t(next ? "network.networkChatEnabled" : "network.networkChatDisabled"),
+        t("network.networkChatPropagates"),
+      );
+      invalidate();
+    } catch (error) {
+      toast.fromError(t("network.networkChatFailed"), error);
+    } finally {
+      setNetworkChatSaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -427,6 +495,12 @@ export function Preferences() {
           authority={node.data?.cluster_logs_authority ?? false}
           busy={logsSaving}
           onToggle={(next) => void toggleLogs(next)}
+        />
+        <NetworkChatPanel
+          enabled={node.data?.network_chat_enabled ?? false}
+          authority={node.data?.network_chat_authority ?? false}
+          busy={networkChatSaving}
+          onToggle={(next) => void toggleNetworkChat(next)}
         />
         <ThermalPanel
           policy={node.data?.thermal}

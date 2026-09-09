@@ -24,6 +24,7 @@ import type {
   RuntimeParams,
   KvCacheType,
 } from "./types";
+import type { NetworkChatRequest } from "./types";
 
 const KEY_STORAGE = storageKey("connectionKey");
 
@@ -127,6 +128,30 @@ export async function ensureChatApiKey(force = false): Promise<string> {
     chatApiKeyRequest = null;
   });
   return chatApiKeyRequest;
+}
+
+/** Every network-chat action carries the node-owned POM API key in its frame. */
+export async function postNetworkChat<T = { accepted: boolean }>(
+  action: NetworkChatRequest,
+): Promise<T> {
+  return api.post<T>("/api/ui/network-chat", {
+    ...action,
+    api_key: await ensureChatApiKey(),
+  });
+}
+
+export async function downloadNetworkChatFile(messageId: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  if (connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+  const response = await fetch(`/api/ui/network-chat/file/${encodeURIComponent(messageId)}`, {
+    headers,
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const { message, body } = await explain(response);
+    throw new ApiError(response.status, message, body);
+  }
+  return response.blob();
 }
 
 /** Thrown for any non-2xx answer, carrying whatever the node explained. */

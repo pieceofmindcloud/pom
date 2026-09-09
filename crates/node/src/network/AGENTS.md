@@ -31,9 +31,16 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   principal ingere e persiste lotes.
 - `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
   campo anunciado só dispara a leitura da política no principal.
+- `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
+  response próprio, limites de texto/arquivo, fila limitada, rate limit e
+  writer de persistência fora do loop do swarm. A ação original leva a API key;
+  retransmissões internas levam apenas o frame já validado.
+- `network_chat_policy.rs` - catraca autenticada do interruptor do Chat da
+  rede; o booleano anunciado é gatilho e a leitura autenticada no principal é
+  a fonte efetiva.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
   (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e o
-  protocolo de logs do cluster. Põe peers
+  protocolo de logs do cluster e Chat da rede. Põe peers
   no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
   antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
@@ -67,6 +74,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
   `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
   é a fonte, e falha preserva o valor local.
+- `network_chat_enabled` segue o mesmo contrato. A retransmissão do Chat da
+  rede é estrela: o principal valida API key ativa e `blocked_nodes` antes de
+  enviar a outros `node_id`.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. Guarda também a **memória de
@@ -180,8 +190,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
-  só logam. O request/response de logs usa um behaviour próprio,
-  responde apenas no nó principal e nunca retransmite por outro peer.
+  só logam. O request/response de logs e o do Chat da rede usam behaviours
+  próprios, separados do túnel de inferência. O Chat valida no principal,
+  retransmite sem segredo e recusa relays que não vieram de um administrador.
+  O `select!` é biased para o swarm e o túnel de inferência; filas de Chat usam
+  `try_send`, descartam sob pressão e nunca esperam SQLite.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.

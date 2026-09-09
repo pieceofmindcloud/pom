@@ -10,6 +10,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/ui/network/tls", post(save_tls))
         .route("/api/ui/network/logs", post(save_cluster_logs))
+        .route("/api/ui/network/chat", post(save_network_chat))
         .route("/api/ui/cluster-logs", get(cluster_logs))
         .route(
             "/api/ui/deploy/capacity-preview",

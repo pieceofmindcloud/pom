@@ -197,6 +197,8 @@ pub struct GatewayState {
     pub tls_server: Option<crate::serve::TlsServer>,
     /// Captura, transporte e persistência dos logs de processo do cluster.
     pub cluster_logs: Arc<crate::cluster_logs::ClusterLogs>,
+    /// Canal global da rede, validado e retransmitido pelo principal.
+    pub network_chat: Arc<crate::network_chat::NetworkChat>,
     /// Retrato curto do cluster, isolado por gateway e por instância de teste.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.

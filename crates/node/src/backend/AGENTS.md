@@ -456,6 +456,17 @@ profile policy remains the effective authorization boundary.
 
 ## Key functions and routes
 
+### Chat da rede
+
+`GatewayState.network_chat` expõe o serviço libp2p do Chat da rede. `webui`
+serve `GET/POST /api/ui/network-chat` para a interface, persistência e ações
+com API key, enquanto `POST /api/ui/network/chat` é o interruptor exclusivo do
+principal. A rota de política entre nós é `GET /api/cluster/network-chat`.
+O backend não retransmite pela HTTP UI: a ação entra na fila limitada do
+`NetworkChat` e o swarm valida e encaminha por `discovery.rs`. O snapshot não
+repete bytes de arquivo em cada polling; `GET /api/ui/network-chat/file/:message_id`
+faz o download autenticado do blob persistido.
+
 - `gateway/` - `GatewayState` (network, ollama, default_model,
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
   reply_inbox); `FromRef<GatewayState> for AuthState`; `peers_visible_to_cluster`

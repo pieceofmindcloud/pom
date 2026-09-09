@@ -18,6 +18,10 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
             crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
             get(cluster_logs_policy),
         )
+        .route(
+            crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH,
+            get(network_chat_policy),
+        )
         .route("/handshake", post(session::handle_handshake))
         // Onde a cauda de um pipeline entrega o resultado. A rota é interna ao
         // pipeline: o Ticket é a credencial por quadro.
@@ -80,6 +84,15 @@ pub(super) async fn cluster_logs_policy(
 ) -> impl IntoResponse {
     Json(serde_json::json!({
         "logs_enabled": state.network.cluster_logs_enabled(),
+    }))
+}
+
+pub(super) async fn network_chat_policy(
+    _auth: crate::auth::ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "network_chat_enabled": state.network.network_chat_enabled(),
     }))
 }
 

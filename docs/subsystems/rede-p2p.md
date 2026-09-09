@@ -594,7 +594,41 @@ cada 100 ms, em modo best-effort, sem retentativa agressiva. O principal grava
 as linhas em `pom.db`, associadas ao `deploy_id`, e também persiste o contador
 de descartes.
 
-## 6. Defeitos anotados
+## 6. Chat da rede
+
+O Chat da rede é uma superfície separada do Chat com a IA e usa o mesmo swarm
+libp2p, sem XMPP ou servidor externo. O protocolo request/response próprio é
+`/pom/network-chat/1.0.0`, com Noise, relay/DCuTR e endereçamento exclusivamente
+por `node_id`. Texto, arquivo e indicador de digitação compartilham a sala
+`network`; arquivos têm limite de 8 MiB e texto de 8 KiB. O histórico de texto
+e os metadados de arquivo ficam em `network_chat_messages` no mesmo `pom.db` do
+histórico da IA. O snapshot da UI não repete bytes de arquivo a cada polling; o
+download autenticado usa `GET /api/ui/network-chat/file/:message_id`.
+
+O desenho é estrela. Um participante envia cada ação com a API key ativa do POM
+no frame original. O nó principal confere a chave no banco, vincula a chave ao
+`sender_node_id`, recusa `blocked_nodes`, aplica rate limit e só então
+retransmite o frame já validado aos participantes. A retransmissão remove o
+segredo e leva `relayed: true`; um nó que não é principal não aceita esse frame
+como origem. O arquivo continua dentro do limite de frame do protocolo e não é
+armazenado fora do banco local de cada nó.
+
+`network_chat_enabled` no `Announce` é gatilho, nunca valor. O interruptor
+`POST /api/ui/network/chat` só passa no principal, grava a configuração local e
+atualiza a cópia atômica anunciada. Um nó que observa divergência consulta
+`GET /api/cluster/network-chat` com a chave de conexão e só adota uma resposta
+autenticada; falha preserva o valor local. Desligado, o canal não aceita,
+persiste ou retransmite ações.
+
+A comunicação é deliberadamente de baixa prioridade: o behaviour é separado do
+túnel de inferência, o `select!` do swarm prioriza eventos do swarm e o túnel,
+as filas usam `try_send`, e a persistência roda em writer dedicado com fila
+limitada. Sob pressão, o Chat descarta e incrementa `dropped`; ele nunca espera
+SQLite ou segura uma chamada de `/v1/tp/reduce`, prefill ou decode. O teste de
+contrapressão e a medição de latência ficam em
+`network_chat_tests.rs` e em `discovery.rs`.
+
+## 7. Defeitos anotados
 
 - **DEFEITO ANOTADO: bitswap é protocolo órfão** - `bitswap_behaviour` está no
   swarm e os eventos só são logados em `debug!`

@@ -22,6 +22,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `removeNode` recebe o `deploy_id` para versionar a topologia correta.
   `listDeployments` também preserva o estado `idle` quando os peers continuam
   vivos, mas descarregaram o modelo.
+- `postNetworkChat` - obtains the node-owned API key and includes it in every
+  network-chat action body. The gateway still authenticates the browser with
+  the connection key separately.
+- `downloadNetworkChatFile` - fetches a persisted network-chat file only when
+  the operator asks to download it, so regular history polling carries metadata
+  but not repeated file bytes.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
@@ -166,6 +172,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `leaveNetwork(nodeId?)` - `POST /api/ui/leave`. Without `nodeId` this node leaves; with a peer's `node_id` this node forwards the request to that peer (`webui::forward_leave`) - the panel only uses relative paths, so acting on another machine is always a relay through the local node.
 
 ### types.ts
+- `NetworkChatRequest`, `NetworkChatSnapshot` and related types mirror the
+  network-chat action and snapshot contract. `NetworkChatEvent` preserves
+  `node_id` as the identity key instead of using hostname as a key.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.

@@ -78,6 +78,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/cluster/network-chat",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/api/internal/",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -128,6 +133,11 @@ const ROUTE_RULES: &[RouteRule] = &[
     },
     RouteRule {
         prefix: "/api/ui/network/rtt",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
+        prefix: "/api/ui/network-chat",
         method: None,
         scope: RouteScope::CommonOrInternal,
     },

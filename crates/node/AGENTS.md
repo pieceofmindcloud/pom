@@ -200,6 +200,11 @@ e único contrato oficial: não manter fallback, adapter ou código de
 compatibilidade para formatos v1/v2 anteriores. Mudanças futuras devem
 evoluir este contrato explicitamente.
 
+O arranque cria o `NetworkChat` junto do `Discovery`, usando um behaviour
+libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviço
+com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
+catraca de `network_chat_policy`.
+
 ## Ligações
 
 - **Depende de**: `routing-contract`, `llama-engine` e `brand` (crates irmãos);

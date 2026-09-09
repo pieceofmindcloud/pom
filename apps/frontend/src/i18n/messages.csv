@@ -84,6 +84,7 @@ canvas.resetLayout,"Reset the arrangement, including what you dragged","Redefini
 canvas.vramTotal,VRAM · {count} GPUs,VRAM · {count} GPUs
 canvas.zoomIn,Zoom in,Aumentar zoom
 canvas.zoomOut,Zoom out,Diminuir zoom
+chat.aiTab,AI,IA
 chat.ask,Ask the network anything,Pergunte alguma coisa à rede
 chat.askDetail,Messages travel through machines in Dashboard order and return token by token.,As mensagens percorrem as máquinas na ordem do Painel e voltam token a token.
 chat.attach,Attach file,Anexar ficheiro
@@ -141,6 +142,7 @@ chat.message,"{count, plural, =1 {message} other {messages}}","{count, plural, =
 chat.model,Model,Modelo
 chat.modelAtStart,model used at conversation start: {model},modelo usado no início da conversa: {model}
 chat.modelChanged,model changed to {model},modelo alterado para {model}
+chat.networkTab,Network,Rede
 chat.new,New chat,Conversa nova
 chat.newShort,New,Nova
 chat.noModel,The network is not serving any model,A rede não está servindo nenhum modelo
@@ -158,6 +160,7 @@ chat.send,Send,Enviar
 chat.serverError,Server error,Erro do servidor
 chat.speedUnit,tok/s,tok/s
 chat.stop,Stop,Parar
+chat.surfaceLabel,Chat surface,Superfície do chat
 chat.telemetry.analysis,Execution analysis,Análise da execução
 chat.telemetry.analysis.backendDetail,Most measured processing time is inside llama_decode rather than transport or queue wait.,"A maior parte do tempo medido está dentro do llama_decode, não no transporte ou na fila."
 chat.telemetry.analysis.backendNextStep,"Compare model quantisation, GPU offload and batch settings on this node.","Compare quantização, offload para GPU e configurações de batch neste nó."
@@ -989,6 +992,19 @@ network.logsPropagates,No restart needed. Other nodes confirm the policy with th
 network.logsState,Cluster collection,Coleta do cluster
 network.logsSubtitle,"When on, this node reports its process log to the main node. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo ao principal. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
+network.networkChatDisable,Turn network chat off,Desligar Chat da rede
+network.networkChatDisabled,Network chat turned off,Chat da rede desligado
+network.networkChatEnable,Turn network chat on,Ligar Chat da rede
+network.networkChatEnabled,Network chat turned on,Chat da rede ligado
+network.networkChatFailed,Could not change the network chat policy,Não foi possível mudar a política do Chat da rede
+network.networkChatHowItWorks,"Messages and files travel through the libp2p swarm and are validated by the main node.","Mensagens e arquivos viajam pelo enxame libp2p e são validados pelo nó principal."
+network.networkChatNotAuthority,"Only the main node decides this, and the decision is confirmed by the network.","Somente o nó principal decide isso, e a decisão é confirmada pela rede."
+network.networkChatOff,disabled,desligado
+network.networkChatOn,enabled,ligado
+network.networkChatPropagates,No restart needed. Other nodes confirm the policy with an authenticated read.,Não é preciso reiniciar. Os outros nós confirmam a política por uma leitura autenticada.
+network.networkChatState,Network chat,Chat da rede
+network.networkChatSubtitle,A low-priority conversation channel for the participants in this network.,Um canal de conversa de baixa prioridade para os participantes desta rede.
+network.networkChatTitle,Network chat,Chat da rede
 network.noAddress,no address,sem endereço
 network.noNodes,No known nodes,Nenhum nó conhecido
 network.noNodesDetail,"Not even this machine appears, which usually means it has not announced itself yet.","Nem esta máquina aparece, o que normalmente quer dizer que ela ainda não está anunciando."
@@ -1050,6 +1066,28 @@ network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado
 network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
+networkChat.attach,Attach a file,Anexar arquivo
+networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
+networkChat.disabledTitle,Network chat is disabled,Chat da rede está desligado
+networkChat.download,Download file,Baixar arquivo
+networkChat.downloadFailed,Could not download the file,Não foi possível baixar o arquivo
+networkChat.emptyDetail,Start a conversation with the participants in this network.,Comece uma conversa com os participantes desta rede.
+networkChat.emptyTitle,No messages yet,Nenhuma mensagem ainda
+networkChat.fileLimit,"Files are limited to 8 MiB.","Arquivos são limitados a 8 MiB."
+networkChat.fileTooLarge,File is too large,Arquivo grande demais
+networkChat.hint,"Enter sends. Files are sent through the libp2p network.","Enter envia. Arquivos são enviados pela rede libp2p."
+networkChat.loadFailed,Could not load the network chat,Não foi possível carregar o Chat da rede
+networkChat.loading,Loading network chat,Carregando o Chat da rede
+networkChat.noParticipants,No online participants,Nenhum participante online
+networkChat.nodeLabel,Node,Nó
+networkChat.online,online,online
+networkChat.participants,{count} online,{count} online
+networkChat.placeholder,Write to the network…,Escreva para a rede…
+networkChat.send,Send,Enviar
+networkChat.sendFailed,Could not send the network chat action,Não foi possível enviar a ação do Chat da rede
+networkChat.subtitle,Conversation between the nodes,Conversa entre os nós
+networkChat.title,Network chat,Chat da rede
+networkChat.typing,{node} is typing…,{node} está digitando…
 notFound.back,Back to dashboard,Voltar ao painel
 notFound.detail,The address does not match any screen in this app.,O endereço digitado não corresponde a nenhuma tela deste aplicativo.
 notFound.title,This page does not exist,Esta tela não existe

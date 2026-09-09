@@ -64,6 +64,10 @@ pub struct NodeInfo {
     pub cluster_logs_enabled: bool,
     /// Só o principal pode mudar a política de logs.
     pub cluster_logs_authority: bool,
+    /// Se este nó aceita o canal global de conversa.
+    pub network_chat_enabled: bool,
+    /// Só o principal pode mudar a política do Chat da rede.
+    pub network_chat_authority: bool,
     pub thermal: ThermalPolicy,
 }
 
@@ -83,6 +87,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         tls_required,
         tls_authority,
         cluster_logs_authority,
+        network_chat_authority,
         thermal,
         admin_exposure,
         admin_access_token_configured,
@@ -107,6 +112,10 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .then(|| crate::admin_trust::fingerprint_of(&state.authority_principal.pubkey)),
             cfg.advertise_addr.clone(),
             cfg.tls_required,
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, cfg.profile)
+                == Some(crate::admin_trust::EffectiveAuthority::Primary),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
@@ -183,6 +192,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         tls_authority,
         cluster_logs_enabled: state.network.cluster_logs_enabled(),
         cluster_logs_authority,
+        network_chat_enabled: state.network.network_chat_enabled(),
+        network_chat_authority,
         thermal,
         system,
     })
@@ -1124,6 +1135,46 @@ pub(super) async fn save_cluster_logs(
     Json(json!({ "logs_enabled": req.logs_enabled })).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct SaveNetworkChatRequest {
+    pub network_chat_enabled: bool,
+}
+
+/// Liga ou desliga o Chat da rede para o cluster inteiro. O valor anunciado
+/// só desperta a busca autenticada nos demais nós; apenas esta rota no
+/// principal grava a política.
+pub(super) async fn save_network_chat(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveNetworkChatRequest>,
+) -> Response {
+    if !local_is_primary(&state).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "só o nó principal decide o Chat da rede." })),
+        )
+            .into_response();
+    }
+
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.network_chat_enabled = req.network_chat_enabled;
+        if let Err(error) = cfg.save() {
+            return bad_request(format!(
+                "não deu para gravar {}: {error}",
+                crate::brand::config_filename()
+            ));
+        }
+    }
+    state.network.set_network_chat_enabled(req.network_chat_enabled);
+    state.network_chat.set_enabled(req.network_chat_enabled);
+    info!(
+        "Chat da rede {} pela interface",
+        if req.network_chat_enabled { "ligado" } else { "desligado" }
+    );
+    Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
+}
+
 pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     let catalog = local_catalog(&state).await;
     Json(json!({
@@ -1502,6 +1553,104 @@ pub(super) async fn chat_history(_auth: ConnectionAuth, State(state): State<Gate
                 .into_response()
         }
     }
+}
+
+pub(super) async fn network_chat_snapshot(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    let mut messages = match state
+        .network_chat
+        .history(crate::network_chat::NETWORK_CHAT_ROOM, 100)
+    {
+        Ok(messages) => messages,
+        Err(error) => {
+            tracing::error!("não foi possível ler o Chat da rede: {error:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível ler o Chat da rede" })),
+            )
+                .into_response();
+        }
+    };
+    for message in &mut messages {
+        message.file_data.clear();
+    }
+    let mut participants = vec![json!({
+        "nodeId": state.network.node_id,
+        "hostname": state.network.hostname,
+        "online": true,
+        "profile": format!("{:?}", state.network.profile()),
+    })];
+    let blocked = state.auth.read().await.blocked_nodes.clone();
+    participants.extend(
+        state
+            .network
+            .alive_peers()
+            .await
+            .into_iter()
+            .filter(|peer| peer.node_id != state.network.node_id)
+            .filter(|peer| !blocked.iter().any(|node_id| node_id == &peer.node_id))
+            .map(|peer| {
+                json!({
+                    "nodeId": peer.node_id,
+                    "hostname": peer.hostname,
+                    "online": true,
+                    "profile": format!("{:?}", peer.profile),
+                })
+            }),
+    );
+    Json(json!({
+        "enabled": state.network_chat.enabled(),
+        "messages": messages,
+        "participants": participants,
+        "typing": state.network_chat.typing_snapshot(),
+        "dropped": state.network_chat.dropped(),
+    }))
+    .into_response()
+}
+
+pub(super) async fn network_chat_action(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(request): Json<crate::network_chat::ChatRequest>,
+) -> Response {
+    if request.api_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "o token do Chat da rede é obrigatório" })),
+        )
+            .into_response();
+    }
+    match state.network_chat.submit(request).await {
+        Ok(response) if response.accepted => Json(response).into_response(),
+        Ok(response) => (StatusCode::FORBIDDEN, Json(response)).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn network_chat_file(
+    _auth: ConnectionAuth,
+    Path(message_id): Path<String>,
+    State(state): State<GatewayState>,
+) -> Response {
+    let file = match state.database.network_chat_file(&message_id) {
+        Ok(Some(file)) => file,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!("não foi possível ler arquivo do Chat da rede: {error:#}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let mut response = Body::from(file.0).into_response();
+    if let Ok(value) = HeaderValue::from_str(&file.1) {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    response
 }
 
 pub(super) async fn save_chat_history(

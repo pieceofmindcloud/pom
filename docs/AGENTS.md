@@ -161,6 +161,10 @@ pela descricao do backend, pela base do sistema e pelo identificador PCI.
   suportado e Rust (`crates/node/src/inference/infer_server.rs`,
   `crates/node/src/models/splitter.rs`). Caracterizados em `scripts/AGENTS.md`.
 
+`docs/subsystems/rede-p2p.md` também documenta o Chat da rede: protocolo
+libp2p, validação e retransmissão pelo principal, catraca autenticada do
+interruptor e prioridade do túnel de inferência sobre o tráfego de conversa.
+
 ## Defeitos anotados
 
 Nenhum em aberto. O `README.md` da raiz foi reconciliado com o codigo em

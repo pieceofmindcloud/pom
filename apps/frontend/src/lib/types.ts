@@ -223,7 +223,59 @@ export interface NodeInfo {
   cluster_logs_enabled: boolean;
   /** Só o principal pode mudar a política de logs. */
   cluster_logs_authority: boolean;
+  /** Se o canal global de conversa está ligado neste nó. */
+  network_chat_enabled: boolean;
+  /** Só o principal pode mudar a política do Chat da rede. */
+  network_chat_authority: boolean;
   thermal: ThermalPolicy;
+}
+
+export type NetworkChatKind = "text" | "file" | "typing" | "typing_stopped";
+
+export interface NetworkChatRequest {
+  action: {
+    kind: "text" | "file" | "typing";
+    message_id: string;
+    room_id: string;
+    sender_node_id: string;
+    recipient_node_id: string | null;
+    text?: string;
+    file_name?: string;
+    mime_type?: string;
+    data?: number[];
+    is_typing?: boolean;
+    sent_at: string;
+  };
+  api_key?: string;
+  relayed?: boolean;
+}
+
+export interface NetworkChatEvent {
+  messageId: string;
+  roomId: string;
+  senderNodeId: string;
+  recipientNodeId: string | null;
+  kind: NetworkChatKind;
+  text: string | null;
+  fileName: string | null;
+  mimeType: string | null;
+  fileData: number[];
+  sentAt: string;
+}
+
+export interface NetworkChatParticipant {
+  nodeId: string;
+  hostname: string;
+  online: boolean;
+  profile: string;
+}
+
+export interface NetworkChatSnapshot {
+  enabled: boolean;
+  messages: NetworkChatEvent[];
+  participants: NetworkChatParticipant[];
+  typing: NetworkChatEvent[];
+  dropped: number;
 }
 
 export interface PeerView {

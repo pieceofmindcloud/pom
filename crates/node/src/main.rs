@@ -24,6 +24,10 @@ mod catalog;
 mod cluster_logs;
 #[path = "network/cluster_logs_policy.rs"]
 mod cluster_logs_policy;
+#[path = "network/network_chat.rs"]
+mod network_chat;
+#[path = "network/network_chat_policy.rs"]
+mod network_chat_policy;
 #[path = "utils/config.rs"]
 mod config;
 #[path = "profile.rs"]
@@ -31,6 +35,9 @@ pub(crate) mod profile;
 #[cfg(test)]
 #[path = "profile_tests.rs"]
 mod profile_tests;
+#[cfg(test)]
+#[path = "network/network_chat_tests.rs"]
+mod network_chat_tests;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
@@ -849,6 +856,8 @@ async fn async_main(
     let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
 
     // ── Start P2P network + (best-effort) libp2p discovery ───────────────────
+    let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
+        Arc::new(tokio::sync::RwLock::new(app_config.clone()));
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,
         None => sysmon::sample().await.hostname,
@@ -867,6 +876,9 @@ async fn async_main(
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
+        network_chat_enabled: app_config.network_chat_enabled,
+        auth: auth_config.clone(),
+        database: database.clone(),
         relay_peer_keys: relay_peer_keys.clone(),
         serve_relay: args.serve_relay,
         use_default_relays: !args.no_default_relays,
@@ -900,6 +912,7 @@ async fn async_main(
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
+    let network_chat = stack.network_chat;
     let pkarr_node = stack.pkarr_node;
     let disc_dial_tx = stack.disc_dial_tx;
     let p2p_port = net.bind_addr.port();
@@ -998,8 +1011,6 @@ async fn async_main(
     net.announce(Some(&assignment)).await?;
 
     // ── Runtime: owns the model configuration and the inference server ──────
-    let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
-        Arc::new(tokio::sync::RwLock::new(app_config.clone()));
     let hf_token_store =
         huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
     // ── TLS entre peers ──────────────────────────────────────────────────────
@@ -1060,6 +1071,12 @@ async fn async_main(
             auth_config.clone(),
             cluster_logs.clone(),
         );
+        network_chat_policy::spawn_ratchet(
+            net.clone(),
+            peer_clients.clone(),
+            auth_config.clone(),
+            network_chat.clone(),
+        );
 
         let gw_state = GatewayState {
             network: net.clone(),
@@ -1089,6 +1106,7 @@ async fn async_main(
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
             cluster_logs: cluster_logs.clone(),
+            network_chat: network_chat.clone(),
             cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
             model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
                 Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
@@ -1377,6 +1395,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         profile: crate::profile::NodeProfile::Admin,
         tls_required: false,
         cluster_logs_enabled: false,
+        network_chat_enabled: false,
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,
@@ -1467,6 +1486,9 @@ struct P2pStackArgs {
     tls_required: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     cluster_logs_enabled: bool,
+    network_chat_enabled: bool,
+    auth: Arc<RwLock<config::Config>>,
+    database: Arc<db::PomDb>,
     /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
     /// *inside* this function, after it loads its own `pkarr_node` — not
     /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
@@ -1489,6 +1511,7 @@ struct P2pStack {
     authority_signing_key: ed25519_dalek::SigningKey,
     libp2p_peer_id: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    network_chat: Arc<network_chat::NetworkChat>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
     pkarr_node: Option<pkarr_node::PkarrNode>,
     assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>>,
@@ -1597,6 +1620,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     );
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
+    net.set_network_chat_enabled(args.network_chat_enabled);
 
     if args.no_discovery {
         net.detach().await;
@@ -1608,6 +1632,11 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     net.clone().start(assignment_shared.clone()).await?;
     let (log_tx, log_rx) = mpsc::channel(cluster_logs::LOG_TRANSPORT_QUEUE_CAPACITY);
     cluster_logs.start(net.clone(), assignment_shared.clone(), log_tx);
+    let (network_chat, chat_rx) = network_chat::NetworkChat::new(
+        args.database.clone(),
+        args.auth.clone(),
+        args.network_chat_enabled,
+    );
 
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
     // messages are published to gossipsub every 5 s so internet peers learn
@@ -1626,6 +1655,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         tunnel_rx,
         log_rx,
         cluster_logs.clone(),
+        chat_rx,
+        network_chat.clone(),
     ) {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
@@ -1667,6 +1698,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         authority_signing_key,
         libp2p_peer_id,
         cluster_logs,
+        network_chat,
         tunnel_tx,
         pkarr_node,
         assignment_shared,
@@ -1708,6 +1740,7 @@ async fn start_gateway_only(
         app_config.advertise_addr.as_deref(),
     );
     let ollama_port = advertised_ollama_port(&ollama_url);
+    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let stack = start_p2p_stack(P2pStackArgs {
         node_id: node_id.clone(),
         pubkey: pubkey.clone(),
@@ -1722,6 +1755,9 @@ async fn start_gateway_only(
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
+        network_chat_enabled: app_config.network_chat_enabled,
+        auth: auth_state.clone(),
+        database: database.clone(),
         // No CLI here to source pkarr/relay peer keys from — see the plan's
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],
@@ -1757,6 +1793,7 @@ async fn start_gateway_only(
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
+    let network_chat = stack.network_chat;
 
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
@@ -1777,7 +1814,6 @@ async fn start_gateway_only(
             }
         };
 
-    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let hf_token_store =
         huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
     let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
@@ -1805,6 +1841,12 @@ async fn start_gateway_only(
         peer_clients.clone(),
         auth_state.clone(),
         cluster_logs.clone(),
+    );
+    network_chat_policy::spawn_ratchet(
+        net.clone(),
+        peer_clients.clone(),
+        auth_state.clone(),
+        network_chat.clone(),
     );
 
     let gw_state = GatewayState {
@@ -1841,6 +1883,7 @@ async fn start_gateway_only(
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
         cluster_logs,
+        network_chat,
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
         model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
             Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(

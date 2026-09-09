@@ -1,5 +1,6 @@
 use crate::cluster_logs::{self, ClusterLogs, ClusterLogsCodec, LogOutbound};
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
+use crate::network_chat::{self, ChatOutbound, ChatRequest, ChatResponse, NetworkChat, NetworkChatCodec};
 use crate::network::{is_valid_destination, Network, P2PMessage, PeerInfo};
 use crate::wire;
 use anyhow::Result;
@@ -227,6 +228,7 @@ struct DiscBehaviour {
     relay_server: relay::Behaviour,
     infer_tunnel: request_response::Behaviour<InferTunnelCodec>,
     cluster_logs: request_response::Behaviour<ClusterLogsCodec>,
+    network_chat: request_response::Behaviour<NetworkChatCodec>,
 }
 
 pub struct Discovery {
@@ -240,6 +242,8 @@ pub struct Discovery {
     tunnel_rx: mpsc::Receiver<TunnelOutbound>,
     log_rx: mpsc::Receiver<LogOutbound>,
     logs: Arc<ClusterLogs>,
+    chat_rx: mpsc::Receiver<ChatOutbound>,
+    chat: Arc<NetworkChat>,
     relay_peer_addrs: HashSet<Multiaddr>,
     relay_peer_ids: HashSet<PeerId>,
     connected_relays: HashSet<PeerId>,
@@ -274,6 +278,8 @@ impl Discovery {
         tunnel_rx: mpsc::Receiver<TunnelOutbound>,
         log_rx: mpsc::Receiver<LogOutbound>,
         logs: Arc<ClusterLogs>,
+        chat_rx: mpsc::Receiver<ChatOutbound>,
+        chat: Arc<NetworkChat>,
     ) -> Result<Self> {
         let libp2p_port = udp_port.saturating_add(10000);
         let topic = gossipsub::IdentTopic::new(GOSSIP_TOPIC);
@@ -361,6 +367,7 @@ impl Discovery {
 
                 let infer_tunnel = infer_tunnel::infer_tunnel_behaviour();
                 let cluster_logs = cluster_logs::cluster_logs_behaviour();
+                let network_chat = network_chat::network_chat_behaviour();
 
                 DiscBehaviour {
                     gossipsub,
@@ -373,6 +380,7 @@ impl Discovery {
                     relay_server,
                     infer_tunnel,
                     cluster_logs,
+                    network_chat,
                 }
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
@@ -426,6 +434,8 @@ impl Discovery {
             tunnel_rx,
             log_rx,
             logs,
+            chat_rx,
+            chat,
             relay_peer_addrs,
             relay_peer_ids,
             connected_relays: HashSet::new(),
@@ -445,6 +455,8 @@ impl Discovery {
             mut tunnel_rx,
             mut log_rx,
             logs,
+            mut chat_rx,
+            chat,
             relay_peer_addrs,
             relay_peer_ids,
             mut connected_relays,
@@ -459,13 +471,18 @@ impl Discovery {
             OutboundRequestId,
             oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
         > = HashMap::new();
+        let mut pending_chat: HashMap<
+            OutboundRequestId,
+            oneshot::Sender<ChatResponse>,
+        > = HashMap::new();
         let (inbound_response_tx, mut inbound_response_rx) =
             mpsc::channel::<InboundTunnelResponse>(64);
         loop {
             tokio::select! {
+                biased;
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &inbound_response_tx, &logs).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -505,6 +522,36 @@ impl Discovery {
                     }
                     let _ = swarm.behaviour_mut().cluster_logs.send_request(&peer_id, request);
                 }
+                out = chat_rx.recv() => {
+                    let Some(ChatOutbound { request, reply }) = out else { break };
+                    if !chat.enabled() {
+                        let _ = reply.send(ChatResponse::rejected("network_chat_disabled"));
+                        continue;
+                    }
+                    if network.profile() == crate::profile::NodeProfile::Admin {
+                        let result = accept_original_chat(
+                            &mut swarm,
+                            &network,
+                            &chat,
+                            request,
+                            None,
+                        ).await;
+                        let _ = reply.send(result);
+                        continue;
+                    }
+                    let Some((peer_id, addr_candidates)) = network.principal_peer().await else {
+                        let _ = reply.send(ChatResponse::rejected("principal_unavailable"));
+                        continue;
+                    };
+                    if !swarm.is_connected(&peer_id) {
+                        if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
+                            let _ = reply.send(ChatResponse::rejected(error));
+                            continue;
+                        }
+                    }
+                    let request_id = swarm.behaviour_mut().network_chat.send_request(&peer_id, request);
+                    pending_chat.insert(request_id, reply);
+                }
             }
         }
     }
@@ -522,8 +569,10 @@ async fn handle_event(
         OutboundRequestId,
         oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
     >,
+    pending_chat: &mut HashMap<OutboundRequestId, oneshot::Sender<ChatResponse>>,
     inbound_response_tx: &mpsc::Sender<InboundTunnelResponse>,
     logs: &ClusterLogs,
+    chat: &Arc<NetworkChat>,
 ) {
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
@@ -563,6 +612,7 @@ async fn handle_event(
                 runtime_capacity,
                 cluster_logs_enabled,
                 idle,
+                network_chat_enabled,
             }) = serde_json::from_slice(&message.data)
             {
                 if libp2p_peer_id.as_deref() != Some(source.to_string().as_str()) {
@@ -630,6 +680,12 @@ async fn handle_event(
                     &node_id,
                     profile,
                     cluster_logs_enabled,
+                    tls,
+                );
+                network.trigger_network_chat_probe(
+                    &node_id,
+                    profile,
+                    network_chat_enabled,
                     tls,
                 );
 
@@ -850,6 +906,85 @@ async fn handle_event(
             request_response::Event::ResponseSent { .. } => {}
         },
 
+        // ── Chat da rede: o principal valida e retransmite ────────────────
+        SwarmEvent::Behaviour(DiscBehaviourEvent::NetworkChat(event)) => match event {
+            request_response::Event::Message { peer, message, .. } => match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    let response = if request.relayed {
+                        let source_is_principal = network
+                            .alive_peers()
+                            .await
+                            .into_iter()
+                            .find(|candidate| {
+                                candidate.libp2p_peer_id.as_deref() == Some(peer.to_string().as_str())
+                            })
+                            .is_some_and(|candidate| {
+                                candidate.profile == crate::profile::NodeProfile::Admin
+                            });
+                        if !source_is_principal || !chat.enabled() {
+                            ChatResponse::rejected("relay_not_authorized")
+                        } else {
+                            match chat.accept(request.action.clone()) {
+                                Ok(true) => {
+                                    relay_chat(swarm, network, chat, request.action, Some(peer)).await;
+                                    ChatResponse::accepted()
+                                }
+                                Ok(false) => ChatResponse::rejected("network_chat_disabled"),
+                                Err(error) => ChatResponse::rejected(error.to_string()),
+                            }
+                        }
+                    } else {
+                        let source_node_id = network
+                            .alive_peers()
+                            .await
+                            .into_iter()
+                            .find(|candidate| {
+                                candidate.libp2p_peer_id.as_deref() == Some(peer.to_string().as_str())
+                            })
+                            .map(|candidate| candidate.node_id);
+                        match source_node_id {
+                            Some(source_node_id) => {
+                                accept_original_chat(
+                                    swarm,
+                                    network,
+                                    chat,
+                                    request,
+                                    Some((peer, source_node_id)),
+                                )
+                                .await
+                            }
+                            None => ChatResponse::rejected("sender_unknown"),
+                        }
+                    };
+                    let _ = swarm
+                        .behaviour_mut()
+                        .network_chat
+                        .send_response(channel, response);
+                }
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                } => {
+                    if let Some(reply) = pending_chat.remove(&request_id) {
+                        let _ = reply.send(response);
+                    }
+                }
+            },
+            request_response::Event::OutboundFailure {
+                request_id, error, ..
+            } => {
+                if let Some(reply) = pending_chat.remove(&request_id) {
+                    let _ = reply.send(ChatResponse::rejected(error.to_string()));
+                }
+            }
+            request_response::Event::InboundFailure { peer, error, .. } => {
+                debug!("network-chat: pedido de {peer} falhou: {error:?}");
+            }
+            request_response::Event::ResponseSent { .. } => {}
+        },
+
         // ── Cluster process logs: principal-only receiver ───────────────────
         // This request/response behaviour is separate from the inference
         // tunnel. The bounded writer owns persistence, so the swarm answers
@@ -880,6 +1015,92 @@ async fn handle_event(
         },
 
         _ => {}
+    }
+}
+
+async fn accept_original_chat(
+    swarm: &mut Swarm<DiscBehaviour>,
+    network: &Network,
+    chat: &Arc<NetworkChat>,
+    request: ChatRequest,
+    source: Option<(PeerId, String)>,
+) -> ChatResponse {
+    if !chat.enabled() {
+        return ChatResponse::rejected("network_chat_disabled");
+    }
+    if source.is_some() && network.profile() != crate::profile::NodeProfile::Admin {
+        return ChatResponse::rejected("principal_unavailable");
+    }
+    let transport_node_id = source
+        .as_ref()
+        .map(|(_, node_id)| node_id.as_str())
+        .unwrap_or(network.node_id.as_str());
+    if let Err(error) = chat
+        .validate_original(&request.action, &request.api_key, transport_node_id)
+        .await
+    {
+        return ChatResponse::rejected(error.to_string());
+    }
+    let action = request.action;
+    match chat.accept(action.clone()) {
+        Ok(true) => {
+            if network.profile() == crate::profile::NodeProfile::Admin {
+                relay_chat(
+                    swarm,
+                    network,
+                    chat,
+                    action,
+                    source.map(|(peer_id, _)| peer_id),
+                )
+                .await;
+            }
+            ChatResponse::accepted()
+        }
+        Ok(false) => ChatResponse::rejected("network_chat_disabled"),
+        Err(error) => ChatResponse::rejected(error.to_string()),
+    }
+}
+
+async fn relay_chat(
+    swarm: &mut Swarm<DiscBehaviour>,
+    network: &Network,
+    chat: &Arc<NetworkChat>,
+    action: network_chat::ChatAction,
+    excluded_peer: Option<PeerId>,
+) {
+    let peers = network.alive_peers().await;
+    let excluded_peer_id = excluded_peer.map(|id| id.to_string());
+    for peer in peers {
+        if peer.node_id == network.node_id
+            || peer.libp2p_peer_id.as_deref() == excluded_peer_id.as_deref()
+            || action
+                .recipient_node_id()
+                .is_some_and(|recipient| recipient != peer.node_id)
+            || chat.node_is_blocked(&peer.node_id).await
+        {
+            continue;
+        }
+        let Some(peer_id_text) = peer.libp2p_peer_id.as_deref() else {
+            continue;
+        };
+        let Ok(peer_id) = peer_id_text.parse::<PeerId>() else {
+            continue;
+        };
+        let addresses = peer.dialable_addrs();
+        if !swarm.is_connected(&peer_id) {
+            if let Err(error) = ensure_tunnel_peer_address(swarm, network, peer_id, &addresses).await {
+                debug!("network-chat: peer {} indisponível: {}", peer.node_id, error);
+                continue;
+            }
+        }
+        swarm.behaviour_mut().network_chat.send_request(
+            &peer_id,
+            ChatRequest {
+                action: action.clone(),
+                api_key: String::new(),
+                relayed: true,
+            },
+        );
     }
 }
 

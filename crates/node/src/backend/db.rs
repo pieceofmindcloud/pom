@@ -63,6 +63,25 @@ pub struct ChatMessageRecord {
     pub at: String,
 }
 
+/// Mensagem aceita pelo principal do Chat da rede. Eventos de digitação não
+/// entram nesta tabela: são presença efêmera e nunca devem crescer o banco.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkChatMessageRecord {
+    pub received_seq: u64,
+    pub message_id: String,
+    pub room_id: String,
+    pub sender_node_id: String,
+    pub recipient_node_id: Option<String>,
+    pub kind: String,
+    pub text: Option<String>,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+    pub file_data: Vec<u8>,
+    pub sent_at: String,
+    pub received_at: String,
+}
+
 impl ChatSessionRecord {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.id.trim().is_empty() || self.title.trim().is_empty() {
@@ -621,6 +640,140 @@ impl PomDb {
         })
     }
 
+    /// Persiste uma ação de texto ou arquivo exatamente uma vez por id.
+    pub fn append_network_chat(&self, action: &crate::network_chat::ChatAction) -> Result<bool> {
+        action
+            .validate()
+            .map_err(|error| anyhow::anyhow!("ação de chat inválida: {error}"))?;
+        let (message_id, room_id, sender_node_id, recipient_node_id, kind, text, file_name, mime_type, file_data, sent_at) =
+            match action {
+                crate::network_chat::ChatAction::Text {
+                    message_id,
+                    room_id,
+                    sender_node_id,
+                    recipient_node_id,
+                    text,
+                    sent_at,
+                } => (
+                    message_id,
+                    room_id,
+                    sender_node_id,
+                    recipient_node_id,
+                    "text",
+                    Some(text),
+                    None,
+                    None,
+                    Vec::new(),
+                    sent_at.to_rfc3339(),
+                ),
+                crate::network_chat::ChatAction::File {
+                    message_id,
+                    room_id,
+                    sender_node_id,
+                    recipient_node_id,
+                    file_name,
+                    mime_type,
+                    data,
+                    sent_at,
+                } => (
+                    message_id,
+                    room_id,
+                    sender_node_id,
+                    recipient_node_id,
+                    "file",
+                    None,
+                    Some(file_name),
+                    Some(mime_type),
+                    data.clone(),
+                    sent_at.to_rfc3339(),
+                ),
+                crate::network_chat::ChatAction::Typing { .. } => {
+                    anyhow::bail!("digitação não é persistente")
+                }
+            };
+        self.with_write("salvar mensagem do Chat da rede", |connection| {
+            let changed = connection.execute(
+                "INSERT OR IGNORE INTO network_chat_messages (
+                    message_id, room_id, sender_node_id, recipient_node_id, kind,
+                    text, file_name, mime_type, file_data, sent_at, received_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                params![
+                    message_id,
+                    room_id,
+                    sender_node_id,
+                    recipient_node_id,
+                    kind,
+                    text,
+                    file_name,
+                    mime_type,
+                    file_data,
+                    sent_at,
+                ],
+            )?;
+            Ok(changed > 0)
+        })
+    }
+
+    pub fn network_chat_messages(
+        &self,
+        room_id: &str,
+        limit: usize,
+    ) -> Result<Vec<NetworkChatMessageRecord>> {
+        let limit = limit.clamp(1, 500) as i64;
+        self.with_read("ler histórico do Chat da rede", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT received_seq, message_id, room_id, sender_node_id,
+                        recipient_node_id, kind, text, file_name, mime_type,
+                        file_data, sent_at, received_at
+                 FROM network_chat_messages
+                 WHERE room_id = ?
+                 ORDER BY received_seq DESC
+                 LIMIT ?",
+            )?;
+            let rows = statement.query_map(params![room_id, limit], |row| {
+                Ok(NetworkChatMessageRecord {
+                    received_seq: row.get::<_, i64>(0)? as u64,
+                    message_id: row.get(1)?,
+                    room_id: row.get(2)?,
+                    sender_node_id: row.get(3)?,
+                    recipient_node_id: row.get(4)?,
+                    kind: row.get(5)?,
+                    text: row.get(6)?,
+                    file_name: row.get(7)?,
+                    mime_type: row.get(8)?,
+                    file_data: row.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default(),
+                    sent_at: row.get(10)?,
+                    received_at: row.get(11)?,
+                })
+            })?;
+            let mut messages = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            messages.reverse();
+            Ok(messages)
+        })
+    }
+
+    pub fn network_chat_file(&self, message_id: &str) -> Result<Option<(Vec<u8>, String)>> {
+        self.with_read("ler arquivo do Chat da rede", |connection| {
+            connection
+                .query_row(
+                    "SELECT file_data, mime_type
+                     FROM network_chat_messages
+                     WHERE message_id = ? AND kind = 'file'",
+                    params![message_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<Vec<u8>>>(0)?.unwrap_or_default(),
+                            row.get::<_, Option<String>>(1)?.unwrap_or_else(|| {
+                                "application/octet-stream".to_string()
+                            }),
+                        ))
+                    },
+                )
+                .optional()
+                .context("consultar arquivo do Chat da rede")
+        })
+    }
+
     /// Persiste um lote na ordem em que o principal o aceitou. O contador de
     /// perdas é global ao banco porque uma linha descartada não tem mais
     /// `deploy_id` confiável para uma segunda tentativa.
@@ -1165,6 +1318,24 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS chat_messages_id_idx
             ON chat_messages(conversation_id, message_id);
+        CREATE TABLE IF NOT EXISTS network_chat_messages (
+            received_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id TEXT NOT NULL UNIQUE,
+            room_id TEXT NOT NULL,
+            sender_node_id TEXT NOT NULL,
+            recipient_node_id TEXT,
+            kind TEXT NOT NULL CHECK (kind IN ('text', 'file')),
+            text TEXT,
+            file_name TEXT,
+            mime_type TEXT,
+            file_data BLOB NOT NULL DEFAULT X'',
+            sent_at TEXT NOT NULL,
+            received_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS network_chat_room_seq_idx
+            ON network_chat_messages(room_id, received_seq);
+        CREATE INDEX IF NOT EXISTS network_chat_sender_idx
+            ON network_chat_messages(sender_node_id, received_seq);
         CREATE TABLE IF NOT EXISTS audit_requests (
             id TEXT PRIMARY KEY,
             received_at TEXT NOT NULL,

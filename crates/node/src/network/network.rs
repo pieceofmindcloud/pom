@@ -221,6 +221,9 @@ pub enum P2PMessage {
         /// Modelo descarregado por idle, mantendo a implantação anunciada.
         #[serde(default)]
         idle: bool,
+        /// Gatilho para a catraca autenticada do Chat da rede.
+        #[serde(default)]
+        network_chat_enabled: bool,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -718,6 +721,11 @@ pub struct Network {
     /// Política local de captura de logs. O valor do anúncio é gatilho, nunca
     /// é adotado diretamente.
     cluster_logs_enabled: Arc<AtomicBool>,
+    /// Política local do canal global de conversa. O booleano anunciado é
+    /// apenas gatilho; a fonte é a leitura autenticada no principal.
+    network_chat_probe:
+        std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
+    network_chat_enabled: Arc<AtomicBool>,
     /// Evita repetir no gossip um aviso permanente, como o broadcast global
     /// indisponível dentro de um container.
     broadcast_warning_logged: AtomicBool,
@@ -1104,6 +1112,8 @@ impl Network {
             tls_probe: std::sync::RwLock::new(None),
             cluster_logs_probe: std::sync::RwLock::new(None),
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
+            network_chat_probe: std::sync::RwLock::new(None),
+            network_chat_enabled: Arc::new(AtomicBool::new(false)),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
@@ -1476,6 +1486,7 @@ impl Network {
                 .capacity,
             cluster_logs_enabled: self.cluster_logs_enabled(),
             idle: self.is_idle(),
+            network_chat_enabled: self.network_chat_enabled(),
         }
     }
 
@@ -1619,6 +1630,48 @@ impl Network {
     ) {
         if let Ok(mut slot) = self.cluster_logs_probe.write() {
             *slot = Some(tx);
+        }
+    }
+
+    pub fn network_chat_enabled(&self) -> bool {
+        self.network_chat_enabled.load(Ordering::Acquire)
+    }
+
+    /// A política só muda pela interface do principal ou pela resposta
+    /// autenticada da catraca. Nunca pelo booleano recebido no gossip.
+    pub fn set_network_chat_enabled(&self, enabled: bool) {
+        self.network_chat_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn set_network_chat_probe(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>,
+    ) {
+        if let Ok(mut slot) = self.network_chat_probe.write() {
+            *slot = Some(tx);
+        }
+    }
+
+    pub fn trigger_network_chat_probe(
+        &self,
+        node_id: &str,
+        profile: crate::profile::NodeProfile,
+        announced: bool,
+        tls: bool,
+    ) {
+        if let crate::network_chat_policy::PolicyOutcome::Fetch { principal } =
+            crate::network_chat_policy::on_announce(
+                self.network_chat_enabled(),
+                announced,
+                profile == crate::profile::NodeProfile::Admin,
+                node_id,
+            )
+        {
+            if let Ok(slot) = self.network_chat_probe.read() {
+                if let Some(tx) = slot.as_ref() {
+                    let _ = tx.send((principal, tls));
+                }
+            }
         }
     }
 
@@ -2132,6 +2185,7 @@ impl Network {
                 runtime_capacity,
                 cluster_logs_enabled,
                 idle,
+                network_chat_enabled,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -2234,6 +2288,12 @@ impl Network {
                     &peer.node_id,
                     peer.profile,
                     cluster_logs_enabled,
+                    tls,
+                );
+                self.trigger_network_chat_probe(
+                    &peer.node_id,
+                    peer.profile,
+                    network_chat_enabled,
                     tls,
                 );
 
@@ -3242,6 +3302,7 @@ mod tests {
                 runtime_capacity: None,
                 idle: false,
                 cluster_logs_enabled: false,
+                network_chat_enabled: false,
             },
             current.parse().unwrap(),
             &assignment,

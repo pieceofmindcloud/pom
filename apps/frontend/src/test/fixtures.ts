@@ -70,6 +70,8 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     tls_authority: false,
     cluster_logs_enabled: false,
     cluster_logs_authority: false,
+    network_chat_enabled: false,
+    network_chat_authority: false,
     ...over,
   };
 }

@@ -58,6 +58,11 @@ Per-file list:
   deliberadamente invisível no navegador comum e só publica `open` na ponte
   WebKit `pomOpenWindow`, que abre a janela maior sem criar um fluxo paralelo de
   autenticação.
+- `NetworkChat.tsx` - The `Rede` tab beside the AI chat. It reads the
+  authenticated snapshot and sends text, file and typing actions through the
+  node's libp2p-backed gateway. It displays `node_id` identity in participant
+  and message metadata, downloads persisted file blobs on demand, and polls
+  typing state without touching the AI session store.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

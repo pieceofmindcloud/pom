@@ -267,6 +267,7 @@ mod tests {
             profile: crate::profile::NodeProfile::Admin,
             tls_required: false,
             cluster_logs_enabled: false,
+            network_chat_enabled: false,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,

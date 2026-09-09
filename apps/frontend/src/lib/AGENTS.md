@@ -20,6 +20,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   catálogo e a configuração da máquina alvo para o diálogo incremental;
   `addNode` envia o tipo whole/shards e os overrides por máquina, enquanto
   `removeNode` recebe o `deploy_id` para versionar a topologia correta.
+  `listDeployments` também preserva o estado `idle` quando os peers continuam
+  vivos, mas descarregaram o modelo.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
@@ -37,7 +39,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
-- `format.ts` - number/time formatting in the active locale plus node-state labels.
+- `format.ts` - number/time formatting in the active locale plus node-state
+  labels, incluindo o estado `idle` distinto de `serving` e `noAir`.
 - `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
   the GPU badge; missing or non-finite readings stay explicitly unknown.
 - `gpu.ts` - `sumVram`/`vramUsedPct`: a VRAM somada das placas que a reportam,
@@ -164,7 +167,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### types.ts
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
-- `ServerState` - `"disabled" | "starting" | "ready" | "failed" | "thermal"`; the thermal state is distinct from an unreachable or failed peer.
+- `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
   `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
   de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`

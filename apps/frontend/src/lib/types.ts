@@ -83,7 +83,7 @@ export interface SystemLoad {
  * was assignable every screen compared against a value the node never sends.
  * A machine serving layers looked idle on every panel.
  */
-export type ServerState = "disabled" | "starting" | "ready" | "failed" | "thermal";
+export type ServerState = "disabled" | "starting" | "ready" | "idle" | "failed" | "thermal";
 
 /** Motor que o backend afirma ter executado, sem inferência da interface. */
 export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
@@ -150,6 +150,9 @@ export interface NodeConfig {
   mtp_enabled: boolean;
   mtp_draft_tokens: number;
   mtp_min_probability: number;
+  /** Local peer unload policy; absent means the pre-feature default. */
+  unload_if_idle?: boolean;
+  idle_minutes?: number;
 }
 
 /** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
@@ -1491,6 +1494,8 @@ export interface RuntimeParams {
   mtp_min_probability: number;
   /** Permite o recuo do MTP para pesos e cache em RAM quando a VRAM falhar. */
   mtp_cpu_fallback_enabled?: boolean;
+  unload_if_idle?: boolean;
+  idle_minutes?: number;
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */

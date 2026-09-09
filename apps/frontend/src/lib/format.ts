@@ -121,6 +121,8 @@ export function serverStateLabel(state: ServerState | undefined): string {
       return portuguese ? "servindo" : "serving";
     case "starting":
       return portuguese ? "carregando" : "loading";
+    case "idle":
+      return portuguese ? "ocioso" : "idle";
     case "failed":
       return portuguese ? "falhou" : "failed";
     case "thermal":
@@ -137,6 +139,8 @@ export function serverStateTone(state: ServerState | undefined): Tone {
     case "ready":
       return "aqua";
     case "starting":
+      return "amber";
+    case "idle":
       return "amber";
     case "failed":
       return "rose";

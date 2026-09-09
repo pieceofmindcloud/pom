@@ -534,6 +534,7 @@ pub async fn run(
     reuse_weights: bool,
     loads: Arc<crate::pipeline::LoadTracker>,
     load_node_id: String,
+    request_activity: Arc<crate::reqlog::RequestActivity>,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -715,6 +716,7 @@ pub async fn run(
         direct_forward_order: DirectForwardOrder::default(),
         loads,
         load_node_id,
+        request_activity,
     };
     crate::relay::install_local_inference(generation, Arc::new(app_state.clone())).await;
 

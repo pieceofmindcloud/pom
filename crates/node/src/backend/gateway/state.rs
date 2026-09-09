@@ -418,6 +418,12 @@ pub(super) async fn ready_for_pipeline(
             let Some(base) = peer.inference_url() else {
                 return None;
             };
+            // Idle peers keep their assignment announced while `/health` has
+            // no loaded model. They are valid plan members and are woken by
+            // the reload event before inference starts.
+            if peer.idle {
+                return Some(peer);
+            }
             let Ok(cliente) = cliente else {
                 return None;
             };
@@ -590,6 +596,7 @@ impl GatewayState {
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
+                idle: self.network.is_idle(),
             });
         }
         peers

@@ -176,7 +176,6 @@ pub(super) async fn list_deployments(
         .filter(|p| p.is_alive() && !p.deploy_id.is_empty())
         .map(|p| p.deploy_id.clone())
         .collect();
-
     let linhas: Vec<serde_json::Value> = todas
         .iter()
         .map(|d| {
@@ -188,6 +187,9 @@ pub(super) async fn list_deployments(
             json!({
                 "deployment": d,
                 "serving": anunciados.contains(&d.deploy_id),
+                "idle": anunciados.contains(&d.deploy_id)
+                    && peers.iter().any(|p| p.is_alive() && p.deploy_id == d.deploy_id)
+                    && peers.iter().filter(|p| p.is_alive() && p.deploy_id == d.deploy_id).all(|p| p.idle),
                 "is_default": padrao,
                 "holders": holders,
             })

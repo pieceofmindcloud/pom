@@ -376,6 +376,7 @@ dashboard.leftNodeDetail,It stopped announcing. Rejoin from that machine''s own 
 dashboard.load,Load · {count} cores,Carga · {count} núcleos
 dashboard.loadParams,llama.cpp load parameters,Parâmetros de carga do llama.cpp
 dashboard.localDataUnavailable,This node's live data is unavailable,Os dados ao vivo deste nó estão indisponíveis
+dashboard.localIdle,idle - model unloaded,ocioso - modelo descarregado
 dashboard.localLoad,Requests on this node,Pedidos neste nó
 dashboard.localLoadDetail,current in-flight requests,requisições em voo agora
 dashboard.localModelUnavailable,The model served by this node is unavailable,O modelo servido por este nó está indisponível
@@ -540,6 +541,8 @@ deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valo
 deploy.knob.hidden_state_dtypeF8,f8 - 1 byte per value,f8 - 1 byte por valor
 deploy.knob.hidden_state_dtypeHint,Controls the bytes sent between inference peers. f16 is the default; f8 uses one byte per value and requires every selected peer to advertise support.,Controla os bytes enviados entre peers de inferência. f16 é o padrão; f8 usa um byte por valor e exige que todos os peers selecionados anunciem suporte.
 deploy.knob.hidden_state_dtypeUnavailable,f8 unavailable: ,f8 indisponível: 
+deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
+deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
 deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
@@ -654,6 +657,8 @@ deploy.tpWorkers,Workers,Workers
 deploy.tpWorkersHint,Hold Ctrl/Cmd to pick several. Only machines that already have the model are listed.,Segure Ctrl/Cmd para marcar vários. Só aparecem máquinas que já têm o modelo.
 deploy.transferNote,"Copies use the same transport as Transfers, with resume and MD5 verification. Progress remains in the bell and comes from nodes, so closing this tab does not interrupt anything.","As cópias usam o mesmo transporte da tela de Transferências, com retomada e conferência de MD5. O progresso fica no sino e vem dos nós, então fechar esta aba não interrompe nada."
 deploy.unknownModelSize,model size unknown,tamanho do modelo desconhecido
+deploy.unloadIfIdle,Unload if idle,Descarregar se ocioso
+deploy.unloadIfIdleHint,"Unload this peer's model after the configured period without requests. The deployment stays active and reloads on the next request.","Descarrega o modelo deste peer depois do período configurado sem requisições. A implantação continua ativa e recarrega na próxima requisição."
 deploy.wholeAria,Whole model,Modelo inteiro
 deploy.wholeDetail,Un-sliced models that a cluster machine already has.,Modelos não fatiados que alguma máquina do cluster já tem.
 deploy.wholeEmpty,No whole model on the network,Nenhum modelo inteiro na rede
@@ -710,7 +715,9 @@ deployments.machine,Machine,Máquina
 deployments.machines,Machines,Máquinas
 deployments.makeDefault,Make default,Tornar padrão
 deployments.model,Model,Modelo
+deployments.noAir,Not serving,Fora do ar
 deployments.nodeCount,"{count, plural, one {{count} machine} other {{count} machines}}","{count, plural, one {{count} máquina} other {{count} máquinas}}"
+deployments.peerIdle,Idle,Ocioso
 deployments.perMachine,Per machine,Por máquina
 deployments.redeploy,Re-deploy,Reimplantar
 deployments.redeployAction,Reload with these settings,Recarregar com estes valores
@@ -789,6 +796,7 @@ inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reac
 inspector.knob.cycle_detection_max_window_tokens,Cycle: maximum window,Ciclo: janela máxima
 inspector.knob.cycle_detection_min_window_tokens,Cycle: minimum window,Ciclo: janela mínima
 inspector.knob.cycle_detection_repetitions,Cycle: repetitions,Ciclo: repetições
+inspector.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 inspector.knob.max_new_tokens,Max. tokens,Máx. tokens
 inspector.knob.max_sessions,Sessions,Sessões
 inspector.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP

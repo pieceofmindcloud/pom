@@ -7,9 +7,9 @@
 //!
 //! **A anotação vale como retomável se e somente se a fatia foi vista
 //! carregada e servindo.** Daí ela carregar um [`SliceState`]: quem escreve
-//! `Pending` é o `apply`, e quem promove a `Serving` é o `/health` do servidor
-//! de inferência respondendo `model_loaded` — o único ponto do código que prova
-//! que a fatia está no ar.
+//! `Pending` é o `apply`, quem promove a `Serving` é o `/health` do servidor
+//! de inferência respondendo `model_loaded` e quem escreve `Idle` é o monitor
+//! de ociosidade depois de liberar os pesos.
 //!
 //! Confundir os dois é um laço infinito, não um detalhe: uma fatia que não cabe
 //! na memória mata o processo antes de carregar, o Docker religa o container, e
@@ -35,6 +35,8 @@ pub enum SliceState {
     /// estava servindo.
     #[default]
     Serving,
+    /// O deployment continua ativo, mas os pesos foram liberados por idle.
+    Idle,
 }
 
 /// O que está anotado em disco: a fatia e o quanto se sabe sobre ela.
@@ -56,6 +58,8 @@ pub enum LastSlice {
     Nothing,
     /// Vista servindo antes da queda — o nó volta servindo o mesmo.
     Serving(NodeConfig),
+    /// O nó volta anunciado e ocioso, sem recarregar antes da primeira chamada.
+    Idle(NodeConfig),
     /// Anotada no `apply` e nunca vista carregada. Não se retoma: foi o laço
     /// infinito de 2026-08-15, em que uma fatia que não cabia na memória
     /// ressuscitava a cada religada do container.
@@ -121,6 +125,7 @@ fn take_from(p: &Path) -> LastSlice {
     };
     match anot.state {
         SliceState::Serving => LastSlice::Serving(anot.slice),
+        SliceState::Idle => LastSlice::Idle(anot.slice),
         SliceState::Pending => LastSlice::NeverLoaded(anot.slice),
     }
 }
@@ -194,6 +199,17 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn fatia_ociosa_volta_anunciada_sem_carregar() {
+        let dir = tmp("ociosa-volta");
+        let f = dir.join("cfg.json.last-slice.json");
+        save_at(&f, &sample(), SliceState::Idle).unwrap();
+
+        assert!(matches!(take_from(&f), LastSlice::Idle(cfg) if cfg.model_label == "qwen35"));
+        assert!(!f.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Parar é decisão de quem operou, e o arranque seguinte não a desfaz.
     #[test]
     fn parar_de_proposito_esquece_a_fatia() {
@@ -228,6 +244,7 @@ mod tests {
         match take_from(&f) {
             LastSlice::NeverLoaded(cfg) => assert_eq!(cfg.model_label, "qwen35"),
             LastSlice::Serving(_) => panic!("uma fatia que nunca carregou não pode ser retomada"),
+            LastSlice::Idle(_) => panic!("uma fatia pendente não pode ser ociosa"),
             LastSlice::Nothing => panic!("a razão da falha se perdeu: o operador fica sem saber"),
         }
         assert!(!f.exists(), "e o arquivo sai do disco na leitura");
@@ -341,6 +358,8 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
         }
     }

@@ -562,6 +562,7 @@ async fn handle_event(
                 tp,
                 runtime_capacity,
                 cluster_logs_enabled,
+                idle,
             }) = serde_json::from_slice(&message.data)
             {
                 if libp2p_peer_id.as_deref() != Some(source.to_string().as_str()) {
@@ -621,6 +622,7 @@ async fn handle_event(
                         libp2p_peer_id: libp2p_peer_id.clone(),
                         tp,
                         runtime_capacity,
+                        idle,
                     })
                     .await;
 

@@ -428,7 +428,8 @@ Key logic carriers:
   padrões* (o que o llama.cpp já tem, incluindo os combos de cache KV da
   instalação), *Configurações POM* (motor, ajuste de memória, chunks em voo,
   fusão de fatias, precisão do estado oculto) e *Configurações POM (DESENV)*
-  (detector de ciclo e recuo do MTP para a RAM). O `[i]` vem **antes** do nome,
+  (detector de ciclo, recuo do MTP para a RAM e descarregamento ocioso por
+  peer). O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto

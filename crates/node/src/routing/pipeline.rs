@@ -664,6 +664,7 @@ mod ipv6_tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
     }
 

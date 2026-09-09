@@ -19,7 +19,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   estáveis. Textos simples permanecem literais; interpolação usa `{name}` e
   lógica usa `plural`, `select` e seletores exatos ICU. Valores internos de
   `select` são preparados apenas pelo carregador para preservar condicionais
-  de truthiness que existiam no código antigo.
+  de truthiness que existiam no código antigo. As chaves de deployment também
+  cobrem `unloadIfIdle`, minutos de ociosidade e o status `idle`.
 - O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente
   leitura de admins secundários e nós: roster, cadeia de promoções, sucessor,
   recusas concretas, confirmações e resultado das ações. O grupo

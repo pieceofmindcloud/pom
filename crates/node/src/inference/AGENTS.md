@@ -19,7 +19,10 @@ direto em pernas de rede (`direct_lab.rs`), a bancada da especulação
 (`mtp.rs` + a ponte C++ `llama_mtp_shim.cpp`), o formato binário do tensor na
 rede (`wire.rs`) e a
 supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
-anotação da fatia servida (estado Pending/Serving em `models/lastslice.rs`).
+anotação da fatia servida (estado Pending/Serving/Idle em
+`models/lastslice.rs`). Quando a política por deployment pede descarregamento
+ocioso, `RequestActivity` é avaliado pelo monitor existente fora do caminho de
+inferência; a restauração recebe `reload_model` e volta a anunciar `serving`.
 O runtime consulta a política de `utils/thermal.rs` a cada 5 segundos, pausa
 o modelo acima do limite com estado `thermal`, preserva a configuração para
 retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem

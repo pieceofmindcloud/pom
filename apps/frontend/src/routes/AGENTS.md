@@ -98,6 +98,9 @@ Per-file list:
   slice and in-flight requests instead. A graph view ("minima",
   `ModelNetworkCanvas`) or a details grid ("estendida") is used where the
   profile permits it.
+  O detalhe local diferencia `idle` de `serving`: o primeiro mantém o nó
+  ativo, mas informa que o modelo foi descarregado e será recarregado no
+  próximo pedido.
   The details grid lists the **whole network**, not just the pipeline:
   `networkPeers` (`../lib/networkPeers`) splits `c.peers` into the active
   deployment first (in layer order, `dashboard.groupDeployed*`) and the rest of
@@ -273,6 +276,8 @@ Per-file list:
   ativação". Tela cheia, como a de Logs:
   cabeçalho fixo, tabela rolando por dentro e, quando há versão escolhida, um
   inspetor à direita (`lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]`).
+  Uma implantação ativa com todos os peers vivos ociosos aparece como
+  `idle`, separada de `noAir`.
   Clicar na linha de uma versão abre o `DeploymentInspector` em `readOnly` com
   `version.params` - o mesmo inspetor da tela de implantar, sem duplicar a
   lista de propriedades. O cache KV **não** entra ali: é da instalação e do

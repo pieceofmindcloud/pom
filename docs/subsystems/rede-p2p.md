@@ -39,7 +39,8 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   `{role, group_id, size, rank, rank0_url, members}`, `None` = nó sem TP - ver
   `network.rs`). `rank0_url` é a URL do primary onde os ranks fazem o
   `POST /v1/tp/reduce` da coletiva. Cada `members` traz URL, `node_id`, `PeerId`
-  libp2p e a capacidade do túnel. Campos novos têm `serde(default)` para um nó
+  libp2p e a capacidade do túnel. `idle` informa que este peer está vivo e com
+  o modelo descarregado; não significa que o deployment saiu do ar. Campos novos têm `serde(default)` para um nó
   antigo continuar parseável em cluster de
   versões misturadas.
 - **`PeerRequest`** - pede a lista de peers de um nó conhecido.
@@ -325,6 +326,17 @@ e em `/ip6/::`.
   esse registro acontece junto com a chamada a `Network::insert_peer`. Sem
   ele, um peer aprendido somente pelo gossip tem `PeerId`, mas nenhum endereço
   para `swarm.dial(peer_id)`.
+
+### Ociosidade e `reload_model`
+
+O campo `idle` acompanha cada `Announce` e `PeerInfo`, mas não participa da
+expiração de liveness: um peer ocioso continua vivo, alcançável e parte do
+plano. Ao receber uma requisição para um plano que contém peers ociosos, o
+gateway recarrega o peer local e dispara `POST /api/internal/reload_model` em
+paralelo aos outros peers ociosos. Essa chamada usa `connection_key` e o
+marcador interno, e só ordena a carga local de cada destinatário. Não há
+conexão síncrona adicional no hop normal de inferência nem timer para decidir a
+ociosidade; a decisão usa a atividade local registrada e o monitor existente.
   Requisições recebidas pelo túnel são encaminhadas ao servidor de inferência
   local em uma task separada. O loop do swarm continua drenando GossipSub,
   respostas TP e eventos de conexão enquanto um prefill, decode ou redução TP

@@ -1,4 +1,5 @@
 use super::*;
+use futures::FutureExt;
 
 fn wall_clock_ms() -> u64 {
     std::time::SystemTime::now()
@@ -41,6 +42,79 @@ fn record_gateway_span(
 /// pedido em produção a 2026-09-08.
 fn log_early_outcome(outcome: &str, reason: &str) {
     warn!("⛔ requisição encerrada antes do plano ({outcome}): {reason}");
+}
+
+/// Wakes every idle step selected for this request at once. This is a control
+/// event on the gateway port, not an inference hop, so all peers begin their
+/// local load concurrently before the first prefill is sent.
+async fn reload_idle_pipeline(
+    state: &GatewayState,
+    plan: &PipelinePlan,
+    peers: &[crate::network::PeerInfo],
+) -> anyhow::Result<()> {
+    if !plan.steps.iter().any(|step| {
+        peers
+            .iter()
+            .any(|peer| peer.node_id == step.node_id && peer.idle)
+    }) {
+        return Ok(());
+    }
+    let key = state.auth.read().await.connection_key.clone();
+    let requests = plan.steps.iter().filter_map(|step| {
+        let peer = peers.iter().find(|peer| peer.node_id == step.node_id)?;
+        if !peer.idle {
+            return None;
+        }
+        let node_id = peer.node_id.clone();
+        if node_id == state.network.node_id {
+            let runtime = state.runtime.clone();
+            return Some(async move { runtime.reload_from_idle().await.map(|_| ()) }.boxed());
+        }
+        let client = state.peer_http.for_peer(&node_id).ok()?;
+        let urls = peer.gateway_candidates();
+        let key = key.clone();
+        if urls.is_empty() || key.is_empty() {
+            return Some(
+                async move {
+                    Err(anyhow::anyhow!(
+                        "peer idle sem endpointo de gateway ou chave"
+                    ))
+                }
+                .boxed(),
+            );
+        }
+        Some(
+            async move {
+                let mut last_error = None;
+                for base in urls {
+                    match client
+                        .post(format!("{base}/api/internal/reload_model"))
+                        .bearer_auth(&key)
+                        .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+                        .json(&serde_json::json!({ "event": "reload_model" }))
+                        .send()
+                        .await
+                    {
+                        Ok(response) if response.status().is_success() => return Ok(()),
+                        Ok(response) => {
+                            last_error = Some(format!("HTTP {}", response.status()));
+                        }
+                        Err(error) => last_error = Some(error.to_string()),
+                    }
+                }
+                Err(anyhow::anyhow!(
+                    "reload_model falhou para {node_id}: {}",
+                    last_error.unwrap_or_else(|| "nenhum endereço respondeu".into())
+                ))
+            }
+            .boxed(),
+        )
+    });
+    let results = futures::future::join_all(requests).await;
+    if let Some(error) = results.into_iter().find_map(Result::err) {
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub(super) async fn generate_stream_inner(
@@ -164,6 +238,11 @@ pub(super) async fn generate_stream_inner(
         let _ = tx.send(GenEvent::Failed(error)).await;
         return;
     };
+    if let Err(error) = reload_idle_pipeline(&state, &plan, &peers).await {
+        log_early_outcome("reload_model", &error.to_string());
+        let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+        return;
+    }
     record_gateway_span(
         &mut gateway_spans,
         request_started,
@@ -1847,6 +1926,7 @@ pub fn spawn_logged_generation_with_stops(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
 ) {
+    input.state.runtime.note_request();
     let entry_node_id = input.state.network.node_id.clone();
     let prompt_tokens = estimate_tokens(&input.prompt);
     let logged_model = input.model.clone();

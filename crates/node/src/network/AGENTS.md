@@ -42,6 +42,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   dual-stack, gossip, lifecycle de peers, varredura de descoberta. O perfil
   anunciado por `with_identity` pode ser atualizado por `set_profile`; a
   capacidade de admin não vem do anúncio, mas da cadeia em `admin_trust.rs`.
+  O campo `idle` também é anunciado por peer para distinguir modelo
+  descarregado de deployment fora do ar; ele não altera a regra de liveness.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é

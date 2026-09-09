@@ -6,6 +6,7 @@ pub(super) async fn handle_prefill(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
     // Ver a nota gêmea em `handle_step`: o cabeçalho basta para saber se o
     // quadro é um lote.

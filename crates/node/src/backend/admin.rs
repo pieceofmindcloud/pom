@@ -339,6 +339,37 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             "/api/internal/profile/accept-node",
             post(internal_accept_node_promotion),
         )
+        .route("/api/internal/reload_model", post(internal_reload_model))
+}
+
+/// Named node-to-node event used to wake all idle peers in one planned
+/// pipeline. The sender dispatches these requests concurrently and waits for
+/// each local health watcher, so no hop reloads sequentially through the
+/// inference chain.
+async fn internal_reload_model(
+    _auth: InternalNodeAuth,
+    State(state): State<crate::gateway::GatewayState>,
+    Json(event): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if event.get("event").and_then(|value| value.as_str()) != Some("reload_model") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "evento desconhecido" })),
+        );
+    }
+    match state.runtime.reload_from_idle().await {
+        Ok(reloaded) => (
+            StatusCode::OK,
+            Json(json!({
+                "event": "reload_model",
+                "reloaded": reloaded,
+            })),
+        ),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "event": "reload_model", "error": error.to_string() })),
+        ),
+    }
 }
 
 async fn require_principal(state: &crate::gateway::GatewayState) -> Result<(), StatusCode> {

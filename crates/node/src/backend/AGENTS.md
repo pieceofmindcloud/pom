@@ -41,6 +41,11 @@ mutation where authority changes. Setup and the separate inference listener
 are marked out of scope in the table and are not silently treated as gateway
 routes.
 
+O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
+de geração chama `reload_model` quando encontra peers ociosos no plano. A rota
+interna autenticada carrega o runtime remoto sem colocar uma conexão síncrona
+extra no hop normal; o descarregamento é avaliado pelo monitor já existente.
+
 `POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
 somente o endereço anunciado deste processo e não recebe alvo nem repassa a
 chamada. As rotas administrativas com parâmetro de nó usam a sintaxe `:id`
@@ -214,6 +219,9 @@ profile policy remains the effective authorization boundary.
   `RuntimeParams.fit_memory_margin_mb` is also persisted and controls the
   per-device safety reserve used by llama.cpp's automatic layer fit (default
   256 MiB).
+  `RuntimeParams.unload_if_idle` and `idle_minutes` are persisted with each
+  deployment; the runtime applies them independently on each peer and the
+  registry reports `idle` while a live peer has released its model.
   `/api/ui/peer/:node_id/runtime` forwards the inference `/health` unchanged,
   including `mtp_ready`, `mtp_allocation` and `mtp_unavailable_reason`, so the
   dashboard can distinguish MTP in VRAM, MTP in RAM, a model without `nextn`,

@@ -1167,6 +1167,8 @@ async fn async_main(
             mtp_draft_tokens: args.mtp_draft_tokens,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
         };
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");
@@ -1334,6 +1336,7 @@ fn runtime_mem_source(status: &runtime::RuntimeStatus) -> String {
     use runtime::ServerState;
     match status.state {
         ServerState::Ready => "inference_server".to_string(),
+        ServerState::Idle => format!("inference_server ocioso: {}", status.detail),
         ServerState::Starting => format!("inference_server (subindo: {})", status.detail),
         ServerState::Failed => format!("❌ inference_server parado: {}", status.detail),
         ServerState::Disabled => format!("inference_server desligado: {}", status.detail),
@@ -1865,6 +1868,12 @@ async fn start_gateway_only(
                 Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
                 Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
             }
+        }
+        lastslice::LastSlice::Idle(cfg) => {
+            let label = cfg.model_label.clone();
+            let (a, b) = (cfg.start_layer, cfg.end_layer);
+            node_runtime.restore_idle(cfg).await;
+            info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
         }
         // A fatia foi aplicada e o processo morreu antes de ela carregar uma
         // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o

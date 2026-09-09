@@ -118,6 +118,23 @@ desimplantação e também não prova que é seguro religar.
 desimplantação manual não seja anulada pelo monitor. Cada transição registra
 temperatura observada, limites e tempo no log do servidor.
 
+## 1.5 Descarregamento quando o peer fica ocioso
+
+`RuntimeParams.unload_if_idle` e `idle_minutes` são persistidos por deployment.
+Quando habilitado, cada peer registra localmente a última requisição em
+`backend/reqlog.rs`. O monitor existente, fora do caminho quente e sem criar
+timer ou `sleep` de inferência, avalia esse carimbo e chama o descarregamento
+local. O deployment continua ativo: o peer vivo anuncia `idle`, com a faixa
+preservada, em vez de `serving`.
+
+Na primeira requisição depois de `idle`, o gateway recarrega o runtime local e
+reinicia a atividade. Se o plano tem outros peers ociosos, envia em paralelo o
+evento autenticado `reload_model` para cada um; cada destinatário carrega sua
+própria fatia. Assim, a primeira requisição pode esperar a carga, mas os hops
+não são aquecidos sequencialmente. O status volta a `serving` quando o
+`/health` confirma o modelo carregado. `idle` é por peer, não por deployment:
+uma máquina ociosa não muda o estado das demais.
+
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
 `kind: "whole"` (`DeployKind`, `deploy.rs`) implanta **um GGUF não fatiado em
@@ -654,8 +671,10 @@ precisa saber:
 
 Aplicada, a fatia é anotada em `<config>.last-slice.json` como `pending` pelo
 `runtime::apply` - e só vira `serving` quando o `/health` do servidor de
-inferência responde `model_loaded` (`spawn_health_watch`). É esse estado que
-decide o que um reinício retoma (só `serving`), não o `apply`. Ver
+inferência responde `model_loaded` (`spawn_health_watch`). Quando o monitor de
+ociosidade descarrega o modelo, anota `idle` e mantém a implantação ativa para
+que `reload_model` possa restaurá-la. É esse estado que decide o que um
+reinício retoma (`serving` ou `idle`), não o `apply`. Ver
 `fatiamento.md` seção 6 e o `AGENTS.md` de `inference/`.
 
 `/api/ui/plan` (`plan_split_endpoint`) planeja por orçamento do cluster e **delega**

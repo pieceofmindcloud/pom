@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{watch, Mutex, Notify, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 
@@ -260,6 +260,12 @@ pub struct NodeConfig {
     /// o operador pode desligar o recuo se a medição local não compensar.
     #[serde(default = "default_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
+    /// Descarrega os pesos quando este peer fica ocioso.
+    #[serde(default)]
+    pub unload_if_idle: bool,
+    /// Minutos sem requisição antes de entrar em `idle`.
+    #[serde(default = "default_idle_minutes")]
+    pub idle_minutes: u32,
 }
 
 impl NodeConfig {
@@ -330,6 +336,8 @@ impl NodeConfig {
             mtp_draft_tokens: p.mtp_draft_tokens,
             mtp_min_probability: p.mtp_min_probability,
             mtp_cpu_fallback_enabled: p.mtp_cpu_fallback_enabled,
+            unload_if_idle: p.unload_if_idle,
+            idle_minutes: p.idle_minutes,
         }
     }
 
@@ -433,6 +441,9 @@ fn default_mtp_min_probability() -> f32 {
 }
 fn default_mtp_cpu_fallback_enabled() -> bool {
     true
+}
+fn default_idle_minutes() -> u32 {
+    60
 }
 
 impl NodeConfig {
@@ -583,6 +594,8 @@ pub enum ServerState {
     Starting,
     /// `/health` answered and the model is loaded.
     Ready,
+    /// Modelo descarregado por inatividade; a implantação continua anunciada.
+    Idle,
     /// Crashed past the restart budget.
     Failed,
     /// Model was unloaded because a GPU exceeded the thermal limit.
@@ -652,6 +665,8 @@ pub struct NodeRuntime {
     /// Sem a mesma instância, o painel só veria o zero do tracker do gateway
     /// enquanto as requisições executavam na porta de inferência.
     loads: Arc<crate::pipeline::LoadTracker>,
+    request_activity: Arc<crate::reqlog::RequestActivity>,
+    status_changed: Arc<Notify>,
     /// Serializes apply, manual unload and thermal unload so an operator action
     /// cannot race a temperature transition.
     operation: Mutex<()>,
@@ -698,6 +713,8 @@ impl NodeRuntime {
             auth,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
             loads: Arc::new(crate::pipeline::LoadTracker::new()),
+            request_activity: crate::reqlog::RequestActivity::new(),
+            status_changed: Arc::new(Notify::new()),
             operation: Mutex::new(()),
             thermal: Arc::new(Mutex::new(ThermalRuntime {
                 blocked: false,
@@ -710,6 +727,122 @@ impl NodeRuntime {
     /// inferência da geração atual.
     pub fn load_tracker(&self) -> Arc<crate::pipeline::LoadTracker> {
         self.loads.clone()
+    }
+
+    /// Atomic activity marker used by the out-of-band idle evaluator.
+    pub fn note_request(&self) {
+        self.request_activity.mark_now();
+    }
+
+    /// Wait for the health watcher to prove that a reload is ready. Notify is
+    /// used instead of polling so the first request after idle never adds a
+    /// timer or a sleep to inference.
+    pub async fn wait_until_ready(&self) -> Result<()> {
+        loop {
+            let notified = self.status_changed.notified();
+            match self.status.read().await.state {
+                ServerState::Ready => return Ok(()),
+                ServerState::Failed => bail!("o modelo não conseguiu recarregar"),
+                ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
+                ServerState::Disabled => bail!("o deployment não está configurado"),
+                ServerState::Starting | ServerState::Idle => notified.await,
+            }
+        }
+    }
+
+    /// Reload only when this peer was idle. The caller may invoke this on all
+    /// planned peers concurrently; the local operation is idempotent for a
+    /// peer that has already been woken by another request.
+    pub async fn reload_from_idle(&self) -> Result<bool> {
+        let reloaded = {
+            let _operation = self.operation.lock().await;
+            if self.status.read().await.state != ServerState::Idle {
+                return Ok(false);
+            }
+            let Some(cfg) = self.config.read().await.clone() else {
+                bail!("deployment idle sem configuração");
+            };
+            self.note_request();
+            // Keep the operation lock while transitioning Idle -> Starting so
+            // concurrent requests cannot all begin a duplicate load.
+            self.apply_locked(cfg).await?;
+            true
+        };
+        self.wait_until_ready().await?;
+        Ok(reloaded)
+    }
+
+    /// Evaluate the per-peer policy from the existing monitor. This method is
+    /// intentionally not called by a request handler.
+    async fn evaluate_idle(&self) {
+        let Some(cfg) = self.config.read().await.clone() else {
+            return;
+        };
+        if !cfg.unload_if_idle
+            || cfg.idle_minutes == 0
+            || self.status.read().await.state != ServerState::Ready
+            || !self.request_activity.is_idle(cfg.idle_minutes)
+        {
+            return;
+        }
+        self.unload_for_idle().await;
+    }
+
+    async fn unload_for_idle(&self) {
+        let _operation = self.operation.lock().await;
+        let Some(cfg) = self.config.read().await.clone() else {
+            return;
+        };
+        if !cfg.unload_if_idle
+            || cfg.idle_minutes == 0
+            || !self.request_activity.is_idle(cfg.idle_minutes)
+            || self.loads.load(&self.net.node_id).await != 0
+            || self.status.read().await.state != ServerState::Ready
+        {
+            return;
+        }
+        let Some(assignment) = self.assignment.read().await.clone() else {
+            return;
+        };
+        let generation = *self.generation.borrow() + 1;
+        self.generation.send_replace(generation);
+        self.model_cache.clear();
+        self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
+        self.net.set_runtime_generation(generation);
+        self.net.set_idle(true);
+        *self.status.write().await = RuntimeStatus::new(
+            ServerState::Idle,
+            format!(
+                "modelo descarregado após {} min sem requisições",
+                cfg.idle_minutes
+            ),
+        );
+        self.status_changed.notify_waiters();
+        if let Err(error) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Idle) {
+            warn!("não deu para anotar a fatia ociosa: {error}");
+        }
+        if let Err(error) = self.net.announce(Some(&assignment)).await {
+            warn!("announce após unload por inatividade falhou: {error}");
+        }
+    }
+
+    /// Restore an idle deployment without loading its model during process
+    /// startup. The first planned request explicitly wakes it.
+    pub async fn restore_idle(&self, cfg: NodeConfig) {
+        let profile = ModelProfile::guess_from_name(&cfg.model_path);
+        let assignment = cfg.to_assignment(&profile);
+        *self.config.write().await = Some(cfg.clone());
+        *self.assignment.write().await = Some(assignment.clone());
+        self.net.set_idle(true);
+        self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
+        *self.status.write().await = RuntimeStatus::new(
+            ServerState::Idle,
+            "deployment restaurado ocioso; aguardando requisição",
+        );
+        self.status_changed.notify_waiters();
+        let _ = self.net.announce(Some(&assignment)).await;
     }
 
     pub async fn config(&self) -> Option<NodeConfig> {
@@ -767,6 +900,7 @@ impl NodeRuntime {
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
+                runtime.evaluate_idle().await;
                 let policy = auth.read().await.thermal;
                 machine.set_policy(policy);
                 let system = crate::sysmon::sample().await;
@@ -801,6 +935,8 @@ impl NodeRuntime {
         self.model_cache.clear();
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
+        self.status_changed.notify_waiters();
+        self.net.set_idle(false);
         self.net.set_batching_ready(false);
         self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
@@ -885,6 +1021,9 @@ impl NodeRuntime {
         *self.assignment.write().await = Some(assignment.clone());
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
+        self.status_changed.notify_waiters();
+        self.request_activity.mark_now();
+        self.net.set_idle(false);
         // A configuração nova só vira capacidade efetiva depois que o
         // `/health` do processo novo responder `model_loaded`.
         self.net.set_runtime_generation(generation);
@@ -1090,6 +1229,7 @@ impl NodeRuntime {
         let gen_rx = self.generation.subscribe();
         let status = StatusWriter {
             status: self.status_handle(),
+            changed: self.status_changed.clone(),
         };
         let port = cfg.inference_port;
         let cfg_for_health = cfg.clone();
@@ -1109,6 +1249,7 @@ impl NodeRuntime {
         let auth = self.auth.clone();
         let model_cache = self.model_cache.clone();
         let loads = self.loads.clone();
+        let request_activity = self.request_activity.clone();
         let load_node_id = self.net.node_id.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
@@ -1186,6 +1327,7 @@ impl NodeRuntime {
                     reuse_weights,
                     loads.clone(),
                     load_node_id.clone(),
+                    request_activity.clone(),
                 )
                 .await;
                 if *gen_rx.borrow() != generation {
@@ -1241,6 +1383,7 @@ impl NodeRuntime {
         let port = cfg.inference_port;
         let status = StatusWriter {
             status: self.status_handle(),
+            changed: self.status_changed.clone(),
         };
         let assignment = self.assignment.clone();
         let net = self.net.clone();
@@ -1323,6 +1466,7 @@ impl NodeRuntime {
                 }
                 append_log(port, "modelo carregado (/health respondeu model_loaded)");
                 status.set_ready(reported, reported_gpu).await;
+                net.set_idle(false);
                 if *gen_rx.borrow() != generation {
                     return;
                 }
@@ -1537,6 +1681,7 @@ async fn free_port(port: u16) -> Result<(), String> {
 
 struct StatusWriter {
     status: Arc<RwLock<RuntimeStatus>>,
+    changed: Arc<Notify>,
 }
 
 impl StatusWriter {
@@ -1546,10 +1691,12 @@ impl StatusWriter {
         s.detail = detail;
         s.restarts = restarts;
         s.changed_at = chrono::Utc::now().to_rfc3339();
+        self.changed.notify_waiters();
     }
 
     async fn set_log(&self, path: &str) {
         self.status.write().await.log_path = Some(path.to_string());
+        self.changed.notify_waiters();
     }
 
     async fn set_ready(
@@ -1563,6 +1710,7 @@ impl StatusWriter {
         s.reported_total_layers = reported_total_layers;
         s.reported_gpu_layers = reported_gpu_layers;
         s.changed_at = chrono::Utc::now().to_rfc3339();
+        self.changed.notify_waiters();
     }
 }
 
@@ -1815,6 +1963,8 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
         }
     }

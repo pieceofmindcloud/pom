@@ -218,6 +218,9 @@ pub enum P2PMessage {
         /// Gatilho para a catraca autenticada da coleta de logs.
         #[serde(default)]
         cluster_logs_enabled: bool,
+        /// Modelo descarregado por idle, mantendo a implantação anunciada.
+        #[serde(default)]
+        idle: bool,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -297,6 +300,9 @@ pub struct PeerInfo {
     /// `None` não é zero: significa que a capacidade ainda não foi provada.
     #[serde(default)]
     pub runtime_capacity: Option<RuntimeCapacity>,
+    /// O peer está vivo e anunciado, mas sem os pesos na memória.
+    #[serde(default)]
+    pub idle: bool,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -642,6 +648,7 @@ pub struct Network {
     /// Capacidade que o último `/health` local confirmou. Fit de memória pode
     /// reduzir o contexto efetivo depois que o llama.cpp carrega o GGUF.
     runtime_capacity: std::sync::RwLock<RuntimeCapacityState>,
+    idle: AtomicBool,
     socket: Arc<UdpSocket>,
     #[cfg(test)]
     test_panic_on_next_message: AtomicBool,
@@ -1081,6 +1088,7 @@ impl Network {
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
+            idle: AtomicBool::new(false),
             socket: Arc::new(socket),
             #[cfg(test)]
             test_panic_on_next_message: AtomicBool::new(false),
@@ -1467,6 +1475,7 @@ impl Network {
                 .expect("runtime capacity lock")
                 .capacity,
             cluster_logs_enabled: self.cluster_logs_enabled(),
+            idle: self.is_idle(),
         }
     }
 
@@ -1482,6 +1491,14 @@ impl Network {
     /// True while the operator has taken this node off the network.
     pub fn is_detached(&self) -> bool {
         self.detached.load(Ordering::Relaxed)
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.idle.load(Ordering::Relaxed)
+    }
+
+    pub fn set_idle(&self, idle: bool) {
+        self.idle.store(idle, Ordering::Relaxed);
     }
 
     /// Called once `Discovery::new` has actually succeeded (or failed) —
@@ -2114,6 +2131,7 @@ impl Network {
                 tp,
                 runtime_capacity,
                 cluster_logs_enabled,
+                idle,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -2157,6 +2175,7 @@ impl Network {
                     libp2p_peer_id,
                     tp,
                     runtime_capacity,
+                    idle,
                 };
 
                 let is_new = {
@@ -2516,6 +2535,16 @@ mod tests {
             serde_json::from_slice(&net.gossip_announce_bytes(None).unwrap()).unwrap();
         assert_eq!(udp["tls"], true);
         assert_eq!(gossip["tls"], true);
+
+        // O estado de ociosidade também precisa ser idêntico nos dois
+        // transportes: um peer não pode parecer `serving` pela LAN e `idle`
+        // pelo gossipsub.
+        net.set_idle(true);
+        let udp: serde_json::Value = serde_json::to_value(net.self_announce(None)).unwrap();
+        let gossip: serde_json::Value =
+            serde_json::from_slice(&net.gossip_announce_bytes(None).unwrap()).unwrap();
+        assert_eq!(udp["idle"], true);
+        assert_eq!(gossip["idle"], true);
     }
 
     #[tokio::test]
@@ -2937,6 +2966,7 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -2980,6 +3010,7 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -3067,6 +3098,7 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
     }
 
@@ -3208,6 +3240,7 @@ mod tests {
                 libp2p_peer_id: None,
                 tp: None,
                 runtime_capacity: None,
+                idle: false,
                 cluster_logs_enabled: false,
             },
             current.parse().unwrap(),
@@ -3526,6 +3559,7 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
     }
 

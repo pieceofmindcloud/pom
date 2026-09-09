@@ -29,6 +29,7 @@ pub(crate) async fn handle_step(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
     // Só o cabeçalho é lido aqui: um quadro de um item - o caso normal de
     // todo salto interno - não pode pagar uma cópia do estado oculto inteiro
@@ -398,6 +399,7 @@ pub(crate) async fn handle_step_stream(
     _headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    app.request_activity.mark_now();
     let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(error) => return err400(format!("quadro inválido: {error}")),

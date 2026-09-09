@@ -1651,6 +1651,8 @@ mod budget_tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,
@@ -1909,6 +1911,7 @@ mod peer_visibility_tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
     }
 
@@ -2044,6 +2047,7 @@ pub(crate) mod testkit {
                 n_ctx: 8_192,
                 max_new_tokens: 256,
             }),
+            idle: false,
         }
     }
 
@@ -2250,6 +2254,8 @@ pub(crate) mod testkit {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,

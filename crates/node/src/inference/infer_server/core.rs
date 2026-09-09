@@ -543,6 +543,7 @@ pub(crate) struct InferenceAppState {
     /// gateway shares this tracker so `/api/ui/node` reports the local fact.
     pub(super) loads: Arc<crate::pipeline::LoadTracker>,
     pub(super) load_node_id: String,
+    pub(super) request_activity: Arc<crate::reqlog::RequestActivity>,
     /// TP exposes one global decode/barrier identity per process. Serialize
     /// complete inbound batches so a second request cannot replace that id
     /// while the first batch is waiting for its workers.
@@ -1462,6 +1463,8 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
         };
         cfg.inference_port = port;
@@ -1480,6 +1483,7 @@ mod tests {
             false,
             Arc::new(crate::pipeline::LoadTracker::new()),
             "test-node".to_owned(),
+            crate::reqlog::RequestActivity::new(),
         )
         .await
         .expect_err("porta ocupada devia falhar");

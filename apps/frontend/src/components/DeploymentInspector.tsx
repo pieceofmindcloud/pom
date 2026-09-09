@@ -62,7 +62,8 @@ type NumericKey =
   | "mtp_min_probability"
   | "cycle_detection_min_window_tokens"
   | "cycle_detection_max_window_tokens"
-  | "cycle_detection_repetitions";
+  | "cycle_detection_repetitions"
+  | "idle_minutes";
 
 /**
  * `step` só existe onde o valor não é inteiro: sem ele o navegador recusa
@@ -288,6 +289,7 @@ export function DeploymentInspector({
             aria-label={label}
             name={key}
             type="number"
+            min={key === "idle_minutes" ? 1 : undefined}
             step={NUMERIC_STEP[key]}
             value={shown(key)}
             onChange={(event) => setKnob(key, event.target.value)}
@@ -545,6 +547,15 @@ export function DeploymentInspector({
           onToggle: (next) => set({ mtp_cpu_fallback_enabled: next }),
           tip: t("deploy.mtpCpuFallbackHint"),
         })}
+        {toggle({
+          key: "unload_if_idle",
+          label: t("deploy.unloadIfIdle"),
+          alwaysVisible: true,
+          checked: value.unload_if_idle ?? false,
+          onToggle: (next) => set({ unload_if_idle: next }),
+          tip: t("deploy.unloadIfIdleHint"),
+        })}
+        {numeric("idle_minutes")}
       </Section>
     </>
   );

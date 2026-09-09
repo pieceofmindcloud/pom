@@ -464,6 +464,8 @@ export interface DeploymentRow {
   deployment: Deployment;
   /** Há peer vivo anunciando este `deploy_id`. */
   serving: boolean;
+  /** Há peers vivos, mas todos os peers desta implantação estão ociosos. */
+  idle?: boolean;
   /** É esta que atende quem pede só o nome do modelo, sem sufixo `@`. */
   is_default: boolean;
   /** Quais nós guardam uma cópia do registro. */

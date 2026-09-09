@@ -219,7 +219,9 @@ export function Dashboard() {
   const localModelDetail = localNode == null
     ? t("dashboard.localDataUnavailable")
     : localModel
-      ? isServing(localNode.status.state) ? t("dashboard.localServing") : t("dashboard.notServing")
+      ? localNode.status.state === "idle"
+        ? t("dashboard.localIdle")
+        : isServing(localNode.status.state) ? t("dashboard.localServing") : t("dashboard.notServing")
       : t("dashboard.localNoSliceDetail");
   const localLoad = localNode && typeof localNode.load === "number" ? localNode.load : null;
 

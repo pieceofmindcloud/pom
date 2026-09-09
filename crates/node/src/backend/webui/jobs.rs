@@ -114,6 +114,12 @@ pub struct RuntimeParams {
     /// Permite recuar o MTP para a RAM quando a VRAM não comportar o contexto.
     #[serde(default = "d_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
+    /// Descarrega os pesos depois de um período sem requisições neste peer.
+    #[serde(default)]
+    pub unload_if_idle: bool,
+    /// Minutos de inatividade antes de liberar RAM/VRAM.
+    #[serde(default = "d_idle_minutes")]
+    pub idle_minutes: u32,
 }
 
 pub(super) fn d_gpu_layers() -> u32 {
@@ -200,6 +206,9 @@ pub(super) fn d_mtp_min_probability() -> f32 {
 pub(super) fn d_mtp_cpu_fallback_enabled() -> bool {
     true
 }
+pub(super) fn d_idle_minutes() -> u32 {
+    60
+}
 
 impl Default for RuntimeParams {
     fn default() -> Self {
@@ -239,6 +248,8 @@ impl Default for RuntimeParams {
             mtp_draft_tokens: d_mtp_draft_tokens(),
             mtp_min_probability: d_mtp_min_probability(),
             mtp_cpu_fallback_enabled: d_mtp_cpu_fallback_enabled(),
+            unload_if_idle: false,
+            idle_minutes: d_idle_minutes(),
         }
     }
 }
@@ -286,6 +297,8 @@ impl From<&NodeConfig> for RuntimeParams {
             mtp_draft_tokens: c.mtp_draft_tokens,
             mtp_min_probability: c.mtp_min_probability,
             mtp_cpu_fallback_enabled: c.mtp_cpu_fallback_enabled,
+            unload_if_idle: c.unload_if_idle,
+            idle_minutes: c.idle_minutes,
         }
     }
 }

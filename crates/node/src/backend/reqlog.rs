@@ -16,14 +16,54 @@ use rusqlite::{params, params_from_iter, types::Value, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{mpsc, Arc};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Arc,
+};
 use std::thread;
+use std::time::Instant;
 use tracing::{error, warn};
 
 const WRITER_QUEUE_CAPACITY: usize = 4096;
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
 const STALE_AFTER_MINUTES: i64 = 15;
+
+/// Monotonic request activity shared by the gateway and the local inference
+/// server. The idle policy reads this atomically from the existing monitor;
+/// it never starts a timer or does I/O in the inference path.
+#[derive(Debug, Default)]
+pub struct RequestActivity {
+    last_ms: AtomicU64,
+}
+
+impl RequestActivity {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn mark_now(&self) {
+        self.mark_at(monotonic_ms());
+    }
+
+    pub fn mark_at(&self, timestamp_ms: u64) {
+        self.last_ms.store(timestamp_ms, Ordering::Relaxed);
+    }
+
+    pub fn is_idle(&self, idle_minutes: u32) -> bool {
+        self.is_idle_at(monotonic_ms(), idle_minutes)
+    }
+
+    pub fn is_idle_at(&self, now_ms: u64, idle_minutes: u32) -> bool {
+        now_ms.saturating_sub(self.last_ms.load(Ordering::Relaxed))
+            >= u64::from(idle_minutes).saturating_mul(60_000)
+    }
+}
+
+fn monotonic_ms() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
 
 /// Identity of the credential, without its secret value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1010,6 +1050,17 @@ pub async fn stats_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_activity_marks_and_compares_idle_without_a_timer() {
+        let activity = RequestActivity::new();
+        activity.mark_at(1_000);
+
+        assert!(!activity.is_idle_at(60_999, 1));
+        assert!(activity.is_idle_at(61_000, 1));
+        activity.mark_at(61_001);
+        assert!(!activity.is_idle_at(61_001, 1));
+    }
 
     fn request(id: &str, key_id: &str, prompt: &str) -> AuditRequest {
         AuditRequest {

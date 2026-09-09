@@ -565,6 +565,7 @@ mod tests {
     /// anúncio já carrega o endereço novo.
     #[tokio::test]
     async fn an_infer_node_can_save_its_own_address_and_announce_it_next() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
         let state = testkit::state_with("infer-node", vec![]).await;
         {
             let mut auth = state.auth.write().await;

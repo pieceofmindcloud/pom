@@ -2,7 +2,7 @@ pub(crate) use crate::auth::AuthState;
 pub(crate) use crate::model::LayerAssignment;
 pub(crate) use crate::network::{Network, PeerInfo, RuntimeCapacity};
 pub(crate) use crate::ollama::OllamaClient;
-pub(crate) use crate::pipeline::{plan_pipeline_with_rtt, LoadTracker, PipelinePlan};
+pub(crate) use crate::pipeline::{LoadTracker, PipelinePlan};
 pub(crate) use crate::runtime::NodeRuntime;
 pub(crate) use crate::{admin, session};
 pub(crate) use anyhow::Result;

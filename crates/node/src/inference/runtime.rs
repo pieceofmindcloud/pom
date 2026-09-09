@@ -750,23 +750,29 @@ impl NodeRuntime {
         }
     }
 
-    /// Reload only when this peer was idle. The caller may invoke this on all
-    /// planned peers concurrently; the local operation is idempotent for a
-    /// peer that has already been woken by another request.
+    /// Ensure this peer is ready for a planned request. Idle peers are loaded;
+    /// peers already starting are awaited; ready peers return immediately.
+    /// The caller may invoke this on all planned peers concurrently, and the
+    /// operation lock keeps duplicate wake-ups idempotent.
     pub async fn reload_from_idle(&self) -> Result<bool> {
         let reloaded = {
             let _operation = self.operation.lock().await;
-            if self.status.read().await.state != ServerState::Idle {
-                return Ok(false);
+            match self.status.read().await.state {
+                ServerState::Idle => {
+                    let Some(cfg) = self.config.read().await.clone() else {
+                        bail!("deployment idle sem configuração");
+                    };
+                    self.note_request();
+                    // Keep the operation lock while transitioning Idle ->
+                    // Starting so concurrent requests cannot duplicate a load.
+                    self.apply_locked(cfg).await?;
+                    true
+                }
+                ServerState::Ready | ServerState::Starting => false,
+                ServerState::Failed => bail!("o modelo não conseguiu recarregar"),
+                ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
+                ServerState::Disabled => bail!("o deployment não está configurado"),
             }
-            let Some(cfg) = self.config.read().await.clone() else {
-                bail!("deployment idle sem configuração");
-            };
-            self.note_request();
-            // Keep the operation lock while transitioning Idle -> Starting so
-            // concurrent requests cannot all begin a duplicate load.
-            self.apply_locked(cfg).await?;
-            true
         };
         self.wait_until_ready().await?;
         Ok(reloaded)
@@ -1730,6 +1736,7 @@ mod tests {
     /// `--refresh` e o stdout não sobrevive.
     #[tokio::test]
     async fn a_porta_presa_aparece_no_status_e_no_log() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("pom-porta-presa-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("POM_HOME", &dir);
@@ -1979,6 +1986,7 @@ mod tests {
     /// que ele prova é o contrato entre o watch e o disco, não o llama.cpp.
     #[tokio::test]
     async fn o_health_e_quem_promove_a_anotacao_para_servindo() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("pom-health-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg_path = dir.join("pom.json");

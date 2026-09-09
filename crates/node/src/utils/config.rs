@@ -5,6 +5,12 @@ use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Testes que mudam `POM_CONFIG` ou `POM_HOME` compartilham o ambiente do
+/// processo. A trava mantém esses testes assíncronos determinísticos quando a
+/// suíte roda em paralelo.
+#[cfg(test)]
+pub static TEST_ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Nome do arquivo de config: derivado da marca (`brand.json`), não escrito à
 /// mão, para renomear o produto ser uma edição só.
 fn config_filename() -> String {

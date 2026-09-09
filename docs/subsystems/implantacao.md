@@ -85,7 +85,10 @@ Passo operacional exato antes de testar uma implantação longa:
 O gateway anuncia o menor `n_ctx` confirmado entre os peers da pipeline
 planejada do modelo e mantém `max_new_tokens` apenas como tamanho de perna. Um
 peer ocioso escolhido pela pipeline é acordado por `reload_model` antes do
-prefill. Peers vivos de rotas alternativas não bloqueiam a capacidade. O
+prefill. Todos os peers ociosos planejados recebem o evento em paralelo, e a
+barreira espera o `/health` por até 15 minutos para que uma carga fria conclua;
+se esse prazo vencer, a requisição falha com erro explícito. Peers vivos de
+rotas alternativas não bloqueiam a capacidade. O
 limite local do cliente, como `maxTokens: 5000` no Pi, continua independente
 dessa capacidade. Um `pom.json` legado que contenha o campo removido é recusado
 na leitura, em vez de ser aceito com um valor padrão escondido.
@@ -133,12 +136,13 @@ local. O deployment continua ativo: o peer vivo anuncia `idle`, com a faixa
 preservada, em vez de `serving`.
 
 Na primeira requisição depois de `idle`, o gateway recarrega o runtime local e
-reinicia a atividade. Se o plano tem outros peers ociosos, envia em paralelo o
-evento autenticado `reload_model` para cada um; cada destinatário carrega sua
-própria fatia. Assim, a primeira requisição pode esperar a carga, mas os hops
-não são aquecidos sequencialmente. O status volta a `serving` quando o
-`/health` confirma o modelo carregado. `idle` é por peer, não por deployment:
-uma máquina ociosa não muda o estado das demais.
+reinicia a atividade. Envia em paralelo o evento autenticado `reload_model` a
+cada peer ocioso planejado; o evento é idempotente para uma segunda requisição
+que acorde a mesma máquina, e cada destinatário carrega sua própria fatia.
+Assim, a primeira requisição pode esperar a carga, mas os hops não são
+aquecidos sequencialmente nem ficam esperando uns pelos outros. O status volta
+a `serving` quando o `/health` confirma o modelo carregado. `idle` é por peer,
+não por deployment: uma máquina ociosa não muda o estado das demais.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 

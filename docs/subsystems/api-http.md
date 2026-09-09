@@ -408,10 +408,11 @@ entrega. O mesmo mínimo de peers é usado pela validação de cada requisição
 Um peer só entra nessa capacidade depois de seu `/health` confirmar o modelo
 carregado; durante restart, o anúncio anterior é retirado.
 Um peer ocioso escolhido pelo plano é acordado por `reload_model` antes da
-geração e a requisição espera seu `/health`; um peer vivo de rota alternativa
-não bloqueia o catálogo nem a admissão. Um peer planejado não ocioso sem essa
-confirmação mantém o modelo pendente, em vez de cair na capacidade local e
-esconder um estágio antigo.
+geração e a requisição espera seu `/health`; os peers ociosos planejados são
+acordados em paralelo, com teto de 15 minutos para a barreira. Um peer vivo de
+rota alternativa não bloqueia o catálogo nem a admissão. Um peer planejado não
+ocioso sem essa confirmação mantém o modelo pendente, em vez de cair na
+capacidade local e esconder um estágio antigo.
 
 ### Anthropic (`/v1/messages`)
 

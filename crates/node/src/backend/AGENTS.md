@@ -46,9 +46,12 @@ are marked out of scope in the table and are not silently treated as gateway
 routes.
 
 O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
-de geração chama `reload_model` quando encontra peers ociosos no plano. A rota
-interna autenticada carrega o runtime remoto sem colocar uma conexão síncrona
-extra no hop normal; o descarregamento é avaliado pelo monitor já existente.
+de geração dispara `reload_model` em paralelo para os peers ociosos da pipeline
+planejada. O evento é uma barreira idempotente: peer pronto retorna, peer
+iniciando é aguardado e peer ocioso carrega o runtime remoto. A espera da
+rodada tem teto de 15 minutos, para uma carga fria concluir sem deixar a
+requisição pendurada indefinidamente; o descarregamento continua sendo
+avaliado pelo monitor já existente.
 
 `POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
 somente o endereço anunciado deste processo e não recebe alvo nem repassa a
@@ -417,8 +420,10 @@ profile policy remains the effective authorization boundary.
   A capacidade publicada em `/v1/models` e usada por
   `request_output_limit_for_model` é a menor `RuntimeCapacity` entre os peers
   da pipeline escolhida para o modelo/implantação. Um peer ocioso nessa
-  pipeline é acordado pelo evento `reload_model` antes do primeiro prefill; um
-  peer vivo de rota alternativa não bloqueia a requisição. O runtime só
+  pipeline é acordado pelo evento `reload_model` em paralelo aos demais peers
+  ociosos antes do primeiro prefill; a barreira espera `/health` por até 15
+  minutos e falha explicitamente se o peer não voltar. Um peer vivo de rota
+  alternativa não bloqueia a requisição. O runtime só
   anuncia esse valor depois do `/health` efetivo; apply, erro e unload retiram
   a capacidade durante restart.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit

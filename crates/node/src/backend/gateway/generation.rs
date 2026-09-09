@@ -46,11 +46,23 @@ fn log_early_outcome(outcome: &str, reason: &str) {
 
 /// Wakes every idle step selected for this request at once. This is a control
 /// event on the gateway port, not an inference hop, so all peers begin their
-/// local load concurrently before the first prefill is sent.
+/// local load concurrently before the first prefill is sent. The event is
+/// idempotent if another request has already woken the same peer.
+const IDLE_RELOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
 async fn reload_idle_pipeline(
     state: &GatewayState,
     plan: &PipelinePlan,
     peers: &[crate::network::PeerInfo],
+) -> anyhow::Result<()> {
+    reload_idle_pipeline_with_timeout(state, plan, peers, IDLE_RELOAD_TIMEOUT).await
+}
+
+async fn reload_idle_pipeline_with_timeout(
+    state: &GatewayState,
+    plan: &PipelinePlan,
+    peers: &[crate::network::PeerInfo],
+    timeout: Duration,
 ) -> anyhow::Result<()> {
     if !plan.steps.iter().any(|step| {
         peers
@@ -60,31 +72,43 @@ async fn reload_idle_pipeline(
         return Ok(());
     }
     let key = state.auth.read().await.connection_key.clone();
-    let requests = plan.steps.iter().filter_map(|step| {
-        let peer = peers.iter().find(|peer| peer.node_id == step.node_id)?;
-        if !peer.idle {
-            return None;
-        }
-        let node_id = peer.node_id.clone();
-        if node_id == state.network.node_id {
-            let runtime = state.runtime.clone();
-            return Some(async move { runtime.reload_from_idle().await.map(|_| ()) }.boxed());
-        }
-        let client = state.peer_http.for_peer(&node_id).ok()?;
-        let urls = peer.gateway_candidates();
-        let key = key.clone();
-        if urls.is_empty() || key.is_empty() {
-            return Some(
-                async move {
+    let requests = plan
+        .steps
+        .iter()
+        .filter_map(|step| {
+            let peer = peers.iter().find(|peer| peer.node_id == step.node_id)?;
+            if !peer.idle {
+                return None;
+            }
+            let node_id = peer.node_id.clone();
+            if node_id == state.network.node_id {
+                let runtime = state.runtime.clone();
+                return Some(Ok(async move {
+                    runtime
+                        .reload_from_idle()
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| {
+                            anyhow::anyhow!("reload_model falhou para {node_id}: {error}")
+                        })
+                }
+                .boxed()));
+            }
+            let client = match state.peer_http.for_peer(&node_id) {
+                Ok(client) => client,
+                Err(error) => return Some(Err(error)),
+            };
+            let urls = peer.gateway_candidates();
+            let key = key.clone();
+            if urls.is_empty() || key.is_empty() {
+                return Some(Ok(async move {
                     Err(anyhow::anyhow!(
-                        "peer idle sem endpointo de gateway ou chave"
+                        "peer {node_id} sem endpoint de gateway ou chave"
                     ))
                 }
-                .boxed(),
-            );
-        }
-        Some(
-            async move {
+                .boxed()));
+            }
+            Some(Ok(async move {
                 let mut last_error = None;
                 for base in urls {
                     match client
@@ -107,14 +131,146 @@ async fn reload_idle_pipeline(
                     last_error.unwrap_or_else(|| "nenhum endereço respondeu".into())
                 ))
             }
-            .boxed(),
-        )
-    });
-    let results = futures::future::join_all(requests).await;
-    if let Some(error) = results.into_iter().find_map(Result::err) {
-        return Err(error);
-    }
+            .boxed()))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let results = tokio::time::timeout(timeout, futures::future::try_join_all(requests))
+        .await
+        .map_err(|_| anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}"))?;
+    results?;
     Ok(())
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+    use crate::pipeline::PipelineStep;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct ReloadBarrier {
+        started: Arc<AtomicUsize>,
+        all_started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        expected: usize,
+    }
+
+    async fn gated_reload(State(barrier): State<ReloadBarrier>, _body: Bytes) -> StatusCode {
+        let release = barrier.release.notified();
+        if barrier.started.fetch_add(1, Ordering::SeqCst) + 1 == barrier.expected {
+            barrier.all_started.notify_one();
+        }
+        release.await;
+        StatusCode::OK
+    }
+
+    async fn hanging_reload(State(_): State<()>, _body: Bytes) -> StatusCode {
+        std::future::pending::<()>().await;
+        StatusCode::OK
+    }
+
+    async fn spawn_gated_server(state: ReloadBarrier) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("porta de teste");
+        let port = listener.local_addr().expect("endereço de teste").port();
+        let router = Router::new()
+            .route("/api/internal/reload_model", post(gated_reload))
+            .with_state(state);
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (port, task)
+    }
+
+    async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("porta de teste");
+        let port = listener.local_addr().expect("endereço de teste").port();
+        let router = Router::new()
+            .route("/api/internal/reload_model", post(hanging_reload))
+            .with_state(());
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (port, task)
+    }
+
+    fn plan_for(node_ids: &[&str]) -> PipelinePlan {
+        PipelinePlan {
+            steps: node_ids
+                .iter()
+                .map(|node_id| PipelineStep {
+                    node_id: (*node_id).into(),
+                    inference_url: String::new(),
+                    inference_candidates: Vec::new(),
+                    start_layer: 0,
+                    end_layer: 0,
+                    exec_start: 0,
+                    exec_end: 0,
+                    inference_frame_capabilities: Vec::new(),
+                    libp2p_peer_id: None,
+                    libp2p_addr_candidates: Vec::new(),
+                })
+                .collect(),
+            edges: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reloads_all_planned_idle_peers_concurrently() {
+        let barrier = ReloadBarrier {
+            started: Arc::new(AtomicUsize::new(0)),
+            all_started: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            expected: 2,
+        };
+        let (first_port, first_task) = spawn_gated_server(barrier.clone()).await;
+        let (second_port, second_task) = spawn_gated_server(barrier.clone()).await;
+
+        let mut first = crate::gateway::testkit::peer("idle-first", "first", first_port);
+        first.idle = true;
+        let mut second = crate::gateway::testkit::peer("idle-second", "second", second_port);
+        second.idle = true;
+        let planned_peers = vec![first.clone(), second.clone()];
+        let state = crate::gateway::testkit::state_with("gateway", vec![first, second]).await;
+        let plan = plan_for(&["idle-first", "idle-second"]);
+        let waiting_for_both = barrier.all_started.notified();
+        let reload = tokio::spawn(async move {
+            reload_idle_pipeline_with_timeout(&state, &plan, &planned_peers, Duration::from_secs(2))
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), waiting_for_both)
+            .await
+            .expect("os dois peers planejados devem receber o evento em paralelo");
+        barrier.release.notify_waiters();
+        tokio::time::timeout(Duration::from_secs(1), reload)
+            .await
+            .expect("reload paralelo não pode ficar bloqueado")
+            .expect("task de reload")
+            .expect("ambos os peers devem confirmar o reload");
+
+        first_task.abort();
+        second_task.abort();
+    }
+
+    #[tokio::test]
+    async fn reload_timeout_returns_instead_of_hanging_the_request() {
+        let (port, server_task) = spawn_hanging_server().await;
+        let mut peer = crate::gateway::testkit::peer("idle-hung", "hung", port);
+        peer.idle = true;
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["idle-hung"]);
+
+        let error =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_millis(50))
+                .await
+                .expect_err("um peer preso deve devolver erro com timeout");
+        assert!(error.to_string().contains("excedeu"));
+        server_task.abort();
+    }
 }
 
 pub(super) async fn generate_stream_inner(

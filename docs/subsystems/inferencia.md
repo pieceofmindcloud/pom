@@ -1918,10 +1918,11 @@ por `max_sessions`), e o `max_new_tokens` da perna. O gateway usa o menor
 valor entre os peers da pipeline planejada tanto em `/v1/models` quanto na
 validação da requisição. Apply, erro, stop e unload térmico limpam o anúncio
 antes do restart, então uma capacidade antiga não fica no catálogo. Um peer
-ocioso escolhido pelo plano é acordado pelo evento `reload_model` e a
-requisição espera o novo `/health`; um peer vivo de rota alternativa não
-bloqueia a admissão. Sem peer correspondente, a configuração local continua
-sendo fallback para rotas sem implantação.
+ocioso escolhido pelo plano é acordado pelo evento `reload_model` em paralelo
+com os demais peers ociosos planejados e a requisição espera o novo `/health`
+por até 15 minutos; um peer vivo de rota alternativa não bloqueia a admissão.
+Sem peer correspondente, a configuração local continua sendo fallback para
+rotas sem implantação.
 
 **Limite conhecido.** `context_available` ainda usa a janela por sessão; com
 um pool (`max_sessions > 1`) cada contexto recebe `n_ctx / n`, então esse

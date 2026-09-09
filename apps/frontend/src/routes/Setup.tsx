@@ -10,14 +10,19 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, Cpu, Database, Landmark, Monitor, Server, ShieldCheck, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { WizardLayout, ContinueButton } from "../components/setup-wizard/WizardLayout";
-import type { WizardStage, WizardStep } from "./setupWizardTypes";
+import type { WizardStage } from "./setupWizardTypes";
+import {
+  setupNextStage,
+  setupPreviousStage,
+  setupStepsFor,
+  type SetupProfile,
+} from "./setupWizardFlow";
 import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { LanguageSelect, useI18n } from "../i18n/provider";
 import { Badge, Button, Field, Input, Panel, PanelHeader, Select } from "../components/ui";
 import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 
-type SetupProfile = "admin" | "node" | "infer";
 type NetworkVisibility = "local" | "private" | "public";
 type AccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
 type AdminExposure = "localhost" | "network";
@@ -151,47 +156,6 @@ const INITIAL: SetupState = {
   tlsRequired: true,
 };
 
-const PROFILE_STEPS: WizardStep[] = [{ id: "setup-profile", labelKey: "setupWizard.stepProfile" }];
-
-function stepsFor(profile: SetupProfile | null): WizardStep[] {
-  if (!profile) return PROFILE_STEPS;
-  const steps: WizardStep[] = [
-    { id: "setup-profile", labelKey: "setupWizard.stepProfile" },
-    { id: "setup-hardware", labelKey: "setupWizard.stepHardware" },
-  ];
-  if (profile === "infer") {
-    steps.push({ id: "setup-trust", labelKey: "setupWizard.stepTrust" });
-  } else {
-    steps.push({ id: "setup-resources", labelKey: "setupWizard.stepResources" });
-  }
-  if (profile === "admin") {
-    steps.push(
-      { id: "setup-model", labelKey: "setupWizard.stepModel" },
-      { id: "setup-storage", labelKey: "setupWizard.stepStorage" },
-      { id: "setup-network", labelKey: "setupWizard.stepNetwork" },
-      { id: "setup-security", labelKey: "setupWizard.stepSecurity" },
-      { id: "setup-invite", labelKey: "setupWizard.stepInvite" },
-    );
-  } else if (profile === "node") {
-    steps.push({ id: "setup-trust", labelKey: "setupWizard.stepTrust" });
-  }
-  steps.push(
-    { id: "setup-health", labelKey: "setupWizard.stepHealth" },
-    { id: "setup-review", labelKey: "setupWizard.stepReview" },
-  );
-  return steps;
-}
-
-function nextStage(stage: WizardStage, steps: WizardStep[]): WizardStage | null {
-  const index = steps.findIndex((step) => step.id === stage);
-  return steps[index + 1]?.id ?? null;
-}
-
-function previousStage(stage: WizardStage, steps: WizardStep[]): WizardStage | null {
-  const index = steps.findIndex((step) => step.id === stage);
-  return steps[index - 1]?.id ?? null;
-}
-
 export function Setup() {
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -204,7 +168,7 @@ export function Setup() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const steps = useMemo(() => stepsFor(setup.profile), [setup.profile]);
+  const steps = useMemo(() => setupStepsFor(setup.profile), [setup.profile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -330,12 +294,12 @@ export function Setup() {
       setStage("setup-review");
       return;
     }
-    const next = nextStage(stageNow, steps);
+    const next = setupNextStage(stageNow, steps);
     if (next) setStage(next);
   }
 
   function back() {
-    const previous = previousStage(stage, steps);
+    const previous = setupPreviousStage(stage, steps);
     if (previous) setStage(previous);
   }
 
@@ -443,7 +407,7 @@ function ResourcesScreen({ setup, hardware, profile, update, t }: { setup: Setup
   const diskTotalGb = Math.max(1, Math.floor((hardware?.system.disk.total_mb ?? 0) / 1024));
   const diskFreeGb = Math.floor((hardware?.system.disk.free_mb ?? 0) / 1024);
   const diskValue = Math.min(Math.max(1, Math.round(setup.shardMaxGb)), diskTotalGb);
-  return <Intro eyebrow={t("setupWizard.stepResources")} title={t("setupWizard.resourcesTitle")} detail={t("setupWizard.resourcesDetail")}><Panel className="space-y-6 px-5 py-5"><RangeSetting label={t("setupWizard.ramReserve")} detail={t("setupWizard.ramReserveDetail")} value={setup.ramReservePct} onChange={(value) => update({ ramReservePct: value })} /><RangeSetting label={t("setupWizard.cpuReserve")} detail={t("setupWizard.cpuReserveDetail")} value={setup.cpuReservePct} onChange={(value) => update({ cpuReservePct: value })} />{profile === "node" && <div><div className="flex items-end justify-between gap-4"><div className="min-w-0"><p className="text-sm font-medium text-fg">{t("setupWizard.shardSpace")}</p><p className="mt-1 text-xs leading-relaxed text-faint">{t("setupWizard.shardSpaceHint")}</p></div><span className="shrink-0 font-mono text-sm text-iris">{diskValue} GB</span></div><progress max={diskTotalGb} value={diskValue} aria-label={t("setupWizard.shardSpace")} className="mt-4 h-2 w-full accent-iris" /><div className="mt-2 flex justify-between gap-3 text-xs text-faint"><span>{t("setupWizard.diskAvailable", { value: diskFreeGb })}</span><span>{t("setupWizard.diskTotal", { value: diskTotalGb })}</span></div><input type="range" min={1} max={diskTotalGb} step={1} value={diskValue} onChange={(event) => update({ shardMaxGb: Number(event.target.value) })} className="mt-3 w-full accent-iris" /></div>}<ThermalSetting enabled={Boolean(hardware?.gpu_detected)} value={setup.thermalLimitC} onChange={(value) => update({ thermalLimitC: value })} t={t} /><div className="flex items-start gap-3 rounded-lg border border-aqua/30 bg-aqua/8 px-3 py-3 text-sm text-muted"><Monitor className="mt-0.5 h-4 w-4 shrink-0 text-aqua" /><span>{t("setupWizard.gpuMaxNote")}</span></div></Panel></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepResources")} title={t("setupWizard.resourcesTitle")} detail={t("setupWizard.resourcesDetail")}><Panel className="space-y-6 px-5 py-5"><RangeSetting label={t("setupWizard.ramReserve")} detail={t("setupWizard.ramReserveDetail")} value={setup.ramReservePct} onChange={(value) => update({ ramReservePct: value })} /><RangeSetting label={t("setupWizard.cpuReserve")} detail={t("setupWizard.cpuReserveDetail")} value={setup.cpuReservePct} onChange={(value) => update({ cpuReservePct: value })} />{profile === "node" && <div><div className="flex items-end justify-between gap-4"><div className="min-w-0"><p className="text-sm font-medium text-fg">{t("setupWizard.shardSpace")}</p><p className="mt-1 text-xs leading-relaxed text-faint">{t("setupWizard.shardSpaceHint")}</p></div><span className="shrink-0 font-mono text-sm text-iris">{diskValue} GB</span></div><progress max={diskTotalGb} value={diskValue} aria-label={t("setupWizard.shardSpace")} className="mt-4 h-2 w-full accent-iris" /><div className="mt-2 flex justify-between gap-3 text-xs text-faint"><span>{t("setupWizard.diskAvailable", { value: diskFreeGb })}</span><span>{t("setupWizard.diskTotal", { value: diskTotalGb })}</span></div><input aria-label={t("setupWizard.shardSpace")} type="range" min={1} max={diskTotalGb} step={1} value={diskValue} onChange={(event) => update({ shardMaxGb: Number(event.target.value) })} className="mt-3 w-full accent-iris" /></div>}{hardware?.gpu_detected && <><ThermalSetting enabled value={setup.thermalLimitC} onChange={(value) => update({ thermalLimitC: value })} t={t} /><div className="flex items-start gap-3 rounded-lg border border-aqua/30 bg-aqua/8 px-3 py-3 text-sm text-muted"><Monitor className="mt-0.5 h-4 w-4 shrink-0 text-aqua" /><span>{t("setupWizard.gpuMaxNote")}</span></div></>}</Panel></Intro>;
 }
 
 function ThermalSetting({ enabled, value, onChange, t }: { enabled: boolean; value: number; onChange: (value: number) => void; t: (key: string, values?: Record<string, string | number>) => string }) {

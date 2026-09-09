@@ -21,10 +21,17 @@ Per-file list:
   no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22. O `Setup.tsx` continua
   sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
 
-- `Chat.tsx` - The chat composer and transcript for `POST /v1/chat/completions`
-  with `stream: true`, exactly what a harness gets. It consumes the shared
-  `../lib/chatStore` session/stream controller and `../components/ChatSessionList`,
-  `../lib/chatScroll` (`isNearBottom`), `../lib/queries`
+- `Setup.tsx` - Wizard real de primeiro acesso. Começa pelo hardware e usa
+  `setupWizardFlow.ts` para manter os percursos separados: administrador cria
+  a rede, node escolhe RAM/CPU e espaço de fatias, e infer apenas instala a
+  raiz de confiança. As telas conversam com `/api/setup/*`; não confundir com
+  o protótipo `SetupWizard.tsx`.
+
+- `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
+  exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
+  and the shared active-session controller) and `../components/ChatSessionList`,
+  `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
+  (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
   (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatCapabilities`,
   `useChatTelemetryNetwork`, `useServableModels`, `useInferenceHeads`),
   `../components/Markdown`,

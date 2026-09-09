@@ -389,15 +389,18 @@ campos compatíveis com os dois clientes: `type: "model"`, `created_at`,
 
 Os limites vêm do runtime efetivo e da rede: `context_length`,
 `max_input_tokens`, `max_tokens` e `top_provider.max_completion_tokens` são o
-menor `n_ctx` entre todos os peers vivos que servem o modelo/implantação, a
-capacidade da **requisição**, não o teto de uma perna. Anunciar o
+menor `n_ctx` entre os peers da pipeline planejada que servem o
+modelo/implantação, a capacidade da **requisição**, não o teto de uma perna.
+Anunciar o
 `max_new_tokens` da implantação aqui faria o cliente pedir menos do que o nó
 entrega. O mesmo mínimo de peers é usado pela validação de cada requisição.
 Um peer só entra nessa capacidade depois de seu `/health` confirmar o modelo
 carregado; durante restart, o anúncio anterior é retirado.
-Se ainda houver um peer vivo sem essa confirmação, o modelo não entra no
-catálogo e uma requisição explícita fica HTTP 503 até todos os peers provarem
-o runtime, em vez de cair na capacidade local e esconder um estágio antigo.
+Um peer ocioso escolhido pelo plano é acordado por `reload_model` antes da
+geração e a requisição espera seu `/health`; um peer vivo de rota alternativa
+não bloqueia o catálogo nem a admissão. Um peer planejado não ocioso sem essa
+confirmação mantém o modelo pendente, em vez de cair na capacidade local e
+esconder um estágio antigo.
 
 ### Anthropic (`/v1/messages`)
 
@@ -585,7 +588,8 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
-`GET /api/ui/infer/heads?model=<id>` é a leitura dedicada do perfil `infer`:
+`GET /api/ui/infer/heads?model=<id>` é a leitura dedicada das cabeças de
+inferência, autorizada para os perfis `infer` e `admin`:
 retorna somente as máquinas vivas que anunciam uma faixa começando em L0 para
 o modelo pedido, além da cabeça escolhida, carga em voo e RTT/idade de cada
 candidata. O planejador exige cobertura completa; a cobertura vem primeiro e,

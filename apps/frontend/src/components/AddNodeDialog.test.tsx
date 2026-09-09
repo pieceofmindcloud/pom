@@ -237,4 +237,32 @@ describe("AddNodeDialog", () => {
       post.mockRestore();
     }
   });
+
+  it("não mostra o plano antigo enquanto lê o inventário real do alvo", async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue({
+      options: [],
+      cache_types: { cache_type_k: "f16", cache_type_v: "f16", choices: ["f16"] },
+      defaults: { n_gpu_layers: 99, offload_kqv: true },
+    } as never);
+
+    try {
+      render(
+        <LocaleProvider initialLocale="pt-BR">
+          <AddNodeDialog
+            open
+            group="modelo"
+            peers={[{ node_id: "salem", short_id: "salem", hostname: "salem-gpu" }]}
+            slices={[{ start_layer: 16, end_layer: 40, label: "L16-40" }]}
+            existingRanges={[]}
+            onClose={() => {}}
+          />
+        </LocaleProvider>,
+      );
+
+      await waitFor(() => expect(post).toHaveBeenCalled());
+      expect(screen.queryByRole("option", { name: "L16-40" })).toBeNull();
+    } finally {
+      post.mockRestore();
+    }
+  });
 });

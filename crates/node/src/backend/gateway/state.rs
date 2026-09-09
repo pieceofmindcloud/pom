@@ -618,15 +618,17 @@ impl GatewayState {
         })
     }
 
-    /// Menor capacidade entre os peers vivos que podem atender o seletor.
+    /// Menor capacidade entre os peers da pipeline planejada que podem atender
+    /// o seletor. Peers ociosos dessa pipeline são acordados pelo caminho de
+    /// geração antes do primeiro salto.
     ///
     /// A geração atravessa todos os estágios do pipeline, então anunciar o
     /// maior peer seria uma mentira quando outro ainda está em 8192. Um peer
     /// sem anúncio de capacidade é um nó antigo ou ainda inicializando; nesse
     /// caso a configuração local continua sendo o fallback conservador só
-    /// quando não há peer correspondente. Se há peer vivo sem anúncio, a
-    /// requisição fica pendente: aceitar com a capacidade local poderia
-    /// esconder um estágio antigo no pipeline.
+    /// quando não há peer correspondente. Só um peer não ocioso da pipeline
+    /// sem anúncio deixa a requisição pendente: aceitar com a capacidade local
+    /// poderia esconder um estágio antigo no pipeline.
     pub(super) async fn runtime_capacity_for_model(
         &self,
         model: Option<&str>,
@@ -635,11 +637,60 @@ impl GatewayState {
             return (self.local_runtime_capacity().await, false);
         };
         let peers = self.all_peers().await;
-        let (capacity, pending) = runtime_capacity_from_peers(&peers, model);
+        let Some(planned) = self.planned_peers_for_model(&peers, model).await else {
+            return (None, false);
+        };
+        let (capacity, pending) = runtime_capacity_from_peers(&planned, model);
         if capacity.is_some() || pending {
             return (capacity, pending);
         }
         (self.local_runtime_capacity().await, false)
+    }
+
+    /// The capacity gate belongs to the route the planner will actually use,
+    /// not to every live announcer carrying the same model label. Alternative
+    /// routes and unrelated deployments must not make a valid request look
+    /// unready.
+    pub(super) async fn planned_peers_for_model(
+        &self,
+        peers: &[PeerInfo],
+        model: &str,
+    ) -> Option<Vec<PeerInfo>> {
+        let (model_name, deploy_id) = crate::deployment::split_selector(model);
+        let candidates = crate::pipeline::model_pipeline_candidates(peers, model_name, deploy_id);
+        let total_layers = candidates
+            .iter()
+            .map(|peer| peer.total_layers)
+            .max()
+            .filter(|total| *total > 0)?;
+        let rtts = self
+            .network
+            .rtts
+            .fresh_snapshot()
+            .into_iter()
+            .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
+            .collect::<std::collections::HashMap<_, _>>();
+        let plan = crate::pipeline::plan_pipeline_with_rtt(
+            peers,
+            model_name,
+            deploy_id,
+            total_layers,
+            &self.loads,
+            &rtts,
+        )
+        .await?;
+        let planned_ids = plan
+            .steps
+            .iter()
+            .map(|step| step.node_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        Some(
+            peers
+                .iter()
+                .filter(|peer| planned_ids.contains(peer.node_id.as_str()))
+                .cloned()
+                .collect(),
+        )
     }
 }
 
@@ -678,7 +729,10 @@ pub(super) fn runtime_capacity_from_peers(
     if matching.is_empty() {
         return (None, false);
     }
-    if capacities.len() != matching.len() {
+    if matching
+        .iter()
+        .any(|peer| peer.runtime_capacity.is_none() && !peer.idle)
+    {
         return (None, true);
     }
     (

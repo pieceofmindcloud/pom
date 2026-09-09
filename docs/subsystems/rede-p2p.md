@@ -614,11 +614,14 @@ como origem. O arquivo continua dentro do limite de frame do protocolo e não é
 armazenado fora do banco local de cada nó.
 
 `network_chat_enabled` no `Announce` é gatilho, nunca valor. O interruptor
-`POST /api/ui/network/chat` só passa no principal, grava a configuração local e
-atualiza a cópia atômica anunciada. Um nó que observa divergência consulta
-`GET /api/cluster/network-chat` com a chave de conexão e só adota uma resposta
-autenticada; falha preserva o valor local. Desligado, o canal não aceita,
-persiste ou retransmite ações.
+`POST /api/ui/network/chat` grava a configuração autoritativa no principal
+real, cuja `authority_pubkey` vem do `AdminTrust`, e atualiza a cópia atômica
+anunciada. Quando a interface está num admin secundário, a mesma rota
+encaminha a mutação ao principal com a chave de conexão. Um nó que observa
+divergência consulta `GET /api/cluster/network-chat` com a chave de conexão e
+só adota uma resposta autenticada; falha preserva o valor local. O perfil
+anunciado não substitui a identidade do principal. Desligado, o canal não
+aceita, persiste ou retransmite ações.
 
 A comunicação é deliberadamente de baixa prioridade: o behaviour é separado do
 túnel de inferência, o `select!` do swarm prioriza eventos do swarm e o túnel,

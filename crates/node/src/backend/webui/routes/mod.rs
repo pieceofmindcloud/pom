@@ -481,6 +481,10 @@ mod policy_tests {
             RouteScope::NodeAdmin
         );
         assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::InferNodeAdmin);
+        assert!(profile_can_access(
+            crate::profile::NodeProfile::Admin,
+            scope_of("/api/ui/infer/heads")
+        ));
         assert_eq!(scope_of("/v1/chat/completions"), RouteScope::InferNodeAdmin);
         assert_eq!(scope_of("/api/ui/node"), RouteScope::CommonOrInternal);
         assert_eq!(

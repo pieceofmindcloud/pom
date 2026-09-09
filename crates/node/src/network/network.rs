@@ -726,6 +726,10 @@ pub struct Network {
     network_chat_probe:
         std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     network_chat_enabled: Arc<AtomicBool>,
+    /// Public key of the authority whose authenticated policy is authoritative.
+    /// The profile in an Announce is not enough: a secondary admin also has
+    /// `profile: admin`, but must never become a policy source.
+    policy_principal_pubkey: std::sync::RwLock<Option<String>>,
     /// Evita repetir no gossip um aviso permanente, como o broadcast global
     /// indisponível dentro de um container.
     broadcast_warning_logged: AtomicBool,
@@ -1114,6 +1118,7 @@ impl Network {
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
             network_chat_probe: std::sync::RwLock::new(None),
             network_chat_enabled: Arc::new(AtomicBool::new(false)),
+            policy_principal_pubkey: std::sync::RwLock::new(None),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
@@ -1652,10 +1657,20 @@ impl Network {
         }
     }
 
+    /// Identifica o principal real para as catracas de política. O valor vem
+    /// da cadeia administrativa local, nunca de um campo não autenticado do
+    /// gossip.
+    pub fn set_policy_principal_pubkey(&self, pubkey: impl Into<String>) {
+        let pubkey = pubkey.into();
+        if let Ok(mut current) = self.policy_principal_pubkey.write() {
+            *current = (!pubkey.is_empty()).then_some(pubkey);
+        }
+    }
+
     pub fn trigger_network_chat_probe(
         &self,
         node_id: &str,
-        profile: crate::profile::NodeProfile,
+        authority_pubkey: &str,
         announced: bool,
         tls: bool,
     ) {
@@ -1663,7 +1678,11 @@ impl Network {
             crate::network_chat_policy::on_announce(
                 self.network_chat_enabled(),
                 announced,
-                profile == crate::profile::NodeProfile::Admin,
+                self.policy_principal_pubkey
+                    .read()
+                    .ok()
+                    .and_then(|current| current.as_deref().map(|key| key == authority_pubkey))
+                    .unwrap_or(false),
                 node_id,
             )
         {
@@ -2292,7 +2311,7 @@ impl Network {
                 );
                 self.trigger_network_chat_probe(
                     &peer.node_id,
-                    peer.profile,
+                    &peer.authority_pubkey,
                     network_chat_enabled,
                     tls,
                 );

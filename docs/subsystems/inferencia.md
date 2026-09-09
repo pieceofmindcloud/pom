@@ -1860,8 +1860,9 @@ o teto.
 **A capacidade do nó é derivada do runtime, não é um corte silencioso.**
 O `n_ctx` efetivo confirmado pelo `/health` é anunciado em `/v1/models` como
 `context_length` e `max_completion_tokens`. O gateway usa o menor contexto
-confirmado entre os peers vivos do modelo e reduz o orçamento somente quando o
-prompt ocupa parte dessa janela. Não há uma capacidade absoluta adicional no
+confirmado entre os peers da pipeline planejada do modelo e reduz o orçamento
+somente quando o prompt ocupa parte dessa janela. Não há uma capacidade
+absoluta adicional no
 arquivo de configuração.
 
 O contexto que sobrou continua apertando o teto **sem** recusar, e isso é
@@ -1910,16 +1911,17 @@ prefixo e contar com o cache de prefixo - custaria reprefill do que já saiu, a
 cada perna, e ocuparia exatamente o mesmo KV no fim. Não há vantagem nenhuma em
 pagar por ela.
 
-**Capacidade de todos os peers.** Depois que o `/health` prova o carregamento,
+**Capacidade dos peers da pipeline.** Depois que o `/health` prova o carregamento,
 `runtime::spawn_health_watch` publica em `Announce.runtime_capacity` o
 `n_ctx` efetivo por sessão retornado pelo `/health` (o total do engine dividido
-por `max_sessions`), e o `max_new_tokens` da perna. O gateway usa o menor valor entre todos os
-peers vivos do modelo/implantação tanto em `/v1/models` quanto na validação da
-requisição. Apply, erro, stop e unload térmico limpam o anúncio antes do
-restart, então uma capacidade antiga não fica no catálogo. Sem peer
-correspondente, a configuração local continua sendo fallback para rotas sem
-implantação; havendo peer vivo sem capacidade reportada, a requisição fica
-indisponível até todos confirmarem o runtime, sem esconder um estágio antigo.
+por `max_sessions`), e o `max_new_tokens` da perna. O gateway usa o menor
+valor entre os peers da pipeline planejada tanto em `/v1/models` quanto na
+validação da requisição. Apply, erro, stop e unload térmico limpam o anúncio
+antes do restart, então uma capacidade antiga não fica no catálogo. Um peer
+ocioso escolhido pelo plano é acordado pelo evento `reload_model` e a
+requisição espera o novo `/health`; um peer vivo de rota alternativa não
+bloqueia a admissão. Sem peer correspondente, a configuração local continua
+sendo fallback para rotas sem implantação.
 
 **Limite conhecido.** `context_available` ainda usa a janela por sessão; com
 um pool (`max_sessions > 1`) cada contexto recebe `n_ctx / n`, então esse

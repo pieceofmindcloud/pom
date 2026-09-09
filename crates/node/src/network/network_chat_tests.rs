@@ -1,4 +1,5 @@
 use super::network_chat::{ChatAction, ChatQueue, NetworkChatLimits};
+use crate::network::Network;
 
 #[test]
 fn action_rejects_text_above_the_protocol_limit() {
@@ -68,6 +69,34 @@ fn network_chat_policy_never_adopts_an_unauthenticated_announce() {
         super::network_chat_policy::adopt_or_keep(true, Err(anyhow::anyhow!("offline"))),
         super::network_chat_policy::PolicyOutcome::Unchanged
     );
+}
+
+#[tokio::test]
+async fn network_chat_probe_only_accepts_the_configured_principal_identity() {
+    let network = Network::testkit(
+        "local".into(),
+        "pk-local".into(),
+        vec![],
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    network.set_network_chat_probe(sender);
+    network.set_policy_principal_pubkey("authority-primary");
+
+    network.trigger_network_chat_probe(
+        "secondary",
+        "authority-secondary",
+        true,
+        false,
+    );
+    assert!(receiver.try_recv().is_err());
+
+    network.trigger_network_chat_probe("primary", "authority-primary", true, false);
+    assert_eq!(receiver.try_recv().unwrap(), ("primary".into(), false));
 }
 
 #[tokio::test]

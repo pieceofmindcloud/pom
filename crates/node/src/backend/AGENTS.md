@@ -166,13 +166,13 @@ profile policy remains the effective authorization boundary.
   cadeia colada. A validação e a conferência são as de `admin_trust`
   (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
   `pom admin-anchor` usa: não existe segunda política.
-  `GET /api/ui/infer/heads?model=...` é a única leitura dedicada ao perfil
-  infer: entrega apenas as candidatas de layer zero e a escolha do planejador,
-  sem peers gerais nem ações de controle. A carga de cada candidata vem do
-  próprio `/api/ui/node` e fica `null` quando o relatório não chega, para que a
-  UI mostre indisponível em vez de zero. A validade do RTT é de cinco minutos;
-  valores vencidos aparecem como diagnóstico, mas não entram na seleção da
-  geração.
+  `GET /api/ui/infer/heads?model=...` é a única leitura dedicada das cabeças
+  de layer zero: entrega as candidatas e a escolha do planejador, sem peers
+  gerais nem ações de controle. A rota é `InferNodeAdmin`, portanto admin e
+  infer podem lê-la. A carga de cada candidata vem do próprio `/api/ui/node` e
+  fica `null` quando o relatório não chega, para que a UI mostre indisponível
+  em vez de zero. A validade do RTT é de cinco minutos; valores vencidos
+  aparecem como diagnóstico, mas não entram na seleção da geração.
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
@@ -292,9 +292,11 @@ profile policy remains the effective authorization boundary.
   (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
   máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
-- `POST /api/ui/deploy/node/options` revarre o catálogo do `target_node_id` e
-  devolve as faixas fatiadas, o GGUF inteiro disponível nessa máquina e os
-  defaults locais de GPU/KV. `POST /api/ui/deploy/node` valida novamente essa
+- `POST /api/ui/deploy/node/options` revarre o catálogo real do
+  `target_node_id` e devolve somente as faixas fatiadas e o GGUF inteiro
+  materializados nessa máquina, além dos defaults locais de GPU/KV. A tela não
+  usa o plano antigo como fallback quando já conhece o grupo do modelo.
+  `POST /api/ui/deploy/node` valida novamente essa
   opção no alvo, aplica `cache_type_k`/`cache_type_v` pela API local ou remota e
   lança somente a máquina escolhida. Quando há `deploy_id`, a operação anexa
   uma versão de topologia e muda `kind` para `mixed` quando uma cabeça whole e
@@ -403,9 +405,12 @@ profile policy remains the effective authorization boundary.
   não-streaming produziria, e o prefixo transmitido só cresce - não existe
   desenviar um fragmento SSE.
   A capacidade publicada em `/v1/models` e usada por
-  `request_output_limit_for_model` é a menor `RuntimeCapacity` entre todos os
-  peers vivos do modelo/implantação. O runtime só anuncia esse valor depois do
-  `/health` efetivo; apply, erro e unload retiram a capacidade durante restart.
+  `request_output_limit_for_model` é a menor `RuntimeCapacity` entre os peers
+  da pipeline escolhida para o modelo/implantação. Um peer ocioso nessa
+  pipeline é acordado pelo evento `reload_model` antes do primeiro prefill; um
+  peer vivo de rota alternativa não bloqueia a requisição. O runtime só
+  anuncia esse valor depois do `/health` efetivo; apply, erro e unload retiram
+  a capacidade durante restart.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
   and finish-reason rules, with `x_pom.output_limits` and
   `x_pom.continuation_legs` on blocking responses and the final streaming
@@ -460,8 +465,11 @@ profile policy remains the effective authorization boundary.
 
 `GatewayState.network_chat` expõe o serviço libp2p do Chat da rede. `webui`
 serve `GET/POST /api/ui/network-chat` para a interface, persistência e ações
-com API key, enquanto `POST /api/ui/network/chat` é o interruptor exclusivo do
-principal. A rota de política entre nós é `GET /api/cluster/network-chat`.
+com API key. `POST /api/ui/network/chat` grava no principal real; quando a
+interface está num admin secundário, a rota encaminha a mutação autenticada
+para esse principal. A rota de política entre nós é
+`GET /api/cluster/network-chat`, e o probe só trata como principal a
+`authority_pubkey` confirmada pelo `AdminTrust`, não o perfil anunciado.
 O backend não retransmite pela HTTP UI: a ação entra na fila limitada do
 `NetworkChat` e o swarm valida e encaminha por `discovery.rs`. O snapshot não
 repete bytes de arquivo em cada polling; `GET /api/ui/network-chat/file/:message_id`

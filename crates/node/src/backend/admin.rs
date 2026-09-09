@@ -1240,6 +1240,9 @@ async fn internal_reconcile_admin_trust(
         )
             .into_response();
     }
+    state
+        .network
+        .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
     cfg.profile = if state
         .admin_trust
         .effective_authority(&state.authority_principal, NodeProfile::Admin)
@@ -1290,6 +1293,9 @@ async fn internal_complete_transfer(
         )
             .into_response();
     }
+    state
+        .network
+        .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
     let mut cfg = state.auth.write().await;
     cfg.profile = NodeProfile::Node;
     if let Err(error) = cfg.save() {
@@ -1437,9 +1443,12 @@ pub(crate) async fn accept_authority_transfer(
                 StatusCode::CONFLICT,
                 Json(json!({ "error": format!("aceitação recusada: {error}") })),
             )
-                .into_response()
+            .into_response()
         }
     };
+    state
+        .network
+        .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
     let peers = state.network.alive_peers().await;
     let Some(peer) = peers.into_iter().find(|peer| {
         peer.node_id == offer.issuer.node_id

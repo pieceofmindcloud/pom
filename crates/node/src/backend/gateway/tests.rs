@@ -1325,6 +1325,7 @@ mod tests {
     async fn gateway_sem_modelo_local_recusa_prompt_acima_da_capacidade_do_peer() {
         let mut peer = testkit::peer("peer-gpu", "ksia", 39_991);
         peer.model = "ornith".into();
+        peer.inference_port = Some(39_992);
         peer.total_layers = 32;
         peer.end_layer = 31;
         let state = testkit::state_with("gateway", vec![peer]).await;
@@ -1525,13 +1526,16 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("todos os peers vivos"));
+            .contains("todos os peers da pipeline planejada"));
     }
 
     #[tokio::test]
     async fn a_live_peer_without_capacity_blocks_model_specific_requests() {
         let mut peer = crate::gateway::testkit::peer("n1", "n1", 8080);
         peer.model = "qwen".into();
+        peer.inference_port = Some(8181);
+        peer.end_layer = 31;
+        peer.total_layers = 32;
         peer.runtime_capacity = None;
         let state = crate::gateway::testkit::state_with("self", vec![peer]).await;
 
@@ -1544,7 +1548,62 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("confirmada por todos"));
+            .contains("pipeline planejada"));
+    }
+
+    #[tokio::test]
+    async fn capacity_gate_ignores_an_unplanned_peer_without_capacity() {
+        let mut ready = crate::gateway::testkit::peer("a-ready", "ready", 8080);
+        ready.model = "qwen".into();
+        ready.inference_port = Some(8182);
+        ready.start_layer = 0;
+        ready.end_layer = 31;
+        ready.total_layers = 32;
+        ready.runtime_capacity = Some(RuntimeCapacity {
+            n_ctx: 8_192,
+            max_new_tokens: 256,
+        });
+
+        let mut alternative = crate::gateway::testkit::peer("z-alternative", "alternative", 8081);
+        alternative.model = "qwen".into();
+        alternative.inference_port = Some(8183);
+        alternative.start_layer = 0;
+        alternative.end_layer = 31;
+        alternative.total_layers = 32;
+        alternative.runtime_capacity = None;
+
+        let state = crate::gateway::testkit::state_with("self", vec![ready, alternative]).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+
+        assert!(!pending, "a route not selected by the planner cannot block the request");
+    }
+
+    #[tokio::test]
+    async fn capacity_gate_does_not_block_an_idle_peer_selected_by_the_pipeline() {
+        let mut head = crate::gateway::testkit::peer("head", "head", 8080);
+        head.model = "qwen".into();
+        head.inference_port = Some(8184);
+        head.start_layer = 0;
+        head.end_layer = 15;
+        head.total_layers = 32;
+        head.runtime_capacity = Some(RuntimeCapacity {
+            n_ctx: 8_192,
+            max_new_tokens: 256,
+        });
+
+        let mut tail = crate::gateway::testkit::peer("tail", "tail", 8081);
+        tail.model = "qwen".into();
+        tail.inference_port = Some(8185);
+        tail.start_layer = 16;
+        tail.end_layer = 31;
+        tail.total_layers = 32;
+        tail.idle = true;
+        tail.runtime_capacity = None;
+
+        let state = crate::gateway::testkit::state_with("self", vec![head, tail]).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+
+        assert!(!pending, "idle planned peers are woken by generation before inference");
     }
 
     /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não

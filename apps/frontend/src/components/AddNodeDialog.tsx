@@ -53,7 +53,7 @@ export function AddNodeDialog({
 }) {
   const { t, locale } = useI18n();
   const [nodeId, setNodeId] = useState(peers[0]?.node_id ?? "");
-  const [options, setOptions] = useState<AddNodeOption[]>(toShardOptions(slices));
+  const [options, setOptions] = useState<AddNodeOption[]>(group ? [] : toShardOptions(slices));
   const [optionKey, setOptionKey] = useState(() => keyOf(options[0]));
   const [cacheTypes, setCacheTypes] = useState<CacheTypesResponse | null>(null);
   const [nGpuLayers, setNGpuLayers] = useState(99);
@@ -68,7 +68,7 @@ export function AddNodeDialog({
   useEffect(() => {
     if (open && !wasOpen.current) {
       const firstNode = peers[0]?.node_id ?? "";
-      const fallback = toShardOptions(slices);
+      const fallback = group ? [] : toShardOptions(slices);
       setNodeId(firstNode);
       setOptions(fallback);
       setOptionKey(keyOf(fallback[0]));

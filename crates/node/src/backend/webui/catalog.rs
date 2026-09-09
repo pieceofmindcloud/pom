@@ -1135,25 +1135,72 @@ pub(super) async fn save_cluster_logs(
     Json(json!({ "logs_enabled": req.logs_enabled })).into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SaveNetworkChatRequest {
     pub network_chat_enabled: bool,
 }
 
+/// Repassa a decisão ao principal real quando a tela está aberta num admin
+/// secundário. A cadeia administrativa continua sendo a autoridade, e o
+/// destino grava o valor no próprio pom.json antes de anunciá-lo.
+async fn forward_network_chat_to_primary(
+    state: &GatewayState,
+    req: &SaveNetworkChatRequest,
+) -> Response {
+    let primary = state.admin_trust.current_primary();
+    let Some(peer) = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| {
+            peer.node_id == primary.node_id
+                && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
+                && peer.authority_pubkey == primary.pubkey
+                && peer.gateway_port.is_some()
+        })
+    else {
+        return bad_request("o nó principal não está disponível para decidir o Chat da rede");
+    };
+    let Some(base) = peer.gateway_url() else {
+        return bad_request("o nó principal não anuncia uma porta de gateway");
+    };
+    let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
+        return bad_request("sem cliente para o nó principal");
+    };
+    let key = state.auth.read().await.connection_key.clone();
+    match client
+        .post(format!("{base}/api/ui/network/chat"))
+        .bearer_auth(key)
+        .timeout(PEER_TIMEOUT)
+        .json(req)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => {
+            Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
+        }
+        Ok(response) => {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "o nó principal recusou a decisão".to_string());
+            (status, body).into_response()
+        }
+        Err(error) => bad_request(format!("o nó principal está inacessível: {error}")),
+    }
+}
+
 /// Liga ou desliga o Chat da rede para o cluster inteiro. O valor anunciado
-/// só desperta a busca autenticada nos demais nós; apenas esta rota no
-/// principal grava a política.
+/// só desperta a busca autenticada nos demais nós; apenas o principal real
+/// grava a política, e um admin secundário encaminha a ação para ele.
 pub(super) async fn save_network_chat(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(req): Json<SaveNetworkChatRequest>,
 ) -> Response {
     if !local_is_primary(&state).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "só o nó principal decide o Chat da rede." })),
-        )
-            .into_response();
+        return forward_network_chat_to_primary(&state, &req).await;
     }
 
     {

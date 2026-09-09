@@ -79,11 +79,13 @@ Passo operacional exato antes de testar uma implantação longa:
      http://ksia:8080/v1/models | jq '.data[] | {id, context_length, max_completion_tokens: .top_provider.max_completion_tokens}'
    ```
 
-O gateway anuncia o menor `n_ctx` confirmado entre todos os peers vivos do
-modelo e mantém `max_new_tokens` apenas como tamanho de perna. O limite local
-do cliente, como `maxTokens: 5000` no Pi, continua independente dessa
-capacidade. Um `pom.json` legado que contenha o campo removido é recusado na
-leitura, em vez de ser aceito com um valor padrão escondido.
+O gateway anuncia o menor `n_ctx` confirmado entre os peers da pipeline
+planejada do modelo e mantém `max_new_tokens` apenas como tamanho de perna. Um
+peer ocioso escolhido pela pipeline é acordado por `reload_model` antes do
+prefill. Peers vivos de rotas alternativas não bloqueiam a capacidade. O
+limite local do cliente, como `maxTokens: 5000` no Pi, continua independente
+dessa capacidade. Um `pom.json` legado que contenha o campo removido é recusado
+na leitura, em vez de ser aceito com um valor padrão escondido.
 
 Três regras saem da arquitetura, não do gosto:
 
@@ -492,10 +494,11 @@ placa somam. `Step.capacity` (`CapacityPreview`) é o passo isolado.
 
 ## 6. Adicionar e remover máquina
 
-`add_node_options_endpoint` revarre somente o catálogo da máquina selecionada
-e devolve as fatias que ela tem, o modelo inteiro correspondente quando existe
-e os defaults locais de GPU/KV. Ao trocar a máquina no Painel, a tela refaz
-essa consulta e não reaproveita as opções de outro peer.
+`add_node_options_endpoint` revarre somente o catálogo real da máquina
+selecionada e devolve as fatias materializadas que ela tem, o modelo inteiro
+correspondente quando existe e os defaults locais de GPU/KV. Ao trocar a
+máquina no Painel, a tela refaz essa consulta e não reaproveita as opções de
+outro peer nem o plano antigo enquanto o inventário ainda está sendo lido.
 
 `add_node_endpoint` recebe uma opção + máquina alvo e chama `webui::launch` com
 um único `LaunchTarget` (`skip_split: true` - o arquivo já existe e o passo é

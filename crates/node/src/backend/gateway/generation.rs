@@ -159,9 +159,7 @@ pub(super) async fn generate_stream_inner(
         // `/v1/models` publica, e vale como teto aqui. Fica antes de qualquer
         // sondagem de saúde de propósito: um pedido já inadmissível não
         // justifica uma volta na rede, muito menos um prefill.
-        let (model_name, _) = crate::deployment::split_selector(&model);
-        let (capacity, capacity_pending) =
-            state.runtime_capacity_for_model(Some(model_name)).await;
+        let (capacity, capacity_pending) = state.runtime_capacity_for_model(Some(&model)).await;
         // Capacidade pendente é ausência de informação, não permissão: quem
         // decide nesse caso continua sendo o peer.
         if let Some(capacity) = capacity.filter(|_| !capacity_pending) {

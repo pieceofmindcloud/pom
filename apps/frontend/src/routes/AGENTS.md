@@ -41,8 +41,9 @@ Per-file list:
   throughput e o painel detalhado de telemetria; isso é apresentação, não
   autorização.
   No mesmo composer, `InferenceHeadChoice` mostra por qual cabeça de camada 0
-  a próxima inferência entrará e deixa explícito quando não há candidata ou
-  quando a seleção caiu no fallback sem RTT fresco.
+  a próxima inferência entrará para qualquer perfil com modelo selecionado,
+  mas só aparece quando há mais de uma candidata. Deixa explícito quando não
+  há candidata ou quando a seleção caiu no fallback sem RTT fresco.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
   Phase rows also render

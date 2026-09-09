@@ -558,7 +558,7 @@ function ChatScreen() {
     ? session.model
     : available[0] ?? node.data?.active_model ?? cluster.data?.active_model ?? "";
   const streaming = streamingSessionId === session.id;
-  const headQuery = useInferenceHeads(model, profile === "infer");
+  const headQuery = useInferenceHeads(model, Boolean(model));
 
   useEffect(() => {
     const element = thread.current;
@@ -1124,7 +1124,7 @@ function ChatScreen() {
               <ModelPicker value={model} options={available} onChange={chooseModel} />
               <p className="text-[0.7rem] text-faint">{t("chat.composerHint")}</p>
             </div>
-            {profile === "infer" && model && (
+            {model && (
               <InferenceHeadChoice
                 model={model}
                 response={headQuery.data}

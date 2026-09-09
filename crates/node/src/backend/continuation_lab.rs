@@ -1327,7 +1327,7 @@ async fn model_list_is_authenticated_and_advertises_the_live_100k_context() {
 
 /// A capacidade derivada da rede é a capacidade do pipeline inteiro: um peer
 /// com contexto 8192 não pode ser escondido por outro com contexto 100000.
-/// A lista usa o menor valor entre todos os peers vivos da implantação.
+/// A lista usa o menor valor entre os peers da pipeline planejada.
 #[tokio::test]
 async fn deployment_context_capacity_is_aggregated_across_all_live_peers() {
     let no = no_with_peer_capacities(

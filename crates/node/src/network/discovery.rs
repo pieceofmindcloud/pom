@@ -643,7 +643,7 @@ async fn handle_event(
                         deploy_id,
                         node_id: node_id.clone(),
                         pubkey,
-                        authority_pubkey,
+                        authority_pubkey: authority_pubkey.clone(),
                         // O caminho do gossipsub nao tem endereco de origem para
                         // reescrever, e o anunciado costuma ser o literal
                         // `0.0.0.0`. Com candidatos ha o que usar: o primeiro
@@ -684,7 +684,7 @@ async fn handle_event(
                 );
                 network.trigger_network_chat_probe(
                     &node_id,
-                    profile,
+                    &authority_pubkey,
                     network_chat_enabled,
                     tls,
                 );

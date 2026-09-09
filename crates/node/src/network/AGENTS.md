@@ -74,9 +74,13 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
   `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
   é a fonte, e falha preserva o valor local.
-- `network_chat_enabled` segue o mesmo contrato. A retransmissão do Chat da
-  rede é estrela: o principal valida API key ativa e `blocked_nodes` antes de
-  enviar a outros `node_id`.
+- `network_chat_enabled` segue o mesmo contrato. O gatilho só é aceito como
+  decisão do principal cuja `authority_pubkey` foi confirmada pelo
+  `AdminTrust`; o perfil anunciado não identifica autoridade. O interruptor
+  aberto num admin secundário encaminha a mutação ao principal e só a gravação
+  dele muda a política autoritativa. A retransmissão do Chat da rede é estrela:
+  o principal valida API key ativa e `blocked_nodes` antes de enviar a outros
+  `node_id`.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. Guarda também a **memória de

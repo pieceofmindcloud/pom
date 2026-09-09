@@ -8,10 +8,17 @@ import { ProfileProvider } from "../lib/profile";
 import { ThemeProvider } from "../lib/theme";
 import { ToastProvider } from "../lib/toast";
 import { ChatSessionProvider, type ChatMessage } from "../lib/chatStore";
+import type { InferenceHeadsResponse } from "../lib/types";
 
 const streamScenario = vi.hoisted(() => ({
   release: null as (() => void) | null,
   signalAborted: false,
+}));
+
+const headQuery = vi.hoisted(() => ({
+  data: undefined as InferenceHeadsResponse | undefined,
+  isLoading: false,
+  isError: false,
 }));
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -49,7 +56,7 @@ vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: null }),
   useChatCapabilities: () => ({ data: { vision: "supported", coverage: "complete" } }),
   useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
-  useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
+  useInferenceHeads: () => headQuery,
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: () => [],
 }));
@@ -86,9 +93,56 @@ afterEach(() => {
   resetBrowserSpeech();
   streamScenario.release = null;
   streamScenario.signalAborted = false;
+  headQuery.data = undefined;
+  headQuery.isLoading = false;
+  headQuery.isError = false;
 });
 
 describe("Chat", () => {
+  it("mostra a escolha de cabeça também no perfil admin quando há duas candidatas", () => {
+    headQuery.data = {
+      model: "qwen",
+      status: "selected",
+      selected_node_id: "ksia",
+      selection_policy: "coverage_then_weighted_rtt_load",
+      rtt_valid_for_secs: 300,
+      candidates: [
+        {
+          node_id: "ksia",
+          short_id: "ksia",
+          hostname: "ksia",
+          start_layer: 0,
+          end_layer: 39,
+          total_layers: 40,
+          load: 0,
+          runtime_capacity: { n_ctx: 8192, max_new_tokens: 256 },
+          rtt_ms: 10,
+          rtt_age_ms: 100,
+          rtt_state: "fresh",
+          selected: true,
+        },
+        {
+          node_id: "salem",
+          short_id: "salem",
+          hostname: "salem",
+          start_layer: 0,
+          end_layer: 39,
+          total_layers: 40,
+          load: 0,
+          runtime_capacity: { n_ctx: 8192, max_new_tokens: 256 },
+          rtt_ms: 20,
+          rtt_age_ms: 100,
+          rtt_state: "fresh",
+          selected: false,
+        },
+      ],
+    };
+
+    mountChat();
+
+    expect(screen.getByRole("combobox", { name: "Cabeça de inferência" })).toBeTruthy();
+  });
+
   it("continua o stream e mostra o buffer ao remontar a rota", async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });

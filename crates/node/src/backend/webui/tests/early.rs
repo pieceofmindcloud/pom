@@ -337,6 +337,7 @@ mod cluster_logs_settings_tests {
 
     #[tokio::test]
     async fn principal_liga_e_desliga_logs_sem_reinicio() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
 
@@ -362,6 +363,76 @@ mod cluster_logs_settings_tests {
         assert!(!state.cluster_logs.enabled());
         assert!(!state.network.cluster_logs_enabled());
         assert!(!state.auth.read().await.cluster_logs_enabled);
+    }
+}
+
+#[cfg(test)]
+mod network_chat_settings_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_with, state_with_secondary_admin};
+    use axum::routing::post as axum_post;
+
+    #[tokio::test]
+    async fn principal_toggle_survives_the_next_authenticated_policy_cycle() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let state = state_with("eu", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+
+        let response = save_network_chat(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveNetworkChatRequest {
+                network_chat_enabled: true,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["network_chat_enabled"], true);
+        assert!(state.auth.read().await.network_chat_enabled);
+        assert!(state.network.network_chat_enabled());
+        assert!(matches!(
+            crate::network_chat_policy::adopt_or_keep(true, Ok(true)),
+            crate::network_chat_policy::PolicyOutcome::Unchanged
+        ));
+    }
+
+    #[tokio::test]
+    async fn secondary_admin_forwards_the_toggle_to_the_principal() {
+        let app = Router::new().route(
+            "/api/ui/network/chat",
+            axum_post(|| async {
+                Json(json!({ "network_chat_enabled": true }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let mut primary = peer("primary", "primary", port);
+        primary.libp2p_peer_id = Some("peer-primary".into());
+        primary.authority_pubkey =
+            hex::encode(primary_key.verifying_key().as_bytes());
+        let state = state_with_secondary_admin("secondary", vec![primary]).await;
+
+        let response = save_network_chat(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveNetworkChatRequest {
+                network_chat_enabled: true,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["network_chat_enabled"], true);
+        assert!(
+            !state.auth.read().await.network_chat_enabled,
+            "o secundário não grava a política localmente"
+        );
     }
 }
 

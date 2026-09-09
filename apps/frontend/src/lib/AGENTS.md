@@ -422,7 +422,8 @@ would go.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
-- O Chat do perfil `infer` também lê `/api/ui/infer/heads?model=...`, que
+- O Chat de qualquer perfil que tenha um modelo selecionado lê
+  `/api/ui/infer/heads?model=...`, que é autorizado por `InferNodeAdmin` e
   devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT
   com idade. A carga é `null` se o relatório vivo do candidato não chegar, e a
   UI mostra "indisponível" nesse caso. RTT fora da validade continua

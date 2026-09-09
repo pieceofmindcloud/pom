@@ -162,6 +162,9 @@ pub(super) async fn install_trust_anchor(
     // de escrever. Chegar aqui com erro é corrida ou disco, não navegador.
     match state.admin_trust.adopt_anchor(document, &body.fingerprint) {
         Ok(()) => {
+            state
+                .network
+                .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
             info!(
                 "âncora administrativa instalada pelo operador; impressão digital conferida {expected}"
             );

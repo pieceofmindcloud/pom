@@ -909,6 +909,7 @@ async fn async_main(
         );
     }
     let net = stack.net;
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
@@ -1790,6 +1791,7 @@ async fn start_gateway_only(
         );
     }
     let net = stack.net;
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;

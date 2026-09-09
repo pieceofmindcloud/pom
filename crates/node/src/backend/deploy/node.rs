@@ -36,6 +36,18 @@ pub struct AddNodeDefaults {
     pub offload_kqv: bool,
 }
 
+/// The dialog may add either an actual slice or a whole model. Query both
+/// catalog views so the options are always backed by the exact `HeldKind` the
+/// add endpoint will validate. Tensor parallelism has its own catalog.
+pub(crate) fn add_node_option_survey_kinds(kind: DeployKind) -> Vec<DeployKind> {
+    match kind {
+        DeployKind::TensorParallel => vec![DeployKind::TensorParallel],
+        DeployKind::Shards | DeployKind::Whole => {
+            vec![DeployKind::Shards, DeployKind::Whole]
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AddNodeRequest {
     pub group: String,
@@ -233,32 +245,42 @@ pub(super) async fn add_node_options_endpoint(
     State(state): State<GatewayState>,
     Json(req): Json<AddNodeOptionsRequest>,
 ) -> Response {
-    let survey_kind = match req.kind {
-        DeployKind::TensorParallel => DeployKind::TensorParallel,
-        _ => DeployKind::Whole,
-    };
-    let survey = survey(&state, &req.group, survey_kind, None, None).await;
-    let Some(target) = survey
-        .machines
-        .iter()
-        .find(|machine| machine.node_id == req.target_node_id)
-    else {
+    let mut held = Vec::new();
+    let mut target_seen = false;
+    for survey_kind in add_node_option_survey_kinds(req.kind) {
+        let survey = survey(&state, &req.group, survey_kind, None, None).await;
+        if let Some(target) = survey
+            .machines
+            .iter()
+            .find(|machine| machine.node_id == req.target_node_id)
+        {
+            target_seen = true;
+            held.extend(target.held.iter().map(|held| AddNodeOption {
+                kind: match held.kind {
+                    HeldKind::Whole => DeployKind::Whole,
+                    HeldKind::Shard => DeployKind::Shards,
+                },
+                start_layer: held.start_layer,
+                end_layer: held.end_layer,
+                label: held.name.clone(),
+            }));
+        }
+    }
+    if !target_seen {
         return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
-    };
+    }
 
-    let mut options = target
-        .held
-        .iter()
-        .map(|held| AddNodeOption {
-            kind: match held.kind {
-                HeldKind::Whole => DeployKind::Whole,
-                HeldKind::Shard => DeployKind::Shards,
-            },
-            start_layer: held.start_layer,
-            end_layer: held.end_layer,
-            label: held.name.clone(),
-        })
-        .collect::<Vec<_>>();
+    let mut options = Vec::new();
+    for option in held {
+        if !options.iter().any(|existing: &AddNodeOption| {
+            existing.kind == option.kind
+                && existing.start_layer == option.start_layer
+                && existing.end_layer == option.end_layer
+                && existing.label == option.label
+        }) {
+            options.push(option);
+        }
+    }
     options.sort_by_key(|option| {
         (
             option.start_layer,

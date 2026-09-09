@@ -154,7 +154,7 @@ impl OutputTokenLimit {
     pub fn rejection_reason(self) -> Option<String> {
         if self.capacity_pending {
             return Some(
-                "a capacidade efetiva do modelo ainda não foi confirmada por todos os peers vivos"
+                "a capacidade efetiva do modelo ainda não foi confirmada por todos os peers da pipeline planejada"
                     .into(),
             );
         } else if self.effective > 0 && self.leg > 0 {
@@ -217,9 +217,10 @@ impl GatewayState {
             .await
     }
 
-    /// Resolve the request against the capacity of every live peer serving the
-    /// selected model. The deployment leg remains separate from the request's
-    /// context-derived total.
+    /// Resolve the request against the capacity of the peers selected by the
+    /// current pipeline plan. The deployment leg remains separate from the
+    /// request's context-derived total; idle planned peers are reloaded by
+    /// generation before the first inference hop.
     pub async fn request_output_limit_for_model(
         &self,
         model: Option<&str>,
@@ -288,7 +289,7 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
     if limit.capacity_pending() {
         info!(
             route,
-            "capacidade efetiva aguardando confirmação de todos os peers vivos"
+            "capacidade efetiva aguardando confirmação dos peers da pipeline planejada"
         );
         return;
     }

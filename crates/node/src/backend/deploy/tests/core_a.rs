@@ -114,6 +114,20 @@
         assert!(!DeployKind::TensorParallel.whole(), "TP não é whole");
     }
 
+    #[test]
+    fn add_node_options_consult_both_real_catalog_kinds() {
+        use super::DeployKind;
+
+        assert_eq!(
+            super::add_node_option_survey_kinds(DeployKind::Shards),
+            vec![DeployKind::Shards, DeployKind::Whole]
+        );
+        assert_eq!(
+            super::add_node_option_survey_kinds(DeployKind::TensorParallel),
+            vec![DeployKind::TensorParallel]
+        );
+    }
+
     /// Um no somado no meio do pipeline NAO e o ultimo da divisao.
     ///
     /// `peer_index`/`peer_count` respondem a uma pergunta so - "sou o ultimo?" -

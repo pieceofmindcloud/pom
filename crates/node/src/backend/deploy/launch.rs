@@ -513,6 +513,7 @@ pub(super) fn launch_targets(
                     },
                     &membros,
                 )),
+                mmproj_path: (target.rank == 0).then(|| held.mmproj_path.clone()).flatten(),
                 use_mmproj: false,
             });
         }
@@ -591,6 +592,17 @@ pub(super) fn launch_targets(
                 peer_index,
                 peer_count,
                 tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+                mmproj_path: if step.start_layer == 0 {
+                    target_machine.and_then(|machine| {
+                        step.parts.first().and_then(|part| {
+                            machine
+                                .holds_ready(part.start_layer, part.end_layer)
+                                .and_then(|shard| shard.mmproj_path.clone())
+                        })
+                    })
+                } else {
+                    None
+                },
                 use_mmproj: false,
             });
             continue;
@@ -623,6 +635,7 @@ pub(super) fn launch_targets(
             peer_index,
             peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+            mmproj_path: (step.start_layer == 0).then(|| held.mmproj_path.clone()).flatten(),
             use_mmproj: false,
         });
     }
@@ -662,6 +675,7 @@ pub(super) fn launch_targets(
                 peer_index: None,
                 peer_count: None,
                 tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
+                mmproj_path: None,
                 use_mmproj: false,
             });
         }

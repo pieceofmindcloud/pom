@@ -435,7 +435,10 @@ Key logic carriers:
   apresentação, o backend continua aceitando os três modos. Números de ponto
   flutuante passam por `showNumber`, senão a temperatura sai como
   `0.699999988079071`. Os controles de cache KV, fusão de fatias e precisão do
-  estado oculto só aparecem quando quem monta os passa.
+  estado oculto só aparecem quando quem monta os passa. `VisionControl` segue
+  a mesma fronteira: exibe e alterna o mmproj resolvido para modelos inteiros
+  e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
+  não tem projetor.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
   inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,

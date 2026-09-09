@@ -135,6 +135,7 @@ mod tests {
             merge: None,
             params: RuntimeParams::default(),
             use_mmproj: false,
+            mmproj_path: None,
         };
         let ident = |rank: u32, role: &str| crate::network::TpIdentity {
             role: role.into(),
@@ -206,6 +207,7 @@ mod tests {
             peer_index: None,
             peer_count: None,
             tp: None,
+            mmproj_path: None,
             use_mmproj: false,
         };
 
@@ -245,6 +247,7 @@ mod tests {
             merge: None,
             params: RuntimeParams::default(),
             use_mmproj: false,
+            mmproj_path: None,
         }
     }
 

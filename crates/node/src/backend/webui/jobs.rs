@@ -355,6 +355,10 @@ pub struct ApplyRequest {
     /// Load the adjacent mmproj projector for this target's model.
     #[serde(default)]
     pub use_mmproj: bool,
+    /// Explicit projector path from the local catalog. Slices may be stored
+    /// away from the original whole model, so adjacency is not sufficient.
+    #[serde(default)]
+    pub mmproj_path: Option<String>,
     #[serde(default)]
     pub params: RuntimeParams,
 }

@@ -557,6 +557,7 @@ pub(super) async fn release_slice(
         tp: cfg.tp.clone(),
         skip_split: true,
         use_mmproj: cfg.mmproj_path.is_some(),
+        mmproj_path: cfg.mmproj_path.clone(),
         merge: None,
         params: RuntimeParams::from(&cfg),
     };
@@ -689,6 +690,9 @@ pub struct LaunchTarget {
     /// The target should load the adjacent multimodal projector.
     #[serde(default)]
     pub use_mmproj: bool,
+    /// Projector path on the target peer, resolved from its shard metadata.
+    #[serde(default)]
+    pub mmproj_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -901,6 +905,7 @@ pub(crate) async fn launch(
             part_sha256: target.part_sha256.clone(),
             merge: target.merge.clone(),
             use_mmproj: req.use_mmproj && target.use_mmproj,
+            mmproj_path: target.mmproj_path.clone(),
             params,
         };
 

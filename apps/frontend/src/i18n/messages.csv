@@ -662,6 +662,10 @@ deploy.transferNote,"Copies use the same transport as Transfers, with resume and
 deploy.unknownModelSize,model size unknown,tamanho do modelo desconhecido
 deploy.unloadIfIdle,Unload if idle,Descarregar se ocioso
 deploy.unloadIfIdleHint,"Unload this peer's model after the configured period without requests. The deployment stays active and reloads on the next request.","Descarrega o modelo deste peer depois do período configurado sem requisições. A implantação continua ativa e recarrega na próxima requisição."
+deploy.vision,Vision,Visão
+deploy.visionHint,"Loads the projector on the pipeline head so it can turn images into hidden state for the following shards.","Carrega o projetor na cabeça do pipeline para transformar imagens em estado oculto para as fatias seguintes."
+deploy.visionToggle,Enable vision,Ativar visão
+deploy.visionUnavailable,"Vision unavailable: no mmproj was found for this sliced model.","Visão indisponível: nenhum mmproj foi encontrado para este modelo fatiado."
 deploy.wholeAria,Whole model,Modelo inteiro
 deploy.wholeDetail,Un-sliced models that a cluster machine already has.,Modelos não fatiados que alguma máquina do cluster já tem.
 deploy.wholeEmpty,No whole model on the network,Nenhum modelo inteiro na rede

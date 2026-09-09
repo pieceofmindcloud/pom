@@ -382,12 +382,19 @@ abrir uma segunda execução concorrente.
 ### Visão opcional
 
 O catálogo registra `mmproj_path` quando encontra, no mesmo diretório, o GGUF
-vizinho que segue a convenção do llama.cpp. O `Plan` repassa esse caminho para
-a interface sem uma nova varredura do disco. `DeployRequest.vision` só pode ser
-marcado quando o plano tem projetor; nesse caso o lançamento da cabeça recebe
-`--mmproj <caminho>`. A escolha é persistida em `NodeConfig`, para que o estado
-de visão carregado e o caminho em uso fiquem disponíveis ao chat e às rotas de
-administração.
+vizinho que segue a convenção do llama.cpp. Para uma rodada de fatias, o
+`ShardSet` também expõe o projetor adjacente a uma fatia ou ao modelo inteiro
+de origem identificado por `model_label`; o `Plan` resolve o caminho para o
+alvo escolhido na camada 0 sem uma nova varredura do disco. Sem esse caminho,
+a tela mantém a visão indisponível e o backend recusa `vision: true` com a
+mensagem de que nenhum `mmproj` foi encontrado.
+
+`DeployRequest.vision` só pode ser marcado quando o plano tem projetor. Nesse
+caso, `deploy::lifecycle` marca `use_mmproj` exclusivamente no alvo cujo
+`start_layer` é `0`. Só a cabeça carrega `--mmproj <caminho>` e transforma a
+imagem em estado oculto; os peers seguintes recebem esse estado e nunca tocam
+na imagem crua. A escolha e o caminho local são persistidos em `NodeConfig`,
+para que o chat e as rotas de administração conheçam a visão ativa.
 
 ### O modelo e seu tamanho
 

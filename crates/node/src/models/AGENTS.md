@@ -201,7 +201,9 @@ chave e tamanho.
 `catalog.rs::find_mmproj_sibling` segue a convenção do llama.cpp: GGUF `.gguf`
 vizinho no mesmo diretório com `mmproj` no nome, escolhendo a quantização mais
 próxima. `DiscoveredModel.mmproj_path` é a resposta persistida no catálogo;
-a interface não deve varrer o disco. O projetor não é um modelo selecionável.
+`ShardSet.mmproj_path` herda o caminho de uma fatia ou do modelo inteiro de
+origem com o mesmo rótulo. A interface não deve varrer o disco. O projetor não
+é um modelo selecionável.
 
 ## Manutenção deste arquivo
 

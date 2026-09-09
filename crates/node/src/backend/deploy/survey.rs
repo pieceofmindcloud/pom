@@ -566,13 +566,16 @@ pub(super) async fn survey(
                     .filter(|set| set.get("group").and_then(|g| g.as_str()) == Some(group.as_str()))
                     .flat_map(|set| {
                         let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                        let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
                         set.get("shards")
                             .and_then(|v| v.as_array())
                             .into_iter()
                             .flatten()
-                            .map(move |shard| (shard, pom_id))
+                            .map(move |shard| (shard, pom_id, mmproj_path))
                     })
-                    .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                    .filter_map(|(shard, pom_id, mmproj_path)| {
+                        parse_shard(shard, pom_id, mmproj_path)
+                    })
                     .collect(),
                 DeployKind::Whole => {
                     let mut models = body
@@ -595,13 +598,16 @@ pub(super) async fn survey(
                         })
                         .flat_map(|set| {
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                            let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
                             set.get("shards")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
-                                .map(move |shard| (shard, pom_id))
+                                .map(move |shard| (shard, pom_id, mmproj_path))
                         })
-                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                        .filter_map(|(shard, pom_id, mmproj_path)| {
+                            parse_shard(shard, pom_id, mmproj_path)
+                        })
                         .collect::<Vec<_>>();
                     models.append(&mut slices);
                     models
@@ -619,13 +625,16 @@ pub(super) async fn survey(
                         })
                         .flat_map(|set| {
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                            let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
                             set.get("tp_parts")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
-                                .map(move |shard| (shard, pom_id))
+                                .map(move |shard| (shard, pom_id, mmproj_path))
                         })
-                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                        .filter_map(|(shard, pom_id, mmproj_path)| {
+                            parse_shard(shard, pom_id, mmproj_path)
+                        })
                         .collect();
                     if parts.is_empty() {
                         body.get("models")
@@ -758,7 +767,11 @@ pub(super) fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) 
     (gpu, ram)
 }
 
-pub(super) fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option<HeldShard> {
+pub(super) fn parse_shard(
+    v: &serde_json::Value,
+    pom_id: Option<&str>,
+    set_mmproj_path: Option<&str>,
+) -> Option<HeldShard> {
     let range = v.get("shard_range")?.as_array()?;
     Some(HeldShard {
         kind: HeldKind::Shard,
@@ -774,6 +787,7 @@ pub(super) fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option
         mmproj_path: v
             .get("mmproj_path")
             .and_then(|value| value.as_str())
+            .or(set_mmproj_path)
             .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         sha256: v

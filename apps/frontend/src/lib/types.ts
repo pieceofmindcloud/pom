@@ -635,6 +635,8 @@ export interface DeploymentsResponse {
 export interface ShardSet {
   /** Rótulo do modelo — o que se lê. `group` identifica a rodada. */
   model_label: string;
+  /** Projector adjacent to this set or to its original whole model. */
+  mmproj_path?: string | null;
   /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
   pom_id: string;
   group: string;

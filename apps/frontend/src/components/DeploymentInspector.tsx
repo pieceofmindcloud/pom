@@ -123,6 +123,14 @@ export interface MergeControl {
   onChange: (next: boolean) => void;
 }
 
+/** Vision is a deployment control, even though only the pipeline head uses it. */
+export interface VisionControl {
+  available: boolean;
+  enabled: boolean;
+  path?: string | null;
+  onChange: (next: boolean) => void;
+}
+
 function Section({
   title,
   tone,
@@ -214,6 +222,7 @@ export function DeploymentInspector({
   capabilities,
   cacheTypes,
   merge,
+  vision,
   /**
    * O motor só é uma pergunta quando o modelo é MoE: num modelo denso não há
    * escolha a fazer, e um combo com uma resposta só é ruído. O Histórico
@@ -230,6 +239,7 @@ export function DeploymentInspector({
   capabilities?: DeploymentCapabilities;
   cacheTypes?: CacheTypeControl;
   merge?: MergeControl;
+  vision?: VisionControl;
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
@@ -447,6 +457,32 @@ export function DeploymentInspector({
           </>
         )}
       </Section>
+
+      {vision && (
+        <Section title={t("deploy.vision")} tone="aqua">
+          {vision.available ? (
+            <>
+              <InspectorRow label={t("deploy.visionToggle")} tip={t("deploy.visionHint")}>
+                <Tick
+                  on={vision.enabled}
+                  label={t("deploy.visionToggle")}
+                  disabled={readOnly}
+                  onToggle={() => vision.onChange(!vision.enabled)}
+                />
+              </InspectorRow>
+              {vision.path && (
+                <p className="break-all px-0.5 text-[0.6rem] leading-relaxed text-faint">
+                  {vision.path}
+                </p>
+              )}
+            </>
+          ) : (
+            <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
+              {t("deploy.visionUnavailable")}
+            </p>
+          )}
+        </Section>
+      )}
 
       <Section title={t("inspector.sectionPom")} tone="aqua">
         {showInferenceMode && (

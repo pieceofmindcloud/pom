@@ -1040,11 +1040,6 @@ pub(super) fn plan_with_rtt_options(
         .iter()
         .flat_map(|machine| &machine.held)
         .any(|shard| shard.is_moe);
-    let mmproj_path = machines
-        .iter()
-        .flat_map(|machine| machine.held.iter())
-        .find(|shard| shard.mmproj_path.is_some() && shard.start_layer == 0)
-        .and_then(|shard| shard.mmproj_path.clone());
     let inference_mode_reason = if params.inference_mode == InferenceMode::Moe && !is_moe {
         Some("MoE exige metadata real de experts no GGUF deste modelo.".to_string())
     } else if kind == DeployKind::TensorParallel && is_moe {
@@ -1145,6 +1140,23 @@ pub(super) fn plan_with_rtt_options(
             }
         }
     }
+
+    // Vision belongs to the selected pipeline head, not to whichever peer
+    // happened to report a layer-0 file first. Downstream peers receive hidden
+    // state and must never be asked to load the raw image projector.
+    let mmproj_path = chosen
+        .iter()
+        .find(|(index, target, _)| {
+            !target.is_empty() && available[*index].start_layer == 0
+        })
+        .and_then(|(_, target, _)| machines.iter().find(|machine| machine.node_id == *target))
+        .and_then(|machine| {
+            machine
+                .held
+                .iter()
+                .find(|shard| shard.mmproj_path.is_some())
+                .and_then(|shard| shard.mmproj_path.clone())
+        });
 
     for (i, ..) in &chosen {
         available[*i].selected = true;

@@ -890,8 +890,9 @@ pub(super) async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &s
         .ok_or_else(|| anyhow::anyhow!("este nó subiu sem --inference-port"))?;
 
     let mmproj_path = if req.use_mmproj {
-        Some(crate::catalog::find_mmproj_sibling(std::path::Path::new(&model_path)).ok_or_else(
-            || anyhow::anyhow!("este modelo não tem visão: mmproj não encontrado ao lado do GGUF"),
+        Some(resolve_mmproj_path(
+            std::path::Path::new(&model_path),
+            req.mmproj_path.as_deref(),
         )?)
     } else {
         None
@@ -945,6 +946,44 @@ pub(super) async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &s
     state.runtime.apply(cfg).await?;
     state.network.set_tp(req.tp.clone());
     Ok(model_path)
+}
+
+fn resolve_mmproj_path(
+    model_path: &std::path::Path,
+    requested: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(path) = requested.filter(|path| !path.is_empty()) {
+        anyhow::ensure!(
+            std::path::Path::new(path).is_file(),
+            "este modelo não tem visão: mmproj não encontrado no caminho informado"
+        );
+        return Ok(path.to_string());
+    }
+    crate::catalog::find_mmproj_sibling(model_path).ok_or_else(|| {
+        anyhow::anyhow!("este modelo não tem visão: mmproj não encontrado ao lado do GGUF")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_mmproj_path;
+
+    #[test]
+    fn explicit_projector_path_is_used_for_a_slice() {
+        let root = std::env::temp_dir().join(format!("pom-mmproj-apply-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let model = root.join("slice.gguf");
+        let projector = root.join("projectors/mmproj.gguf");
+        std::fs::write(&model, b"model").unwrap();
+        std::fs::create_dir_all(projector.parent().unwrap()).unwrap();
+        std::fs::write(&projector, b"projector").unwrap();
+
+        assert_eq!(
+            resolve_mmproj_path(&model, projector.to_str()).unwrap(),
+            projector.to_string_lossy()
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
 }
 
 /// Join local slices into one GGUF covering their union, then serve that.

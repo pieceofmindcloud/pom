@@ -310,6 +310,39 @@ describe("DeployModel", () => {
     });
   });
 
+  it("mostra e envia a visão quando o plano fatiado encontra um mmproj", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.mmproj_path = "/models/mmproj-qwen.gguf";
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+
+    const vision = screen.getByRole("checkbox", { name: "Ativar visão" });
+    expect(vision).toBeTruthy();
+    fireEvent.click(vision);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Implantar$/ })).toBeTruthy());
+  });
+
+  it("explica quando o plano fatiado não tem mmproj", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.mmproj_path = null;
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Visão indisponível: nenhum mmproj foi encontrado para este modelo fatiado.",
+    );
+    expect(screen.queryByRole("checkbox", { name: "Ativar visão" })).toBeNull();
+  });
+
   it("explica a recusa de um gap mesmo quando os passos chegam fora da ordem", async () => {
     post.mockResolvedValue(planWithUnassignedMiddleRange());
     mount();

@@ -173,6 +173,10 @@ pub struct ShardSet {
     /// lê. Vazio numa fatia sem manifesto.
     #[serde(default)]
     pub model_label: String,
+    /// Projector adjacent to a shard or to the whole model that originated it.
+    /// The path is local to this peer and is only used by the pipeline head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mmproj_path: Option<String>,
     /// O hash do modelo original. Identificação, não nome.
     #[serde(default)]
     pub pom_id: String,
@@ -1250,12 +1254,31 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
                 pipeline_complete
             };
 
+            let model_label = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.model_label.clone())
+                .unwrap_or_else(|| group.clone());
+            let mmproj_path = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.mmproj_path.clone())
+                .or_else(|| {
+                    models
+                        .iter()
+                        .filter(|model| !model.is_shard())
+                        .find(|model| {
+                            model.name == model_label
+                                || model.name == group
+                                || model.name.strip_suffix(".gguf").unwrap_or(&model.name)
+                                    == model_label
+                        })
+                        .and_then(|model| model.mmproj_path.clone())
+                });
+
             ShardSet {
-                model_label: shards
-                    .iter()
-                    .chain(tp_parts.iter())
-                    .find_map(|s| s.model_label.clone())
-                    .unwrap_or_else(|| group.clone()),
+                model_label,
+                mmproj_path,
                 pom_id: shards
                     .iter()
                     .chain(tp_parts.iter())
@@ -1448,6 +1471,54 @@ mod tests {
 
         let with_gap = build_shard_sets(&[mk(0, 15, 32), mk(20, 31, 32)]);
         assert!(!with_gap[0].complete);
+    }
+
+    #[test]
+    fn shard_set_inherits_projector_from_original_model() {
+        let source = DiscoveredModel {
+            id: "source".into(),
+            name: "vision-model.gguf".into(),
+            source: ModelSource::Local,
+            source_label: "Local".into(),
+            path: "/models/vision-model.gguf".into(),
+            mmproj_path: Some("/models/mmproj-vision-model.gguf".into()),
+            size_bytes: 4096,
+            architecture: None,
+            is_moe: false,
+            total_layers: Some(32),
+            quant: None,
+            shard_range: None,
+            shard_group: None,
+            sha256: None,
+            model_label: None,
+            pom_id: None,
+            tensor_parallel: false,
+            tp_rank: None,
+            tp_size: None,
+            capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
+            metadata_error: None,
+            metadata_identity: None,
+        };
+        let mut slice = source.clone();
+        slice.id = "slice".into();
+        slice.name = "vision-0-15.gguf".into();
+        slice.path = "/shards/vision-0-15.gguf".into();
+        slice.mmproj_path = None;
+        slice.shard_range = Some((0, 15));
+        slice.shard_group = Some("vision-slices".into());
+        slice.model_label = Some("vision-model".into());
+        let mut second = slice.clone();
+        second.id = "slice-2".into();
+        second.name = "vision-16-31.gguf".into();
+        second.path = "/shards/vision-16-31.gguf".into();
+        second.shard_range = Some((16, 31));
+
+        let sets = build_shard_sets(&[source, slice, second]);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].mmproj_path.as_deref(), Some("/models/mmproj-vision-model.gguf"));
     }
 
     #[test]

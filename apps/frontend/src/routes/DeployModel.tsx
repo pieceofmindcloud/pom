@@ -346,14 +346,18 @@ export function DeployModel() {
   }, [cacheTypes.data, cacheTypesLoaded]);
   /** Every slicing round anyone in the cluster holds, named once. */
   const groups = useMemo(() => {
-    const seen = new Map<string, { key: string; label: string; pomId: string }>();
+    const seen = new Map<string, { key: string; label: string; pomId: string; mmprojPath: string | null }>();
     for (const peer of cluster.data?.peers ?? []) {
       for (const set of peer.shard_sets ?? []) {
-        if (!seen.has(set.group)) {
+        const existing = seen.get(set.group);
+        if (existing) {
+          if (!existing.mmprojPath && set.mmproj_path) existing.mmprojPath = set.mmproj_path;
+        } else {
           seen.set(set.group, {
             key: set.group,
             label: set.model_label || set.group,
             pomId: set.pom_id ?? "",
+            mmprojPath: set.mmproj_path ?? null,
           });
         }
       }
@@ -500,9 +504,10 @@ export function DeployModel() {
   const p = plan.data;
   // The plan is authoritative once answered; the catalog is useful while the
   // first plan is loading so the vision control does not flicker into view.
+  const slicedMmprojPath = groups.find((entry) => entry.key === chosen)?.mmprojPath ?? null;
   const mmprojPath = p?.mmproj_path !== undefined
     ? p.mmproj_path
-    : wholeModel?.mmproj_path ?? null;
+    : wholeModel?.mmproj_path ?? slicedMmprojPath;
   const visionAvailable = Boolean(mmprojPath);
   useEffect(() => {
     if (!visionAvailable) setUseVision(false);
@@ -1318,25 +1323,13 @@ export function DeployModel() {
                   : (inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido.")
               }
               showHiddenStateDtype={crossesPeerBoundary}
+              vision={isWhole && !visionAvailable ? undefined : {
+                available: visionAvailable,
+                enabled: useVision,
+                path: mmprojPath,
+                onChange: setUseVision,
+              }}
             />
-            {visionAvailable && (
-              <section className="border-b border-line px-2 py-3">
-                <label className="flex cursor-pointer items-start gap-2 text-[0.68rem]">
-                  <input
-                    type="checkbox"
-                    checked={useVision}
-                    onChange={(event) => setUseVision(event.target.checked)}
-                    className="mt-0.5 accent-iris"
-                  />
-                  <span className="min-w-0">
-                    <span className="block font-semibold text-fg">Ativar visão</span>
-                    <span className="mt-0.5 block break-all text-[0.6rem] text-faint">
-                      {mmprojPath}
-                    </span>
-                  </span>
-                </label>
-              </section>
-            )}
             {isMoePlan && !inferenceModeSupported && (
               <p role="alert" className="border-b border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
                 {inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido."}

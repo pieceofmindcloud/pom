@@ -941,8 +941,9 @@ faz o download autenticado do blob persistido.
 
 ### Visão na implantação e no chat
 
-`deploy::Plan.mmproj_path` vem do catálogo do modelo inteiro e
-`DeployRequest.vision` só habilita o projetor na cabeça da implantação.
+`deploy::Plan.mmproj_path` vem do catálogo do modelo inteiro ou do
+`ShardSet.mmproj_path` da rodada fatiada. `DeployRequest.vision` só habilita o
+projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
 projetor e a mensagem para o usuário precisam permanecer alinhadas.

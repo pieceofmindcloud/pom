@@ -36,10 +36,14 @@ const params: RuntimeParams = {
   idle_minutes: 60,
 };
 
-function mount(value = params, onChange = vi.fn()) {
+function mount(
+  value = params,
+  onChange = vi.fn(),
+  vision?: { available: boolean; enabled: boolean; path?: string | null; onChange: (next: boolean) => void },
+) {
   render(
     <LocaleProvider initialLocale="en">
-      <DeploymentInspector value={value} onChange={onChange} />
+      <DeploymentInspector value={value} onChange={onChange} vision={vision} />
     </LocaleProvider>,
   );
   return onChange;
@@ -67,5 +71,35 @@ describe("DeploymentInspector idle policy", () => {
 
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ unload_if_idle: true }));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ idle_minutes: 15 }));
+  });
+
+  it("shows and toggles vision for a sliced deployment", () => {
+    const onVisionChange = vi.fn();
+    mount(params, vi.fn(), {
+      available: true,
+      enabled: false,
+      path: "/models/mmproj-vision.gguf",
+      onChange: onVisionChange,
+    });
+
+    const vision = screen.getByRole("checkbox", { name: "Enable vision" });
+    expect(vision).toBeTruthy();
+    expect(screen.getByText("/models/mmproj-vision.gguf")).toBeTruthy();
+    fireEvent.click(vision);
+    expect(onVisionChange).toHaveBeenCalledWith(true);
+  });
+
+  it("explains when a sliced deployment has no projector", () => {
+    mount(params, vi.fn(), {
+      available: false,
+      enabled: false,
+      path: null,
+      onChange: vi.fn(),
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Vision unavailable: no mmproj was found for this sliced model.",
+    );
+    expect(screen.queryByRole("checkbox", { name: "Enable vision" })).toBeNull();
   });
 });

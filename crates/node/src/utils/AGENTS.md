@@ -29,7 +29,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   e grava `shard_max_gb` para limitar as fatias compartilhadas.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
-- `respawn.rs` - reiniciar este processo preservando o argv do arranque.
+- `respawn.rs` - reiniciar este processo preservando o argv do arranque,
+  criando uma nova sessão em Unix e redirecionando stdout/stderr para
+  `<project_root>/pom.log` para que falhas logo após o reinício deixem rastro.
 - `sysmon.rs` - amostragem de RAM/VRAM/disco por plataforma, com cache.
 - `thermal.rs` - política de temperatura, histerese e cooldown como máquina de
   estados pura, sem dependência de fornecedor ou hardware.
@@ -94,8 +96,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 - `remember_argv`/`original_argv` - captura o argv (sem argv[0]) no início do
   main; é o que preserva `--advertise-addr` etc. num restart (o respawn ingênuo
   com `Command::new(current_exe())` perdia os argumentos).
-- `respawn_self` - spawna `current_exe` + argv original e sai (exit 0); se o
-  spawn falhar retorna o erro e o nó segue vivo para reportar.
+- `respawn_self` - spawna `current_exe` + argv original em uma sessão
+  independente, com stdout/stderr em `pom.log`, e sai (exit 0); se abrir o log
+  ou o spawn falhar retorna o erro e o nó segue vivo para reportar.
 
 `sysmon.rs`:
 - `sample` - leitura com cache de 1,2 s (`nvidia-smi` custa um spawn por leitura;

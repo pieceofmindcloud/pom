@@ -443,11 +443,17 @@ marcador interno próprio, que o navegador nunca envia.
 da catraca. A inferência usa exclusivamente a API key dedicada `pom-[node_id]`,
 obtida em `POST /api/ui/chat-key` e enviada como `X-API-Key` em cada chamada
 `/api/generate` ou `/v1`. Se ela for revogada, a próxima tentativa cria uma
-substituta e repete a mensagem uma única vez. O primeiro acesso não usa mais
-O router de setup (sem `pom.json`) serve hardware, modelos, prévia da raiz
+substituta e repete a mensagem uma única vez. O primeiro acesso usa o router
+de setup (sem `pom.json`), que serve hardware, modelos, prévia da raiz
 administrativa, token administrativo, instalação da raiz, verificações e `POST /api/setup/save`. O save
-instala a raiz de confiança separada e grava `pom.json` antes do respawn. A
-resposta de nó configurado publica `addr_candidates`, `libp2p_peer_id` e as
+instala a raiz de confiança separada e grava `pom.json` antes do respawn. O
+respawn cria uma sessão independente em Unix, herda os argumentos originais e
+redireciona stdout/stderr para `<project_root>/pom.log`, para que uma falha de
+arranque após o save fique diagnosticável. A sugestão de `advertise_addr` usa
+a enumeração real das interfaces: IPv6 global não temporário primeiro, depois
+IPv4; ela é apenas uma sugestão editável e o anúncio continua redetectando os
+endereços em cada ciclo. A resposta de nó configurado publica
+`addr_candidates`, `libp2p_peer_id` e as
 capabilities do túnel, usados pelo deploy TP para transportar o endereço correto
 até cada rank.
 

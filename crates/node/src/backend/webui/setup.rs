@@ -91,26 +91,6 @@ fn fresh_connection_key() -> String {
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
-fn public_ipv6_address() -> Option<std::net::Ipv6Addr> {
-    let Ok(socket) = std::net::UdpSocket::bind("[::]:0") else {
-        return None;
-    };
-    if socket.connect("[2001:4860:4860::8888]:80").is_err() {
-        return None;
-    }
-    socket
-        .local_addr()
-        .ok()
-        .and_then(|address| match address.ip() {
-            std::net::IpAddr::V6(ip)
-                if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_unicast_link_local() =>
-            {
-                Some(ip)
-            }
-            _ => None,
-        })
-}
-
 async fn setup_hardware(config: AuthState) -> SetupHardwareResponse {
     let system = sysmon::sample().await;
     let gpu_detected = !system.gpus.is_empty();
@@ -136,7 +116,7 @@ async fn setup_hardware(config: AuthState) -> SetupHardwareResponse {
         "CPU"
     };
     let cfg = config.read().await;
-    let public_ipv6 = tokio::task::spawn_blocking(public_ipv6_address)
+    let suggested_ip = tokio::task::spawn_blocking(crate::addrs::preferred_local_advertise_ip)
         .await
         .unwrap_or(None);
     SetupHardwareResponse {
@@ -146,8 +126,14 @@ async fn setup_hardware(config: AuthState) -> SetupHardwareResponse {
         vulkan_available,
         backend: backend.to_string(),
         p2p_discovery_available: std::net::UdpSocket::bind("0.0.0.0:0").is_ok(),
-        public_ipv6_available: public_ipv6.is_some(),
-        suggested_advertise_addr: public_ipv6.map(|ip| format!("[{ip}]:{}", cfg.p2p_port)),
+        public_ipv6_available: suggested_ip.as_deref().is_some_and(|ip| ip.contains(':')),
+        suggested_advertise_addr: suggested_ip.map(|ip| {
+            if ip.contains(':') {
+                format!("[{ip}]:{}", cfg.p2p_port)
+            } else {
+                format!("{ip}:{}", cfg.p2p_port)
+            }
+        }),
         default_model_dir: crate::config::default_model_dir()
             .to_string_lossy()
             .into_owned(),

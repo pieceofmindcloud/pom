@@ -13,8 +13,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   macOS, `ip -o addr` no Linux) e a filtragem que decide o que anunciar.
   Captura também a interface dona do endereço para excluir bridges e pares
   virtuais de Docker, Podman, CNI e equivalentes sem perder IPs privados de
-  interfaces reais da LAN. Único arquivo com código por plataforma; a
-  filtragem fica fora do `cfg` e tem teste que roda em qualquer sistema.
+  interfaces reais da LAN. `preferred_local_advertise_ip` reaproveita essa
+  filtragem para a sugestão do wizard, preferindo IPv6 global estável e depois
+  IPv4, sem confundir endereço de privacidade com endereço persistente. Único
+  arquivo com código por plataforma; a filtragem fica fora do `cfg` e tem teste
+  que roda em qualquer sistema.
 - `infer_tunnel.rs` - protocolo request/response que carrega a chamada de
   inferência pelo enxame libp2p como transporte preferencial quando o peer
   anuncia essa capability. Se o túnel falhar por transporte, o relay usa o

@@ -2936,6 +2936,7 @@ dependencies = [
  "hex",
  "hyper",
  "hyper-util",
+ "libc",
  "libp2p",
  "llama-engine",
  "md-5",

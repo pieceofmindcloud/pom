@@ -1336,6 +1336,7 @@ impl TraceIssue {
 }
 
 impl RequestTrace {
+    #[cfg(test)]
     pub fn new(model: impl Into<String>, steps: &[(&str, u32, u32)]) -> Self {
         Self::new_with_trace_id(uuid::Uuid::new_v4().simple().to_string(), model, steps)
     }
@@ -1407,6 +1408,7 @@ impl RequestTrace {
         }
     }
 
+    #[cfg(test)]
     pub fn record_span(&mut self, span: TraceSpan) {
         if !self.profile.collects_spans() {
             return;

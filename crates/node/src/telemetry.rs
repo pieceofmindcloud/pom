@@ -31,6 +31,7 @@ impl Profile {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -43,6 +44,7 @@ impl Profile {
         !matches!(self, Self::Off)
     }
 
+    #[cfg(test)]
     pub fn collects_chunk_details(self) -> bool {
         matches!(self, Self::Trace)
     }

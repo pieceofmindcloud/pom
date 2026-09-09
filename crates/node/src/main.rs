@@ -583,10 +583,12 @@ fn local_authority_identity() -> Result<(
     Ok((signing_key, principal))
 }
 
+#[cfg(target_os = "macos")]
 fn gateway_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/admin-ui/chat")
 }
 
+#[cfg(target_os = "macos")]
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
     config_port.unwrap_or(cli_port)
 }
@@ -1937,12 +1939,14 @@ async fn start_gateway_only(
 mod main_tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn menu_bar_chat_url_uses_loopback_and_gateway_port() {
         assert_eq!(gateway_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
         assert_eq!(gateway_url(8090), "http://127.0.0.1:8090/admin-ui/chat");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn persisted_gateway_port_wins_over_cli_fallback() {
         assert_eq!(select_gateway_port(Some(9123), 8080), 9123);

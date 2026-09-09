@@ -157,6 +157,10 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/estatisticas` -> Statistics, tela própria dos agregados da auditoria;
   `/logs/estatisticas` redireciona para a rota nova
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
+- `/redes-publicas` -> PublicNetworks, catálogo inicial de redes públicas
+  descobertas pela camada pkarr. Agrupa por país/cidade e ordena pela distância
+  aproximada autorizada no navegador; o botão de entrada reaproveita a tela de
+  confiança sem segredo de rede pública.
 - `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
   sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
   decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
@@ -183,20 +187,24 @@ projeção normal de `NAV`.
 
 ### Wizard de primeiro acesso
 
-`routes/SetupWizard.tsx` mantém uma máquina de estados local, com histórico para
-voltar em qualquer etapa. O cabeçalho usa o mesmo lockup, tokens, tipografia,
-painéis e ações do restante da interface. Os caminhos Quick Start, máquinas
-próprias, rede de empresa, contribuição, rede de IA e configuração avançada
-compartilham o resumo final, mas exibem apenas as decisões relevantes de cada
-perfil. Hardware, nós encontrados, modelos, redes públicas, capabilities e
-checagens de saúde vêm de `routes/setupWizardMocks.ts`, separados dos tipos em
-`routes/setupWizardTypes.ts` para uma futura troca por respostas do backend.
+`routes/Setup.tsx` é o wizard real, servido pelo router loopback
+`/api/setup/*`. Ele detecta hardware antes das decisões, pede localização
+país/cidade para todos os perfis, persiste a localização aproximada autorizada
+e usa etapas diferentes para `admin`, `node` e `infer`: admin cria a raiz,
+configura a rede e convida; node escolhe RAM, CPU, disco de fatias e proteção
+térmica; infer só confirma a confiança e entra. País e cidade são obrigatórios
+para rede pública e opcionais, mas persistidos, para local/private. A cidade
+manual é válida quando a referência SQLite não a contém.
 
-O wizard não grava configuração, baixa modelos, convida usuários, cria chaves,
-mede a máquina nem conecta uma rede. Essas telas são estados visuais do
-protótipo e exibem a preparação para as superfícies reais. O link de
-Configurações usa a mesma entrada `/setup`, então a experiência permanece
-revisável depois do primeiro acesso sem interferir no bootstrap de um nó novo.
+O passo de modelos combina o catálogo local com referências do Hugging Face,
+sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
+padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a chave
+pública, a fingerprint calculada e a chave de conexão apenas quando a rede é
+local/private. A verificação final cobre GPU, backend disponível, configuração,
+descoberta P2P e IPv6 público; a inferência do modelo fica para depois.
+
+`routes/SetupWizard.tsx` e `components/setup-wizard/*` continuam sendo apenas o
+mock de referência visual. Não são usados pelo primeiro acesso real.
 
 ### Modelos remotos
 
@@ -458,8 +466,11 @@ capabilities do túnel, usados pelo deploy TP para transportar o endereço corre
 até cada rank.
 
 `GET /api/public/networks` lista metadados de redes públicas conhecidos pela
-descoberta pkarr existente. A página `/redes-publicas` mostra nome, impressão
-digital e endereço e leva ao fluxo de ancoragem. O documento de confiança não é
+descoberta pkarr existente. O label geo canônico (`com.<país>.<cidade>.<node>`)
+é campo do registro, nunca a chave pkarr. O índice local persiste labels já
+observados e aceita `geo_prefix`/`geo_suffix`, permitindo filtrar candidatos
+antes das sondas HTTP. A página `/redes-publicas` agrupa por país/cidade e
+mostra nome, fingerprint, label e endereço. O documento de confiança não é
 publicado por esta lista; o operador recebe-o do responsável da rede por um
 canal próprio.
 

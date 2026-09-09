@@ -23,6 +23,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/reconfigure", post(reconfigure))
         .route("/api/ui/release", post(release_slice))
         .route("/api/ui/release/candidate", get(release_candidate))
+        .route("/api/ui/network/leave", post(leave_network_and_reset))
         .route("/api/ui/leave", post(leave_network))
         .route("/api/ui/rejoin", post(rejoin_network))
         .route("/api/ui/requests", get(crate::reqlog::list_requests))

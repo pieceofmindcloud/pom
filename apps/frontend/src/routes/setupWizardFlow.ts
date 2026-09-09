@@ -19,6 +19,7 @@ export function setupStepsFor(profile: SetupProfile | null): WizardStep[] {
   const steps: WizardStep[] = [
     { id: "setup-profile", labelKey: "setupWizard.stepProfile" },
     { id: "setup-hardware", labelKey: "setupWizard.stepHardware" },
+    { id: "setup-location", labelKey: "setupWizard.stepLocation" },
   ];
   if (profile === "infer") {
     steps.push({ id: "setup-trust", labelKey: "setupWizard.stepTrust" });

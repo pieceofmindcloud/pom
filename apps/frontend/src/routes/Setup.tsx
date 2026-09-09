@@ -7,7 +7,7 @@
  * quem ainda não sabe o que o POM pode compartilhar.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, Cpu, Database, Download, Landmark, Monitor, Server, ShieldCheck, Sparkles } from "lucide-react";
+import { Check, Copy, Cpu, Database, Download, Landmark, LocateFixed, MapPin, Monitor, Server, ShieldCheck, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { WizardLayout, ContinueButton } from "../components/setup-wizard/WizardLayout";
 import type { WizardStage } from "./setupWizardTypes";
@@ -55,6 +55,29 @@ interface HardwareResponse {
   default_model_dir: string;
   default_shard_dir: string;
   shard_max_gb: number;
+  ram_reserve_pct: number;
+  cpu_reserve_pct: number;
+  model_dirs: string[];
+  shard_dir: string;
+  node_name: string | null;
+  network: SetupState["network"];
+}
+
+interface GeoCityReference {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+interface GeoCountryReference {
+  code: string;
+  name: string;
+  cities: GeoCityReference[];
+}
+
+interface GeoReferenceResponse {
+  countries: GeoCountryReference[];
 }
 
 interface SetupModel {
@@ -75,6 +98,15 @@ interface ModelsResponse {
   model_dirs: string[];
   default_model_dir: string;
   default_shard_dir: string;
+}
+
+interface PublicJoinPayload {
+  name?: string;
+  cluster_id?: string;
+  fingerprint?: string;
+  bootstrap_address?: string;
+  trust_document?: string;
+  access_policy?: AccessPolicy;
 }
 
 interface AnchorPreview {
@@ -107,6 +139,7 @@ interface SetupState {
   adminAccessToken: string;
   adminExposure: AdminExposure;
   tlsRequired: boolean;
+  nodeName: string;
   network: {
     public_name: string;
     organization: string;
@@ -115,6 +148,10 @@ interface SetupState {
     channels: string;
     visibility: NetworkVisibility;
     access_policy: AccessPolicy;
+    country_code: string;
+    country_name: string;
+    city: string;
+    geo_label: string;
     location: { latitude: number; longitude: number; accuracy_m?: number } | null;
   };
   ramReservePct: number;
@@ -142,6 +179,10 @@ const INITIAL: SetupState = {
     channels: "",
     visibility: "private",
     access_policy: "authorized",
+    country_code: "",
+    country_name: "",
+    city: "",
+    geo_label: "",
     location: null,
   },
   ramReservePct: 20,
@@ -154,6 +195,7 @@ const INITIAL: SetupState = {
   adminAccessToken: "",
   adminExposure: "localhost",
   tlsRequired: false,
+  nodeName: "",
 };
 
 export function Setup() {
@@ -164,6 +206,7 @@ export function Setup() {
   const [stage, setStage] = useState<WizardStage>("setup-profile");
   const [hardware, setHardware] = useState<HardwareResponse | null>(null);
   const [models, setModels] = useState<ModelsResponse | null>(null);
+  const [geoReference, setGeoReference] = useState<GeoReferenceResponse | null>(null);
   const [anchor, setAnchor] = useState<AnchorPreview | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,19 +218,25 @@ export function Setup() {
     Promise.all([
       api.get<HardwareResponse>("/api/setup/hardware", { auth: false }),
       api.get<ModelsResponse>("/api/setup/models", { auth: false }),
+      api.get<GeoReferenceResponse>("/api/setup/geo-reference", { auth: false }),
     ])
-      .then(([detected, available]) => {
+      .then(([detected, available, geo]) => {
         if (cancelled) return;
         setHardware(detected);
         setModels(available);
+        setGeoReference(geo);
         setSetup((current) => ({
           ...current,
           // Existing libraries are still scanned and shown as local choices,
           // but new files belong in POM's stable first-access folder.
-          modelDirs: [available.default_model_dir],
-          shardDir: available.default_shard_dir,
+          modelDirs: detected.model_dirs.length ? detected.model_dirs : [available.default_model_dir],
+          shardDir: detected.shard_dir || available.default_shard_dir,
           shardMaxGb: detected.shard_max_gb || 20,
+          ramReservePct: detected.ram_reserve_pct ?? current.ramReservePct,
+          cpuReservePct: detected.cpu_reserve_pct ?? current.cpuReservePct,
           thermalLimitC: detected.thermal_limit_c || 85,
+          nodeName: detected.node_name ?? current.nodeName,
+          network: { ...current.network, ...detected.network },
           advertiseAddr: current.advertiseAddr || detected.suggested_advertise_addr || "",
         }));
       })
@@ -199,6 +248,30 @@ export function Setup() {
       cancelled = true;
     };
   }, [t, toast]);
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem("pom.public-network-join");
+    if (!raw) return;
+    sessionStorage.removeItem("pom.public-network-join");
+    try {
+      const network = JSON.parse(raw) as PublicJoinPayload;
+      setSetup((current) => ({
+        ...current,
+        bootstrap: network.bootstrap_address ?? "",
+        trustDocument: network.trust_document ?? "",
+        trustFingerprint: "",
+        trustConfirmed: false,
+        network: {
+          ...current.network,
+          public_name: network.name ?? network.cluster_id ?? "",
+          visibility: "public",
+          access_policy: network.access_policy ?? "anyone_with_anchor",
+        },
+      }));
+    } catch {
+      // A stale browser hint must never prevent the normal wizard from opening.
+    }
+  }, []);
 
   function update(patch: Partial<SetupState>) {
     setSetup((current) => ({ ...current, ...patch }));
@@ -286,6 +359,7 @@ export function Setup() {
         shard_dir: setup.shardDir.trim(),
         shard_max_gb: setup.shardMaxGb,
         setup_model: setup.setupModel || null,
+        node_name: setup.nodeName.trim(),
       }, { auth: false });
       setStage("setup-saved");
       window.setTimeout(() => window.location.reload(), 4200);
@@ -347,7 +421,7 @@ export function Setup() {
           )
         }
       >
-        {loading ? <LoadingScreen /> : <Screen stage={stage} setup={setup} hardware={hardware} models={models} anchor={anchor} health={health} update={update} updateNetwork={updateNetwork} onExposureChange={changeAdminExposure} setStage={setStage} t={t} />}
+      {loading ? <LoadingScreen /> : <Screen stage={stage} setup={setup} hardware={hardware} models={models} geoReference={geoReference} anchor={anchor} health={health} update={update} updateNetwork={updateNetwork} onExposureChange={changeAdminExposure} setStage={setStage} t={t} />}
       </WizardLayout>
     </div>
   );
@@ -358,6 +432,7 @@ function Screen({
   setup,
   hardware,
   models,
+  geoReference,
   anchor,
   health,
   update,
@@ -370,6 +445,7 @@ function Screen({
   setup: SetupState;
   hardware: HardwareResponse | null;
   models: ModelsResponse | null;
+  geoReference: GeoReferenceResponse | null;
   anchor: AnchorPreview | null;
   health: HealthResponse | null;
   update: (patch: Partial<SetupState>) => void;
@@ -380,7 +456,8 @@ function Screen({
 }) {
   switch (stage) {
     case "setup-profile": return <ProfileScreen profile={setup.profile} onSelect={(profile) => update({ profile })} t={t} />;
-    case "setup-hardware": return <HardwareScreen hardware={hardware} t={t} />;
+    case "setup-hardware": return <HardwareScreen setup={setup} hardware={hardware} update={update} t={t} />;
+    case "setup-location": return <LocationScreen setup={setup} countries={geoReference?.countries ?? []} updateNetwork={updateNetwork} t={t} />;
     case "setup-resources": return <ResourcesScreen setup={setup} hardware={hardware} profile={setup.profile} update={update} t={t} />;
     case "setup-model": return <ModelScreen models={models} selected={setup.setupModel} onSelect={(setupModel) => update({ setupModel })} t={t} />;
     case "setup-storage": return <StorageScreen setup={setup} update={update} models={models} t={t} />;
@@ -407,7 +484,7 @@ function ProfileScreen({ profile, onSelect, t }: { profile: SetupProfile | null;
   return <Intro eyebrow={t("setupWizard.welcomeEyebrow")} title={t("setupWizard.welcomeTitle")} detail={t("setupWizard.welcomeDetail")}><div className="grid gap-3 md:grid-cols-3">{roles.map((role) => <button key={role.id} type="button" aria-pressed={profile === role.id} onClick={() => onSelect(role.id)} className={["min-w-0 rounded-xl border bg-surface p-5 text-left transition-colors hover:border-line-strong", profile === role.id ? "border-iris/55 bg-iris/[0.07]" : "border-line"].join(" ")}><span className={["flex h-10 w-10 items-center justify-center rounded-lg border", profile === role.id ? "border-iris/40 bg-iris/12 text-iris" : "border-line bg-raised text-muted"].join(" ")}>{role.icon}</span><span className="mt-4 block font-display text-base font-semibold text-fg">{role.title}</span><span className="mt-2 block text-sm leading-relaxed text-muted">{role.detail}</span></button>)}</div><p className="mt-4 text-xs text-faint">{t("setupWizard.roleHint")}</p></Intro>;
 }
 
-function HardwareScreen({ hardware, t }: { hardware: HardwareResponse | null; t: (key: string, values?: Record<string, string | number>) => string }) {
+function HardwareScreen({ setup, hardware, update, t }: { setup: SetupState; hardware: HardwareResponse | null; update: (patch: Partial<SetupState>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   if (!hardware) return <Intro eyebrow={t("setupWizard.stepHardware")} title={t("setupWizard.hardwareTitle")} detail={t("setupWizard.hardwareUnavailable")} />;
   const ram = hardware.system.ram.total_mb / 1024;
   const gpu = hardware.system.gpus[0];
@@ -417,7 +494,38 @@ function HardwareScreen({ hardware, t }: { hardware: HardwareResponse | null; t:
     : hasAmd
       ? { ok: hardware.vulkan_available, label: t("setupWizard.vulkanAvailable") }
       : { ok: hardware.cuda_available, label: t("setupWizard.cudaAvailable") };
-  return <Intro eyebrow={t("setupWizard.stepHardware")} title={t("setupWizard.hardwareTitle")} detail={t("setupWizard.hardwareDetail")}><Panel><div className="grid gap-px bg-line sm:grid-cols-3"><HardwareStat icon={<Cpu className="h-4 w-4" />} label={t("setupWizard.cpu")} value={t("setupWizard.cpuValue", { count: hardware.system.cpu_count })} detail={`${hardware.system.hostname} · ${hardware.system.os}`} /><HardwareStat icon={<Database className="h-4 w-4" />} label={t("setupWizard.memory")} value={`${ram.toFixed(1)} GB`} detail={`${(hardware.system.ram.available_mb / 1024).toFixed(1)} GB ${t("setupWizard.available")}`} /><HardwareStat icon={<Monitor className="h-4 w-4" />} label={t("setupWizard.gpu")} value={gpu?.name ?? t("setupWizard.noGpu")} detail={gpu?.vram_total_mb ? `${(gpu.vram_total_mb / 1024).toFixed(1)} GB VRAM · ${hardware.backend}` : hardware.backend} /></div><div className="flex flex-wrap gap-2 border-t border-line px-4 py-3"><StatusBadge ok={hardware.gpu_detected} label={t("setupWizard.gpuDetected")} />{acceleratorCheck && <StatusBadge ok={acceleratorCheck.ok} label={acceleratorCheck.label} />}<StatusBadge ok={hardware.p2p_discovery_available} label={t("setupWizard.discoveryAvailable")} /></div></Panel><p className="mt-4 text-xs text-faint">{t("setupWizard.gpuMaxNote")}</p></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepHardware")} title={t("setupWizard.hardwareTitle")} detail={t("setupWizard.hardwareDetail")}><Panel><div className="grid gap-px bg-line sm:grid-cols-3"><HardwareStat icon={<Cpu className="h-4 w-4" />} label={t("setupWizard.cpu")} value={t("setupWizard.cpuValue", { count: hardware.system.cpu_count })} detail={`${hardware.system.hostname} · ${hardware.system.os}`} /><HardwareStat icon={<Database className="h-4 w-4" />} label={t("setupWizard.memory")} value={`${ram.toFixed(1)} GB`} detail={`${(hardware.system.ram.available_mb / 1024).toFixed(1)} GB ${t("setupWizard.available")}`} /><HardwareStat icon={<Monitor className="h-4 w-4" />} label={t("setupWizard.gpu")} value={gpu?.name ?? t("setupWizard.noGpu")} detail={gpu?.vram_total_mb ? `${(gpu.vram_total_mb / 1024).toFixed(1)} GB VRAM · ${hardware.backend}` : hardware.backend} /></div><div className="flex flex-wrap gap-2 border-t border-line px-4 py-3"><StatusBadge ok={hardware.gpu_detected} label={t("setupWizard.gpuDetected")} />{acceleratorCheck && <StatusBadge ok={acceleratorCheck.ok} label={acceleratorCheck.label} />}<StatusBadge ok={hardware.p2p_discovery_available} label={t("setupWizard.discoveryAvailable")} /></div><div className="border-t border-line px-5 py-5"><Field label={t("setupWizard.nodeName")} hint={t("setupWizard.nodeNameHint")}><Input autoFocus value={setup.nodeName} onChange={(event) => update({ nodeName: event.target.value })} /></Field></div></Panel><p className="mt-4 text-xs text-faint">{t("setupWizard.gpuMaxNote")}</p></Intro>;
+}
+
+function LocationScreen({ setup, countries, updateNetwork, t }: { setup: SetupState; countries: GeoCountryReference[]; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+  const [locationStatus, setLocationStatus] = useState<"idle" | "asking" | "saved" | "denied" | "unavailable">("idle");
+  const locationAsked = useRef(false);
+  const selectedCountry = countries.find((country) => country.code === setup.network.country_code);
+  const cityIsReference = selectedCountry?.cities.some((city) => city.name === setup.network.city) ?? false;
+
+  useEffect(() => {
+    if (setup.network.location) {
+      setLocationStatus("saved");
+      return;
+    }
+    if (locationAsked.current) return;
+    locationAsked.current = true;
+    if (!navigator.geolocation) {
+      setLocationStatus("unavailable");
+      return;
+    }
+    setLocationStatus("asking");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        updateNetwork({ location: { latitude: Number(position.coords.latitude.toFixed(5)), longitude: Number(position.coords.longitude.toFixed(5)), accuracy_m: position.coords.accuracy } });
+        setLocationStatus("saved");
+      },
+      (error) => setLocationStatus(error.code === error.PERMISSION_DENIED ? "denied" : "unavailable"),
+      { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 },
+    );
+  }, [setup.network.location, updateNetwork]);
+
+  return <Intro eyebrow={t("setupWizard.stepLocation")} title={t("setupWizard.locationTitle")} detail={t("setupWizard.locationDetail")}><Panel><PanelHeader title={t("setupWizard.locationPanelTitle")} subtitle={t("setupWizard.locationPanelDetail")} /><div className="grid gap-4 px-5 py-5 md:grid-cols-2"><Field label={t("setupWizard.country")} hint={t("setupWizard.countryHint")}><Select autoFocus value={setup.network.country_code} onChange={(event) => { const country = countries.find((candidate) => candidate.code === event.target.value); updateNetwork({ country_code: country?.code ?? "", country_name: country?.name ?? "", city: "" }); }}><option value="">{t("setupWizard.chooseCountry")}</option>{countries.map((country) => <option key={country.code} value={country.code}>{country.name}</option>)}</Select></Field><Field label={t("setupWizard.city")} hint={t("setupWizard.cityHint")}><Select value={cityIsReference ? setup.network.city : setup.network.city ? "__manual__" : ""} disabled={!selectedCountry} onChange={(event) => updateNetwork({ city: event.target.value === "__manual__" ? "" : event.target.value })}><option value="">{t("setupWizard.chooseCity")}</option>{selectedCountry?.cities.map((city) => <option key={city.id} value={city.name}>{city.name}</option>)}<option value="__manual__">{t("setupWizard.otherCity")}</option></Select></Field>{selectedCountry && !cityIsReference && <Field label={t("setupWizard.manualCity")} hint={t("setupWizard.manualCityHint")}><Input value={setup.network.city} onChange={(event) => updateNetwork({ city: event.target.value })} /></Field>}<div className="md:col-span-2 flex items-start gap-3 rounded-lg border border-aqua/25 bg-aqua/7 px-3 py-3 text-sm text-muted"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-aqua" /><span><span className="block font-medium text-fg">{t("setupWizard.locationPrompt")}</span><span className="mt-1 block text-xs leading-relaxed text-faint">{locationStatus === "saved" && setup.network.location ? t("setupWizard.locationSaved", { latitude: setup.network.location.latitude, longitude: setup.network.location.longitude }) : t(`setupWizard.location${locationStatus[0].toUpperCase()}${locationStatus.slice(1)}`)}</span></span></div></div></Panel><p className="mt-4 flex items-center gap-2 text-xs text-faint"><LocateFixed className="h-3.5 w-3.5" />{t("setupWizard.locationPrivacy")}</p></Intro>;
 }
 
 function ResourcesScreen({ setup, hardware, profile, update, t }: { setup: SetupState; hardware: HardwareResponse | null; profile: SetupProfile | null; update: (patch: Partial<SetupState>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
@@ -442,38 +550,7 @@ function StorageScreen({ setup, update, models, t }: { setup: SetupState; update
 
 function NetworkScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   const publicNetwork = setup.network.visibility === "public";
-  const [locationStatus, setLocationStatus] = useState<"idle" | "asking" | "saved" | "denied" | "unavailable">("idle");
-  const locationAsked = useRef(false);
-
-  useEffect(() => {
-    if (!publicNetwork) {
-      locationAsked.current = false;
-      if (setup.network.location) updateNetwork({ location: null });
-      setLocationStatus("idle");
-      return;
-    }
-    if (setup.network.location) {
-      setLocationStatus("saved");
-      return;
-    }
-    if (locationAsked.current) return;
-    locationAsked.current = true;
-    if (!navigator.geolocation) {
-      setLocationStatus("unavailable");
-      return;
-    }
-    setLocationStatus("asking");
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        updateNetwork({ location: { latitude: Number(position.coords.latitude.toFixed(2)), longitude: Number(position.coords.longitude.toFixed(2)), accuracy_m: position.coords.accuracy } });
-        setLocationStatus("saved");
-      },
-      (error) => setLocationStatus(error.code === error.PERMISSION_DENIED ? "denied" : "unavailable"),
-      { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 },
-    );
-  }, [publicNetwork, setup.network.location, updateNetwork]);
-
-  return <Intro eyebrow={t("setupWizard.stepNetwork")} title={t("setupWizard.networkTitle")} detail={t("setupWizard.networkDetail")}><Panel><PanelHeader title={t("setupWizard.networkIdentity")} subtitle={t("setupWizard.networkIdentityDetail")} /><div className="grid gap-4 px-5 py-5 md:grid-cols-2"><Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input autoFocus value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field><Field label={t("setupWizard.organization")}><Input value={setup.network.organization} onChange={(event) => updateNetwork({ organization: event.target.value })} /></Field><TextAreaField label={t("setupWizard.description")} value={setup.network.description} onChange={(value) => updateNetwork({ description: value })} /><TextAreaField label={t("setupWizard.rules")} value={setup.network.rules} onChange={(value) => updateNetwork({ rules: value })} /><TextAreaField label={t("setupWizard.channels")} value={setup.network.channels} onChange={(value) => updateNetwork({ channels: value })} /><Field label={t("setupWizard.visibility")} hint={t("setupWizard.visibilityHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : setup.network.access_policy })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option><option value="local">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.accessPolicy")} hint={t("setupWizard.accessPolicyHint")}><Select value={setup.network.access_policy} onChange={(event) => updateNetwork({ access_policy: event.target.value as AccessPolicy })}><option value="authorized">{t("setupWizard.authorizedPeople")}</option><option value="anyone_with_anchor">{t("setupWizard.anyoneWithAnchor")}</option><option value="local_only">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.advertiseAddress")} hint={t("setupWizard.advertiseAddressHint")}><Input value={setup.advertiseAddr} placeholder={t("setupWizard.advertiseAddressPlaceholder")} onChange={(event) => update({ advertiseAddr: event.target.value })} /></Field>{publicNetwork && <div className="md:col-span-2 rounded-lg border border-aqua/25 bg-aqua/7 px-3 py-3 text-sm text-muted"><p>{t("setupWizard.locationPrompt")}</p><p className="mt-1 text-xs text-faint">{t(`setupWizard.location${locationStatus[0].toUpperCase()}${locationStatus.slice(1)}`)}</p></div>}</div></Panel></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepNetwork")} title={t("setupWizard.networkTitle")} detail={t("setupWizard.networkDetail")}><Panel><PanelHeader title={t("setupWizard.networkIdentity")} subtitle={t("setupWizard.networkIdentityDetail")} /><div className="grid gap-4 px-5 py-5 md:grid-cols-2"><Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input autoFocus value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field><Field label={t("setupWizard.organization")}><Input value={setup.network.organization} onChange={(event) => updateNetwork({ organization: event.target.value })} /></Field><TextAreaField label={t("setupWizard.description")} value={setup.network.description} onChange={(value) => updateNetwork({ description: value })} /><TextAreaField label={t("setupWizard.rules")} value={setup.network.rules} onChange={(value) => updateNetwork({ rules: value })} /><TextAreaField label={t("setupWizard.channels")} value={setup.network.channels} onChange={(value) => updateNetwork({ channels: value })} /><Field label={t("setupWizard.visibility")} hint={t("setupWizard.visibilityHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : setup.network.access_policy })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option><option value="local">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.accessPolicy")} hint={t("setupWizard.accessPolicyHint")}><Select value={setup.network.access_policy} onChange={(event) => updateNetwork({ access_policy: event.target.value as AccessPolicy })}><option value="authorized">{t("setupWizard.authorizedPeople")}</option><option value="anyone_with_anchor">{t("setupWizard.anyoneWithAnchor")}</option><option value="local_only">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.advertiseAddress")} hint={t("setupWizard.advertiseAddressHint")}><Input value={setup.advertiseAddr} placeholder={t("setupWizard.advertiseAddressPlaceholder")} onChange={(event) => update({ advertiseAddr: event.target.value })} /></Field>{publicNetwork && <div className="md:col-span-2 rounded-lg border border-aqua/25 bg-aqua/7 px-3 py-3 text-sm text-muted"><p>{t("setupWizard.publicGeoRequired")}</p></div>}</div></Panel></Intro>;
 }
 
 function SecurityScreen({ setup, onExposureChange, update, t }: { setup: SetupState; onExposureChange: (exposure: AdminExposure) => Promise<void>; update: (patch: Partial<SetupState>) => void; t: (key: string) => string }) {
@@ -580,19 +657,19 @@ function clusterIdFromDocument(document: string): string {
 function isReadyToSave(setup: SetupState): boolean {
   if (!setup.profile || !setup.trustDocument.trim() || !setup.trustFingerprint.trim() || !setup.trustConfirmed) return false;
   if (setup.profile !== "admin" && setup.network.visibility !== "public" && !setup.connectionKey.trim()) return false;
-  if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || (setup.adminExposure === "network" && !setup.adminAccessToken.trim()))) return false;
+  if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || (setup.network.visibility === "public" && (!setup.network.country_code.trim() || !setup.network.city.trim())) || (setup.adminExposure === "network" && !setup.adminAccessToken.trim()))) return false;
   return true;
 }
 
 function canContinue(stage: WizardStage, setup: SetupState): boolean {
   if (stage === "setup-network" && setup.profile === "admin") {
-    return Boolean(setup.network.public_name.trim() && setup.advertiseAddr.trim());
+    return Boolean(setup.network.public_name.trim() && setup.advertiseAddr.trim() && (setup.network.visibility !== "public" || (setup.network.country_code.trim() && setup.network.city.trim())));
   }
   if (stage === "setup-security" && setup.profile === "admin") {
     return Boolean(setup.adminExposure !== "network" || setup.adminAccessToken.trim());
   }
   if (stage === "setup-trust") {
-    return Boolean(setup.trustFingerprint.trim() && setup.trustConfirmed && (setup.network.visibility === "public" || setup.connectionKey.trim()));
+    return Boolean(setup.trustFingerprint.trim() && setup.trustConfirmed && (setup.network.visibility !== "public" || (setup.network.country_code.trim() && setup.network.city.trim())) && (setup.network.visibility === "public" || setup.connectionKey.trim()));
   }
   return true;
 }

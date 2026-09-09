@@ -13,6 +13,8 @@ pub struct NodeInfo {
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
     pub dev_update: bool,
     pub profile: crate::profile::NodeProfile,
+    /// Human-facing network name shown by the leave action in the main menu.
+    pub network_name: String,
     /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
     /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
     /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
@@ -80,6 +82,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         .unwrap_or_default();
     let (
         profile,
+        network_name,
         connection_key,
         authority_level,
         authority_fingerprint,
@@ -96,6 +99,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         let cfg = state.auth.read().await;
         (
             cfg.profile,
+            cfg.network.public_name.clone(),
             cfg.connection_key.clone(),
             state
                 .admin_trust
@@ -143,6 +147,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         build_commit: crate::BUILD_COMMIT.to_string(),
         dev_update: crate::devupdate::enabled(),
         profile,
+        network_name,
         connection_key,
         authority_level,
         authority_fingerprint,

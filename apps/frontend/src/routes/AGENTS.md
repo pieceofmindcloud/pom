@@ -24,8 +24,16 @@ Per-file list:
 - `Setup.tsx` - Wizard real de primeiro acesso. Começa pelo hardware e usa
   `setupWizardFlow.ts` para manter os percursos separados: administrador cria
   a rede, node escolhe RAM/CPU e espaço de fatias, e infer apenas instala a
-  raiz de confiança. As telas conversam com `/api/setup/*`; não confundir com
-  o protótipo `SetupWizard.tsx`.
+  raiz de confiança. Todos os perfis registram localização, e a seleção de
+  país/cidade vem da referência SQLite do nó; rede pública exige os dois. As
+  telas conversam com `/api/setup/*`; não confundir com o protótipo
+  `SetupWizard.tsx`.
+
+- `PublicNetworks.tsx` - Diretório inicial de redes públicas. Consulta
+  `/api/public/networks`, agrupa por país/cidade, ordena por distância da
+  localização do navegador e inicia a entrada sem chave compartilhada. O
+  documento assinado fica em `sessionStorage` só durante a transição; o nó sai
+  da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage

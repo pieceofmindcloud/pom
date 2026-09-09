@@ -108,11 +108,45 @@ pub(crate) struct PublicNetworkView {
     pub name: String,
     pub fingerprint: String,
     pub address: String,
+    pub bootstrap_address: String,
+    /// The signed chain is public network metadata, not a shared secret. It
+    /// lets the public directory hand the join flow everything it needs.
+    pub trust_document: String,
     pub organization: String,
     pub description: String,
+    pub country_code: String,
+    pub country_name: String,
+    pub city: String,
+    pub geo_label: String,
     pub access_policy: crate::config::NetworkAccessPolicy,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct PublicNetworksQuery {
+    /// Search only cached records whose canonical label starts with this
+    /// hierarchy, for example `com.br.curitiba`.
+    pub geo_prefix: Option<String>,
+    /// Search only cached records whose canonical label ends with this node or
+    /// network suffix. Both filters are conjunctive when supplied together.
+    pub geo_suffix: Option<String>,
+}
+
+fn matches_geo_label(label: &str, query: &PublicNetworksQuery) -> bool {
+    let label = label.trim();
+    query
+        .geo_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|prefix| label.starts_with(prefix))
+        && query
+            .geo_suffix
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none_or(|suffix| label.ends_with(suffix))
 }
 
 fn endpoint_for_public_network(state: &GatewayState) -> String {
@@ -126,6 +160,26 @@ fn endpoint_for_public_network(state: &GatewayState) -> String {
     } else {
         format!("{host}:{}", state.gateway_port)
     }
+}
+
+fn bootstrap_for_public_network(state: &GatewayState) -> String {
+    state
+        .network
+        .self_addr_candidates()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            let host = state
+                .network
+                .advertised_host()
+                .or_else(|| crate::pkarr_node::detect_local_ip())
+                .unwrap_or_else(|| "127.0.0.1".to_string());
+            if host.contains(':') && !host.starts_with('[') {
+                format!("[{host}]:{}", state.network.bind_addr.port())
+            } else {
+                format!("{host}:{}", state.network.bind_addr.port())
+            }
+        })
 }
 
 async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView> {
@@ -144,13 +198,20 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         .unwrap_or(configured_network);
     let document = state.admin_trust.document();
     let fingerprint = crate::admin_trust::anchor_fingerprint(&document);
+    let trust_document = serde_json::to_string_pretty(&document).ok()?;
     Some(PublicNetworkView {
         cluster_id: document.anchor.cluster_id.clone(),
         name: network.public_name.clone(),
         fingerprint,
         address: endpoint_for_public_network(state),
+        bootstrap_address: bootstrap_for_public_network(state),
+        trust_document,
         organization: network.organization.clone(),
         description: network.description.clone(),
+        country_code: network.country_code.clone(),
+        country_name: network.country_name.clone(),
+        city: network.city.clone(),
+        geo_label: network.geo_label.clone(),
         access_policy: network.access_policy,
         location: network
             .location
@@ -164,8 +225,8 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
     })
 }
 
-/// Public metadata only. It intentionally excludes the trust document: the
-/// operator still receives that document out of band from the network owner.
+/// Public metadata for a network. The trust document is signed public data,
+/// not a password, so the directory can pass it to the no-secret join flow.
 pub(super) async fn public_network(State(state): State<GatewayState>) -> impl IntoResponse {
     match local_public_network(&state).await {
         Some(network) => (StatusCode::OK, Json(network)).into_response(),
@@ -177,14 +238,40 @@ pub(super) async fn public_network(State(state): State<GatewayState>) -> impl In
 /// pkarr-backed peers. The peer records are already the result of the existing
 /// discovery layer, so this endpoint does not introduce a second discovery
 /// protocol or change the P2P wire format.
-pub(super) async fn public_networks(State(state): State<GatewayState>) -> impl IntoResponse {
+pub(super) async fn public_networks(
+    State(state): State<GatewayState>,
+    Query(query): Query<PublicNetworksQuery>,
+) -> impl IntoResponse {
     let mut networks = Vec::new();
+    let has_geo_filter = query
+        .geo_prefix
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || query
+            .geo_suffix
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
     if let Some(local) = local_public_network(&state).await {
-        networks.push(local);
+        if !has_geo_filter || matches_geo_label(&local.geo_label, &query) {
+            networks.push(local);
+        }
     }
+
+    let mut geo_cache = state.database.public_network_geo_cache().unwrap_or_default();
 
     for peer in state.network.alive_peers().await {
         if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
+            continue;
+        }
+        if has_geo_filter
+            && !geo_cache.iter().any(|entry| {
+                entry.node_id == peer.node_id && matches_geo_label(&entry.geo_label, &query)
+            })
+        {
+            // A filtered lookup is intentionally conservative: only peers
+            // already indexed by a prior pkarr-backed observation are probed.
+            // An unfiltered lookup refreshes the index and discovers new
+            // records without ever scanning an unrelated world-wide set.
             continue;
         }
         let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
@@ -205,6 +292,16 @@ pub(super) async fn public_networks(State(state): State<GatewayState>) -> impl I
             let Ok(network) = response.json::<PublicNetworkView>().await else {
                 continue;
             };
+            if has_geo_filter && !matches_geo_label(&network.geo_label, &query) {
+                continue;
+            }
+            geo_cache.retain(|entry| entry.node_id != peer.node_id);
+            geo_cache.push(crate::db::PublicNetworkGeoCacheEntry {
+                node_id: peer.node_id.clone(),
+                geo_label: network.geo_label.clone(),
+                fingerprint: network.fingerprint.clone(),
+                observed_at: chrono::Utc::now().to_rfc3339(),
+            });
             if !networks
                 .iter()
                 .any(|known: &PublicNetworkView| known.fingerprint == network.fingerprint)
@@ -213,6 +310,10 @@ pub(super) async fn public_networks(State(state): State<GatewayState>) -> impl I
             }
             break;
         }
+    }
+
+    if let Err(error) = state.database.save_public_network_geo_cache(&geo_cache) {
+        warn!("não foi possível atualizar o índice geo de redes públicas: {error:#}");
     }
 
     Json(networks).into_response()

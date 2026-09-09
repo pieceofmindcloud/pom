@@ -177,6 +177,7 @@ export interface NodeInfo {
   short_id: string;
   hostname: string;
   profile: Profile;
+  network_name: string;
   /**
    * A chave de conexão do cluster, que esta interface mostra em "Chave de
    * Conexão" e guarda para autenticar as chamadas que a exigem.

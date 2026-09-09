@@ -14,6 +14,7 @@ describe("first-access wizard flow", () => {
     expect(ids("node")).toEqual([
       "setup-profile",
       "setup-hardware",
+      "setup-location",
       "setup-resources",
       "setup-trust",
       "setup-health",
@@ -28,6 +29,7 @@ describe("first-access wizard flow", () => {
     expect(ids("infer")).toEqual([
       "setup-profile",
       "setup-hardware",
+      "setup-location",
       "setup-trust",
       "setup-health",
       "setup-review",
@@ -41,6 +43,7 @@ describe("first-access wizard flow", () => {
     expect(ids("admin")).toEqual([
       "setup-profile",
       "setup-hardware",
+      "setup-location",
       "setup-resources",
       "setup-model",
       "setup-storage",

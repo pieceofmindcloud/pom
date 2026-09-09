@@ -1,6 +1,23 @@
 use super::*;
 // ── Setup API ────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
+pub struct SetupState {
+    pub config: AuthState,
+    pub database: Arc<crate::db::PomDb>,
+}
+
+impl axum::extract::FromRef<SetupState> for AuthState {
+    fn from_ref(state: &SetupState) -> Self {
+        state.config.clone()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupGeoResponse {
+    pub countries: Vec<crate::db::GeoCountryReference>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SetupHardwareResponse {
     pub system: SystemLoad,
@@ -15,6 +32,12 @@ pub struct SetupHardwareResponse {
     pub default_shard_dir: String,
     pub shard_max_gb: f64,
     pub thermal_limit_c: f64,
+    pub ram_reserve_pct: f64,
+    pub cpu_reserve_pct: f64,
+    pub model_dirs: Vec<String>,
+    pub shard_dir: String,
+    pub node_name: Option<String>,
+    pub network: crate::config::NetworkSettings,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -142,11 +165,32 @@ async fn setup_hardware(config: AuthState) -> SetupHardwareResponse {
             .into_owned(),
         shard_max_gb: cfg.shard_max_gb(),
         thermal_limit_c: cfg.thermal.limit_c,
+        ram_reserve_pct: cfg.resources.ram_reserve_pct,
+        cpu_reserve_pct: cfg.resources.cpu_reserve_pct,
+        model_dirs: cfg
+            .model_dir_paths()
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        shard_dir: cfg.shard_dir_path().to_string_lossy().into_owned(),
+        node_name: cfg.node_name.clone(),
+        network: cfg.network.clone(),
     }
 }
 
 pub async fn get_setup_hardware(State(config): State<AuthState>) -> impl IntoResponse {
     Json(setup_hardware(config).await)
+}
+
+pub async fn get_setup_geo_reference(State(state): State<SetupState>) -> Response {
+    match state.database.geo_reference() {
+        Ok(countries) => Json(SetupGeoResponse { countries }).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não foi possível ler a referência geográfica: {error:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 pub fn reference_models() -> Vec<SetupModel> {
@@ -313,6 +357,8 @@ pub struct SaveSetupRequest {
     pub shard_max_gb: f64,
     #[serde(default)]
     pub setup_model: Option<String>,
+    #[serde(default)]
+    pub node_name: String,
 }
 
 pub async fn install_setup_trust_anchor(
@@ -334,9 +380,10 @@ pub async fn install_setup_trust_anchor(
 }
 
 pub async fn save_setup(
-    State(config): State<AuthState>,
+    State(state): State<SetupState>,
     Json(req): Json<SaveSetupRequest>,
 ) -> impl IntoResponse {
+    let config = state.config;
     let profile = match req.profile.as_str() {
         "admin" => crate::profile::NodeProfile::Admin,
         "infer" => crate::profile::NodeProfile::Infer,
@@ -350,7 +397,30 @@ pub async fn save_setup(
         }
     };
 
-    let visibility = req.network.visibility;
+    let mut network = req.network.clone();
+    network.country_code = network.country_code.trim().to_ascii_uppercase();
+    network.country_name = network.country_name.trim().to_string();
+    network.city = network.city.trim().to_string();
+    if network.visibility == crate::config::NetworkVisibility::Public
+        && (network.country_code.is_empty() || network.city.is_empty())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "redes públicas precisam de país e cidade" })),
+        )
+            .into_response();
+    }
+    network.geo_label = if network.country_code.is_empty() || network.city.is_empty() {
+        String::new()
+    } else {
+        let identity = crate::identity::Identity::load_or_create(&crate::identity::key_path());
+        crate::config::geo_network_label(
+            &network.country_code,
+            &network.city,
+            &identity.node_id.0,
+        )
+    };
+    let visibility = network.visibility;
     let requires_connection_key = visibility != crate::config::NetworkVisibility::Public;
     if profile != crate::profile::NodeProfile::Admin
         && requires_connection_key
@@ -446,6 +516,8 @@ pub async fn save_setup(
 
     let mut cfg = config.write().await;
     cfg.profile = profile;
+    cfg.setup_pending = false;
+    cfg.node_name = (!req.node_name.trim().is_empty()).then(|| req.node_name.trim().to_string());
 
     if profile == crate::profile::NodeProfile::Admin {
         cfg.admin_exposure = req.admin_exposure;
@@ -477,12 +549,12 @@ pub async fn save_setup(
     }
     cfg.advertise_addr =
         (!req.advertise_addr.trim().is_empty()).then(|| req.advertise_addr.trim().to_string());
-    cfg.network = req.network;
-    cfg.tls_required = if profile == crate::profile::NodeProfile::Admin {
-        req.tls_required
-    } else {
-        visibility != crate::config::NetworkVisibility::Local
-    };
+    cfg.network = network;
+    // TLS is an optional network policy chosen by the administrator. Joining
+    // a public or private network must not silently turn it on for a node or
+    // infer profile, especially because libp2p already authenticates the
+    // transport.
+    cfg.tls_required = profile == crate::profile::NodeProfile::Admin && req.tls_required;
     cfg.resources.ram_reserve_pct = clamp_setup_percent(req.resources.ram_reserve_pct);
     cfg.resources.cpu_reserve_pct = clamp_setup_percent(req.resources.cpu_reserve_pct);
     if let Some(limit_c) = req.thermal_limit_c {
@@ -516,8 +588,14 @@ pub async fn save_setup(
     }
     cfg.setup_model = req.setup_model;
 
-    match cfg.save() {
+    let network_for_db = cfg.network.clone();
+    let save_result = cfg.save();
+    drop(cfg);
+    match save_result {
         Ok(()) => {
+            if let Err(error) = state.database.save_network_settings(&network_for_db) {
+                warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+            }
             // Trigger restart: spawn a new instance and exit.
             // The new instance will find the config file and start in full mode.
             tokio::spawn(async move {

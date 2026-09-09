@@ -47,6 +47,12 @@ remain local until the deploy preflight.
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.
 
+  The real first-access route is `/setup` and uses `routes/Setup.tsx` with the
+  loopback `/api/setup/*` backend. `routes/SetupWizard.tsx` and
+  `components/setup-wizard/*` are visual mock references only. The live wizard
+  also owns the country/city location step, hardware-first order, profile
+  branches, and the restart after save.
+
 ### App.tsx route table
 
 `App` first decides setup vs dashboard: `useAdminSurface()` probes `/api/ui/node` with `auth: false`; a 404 means the node runs only the `/api/setup/*` router and `Setup` renders instead, while a local-only refusal renders the server-equivalent bilingual no-navigation state (the probe never hits `/api/setup/key` because that route mints a connection key). Both Sidebar and Topbar sit in their own `ErrorBoundary` so a chrome crash cannot blank the menu.

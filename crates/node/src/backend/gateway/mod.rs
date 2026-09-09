@@ -8,7 +8,7 @@ pub(crate) use crate::{admin, session};
 pub(crate) use anyhow::Result;
 pub(crate) use axum::{
     body::Bytes,
-    extract::{FromRequestParts, Request, State},
+    extract::{FromRequestParts, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},

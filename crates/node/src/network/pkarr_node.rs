@@ -36,6 +36,8 @@ pub struct ResolvedPeer {
     pub end_layer: u32,
     pub total_layers: u32,
     pub is_relay: bool,
+    /// Canonical geo discovery label carried as pkarr record metadata.
+    pub geo_label: Option<String>,
 }
 
 // ── Private helper ────────────────────────────────────────────────────────────
@@ -60,6 +62,10 @@ struct TxtPayload {
     /// Relay capability (true if this node accepts relay connections)
     #[serde(skip_serializing_if = "Option::is_none")]
     r: Option<bool>,
+    /// Canonical geo discovery label. This is record metadata, never the pkarr key.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    g: Option<String>,
 }
 
 // ── PkarrNode impl ────────────────────────────────────────────────────────────
@@ -113,6 +119,7 @@ impl PkarrNode {
         end_layer: u32,
         total_layers: u32,
         is_relay: bool,
+        geo_label: Option<&str>,
     ) -> Result<()> {
         let payload = TxtPayload {
             a: addr.to_string(),
@@ -122,6 +129,7 @@ impl PkarrNode {
             e: end_layer,
             t: total_layers,
             r: if is_relay { Some(true) } else { None },
+            g: geo_label.filter(|label| !label.trim().is_empty()).map(str::to_owned),
         };
 
         let json = serde_json::to_string(&payload)?;
@@ -173,6 +181,7 @@ fn parse_signed_packet(sp: &SignedPacket) -> Option<ResolvedPeer> {
                         end_layer: payload.e,
                         total_layers: payload.t,
                         is_relay: payload.r.unwrap_or(false),
+                        geo_label: payload.g,
                     });
                 }
             }
@@ -232,6 +241,7 @@ mod tests {
             e: 15,
             t: 32,
             r: None,
+            g: None,
         };
 
         let json = serde_json::to_string(&payload).expect("serialize");
@@ -255,6 +265,7 @@ mod tests {
             e: 31,
             t: 32,
             r: None,
+            g: None,
         };
 
         let json = serde_json::to_string(&payload).expect("serialize");
@@ -331,6 +342,7 @@ mod tests {
             e: 15,
             t: 32,
             r: Some(true),
+            g: Some("com.br.curitiba.node-a".to_string()),
         };
         let json = serde_json::to_string(&with_relay).expect("serialize");
         assert!(
@@ -340,6 +352,7 @@ mod tests {
         );
         let decoded: TxtPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded.r, Some(true));
+        assert_eq!(decoded.g.as_deref(), Some("com.br.curitiba.node-a"));
 
         let no_relay = TxtPayload {
             a: "1.2.3.4:42777".to_string(),
@@ -349,6 +362,7 @@ mod tests {
             e: 15,
             t: 32,
             r: None,
+            g: None,
         };
         let json2 = serde_json::to_string(&no_relay).expect("serialize");
         assert!(

@@ -278,9 +278,13 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 
 `pkarr_node.rs`:
 - `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma
-  letra para caber no limite DNS de ~1000 B) e publica no DHT.
+  letra para caber no limite DNS de ~1000 B) e publica no DHT. O campo `g`
+  carrega o rótulo geo canônico da rede como metadado, sem alterar a chave
+  pkarr nem o contrato de `Announce`.
 - `resolve_peers`/`resolve_one` - resolve chaves `pk:` em `ResolvedPeer`
-  (multiaddr + faixa de camadas + `is_relay`); falha vira `None`, nunca erro.
+  (multiaddr + faixa de camadas + `is_relay` + rótulo geo); falha vira `None`,
+  nunca erro. O gateway mantém um índice local dos rótulos observados para
+  filtrar consultas públicas por prefixo/sufixo antes de sondar peers.
 - `detect_local_ip` - IP de saída por socket UDP conectado a 8.8.8.8:80 (nada é
   enviado).
 

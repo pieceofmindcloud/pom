@@ -601,15 +601,33 @@ async fn async_main(
     let database = Arc::new(db::PomDb::open(config::database_path())?);
     info!("Local database: {}", database.path().display());
 
-    // ── Setup flow: if no config exists, serve only the setup page ──────────
-    if !config::Config::exists() {
-        info!("No config found — starting in setup mode");
-        start_setup_mode(args.gateway_port).await?;
+    // ── Setup flow: a fresh node and a node that just left a network both
+    // serve only the setup page. The latter keeps pom.json as a local
+    // preference shell, so checking only for file existence would boot the old
+    // network again.
+    let existing_config = if config::Config::exists() {
+        Some(config::Config::load()?)
+    } else {
+        None
+    };
+    if existing_config
+        .as_ref()
+        .is_none_or(|config| config.setup_pending)
+    {
+        if existing_config.is_some() {
+            info!("Setup pending — starting in setup mode");
+        } else {
+            info!("No config found — starting in setup mode");
+        }
+        let gateway_port = existing_config
+            .as_ref()
+            .map_or(args.gateway_port, |config| config.gateway_port);
+        start_setup_mode(gateway_port, existing_config, database.clone()).await?;
         return Ok(());
     }
 
     // ── Load existing config ─────────────────────────────────────────────────
-    let mut app_config = config::Config::load()?;
+    let mut app_config = existing_config.expect("config já carregada antes do modo completo");
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
@@ -864,7 +882,7 @@ async fn async_main(
         gateway_port,
         profile: app_config.profile,
         node_display_name,
-        advertise_addr,
+        advertise_addr: advertise_addr.clone(),
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
@@ -913,20 +931,11 @@ async fn async_main(
 
     // ── Compute pkarr multiaddr to publish ───────────────────────────────────
     // Use the actual UDP port when the config requested an ephemeral bind.
-    let pkarr_multiaddr = {
-        let default_tcp_port = p2p_port.saturating_add(10000);
-        if !args.public_addr.is_empty() {
-            if let Some((host, port_str)) = args.public_addr.split_once(':') {
-                let udp_port = port_str.parse::<u16>().unwrap_or(p2p_port);
-                format!("/ip4/{}/tcp/{}", host, udp_port.saturating_add(10000))
-            } else {
-                format!("/ip4/{}/tcp/{}", args.public_addr, default_tcp_port)
-            }
-        } else {
-            let ip = pkarr_node::detect_local_ip().unwrap_or_else(|| "0.0.0.0".to_string());
-            format!("/ip4/{}/tcp/{}", ip, default_tcp_port)
-        }
-    };
+    let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
+        (!args.public_addr.is_empty()).then_some(args.public_addr.as_str()),
+        pkarr_node::detect_local_ip(),
+        p2p_port,
+    );
 
     info!("⏳ Scanning network for existing layer coverage...");
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1219,6 +1228,7 @@ async fn async_main(
         let inf_port = inference_port;
         let model_name_pk = profile.name.clone();
         let asgn_pk = assignment_shared.clone();
+        let geo_label_pk = app_config.network.geo_label.clone();
 
         // Initial publish (best-effort, does not block startup)
         {
@@ -1226,16 +1236,25 @@ async fn async_main(
             let addr2 = addr.clone();
             let mn2 = model_name_pk.clone();
             let asgn2 = asgn_pk.clone();
+            let geo2 = geo_label_pk.clone();
             tokio::spawn(async move {
                 let (start_l, end_l, total_l) = {
                     let a = asgn2.read().await;
-                    match *a {
-                        Some(ref asgn) => (asgn.start_layer, asgn.end_layer, asgn.total_layers),
-                        None => return,
-                    }
+                    a.as_ref()
+                        .map(|asgn| (asgn.start_layer, asgn.end_layer, asgn.total_layers))
+                        .unwrap_or((0, 0, 0))
                 }; // guard dropped here
                 if let Err(e) = pn2
-                    .publish(&addr2, inf_port, &mn2, start_l, end_l, total_l, serve_relay)
+                    .publish(
+                        &addr2,
+                        inf_port,
+                        &mn2,
+                        start_l,
+                        end_l,
+                        total_l,
+                        serve_relay,
+                        (!geo2.is_empty()).then_some(geo2.as_str()),
+                    )
                     .await
                 {
                     warn!("pkarr initial publish failed: {}", e);
@@ -1265,6 +1284,7 @@ async fn async_main(
                         end_l,
                         total_l,
                         serve_relay,
+                        (!geo_label_pk.is_empty()).then_some(geo_label_pk.as_str()),
                     )
                     .await
                 {
@@ -1383,15 +1403,20 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
         .and_then(|s| s.parse::<u16>().ok())
 }
 
-async fn start_setup_mode(gateway_port: u16) -> Result<()> {
+async fn start_setup_mode(
+    gateway_port: u16,
+    preserved: Option<config::Config>,
+    database: Arc<db::PomDb>,
+) -> Result<()> {
     use crate::config::Config;
     use crate::webui;
     use axum::{routing::get, Router};
     use std::net::SocketAddr;
 
     config::validate_gateway_port(gateway_port)?;
-    let config = Arc::new(RwLock::new(Config {
+    let config = Arc::new(RwLock::new(preserved.unwrap_or_else(|| Config {
         profile: crate::profile::NodeProfile::Admin,
+        setup_pending: true,
         tls_required: false,
         cluster_logs_enabled: false,
         network_chat_enabled: false,
@@ -1425,7 +1450,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         slot_persist_prefix_cache: false,
         slot_auto_max_bytes: None,
         slot_auto_ttl_secs: None,
-    }));
+    })));
 
     // The same interface the configured node serves, so setup is not a second
     // look-and-feel to maintain. The app notices it is in setup mode because
@@ -1433,6 +1458,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     let app = Router::new()
         .route("/api/setup/hardware", get(webui::get_setup_hardware))
         .route("/api/setup/models", get(webui::get_setup_models))
+        .route("/api/setup/geo-reference", get(webui::get_setup_geo_reference))
         .route(
             "/api/setup/admin-anchor/preview",
             axum::routing::post(webui::preview_setup_anchor),
@@ -1451,7 +1477,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         )
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
         .merge(crate::webapp::routes())
-        .with_state(config)
+        .with_state(webui::SetupState { config, database })
         .layer(tower_http::compression::CompressionLayer::new());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
@@ -1479,6 +1505,49 @@ fn resolve_advertise_addr(
     } else {
         config_val.map(|s| s.to_string())
     }
+}
+
+/// Convert the operator-facing advertised endpoint into the libp2p address
+/// stored in the pkarr record. IPv6 endpoints must use `/ip6` and preserve
+/// their configured port, including the bracketed `[addr]:port` form used by
+/// the setup wizard.
+fn pkarr_multiaddr_for_advertise(
+    configured: Option<&str>,
+    fallback_ip: Option<String>,
+    default_udp_port: u16,
+) -> String {
+    let raw = configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or(fallback_ip)
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let (host, udp_port) = if let Some(rest) = raw.strip_prefix('[') {
+        rest.split_once(']')
+            .map(|(host, suffix)| {
+                let port = suffix
+                    .strip_prefix(':')
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(default_udp_port);
+                (host.to_string(), port)
+            })
+            .unwrap_or((rest.trim_end_matches(']').to_string(), default_udp_port))
+    } else if raw.parse::<std::net::Ipv6Addr>().is_ok() {
+        (raw, default_udp_port)
+    } else if let Some((host, port)) = raw.rsplit_once(':') {
+        (host.to_string(), port.parse().unwrap_or(default_udp_port))
+    } else {
+        (raw, default_udp_port)
+    };
+    let protocol = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        "ip6"
+    } else {
+        "ip4"
+    };
+    format!(
+        "/{protocol}/{host}/tcp/{}",
+        udp_port.saturating_add(10000)
+    )
 }
 
 /// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,
@@ -1768,7 +1837,7 @@ async fn start_gateway_only(
         gateway_port,
         profile: app_config.profile,
         node_display_name,
-        advertise_addr,
+        advertise_addr: advertise_addr.clone(),
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
@@ -1812,6 +1881,35 @@ async fn start_gateway_only(
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
     let network_chat = stack.network_chat;
+
+    // A gateway-only public admin still needs a pkarr record so the public
+    // network directory can find it before a model is deployed.
+    let pkarr_node = stack.pkarr_node;
+    let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
+        advertise_addr.as_deref(),
+        pkarr_node::detect_local_ip(),
+        app_config.p2p_port,
+    );
+    if let Some(pn) = pkarr_node {
+        let geo_label = app_config.network.geo_label.clone();
+        tokio::spawn(async move {
+            if let Err(error) = pn
+                .publish(
+                    &pkarr_multiaddr,
+                    None,
+                    "",
+                    0,
+                    0,
+                    0,
+                    false,
+                    (!geo_label.is_empty()).then_some(geo_label.as_str()),
+                )
+                .await
+            {
+                warn!("pkarr gateway-only publish failed: {error}");
+            }
+        });
+    }
 
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
@@ -2048,5 +2146,21 @@ mod main_tests {
             Some("3.3.3.3:3".to_string())
         );
         assert_eq!(resolve_advertise_addr("", "", None), None);
+    }
+
+    #[test]
+    fn pkarr_advertise_addr_preserves_ipv6_and_port() {
+        assert_eq!(
+            pkarr_multiaddr_for_advertise(Some("[2001:db8::1]:42777"), None, 42777),
+            "/ip6/2001:db8::1/tcp/52777"
+        );
+        assert_eq!(
+            pkarr_multiaddr_for_advertise(Some("192.0.2.1:42777"), None, 42777),
+            "/ip4/192.0.2.1/tcp/52777"
+        );
+        assert_eq!(
+            pkarr_multiaddr_for_advertise(Some("2001:db8::1"), None, 42777),
+            "/ip6/2001:db8::1/tcp/52777"
+        );
     }
 }

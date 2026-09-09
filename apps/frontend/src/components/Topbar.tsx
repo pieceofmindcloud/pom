@@ -99,6 +99,9 @@ function NodeActions() {
   }, [open]);
 
   const loaded = node.data?.config != null || isServing(node.data?.status.state);
+  const leaveLabel = t("topbar.leaveNetworkNamed", {
+    name: node.data?.network_name?.trim() || t("sidebar.thisNetwork"),
+  });
 
   async function run(action: Exclude<PendingAction, null>) {
     setBusy(true);
@@ -107,11 +110,12 @@ function NodeActions() {
         await api.post("/api/ui/unload");
         toast.success(t("topbar.unloaded"), t("topbar.unloadedDetail"));
       } else {
-        await api.post("/api/ui/leave");
+        await api.post("/api/ui/network/leave");
         toast.success(
           t("topbar.left"),
           t("topbar.leftDetail"),
         );
+        window.setTimeout(() => window.location.assign("/setup"), 1500);
       }
       invalidate();
     } catch (e) {
@@ -182,10 +186,10 @@ function NodeActions() {
               <LogOut className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
               <span className="min-w-0">
                 <span className="block text-[0.84rem] font-medium text-fg">
-                  {t("topbar.leaveNetwork")}
+                  {leaveLabel}
                 </span>
                 <span className="block text-xs leading-relaxed text-muted">
-                  {t("topbar.leaveDetail")}
+                  {t("sidebar.leaveNetworkDescription")}
                 </span>
               </span>
             </button>
@@ -212,8 +216,8 @@ function NodeActions() {
       <Confirm
         open={pending === "leave"}
         title={t("topbar.leaveTitle")}
-        description={t("topbar.leaveDescription")}
-        confirmLabel={t("topbar.leaveNetwork")}
+        description={t("sidebar.leaveNetworkDescription")}
+        confirmLabel={leaveLabel}
         tone="danger"
         busy={busy}
         onConfirm={() => run("leave")}

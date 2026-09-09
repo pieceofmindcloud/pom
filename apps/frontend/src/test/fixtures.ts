@@ -37,6 +37,7 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     short_id: "a",
     hostname: "salem",
     profile: "node",
+    network_name: "",
     connection_key: "",
     authority_level: null,
     authority_fingerprint: null,

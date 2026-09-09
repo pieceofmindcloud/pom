@@ -12,6 +12,7 @@ export type DiscoveryMode = "automatic" | "mdns" | "manual";
 export type WizardStage =
   | "setup-profile"
   | "setup-hardware"
+  | "setup-location"
   | "setup-resources"
   | "setup-model"
   | "setup-storage"

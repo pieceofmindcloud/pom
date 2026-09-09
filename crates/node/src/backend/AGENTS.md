@@ -854,14 +854,20 @@ faz o download autenticado do blob persistido.
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
+  `/api/setup/geo-reference`,
   `/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
   `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
-  installs the trust document and `pom.json` before respawning. The setup
+  installs the trust document, persists network details in both `pom.json` and
+  `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
+  a network while preserving local hardware preferences. The setup
   anchor preview returns a private connection key only for local/private
   visibility; the admin access token is persisted only for network exposure.
-  `GET
-  /api/public/network(s)` exposes only public metadata and gathers live public
-  records through the existing pkarr-backed discovery table.
+  `GET /api/public/network(s)` exposes public network metadata, including the
+  signed trust document and a P2P bootstrap address for the no-secret join
+  flow, and gathers live records through the existing pkarr-backed discovery
+  table. Public records carry the canonical country/city label as pkarr TXT
+  metadata; the local geo cache supports `geo_prefix` and `geo_suffix`
+  candidate filtering.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,

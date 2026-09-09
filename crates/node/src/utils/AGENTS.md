@@ -23,7 +23,10 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `profile` é o perfil oficial do nó; um `pom.json` antigo sem ele exige novo
   setup, sem migração.
   `NetworkSettings` guarda nome, organização, descrição, regras, canais,
-  visibilidade (`local`, `private`, `public`) e política de acesso.
+  visibilidade (`local`, `private`, `public`), política de acesso e localização
+  geo (país, cidade, coordenadas e label canônico). `setup_pending` permite
+  preservar preferências locais ao sair da rede e voltar ao wizard mesmo com
+  `pom.json` presente.
   `ResourcePolicy` guarda os percentuais de RAM e CPU reservados ao sistema.
   O primeiro acesso usa `~/.pom/models` e `~/.pom/models_sliced` como padrões
   e grava `shard_max_gb` para limitar as fatias compartilhadas.

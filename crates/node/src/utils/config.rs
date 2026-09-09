@@ -97,6 +97,19 @@ pub struct NetworkSettings {
     pub rules: String,
     #[serde(default)]
     pub channels: String,
+    /// Reference-country code selected in the first-access location step.
+    #[serde(default)]
+    pub country_code: String,
+    /// Human-readable country name from the local reference table.
+    #[serde(default)]
+    pub country_name: String,
+    /// Reference-table city or an operator-entered manual city.
+    #[serde(default)]
+    pub city: String,
+    /// Public discovery index label. This is metadata in the pkarr record, not
+    /// the pkarr public key itself.
+    #[serde(default)]
+    pub geo_label: String,
     #[serde(default)]
     pub visibility: NetworkVisibility,
     #[serde(default)]
@@ -155,6 +168,11 @@ pub struct Config {
     /// and is intentionally required in the new schema. Administrative
     /// capability comes only from the separate signed grant chain.
     pub profile: crate::profile::NodeProfile,
+    /// This file is a local preference shell waiting for first access. It is
+    /// set when leaving a network so setup can preserve machine preferences
+    /// without booting the old network.
+    #[serde(default)]
+    pub setup_pending: bool,
     #[serde(default)]
     pub connection_key: String,
     #[serde(default = "default_gateway_port")]
@@ -517,6 +535,11 @@ impl Config {
             // when another setting updates pom.json, so the legacy source stays
             // a usable safety copy until the operator explicitly migrates it.
             for field in ["api_keys", "thermal", "huggingface_token"] {
+                // Leaving a network revokes every network API key. Never
+                // resurrect it while writing the setup-pending shell.
+                if self.setup_pending && field == "api_keys" {
+                    continue;
+                }
                 if let Some(old_value) = old.get(field) {
                     value[field] = old_value.clone();
                 }
@@ -543,6 +566,25 @@ impl Config {
             .with_context(|| format!("Failed to write config at {:?}", path))?;
         file.flush()
             .with_context(|| format!("Failed to flush config at {:?}", path))
+    }
+
+    /// Turn a configured node into the local shell used by first access after
+    /// it leaves a network. Keep only preferences that belong to this machine;
+    /// every network identity or credential must be supplied again.
+    pub fn prepare_for_setup(&mut self) {
+        self.setup_pending = true;
+        self.profile = crate::profile::NodeProfile::Node;
+        self.connection_key.clear();
+        self.bootstrap_nodes.clear();
+        self.advertise_addr = None;
+        self.network = NetworkSettings::default();
+        self.api_keys.clear();
+        self.blocked_nodes.clear();
+        self.admin_exposure = AdminExposure::Localhost;
+        self.admin_access_token = None;
+        self.tls_required = false;
+        self.cluster_logs_enabled = false;
+        self.setup_model = None;
     }
 
     /// Inference port this node should use, falling back to the default.
@@ -650,7 +692,39 @@ impl Config {
     }
 }
 
-/// `<project_root>/models` — where every slice has always landed.
+/// Stable geo-hierarchical metadata used to narrow public-network discovery.
+/// It deliberately never becomes the pkarr key: the key remains the signed
+/// node identity, while this label is an indexable field in its record.
+pub fn geo_network_label(country_code: &str, city: &str, node_id: &str) -> String {
+    let country = country_code.trim().to_ascii_lowercase();
+    let city = geo_slug(city);
+    let node = geo_slug(node_id);
+    if country.is_empty() || city.is_empty() || node.is_empty() {
+        return String::new();
+    }
+    format!("com.{country}.{city}.{node}")
+}
+
+fn geo_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in value.trim().chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            if separator {
+                slug.push('-');
+            }
+            slug.push(character);
+            separator = false;
+        } else if (character.is_whitespace() || character == '-' || character == '_')
+            && !slug.is_empty()
+        {
+            separator = true;
+        }
+    }
+    slug
+}
+
+/// `<project_root>/models` - where every slice has always landed.
 pub fn default_shard_dir() -> PathBuf {
     crate::catalog::home_dir()
         .unwrap_or_else(project_root)
@@ -767,6 +841,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
+            setup_pending: false,
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -837,6 +912,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Node,
+            setup_pending: false,
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -949,6 +1025,7 @@ mod tests {
         ));
         let mut cfg = Config {
             profile: crate::profile::NodeProfile::Node,
+            setup_pending: false,
             connection_key: String::new(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -1065,6 +1142,7 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
+            setup_pending: false,
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
@@ -1111,5 +1189,70 @@ mod tests {
             slot_auto_ttl_secs: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
+    }
+
+    #[test]
+    fn sair_da_rede_preserva_preferencias_locais_e_limpa_credenciais() {
+        let mut cfg: Config = serde_json::from_value(serde_json::json!({
+            "profile": "admin",
+            "connection_key": "segredo-da-rede",
+            "bootstrap_nodes": ["[2001:db8::2]:42777"],
+            "advertise_addr": "[2001:db8::1]:42777",
+            "network": {
+                "public_name": "Rede antiga",
+                "organization": "Equipe antiga",
+                "visibility": "private"
+            },
+            "api_keys": [{
+                "id": "key-id",
+                "key": "sk-old",
+                "label": "Aplicativo",
+                "node_id": "node",
+                "origin_node_id": "node",
+                "active": true,
+                "created_at": "2026-09-09T00:00:00Z"
+            }],
+            "admin_exposure": "network",
+            "admin_access_token": "admin-token",
+            "tls_required": true,
+            "model_dirs": ["/Volumes/models"],
+            "shard_dir": "/Volumes/slices",
+            "shard_max_gb": 120,
+            "resources": {"ram_reserve_pct": 31, "cpu_reserve_pct": 42},
+            "thermal": {"limit_c": 82, "hysteresis_c": 5, "cooldown_secs": 30},
+            "node_name": "Mesa do Jair"
+        }))
+        .unwrap();
+
+        cfg.prepare_for_setup();
+
+        assert!(cfg.setup_pending);
+        assert!(cfg.connection_key.is_empty());
+        assert!(cfg.bootstrap_nodes.is_empty());
+        assert!(cfg.advertise_addr.is_none());
+        assert_eq!(cfg.network, NetworkSettings::default());
+        assert!(cfg.api_keys.is_empty());
+        assert!(cfg.admin_access_token.is_none());
+        assert_eq!(cfg.admin_exposure, AdminExposure::Localhost);
+        assert!(!cfg.tls_required);
+        assert_eq!(cfg.model_dirs, Some(vec!["/Volumes/models".into()]));
+        assert_eq!(cfg.shard_dir.as_deref(), Some("/Volumes/slices"));
+        assert_eq!(cfg.shard_max_gb, 120.0);
+        assert_eq!(cfg.resources.ram_reserve_pct, 31.0);
+        assert_eq!(cfg.resources.cpu_reserve_pct, 42.0);
+        assert_eq!(cfg.thermal.limit_c, 82.0);
+        assert_eq!(cfg.node_name.as_deref(), Some("Mesa do Jair"));
+    }
+
+    #[test]
+    fn rotulo_geo_separa_pais_cidade_e_identidade_do_no() {
+        assert_eq!(
+            geo_network_label("BR", "Curitiba", "abc123"),
+            "com.br.curitiba.abc123"
+        );
+        assert_eq!(
+            geo_network_label("AU", "Cidade Manual", "node-id"),
+            "com.au.cidade-manual.node-id"
+        );
     }
 }

@@ -1226,13 +1226,20 @@ publicNetworks.emptyDetail,Keep POM open on a network or try again in a moment. 
 publicNetworks.emptyTitle,No public networks found,Não encontramos redes públicas
 publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
 publicNetworks.fingerprint,Fingerprint,Impressão digital
+publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
 publicNetworks.join,Open joining,Entrar na rede
+publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
+publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
+publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
+publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
 publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
 publicNetworks.pkarr,pkarr,pkarr
 publicNetworks.refresh,Refresh,Atualizar
-publicNetworks.securityNote,Joining still requires the network trust document and its fingerprint from the network owner.,Entrar ainda exige o documento de confiança e a impressão digital enviados pelo responsável da rede.
+publicNetworks.securityNote,The signed trust document is public metadata; the setup still asks you to confirm its calculated fingerprint.,O documento de confiança assinado é um dado público; o setup ainda pede que você confirme a impressão digital calculada.
 publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
 publicNetworks.title,Public networks,Redes públicas
+publicNetworks.unknownCity,Unknown city,Cidade desconhecida
+publicNetworks.unknownCountry,Unknown country,País desconhecido
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada
@@ -1394,10 +1401,16 @@ setupWizard.checkGpu,GPU detected,GPU detectada
 setupWizard.checkIpv6,Public IPv6 enabled,IPv6 público habilitado
 setupWizard.checkP2p,P2P discovery working,Descoberta P2P funcionando
 setupWizard.checkVulkan,Vulkan working,Vulkan funcionando
+setupWizard.chooseCity,Choose a city,Escolha uma cidade
+setupWizard.chooseCountry,Choose a country,Escolha um país
+setupWizard.city,City,Cidade
+setupWizard.cityHint,Choose a city or enter another one when it is missing.,Escolha uma cidade ou digite outra se ela não estiver na lista.
 setupWizard.connectionSecret,Connection secret,Segredo de conexão
 setupWizard.connectionSecretHint,Only needed for private or local networks.,Necessário apenas em redes privadas ou locais.
 setupWizard.copied,Copied,Copiado
 setupWizard.copy,Copy,Copiar
+setupWizard.country,Country,País
+setupWizard.countryHint,Use the reference list so public networks can be grouped consistently.,Use a lista de referência para agrupar redes públicas de forma consistente.
 setupWizard.cpu,CPU,CPU
 setupWizard.cpuReserve,CPU available for the system,CPU disponível para o sistema
 setupWizard.cpuReserveDetail,More means POM yields more often to other work.,Mais significa que o POM cede mais vezes a outras tarefas.
@@ -1439,10 +1452,17 @@ setupWizard.loadFailed,The setup information could not be loaded,Não foi possí
 setupWizard.localOnly,Only this local network,Apenas esta rede local
 setupWizard.locationAsking,Asking for permission to use this machine's approximate location...,Pedindo permissão para usar a localização aproximada desta máquina...
 setupWizard.locationDenied,Location permission was not granted. The network can still be published.,A permissão de localização não foi concedida. A rede ainda poderá ser publicada.
+setupWizard.locationDetail,Choose a country and city for quick filtering. Your browser location adds the fine-grained distance estimate.,Escolha um país e uma cidade para o filtro rápido. A localização do navegador acrescenta a distância precisa.
 setupWizard.locationIdle,Location will help order nearby networks.,A localização ajudará a ordenar as redes próximas.
-setupWizard.locationPrompt,"For a public network, POM can save this machine's approximate location so nearby networks are easier to find.","Para uma rede pública, o POM pode salvar a localização aproximada desta máquina para facilitar encontrar redes próximas."
+setupWizard.locationPanelDetail,Country and city are useful even when browser location is unavailable.,País e cidade continuam úteis mesmo quando a localização do navegador não está disponível.
+setupWizard.locationPanelTitle,Where is this node?,Onde este nó está?
+setupWizard.locationPrivacy,Only the approximate coordinates you approve are saved with this node.,Somente as coordenadas aproximadas que você aprovar serão salvas neste nó.
+setupWizard.locationPrompt,"POM can save this machine's approximate location so nearby networks and peers are easier to find.","O POM pode salvar a localização aproximada desta máquina para facilitar encontrar redes e peers próximos."
 setupWizard.locationSaved,Location saved for nearby network ordering.,Localização salva para ordenar redes próximas.
+setupWizard.locationTitle,Help POM find nearby peers,Ajude o POM a encontrar peers próximos
 setupWizard.locationUnavailable,Location is unavailable. The network can still be published.,A localização não está disponível. A rede ainda poderá ser publicada.
+setupWizard.manualCity,City name,Nome da cidade
+setupWizard.manualCityHint,This name will be used in the geographic discovery label.,Este nome será usado no rótulo geográfico de descoberta.
 setupWizard.memory,Memory,Memória
 setupWizard.modelDetail,Local models are ready now. Reference models from Hugging Face are suggestions for later download.,Modelos locais já estão prontos. Modelos de referência do Hugging Face são sugestões para baixar depois.
 setupWizard.modelLabel,Model,Modelo
@@ -1463,13 +1483,17 @@ setupWizard.noModelSelected,No model selected,Nenhum modelo selecionado
 setupWizard.noModels,No model was found yet. You can choose one after setup.,Nenhum modelo foi encontrado ainda. Você poderá escolher um depois da configuração.
 setupWizard.node,Network node,Nó da rede
 setupWizard.nodeDetail,Share this machine's resources with a network you already trust.,Compartilhe os recursos desta máquina com uma rede em que você confia.
+setupWizard.nodeName,Name this node,Nomeie este nó
+setupWizard.nodeNameHint,This is how the machine appears to people in the network.,É assim que esta máquina aparecerá para as pessoas na rede.
 setupWizard.notAvailable,Not available,Não disponível
 setupWizard.ok,OK,OK
 setupWizard.organization,Organization,Organização
+setupWizard.otherCity,Another city,Outra cidade
 setupWizard.pasteTrust,Confirm the network before joining,Confirme a rede antes de entrar
 setupWizard.pasteTrustDetail,Get the document and a separate fingerprint message from the administrator.,Receba o documento e uma mensagem separada com a impressão digital do administrador.
 setupWizard.privateInternet,Private over the internet,Privada pela internet
 setupWizard.profileLabel,Role,Função
+setupWizard.publicGeoRequired,Public networks need a country and city so nearby people can filter them quickly.,Redes públicas precisam de país e cidade para que pessoas próximas possam filtrá-las rapidamente.
 setupWizard.publicInternet,Public over the internet,Pública pela internet
 setupWizard.publicKey,Generated public key,Chave pública gerada
 setupWizard.publicName,Public network name,Nome público da rede
@@ -1498,6 +1522,7 @@ setupWizard.shardsFolderHint,Default: ~/.pom/models_sliced, Padrão: ~/.pom/mode
 setupWizard.stepHardware,Your machine,Sua máquina
 setupWizard.stepHealth,Checks,Verificações
 setupWizard.stepInvite,Invite,Convite
+setupWizard.stepLocation,Location,Localização
 setupWizard.stepModel,Model,Modelo
 setupWizard.stepNetwork,Network,Rede
 setupWizard.stepProfile,Role,Função
@@ -1556,6 +1581,11 @@ sidebar.build,build,build
 sidebar.buildTitle,Commit this node''s binary was built from. Compare it across cards to see whether every node runs the same version.,Commit de que o binário deste nó foi compilado. Compare entre os cards para ver se todos os nós estão na mesma versão.
 sidebar.collapse,Minimize menu,Minimizar menu
 sidebar.expand,Expand menu,Expandir menu
+sidebar.leaveNetworkConfirm,Leave network,Sair da rede
+sidebar.leaveNetworkDescription,"This removes the trust document and private network secret from this node, keeps local preferences, and restarts the first-access setup.","Isso remove o documento de confiança e o segredo privado da rede deste nó, preserva as preferências locais e reinicia a configuração inicial."
+sidebar.leaveNetworkFailed,The node could not leave the network,Não foi possível sair da rede
+sidebar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
+sidebar.thisNetwork,this network,esta rede
 slice.actualSize,Actual size,Peso real
 slice.add,Add another shard,Mais uma fatia
 slice.complete,full model covered,modelo inteiro coberto
@@ -1736,6 +1766,7 @@ topbar.leaveDescription,"The node stops announcing, forgets known peers, and unl
 topbar.leaveDetail,"Unloads the model, stops announcing, and forgets peers.","Descarrega o modelo, para de anunciar e esquece os peers."
 topbar.leaveFailed,The node remains on the network,O nó continua na rede
 topbar.leaveNetwork,Leave network,Sair da rede
+topbar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
 topbar.leaveTitle,Remove this node from the network?,Tirar este nó da rede?
 topbar.left,Node left the network,Nó fora da rede
 topbar.leftDetail,It stopped announcing and forgot its peers. Rejoin from the Network screen.,Parou de anunciar e esqueceu os peers. Reconecte pela aba Rede.

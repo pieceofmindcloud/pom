@@ -218,6 +218,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
+        prefix: "/api/ui/network/leave",
+        method: Some(Method::POST),
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
         prefix: "/api/ui/plan",
         method: None,
         scope: RouteScope::NodeAdmin,

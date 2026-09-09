@@ -288,6 +288,65 @@ pub(super) async fn leave_network(
     Json(json!({ "detached": true })).into_response()
 }
 
+/// Leave this network permanently: revoke the local trust anchor, clear the
+/// network-owned part of `pom.json`, then restart into the real setup router.
+/// Local hardware preferences stay in the file so returning to the wizard does
+/// not make the operator repeat machine-specific choices.
+pub(super) async fn leave_network_and_reset(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    state.runtime.stop().await;
+    state.network.detach().await;
+
+    let trust_path = crate::config::admin_trust_path();
+    if let Err(error) = std::fs::remove_file(&trust_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("não foi possível apagar a raiz de confiança: {error}") })),
+            )
+                .into_response();
+        }
+    }
+
+    let mut config = match crate::config::Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("não foi possível ler a configuração: {error:#}") })),
+            )
+                .into_response()
+        }
+    };
+    config.prepare_for_setup();
+    if let Err(error) = config.save() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não foi possível preparar o próximo setup: {error:#}") })),
+        )
+            .into_response();
+    }
+    if let Err(error) = state.database.save_network_settings(&config.network) {
+        warn!("não foi possível limpar os detalhes da rede no banco: {error:#}");
+    }
+    if let Err(error) = state.database.clear_api_keys() {
+        warn!("não foi possível limpar as chaves de API locais: {error:#}");
+    }
+
+    info!(
+        trust = %trust_path.display(),
+        "nó saiu da rede; confiança revogada e setup pendente"
+    );
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        let error = crate::respawn::respawn_self();
+        tracing::error!("respawn após saída da rede falhou, o nó segue no ar: {error}");
+    });
+    Json(json!({ "left": true, "setup_pending": true, "restart": true })).into_response()
+}
+
 /// Autoridade administrativa efetiva deste nó. `profile: admin` sozinho não
 /// concede capacidade: é a concessão assinada que decide (ver `admin_trust`).
 async fn has_admin_authority(state: &GatewayState) -> bool {

@@ -545,7 +545,7 @@ O caminho é `network/tls_policy.rs`:
 
 1. Um Announce **do principal** discorda da política local.
 2. Isso dispara `GET /api/cluster/tls` no principal, autenticado com a chave de
-   conexão.
+   conexão e `x-pom-internal-node: 1`.
 3. Só a resposta dessa busca é gravada em `pom.json`.
 
 Um intruso pode disparar a busca à vontade; não pode responder por ela. O
@@ -574,8 +574,9 @@ informativo.
 
 `cluster_logs_enabled` no `Announce` é somente gatilho. Quando diverge da
 política local, o nó faz uma busca autenticada em `GET /api/cluster/logs` no
-principal e só grava o valor retornado; falha na busca preserva o valor local.
-O interruptor administrativo aplica a mudança sem reinício.
+principal com `connection_key` e `x-pom-internal-node: 1`, e só grava o valor
+retornado; falha na busca preserva o valor local. O interruptor administrativo
+aplica a mudança sem reinício.
 
 A prova local de contrapressão roda com
 `cargo test -p node --bin pom cluster_logs --no-default-features -- --nocapture`.
@@ -619,7 +620,8 @@ real, cuja `authority_pubkey` vem do `AdminTrust`, e atualiza a cópia atômica
 anunciada. Quando a interface está num admin secundário, a mesma rota
 encaminha a mutação ao principal com a chave de conexão. Um nó que observa
 divergência consulta `GET /api/cluster/network-chat` com a chave de conexão e
-só adota uma resposta autenticada; falha preserva o valor local. O perfil
+`x-pom-internal-node: 1`; a rota é comum/interna e não exige token humano. Só
+adota uma resposta autenticada; falha preserva o valor local. O perfil
 anunciado não substitui a identidade do principal. Desligado, o canal não
 aceita, persiste ou retransmite ações.
 

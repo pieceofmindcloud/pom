@@ -277,7 +277,9 @@ haver chave.
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (com `inference_port`), `default_model` e
   `runtime_capacity` (`n_ctx`, `max_new_tokens`) quando o runtime local já
-  respondeu `model_loaded`. Na porta de inferência, a resposta também publica
+  respondeu `model_loaded`. A sonda opcional de Ollama tem teto de 500 ms, então
+  um Ollama ausente ou o enriquecimento frio do catálogo não bloqueia a resposta
+  do gateway. Na porta de inferência, a resposta também publica
   `n_ubatch_effective`, `mtp_ready` e `mtp_unavailable_reason`; este último
   explica por que o contexto MTP pedido não foi anexado. `load_params` traz os
   parâmetros de llama.cpp com que o contexto subiu - `n_ctx`, `n_ctx_seq`,
@@ -314,8 +316,9 @@ haver chave.
   cabeça remota o instala internamente no próximo `step`; o gateway não faz
   uma chamada de reinjeção. Peers antigos sem esses campos continuam válidos.
 - **`GET /api/cluster/tls`** - `{ tls_required }`. É o que a catraca dos outros
-  nós consulta no principal. **Exige a chave de conexão**, e é isso que impede
-  um intruso de responder pelo principal e rebaixar o cluster para texto claro.
+  nós consulta no principal. Exige `InternalNodeAuth`, isto é, a chave de
+  conexão e `x-pom-internal-node: 1`; isso impede um intruso de responder pelo
+  principal e rebaixar o cluster para texto claro.
   Ver `rede-p2p.md`, seção 5.
 
 ### OpenAI (`/v1/*`)
@@ -704,10 +707,15 @@ ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
 implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 `rede-p2p.md`, seção 5.
 
-**`GET /api/cluster/logs`** - exige `ConnectionAuth` e devolve
-`{ logs_enabled }`. É a fonte autenticada que os nós consultam quando o campo
-`cluster_logs_enabled` do anúncio dispara a catraca; não aceita o anúncio como
-política.
+**`GET /api/cluster/logs`** - exige `InternalNodeAuth`, isto é,
+`Authorization: Bearer <connection_key>` mais `x-pom-internal-node: 1`, e
+devolve `{ logs_enabled }`. É a fonte autenticada que os nós consultam quando
+o campo `cluster_logs_enabled` do anúncio dispara a catraca; não aceita o
+anúncio como política.
+
+**`GET /api/cluster/network-chat`** - usa a mesma `InternalNodeAuth` e devolve
+`{ network_chat_enabled }`. A classificação do gateway é comum/interna, para
+que uma chamada de peer não passe pela catraca de token humano.
 
 **`POST /api/ui/network/logs`** - corpo `{ logs_enabled: bool }`, liga ou
 desliga a captura e o envio do log de processo do cluster em tempo real. Só o

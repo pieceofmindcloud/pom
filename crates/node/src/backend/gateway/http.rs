@@ -79,7 +79,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
 }
 
 pub(super) async fn cluster_logs_policy(
-    _auth: crate::auth::ConnectionAuth,
+    _auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({
@@ -88,7 +88,7 @@ pub(super) async fn cluster_logs_policy(
 }
 
 pub(super) async fn network_chat_policy(
-    _auth: crate::auth::ConnectionAuth,
+    _auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({
@@ -120,7 +120,7 @@ pub(crate) async fn ensure_gateway_port_available(port: u16, current: Option<u16
 /// Autenticada pela chave de conexão: é isso que impede um intruso de responder
 /// pelo principal e rebaixar o cluster para texto claro. Ver `tls_policy`.
 pub(super) async fn cluster_tls(
-    _auth: crate::auth::ConnectionAuth,
+    _auth: crate::auth::InternalNodeAuth,
     State(state): State<GatewayState>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({

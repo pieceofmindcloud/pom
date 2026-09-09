@@ -450,6 +450,9 @@ profile policy remains the effective authorization boundary.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
   request e serve TLS ou texto claro na mesma porta. `TlsServer` (certificado, modo estrito, duração do
   último handshake). Ver `docs/subsystems/rede-p2p.md`, seção 5.
+- `models::OllamaClient::is_available` é apenas uma sonda opcional do
+  `/health`: tem limite próprio de 500 ms e não herda os 300 s da geração, para
+  que um Ollama frio ou ausente nunca esconda o readiness do gateway.
 - `session.rs` - `POST /handshake` usa um desafio Ed25519 em duas etapas. Uma
   requisição sem `nonce` e `signature` é recusada com HTTP 403
   `challenge_required` e recebe um nonce hexadecimal aleatório de 32 bytes. O
@@ -470,6 +473,9 @@ interface está num admin secundário, a rota encaminha a mutação autenticada
 para esse principal. A rota de política entre nós é
 `GET /api/cluster/network-chat`, e o probe só trata como principal a
 `authority_pubkey` confirmada pelo `AdminTrust`, não o perfil anunciado.
+Os GETs de política (`/api/cluster/tls`, `/api/cluster/logs` e
+`/api/cluster/network-chat`) exigem `InternalNodeAuth`: `connection_key` mais
+`x-pom-internal-node: 1`; não são superfície de token humano.
 O backend não retransmite pela HTTP UI: a ação entra na fila limitada do
 `NetworkChat` e o swarm valida e encaminha por `discovery.rs`. O snapshot não
 repete bytes de arquivo em cada polling; `GET /api/ui/network-chat/file/:message_id`

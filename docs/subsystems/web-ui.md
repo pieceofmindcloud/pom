@@ -458,6 +458,11 @@ local do navegador e não vale como credencial. As rotas administrativas usam a
 chave de conexão; `/api/generate` e `/v1` usam exclusivamente a API key
 dedicada de inferência, seja qual for o perfil na tela.
 
+O Chat da rede gera ids de mensagem e digitação com `src/lib/id.ts`. Ele usa
+`crypto.getRandomValues` quando `crypto.randomUUID` não existe, portanto o
+composer continua funcionando na implantação HTTP da LAN, sem depender de
+secure context.
+
 ## Janelas modais: portal e pilha de Esc
 
 `Modal`/`Confirm` (`src/components/Confirm.tsx`) vão por `createPortal` para

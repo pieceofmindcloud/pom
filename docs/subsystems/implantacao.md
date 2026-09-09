@@ -69,6 +69,9 @@ Passo operacional exato antes de testar uma implantação longa:
 2. Aplique a implantação e aguarde o `/health` de **cada peer** confirmar
    `model_loaded` e `runtime_capacity`. Um peer que ainda está reiniciando não
    entra na capacidade publicada.
+   O `/health` do gateway continua respondendo durante o enriquecimento frio do
+   catálogo; a sonda opcional do Ollama tem prazo curto e não transforma esse
+   trabalho em bloqueio do readiness HTTP.
 3. Consulte `/v1/models` autenticado e confirme
    `context_length: 100000` e
    `top_provider.max_completion_tokens: 100000` quando esse for o contexto

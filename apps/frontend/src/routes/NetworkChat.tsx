@@ -2,6 +2,7 @@ import { Download, FileUp, MessageCircle, Send, Users, Wifi, WifiOff } from "luc
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Empty, Input, Panel, PanelHeader } from "../components/ui";
 import { api, downloadNetworkChatFile, postNetworkChat } from "../lib/api";
+import { randomId } from "../lib/id";
 import { useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -16,7 +17,7 @@ const ROOM_ID = "network";
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 function id(): string {
-  return crypto.randomUUID().replaceAll("-", "");
+  return randomId();
 }
 
 function shortNodeId(nodeId: string): string {

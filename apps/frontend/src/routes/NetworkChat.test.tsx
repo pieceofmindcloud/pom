@@ -49,6 +49,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function mount() {
@@ -77,6 +78,30 @@ describe("NetworkChat", () => {
           room_id: "network",
           sender_node_id: "node-local",
           text: "Mensagem nova",
+        }),
+      }));
+    });
+  });
+
+  it("envia texto em HTTP sem crypto.randomUUID", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: (bytes: Uint8Array) => {
+        bytes.fill(0xcd);
+        return bytes;
+      },
+    });
+    mount();
+
+    const composer = await screen.findByPlaceholderText("Escreva para a rede…");
+    fireEvent.change(composer, { target: { value: "Mensagem em HTTP" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith(expect.objectContaining({
+        action: expect.objectContaining({
+          kind: "text",
+          text: "Mensagem em HTTP",
+          message_id: expect.stringMatching(/^[0-9a-f]{32}$/),
         }),
       }));
     });

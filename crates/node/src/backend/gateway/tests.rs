@@ -357,6 +357,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn policy_gets_accept_peer_auth_and_reject_bare_connection_key() {
+        let state = testkit::state_with("principal", vec![]).await;
+        state.network.set_cluster_logs_enabled(true);
+        state.network.set_network_chat_enabled(true);
+        let app = Router::new()
+            .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
+            .route(
+                crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
+                get(cluster_logs_policy),
+            )
+            .route(
+                crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH,
+                get(network_chat_policy),
+            )
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(2));
+        let base = format!("http://{address}");
+        assert!(!crate::tls_policy::fetch_from_principal(
+            &clients,
+            "principal",
+            &base,
+            "chave",
+        )
+        .await
+        .unwrap());
+        assert!(crate::cluster_logs_policy::fetch_from_principal(
+            &clients,
+            "principal",
+            &base,
+            "chave",
+        )
+        .await
+        .unwrap());
+        assert!(crate::network_chat_policy::fetch_from_principal(
+            &clients,
+            "principal",
+            &base,
+            "chave",
+        )
+        .await
+        .unwrap());
+
+        for path in [
+            crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
+            crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH,
+        ] {
+            let bare = clients
+                .plain()
+                .get(format!("{base}{path}"))
+                .bearer_auth("chave")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(bare.status(), StatusCode::FORBIDDEN, "path={path}");
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn an_admin_profile_without_a_trust_grant_has_no_admin_capability() {
         let mut state = testkit::state_with("connection-secret", vec![]).await;
         state.admin_trust = Arc::new(crate::admin_trust::AdminTrust::empty());

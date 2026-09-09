@@ -233,6 +233,7 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == "/handshake"
         || path == crate::tls_policy::TLS_POLICY_PATH
         || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
+        || path == crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH
         || path.starts_with("/api/internal/")
         || path.starts_with("/api/transfer/")
         || path.starts_with("/v1/")

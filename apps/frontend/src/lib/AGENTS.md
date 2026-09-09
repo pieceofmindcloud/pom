@@ -28,6 +28,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `downloadNetworkChatFile` - fetches a persisted network-chat file only when
   the operator asks to download it, so regular history polling carries metadata
   but not repeated file bytes.
+- `id.ts` - gera ids compactos no formato UUID sem depender de
+  `crypto.randomUUID`, que não existe no contexto HTTP da LAN; usa
+  `getRandomValues` quando disponível e mantém um fallback para ids não
+  secretos em navegadores antigos.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
@@ -72,8 +76,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the peers in that trace without polling the whole cluster.
   `useNetworkRtt` asks the same authenticated telemetry route for the current
   deployment edges shown on the Dashboard and refreshes them every 15 s.
-  `useInferenceHeads` polls the infer-only model head view every 15 s; this is
-  a capability slice, not a general peer list.
+  `useInferenceHeads` polls the model head view every 15 s for every profile;
+  this is a capability slice, not a general peer list.
   `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
   por `deploy_id`, e atualiza a consola a cada segundo.
   `useAdminSurface` is the one-shot shell probe: it distinguishes setup,

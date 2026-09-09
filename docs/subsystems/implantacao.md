@@ -133,7 +133,12 @@ Quando habilitado, cada peer registra localmente a última requisição em
 `backend/reqlog.rs`. O monitor existente, fora do caminho quente e sem criar
 timer ou `sleep` de inferência, avalia esse carimbo e chama o descarregamento
 local. O deployment continua ativo: o peer vivo anuncia `idle`, com a faixa
-preservada, em vez de `serving`.
+preservada, em vez de `serving`. A identidade do deployment continua no
+catálogo de modelos enquanto todos os peers correspondentes estiverem
+`idle`, mesmo sem `runtime_capacity`; isso permite que uma requisição por nome
+seja planejada e acorde os peers antes do primeiro salto. Um peer em
+reinicialização (`runtime_capacity` ausente sem `idle`) continua fora do
+catálogo até confirmar o `/health`.
 
 Na primeira requisição depois de `idle`, o gateway recarrega o runtime local e
 reinicia a atividade. Envia em paralelo o evento autenticado `reload_model` a

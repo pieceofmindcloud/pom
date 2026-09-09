@@ -497,6 +497,11 @@ fn model_object(
 /// `<modelo>@<deploy_id>`. É o que dá ao cliente como escolher **qual**
 /// implantação atende quando o mesmo modelo está no ar mais de uma vez; o nome
 /// pelado continua valendo e vai para a que quem monta o pipeline escolher.
+///
+/// Um peer ocioso não tem `runtime_capacity` enquanto os pesos estão fora da
+/// memória, mas continua sendo uma implantação servível: a geração o acorda
+/// depois de planejar a rota. Só um peer que não está ocioso e ainda não
+/// confirmou `/health` deve esconder o modelo do catálogo.
 fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
     let alive_models: std::collections::BTreeSet<String> = peers
         .iter()
@@ -509,7 +514,7 @@ fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
             peers
                 .iter()
                 .filter(|p| p.is_alive() && p.model == *model)
-                .all(|p| p.runtime_capacity.is_some())
+                .all(|p| p.runtime_capacity.is_some() || p.idle)
         })
         .collect();
     let deployments: std::collections::BTreeSet<(String, String)> = peers
@@ -521,7 +526,7 @@ fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
         let ready = peers
             .iter()
             .filter(|p| p.is_alive() && p.model == model && p.deploy_id == deploy_id)
-            .all(|p| p.runtime_capacity.is_some());
+            .all(|p| p.runtime_capacity.is_some() || p.idle);
         if ready {
             ids.push(format!("{model}@{deploy_id}"));
         }
@@ -1570,6 +1575,53 @@ mod tests {
         let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
 
         assert!(model_ids(&state).await.is_empty());
+    }
+
+    /// An idle deployment remains a valid selector even though unloading the
+    /// weights clears its runtime capacity. The request must resolve the
+    /// deployment before the generation path can wake its peers.
+    #[tokio::test]
+    async fn idle_deployment_remains_resolvable_by_model_name() {
+        let mut head = crate::gateway::testkit::peer("head", "head", 8080);
+        head.model = "ornith-35b".into();
+        head.deploy_id = "d-idle1234".into();
+        head.inference_port = Some(8181);
+        head.start_layer = 0;
+        head.end_layer = 15;
+        head.total_layers = 32;
+        head.runtime_capacity = None;
+        head.idle = true;
+
+        let mut tail = crate::gateway::testkit::peer("tail", "tail", 8081);
+        tail.model = "ornith-35b".into();
+        tail.deploy_id = "d-idle1234".into();
+        tail.inference_port = Some(8182);
+        tail.start_layer = 16;
+        tail.end_layer = 31;
+        tail.total_layers = 32;
+        tail.runtime_capacity = None;
+        tail.idle = true;
+
+        let state = crate::gateway::testkit::state_with("gateway", vec![head, tail]).await;
+
+        let ids = model_ids(&state).await;
+        assert!(ids.contains(&"ornith-35b".to_string()), "{ids:?}");
+        assert!(
+            ids.contains(&"ornith-35b@d-idle1234".to_string()),
+            "{ids:?}"
+        );
+        assert_eq!(
+            resolve_model(&state, "ornith-35b".into()).await,
+            "ornith-35b"
+        );
+
+        let limit = state
+            .request_output_limit_for_model(Some("ornith-35b"), 32, "oi")
+            .await;
+        assert!(
+            limit.rejection_reason().is_none(),
+            "a gateway must let an idle deployment reach reload_model: {limit:?}"
+        );
     }
 
     /// Pedir uma implantação que ninguém anuncia **não** pode cair calado na

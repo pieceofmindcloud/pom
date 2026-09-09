@@ -636,7 +636,9 @@ faz o download autenticado do blob persistido.
   `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
   pipeline did not reprocess, read from the trace - the executed number, not the
   cache's choice; `approx_tokens` = chars/4; `model_ids` comes only from live
-  peer announcements (never the stale CLI default); model objects include both
+  peer announcements (never the stale CLI default), and keeps an `idle` deployment
+  selectable while its weights are unloaded; an unready non-idle peer without
+  `runtime_capacity` still hides the model until `/health` confirms it; model objects include both
   OpenAI and Anthropic discovery fields; `resolve_model` maps unknown names to
   the active model;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;

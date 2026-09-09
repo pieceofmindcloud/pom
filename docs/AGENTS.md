@@ -82,7 +82,9 @@ em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
 corrige.
 `api-http.md` registra também que o endereço anunciado é uma mutação local
 disponível a todo perfil e que o fallback da interface não intercepta métodos
-de rotas administrativas concretas.
+de rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
+o contrato de que deployments `idle` continuam selecionáveis pelo nome, mesmo
+sem capacidade efetiva anunciada, para que a primeira requisição possa acordá-los.
 
 O armazenamento local unificado está especificado em
 `superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no

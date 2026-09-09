@@ -15,6 +15,13 @@
 # pinned to the path baked into the image because POM_HOME no longer
 # points at /app, and the web interface would otherwise be looked for under
 # the (bind-mounted, UI-less) data directory instead.
+#
+# GPU isolation is by container device VISIBILITY (matches the ksia 3-node layout):
+#   node-gpu    : NVIDIA(0) + Radeon(/dev/dri)   -> "as duas placas"
+#   node-gpu2   : NVIDIA(0) only, NO /dev/dri     -> so a NVIDIA
+#   node-gpu-3  : Radeon(/dev/dri) only, NO nvidia -> so a Radeon
+# A Radeon e um unico render node: node-gpu e node-gpu-3 veem-na fisicamente;
+# o pom.json de cada fixture decide o uso real.
 x-node: &node
   build:
     context: .
@@ -46,6 +53,7 @@ x-node: &node
     RUST_LOG: info,pom=debug
 
 services:
+  # salem-gpu : NVIDIA(0) + Radeon
   node-gpu:
     <<: *node
     container_name: pom-node-gpu
@@ -54,10 +62,7 @@ services:
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ./tests/fixtures/node-gpu:/data
     # AMD Radeon for the Vulkan/RADV backend: the DRI render node is all the
-    # driver needs (`/dev/kfd` is ROCm-only and unused here). The container
-    # runs as root and the device nodes are root-owned, so no `group_add` is
-    # needed; a non-root container would add the numeric GIDs of `video` and
-    # the render node here.
+    # driver needs (`/dev/kfd` is ROCm-only and unused here).
     devices:
       - /dev/dri:/dev/dri
     deploy:
@@ -68,20 +73,32 @@ services:
               capabilities: [gpu]
               device_ids: ['0']
 
-#  node-gpu2:
-#    <<: *node
-#    container_name: pom-node-gpu2
-#    volumes:
-#      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
-#      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
-#      - ./tests/fixtures/node-gpu-2:/data
-#    deploy:
-#      resources:
-#        reservations:
-#          devices:
-#            - driver: nvidia
-#              capabilities: [gpu]
-#              device_ids: ['1']
+  # salem-gpu-2 : so NVIDIA(0) - sem /dev/dri
+  node-gpu2:
+    <<: *node
+    container_name: pom-node-gpu2
+    volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ./tests/fixtures/node-gpu-2:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['0']
+
+  # salem-gpu-3 : so Radeon - /dev/dri, sem reserva NVIDIA
+  node-gpu-3:
+    <<: *node
+    container_name: pom-node-gpu3
+    volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ./tests/fixtures/node-gpu-3:/data
+    devices:
+      - /dev/dri:/dev/dri
 
 #  node-cpu-1:
 #    <<: *node

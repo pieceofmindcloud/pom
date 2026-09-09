@@ -109,10 +109,13 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    resolvidas contra `config::project_root()`.
 8. Bootstrap = config + `--bootstrap`, ambos passando por
    `config::normalize_peer_addr`. `--advertise-addr` vence a config.
-9. `Network::new` recebe a política TLS inicial antes de `start` (receive,
-   gossip 5 s, medição de rotas 30 s) e `bootstrap_discovery`. Isso garante que
-   a primeira sonda use o mesmo esquema anunciado pela UI; `--no-discovery` →
-   `detach`.
+9. `Network::new` recebe a política TLS inicial e a catraca de admissão antes
+   de `start` (receive, gossip 5 s, medição de rotas 30 s) e
+   `bootstrap_discovery`. Rede privada prova `connection_key` pelo
+   `/handshake`; rede pública exige `cluster_id` e uma principal/concessão da
+   cadeia em `.pom-admin-trust.json`. Isso garante que a primeira sonda use o
+   mesmo esquema anunciado pela UI e que nenhum Announce não autenticado entre
+   em `peers`; `--no-discovery` → `detach`.
 10. Faixa de camadas, por precedência: `--start-layer/--end-layer` → nome do
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
     `calculate_assignment` (gap-filling). `lastslice::take()` é consumido

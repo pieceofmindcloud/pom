@@ -642,6 +642,7 @@ mod ipv6_tests {
             node_id: "n".repeat(64),
             pubkey: "p".into(),
             authority_pubkey: String::new(),
+            cluster_id: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),

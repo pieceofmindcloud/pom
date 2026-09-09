@@ -4,6 +4,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -167,7 +168,15 @@ pub async fn handle_handshake(
     let verifier_id = std::sync::Arc::as_ptr(&config) as usize;
     let cfg = config.read().await;
 
-    if req.connection_key != cfg.connection_key {
+    if cfg.connection_key.is_empty()
+        || req.connection_key.is_empty()
+        || cfg
+            .connection_key
+            .as_bytes()
+            .ct_eq(req.connection_key.as_bytes())
+            .unwrap_u8()
+            != 1
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(HandshakeResponse {
@@ -526,6 +535,15 @@ mod tests {
         let state = make_state("secret", vec![]);
         let cfg = state.read().await;
         assert_ne!("wrong", cfg.connection_key);
+    }
+
+    #[tokio::test]
+    async fn chave_vazia_nunca_e_uma_credencial_de_handshake() {
+        let state = make_state("", vec![]);
+        let (status, body) = responder(state, make_request("")).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "invalid_key");
     }
 
     #[tokio::test]

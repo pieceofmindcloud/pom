@@ -97,6 +97,9 @@ profile policy remains the effective authorization boundary.
   autenticado e falha fechada em timeout ou erro. A porta de inferência não
   usa esse fluxo: ela exige a `connection_key` compartilhada e o marcador
   interno, enquanto os callbacks de resultado validam o `Ticket` por quadro.
+- `/handshake` é a prova de admissão da descoberta privada. A comparação exige
+  que a chave configurada e a recebida sejam ambas não vazias; chave vazia
+  nunca transforma um processo de setup em membro do enxame.
 - `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
   geração, snapshots/planejamento, HTTP e testes: `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,

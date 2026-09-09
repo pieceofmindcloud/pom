@@ -613,6 +613,7 @@ async fn handle_event(
                 cluster_logs_enabled,
                 idle,
                 network_chat_enabled,
+                cluster_id,
             }) = serde_json::from_slice(&message.data)
             {
                 if libp2p_peer_id.as_deref() != Some(source.to_string().as_str()) {
@@ -638,43 +639,50 @@ async fn handle_event(
                     (peer_id, tunnel_peer_multiaddrs(peer_id, &advertised))
                 });
 
-                network
-                    .insert_peer(PeerInfo {
-                        deploy_id,
-                        node_id: node_id.clone(),
-                        pubkey,
-                        authority_pubkey: authority_pubkey.clone(),
-                        // O caminho do gossipsub nao tem endereco de origem para
-                        // reescrever, e o anunciado costuma ser o literal
-                        // `0.0.0.0`. Com candidatos ha o que usar: o primeiro
-                        // deles e um endereco de verdade, e o `0.0.0.0` so
-                        // sobrevive quando o peer nao anunciou nenhum.
-                        addr: addr_candidates.first().cloned().unwrap_or(addr),
-                        addr_candidates,
-                        model,
-                        start_layer,
-                        end_layer,
-                        total_layers,
-                        memory_mb,
-                        last_seen: timestamp,
-                        ollama_port,
-                        inference_port,
-                        inference_frame_capabilities,
-                        gateway_port,
-                        profile,
-                        tls,
-                        hostname,
-                        capabilities,
-                        connection_verified: false,
-                        disk_total_mb,
-                        disk_free_mb,
-                        api_keys_active: 0,
-                        libp2p_peer_id: libp2p_peer_id.clone(),
-                        tp,
-                        runtime_capacity,
-                        idle,
-                    })
-                    .await;
+                let peer = PeerInfo {
+                    deploy_id,
+                    node_id: node_id.clone(),
+                    pubkey,
+                    authority_pubkey: authority_pubkey.clone(),
+                    cluster_id,
+                    // O caminho do gossipsub nao tem endereco de origem para
+                    // reescrever, e o anunciado costuma ser o literal
+                    // `0.0.0.0`. Com candidatos ha o que usar: o primeiro
+                    // deles e um endereco de verdade, e o `0.0.0.0` so
+                    // sobrevive quando o peer nao anunciou nenhum.
+                    addr: addr_candidates.first().cloned().unwrap_or(addr),
+                    addr_candidates,
+                    model,
+                    start_layer,
+                    end_layer,
+                    total_layers,
+                    memory_mb,
+                    last_seen: timestamp,
+                    ollama_port,
+                    inference_port,
+                    inference_frame_capabilities,
+                    gateway_port,
+                    profile,
+                    tls,
+                    hostname,
+                    capabilities,
+                    connection_verified: false,
+                    disk_total_mb,
+                    disk_free_mb,
+                    api_keys_active: 0,
+                    libp2p_peer_id: libp2p_peer_id.clone(),
+                    tp,
+                    runtime_capacity,
+                    idle,
+                };
+                if !network.admit_peer(&peer).await {
+                    debug!(
+                        "libp2p: descartei Announce de {} sem prova de pertencimento",
+                        crate::network::short(&node_id)
+                    );
+                    return;
+                }
+                network.insert_admitted_peer(peer).await;
 
                 network.trigger_cluster_logs_probe(
                     &node_id,

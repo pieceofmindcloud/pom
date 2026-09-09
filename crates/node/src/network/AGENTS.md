@@ -43,17 +43,25 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   a fonte efetiva.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
   (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e o
-  protocolo de logs do cluster e Chat da rede. Põe peers
-  no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
-  antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
+  protocolo de logs do cluster e Chat da rede. Põe peers no `Network` somente
+  depois da catraca de admissão, e reidrata no swarm os endereços dos peers
+  admitidos antes de enviar pelo túnel quando o anúncio chegou antes do
+  registro de rota. A assinatura nativa do gossipsub prova a origem do
+  transporte, mas não substitui a prova de pertencimento do enxame.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
-  dual-stack, gossip, lifecycle de peers, varredura de descoberta. O perfil
-  anunciado por `with_identity` pode ser atualizado por `set_profile`; a
-  capacidade de admin não vem do anúncio, mas da cadeia em `admin_trust.rs`.
-  O campo `idle` também é anunciado por peer para distinguir modelo
-  descarregado de deployment fora do ar; ele não altera a regra de liveness.
+  dual-stack, gossip, lifecycle de peers, varredura de descoberta e admissão.
+  A `connection_key` não vai no `Announce`: em rede privada, o handler faz
+  uma sonda no `/handshake` antes de registrar o peer. Em rede pública,
+  `cluster_id` só seleciona a cadeia e a tupla `{node_id, peer_id, pubkey}`
+  precisa ser uma concessão ativa em `admin_trust.rs`; campo `profile` não
+  concede acesso. `PeerList` é revalidado, e `connection_verified` só é
+  escrito pelo gate local. O perfil anunciado por `with_identity` pode ser
+  atualizado por `set_profile`; a capacidade de admin não vem do anúncio, mas
+  da cadeia em `admin_trust.rs`. O campo `idle` também é anunciado por peer
+  para distinguir modelo descarregado de deployment fora do ar; ele não altera
+  a regra de liveness.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é

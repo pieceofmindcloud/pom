@@ -24,6 +24,46 @@ casa é que a decisão de endereço pertence a quem vai discar, não a quem anun
 - Os dois caminhos desaguam no mesmo lugar: a tabela `peers` de `Network`
   (`HashMap<node_id, PeerInfo>`). O libp2p entra por `Network::insert_peer`.
 
+### Admissão antes da tabela `peers`
+
+Descoberta de transporte não é pertencimento ao enxame. O processo pode
+aprender um endereço por UDP, mDNS, Kademlia, pkarr ou um link gossipsub, mas
+nenhuma dessas fontes registra um `PeerInfo` sem prova local de admissão. A
+mesma regra vale para `Announce` UDP, `Announce` gossipsub, `PeerList` e a
+entrada direta por `insert_peer`; políticas, túneis, rotas, UI e pipeline só
+consomem a tabela depois desse ponto.
+
+- Em rede privada, uma `connection_key` não vazia seleciona a prova por
+  `/handshake`. O nó envia sua identidade e a chave ao gateway anunciado e
+  considera a resposta `approved` ou `challenge_required` como prova de que o
+  destino conhece a chave compartilhada. Chave errada, chave ausente, peer
+  sem gateway ou timeout são recusados. A chave não aparece no `Announce`.
+- Em rede pública, a âncora local precisa ser válida. O `Announce` carrega o
+  `cluster_id`, mas ele é apenas um seletor de cadeia e pode ser falsificado.
+  A admissão exige também a tupla exata `{node_id, libp2p peer_id,
+  authority_pubkey}` presente como principal atual ou concessão secundária
+  não demovida. A chave pública legada precisa derivar o `node_id`, e a chave
+  de autoridade precisa derivar o `libp2p peer_id`. Sem trust local, nenhum
+  peer público é membro.
+- `connection_verified` é uma marca produzida pelo gate local. O valor vindo
+  de `PeerList` nunca é aceito como prova e a lista transitiva é revalidada
+  antes de inserir um peer desconhecido ou atualizar um peer existente.
+
+Um desconhecido público ainda pode aparecer nos eventos do transporte libp2p,
+porque mDNS, Kademlia e gossipsub precisam continuar operacionais para achar
+endereços. Ele é descartado em silêncio no limite da aplicação, sem logar
+credencial ou responder com detalhes de falha, e não aparece em `/api/ui/cluster`,
+nas rotas ou no planejamento de inferência. A sonda privada tem timeout curto e
+cacheia o resultado por identidade e endereço por 30 segundos; recusas ficam
+cacheadas por 5 segundos para não permitir uma tempestade de anúncios.
+
+O `cluster_id` sozinho não protege contra falsificação. A proteção vem da
+comparação da tupla com a cadeia assinada carregada por `AdminTrust`; anunciar
+o id correto sem a chave pública e a concessão correspondentes não passa pela
+catraca. Isso mantém a decisão de `admin-control-signature-scope`: quadros de
+inferência não ganham assinatura administrativa, mas o controle de admissão
+usa a cadeia de confiança antes de qualquer roteamento.
+
 ## 2. Protocolo UDP
 
 ### Mensagens (`P2PMessage`, `network.rs`)
@@ -31,6 +71,7 @@ casa é que a decisão de endereço pertence a quem vai discar, não a quem anun
 Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 
 - **`Announce`** - auto-apresentação: `node_id`, `pubkey`, `authority_pubkey`,
+  `cluster_id` (se houver uma cadeia pública ancorada),
   `libp2p_peer_id`, `addr`, `addr_candidates`,
   `model`, `start_layer`, `end_layer`, `total_layers`, `memory_mb`, `timestamp`,
   `ollama_port`, `inference_port`, `inference_frame_capabilities`, `gateway_port`,

@@ -717,6 +717,7 @@ impl GatewayState {
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
                 authority_pubkey: self.network.authority_pubkey(),
+                cluster_id: self.network.cluster_id(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
                 model: local.as_ref().map(|l| l.model.clone()).unwrap_or_default(),

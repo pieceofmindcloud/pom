@@ -306,6 +306,44 @@ impl AdminTrust {
         validate_document(&self.document()).is_ok()
     }
 
+    /// Identificador do enxame que esta máquina aceitou fora de banda.
+    ///
+    /// O valor serve apenas para selecionar a cadeia local. A admissão ainda
+    /// exige a tupla completa do principal em `admits_participant`.
+    pub(crate) fn cluster_id(&self) -> Option<String> {
+        let document = self.document();
+        validate_document(&document)
+            .is_ok()
+            .then(|| document.anchor.cluster_id)
+    }
+
+    /// Confere uma prova de participação contra a cadeia já validada.
+    ///
+    /// No formato atual, a cadeia só tem concessões de autoridade primária e
+    /// secundária. Elas são também as concessões de participação disponíveis
+    /// para a descoberta: o `profile` anunciado nunca substitui esta prova.
+    pub(crate) fn admits_participant(
+        &self,
+        cluster_id: &str,
+        subject: &AuthorityPrincipal,
+    ) -> bool {
+        let document = self.document();
+        if validate_document(&document).is_err() || document.anchor.cluster_id != cluster_id {
+            return false;
+        }
+        if subject == &document.primary {
+            return true;
+        }
+        document.grants.iter().any(|grant| {
+            grant.subject == *subject
+                && grant.level == AdminLevel::Secondary
+                && !document.demotions.iter().any(|demotion| {
+                    demotion.subject == *subject
+                        && demotion.target_grant_hash == grant_hash(grant).unwrap_or_default()
+                })
+        })
+    }
+
     /// Se já existe arquivo de confiança no disco, mesmo ilegível. Um arquivo
     /// ilegível não é âncora, mas também não é coisa que a interface apague:
     /// a recusa manda o operador para a reancoragem manual na máquina.
@@ -1697,6 +1735,20 @@ mod tests {
         let trust = AdminTrust::empty();
         let local = principal(1, "node", "peer");
         assert_eq!(trust.effective_authority(&local, NodeProfile::Admin), None);
+    }
+
+    #[test]
+    fn admission_requires_the_anchored_cluster_and_an_active_principal() {
+        let dir = TempDir::new();
+        let (trust, _, root) = boot(&dir.path().join("trust.json"));
+
+        assert!(trust.admits_participant("cluster", &root));
+        assert!(!trust.admits_participant("outro-cluster", &root));
+        assert!(!trust.admits_participant(
+            "cluster",
+            &principal(2, "attacker", "peer-attacker")
+        ));
+        assert!(!AdminTrust::empty().admits_participant("cluster", &root));
     }
 
     #[test]

@@ -868,6 +868,9 @@ async fn async_main(
     // ── Start P2P network + (best-effort) libp2p discovery ───────────────────
     let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
         Arc::new(tokio::sync::RwLock::new(app_config.clone()));
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,
         None => sysmon::sample().await.hostname,
@@ -888,6 +891,7 @@ async fn async_main(
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
         auth: auth_config.clone(),
+        admin_trust: admin_trust.clone(),
         database: database.clone(),
         relay_peer_keys: relay_peer_keys.clone(),
         serve_relay: args.serve_relay,
@@ -901,9 +905,6 @@ async fn async_main(
         stack.libp2p_peer_id.clone(),
         &stack.authority_signing_key,
     );
-    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
-        config::admin_trust_path(),
-    ));
     if app_config.profile == crate::profile::NodeProfile::Admin
         && admin_trust
             .effective_authority(&authority_principal, app_config.profile)
@@ -1576,6 +1577,7 @@ struct P2pStackArgs {
     cluster_logs_enabled: bool,
     network_chat_enabled: bool,
     auth: Arc<RwLock<config::Config>>,
+    admin_trust: Arc<crate::admin_trust::AdminTrust>,
     database: Arc<db::PomDb>,
     /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
     /// *inside* this function, after it loads its own `pkarr_node` — not
@@ -1702,7 +1704,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_authority_pubkey(hex::encode(
             authority_signing_key.verifying_key().as_bytes(),
         ))
-        .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
+        .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
+        .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
@@ -1827,6 +1830,9 @@ async fn start_gateway_only(
     );
     let ollama_port = advertised_ollama_port(&ollama_url);
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
     let stack = start_p2p_stack(P2pStackArgs {
         node_id: node_id.clone(),
         pubkey: pubkey.clone(),
@@ -1843,6 +1849,7 @@ async fn start_gateway_only(
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
         auth: auth_state.clone(),
+        admin_trust: admin_trust.clone(),
         database: database.clone(),
         // No CLI here to source pkarr/relay peer keys from — see the plan's
         // addendum on deferred parity for `start_gateway_only`.
@@ -1858,9 +1865,6 @@ async fn start_gateway_only(
         stack.libp2p_peer_id.clone(),
         &stack.authority_signing_key,
     );
-    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
-        config::admin_trust_path(),
-    ));
     if app_config.profile == crate::profile::NodeProfile::Admin
         && admin_trust
             .effective_authority(&authority_principal, app_config.profile)

@@ -411,6 +411,9 @@ profile policy remains the effective authorization boundary.
   interruptor. A concatenação dos fragmentos é sempre a string que o caminho
   não-streaming produziria, e o prefixo transmitido só cresce - não existe
   desenviar um fragmento SSE.
+  O Chat pode enviar `inference_head` com um `node_id` de layer 0; o gateway
+  valida a candidata viva, fixa essa cabeça no planejador e a repete em
+  `x_pom.source`/trace, sem reescolher por RTT ou carga.
   A capacidade publicada em `/v1/models` e usada por
   `request_output_limit_for_model` é a menor `RuntimeCapacity` entre os peers
   da pipeline escolhida para o modelo/implantação. Um peer ocioso nessa

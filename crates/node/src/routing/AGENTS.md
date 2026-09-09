@@ -24,6 +24,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   Empates finais usam `node_id` para manter o plano determinístico. **Exclui
   workers de tensor parallelism** (`PeerInfo::is_tp_worker`): só o primary de
   um grupo entra na cadeia. Devolve `None` no primeiro buraco executável.
+- `plan_pipeline_with_rtt_from_head` - mesma cobertura e escolha dos estágios
+  seguintes, mas honra um `node_id` explícito para a etapa L0 quando ele é uma
+  cabeça viva do modelo. Uma escolha inválida falha fechada, sem voltar ao
+  score, e `PipelinePlan::hop_chain` passa a provar essa cabeça na telemetria.
 - `plan_pipeline` - chama a variante acima sem medições de RTT.
 - `model_pipeline_candidates` e `model_head_candidates` - o primeiro aplica o
   filtro de modelo, implantação e liveness; o segundo recorta somente as

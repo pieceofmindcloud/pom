@@ -292,6 +292,7 @@ mod tests {
                 node_id: PRINCIPAL.into(),
                 pubkey: "principal-pubkey".into(),
                 authority_pubkey: "principal-authority".into(),
+                cluster_id: None,
                 addr: format!("[::1]:{gateway_port}"),
                 addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
                 model: "model".into(),

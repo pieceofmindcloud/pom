@@ -463,6 +463,34 @@ pub async fn plan_pipeline_with_rtt(
     tracker: &LoadTracker,
     rtts: &HashMap<String, f64>,
 ) -> Option<PipelinePlan> {
+    plan_pipeline_with_rtt_from_head(
+        peers,
+        model_name,
+        deploy_id,
+        total_layers,
+        tracker,
+        rtts,
+        None,
+    )
+    .await
+}
+
+/// Plan a pipeline while optionally pinning the peer that receives layer 0.
+///
+/// The UI may expose more than one complete-model head. When the caller has
+/// explicitly picked one, that choice is authoritative for the first step;
+/// RTT and load still select the remaining contiguous stages. An invalid or
+/// unavailable choice fails closed instead of silently switching to a
+/// different head and misleading the operator.
+pub async fn plan_pipeline_with_rtt_from_head(
+    peers: &[PeerInfo],
+    model_name: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    tracker: &LoadTracker,
+    rtts: &HashMap<String, f64>,
+    preferred_head: Option<&str>,
+) -> Option<PipelinePlan> {
     let servindo = model_pipeline_candidates(peers, model_name, deploy_id);
 
     if servindo.is_empty() {
@@ -515,7 +543,7 @@ pub async fn plan_pipeline_with_rtt(
         // key is a weighted speed penalty: a small RTT advantage can be lost
         // when its peer is carrying enough in-flight work.
         let mut best: Option<(&PeerInfo, i64, i64)> = None;
-        for peer in reachable {
+        for peer in reachable.iter().copied() {
             let load = tracker.load(&peer.node_id).await as i64;
             let layers = (peer.end_layer - pos + 1) as i64;
             let rtt_penalty = rtts
@@ -537,7 +565,23 @@ pub async fn plan_pipeline_with_rtt(
             }
         }
 
-        let chosen = best.unwrap().0;
+        let chosen = if pos == 0 {
+            match preferred_head {
+                Some(preferred) => reachable
+                    .iter()
+                    .copied()
+                    .find(|peer| peer.node_id == preferred),
+                None => best.map(|(peer, _, _)| peer),
+            }
+        } else {
+            best.map(|(peer, _, _)| peer)
+        };
+
+        let Some(chosen) = chosen else {
+            // A requested head is only allowed to fail closed at layer zero.
+            // Later gaps are the normal no-pipeline result handled below.
+            return None;
+        };
 
         // `PeerInfo::inference_url` is the one place that knows how to turn an
         // address into a URL. Splitting `chosen.addr` on ':' here instead cut
@@ -855,6 +899,35 @@ mod ipv6_tests {
         .expect("as duas entradas cobrem o mesmo ramo");
 
         assert_eq!(plan.steps[0].node_id, "fast-entry");
+    }
+
+    #[tokio::test]
+    async fn planner_honors_an_explicit_inference_head() {
+        let mut score_winner = peer("10.0.0.1:42777", 0, 7);
+        let mut requested = peer("10.0.0.2:42777", 0, 7);
+        let mut tail = peer("10.0.0.3:42777", 8, 15);
+        score_winner.node_id = "score-winner".into();
+        requested.node_id = "requested-head".into();
+        tail.node_id = "tail".into();
+
+        let rtts = HashMap::from([
+            (String::from("score-winner"), 1.0),
+            (String::from("requested-head"), 80.0),
+        ]);
+        let plan = plan_pipeline_with_rtt_from_head(
+            &[score_winner, requested, tail],
+            "qwen35",
+            None,
+            16,
+            &LoadTracker::new(),
+            &rtts,
+            Some("requested-head"),
+        )
+        .await
+        .expect("a cabeça escolhida ainda cobre a pipeline");
+
+        assert_eq!(plan.steps[0].node_id, "requested-head");
+        assert_eq!(plan.steps[1].node_id, "tail");
     }
 
     #[tokio::test]

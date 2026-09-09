@@ -494,6 +494,7 @@ pub(super) async fn handle_generate(
             // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
             // o próprio texto.
             cache_key: None,
+            preferred_head: None,
         },
     )
     .await

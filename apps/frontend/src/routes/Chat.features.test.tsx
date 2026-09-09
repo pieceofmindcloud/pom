@@ -13,6 +13,7 @@ import type { InferenceHeadsResponse } from "../lib/types";
 const streamScenario = vi.hoisted(() => ({
   release: null as (() => void) | null,
   signalAborted: false,
+  lastBody: undefined as Record<string, unknown> | undefined,
 }));
 
 const headQuery = vi.hoisted(() => ({
@@ -26,7 +27,8 @@ vi.mock("../lib/api", async (importOriginal) => {
   return {
     ...actual,
     // eslint-disable-next-line require-yield
-    streamSse: async function* (_path: string, _body: unknown, signal: AbortSignal) {
+    streamSse: async function* (_path: string, body: unknown, signal: AbortSignal) {
+      streamScenario.lastBody = body as Record<string, unknown>;
       yield JSON.stringify({ choices: [{ delta: { content: "primeiro" } }] });
       if (streamScenario.release) {
         await new Promise<void>((resolve) => {
@@ -93,6 +95,7 @@ afterEach(() => {
   resetBrowserSpeech();
   streamScenario.release = null;
   streamScenario.signalAborted = false;
+  streamScenario.lastBody = undefined;
   headQuery.data = undefined;
   headQuery.isLoading = false;
   headQuery.isError = false;
@@ -141,6 +144,55 @@ describe("Chat", () => {
     mountChat();
 
     expect(screen.getByRole("combobox", { name: "Cabeça de inferência" })).toBeTruthy();
+  });
+
+  it("envia a cabeça escolhida para a requisição do Chat", async () => {
+    headQuery.data = {
+      model: "qwen",
+      status: "selected",
+      selected_node_id: "ksia",
+      selection_policy: "coverage_then_weighted_rtt_load",
+      rtt_valid_for_secs: 300,
+      candidates: [
+        {
+          node_id: "ksia",
+          short_id: "ksia",
+          hostname: "ksia",
+          start_layer: 0,
+          end_layer: 39,
+          total_layers: 40,
+          load: 0,
+          runtime_capacity: null,
+          rtt_ms: 10,
+          rtt_age_ms: 100,
+          rtt_state: "fresh",
+          selected: true,
+        },
+        {
+          node_id: "salem",
+          short_id: "salem",
+          hostname: "salem",
+          start_layer: 0,
+          end_layer: 39,
+          total_layers: 40,
+          load: 0,
+          runtime_capacity: null,
+          rtt_ms: 20,
+          rtt_age_ms: 100,
+          rtt_state: "fresh",
+          selected: false,
+        },
+      ],
+    };
+
+    mountChat();
+    fireEvent.change(screen.getByRole("combobox", { name: "Cabeça de inferência" }), {
+      target: { value: "salem" },
+    });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "oi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => expect(streamScenario.lastBody?.inference_head).toBe("salem"));
   });
 
   it("continua o stream e mostra o buffer ao remontar a rota", async () => {

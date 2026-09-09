@@ -482,6 +482,10 @@ function ChatScreen() {
     cluster: ClusterView | null;
   } | null>(null);
   const [telemetrySnapshots, setTelemetrySnapshots] = useState<Record<string, ExecutionTelemetryEnvironment>>({});
+  const [headChoice, setHeadChoice] = useState<{ model: string; nodeId: string | null }>({
+    model: "",
+    nodeId: null,
+  });
   const thread = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -559,6 +563,11 @@ function ChatScreen() {
     : available[0] ?? node.data?.active_model ?? cluster.data?.active_model ?? "";
   const streaming = streamingSessionId === session.id;
   const headQuery = useInferenceHeads(model, Boolean(model));
+  const selectedInferenceHead = headQuery.data?.candidates.some(
+    (candidate) => candidate.node_id === headChoice.nodeId && headChoice.model === model,
+  )
+    ? headChoice.nodeId
+    : headQuery.data?.selected_node_id ?? null;
 
   useEffect(() => {
     const element = thread.current;
@@ -813,6 +822,7 @@ function ChatScreen() {
       replyId: reply.id,
       model,
       maxTokens: node.data?.config?.max_new_tokens,
+      inferenceHead: selectedInferenceHead ?? undefined,
       emptyResponseMessage: t("chat.emptyResponse"),
       interruptedMessage: t("chat.interrupted"),
       cluster: cluster.data ?? null,
@@ -1130,6 +1140,8 @@ function ChatScreen() {
                 response={headQuery.data}
                 loading={headQuery.isLoading}
                 failed={headQuery.isError}
+                selectedNodeId={selectedInferenceHead}
+                onChange={(nodeId) => setHeadChoice({ model, nodeId })}
               />
             )}
           </div>

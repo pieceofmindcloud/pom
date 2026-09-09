@@ -238,6 +238,10 @@ pub struct ChatRequest {
     pub tools: Vec<ChatToolDef>,
     #[serde(default)]
     pub stop: Option<StopInput>,
+    /// Optional explicit layer-0 peer chosen by the Chat UI. It is ignored
+    /// when the peer is not a live head for the requested model.
+    #[serde(default)]
+    pub inference_head: Option<String>,
 }
 
 /// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
@@ -616,6 +620,7 @@ async fn chat_completions(
         .into_iter()
         .map(ChatToolDef::into_tool_def)
         .collect();
+    let preferred_head = req.inference_head.clone();
     let (prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
         Ok(rendered) => rendered,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
@@ -676,6 +681,7 @@ async fn chat_completions(
             Mode::Chat,
             stops,
             Some(cache_key),
+            preferred_head.clone(),
             request_details.clone(),
             output_limit,
         )
@@ -695,6 +701,7 @@ async fn chat_completions(
             Mode::Chat,
             stops,
             Some(cache_key),
+            preferred_head,
             request_details,
             output_limit,
         )
@@ -748,6 +755,7 @@ async fn completions(
             stops,
             // Completion crua não tem conversa: o prefixo é o próprio texto.
             None,
+            None,
             request_details.clone(),
             output_limit,
         )
@@ -766,6 +774,7 @@ async fn completions(
             prompt_tokens,
             Mode::Completion,
             stops,
+            None,
             None,
             request_details,
             output_limit,
@@ -830,6 +839,7 @@ async fn blocking_response(
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    preferred_head: Option<String>,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
@@ -847,6 +857,7 @@ async fn blocking_response(
             budget,
             stops,
             cache_key,
+            preferred_head,
             request_details,
         },
     )
@@ -1034,6 +1045,7 @@ fn stream_response(
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    preferred_head: Option<String>,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
@@ -1052,6 +1064,7 @@ fn stream_response(
             budget,
             stops,
             cache_key,
+            preferred_head,
             request_details,
         },
         tx,
@@ -1671,6 +1684,7 @@ mod tests {
                     },
                 }],
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -1795,6 +1809,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -1945,6 +1960,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -1968,6 +1984,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -2013,6 +2030,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await

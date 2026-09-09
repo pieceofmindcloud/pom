@@ -455,6 +455,9 @@ pub(crate) struct GenerationInput {
     /// mensagens, que só cresce: imune a template, a rótulo e a bloco de
     /// ferramentas. Ver `crate::openai::conversation_cache_key`.
     pub(crate) cache_key: Option<String>,
+    /// Explicit layer-0 peer selected by the Chat UI, when any. The planner
+    /// validates it against the live model heads before honoring it.
+    pub(crate) preferred_head: Option<String>,
     /// The parsed HTTP request body, retained for audit without headers or
     /// credentials.
     pub(crate) request_details: serde_json::Value,

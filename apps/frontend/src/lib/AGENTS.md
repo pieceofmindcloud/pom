@@ -301,6 +301,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   sent, while `stopStream` is the explicit user cancellation. Deltas are
   persisted in the session as they arrive, and deleting a session prevents a
   finishing stream from recreating it.
+  `startStream` also carries the optional Chat `inference_head` selection in
+  the OpenAI-compatible request body.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.

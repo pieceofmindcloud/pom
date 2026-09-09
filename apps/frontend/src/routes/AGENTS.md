@@ -59,6 +59,9 @@ Per-file list:
   a próxima inferência entrará para qualquer perfil com modelo selecionado,
   mas só aparece quando há mais de uma candidata. Deixa explícito quando não
   há candidata ou quando a seleção caiu no fallback sem RTT fresco.
+  A escolha do combo é controlada pelo `ChatScreen` e segue na próxima chamada
+  como `inference_head`; o backend valida o `node_id` e preserva a cabeça no
+  plano e no `x_pom.source` da telemetria.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
   Phase rows also render

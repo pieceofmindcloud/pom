@@ -8,11 +8,15 @@ export function InferenceHeadChoice({
   response,
   loading = false,
   failed = false,
+  selectedNodeId,
+  onChange,
 }: {
   model: string;
   response?: InferenceHeadsResponse;
   loading?: boolean;
   failed?: boolean;
+  selectedNodeId?: string | null;
+  onChange?: (nodeId: string) => void;
 }) {
   const { t } = useI18n();
 
@@ -67,6 +71,8 @@ export function InferenceHeadChoice({
   if (response.candidates.length === 1) return null;
 
   const selected = response.candidates.find(
+    (candidate) => candidate.node_id === selectedNodeId,
+  ) ?? response.candidates.find(
     (candidate) => candidate.selected || candidate.node_id === response.selected_node_id,
   ) ?? response.candidates[0];
   const policy = t("chat.headPolicy", { validity: duration(response.rtt_valid_for_secs) });
@@ -79,10 +85,10 @@ export function InferenceHeadChoice({
       <div className="group relative inline-flex h-8 min-w-0 items-center rounded-lg border border-line bg-raised transition-colors duration-150 hover:border-line-strong focus-within:border-iris focus-within:ring-2 focus-within:ring-iris/25">
         <Boxes className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-faint transition-colors duration-150 group-hover:text-muted" />
         <select
-          key={selected.node_id}
-          defaultValue={selected.node_id}
+          value={selected.node_id}
           aria-label={t("chat.headPicker")}
           title={`${policy} · ${t("chat.headPickerHint")}`}
+          onChange={(event) => onChange?.(event.target.value)}
           className="h-8 w-full min-w-0 max-w-[18rem] cursor-pointer appearance-none truncate bg-transparent pl-8 pr-7 text-[0.78rem] text-fg focus:outline-none"
         >
           <option value="__head-policy" disabled>

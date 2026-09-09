@@ -269,6 +269,9 @@ indisponível, não zero. A política fica escrita na tela: cobertura primeiro, 
 RTT fresco e carga, e empate por id. RTT sem medição fresca aparece como fallback, e um modelo sem cabeça
 ou sem caminho completo produz um aviso legível em vez de uma falha crua. Esse
 recorte não abre a lista geral de peers nem oferece autoridade de controle.
+Ao trocar o combo, o Chat envia o `node_id` escolhido como `inference_head` na
+próxima requisição; a pipeline e a telemetria usam essa cabeça, em vez de
+reaplicar o score de RTT/carga.
 
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
 barra compacta aplica filtros por identidade não secreta da API key, texto do

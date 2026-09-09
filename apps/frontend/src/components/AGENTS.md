@@ -23,6 +23,8 @@ pendência está em `TODO.md`, item 23.
   critério, fallback e pipeline incompleto ficam nas opções desativadas do menu.
   Carga desconhecida aparece como "indisponível", nunca zero. Sem candidata,
   mantém um aviso claro. O componente não apresenta peers fora desse recorte.
+  A escolha é controlada pelo `ChatScreen`: `onChange` devolve o `node_id`
+  selecionado e a próxima chamada envia esse valor em `inference_head`.
 
 - `setup-wizard/` - Componentes visuais reutilizáveis do wizard de primeiro
   acesso: layout com progresso e ações, cards de intenção, hardware, nó,

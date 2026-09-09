@@ -1435,6 +1435,7 @@ mod tests {
                 budget: crate::gateway::OutputBudget::single(200),
                 stops: Vec::new(),
                 cache_key: None,
+                preferred_head: None,
                 request_details: serde_json::json!({}),
                 trace_id: None,
             },

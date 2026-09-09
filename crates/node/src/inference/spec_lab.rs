@@ -543,6 +543,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
             budget: crate::gateway::OutputBudget::single(max_tokens),
             stops: Vec::new(),
             cache_key: None,
+            preferred_head: None,
             request_details: serde_json::json!({}),
             trace_id: None,
         },

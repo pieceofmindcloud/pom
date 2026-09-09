@@ -108,6 +108,8 @@ export interface StartChatStreamOptions {
   replyId: string;
   model: string;
   maxTokens?: number;
+  /** Explicit layer-0 peer chosen in the Chat head selector. */
+  inferenceHead?: string;
   emptyResponseMessage: string;
   interruptedMessage: string;
   cluster: ClusterView | null;
@@ -317,6 +319,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           "/v1/chat/completions",
           {
             model: options.model,
+            ...(options.inferenceHead ? { inference_head: options.inferenceHead } : {}),
             stream: true,
             ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
             messages: turnsOnly(options.history).map((message) => ({

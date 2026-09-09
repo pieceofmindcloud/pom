@@ -700,6 +700,7 @@ async fn blocking_response(params: RespostaParams) -> Response {
             budget,
             stops,
             cache_key,
+            preferred_head: None,
             request_details,
         },
     )
@@ -805,6 +806,7 @@ fn stream_response(params: RespostaParams) -> Response {
             budget,
             stops,
             cache_key,
+            preferred_head: None,
             request_details,
         },
         tx,

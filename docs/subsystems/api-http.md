@@ -611,6 +611,12 @@ não chegar, ele é `null`, não zero.
 Sem candidata a resposta é `status: "no_candidate"`; com cabeça mas sem
 cobertura completa é `status: "incomplete_pipeline"`. RTT vencido aparece
 para diagnóstico, mas não entra na escolha.
+O `POST /v1/chat/completions` aceita ainda o campo POM opcional
+`inference_head`, com o `node_id` de uma dessas candidatas. Quando presente,
+o planejador valida que o nó continua vivo e começa a pipeline por ele; não
+recalcula outra cabeça por RTT/carga. O `x_pom.source` e o trace da resposta
+mostram a cadeia que efetivamente começou nessa cabeça. Uma escolha ausente,
+inválida ou já desaparecida falha fechada, sem trocar silenciosamente de nó.
 
 `GET /api/ui/deployments` deduplica as cópias persistidas por `deploy_id` e
 marca `serving` somente quando um peer vivo anuncia o deployment. O registro

@@ -135,6 +135,7 @@ pub(super) async fn generate_stream_inner(
         budget,
         stops,
         cache_key,
+        preferred_head,
         request_details: _,
     } = input;
     let budget = budget.normalized();
@@ -219,13 +220,14 @@ pub(super) async fn generate_stream_inner(
         .collect::<std::collections::HashMap<_, _>>();
     let selection_started = Instant::now();
     let selection_wall = wall_clock_ms();
-    let Some(mut plan) = plan_pipeline_with_rtt(
+    let Some(mut plan) = crate::pipeline::plan_pipeline_with_rtt_from_head(
         &peers,
         model,
         deploy_id,
         total_layers,
         &state.loads,
         &route_rtt,
+        preferred_head.as_deref(),
     )
     .await
     else {

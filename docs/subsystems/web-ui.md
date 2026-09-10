@@ -150,7 +150,10 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   leitura, com os parâmetros com que aquela versão subiu
 - `/implantacoes/logs` -> DeploymentLogs, consola terminal do log de processo de
   todo o cluster, em ordem de chegada ao principal e com filtro por `deploy_id`;
-  não confundir com a auditoria de requisições em `/logs`
+  não confundir com a auditoria de requisições em `/logs`. O histórico é
+  limitado no principal aos últimos sete dias ou 500.000 registros, o que
+  ocorrer primeiro; `cluster_logs_min_level` em `pom.json` controla o nível
+  mínimo capturado e assume `info`.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
   requisições paginadas por scroll infinito e inspetor JSON

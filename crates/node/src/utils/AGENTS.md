@@ -30,6 +30,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `ResourcePolicy` guarda os percentuais de RAM e CPU reservados ao sistema.
   O primeiro acesso usa `~/.pom/models` e `~/.pom/models_sliced` como padrões
   e grava `shard_max_gb` para limitar as fatias compartilhadas.
+  `cluster_logs_min_level` também vive no JSON, aceita
+  `trace`, `debug`, `info`, `warn` e `error`, e assume `info` quando ausente;
+  ele só controla o que `CaptureLayer` enfileira.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque,
@@ -84,6 +87,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e
   `q5_1`. Esses campos vivem no `pom.json` e não fazem parte dos parâmetros
   por máquina de uma implantação.
+- `cluster_logs_min_level` - limiar mínimo da captura de logs de implantação;
+  o console mantém sua política `RUST_LOG` independente. A retenção é fixa no
+  principal e não é uma preferência da auditoria de requisições.
 - `DEFAULT_INFERENCE_PORT` (8181) - anunciado desde o arranque mesmo antes de
   a fatia ser atribuída (sem ele o `apply` recusava todo modelo).
 

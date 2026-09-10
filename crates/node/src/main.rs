@@ -633,6 +633,7 @@ async fn async_main(
         app_config.save()?;
         info!("Generated a local admin credential for the configured node");
     }
+    log_capture.set_min_level(app_config.cluster_logs_min_level);
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
@@ -1397,6 +1398,7 @@ async fn start_setup_mode(
         tls_required: false,
         cluster_logs_enabled: false,
         network_chat_enabled: false,
+        cluster_logs_min_level: Default::default(),
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,

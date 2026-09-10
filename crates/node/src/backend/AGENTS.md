@@ -128,7 +128,10 @@ profile policy remains the effective authorization boundary.
   segredo do Hugging Face, histórico durável do catálogo e histórico de
   conversas e linhas do log de processo por `deploy_id`. Os logs preservam a
   ordem de chegada no principal, guardam o timestamp de origem só como dado
-  informativo e acumulam descartes da fila limitada. O histórico identifica
+  informativo e acumulam descartes da fila limitada. `try_prune_cluster_logs`
+  apaga somente `cluster_logs`, em transações `BEGIN IMMEDIATE` de até 256
+  linhas numa conexão com timeout zero; contenda encerra a rodada e o WAL é
+  truncado depois de uma exclusão. O histórico identifica
   modelos inteiros pelo caminho local, sem
   hashear os pesos durante o registro do catálogo; hashes de conteúdo ficam
   nas fronteiras explícitas de implantação, fatiamento e transferência.

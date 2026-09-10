@@ -134,8 +134,10 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI). A rota
     de prévia de capacidade faz somente estimativa analítica, com quatro
     admissões por processo e `429` imediato quando todas estão ocupadas.
-13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o
-    `Discovery` mantém o behaviour request/response de logs separado do túnel
+13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o histórico
+    usa `INFO` como nível mínimo por padrão, aceita `cluster_logs_min_level` no
+    `pom.json`, e o principal poda sete dias ou 500.000 linhas em lotes com
+    contenção não bloqueante. O `Discovery` mantém o behaviour request/response de logs separado do túnel
     de inferência e só envia lotes ao principal. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
     UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a

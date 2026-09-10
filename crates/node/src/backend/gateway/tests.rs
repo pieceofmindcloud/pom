@@ -2320,6 +2320,7 @@ pub(crate) mod testkit {
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,

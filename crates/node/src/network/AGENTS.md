@@ -33,7 +33,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   mesmo túnel Noise.
 - `cluster_logs.rs` - captura limitada do `tracing` e transporte request/response
   separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão e só o
-  principal ingere e persiste lotes.
+  principal ingere e persiste lotes. `CaptureLayer` usa `INFO` como nível
+  mínimo por padrão, configurável por `Config.cluster_logs_min_level`, sem
+  alterar o filtro do console. No principal, `ClusterLogs::start` roda a poda
+  em segundo plano: mantém sete dias e no máximo 500.000 linhas, em lotes de
+  256 com pausa e tentativa não bloqueante.
 - `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
   campo anunciado só dispara a leitura da política no principal.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/

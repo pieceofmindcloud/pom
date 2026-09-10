@@ -10,7 +10,7 @@ use crate::config::{ApiKey, NetworkSettings};
 use crate::deployment::Deployment;
 use crate::thermal::ThermalPolicy;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -78,6 +78,24 @@ const GEO_REFERENCE: &[(&str, &str, &str, f64, f64)] = &[
     ("US", "Estados Unidos", "São Francisco", 37.7749, -122.4194),
     ("US", "Estados Unidos", "Seattle", 47.6062, -122.3321),
 ];
+
+fn is_sqlite_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(sqlite_error, _)
+            if matches!(
+                sqlite_error.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterLogsPruneResult {
+    Deleted { count: usize, space_reclaimed: bool },
+    NothingToPrune,
+    Contended,
+}
 
 /// Durable transcript accepted by the authenticated UI history API.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -977,6 +995,108 @@ impl PomDb {
         })
     }
 
+    /// Remove one bounded batch of cluster logs that falls outside both
+    /// retention limits. The connection and transaction deliberately use a
+    /// zero busy timeout: pruning is best-effort and must yield immediately
+    /// to an active writer instead of delaying inference or audit writes.
+    pub fn try_prune_cluster_logs(
+        &self,
+        older_than: &str,
+        max_rows: u64,
+        batch_size: usize,
+    ) -> Result<ClusterLogsPruneResult> {
+        let batch_size = batch_size.clamp(1, 1_000) as i64;
+        let max_rows = max_rows.max(1);
+        let mut connection = Connection::open(&self.path)
+            .with_context(|| format!("abrir conexão para podar logs {}", self.path.display()))?;
+        connection.busy_timeout(std::time::Duration::ZERO)?;
+
+        // This read happens before BEGIN IMMEDIATE so a large offset cannot
+        // hold the writer lock. If a concurrent writer changes the count
+        // after this snapshot, the next cycle corrects the conservative
+        // result without ever deleting a newly inserted row.
+        let oldest_kept = match connection
+            .query_row(
+                "SELECT received_seq
+                 FROM cluster_logs
+                 ORDER BY received_seq DESC
+                 LIMIT 1 OFFSET ?",
+                params![max_rows.saturating_sub(1).min(i64::MAX as u64) as i64],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+        {
+            Ok(oldest_kept) => oldest_kept,
+            Err(error) if is_sqlite_busy(&error) => {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            Err(error) => return Err(error).context("ler limite de retenção dos logs"),
+        };
+        let transaction = match connection.transaction_with_behavior(TransactionBehavior::Immediate)
+        {
+            Ok(transaction) => transaction,
+            Err(error) if is_sqlite_busy(&error) => {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            Err(error) => return Err(error).context("iniciar transação de poda dos logs"),
+        };
+
+        let deleted = match oldest_kept {
+            Some(oldest_kept) => transaction.execute(
+                "DELETE FROM cluster_logs
+                 WHERE received_seq IN (
+                     SELECT received_seq
+                     FROM cluster_logs
+                     WHERE received_at < ?1 OR received_seq < ?2
+                     ORDER BY received_seq
+                     LIMIT ?3
+                 )",
+                params![older_than, oldest_kept, batch_size],
+            ),
+            None => transaction.execute(
+                "DELETE FROM cluster_logs
+                 WHERE received_seq IN (
+                     SELECT received_seq
+                     FROM cluster_logs
+                     WHERE received_at < ?1
+                     ORDER BY received_seq
+                     LIMIT ?2
+                 )",
+                params![older_than, batch_size],
+            ),
+        };
+        let deleted = match deleted {
+            Ok(deleted) => deleted,
+            Err(error) if is_sqlite_busy(&error) => {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            Err(error) => return Err(error).context("apagar lote de logs antigos"),
+        };
+        if let Err(error) = transaction.commit() {
+            if is_sqlite_busy(&error) {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            return Err(error).context("confirmar poda dos logs");
+        }
+
+        if deleted == 0 {
+            return Ok(ClusterLogsPruneResult::NothingToPrune);
+        }
+
+        let space_reclaimed =
+            match connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                row.get::<_, i64>(0)
+            }) {
+                Ok(busy) => busy == 0,
+                Err(error) if is_sqlite_busy(&error) => false,
+                Err(error) => return Err(error).context("recuperar espaço do WAL dos logs"),
+            };
+        Ok(ClusterLogsPruneResult::Deleted {
+            count: deleted,
+            space_reclaimed,
+        })
+    }
+
     /// Lê a janela mais recente e devolve-a em ordem crescente de chegada.
     /// `origin_at` nunca aparece no ORDER BY: relógios remotos são apenas
     /// informação, não uma fonte de ordenação.
@@ -1566,6 +1686,8 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS cluster_logs_deploy_seq_idx
             ON cluster_logs(deploy_id, received_seq);
+        CREATE INDEX IF NOT EXISTS cluster_logs_received_at_seq_idx
+            ON cluster_logs(received_at, received_seq);
         CREATE TABLE IF NOT EXISTS cluster_log_counters (
             counter_key TEXT PRIMARY KEY,
             value INTEGER NOT NULL
@@ -1720,9 +1842,11 @@ fn is_last(model: &DiscoveredModel) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{PomDb, DATABASE_FILENAME};
+    use super::{ClusterLogsPruneResult, PomDb, DATABASE_FILENAME};
     use crate::config::ApiKey;
+    use rusqlite::Connection;
     use std::path::{Path, PathBuf};
+    use std::time::Instant;
 
     #[test]
     fn creates_missing_database_with_the_complete_schema() {
@@ -1788,6 +1912,170 @@ mod tests {
         assert_eq!(rows[0].deploy_id, "deploy-1");
         assert_eq!(db.cluster_log_dropped().unwrap(), 3);
         remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_removes_old_rows_even_below_count_limit() {
+        let path = temporary_path("cluster-logs-retention-age");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo-1");
+        insert_cluster_log(&db, "2026-01-02T00:00:00Z", "antigo-2");
+        insert_cluster_log(&db, "2026-09-10T00:00:00Z", "recente");
+
+        let result = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("podar logs antigos");
+
+        assert!(matches!(
+            result,
+            ClusterLogsPruneResult::Deleted { count: 2, .. }
+        ));
+        let rows = db.cluster_logs(None, 100).expect("ler logs restantes");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].message, "recente");
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_respects_count_in_small_batches() {
+        let path = temporary_path("cluster-logs-retention-count");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        for index in 0..7 {
+            insert_cluster_log(&db, "2099-01-01T00:00:00Z", &format!("mensagem-{index}"));
+        }
+
+        let first = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
+            .expect("primeiro lote");
+        let second = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
+            .expect("segundo lote");
+        let third = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
+            .expect("fim da poda");
+
+        assert!(matches!(
+            first,
+            ClusterLogsPruneResult::Deleted { count: 2, .. }
+        ));
+        assert!(matches!(
+            second,
+            ClusterLogsPruneResult::Deleted { count: 2, .. }
+        ));
+        assert_eq!(third, ClusterLogsPruneResult::NothingToPrune);
+        assert_eq!(db.cluster_logs(None, 100).unwrap().len(), 3);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_returns_immediately_under_sqlite_contention() {
+        let path = temporary_path("cluster-logs-retention-contention");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
+        let holder = Connection::open(&path).expect("abrir conexão de contenção");
+        holder
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("reservar escrita");
+
+        let started = Instant::now();
+        let result = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("contenção deve ser tratável");
+
+        assert_eq!(result, ClusterLogsPruneResult::Contended);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        holder.execute_batch("ROLLBACK").expect("liberar escrita");
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_checkpoints_wal_after_a_delete() {
+        let path = temporary_path("cluster-logs-retention-checkpoint");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
+
+        let result = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("podar e recuperar espaço");
+
+        assert!(matches!(
+            result,
+            ClusterLogsPruneResult::Deleted {
+                count: 1,
+                space_reclaimed: true
+            }
+        ));
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_does_not_touch_request_audit_tables() {
+        let path = temporary_path("cluster-logs-retention-audit");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        db.with_write("preparar auditoria do teste", |connection| {
+            connection.execute(
+                "INSERT INTO audit_requests (
+                    id, received_at, route, model, api_key_id, api_key_label,
+                    entry_node_id, prompt, status
+                 ) VALUES ('request-1', '2026-09-10T00:00:00Z', '/v1/chat/completions',
+                    'model', 'key-1', 'test', 'node-a', 'prompt', 'in_progress')",
+                [],
+            )?;
+            connection.execute(
+                "INSERT INTO audit_request_hops (request_id, position, node_id)
+                 VALUES ('request-1', 0, 'node-a')",
+                [],
+            )?;
+            connection.execute(
+                "INSERT INTO audit_prompt_fts (request_id, prompt)
+                 VALUES ('request-1', 'prompt')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("preparar auditoria");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
+
+        db.try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("podar logs");
+
+        db.with_read("conferir auditoria", |connection| {
+            assert_eq!(
+                connection.query_row("SELECT COUNT(*) FROM audit_requests", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                1
+            );
+            assert_eq!(
+                connection.query_row("SELECT COUNT(*) FROM audit_request_hops", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                1
+            );
+            assert_eq!(
+                connection.query_row("SELECT COUNT(*) FROM audit_prompt_fts", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                1
+            );
+            Ok(())
+        })
+        .expect("auditoria preservada");
+        remove_database(&path);
+    }
+
+    fn insert_cluster_log(db: &PomDb, received_at: &str, message: &str) {
+        db.with_write("preparar log do teste", |connection| {
+            connection.execute(
+                "INSERT INTO cluster_logs (
+                    node_id, node_name, deploy_id, origin_at, received_at,
+                    level, target, message
+                 ) VALUES ('node-a', 'test', 'deploy-1', ?, ?, 'INFO', 'test', ?)",
+                rusqlite::params![received_at, received_at, message],
+            )?;
+            Ok(())
+        })
+        .expect("preparar log");
     }
 
     #[test]

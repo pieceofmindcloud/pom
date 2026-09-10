@@ -752,6 +752,13 @@ anúncio como política.
 `{ network_chat_enabled }`. A classificação do gateway é comum/interna, para
 que uma chamada de peer não passe pela catraca de token humano.
 
+O `pom.json` aceita `cluster_logs_min_level` (`trace`, `debug`, `info`, `warn`
+ou `error`) para escolher o nível mínimo gravado; o padrão é `info` e isso não
+altera o console. O principal poda `cluster_logs` periodicamente, mantendo os
+últimos sete dias e no máximo 500.000 linhas, o que ocorrer primeiro. A poda
+em lotes e a recuperação do WAL não alcançam `audit_requests`,
+`audit_request_hops` nem `audit_prompt_fts*`.
+
 **`POST /api/ui/network/logs`** - corpo `{ logs_enabled: bool }`, liga ou
 desliga a captura e o envio do log de processo do cluster em tempo real. Só o
 principal recebe a operação; o efeito é aplicado sem reinício e anunciado como

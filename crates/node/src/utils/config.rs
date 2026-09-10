@@ -246,6 +246,10 @@ pub struct Config {
     /// demais nós via leitura autenticada.
     #[serde(default)]
     pub network_chat_enabled: bool,
+    /// Nível mínimo capturado no histórico de logs do cluster. O filtro é
+    /// local à captura e não altera o nível do console ou de outros sinks.
+    #[serde(default)]
+    pub cluster_logs_min_level: crate::cluster_logs::ClusterLogLevel,
     /// Directories holding **whole** models.
     ///
     /// `None` — the field missing from an old `pom.json`, or never edited —
@@ -361,6 +365,7 @@ impl fmt::Debug for Config {
             .field("tls_required", &self.tls_required)
             .field("cluster_logs_enabled", &self.cluster_logs_enabled)
             .field("network_chat_enabled", &self.network_chat_enabled)
+            .field("cluster_logs_min_level", &self.cluster_logs_min_level)
             .field("model_dirs", &self.model_dirs)
             .field("shard_dir", &self.shard_dir)
             .field("shard_max_gb", &self.shard_max_gb)
@@ -866,6 +871,7 @@ mod tests {
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             connection_key: "test-key".into(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -926,6 +932,29 @@ mod tests {
     }
 
     #[test]
+    fn nivel_minimo_dos_logs_tem_default_info_e_sobrevive_ao_json() {
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert_eq!(
+            defaulted.cluster_logs_min_level,
+            crate::cluster_logs::ClusterLogLevel::Info
+        );
+
+        let configured: Config =
+            serde_json::from_str(r#"{"profile":"node","cluster_logs_min_level":"debug"}"#).unwrap();
+        assert_eq!(
+            configured.cluster_logs_min_level,
+            crate::cluster_logs::ClusterLogLevel::Debug
+        );
+        assert_eq!(
+            serde_json::to_value(configured)
+                .unwrap()
+                .get("cluster_logs_min_level")
+                .unwrap(),
+            "debug"
+        );
+    }
+
+    #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
             gpus: None,
@@ -937,6 +966,7 @@ mod tests {
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             connection_key: "node-key".into(),
             gateway_port: 8090,
             admin_exposure: AdminExposure::Localhost,
@@ -1074,6 +1104,7 @@ mod tests {
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
@@ -1180,6 +1211,7 @@ mod tests {
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             connection_key: "k".into(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,

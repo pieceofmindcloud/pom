@@ -4038,6 +4038,7 @@ mod tests {
             tls_required: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,

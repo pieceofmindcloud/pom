@@ -182,8 +182,26 @@ pub(crate) fn step_blocking(
                 match spec.source {
                     DraftSource::Mtp => {
                         let p_min = s.mtp_min_probability;
-                        s.engine
-                            .mtp_draft(tid, n_past, seq_id, spec.k.saturating_sub(1), p_min)
+                        let mtp_started = Instant::now();
+                        let draft = s.engine.mtp_draft(
+                            tid,
+                            n_past,
+                            seq_id,
+                            spec.k.saturating_sub(1),
+                            p_min,
+                        );
+                        timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
+                        if let Some(context) = profiling.as_ref() {
+                            timings.record_profile_span(
+                                context,
+                                "mtp-draft",
+                                mtp_started,
+                                Instant::now(),
+                                None,
+                                None,
+                            );
+                        }
+                        draft
                     }
                     DraftSource::Lookup => {
                         let session = &s.sessions[&sid_key];
@@ -392,9 +410,21 @@ pub(crate) fn step_blocking(
                     let n_past_next = session_n_past - (n_tokens as u32 - keep as u32);
                     let id0 = *accepted_ids.last().unwrap_or(&eos);
                     let p_min = s.mtp_min_probability;
-                    let dr =
-                        s.engine
-                            .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
+                    let mtp_started = Instant::now();
+                    let dr = s
+                        .engine
+                        .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
+                    timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
+                    if let Some(context) = profiling.as_ref() {
+                        timings.record_profile_span(
+                            context,
+                            "mtp-draft",
+                            mtp_started,
+                            Instant::now(),
+                            None,
+                            None,
+                        );
+                    }
                     if dr.is_empty() {
                         speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                         speculation_disabled_detail =
@@ -562,9 +592,25 @@ pub(crate) fn step_blocking(
                 s.engine.mtp_accept(0);
                 let session_n_past = s.sessions[&sid_key].n_past;
                 let p_min = s.mtp_min_probability;
-                let dr =
-                    s.engine
-                        .mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
+                let mtp_started = Instant::now();
+                let dr = s.engine.mtp_draft(
+                    next_id,
+                    session_n_past,
+                    seq_id,
+                    k.saturating_sub(1),
+                    p_min,
+                );
+                timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
+                if let Some(context) = profiling.as_ref() {
+                    timings.record_profile_span(
+                        context,
+                        "mtp-draft",
+                        mtp_started,
+                        Instant::now(),
+                        None,
+                        None,
+                    );
+                }
                 if dr.is_empty() {
                     speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
                     speculation_disabled_detail =

@@ -43,6 +43,8 @@ pub(crate) const SPECULATION_REASON_MTP_INPUT_MISSING: &str = "mtp_input_missing
 pub(crate) const SPECULATION_REASON_MTP_RUNTIME_DISABLED: &str = "mtp_runtime_disabled";
 pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
     "peer_without_sliced_mtp_wire";
+pub(crate) const SPECULATION_REASON_REMOTE_STREAM_MTP_DISABLED: &str =
+    "remote_stream_sliced_mtp_disabled";
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
 const PROFILE_SPAN_LIMIT: usize = 64;
 
@@ -163,6 +165,10 @@ pub(super) struct NodeTimings {
     pub(super) lock_wait_us: u64,
     pub(super) setup_us: u64,
     pub(super) decode_us: u64,
+    /// Tempo síncrono gasto pelo bloco `nextn` para montar o draft. Fica
+    /// separado de `decode_us` para não classificar produção do próximo
+    /// token como rede, fila ou espera do scheduler.
+    pub(super) mtp_draft_us: u64,
     pub(super) backend_enqueue_us: u64,
     pub(super) backend_completion_us: u64,
     pub(super) residual_capture_d2h_sync_us: u64,
@@ -350,6 +356,7 @@ impl NodeTimings {
             "lock_wait_ms": ms(self.lock_wait_us),
             "setup_ms": ms(self.setup_us),
             "decode_ms": ms(self.decode_us),
+            "mtp_draft_ms": ms(self.mtp_draft_us),
             "backend_enqueue_ms": ms(self.backend_enqueue_us),
             "backend_completion_ms": ms(self.backend_completion_us),
             "residual_capture_d2h_sync_ms": ms(self.residual_capture_d2h_sync_us),

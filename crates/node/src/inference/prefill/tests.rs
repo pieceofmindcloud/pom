@@ -307,7 +307,10 @@ mod tests {
                 "remote_stream_remote_compute_ms": 4,
                 "remote_stream_wait_ms": 20 + index,
                 "remote_stream_producer_wait_ms": 7 + index,
+                "remote_stream_channel_send_wait_ms": 1 + index,
+                "remote_stream_downstream_wait_ms": 15 + index,
                 "remote_stream_queue_wait_ms": 2 + index,
+                "remote_stream_delivery_ms": 3 + index,
             })
         };
         let hop = |span_count: u64, processing_ms: u64| {
@@ -367,6 +370,34 @@ mod tests {
             trace
                 .telemetry
                 .remote_stream
+                .remote_stream_channel_send_wait_total_ms,
+            3
+        );
+        assert_eq!(
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_channel_send_wait_p95_ms,
+            2
+        );
+        assert_eq!(
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_downstream_wait_total_ms,
+            31
+        );
+        assert_eq!(
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_downstream_wait_p95_ms,
+            16
+        );
+        assert_eq!(
+            trace
+                .telemetry
+                .remote_stream
                 .remote_stream_queue_wait_total_ms,
             7
         );
@@ -375,6 +406,20 @@ mod tests {
                 .telemetry
                 .remote_stream
                 .remote_stream_queue_wait_p95_ms,
+            4
+        );
+        assert_eq!(
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_delivery_total_ms,
+            7
+        );
+        assert_eq!(
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_delivery_p95_ms,
             4
         );
         assert_eq!(trace.telemetry.status, "complete");
@@ -758,6 +803,28 @@ mod tests {
 
         assert_eq!(trace.hops[0].decode.node_lock_wait_ms, 194.0);
         assert_eq!(trace.hops[0].decode.node_decode_ms, 34.0);
+    }
+
+    #[test]
+    fn mtp_draft_is_reported_as_synchronous_node_compute() {
+        let mut trace = RequestTrace::new("qwen", &[("tail", 0, 15)]);
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 78,
+                "processing_ms": 78,
+                "node_timings": {
+                    "decode_ms": 19.0,
+                    "sampling_ms": 2.0,
+                    "mtp_draft_ms": 54.0,
+                    "encode_ms": 1.0,
+                },
+            }),
+        );
+
+        assert_eq!(trace.hops[0].decode.node_mtp_draft_ms, 54.0);
+        assert_eq!(trace.hops[0].decode.node_decode_ms, 19.0);
     }
 
     #[test]

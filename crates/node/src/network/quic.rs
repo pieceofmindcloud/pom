@@ -15,7 +15,7 @@ use quinn;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::lookup_host;
 use tracing::{debug, info};
 
@@ -60,6 +60,16 @@ pub fn inference_quic_port(p2p_port: u16) -> Option<u16> {
 /// hop precisa cair para o próximo transporte **sem esperar**.
 pub(crate) const QUIC_ESTABLISH_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// O orçamento total para descobrir que o endpoint QUIC não está disponível.
+/// Os endereços anunciados são alternativas, não tentativas independentes:
+/// testar três deles não pode transformar um fallback TCP em três timeouts.
+pub(crate) const QUIC_FALLBACK_BUDGET: Duration = Duration::from_millis(300);
+
+/// Uma falha de descoberta torna inútil repetir o mesmo handshake no próximo
+/// token. O caminho HTTP continua disponível imediatamente, e o QUIC volta a
+/// ser sondado depois desta janela para recuperar uma porta que foi reiniciada.
+const QUIC_FAILURE_QUARANTINE: Duration = Duration::from_secs(5);
+
 /// Empurrar o corpo (o estado oculto do prefill são alguns MB) é o único
 /// trecho de envio que pode legitimamente demorar mais que um RTT. Ainda
 /// assim, num link são drena em dezenas de ms; 1,5 s é teto de "algo travou".
@@ -92,6 +102,7 @@ struct QuicSession {
 pub struct ClientPool {
     endpoint: Arc<tokio::sync::OnceCell<quinn::Endpoint>>,
     sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<QuicSession>>>>,
+    failed_until: Arc<tokio::sync::Mutex<HashMap<String, Instant>>>,
 }
 
 impl ClientPool {
@@ -99,6 +110,7 @@ impl ClientPool {
         Self {
             endpoint: Arc::new(tokio::sync::OnceCell::const_new()),
             sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            failed_until: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -124,8 +136,17 @@ impl ClientPool {
         timeout: Duration,
     ) -> Result<QuicResponse> {
         let mut last_error = anyhow!("nenhum endereço QUIC anunciado para {peer_id}");
+        let fallback_deadline = Instant::now() + QUIC_FALLBACK_BUDGET;
         for advertised in quic_addresses {
             let key = format!("{peer_id}@{}", advertised.trim());
+            if self.is_quic_quarantined(&key).await {
+                last_error = anyhow!("{advertised}: endpoint QUIC em quarentena");
+                continue;
+            }
+            if remaining_budget(fallback_deadline).is_none() {
+                last_error = anyhow!("orçamento de descoberta QUIC esgotado");
+                break;
+            }
             match self
                 .request_one(
                     &key,
@@ -138,13 +159,18 @@ impl ClientPool {
                     session_id,
                     body.clone(),
                     timeout,
+                    fallback_deadline,
                 )
                 .await
             {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    self.failed_until.lock().await.remove(&key);
+                    return Ok(response);
+                }
                 Err(error) => {
                     last_error = anyhow!("{advertised}: {error}");
                     self.sessions.lock().await.remove(&key);
+                    self.quarantine_quic(&key).await;
                 }
             }
         }
@@ -164,8 +190,9 @@ impl ClientPool {
         session_id: Option<&str>,
         body: Vec<u8>,
         timeout: Duration,
+        fallback_deadline: Instant,
     ) -> Result<QuicResponse> {
-        let session = match self.session(key, peer_id, advertised, timeout).await {
+        let session = match self.session(key, peer_id, advertised, fallback_deadline).await {
             Ok(session) => session,
             Err(error) => return Err(error),
         };
@@ -188,10 +215,11 @@ impl ClientPool {
             // Abrir o stream é controle: um RTT num link vivo. Passou de
             // `QUIC_ESTABLISH_TIMEOUT` => caminho UDP morto, aborta já para o
             // chamador cair no próximo transporte sem penalidade de espera.
-            let mut stream =
-                tokio::time::timeout(QUIC_ESTABLISH_TIMEOUT, sender.send_request(request))
-                    .await
-                    .context("abertura do stream HTTP/3 não fechou no orçamento de RTT")??;
+            let stream_timeout = remaining_budget(fallback_deadline)
+                .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do stream"))?;
+            let mut stream = tokio::time::timeout(stream_timeout, sender.send_request(request))
+                .await
+                .context("abertura do stream HTTP/3 não fechou no orçamento de RTT")??;
             // `send_data`/`finish` empurram o corpo (o estado oculto do prefill
             // são alguns MB). Num link são drena em dezenas de ms; passou de
             // `QUIC_SEND_TIMEOUT` => travou, cai para TCP.
@@ -243,12 +271,16 @@ impl ClientPool {
         key: &str,
         peer_id: &str,
         advertised: &str,
-        _timeout: Duration,
+        fallback_deadline: Instant,
     ) -> Result<Arc<QuicSession>> {
         if let Some(session) = self.sessions.lock().await.get(key).cloned() {
             return Ok(session);
         }
-        let addr = resolve_addr(advertised).await?;
+        let resolve_timeout = remaining_budget(fallback_deadline)
+            .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do DNS"))?;
+        let addr = tokio::time::timeout(resolve_timeout, resolve_addr(advertised))
+            .await
+            .context("resolução do endereço QUIC excedeu o orçamento")??;
         let tls = crate::tls::quic_client_config(peer_id)?;
         let mut config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(tls)?,
@@ -260,8 +292,10 @@ impl ClientPool {
         // O handshake QUIC é 1-RTT (0-RTT quando há ticket). Um orçamento de
         // sub-segundo é o que transforma "peer QUIC inalcançável" em um
         // fallback imediato para TCP, em vez de segurar o hop de inferência.
+        let establish_timeout = remaining_budget(fallback_deadline)
+            .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do handshake"))?;
         let connection = tokio::time::timeout(
-            QUIC_ESTABLISH_TIMEOUT,
+            establish_timeout.min(QUIC_ESTABLISH_TIMEOUT),
             endpoint
                 // The certificate verifier pins the full node_id. SNI only
                 // needs a valid DNS label; a 64-character hex node_id can
@@ -285,6 +319,31 @@ impl ClientPool {
             .insert(key.to_string(), session.clone());
         Ok(session)
     }
+
+    async fn is_quic_quarantined(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let mut failed_until = self.failed_until.lock().await;
+        match failed_until.get(key).copied() {
+            Some(until) if until > now => true,
+            Some(_) => {
+                failed_until.remove(key);
+                false
+            }
+            None => false,
+        }
+    }
+
+    async fn quarantine_quic(&self, key: &str) {
+        self.failed_until
+            .lock()
+            .await
+            .insert(key.to_owned(), Instant::now() + QUIC_FAILURE_QUARANTINE);
+    }
+}
+
+fn remaining_budget(deadline: Instant) -> Option<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    (!remaining.is_zero()).then_some(remaining)
 }
 
 pub fn server_config(id: &crate::identity::Identity) -> Result<Arc<quinn::ServerConfig>> {
@@ -531,6 +590,24 @@ mod tests {
             "[2001:db8::42]:8182".parse().unwrap()
         );
         assert!(quic_socket_addr("http://[2001:db8::42]:8181", 8182).is_err());
+    }
+
+    #[test]
+    fn tentativas_quic_compartilham_orcamento_antes_do_fallback_tcp() {
+        let mut remaining = QUIC_FALLBACK_BUDGET;
+        let mut spent = Duration::ZERO;
+        let mut attempts = 0;
+        while let Some(timeout) = (!remaining.is_zero())
+            .then_some(remaining.min(QUIC_ESTABLISH_TIMEOUT))
+        {
+            attempts += 1;
+            spent += timeout;
+            remaining = remaining.saturating_sub(timeout);
+        }
+
+        assert_eq!(attempts, 1, "um endpoint morto não deve serializar timeouts");
+        assert_eq!(spent, QUIC_FALLBACK_BUDGET);
+        assert!(spent < Duration::from_secs(1));
     }
 
     #[tokio::test]

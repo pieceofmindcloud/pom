@@ -561,15 +561,13 @@ faz o download autenticado do blob persistido.
   `response_complete` until the retained trace is complete, not as an
   invented `unaccounted` duration;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
-  the tail produces `next_draft` and the remote head installs it in the next
-  internal `step` metadata before continuing its owned loop. The existing
-  callback carries that draft and explicit `speculated`, `speculation_active`
-  and `speculation_disabled_reason` fields in the same frame; the gateway uses
-  the state for telemetry and does not reinject a draft in remote-stream mode.
-  The legacy direct path keeps the gateway-side store and injection. A remote
-  stream stops MTP only when `speculation_active` is false, while the legacy
-  path stops when the head refuses a sent draft or the tail returns no draft;
-  both paths continue with `prefill::step` and a named reason;
+  the remote-stream selector deliberately omits the synchronous `nextn` draft
+  because it would block every producer callback, recording
+  `remote_stream_sliced_mtp_disabled`; the legacy direct path keeps the
+  gateway-side store and injection. The callback still carries explicit
+  `speculated`, `speculation_active` and `speculation_disabled_reason` fields
+  when that path is selected. Both paths continue with `prefill::step` and a
+  named reason when speculation is unavailable;
   the gateway still chooses the pipeline replica per session. Continuous
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
@@ -706,8 +704,9 @@ faz o download autenticado do blob persistido.
   `chat/telemetry` (POST autenticado, deriva transporte e RTT das pernas
   direcionais de `pipeline_cycle` no trace da execução identificada, ou da
   última execução concluída no Painel; também devolve `pipeline_cost` quando a
-  decomposição de rede e compute existe; não usa `RttTable` como telemetria de
-  inferência),
+  decomposição de rede e compute existe; os RTTs desta vista preferem a medida
+  de fio (`net_rtt_median_ms`) e só recuam para o RTT de execução em traces
+  antigos; não usa `RttTable` como telemetria de inferência),
   `requests` (GET ->
   `crate::reqlog::list_requests`; `chat/history` (GET/POST/DELETE autenticado,
   transcriptos normalizados em `pom.db`); `requests/stats` (GET ->

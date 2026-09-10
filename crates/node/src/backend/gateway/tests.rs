@@ -1934,7 +1934,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_de_dois_hops_inicia_mtp_na_cabeca_remota() {
+    fn stream_remoto_de_dois_hops_desliga_mtp_sincrono_por_ciclo() {
         let mut multi = plan(
             "remote-head",
             [
@@ -1963,17 +1963,94 @@ mod remote_stream_selection_tests {
         let speculate = remote_stream_speculation(
             &multi,
             true,
-            true,
+            false,
             4,
             3,
             4,
             crate::prefill::DraftSource::Lookup,
-        )
-        .expect("MTP fatiado deve entrar no stream remoto");
+        );
+        assert!(speculate.is_none());
+    }
 
+    #[test]
+    fn stream_remoto_desliga_mtp_fatiado_mas_preserva_o_caminho_legado() {
+        assert!(disable_sliced_mtp_for_remote_stream(true, true));
+        assert!(!disable_sliced_mtp_for_remote_stream(false, true));
+        assert!(!disable_sliced_mtp_for_remote_stream(true, false));
+
+        let legacy = remote_stream_speculation(
+            &multi_plan_with_mtp(),
+            true,
+            true,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Mtp,
+        )
+        .expect("o caminho legado deve continuar elegível a MTP");
+        assert_eq!(legacy.source, crate::infer_server::DraftSource::Mtp);
+        assert_eq!(legacy.k, 4);
+    }
+
+    fn multi_plan_with_mtp() -> PipelinePlan {
+        let mut multi = plan(
+            "remote-head",
+            [
+                vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
+                mtp_capabilities(),
+            ]
+            .concat(),
+        );
+        multi.steps[0]
+            .inference_frame_capabilities
+            .extend(mtp_capabilities());
+        multi.steps.push(crate::pipeline::PipelineStep {
+            node_id: "remote-tail".into(),
+            inference_url: "http://127.0.0.1:8182".into(),
+            inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
+            start_layer: 32,
+            end_layer: 63,
+            exec_start: 32,
+            exec_end: 63,
+            inference_frame_capabilities: mtp_capabilities(),
+            libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
+        });
+        multi
+    }
+
+    #[test]
+    fn remote_stream_mtp_fatiado_e_omitido_por_cadencia_explicita() {
+        let multi = multi_plan_with_mtp();
+        let disabled = disable_sliced_mtp_for_remote_stream(true, true);
+        assert!(disabled);
+        assert!(remote_stream_speculation(
+            &multi,
+            true,
+            !disabled,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Mtp,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn remote_stream_de_um_hop_preserva_mtp_do_modelo_inteiro() {
+        let single = plan("remote-head", mtp_capabilities());
+        let speculate = remote_stream_speculation(
+            &single,
+            true,
+            true,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Mtp,
+        )
+        .expect("MTP do modelo inteiro não depende de draft fatiado");
         assert_eq!(speculate.source, crate::infer_server::DraftSource::Mtp);
-        assert_eq!(speculate.k, 4);
-        assert!(speculate.draft.is_none());
     }
 
     #[test]

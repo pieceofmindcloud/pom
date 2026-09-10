@@ -191,9 +191,18 @@ export interface RemoteStreamTelemetry {
   remote_stream_producer_wait_total_ms?: number;
   remote_stream_producer_wait_p50_ms?: number;
   remote_stream_producer_wait_p95_ms?: number;
+  remote_stream_channel_send_wait_total_ms?: number;
+  remote_stream_channel_send_wait_p50_ms?: number;
+  remote_stream_channel_send_wait_p95_ms?: number;
+  remote_stream_downstream_wait_total_ms?: number;
+  remote_stream_downstream_wait_p50_ms?: number;
+  remote_stream_downstream_wait_p95_ms?: number;
   remote_stream_queue_wait_total_ms?: number;
   remote_stream_queue_wait_p50_ms?: number;
   remote_stream_queue_wait_p95_ms?: number;
+  remote_stream_delivery_total_ms?: number;
+  remote_stream_delivery_p50_ms?: number;
+  remote_stream_delivery_p95_ms?: number;
   token_delivery_interval_min_ms?: number;
   token_delivery_interval_p50_ms?: number;
   token_delivery_interval_p95_ms?: number;
@@ -350,6 +359,8 @@ export interface PhaseTrace {
   node_lock_wait_ms: number;
   node_setup_ms: number;
   node_decode_ms: number;
+  /** Measured synchronous MTP/nextn draft production, when reported. */
+  node_mtp_draft_ms?: number;
   node_backend_enqueue_ms: number;
   /** Backend completion timing. Never infer POM_PROFILE_SYNC from this value. */
   node_backend_completion_ms: number;

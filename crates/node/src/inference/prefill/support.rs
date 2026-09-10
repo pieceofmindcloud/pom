@@ -401,11 +401,29 @@ pub struct RemoteStreamTelemetry {
     pub remote_stream_producer_wait_total_ms: u64,
     pub remote_stream_producer_wait_p50_ms: u64,
     pub remote_stream_producer_wait_p95_ms: u64,
+    /// Tempo em que o produtor aguardou um permit do canal limitado depois
+    /// de concluir a produção do token. Zero prova que não houve
+    /// contrapressão do `Sender` nesta execução.
+    pub remote_stream_channel_send_wait_total_ms: u64,
+    pub remote_stream_channel_send_wait_p50_ms: u64,
+    pub remote_stream_channel_send_wait_p95_ms: u64,
+    /// Wall time spent in the producer's nested hop before its token became
+    /// ready. It includes downstream compute and transport, so it is the
+    /// producer's legitimate cycle time rather than local queueing.
+    pub remote_stream_downstream_wait_total_ms: u64,
+    pub remote_stream_downstream_wait_p50_ms: u64,
+    pub remote_stream_downstream_wait_p95_ms: u64,
     /// Tempo em que o token já pronto permaneceu no canal antes do emitter.
     /// Pode incluir backpressure quando o canal limitado está cheio.
     pub remote_stream_queue_wait_total_ms: u64,
     pub remote_stream_queue_wait_p50_ms: u64,
     pub remote_stream_queue_wait_p95_ms: u64,
+    /// Time spent awaiting the callback delivery that preceded this batch.
+    /// The first batch is zero and the final callback has no following batch
+    /// to carry its duration.
+    pub remote_stream_delivery_total_ms: u64,
+    pub remote_stream_delivery_p50_ms: u64,
+    pub remote_stream_delivery_p95_ms: u64,
     /// Intervalo observado no gateway entre lotes de tokens recebidos. Em um
     /// lote de um token, é o ciclo de entrega por token; lotes maiores são
     /// contados como um ciclo, sem inventar intervalos internos.
@@ -424,7 +442,13 @@ pub struct RemoteStreamTelemetry {
     #[serde(skip)]
     producer_wait: RttDistribution,
     #[serde(skip)]
+    channel_send_wait: RttDistribution,
+    #[serde(skip)]
+    downstream_wait: RttDistribution,
+    #[serde(skip)]
     queue_wait: RttDistribution,
+    #[serde(skip)]
+    delivery: RttDistribution,
     #[serde(skip)]
     token_delivery_interval: RttDistribution,
 }
@@ -493,12 +517,39 @@ impl RemoteStreamTelemetry {
             self.producer_wait.record(value);
         }
         if let Some(value) = meta
+            .get("remote_stream_channel_send_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_channel_send_wait_total_ms = self
+                .remote_stream_channel_send_wait_total_ms
+                .saturating_add(value);
+            self.channel_send_wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_downstream_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_downstream_wait_total_ms = self
+                .remote_stream_downstream_wait_total_ms
+                .saturating_add(value);
+            self.downstream_wait.record(value);
+        }
+        if let Some(value) = meta
             .get("remote_stream_queue_wait_ms")
             .and_then(serde_json::Value::as_u64)
         {
             self.remote_stream_queue_wait_total_ms =
                 self.remote_stream_queue_wait_total_ms.saturating_add(value);
             self.queue_wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_delivery_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_delivery_total_ms = self
+                .remote_stream_delivery_total_ms
+                .saturating_add(value);
+            self.delivery.record(value);
         }
         self.refresh_percentiles();
     }
@@ -528,13 +579,23 @@ impl RemoteStreamTelemetry {
         self.remote_stream_producer_wait_total_ms = self
             .remote_stream_producer_wait_total_ms
             .saturating_add(other.remote_stream_producer_wait_total_ms);
+        self.remote_stream_channel_send_wait_total_ms = self
+            .remote_stream_channel_send_wait_total_ms
+            .saturating_add(other.remote_stream_channel_send_wait_total_ms);
+        self.remote_stream_downstream_wait_total_ms = self
+            .remote_stream_downstream_wait_total_ms
+            .saturating_add(other.remote_stream_downstream_wait_total_ms);
         self.remote_stream_queue_wait_total_ms = self
             .remote_stream_queue_wait_total_ms
             .saturating_add(other.remote_stream_queue_wait_total_ms);
+        self.remote_stream_delivery_total_ms = self
+            .remote_stream_delivery_total_ms
+            .saturating_add(other.remote_stream_delivery_total_ms);
         self.frame_latency.merge(&other.frame_latency);
         self.remote_compute.merge(&other.remote_compute);
         self.wait.merge(&other.wait);
         self.producer_wait.merge(&other.producer_wait);
+        self.channel_send_wait.merge(&other.channel_send_wait);
         self.queue_wait.merge(&other.queue_wait);
         self.token_delivery_interval
             .merge(&other.token_delivery_interval);
@@ -556,8 +617,14 @@ impl RemoteStreamTelemetry {
         self.remote_stream_wait_p95_ms = self.wait.percentile(95);
         self.remote_stream_producer_wait_p50_ms = self.producer_wait.percentile(50);
         self.remote_stream_producer_wait_p95_ms = self.producer_wait.percentile(95);
+        self.remote_stream_channel_send_wait_p50_ms = self.channel_send_wait.percentile(50);
+        self.remote_stream_channel_send_wait_p95_ms = self.channel_send_wait.percentile(95);
+        self.remote_stream_downstream_wait_p50_ms = self.downstream_wait.percentile(50);
+        self.remote_stream_downstream_wait_p95_ms = self.downstream_wait.percentile(95);
         self.remote_stream_queue_wait_p50_ms = self.queue_wait.percentile(50);
         self.remote_stream_queue_wait_p95_ms = self.queue_wait.percentile(95);
+        self.remote_stream_delivery_p50_ms = self.delivery.percentile(50);
+        self.remote_stream_delivery_p95_ms = self.delivery.percentile(95);
         self.token_delivery_interval_min_ms = self.token_delivery_interval.min_ms;
         self.token_delivery_interval_p50_ms = self.token_delivery_interval.percentile(50);
         self.token_delivery_interval_p95_ms = self.token_delivery_interval.percentile(95);
@@ -1041,6 +1108,10 @@ pub struct PhaseTrace {
     pub node_lock_wait_ms: f64,
     pub node_setup_ms: f64,
     pub node_decode_ms: f64,
+    /// Tempo medido do bloco `nextn`, fora de `node_decode_ms` e antes da
+    /// serialização da resposta. Quando presente, explica a produção MTP que
+    /// um ciclo de remote-stream aguarda legitimamente.
+    pub node_mtp_draft_ms: f64,
     /// Time to hand the batch to the backend - not the time it ran.
     pub node_backend_enqueue_ms: f64,
     /// Queued backend work plus already-queued output transfer, measured with
@@ -1214,6 +1285,7 @@ impl PhaseTrace {
         self.node_lock_wait_ms += node_ms("lock_wait_ms");
         self.node_setup_ms += node_ms("setup_ms");
         self.node_decode_ms += node_decode_ms;
+        self.node_mtp_draft_ms += node_ms("mtp_draft_ms");
         self.node_backend_enqueue_ms += node_ms("backend_enqueue_ms");
         self.node_backend_completion_ms += node_ms("backend_completion_ms");
         self.node_moe_forward_ms += node_ms("moe_forward_ms");
@@ -1377,6 +1449,7 @@ impl PhaseTrace {
         self.node_lock_wait_ms += next.node_lock_wait_ms;
         self.node_setup_ms += next.node_setup_ms;
         self.node_decode_ms += next.node_decode_ms;
+        self.node_mtp_draft_ms += next.node_mtp_draft_ms;
         self.node_backend_enqueue_ms += next.node_backend_enqueue_ms;
         self.node_backend_completion_ms += next.node_backend_completion_ms;
         self.node_residual_capture_d2h_sync_ms += next.node_residual_capture_d2h_sync_ms;

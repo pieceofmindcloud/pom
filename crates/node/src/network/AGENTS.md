@@ -100,6 +100,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   A configuração do listener é independente do `tls_required` do TCP, porque
   QUIC leva seu próprio TLS 1.3. Cada resposta também expõe o RTT suavizado da
   conexão Quinn em microssegundos, separado do processamento do handler remoto.
+  A descoberta de um endpoint QUIC morto compartilha um orçamento agregado de
+  300 ms entre endereços, e a falha põe aquele endereço em quarentena por 5 s
+  para não repetir handshake a cada token; a sessão saudável é reutilizada.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o

@@ -256,7 +256,7 @@ chat.telemetry.networkUnavailable,Directional RTT unavailable,RTT direcional ind
 chat.telemetry.noEdges,"This execution used one peer, so there are no inter-peer edges to measure.","Esta execução usou uma máquina, então não há arestas entre peers para medir."
 chat.telemetry.noMeasurement,not measured,não medido
 chat.telemetry.nodeResidual,node residual {ms} ms,residual do nó {ms} ms
-chat.telemetry.nodeRow,node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · engine wait {engineWait} ms · setup {setup} ms · frame out {frameOut} ms,nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · espera do motor {engineWait} ms · setup {setup} ms · frame out {frameOut} ms
+chat.telemetry.nodeRow,node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · engine wait {engineWait} ms · setup {setup} ms · MTP draft {mtpDraft} ms · frame out {frameOut} ms,nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · espera do motor {engineWait} ms · draft MTP {mtpDraft} ms · setup {setup} ms · frame out {frameOut} ms
 chat.telemetry.notInformed,not informed,não informado
 chat.telemetry.notMeasured,not measured,não medido
 chat.telemetry.observedPath,this execution: selected path: {value},nesta execução: caminho selecionado: {value}
@@ -291,7 +291,7 @@ chat.telemetry.remoteStreamLatency,frame latency first / p50 / p95 / max {first}
 chat.telemetry.remoteStreamTitle,Remote stream,Remote stream
 chat.telemetry.remoteStreamTokenDelivery,token delivery interval samples {samples} · p50/p95/p99/max {p50}/{p95}/{p99}/{max} ms,amostras do intervalo de entrega de tokens {samples} · p50/p95/p99/máximo {p50}/{p95}/{p99}/{max} ms
 chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · p95 {p95} ms,espera do stream total {total} ms · p50 {p50} ms · p95 {p95} ms
-chat.telemetry.remoteStreamWaitSplit,producer wait total/p95 {producerTotal}/{producerP95} ms · queue wait total/p95 {queueTotal}/{queueP95} ms,espera do produtor total/p95 {producerTotal}/{producerP95} ms · espera de fila total/p95 {queueTotal}/{queueP95} ms
+chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{producerP95} ms · channel send total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · queued token total/p95 {queueTotal}/{queueP95} ms · prior delivery total/p95 {deliveryTotal}/{deliveryP95} ms,produção total/p95 {producerTotal}/{producerP95} ms · envio ao canal total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · token na fila total/p95 {queueTotal}/{queueP95} ms · entrega anterior total/p95 {deliveryTotal}/{deliveryP95} ms
 chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
 chat.telemetry.residualHeader,residual,residual
 chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms

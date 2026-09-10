@@ -676,8 +676,11 @@ do `node_id`; portanto QUIC permanece cifrado mesmo quando `tls_required` está
 desligado. A política TLS continua escolhendo apenas `http://` ou `https://`
 para o fallback TCP. Se o peer não tiver endpoint QUIC, a porta não estiver
 escutando, a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e
-marca `transport_fallback`; o túnel só é a última reserva depois de uma falha
-de transporte também no caminho TCP.
+marca `transport_fallback`; a descoberta compartilha um orçamento de 300 ms
+entre os endereços QUIC anunciados, em vez de serializar um timeout por
+endereço, e coloca um endpoint que falhou em quarentena por 5 s. Uma sessão
+saudável é reutilizada nos próximos frames. O túnel só é a última reserva
+depois de uma falha de transporte também no caminho TCP.
 A telemetria por hop publica o transporte efetivo como `http`, `https` ou
 `quic`. Para QUIC, `transport_rtt_us` é o RTT medido pela conexão UDP e os
 quantis de rede ficam separados do tempo de processamento remoto.

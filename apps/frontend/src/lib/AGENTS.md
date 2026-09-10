@@ -49,7 +49,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   observations and distributed `TelemetrySummary`/`TelemetrySpan`. TTFT keeps
   separate pipeline/server/client meanings; backend completion timing must not
   be used to infer `POM_PROFILE_SYNC` or the engine.
-  `RequestTrace.pipeline_cycle` preserves the measured directional legs of the
+  The remote-stream contract separates producer, downstream, channel, queue
+  and callback timing, and `PhaseTrace` carries synchronous MTP draft time
+  when reported. `RequestTrace.pipeline_cycle` preserves the measured directional legs of the
   distributed cycle, including the final peer-to-gateway return when the
   transport publishes one; missing legs remain unknown. The Dashboard uses
   this data for the virtual Gateway cost card instead of a topology probe.

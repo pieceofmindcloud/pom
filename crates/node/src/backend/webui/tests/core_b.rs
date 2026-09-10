@@ -328,6 +328,39 @@ mod chat_telemetry_tests {
     }
 
     #[test]
+    fn execution_telemetry_network_panel_uses_wire_rtt_not_remote_processing() {
+        let requested = ["head", "tail"].into_iter().map(str::to_string).collect();
+        let trace = json!({
+            "hops": [
+                {"node_id": "head", "decode": {"processing_ms": 34}},
+                {"node_id": "tail", "decode": {"processing_ms": 94}}
+            ],
+            "pipeline_cycle": {
+                "decode": [
+                    {"from_node_id": "head", "to_node_id": "tail", "transport_summary": {
+                        "transports": [{
+                            "transport": "quic",
+                            "calls": 10,
+                            "rtt_median_ms": 77,
+                            "net_rtt_median_ms": 1
+                        }]
+                    }}
+                ]
+            }
+        });
+
+        assert_eq!(
+            execution_transport_measurements(&trace, &requested),
+            vec![ChatTelemetryMeasurement {
+                from_node_id: "head".into(),
+                to_node_id: "tail".into(),
+                rtt_ms: 1.0,
+                transport: "quic".into(),
+            }]
+        );
+    }
+
+    #[test]
     fn execution_pipeline_cost_sums_each_cycle_leg_once_and_adds_compute() {
         let trace = json!({
             "hops": [

@@ -94,7 +94,7 @@ function DistributedTelemetry({ trace }: { trace: RequestTrace }) {
         <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamLatency", { first: remote.first_frame_latency_ms ?? 0, p50: remote.frame_latency_p50_ms, p95: remote.frame_latency_p95_ms, max: remote.frame_latency_max_ms })}</p>
         <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamCompute", { total: remote.remote_compute_total_ms, p50: remote.remote_compute_p50_ms, p95: remote.remote_compute_p95_ms })}</p>
         <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamWait", { total: remote.remote_stream_wait_total_ms, p50: remote.remote_stream_wait_p50_ms, p95: remote.remote_stream_wait_p95_ms })}</p>
-        <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamWaitSplit", { producerTotal: remote.remote_stream_producer_wait_total_ms ?? 0, producerP95: remote.remote_stream_producer_wait_p95_ms ?? 0, queueTotal: remote.remote_stream_queue_wait_total_ms ?? 0, queueP95: remote.remote_stream_queue_wait_p95_ms ?? 0 })}</p>
+        <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamWaitSplit", { producerTotal: remote.remote_stream_producer_wait_total_ms ?? 0, producerP95: remote.remote_stream_producer_wait_p95_ms ?? 0, channelTotal: remote.remote_stream_channel_send_wait_total_ms ?? 0, channelP95: remote.remote_stream_channel_send_wait_p95_ms ?? 0, downstreamTotal: remote.remote_stream_downstream_wait_total_ms ?? 0, downstreamP95: remote.remote_stream_downstream_wait_p95_ms ?? 0, queueTotal: remote.remote_stream_queue_wait_total_ms ?? 0, queueP95: remote.remote_stream_queue_wait_p95_ms ?? 0, deliveryTotal: remote.remote_stream_delivery_total_ms ?? 0, deliveryP95: remote.remote_stream_delivery_p95_ms ?? 0 })}</p>
         {(remote.token_delivery_interval_samples ?? 0) > 0 && <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamTokenDelivery", { samples: remote.token_delivery_interval_samples ?? 0, p50: remote.token_delivery_interval_p50_ms ?? 0, p95: remote.token_delivery_interval_p95_ms ?? 0, p99: remote.token_delivery_interval_p99_ms ?? 0, max: remote.token_delivery_interval_max_ms ?? 0 })}</p>}
       </div>}
       {(telemetry.duplicate_spans > 0 || telemetry.late_spans > 0 || telemetry.orphan_spans > 0) && <p className="mt-2 font-mono text-[0.66rem] text-faint">{t("chat.telemetry.integrity", { duplicates: telemetry.duplicate_spans, late: telemetry.late_spans, orphan: telemetry.orphan_spans })}</p>}
@@ -425,7 +425,7 @@ function PhaseRow({
   const named =
     phase.node_frame_decode_ms + phase.node_input_prepare_ms + phase.node_queue_ms +
     phase.node_lock_wait_ms +
-    phase.node_setup_ms + phase.node_decode_ms + phase.node_residual_ms +
+    phase.node_setup_ms + phase.node_decode_ms + (phase.node_mtp_draft_ms ?? 0) + phase.node_residual_ms +
     phase.node_sampling_ms + phase.node_encode_ms;
   const nodeResidual = Math.max(0, phase.processing_ms - named);
   const idle = phase.calls === 0;
@@ -463,7 +463,7 @@ function PhaseRow({
     </tr>
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={9}>
-        <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, frameOut: phase.node_encode_ms })}{nodeResidual > 0 ? ` · ${t("chat.telemetry.nodeResidual", { ms: nodeResidual })}` : ""}</span>
+        <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, mtpDraft: phase.node_mtp_draft_ms ?? 0, frameOut: phase.node_encode_ms })}{nodeResidual > 0 ? ` · ${t("chat.telemetry.nodeResidual", { ms: nodeResidual })}` : ""}</span>
         <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
         <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>

@@ -1594,15 +1594,22 @@ fn dominant_transport_measurement(summary: &serde_json::Value) -> Option<(String
             if calls == 0 {
                 return None;
             }
-            let rtt_ms = entry
-                .get("rtt_median_ms")
-                .and_then(serde_json::Value::as_f64)
-                .or_else(|| {
-                    entry
-                        .get("rtt_median_ms")
-                        .and_then(serde_json::Value::as_u64)
-                        .map(|value| value as f64)
-                })?;
+            let metric = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(serde_json::Value::as_f64)
+                    .or_else(|| {
+                        entry
+                            .get(key)
+                            .and_then(serde_json::Value::as_u64)
+                            .map(|value| value as f64)
+                    })
+            };
+            // This endpoint feeds the network panel and route labels. The
+            // full execution RTT includes remote processing, so prefer the
+            // transport's wire RTT and keep the old field as a fallback for
+            // traces written before net_rtt_median_ms existed.
+            let rtt_ms = metric("net_rtt_median_ms").or_else(|| metric("rtt_median_ms"))?;
             Some((calls, transport, rtt_ms))
         })
         .max_by_key(|(calls, _, _)| *calls)

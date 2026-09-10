@@ -57,6 +57,19 @@ pub(super) fn mtp_enabled_for_plan(
     plan_supports_mtp && local_mtp_enabled.unwrap_or(true)
 }
 
+/// O callback `remote-stream` não tem uma rodada do gateway para esconder o
+/// custo do draft seguinte: o produtor remoto precisa terminar o `nextn`
+/// antes de liberar o próximo lote. Em uma pipeline fatiada, isso transforma
+/// cada tentativa de MTP em espera do produtor. O caminho legado continua
+/// podendo usar MTP; somente o stream remoto faz fallback para um token por
+/// rodada enquanto o draft não puder ser calculado fora desse ciclo.
+pub(super) fn disable_sliced_mtp_for_remote_stream(
+    remote_stream_capable: bool,
+    sliced_mtp_requested: bool,
+) -> bool {
+    remote_stream_capable && sliced_mtp_requested
+}
+
 // O protocolo antigo `/v1/infer` (tensor em base64, uma chamada por peer)
 // saiu daqui: hoje o pipeline fala `/v1/prefill` e `/v1/step` com o
 // enquadramento binario de `inference/wire.rs`, e o encadeamento dos hops

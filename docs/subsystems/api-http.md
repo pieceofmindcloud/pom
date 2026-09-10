@@ -617,8 +617,9 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `requests` e `requests/stats` (a auditoria persistente, respectivamente
 `reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
-recebe `{ node_ids, execution_id? }` e devolve somente transporte e RTT
-observados nas arestas da execução identificada; sem `execution_id`, usa a
+recebe `{ node_ids, execution_id? }` e devolve somente transporte e RTT de fio
+observado nas arestas da execução identificada; o RTT de execução com
+processamento remoto continua no trace; sem `execution_id`, usa a
 última execução concluída que tiver essas arestas), `chat/history` (GET/POST/DELETE autenticados para o histórico
 durável de conversas), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
@@ -770,7 +771,9 @@ autenticada. `GET /api/ui/node` devolve `quic_enabled` e `quic_authority` para
 a tela distinguir estado de autoridade. Os endpoints UDP usam as portas
 dedicadas anunciadas em `inference_quic_port` e `gateway_quic_port`, sem
 reutilizar a porta TCP nem a `inference_url`. Falha de negociação mantém o
-caminho TCP e aparece como fallback na telemetria.
+caminho TCP e aparece como fallback na telemetria; a descoberta limita o custo
+de endpoints mortos a um orçamento agregado de 300 ms e evita novo handshake
+no mesmo endpoint por 5 s.
 
 **`GET /api/cluster/logs`** - exige `ConnectionAuth` e devolve
 `{ logs_enabled }`. É a fonte autenticada que os nós consultam quando o campo
@@ -838,7 +841,9 @@ requisição e deriva cada aresta de `pipeline_cycle.decode`, que registra a
 travessia lógica observada e o transporte efetivo (`http`, `https` ou `quic`).
 Sem o id, o Painel consulta a última execução concluída e conserva somente as
 arestas solicitadas. Cada item responde `{ from_node_id, to_node_id, rtt_ms,
-transport }`; a resposta também pode conter
+transport }`, onde `rtt_ms` é o RTT de fio (`net_rtt_median_ms`), sem o
+processamento remoto; traces antigos sem essa medida recuam para o RTT de
+execução. A resposta também pode conter
 `pipeline_cost: { legs_ms, compute_ms }`, na ordem
 `Gateway -> cabeça -> ... -> cauda -> Gateway`. Uma perna sem observação fica
 `null` e impede o total fechado. A medida é da execução real, não da probe

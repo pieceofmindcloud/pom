@@ -1023,6 +1023,25 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                 trace.transport_trace_complete = false;
                 continue;
             };
+            // A direct hop answers its caller with an ACK before the tail
+            // delivers the result. Its transport receipt therefore carries
+            // processing_ms=0, while the matching hop_timing has the callee's
+            // measured processing. Use that authoritative value for the TCP
+            // residual; QUIC uses its own wire RTT below instead.
+            let hop_processing_ms = hop
+                .get("processing_ms")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let mut transport = traversal.clone();
+            if transport
+                .get("processing_ms")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                == 0
+                && hop_processing_ms > 0
+            {
+                transport["processing_ms"] = serde_json::json!(hop_processing_ms);
+            }
             for field in [
                 "round_trip_ms",
                 "processing_ms",
@@ -1039,7 +1058,7 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                 "transport_fallback",
                 "transport_fallback_reason",
             ] {
-                if let Some(value) = traversal.get(field) {
+                if let Some(value) = transport.get(field) {
                     hop[field] = value.clone();
                 }
             }
@@ -1047,7 +1066,7 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                 phase,
                 &from_node_id,
                 &to_node_id,
-                TransportTrace::from_json(traversal),
+                TransportTrace::from_json(&transport),
             );
         }
     } else {

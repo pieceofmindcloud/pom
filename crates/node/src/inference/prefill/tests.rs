@@ -1103,6 +1103,34 @@ mod tests {
     }
 
     #[test]
+    fn direct_transport_uses_processing_from_hop_timing_when_ack_has_none() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        super::pipeline::record_direct_hops(
+            &mut trace,
+            Phase::Prefill,
+            &json!({
+                "hop_timings": [{
+                    "round_trip_ms": 20,
+                    "processing_ms": 17,
+                    "node_timings": {}
+                }],
+                "transport_traversals": [{
+                    "hop_index": 0,
+                    "transport": "http",
+                    "round_trip_ms": 20,
+                    "processing_ms": 0
+                }]
+            }),
+        );
+
+        let phase = &trace.hops[0].prefill;
+        assert_eq!(phase.processing_ms, 17);
+        assert_eq!(phase.network_ms, 3);
+        assert_eq!(phase.transport_summary.transports[0].rtt_median_ms, 20);
+        assert_eq!(phase.transport_summary.transports[0].net_rtt_median_ms, 3);
+    }
+
+    #[test]
     fn transport_telemetry_is_aggregated_instead_of_serializing_every_call() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         for (transport, fallback, round_trip_ms) in [

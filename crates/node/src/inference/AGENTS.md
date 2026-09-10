@@ -666,9 +666,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
   tabela local. O `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
   autorização interna usa a `connection_key` compartilhada e o marcador de nó
-  interno em redes privadas. Em redes públicas usa transporte TLS com o
-  marcador, sem a chave local do admin; sem a prova correspondente, a chamada
-  é recusada em vez de cair para uma API key de cliente.
+  interno. Em redes públicas, HTTPS e QUIC podem validar pelo transporte seguro
+  com o marcador, mas o fallback HTTP também leva o bearer compartilhado; sem a
+  prova correspondente, a chamada é recusada em vez de cair para uma API key de
+  cliente.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de

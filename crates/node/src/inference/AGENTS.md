@@ -289,8 +289,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   dos peers downstream, além de contadores e histogramas limitados de frames,
   espera e processamento remoto. O produtor usa uma fila limitada de 64 itens
   e o emitter separa `remote_stream_wait` em espera do produtor e espera do
-  token pronto no canal, sem timer artificial. O retorno normal usa o canal persistente e só o fallback usa
-  HTTPS por callback, com contagem e razão visíveis. O modo normal não
+  token pronto no canal, sem timer artificial. `handle_step_stream` copia o
+  `session_id` do frame de controle para o `reply_to`, e cada lote de retorno
+  o recoloca no envelope antes de chegar ao ticket. O retorno normal usa o
+  canal persistente e só o fallback usa HTTPS por callback, com contagem e
+  razão visíveis. O modo normal não
   serializa spans por token;
   `POM_PROFILE_SYNC=1` acrescenta spans de frame e eventos de token com
   IDs de trace, request, pipeline e peer. Eventos de token sem intervalo

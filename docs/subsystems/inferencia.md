@@ -491,7 +491,7 @@ tradicionais:
    remoto e recebe os tokens por callbacks em `/v1/remote-stream-result`. O
    head mantém o laço de geração; em um pipeline com mais hops, os demais peers
    continuam dentro do relay do head. O produtor põe cada token numa fila
-   limitada a 16 itens e não espera o callback; o emissor drena, até 8 itens que
+   limitada a 64 itens e não espera o callback; o emissor drena, até 8 itens que
   já estejam prontos. Se a fila enche, o envio do callback espera e aplica
   contrapressão até a geração. Cada URL de callback que falha fica fora por 5
   min e a entrega tem teto de 500 ms por tentativa, então uma rota que engole
@@ -504,7 +504,9 @@ tradicionais:
    `speculation_disabled_reason`, sem travessia ou chamada adicional por token.
    Cada lote também preserva `hop_timings` e `span_count` dos peers downstream,
    além de `stream_id`, índice do frame, lifetime, latência, bytes e espera;
-   assim o head não é o único hop visível no trace.
+   assim o head não é o único hop visível no trace. O `session_id` do frame de
+   controle é copiado para o `reply_to` e para cada lote, mantendo a mesma
+   sessão no caminho do token até o ticket do gateway.
 2. **Resposta direta** (`relay/v2-direct`, `run_direct`/`step_direct`) - quando
    `PipelinePlan::supports_direct_reply()`: todos os passos anunciam
    `relay/v2-direct` **e** a cadeia tem pelo menos 2 hops. O gateway despacha

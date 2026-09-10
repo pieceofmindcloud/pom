@@ -446,7 +446,7 @@ pub(crate) async fn handle_step_stream(
     // The callback is the only response path for this stream. Carry the
     // request identity alongside its ticket so profiling spans from the
     // remote head remain correlated after the control request returns.
-    for field in ["trace_id", "request_id", "pipeline_id"] {
+    for field in ["trace_id", "request_id", "pipeline_id", "session_id"] {
         if let Some(value) = meta.get(field) {
             reply_to[field] = value.clone();
         }
@@ -927,7 +927,7 @@ pub(super) async fn remote_stream_emitter(
             .unwrap_or_else(|| now.saturating_duration_since(stream_started).as_millis() as u64);
         previous_frame_at = Some(now);
         batch["stream_id"] = json!(stream_id);
-        for field in ["trace_id", "request_id", "pipeline_id"] {
+        for field in ["trace_id", "request_id", "pipeline_id", "session_id"] {
             if let Some(value) = reply_to.get(field) {
                 batch[field] = value.clone();
             }
@@ -984,6 +984,9 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
         };
         let items = crate::prefill::drain_opportunistic_batch(first, &mut receiver);
         let (mut batch, error, terminal) = remote_stream_batch(&items);
+        if let Some(session_id) = reply_to.get("session_id") {
+            batch["session_id"] = session_id.clone();
+        }
         batch["remote_stream_wait_ms"] = json!(wait_ms);
         batch["remote_stream_producer_wait_ms"] = json!(producer_wait_ms);
         batch["remote_stream_queue_wait_ms"] = json!(queue_wait_ms);
@@ -1082,6 +1085,26 @@ mod remote_stream_tests {
         assert_eq!(batch["done"], true);
         assert!(error.is_none());
         assert!(terminal);
+    }
+
+    #[tokio::test]
+    async fn lote_remoto_preserva_session_id_do_canal_de_retorno() {
+        let (items_tx, items_rx) = mpsc::channel(1);
+        items_tx
+            .send(token(7, "token", true))
+            .await
+            .expect("token enfileirado");
+        drop(items_tx);
+
+        emit_remote_stream_batches(
+            json!({"ticket": "stream-session", "session_id": "session-42"}),
+            items_rx,
+            |_, batch| async move {
+                assert_eq!(batch["session_id"], "session-42");
+                crate::direct::Delivery::Accepted
+            },
+        )
+        .await;
     }
 
     #[test]

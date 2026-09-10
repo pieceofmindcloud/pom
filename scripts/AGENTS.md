@@ -41,7 +41,10 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   `--force` sobrescreve config existente. Nunca gera a chave de conexao - herda
   da config base (`--base`, padrao `pom.json` na raiz) para nao partir um
   cluster existente. `--advertise-addr` atualiza somente o endereco anunciado
-  tambem em configs existentes, preservando os outros campos.
+  tambem em configs existentes, preservando os outros campos. Quando recebe
+  `HOST:PORT`, trata a porta como a base do conjunto e usa a porta `p2p_port`
+  propria de cada no; assim quatro processos no mesmo host nao anunciam todos
+  o socket 42777.
 - `test_gen_node_configs.py` - testes unitarios do override de
   `advertise_addr`, incluindo a preservacao dos demais campos da config.
 - `bench-llamacpp.sh` - CLI do benchmark do llama.cpp puro na ksia. Recebe o

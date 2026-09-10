@@ -41,6 +41,36 @@ class AdvertiseAddressTests(unittest.TestCase):
         self.assertEqual(updated["custom_setting"], "keep-me")
         self.assertEqual(existing["advertise_addr"], "old-ipv6")
 
+    def test_explicit_host_port_override_keeps_each_nodes_p2p_port(self):
+        base = {
+            "connection_key": "shared",
+            "advertise_addr": "old-ipv6",
+        }
+
+        node_two = MODULE.config_do_no(
+            base,
+            n=2,
+            total=4,
+            advertise_addr="100.122.132.97:42777",
+        )
+
+        self.assertEqual(node_two["p2p_port"], 42778)
+        self.assertEqual(node_two["advertise_addr"], "100.122.132.97:42778")
+
+    def test_existing_config_override_uses_its_own_p2p_port(self):
+        existing = {
+            "connection_key": "shared",
+            "advertise_addr": "old-ipv6",
+            "p2p_port": 42780,
+        }
+
+        updated = MODULE.config_com_advertise_addr(
+            existing,
+            "100.122.132.97:42777",
+        )
+
+        self.assertEqual(updated["advertise_addr"], "100.122.132.97:42780")
+
 
 if __name__ == "__main__":
     unittest.main()

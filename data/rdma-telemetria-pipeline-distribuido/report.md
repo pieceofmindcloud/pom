@@ -630,6 +630,27 @@ Os testes `a_pinned_address_replaces_local_announce_candidates`,
 `libp2p_dial_uses_addr_canonico_e_ignora_candidatos_legados` e
 `tunnel_addresses_preserve_only_the_explicit_advertised_set` passam.
 
+O primeiro redeploy desta rodada revelou uma causa operacional adicional antes
+de qualquer medição de throughput: `pom-ksia.sh` passa o override completo
+`100.122.132.97:42777` a `scripts/gen-node-configs.py`. O gerador antigo copiava
+esse endpoint literalmente para os quatro processos, embora as configs
+mantivessem `p2p_port` 42777, 42778, 42779 e 42780. Assim, todos anunciavam o
+mesmo socket UDP/TCP derivado, colapsando os peers e impedindo uma cobertura
+válida `0..41`; a chamada E2E chegou ao gateway e retornou 503 por
+`Nenhum pipeline válido`, enquanto `/peers` ainda mostrava apenas a faixa
+remota 16-40. A evidência foi obtida nas quatro configs e na resposta HTTP,
+não inferida do timeout.
+
+O gerador agora interpreta `HOST:PORT` como host comum e reescreve somente a
+porta para o `p2p_port` próprio de cada processo. Os quatro testes de
+`scripts/test_gen_node_configs.py` passam. O pin mDNS também foi validado no
+boot seguinte: não surgiram novos logs internos `discovered/expired peer on
+address`; os registros antigos permanecem apenas no arquivo histórico. Na
+Salem, as portas por serviço já eram distintas, mas o bootstrap configurado
+continua apontando para o Tailscale antigo `100.71.127.127:42777`, um alvo
+obsoleto separado que ainda precisa ser removido ou substituído na operação.
+O redeploy e a medição E2E após o conserto das portas ainda estão pendentes.
+
 ### 17.6 Estado da rodada e próximos números
 
 Validações locais desta rodada: `cargo test -p node --no-run`, a suíte Node
@@ -643,7 +664,8 @@ valor medido pelo captain continua sendo 13,5 tok/s de geração, 9,6 tok/s E2E
 e TTFT 5,85 s.
 
 A próxima rodada deve ser implantada nas duas máquinas, com a Salem na mesma
-versão e a KSIA anunciando `100.122.132.97:42777`. O critério objetivo é:
+versão e a KSIA anunciando o host `100.122.132.97` nas portas próprias
+42777-42780. O critério objetivo é:
 fila de prefill do segundo peer sem os 5 s, nenhum dial para LAN/bridge/IPv6
 antigo, retorno normal pelo canal persistente, e comparação antes/depois de
 TTFT, E2E tok/s, p50/p95/p99 por token, máximo de frame, split produtor/fila

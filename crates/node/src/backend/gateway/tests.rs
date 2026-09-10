@@ -2318,6 +2318,7 @@ pub(crate) mod testkit {
             profile: crate::profile::NodeProfile::Node,
             setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
             cluster_logs_min_level: Default::default(),

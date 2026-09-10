@@ -1269,6 +1269,7 @@ async fn send_batch_body(
             }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
+                transport_fallback = true;
                 transport_fallback_reason = Some(format!("https-link: {error}"));
                 warn!("{peer_label}: canal persistente falhou ({error}), usando o caminho por requisição")
             }

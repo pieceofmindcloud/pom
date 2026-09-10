@@ -4069,6 +4069,7 @@ mod tests {
             api_keys: vec![],
             blocked_nodes: vec![],
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
             cluster_logs_min_level: Default::default(),

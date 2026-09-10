@@ -204,23 +204,27 @@ impl PeerClients {
         request: reqwest::RequestBuilder,
         session_id: Option<&str>,
     ) -> reqwest::RequestBuilder {
-        let token = self.internal_node_token().await;
         let request = match session_id {
             Some(id) if !id.is_empty() => request.header(crate::auth::INFERENCE_SESSION_HEADER, id),
             _ => request,
         };
-        match token {
-            Some(token) => {
-                request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            }
-            None => request,
-        }
+        self.authorize_inference_request(request).await
     }
 
+    /// Anexa a credencial POM de um salto interno de inferência, **idêntica** à
+    /// que o túnel libp2p e o cliente QUIC já mandam: o marcador
+    /// `x-pom-internal-node: 1` sempre, e `Authorization: Bearer <token>` quando
+    /// há um (a `connection_key` compartilhada, em redes privadas). Sem o
+    /// marcador, `require_inference_auth` do peer recusa o canal HTTP
+    /// persistente e as chamadas de ciclo de vida de sessão com 401/403 mesmo
+    /// numa rede privada; numa rede pública, o marcador é o que habilita o
+    /// desvio por transporte seguro. O túnel funcionava só porque montava esses
+    /// dois cabeçalhos à mão (`send_frame_via_tunnel_with_auth`).
     pub async fn authorize_inference_request(
         &self,
         request: reqwest::RequestBuilder,
     ) -> reqwest::RequestBuilder {
+        let request = request.header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1");
         match self.internal_node_token().await {
             Some(token) => {
                 request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
@@ -264,6 +268,37 @@ impl PeerClients {
         session_id: Option<&str>,
         timeout: Duration,
     ) -> anyhow::Result<crate::quic::QuicResponse> {
+        self.quic_post_typed(
+            peer_id,
+            base_url,
+            quic_addresses,
+            path,
+            "application/octet-stream",
+            body,
+            session_id,
+            timeout,
+        )
+        .await
+    }
+
+    /// Como `quic_post`, mas com `content-type` explícito. As rotas de ciclo
+    /// de vida de sessão (`/v1/session/{release,rewind,rollback}`) usam
+    /// `application/json` e um `Json<T>` que recusa `octet-stream`; mandá-las
+    /// por QUIC é o que dá a elas o mesmo tratamento de transporte seguro que
+    /// o decode já tem, em vez de um POST em claro sem credencial que o peer
+    /// rejeita com 401 numa rede pública.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn quic_post_typed(
+        &self,
+        peer_id: &str,
+        base_url: &str,
+        quic_addresses: &[String],
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        session_id: Option<&str>,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::quic::QuicResponse> {
         let token = self.internal_node_token().await;
         self.quic_pool
             .request(
@@ -271,6 +306,7 @@ impl PeerClients {
                 base_url,
                 quic_addresses,
                 path,
+                content_type,
                 token,
                 session_id,
                 body,

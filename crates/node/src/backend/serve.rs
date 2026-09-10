@@ -520,6 +520,7 @@ mod integracao {
                 &format!("http://127.0.0.1:{port}"),
                 &[format!("127.0.0.1:{quic_port}")],
                 "/test",
+                "application/octet-stream",
                 None,
                 None,
                 b"http3-without-tcp-tls".to_vec(),

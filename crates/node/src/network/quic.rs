@@ -88,12 +88,14 @@ impl ClientPool {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn request(
         &self,
         peer_id: &str,
         base_url: &str,
         quic_addresses: &[String],
         path: &str,
+        content_type: &str,
         authorization: Option<String>,
         session_id: Option<&str>,
         body: Vec<u8>,
@@ -109,6 +111,7 @@ impl ClientPool {
                     advertised,
                     base_url,
                     path,
+                    content_type,
                     authorization.clone(),
                     session_id,
                     body.clone(),
@@ -126,6 +129,7 @@ impl ClientPool {
         Err(last_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn request_one(
         &self,
         key: &str,
@@ -133,6 +137,7 @@ impl ClientPool {
         advertised: &str,
         base_url: &str,
         path: &str,
+        content_type: &str,
         authorization: Option<String>,
         session_id: Option<&str>,
         body: Vec<u8>,
@@ -146,7 +151,7 @@ impl ClientPool {
             let mut request_builder = Request::builder()
                 .method("POST")
                 .uri(format!("https://{}{}", authority(base_url)?, path))
-                .header("content-type", "application/octet-stream")
+                .header("content-type", content_type)
                 .header("host", authority(base_url)?)
                 .header("x-pom-internal-node", "1");
             if let Some(token) = authorization {
@@ -161,13 +166,19 @@ impl ClientPool {
             let mut stream = tokio::time::timeout(timeout, sender.send_request(request))
                 .await
                 .context("abertura do stream HTTP/3 expirou")??;
-            stream
-                .send_data(Bytes::from(body))
+            // `send_data`/`finish` pendem no controle de fluxo do QUIC: um
+            // corpo grande (o handoff de prefill leva o estado oculto de todo
+            // o prompt) trava aqui até o peer liberar janela. Sem o timeout,
+            // um peer que não drena o corpo pendura o hop de prefill para
+            // sempre - o decode tinha fallback, o prefill não. Com o timeout,
+            // o erro sobe e `send_frame_with_protocol` cai para TCP.
+            tokio::time::timeout(timeout, stream.send_data(Bytes::from(body)))
                 .await
+                .context("envio do corpo HTTP/3 expirou")?
                 .map_err(|error| anyhow!("envio do corpo HTTP/3 falhou: {error}"))?;
-            stream
-                .finish()
+            tokio::time::timeout(timeout, stream.finish())
                 .await
+                .context("finalização do corpo HTTP/3 expirou")?
                 .map_err(|error| anyhow!("finalização do corpo HTTP/3 falhou: {error}"))?;
             let headers_started = std::time::Instant::now();
             let response = tokio::time::timeout(timeout, stream.recv_response())
@@ -211,9 +222,12 @@ impl ClientPool {
         }
         let addr = resolve_addr(advertised).await?;
         let tls = crate::tls::quic_client_config(peer_id)?;
-        let config = quinn::ClientConfig::new(Arc::new(
+        let mut config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(tls)?,
         ));
+        // Mesmas janelas largas do servidor: o lado que puxa a resposta do
+        // prefill também recebe alguns MB de estado oculto.
+        config.transport_config(Arc::new(inference_transport_config()));
         let endpoint = self.endpoint().await?;
         let connection = tokio::time::timeout(
             timeout,
@@ -253,10 +267,36 @@ pub fn server_config(id: &crate::identity::Identity) -> Result<Arc<quinn::Server
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(tls)?,
     ));
+    config.transport = Arc::new(inference_transport_config());
+    Ok(Arc::new(config))
+}
+
+/// Janelas de controle de fluxo largas o suficiente para o handoff de prefill.
+///
+/// O corpo desse hop carrega o estado oculto de todo o prompt (centenas de
+/// posições x hidden_dim x 2 bytes = alguns MB). Com a janela padrão do quinn
+/// (~1 MiB por stream) um prompt real fica gaguejando à espera de crédito de
+/// janela, o que parecia "pendurado" mesmo antes de o timeout de `send_data`
+/// existir. `receive_window` cobre a conexão inteira e `stream_receive_window`
+/// cada stream; o `send_window` casa o lado que escreve.
+pub(crate) fn inference_transport_config() -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     transport.max_concurrent_bidi_streams(128u32.into());
-    config.transport = Arc::new(transport);
-    Ok(Arc::new(config))
+    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
+    transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
+    transport.send_window(64 * 1024 * 1024);
+    // O quinn deixa `max_idle_timeout` desligado por padrão: uma conexão que
+    // vira buraco negro (peer sumiu, caminho UDP morto no meio de um handoff)
+    // nunca erra e o hop fica preso até o timeout de 600 s do frame. Com um
+    // idle timeout curto e keep-alive, um caminho morto falha em segundos e o
+    // `send_frame_with_protocol` cai para TCP.
+    transport.max_idle_timeout(Some(
+        Duration::from_secs(20)
+            .try_into()
+            .expect("20 s cabe em VarInt"),
+    ));
+    transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    transport
 }
 
 pub async fn serve(
@@ -490,6 +530,7 @@ mod tests {
                 &format!("http://127.0.0.1:{port}"),
                 &[format!("127.0.0.1:{port}")],
                 "/test",
+                "application/octet-stream",
                 None,
                 None,
                 b"http3".to_vec(),

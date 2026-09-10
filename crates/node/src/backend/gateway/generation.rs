@@ -1629,6 +1629,112 @@ fn inference_route_candidates(step: &crate::pipeline::PipelineStep) -> Vec<Strin
     candidates
 }
 
+/// POST de um corpo JSON pequeno a uma rota de ciclo de vida de sessão de um
+/// peer, pelo mesmo transporte que o decode: QUIC primeiro quando a preferência
+/// do cluster é QUIC, e HTTP/HTTPS como reserva.
+///
+/// Por que não só `http.post(...).json(...)`: numa rede pública sem TLS de
+/// aplicação, o peer não compartilha `connection_key`, então
+/// `authorize_inference_request_for_session` não anexa `Authorization` e o
+/// `require_inference_auth` do peer responde `401 missing Authorization
+/// header` - deixando a sessão retida. Pelo QUIC a requisição carrega o
+/// marcador interno sobre transporte cifrado, que é a credencial aceita nesse
+/// caso (e o bearer da `connection_key` quando a rede é privada). Uma falha de
+/// transporte QUIC cai para o caminho HTTP; um 404/405 significa peer sem a
+/// rota HTTP/3 e também cai para HTTP.
+///
+/// `Ok(body)` em qualquer 2xx (corpo desserializado, `Null` se ilegível);
+/// `Err(motivo)` quando nenhum endereço respondeu 2xx.
+async fn post_session_lifecycle(
+    http: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+    path: &str,
+    body: &serde_json::Value,
+    session_id: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let route_key = format!("inference:{}", step.node_id);
+    let candidates = inference_route_candidates(step);
+    let payload = match serde_json::to_vec(body) {
+        Ok(payload) => payload,
+        Err(error) => return Err(format!("corpo JSON inválido: {error}")),
+    };
+    let mut last_error = None;
+
+    if http.effective_quic_enabled() && !step.quic_addr_candidates.is_empty() {
+        for base in http.route_order(&route_key, &candidates) {
+            match http
+                .quic_post_typed(
+                    &step.node_id,
+                    &base,
+                    &step.quic_addr_candidates,
+                    path,
+                    "application/json",
+                    payload.clone(),
+                    Some(session_id),
+                    timeout,
+                )
+                .await
+            {
+                Ok(response) if response.status.is_success() => {
+                    http.remember_route_success(&route_key, &base);
+                    return Ok(serde_json::from_slice(&response.body)
+                        .unwrap_or(serde_json::Value::Null));
+                }
+                Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
+                    last_error = Some(format!("quic: HTTP {} (sem rota HTTP/3)", response.status));
+                    break;
+                }
+                Ok(response) => {
+                    return Err(format!("{path} em {} respondeu HTTP {}", step.node_id, response.status));
+                }
+                Err(error) => {
+                    last_error = Some(format!("quic: {error}"));
+                    warn!(
+                        "{path} por QUIC em {} falhou ({error}), tentando TCP",
+                        step.node_id
+                    );
+                }
+            }
+        }
+    }
+
+    let Ok(cliente) = http.for_peer(&step.node_id) else {
+        return Err(last_error.unwrap_or_else(|| "sem cliente para o peer".to_string()));
+    };
+    for base in http.route_order(&route_key, &candidates) {
+        let url = format!("{}{path}", base.trim_end_matches('/'));
+        let request = cliente
+            .post(&url)
+            .json(body)
+            .timeout(timeout);
+        match http
+            .authorize_inference_request_for_session(request, Some(session_id))
+            .await
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                http.remember_route_success(&route_key, &base);
+                return Ok(response
+                    .json::<serde_json::Value>()
+                    .await
+                    .unwrap_or(serde_json::Value::Null));
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                last_error = Some(format!("HTTP {status}: {body}"));
+            }
+            Err(error) => {
+                http.remember_route_failure(&route_key, &base);
+                last_error = Some(error.to_string());
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "nenhum endereço anunciado".to_string()))
+}
+
 pub(super) async fn rewind_sessions(
     plan: &PipelinePlan,
     session_id: &str,
@@ -1637,65 +1743,32 @@ pub(super) async fn rewind_sessions(
 ) -> bool {
     let mut all_ok = true;
     for step in &plan.steps {
-        let Ok(http) = clients.for_peer(&step.node_id) else {
-            all_ok = false;
-            continue;
-        };
-        let route_key = format!("inference:{}", step.node_id);
-        let mut rewound = false;
-        let mut last_error = None;
-        for base in clients.route_order(&route_key, &inference_route_candidates(step)) {
-            let url = format!("{}/v1/session/rewind", base.trim_end_matches('/'));
-            let request = http
-                .post(&url)
-                .json(&serde_json::json!({
-                    "session_id": session_id,
-                    "n_tokens": retained_tokens,
-                }))
-                .timeout(REWIND_TIMEOUT);
-            match clients
-                .authorize_inference_request_for_session(request, Some(session_id))
-                .await
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    match response.json::<serde_json::Value>().await {
-                        Ok(body)
-                            if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
-                                && body.get("n_past").and_then(|v| v.as_u64())
-                                    == Some(retained_tokens as u64) =>
-                        {
-                            clients.remember_route_success(&route_key, &base);
-                            rewound = true;
-                        }
-                        Ok(body) => {
-                            warn!("rewind recusado por {}: {}", step.node_id, body);
-                        }
-                        Err(error) => {
-                            warn!("resposta ilegível no rewind de {}: {error}", step.node_id);
-                        }
-                    }
-                    break;
-                }
-                Ok(response) => {
-                    warn!("rewind em {} respondeu {}", step.node_id, response.status());
-                    break;
-                }
-                Err(error) => {
-                    clients.remember_route_failure(&route_key, &base);
-                    last_error = Some(error.to_string());
-                }
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "n_tokens": retained_tokens,
+        });
+        match post_session_lifecycle(
+            clients,
+            step,
+            "/v1/session/rewind",
+            &body,
+            session_id,
+            REWIND_TIMEOUT,
+        )
+        .await
+        {
+            Ok(body)
+                if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
+                    && body.get("n_past").and_then(|v| v.as_u64())
+                        == Some(retained_tokens as u64) => {}
+            Ok(body) => {
+                warn!("rewind recusado por {}: {}", step.node_id, body);
+                all_ok = false;
             }
-        }
-        if !rewound {
-            if let Some(error) = last_error {
-                warn!(
-                    "rewind em {} falhou em todos os endereços: {error}",
-                    step.node_id
-                );
+            Err(error) => {
+                warn!("rewind em {} falhou: {error}", step.node_id);
+                all_ok = false;
             }
-            all_ok = false;
         }
     }
     all_ok
@@ -1710,48 +1783,18 @@ pub(super) async fn release_sessions(
     clients: &crate::peer_client::PeerClients,
 ) {
     for step in &plan.steps {
-        let Ok(http) = clients.for_peer(&step.node_id) else {
-            warn!("sem cliente para liberar sessão em {}", step.node_id);
-            continue;
-        };
-        let candidates = inference_route_candidates(step);
-        let route_key = format!("inference:{}", step.node_id);
-        let mut last_error = None;
-        let mut released = false;
-        for base in clients.route_order(&route_key, &candidates) {
-            let url = format!("{}/v1/session/release", base.trim_end_matches('/'));
-            let request = http
-                .post(&url)
-                .json(&serde_json::json!({ "session_id": session_id }))
-                .timeout(Duration::from_secs(10));
-            match clients
-                .authorize_inference_request_for_session(request, Some(session_id))
-                .await
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    clients.remember_route_success(&route_key, &base);
-                    released = true;
-                    break;
-                }
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    last_error = Some(format!("HTTP {status}: {body}"));
-                }
-                Err(error) => {
-                    clients.remember_route_failure(&route_key, &base);
-                    last_error = Some(error.to_string());
-                }
-            }
-        }
-        if !released {
-            warn!(
-                "release de sessão em {} falhou em todos os endereços: {}",
-                step.node_id,
-                last_error.unwrap_or_else(|| "nenhum endereço anunciado".to_string())
-            );
+        let body = serde_json::json!({ "session_id": session_id });
+        if let Err(error) = post_session_lifecycle(
+            clients,
+            step,
+            "/v1/session/release",
+            &body,
+            session_id,
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            warn!("release de sessão em {} falhou: {error}", step.node_id);
         }
     }
 }
@@ -1777,78 +1820,36 @@ pub(super) async fn rollback_sessions(
 ) -> bool {
     let mut all_ok = true;
     for step in &plan.steps {
-        let Ok(cliente) = http.for_peer(&step.node_id) else {
-            warn!("rollback: sem cliente para {}", step.node_id);
-            all_ok = false;
-            continue;
-        };
-        let route_key = format!("inference:{}", step.node_id);
-        let mut rolled_back = false;
-        let mut last_error = None;
-        for base in http.route_order(&route_key, &inference_route_candidates(step)) {
-            let url = format!("{}/v1/session/rollback", base.trim_end_matches('/'));
-            let request = cliente
-                .post(&url)
-                .json(&serde_json::json!({
-                    "session_id": session_id,
-                    "accept_count": accept_count,
-                    "batch_width": batch_width,
-                }))
-                .timeout(Duration::from_secs(10));
-            match http
-                .authorize_inference_request_for_session(request, Some(session_id))
-                .await
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    match response.json::<serde_json::Value>().await {
-                        Ok(body)
-                            if body.get("rolled_back").and_then(|v| v.as_bool()) == Some(true) =>
-                        {
-                            http.remember_route_success(&route_key, &base);
-                            rolled_back = true;
-                        }
-                        Ok(body) => {
-                            warn!(
-                                "rollback de sessão em {} recusado: {}",
-                                step.node_id,
-                                body.get("reason")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("sem motivo informado")
-                            );
-                        }
-                        Err(error) => {
-                            warn!(
-                                "rollback de sessão em {}: corpo ilegível: {error}",
-                                step.node_id
-                            );
-                        }
-                    }
-                    break;
-                }
-                Ok(response) => {
-                    warn!(
-                        "rollback de sessão em {} respondeu {}",
-                        step.node_id,
-                        response.status()
-                    );
-                    break;
-                }
-                Err(error) => {
-                    http.remember_route_failure(&route_key, &base);
-                    last_error = Some(error.to_string());
-                }
-            }
-        }
-        if !rolled_back {
-            if let Some(error) = last_error {
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "accept_count": accept_count,
+            "batch_width": batch_width,
+        });
+        match post_session_lifecycle(
+            http,
+            step,
+            "/v1/session/rollback",
+            &body,
+            session_id,
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            Ok(body) if body.get("rolled_back").and_then(|v| v.as_bool()) == Some(true) => {}
+            Ok(body) => {
                 warn!(
-                    "rollback de sessão em {} falhou em todos os endereços: {error}",
-                    step.node_id
+                    "rollback de sessão em {} recusado: {}",
+                    step.node_id,
+                    body.get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("sem motivo informado")
                 );
+                all_ok = false;
             }
-            all_ok = false;
+            Err(error) => {
+                warn!("rollback de sessão em {} falhou: {error}", step.node_id);
+                all_ok = false;
+            }
         }
     }
     all_ok

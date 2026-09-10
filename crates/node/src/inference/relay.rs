@@ -977,7 +977,14 @@ async fn send_frame_with_protocol(
                             profiling_spans,
                         });
                     }
-                    Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
+                    Ok(response)
+                        if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) =>
+                    {
+                        // 404/405: peer sem a rota HTTP/3. 401/403: transporte
+                        // sem credencial aceita para este peer (rede pública em
+                        // texto claro, política ainda não propagada) - não é uma
+                        // recusa considerada do pedido, então cai para o próximo
+                        // transporte (TCP e, por fim, o túnel) em vez de morrer.
                         transport_fallback = true;
                         transport_fallback_reason = Some(match transport_fallback_reason.take() {
                             Some(previous) => format!("{previous}; quic: HTTP {}", response.status),
@@ -986,9 +993,12 @@ async fn send_frame_with_protocol(
                         on_issue(SendIssue {
                             kind: SendIssueKind::Transport,
                             attempt,
-                            message: format!("QUIC HTTP/3 não suportado: {}", response.status),
+                            message: format!("QUIC HTTP/3 indisponível: {}", response.status),
                         });
-                        warn!("peer {peer_label} recusou a rota HTTP/3, usando TCP");
+                        warn!(
+                            "peer {peer_label} não aceitou a rota HTTP/3 ({}), usando TCP",
+                            response.status
+                        );
                     }
                     Ok(response) => {
                         return Err(anyhow::Error::new(HttpRefusal {
@@ -1093,6 +1103,27 @@ async fn send_frame_with_protocol(
                         transport_fallback_reason,
                         profiling_spans,
                     });
+                }
+                Ok(r) if matches!(r.status().as_u16(), 401 | 403) => {
+                    // Rejeição de autenticação do transporte direto: numa rede
+                    // pública sem TLS não há credencial que o peer aceite por
+                    // HTTP em claro. Não é recusa do pedido - deixa a escada
+                    // seguir para o túnel libp2p (Noise), que autentica.
+                    let code = r.status();
+                    let text = r.text().await.unwrap_or_default();
+                    last_error = format!("HTTP {code}: {text}");
+                    transport_fallback = true;
+                    transport_fallback_reason = Some(match transport_fallback_reason.take() {
+                        Some(previous) => format!("{previous}; http: {last_error}"),
+                        None => format!("http: {last_error}"),
+                    });
+                    clients.remember_route_failure(&route_key, &base);
+                    on_issue(SendIssue {
+                        kind: SendIssueKind::Transport,
+                        attempt,
+                        message: last_error.clone(),
+                    });
+                    warn!("peer {peer_label} recusou o HTTP direto ({code}), tentando o túnel");
                 }
                 Ok(r) => {
                     let code = r.status();
@@ -1382,13 +1413,20 @@ async fn send_batch_body(
                             profiling_spans,
                         });
                     }
-                    Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
+                    Ok(response)
+                        if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) =>
+                    {
+                        // 404/405: peer sem HTTP/3. 401/403: transporte sem
+                        // credencial aceita - cai para TCP e, por fim, o túnel.
                         transport_fallback = true;
                         transport_fallback_reason = Some(match transport_fallback_reason.take() {
                             Some(previous) => format!("{previous}; quic: HTTP {}", response.status),
                             None => format!("quic: HTTP {}", response.status),
                         });
-                        warn!("peer {peer_label} recusou a rota HTTP/3 do batch, usando TCP");
+                        warn!(
+                            "peer {peer_label} não aceitou a rota HTTP/3 do batch ({}), usando TCP",
+                            response.status
+                        );
                     }
                     Ok(response) => {
                         return Err(anyhow::Error::new(HttpRefusal {
@@ -1454,6 +1492,18 @@ async fn send_batch_body(
                             response_received_at,
                         ),
                     });
+                }
+                Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    last_error = format!("HTTP {status}: {text}");
+                    transport_fallback = true;
+                    transport_fallback_reason = Some(match transport_fallback_reason.take() {
+                        Some(previous) => format!("{previous}; http: {last_error}"),
+                        None => format!("http: {last_error}"),
+                    });
+                    clients.remember_route_failure(&route_key, &base);
+                    warn!("peer {peer_label} recusou o HTTP direto do batch ({status}), tentando o túnel");
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -3106,6 +3156,49 @@ mod tests {
             .transport_fallback_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("quic/http") && reason.contains("http")));
+    }
+
+    /// Um 401/403 do HTTP direto não é recusa considerada do pedido: numa rede
+    /// pública em texto claro o peer não tem credencial para aceitar o canal
+    /// HTTP. A escada tem que cair para o túnel libp2p (Noise), não devolver
+    /// erro terminal - era isso que pendurava o prefill.
+    #[tokio::test]
+    async fn a_direct_http_401_falls_back_to_the_tunnel() {
+        let port = spawn_fake_inference_server(|_body| (401, b"missing Authorization header".to_vec()))
+            .await;
+        let step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
+            &step,
+            Some(&tunnel_tx),
+            "/v1/prefill",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("um 401 do HTTP direto deve cair para o túnel, não falhar");
+
+        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert!(sent.transport_fallback);
+        assert!(sent
+            .transport_fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("401")));
     }
 
     #[tokio::test]

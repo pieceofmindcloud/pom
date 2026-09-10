@@ -1503,6 +1503,10 @@ pub(super) async fn inference_heads(
 pub(super) struct ChatTelemetryRequest {
     #[serde(default)]
     pub(super) node_ids: Vec<String>,
+    /// ID OpenAI da execução. Quando ausente, o painel consulta a execução
+    /// concluída mais recente que tiver as arestas pedidas.
+    #[serde(default)]
+    pub(super) execution_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -1518,13 +1522,80 @@ pub(super) struct ChatTelemetryResponse {
     pub(super) measurements: Vec<ChatTelemetryMeasurement>,
 }
 
-/// Combina a sonda local com os relatórios direcionais dos próprios peers.
+/// Extrai a medição da aresta de modelo a partir do trace que a execução
+/// acabou de produzir.
 ///
-/// A tela de implantação já usa esta mesma fonte para as arestas do plano,
-/// mas o chat precisa de uma consulta sob demanda para a execução recém
-/// terminada. Cada relatório é aceito somente quando o `source_node_id` bate
-/// com o peer que respondeu: sem essa verificação, um gateway intermediário
-/// poderia fazer uma medida parecer ser de outra máquina.
+/// `hops` representa nós, enquanto o transporte de uma aresta entra no hop
+/// downstream. Assim, em `head -> tail`, o probe do gateway em `hops[0]` não
+/// pode ser usado para nomear a aresta: a evidência da aresta está em
+/// `hops[1].decode.transport_summary`. O caso `remote-stream` acrescenta uma
+/// entrada sintética no hop zero, e por isso a mesma regra continua válida.
+pub(super) fn execution_transport_measurements(
+    trace: &serde_json::Value,
+    requested: &std::collections::HashSet<String>,
+) -> Vec<ChatTelemetryMeasurement> {
+    let Some(hops) = trace.get("hops").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+
+    hops.windows(2)
+        .filter_map(|window| {
+            let from_node_id = window[0].get("node_id")?.as_str()?;
+            let to_node_id = window[1].get("node_id")?.as_str()?;
+            if from_node_id == to_node_id
+                || !requested.contains(from_node_id)
+                || !requested.contains(to_node_id)
+            {
+                return None;
+            }
+
+            let phase = window[1]
+                .get("decode")
+                .filter(|phase| {
+                    phase
+                        .get("transport_summary")
+                        .and_then(|summary| summary.get("transports"))
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|entries| {
+                            entries.iter().any(|entry| {
+                                entry.get("calls").and_then(serde_json::Value::as_u64) > Some(0)
+                            })
+                        })
+                })
+                .or_else(|| window[1].get("prefill"))?;
+            let entries = phase
+                .get("transport_summary")
+                .and_then(|summary| summary.get("transports"))
+                .and_then(serde_json::Value::as_array)?;
+            let dominant = entries
+                .iter()
+                .filter_map(|entry| {
+                    let transport = entry.get("transport")?.as_str()?;
+                    let calls = entry.get("calls")?.as_u64()?;
+                    if calls == 0 {
+                        return None;
+                    }
+                    Some((calls, transport, entry))
+                })
+                .max_by(|left, right| left.0.cmp(&right.0));
+            let (_, transport, dominant) = dominant?;
+            let rtt_ms = dominant.get("rtt_median_ms")?.as_u64()? as f64;
+
+            Some(ChatTelemetryMeasurement {
+                from_node_id: from_node_id.to_owned(),
+                to_node_id: to_node_id.to_owned(),
+                rtt_ms,
+                transport: transport.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Retorna apenas o transporte observado na execução distribuída.
+///
+/// `RttTable` continua sendo a fonte de probes para seleção de rota, mas não é
+/// uma medida da execução: em particular, uma probe libp2p não pode aparecer
+/// no Chat ou no mapa quando o frame real cruzou por `https-link`.
 pub(super) async fn chat_telemetry(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1552,52 +1623,39 @@ pub(super) async fn chat_telemetry(
         });
     }
 
-    let self_id = state.network.node_id.clone();
-    let peers = state.all_peers().await;
-    let mut measurements = Vec::new();
-
-    append_chat_telemetry_measurements(
-        &mut measurements,
-        &self_id,
-        RttReport {
-            source_node_id: self_id.clone(),
-            measurements: local_rtt_measurements(&state),
-        },
-        &requested,
-    );
-
-    for peer in peers {
-        if peer.node_id == self_id || !requested.contains(&peer.node_id) {
-            continue;
+    let trace = if let Some(execution_id) = request.execution_id.as_deref() {
+        let mut trace = None;
+        for attempt in 0..5 {
+            match state.audit.telemetry(execution_id).await {
+                Ok(found) => {
+                    trace = found;
+                    if trace.is_some() || attempt == 4 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, execution_id, "não foi possível consultar o trace da execução");
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let Some(base) = peer.gateway_url() else {
-            continue;
-        };
-        let Ok(http) = state.peer_http.for_peer(&peer.node_id) else {
-            continue;
-        };
-        let Ok(request) = state
-            .control_get_request(
-                http.get(format!("{base}/api/ui/network/rtt"))
-                    .timeout(PEER_TIMEOUT),
-                "/api/ui/network/rtt",
-            )
-            .await
-        else {
-            continue;
-        };
-        let response = request.send().await;
-        let Ok(response) = response else {
-            continue;
-        };
-        if !response.status().is_success() {
-            continue;
+        trace
+    } else {
+        match state.audit.recent_telemetries(32).await {
+            Ok(traces) => traces
+                .into_iter()
+                .find(|trace| !execution_transport_measurements(trace, &requested).is_empty()),
+            Err(error) => {
+                tracing::warn!(%error, "não foi possível consultar a última telemetria");
+                None
+            }
         }
-        let Ok(report) = response.json::<RttReport>().await else {
-            continue;
-        };
-        append_chat_telemetry_measurements(&mut measurements, &peer.node_id, report, &requested);
-    }
+    };
+    let mut measurements = trace
+        .as_ref()
+        .map(|trace| execution_transport_measurements(trace, &requested))
+        .unwrap_or_default();
 
     measurements.sort_by(|a, b| {
         a.from_node_id
@@ -1779,30 +1837,4 @@ pub(super) async fn clear_chat_history(
 
 pub(super) fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
     state.network.rtts.fresh_snapshot()
-}
-
-pub(super) fn append_chat_telemetry_measurements(
-    output: &mut Vec<ChatTelemetryMeasurement>,
-    expected_source: &str,
-    report: RttReport,
-    requested: &std::collections::HashSet<String>,
-) {
-    if report.source_node_id != expected_source {
-        return;
-    }
-    output.extend(
-        report
-            .measurements
-            .into_iter()
-            .filter(|measurement| {
-                requested.contains(&measurement.target_node_id)
-                    && measurement.target_node_id != expected_source
-            })
-            .map(|measurement| ChatTelemetryMeasurement {
-                from_node_id: expected_source.to_string(),
-                to_node_id: measurement.target_node_id,
-                rtt_ms: measurement.rtt_ms,
-                transport: measurement.transport,
-            }),
-    );
 }

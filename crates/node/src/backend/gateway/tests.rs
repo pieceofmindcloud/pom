@@ -1974,6 +1974,13 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
+    fn gateway_sem_runtime_local_usa_capacidade_mtp_remota() {
+        assert!(mtp_enabled_for_plan(None, true));
+        assert!(!mtp_enabled_for_plan(None, false));
+        assert!(!mtp_enabled_for_plan(Some(false), true));
+    }
+
+    #[test]
     fn stream_de_dois_hops_nao_desliga_mtp_apos_o_token_de_aquecimento() {
         let step = crate::prefill::SpeculativeStep {
             accepted: vec![(4, "A".into())],

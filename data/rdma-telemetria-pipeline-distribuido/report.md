@@ -1132,3 +1132,91 @@ seção: ele depende do redeploy dos dois peers. A próxima medição deve regis
 `proposed`, `accepted`, `rejected`, largura dos lotes, TTFT, geração tok/s e
 wall tok/s, comparando com a base de 22,57 tok/s de geração, 18,52 tok/s wall
 e TTFT de 944 ms da seção 17.16.
+
+### 17.18 Transporte real do Chat e RTT do Painel
+
+A observação do captain foi reproduzida por inspeção do caminho chamado pelo
+produto. O Chat envia `POST /v1/chat/completions` com `stream: true`; o handler
+`openai::stream_response` chama `gateway::spawn_logged_generation_with_stops`,
+que é a mesma geração usada pelo harness. Não existe uma rota alternativa de
+inferência para o Chat. Dentro da geração, `inference::relay::send_batch_body`
+tenta `CAP_LINK_STREAM` e `link::send_batch_with_session_profile` antes do
+túnel libp2p ou HTTPS de fallback. Portanto, o canal persistente de
+`15caf764` não era exclusivo do harness. A divergência estava na fonte da
+telemetria apresentada ao usuário.
+
+O endpoint `POST /api/ui/chat/telemetry` consultava `RttTable` local e fazia
+fan-out para `GET /api/ui/network/rtt` nos peers. Essa tabela é preenchida pelo
+monitor periódico da rede com probes `libp2p`; ela é correta para seleção de
+rota, mas não identifica o transporte de um frame da inferência. Por isso o
+Chat podia mostrar `libp2p` mesmo quando o trace da execução tinha
+`https-link`, e o card do Painel repetia o mesmo valor.
+
+A correção faz a rota receber `execution_id`, que é o mesmo id
+`chatcmpl-*` usado como `trace_id` e chave da auditoria. O gateway lê o trace
+persistido no SQLite, espera brevemente a conclusão da escrita quando a
+consulta ocorre no mesmo instante do último SSE, e deriva cada aresta do
+`transport_summary` do hop downstream. Para `head -> tail`, o probe sintético
+do hop zero não é usado: a medida vem de `hops[1].decode`, que registra a
+travessia efetiva entre os peers. O Painel, que não tem um id de requisição,
+consulta a última execução concluída e filtra as arestas pedidas. Sem trace ou
+aresta correspondente, o retorno fica vazio e a UI mostra desconhecido; não
+há fallback que renomeie `RttTable` como execução.
+
+O teste de regressão sem rede semeia simultaneamente uma probe de 900 ms com
+transporte `libp2p` e um trace de execução com `https-link` de 6 ms. Tanto a
+consulta com `execution_id` quanto a consulta sem id retornam somente:
+
+```json
+{
+  "from_node_id": "head",
+  "to_node_id": "tail",
+  "rtt_ms": 6,
+  "transport": "https-link"
+}
+```
+
+Assim, a causa raiz comum com o MTP foi confirmada no nível de integração do
+gateway: o caminho de execução real já tinha as capacidades e o transporte
+persistente, mas as decisões e a tela consultavam estado local do gateway que
+não existe em um gateway puro. O gate MTP agora usa `plan.supports_mtp()` e
+trata a ausência de `NodeConfig` local como configuração desconhecida, sem
+ignorar um `Some(false)` explícito. Os logs também registram a decisão de MTP,
+`plan_supports_mtp`, `remote_stream_capable` e `sliced_mtp` para a próxima
+captura de campo.
+
+Arquivos acrescentados nesta rodada:
+
+- `crates/node/src/backend/gateway/budget.rs` e `generation.rs`: gate MTP
+  baseado no plano e logs de decisão.
+- `crates/node/src/backend/reqlog.rs`: leitura assíncrona do trace exato e da
+  última execução concluída.
+- `crates/node/src/backend/webui/catalog.rs`: derivação de RTT/transporte por
+  aresta e remoção do uso de probes no endpoint do Chat.
+- `apps/frontend/src/lib/queries.ts`: envio do `execution_id` e semântica do
+  card baseada em execução.
+- `crates/node/src/backend/webui/tests/core_b.rs` e
+  `crates/node/src/backend/gateway/tests.rs`: regressões de endpoint, hop,
+  probe libp2p e gateway sem runtime local.
+
+Validação desta rodada:
+
+- `cargo test -p node --bin pom gateway_sem_runtime_local_usa_capacidade_mtp_remota`: passou.
+- `cargo test -p node --bin pom execution_telemetry_uses_downstream_edge_not_gateway_probe`: passou.
+- `cargo test -p node --bin pom creates_then_completes_the_same_audit_record`: passou.
+- `cargo test -p node --bin pom chat_telemetry_ignores_libp2p_probe_when_execution_trace_exists`: passou.
+- `npm run build`: TypeScript e Vite concluídos após a atualização de documentação.
+- `cargo test -p node --bin pom`: 1271 testes passados, 5 ignorados.
+
+Overhead: a decisão MTP faz somente leituras já disponíveis do plano e da
+configuração local, sem sincronização ou I/O no caminho quente. A leitura do
+trace do endpoint é feita em `spawn_blocking` e somente quando a UI pede o
+retrato, depois da geração; a consulta do Painel lê no máximo 32 traces
+agregados para encontrar uma topologia correspondente. O caminho normal de
+inferência não ganhou spans por token nem chamadas de rede adicionais.
+
+Limitação: ainda é necessária uma captura E2E pós-deploy em KSIA e Salem para
+confirmar que `mtp_draft_tokens_proposed` deixou de ser zero e medir a nova
+geração. A correção de telemetria torna essa captura confiável, mas não
+substitui a medição de produção. A tabela `RttTable` permanece deliberadamente
+libp2p para o planner; ela não deve ser usada como RTT de execução.

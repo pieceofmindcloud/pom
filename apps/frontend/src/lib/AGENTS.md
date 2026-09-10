@@ -79,10 +79,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   peer's representation through the target-aware deploy flow, so cache choices
   are applied on that machine before launch.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
-  RTT snapshot after a chat stream, and `usePeerRuntimes` reads `/health` for
-  the peers in that trace without polling the whole cluster.
-  `useNetworkRtt` asks the same authenticated telemetry route for the current
-  deployment edges shown on the Dashboard and refreshes them every 15 s.
+  transport and RTT observed by the exact chat execution, and
+  `usePeerRuntimes` reads `/health` for the peers in that trace without polling
+  the whole cluster. `useNetworkRtt` asks the same route for the most recent
+  completed execution matching the Dashboard edges and refreshes it every 15 s;
+  without a matching execution the edge remains unknown instead of displaying
+  a libp2p probe as inference telemetry.
   `useInferenceHeads` polls the model head view every 15 s for every profile;
   this is a capability slice, not a general peer list.
   `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado

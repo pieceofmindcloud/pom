@@ -612,8 +612,9 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `requests` e `requests/stats` (a auditoria persistente, respectivamente
 `reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
-recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
-peers solicitados), `chat/history` (GET/POST/DELETE autenticados para o histórico
+recebe `{ node_ids, execution_id? }` e devolve somente transporte e RTT
+observados nas arestas da execução identificada; sem `execution_id`, usa a
+última execução concluída que tiver essas arestas), `chat/history` (GET/POST/DELETE autenticados para o histórico
 durável de conversas), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
@@ -807,13 +808,14 @@ ilegível. Endereços IPv6 temporários rodam sozinhos e o cluster tem de aguent
 isso sem `--advertise-addr`: ver `docs/subsystems/rede-p2p.md`, "Endereço que
 deixou de responder".
 **`POST /api/ui/chat/telemetry`** - coleta sob demanda feita depois de uma
-execução do Chat. O gateway inclui a medição local e consulta o
-`GET /api/ui/network/rtt` autenticado de cada peer solicitado, aceitando o
-relatório somente quando `source_node_id` coincide com o peer que respondeu.
+execução do Chat. Com `execution_id`, o gateway lê o trace persistido daquela
+requisição e deriva cada aresta do `transport_summary` do hop downstream, que
+é a chamada que realmente cruzou entre os nós do modelo. Sem o id, o Painel
+consulta a última execução concluída e conserva somente as arestas solicitadas.
 Cada item responde `{ from_node_id, to_node_id, rtt_ms, transport }`. A medida
-é da origem da aresta até o destino e não é o RTT do card que um gateway mediu
-até um peer. Ausência de uma medida fica ausente na resposta; não há zero de
-fallback.
+é da execução real, não da probe periódica de `RttTable`/libp2p. Ausência de
+trace ou de uma aresta fica ausente na resposta; não há zero nem fallback que
+renomeie a probe como inferência.
 
 **`GET/POST/DELETE /api/ui/chat/history`** - exige `ConnectionAuth` e guarda
 sessões do Chat no `pom.db`, não no sistema de arquivos nem em um SQLite

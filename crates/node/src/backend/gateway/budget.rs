@@ -44,6 +44,19 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
     speculative_k.max(1).min(n_batch.max(1))
 }
 
+/// Decide se a geração pode pedir MTP para o plano selecionado.
+///
+/// Um gateway sem modelo local não tem `NodeConfig` para consultar. Nesse
+/// caso, a capacidade anunciada pelo plano é a evidência da execução remota.
+/// `Some(false)` continua sendo um kill-switch explícito do nó que inicia a
+/// geração.
+pub(super) fn mtp_enabled_for_plan(
+    local_mtp_enabled: Option<bool>,
+    plan_supports_mtp: bool,
+) -> bool {
+    plan_supports_mtp && local_mtp_enabled.unwrap_or(true)
+}
+
 // O protocolo antigo `/v1/infer` (tensor em base64, uma chamada por peer)
 // saiu daqui: hoje o pipeline fala `/v1/prefill` e `/v1/step` com o
 // enquadramento binario de `inference/wire.rs`, e o encadeamento dos hops

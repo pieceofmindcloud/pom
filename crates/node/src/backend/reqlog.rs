@@ -12,7 +12,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use rusqlite::{params, params_from_iter, types::Value, Connection, Row};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -304,6 +304,34 @@ impl AuditLog {
         .context("aguardar consulta do banco de auditoria")?
     }
 
+    /// Read the completed trace for one request without putting SQLite work in
+    /// the HTTP or inference executor.
+    pub async fn telemetry(&self, id: &str) -> Result<Option<JsonValue>> {
+        let database = self.database.clone();
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            database.with_write("consultar telemetria", |connection| {
+                AuditDb::from_shared(connection).telemetry(&id)
+            })
+        })
+        .await
+        .context("aguardar consulta da telemetria")?
+    }
+
+    /// Read recent completed traces for the dashboard. The caller filters them
+    /// against the requested topology and can skip a trace for another model.
+    pub async fn recent_telemetries(&self, limit: usize) -> Result<Vec<JsonValue>> {
+        let database = self.database.clone();
+        let limit = limit.clamp(1, 100);
+        tokio::task::spawn_blocking(move || {
+            database.with_write("consultar última telemetria", |connection| {
+                AuditDb::from_shared(connection).recent_telemetries(limit)
+            })
+        })
+        .await
+        .context("aguardar consulta da última telemetria")?
+    }
+
     pub async fn stats(&self, query: AuditQuery) -> Result<AuditStats> {
         let database = self.database.clone();
         tokio::task::spawn_blocking(move || {
@@ -316,7 +344,7 @@ impl AuditLog {
     }
 
     #[cfg(test)]
-    fn flush(&self) {
+    pub(crate) fn flush(&self) {
         let (sender, receiver) = mpsc::channel();
         self.sender
             .send(Command::Flush(sender))
@@ -523,6 +551,36 @@ impl<C: ConnectionAccess> AuditDb<C> {
             params![format!("-{STALE_AFTER_MINUTES} minutes")],
         )?;
         Ok(())
+    }
+
+    fn telemetry(&mut self, id: &str) -> Result<Option<JsonValue>> {
+        let raw: Option<String> = self
+            .connection()
+            .query_row(
+                "SELECT telemetry FROM audit_requests WHERE id = ? AND status IN ('ok', 'partial', 'incomplete')",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw.and_then(|value| serde_json::from_str(&value).ok()))
+    }
+
+    fn recent_telemetries(&mut self, limit: usize) -> Result<Vec<JsonValue>> {
+        let mut statement = self.connection().prepare(
+            "SELECT telemetry
+             FROM audit_requests
+             WHERE telemetry IS NOT NULL AND status IN ('ok', 'partial', 'incomplete')
+             ORDER BY completed_at DESC, id DESC
+             LIMIT ?",
+        )?;
+        let rows = statement.query_map(params![limit as i64], |row| row.get::<_, String>(0))?;
+        let mut traces = Vec::new();
+        for row in rows {
+            if let Ok(trace) = serde_json::from_str(&row?) {
+                traces.push(trace);
+            }
+        }
+        Ok(traces)
     }
 
     pub fn list(&mut self, query: &AuditQuery) -> Result<AuditList> {
@@ -1134,6 +1192,11 @@ mod tests {
             after.entries[0].completed_at.as_deref(),
             Some("2026-08-26T12:00:01Z")
         );
+        assert_eq!(
+            db.telemetry("req-1").unwrap(),
+            Some(json!({ "tokens_per_sec": 12.5 }))
+        );
+        assert_eq!(db.telemetry("does-not-exist").unwrap(), None);
     }
 
     #[test]

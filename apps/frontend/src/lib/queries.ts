@@ -300,14 +300,17 @@ export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, exe
   return useQuery({
     queryKey: keys.chatTelemetry(executionId, nodeIds),
     queryFn: () =>
-      api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", { node_ids: nodeIds }),
+      api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", {
+        node_ids: nodeIds,
+        execution_id: executionId,
+      }),
     enabled: enabled && nodeIds.length > 1,
     retry: false,
     staleTime: Infinity,
   });
 }
 
-/** RTT direcional da topologia atual, para o mapa do Painel. */
+/** Último RTT observado nas arestas de inferência, para o mapa do Painel. */
 export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.networkRtt(nodeIds),

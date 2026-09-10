@@ -981,9 +981,11 @@ impressão digital é só modelo + conjunto de faixas.
   escolha, tentar incluir uma segunda mostra um aviso e preserva a máquina
   escolhida. No Tensor, somente peers que estão no mapa entram como
   primary/worker, mesmo que outros tenham o modelo.
-  GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; os
-  RTTs vêm do survey direcional do planner e não são substituídos pela medição
-  HTTP do gateway. Uma GPU ausente aparece como `sem GPU`, sem barra
+  GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; o
+  mapa do Painel mostra o último RTT observado na execução de inferência para
+  cada aresta e deixa a medida desconhecida sem execução correspondente. O
+  survey direcional do planner continua reservado à escolha de rota e não é
+  exibido como se fosse a execução. Uma GPU ausente aparece como `sem GPU`, sem barra
   indeterminada. Em Completa, todos os peers entram no canvas e na lista de
   candidatos nos modos de fatias e Tensor; modelo inteiro mantém a restrição de
   uma máquina. A cobertura fica reduzida no rodapé junto da barra de peers.

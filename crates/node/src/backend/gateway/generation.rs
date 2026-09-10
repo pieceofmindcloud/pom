@@ -612,7 +612,7 @@ pub(super) async fn generate_stream_inner(
         lookup_enabled,
         lookup_k,
         speculative_m,
-        mtp_enabled,
+        mtp_configured,
         mtp_k,
     ) = {
         let cfg = state.runtime.config().await;
@@ -636,7 +636,7 @@ pub(super) async fn generate_stream_inner(
             cfg.as_ref()
                 .map(|c| c.speculative_lookup_window)
                 .unwrap_or(3),
-            cfg.as_ref().is_some_and(|c| c.mtp_enabled),
+            cfg.as_ref().map(|c| c.mtp_enabled),
             // O parâmetro é "quantos tokens rascunhar"; a largura do lote é
             // isso mais o token já confirmado.
             speculative_k_of(
@@ -646,12 +646,24 @@ pub(super) async fn generate_stream_inner(
         )
     };
 
+    let plan_supports_mtp = plan.supports_mtp();
+    let mtp_enabled = mtp_enabled_for_plan(mtp_configured, plan_supports_mtp);
+    info!(
+        gateway_runtime_config_present = mtp_configured.is_some(),
+        gateway_mtp_enabled = ?mtp_configured,
+        plan_supports_mtp,
+        mtp_enabled,
+        mtp_k,
+        pipeline_hops = plan.steps.len(),
+        "decisão de especulação MTP do pipeline"
+    );
+
     // Qual das duas especulações roda nesta requisição. O MTP vem primeiro
     // quando os dois estão ligados: ele usa uma cabeça treinada do próprio
     // modelo, enquanto o lookup só acerta em saída repetitiva. Nunca os dois
     // na mesma rodada - o lote é um só, e misturar as fontes tornaria a taxa
     // de aceitação impossível de atribuir.
-    let (speculative_enabled, speculative_k, draft_source) = if mtp_enabled && plan.supports_mtp() {
+    let (speculative_enabled, speculative_k, draft_source) = if mtp_enabled {
         (true, mtp_k, crate::prefill::DraftSource::Mtp)
     } else {
         (
@@ -923,7 +935,13 @@ pub(super) async fn generate_stream_inner(
             &state.network.node_id,
             direct.is_some(),
         );
-        let sliced_mtp = mtp_enabled && plan.supports_mtp() && plan.steps.len() >= 2;
+        let sliced_mtp = mtp_enabled && plan_supports_mtp && plan.steps.len() >= 2;
+        info!(
+            remote_stream_capable,
+            sliced_mtp,
+            plan_supports_mtp,
+            "caminho de decode do pipeline"
+        );
         if mtp_enabled && plan.steps.len() >= 2 && !sliced_mtp {
             info!(
                 reason = sliced_mtp_disable_reason(&plan),

@@ -692,8 +692,10 @@ faz o download autenticado do blob persistido.
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
   (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
   `network/rtt` (GET autenticado, relatório direcional deste nó),
-  `chat/telemetry` (POST autenticado, coleta os relatórios direcionais dos
-  peers selecionados para o trace e não altera o planner), `requests` (GET ->
+  `chat/telemetry` (POST autenticado, deriva transporte e RTT dos
+  `transport_summary` do trace da execução identificada, ou da última execução
+  concluída no Painel; não usa `RttTable` como telemetria de inferência),
+  `requests` (GET ->
   `crate::reqlog::list_requests`; `chat/history` (GET/POST/DELETE autenticado,
   transcriptos normalizados em `pom.db`); `requests/stats` (GET ->
   `crate::reqlog::stats_requests`). `leave_network` now takes an optional

@@ -1040,12 +1040,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   saída (erro, prazo). Quando há travessias esperadas, `deliver` libera o
   resultado e retém só o snapshot por 30 s para recibos tardios; depois disso
   o ticket desconhecido vira `410` e nunca cai no token seguinte.
-- `StreamTicket`/`deliver_stream` - canal mpsc limitado a 16 lotes; um emissor
+- `StreamTicket`/`deliver_stream` - canal mpsc limitado a 64 lotes; um emissor
   remoto aguarda o receptor quando a fila enche, e `Drop` remove o ticket para
   que cancelamento, stop, ciclo ou erro não deixem entregas pendentes. O par
   producer/emitter também é encerrado junto: se a entrega detecta que o
   gateway sumiu, `run_remote_stream_tasks` aborta o producer em vez de deixar
-  a sessão de KV e a admissão do scheduler vivas até o próximo timeout.
+  a sessão de KV e a admissão do scheduler vivas até o próximo timeout. No
+  retorno pelo `/v1/link`, o ACK de cada callback continua assíncrono, mas um
+  `410 Gone` é publicado ao `RemoteStreamDelivery`, que devolve
+  `GatewayGone` e encerra o producer sem cair em HTTPS.
 - `DirectReply::new(inbox, urls)` - `None` quando o nó não conhece nenhum
   endereço de si mesmo; aí o anel assume em vez de despachar quadro que nunca
   volta.

@@ -328,6 +328,32 @@ struct Channel {
     alive: Arc<AtomicBool>,
 }
 
+/// Resultado assíncrono do ACK de um callback. O envio continua fora do
+/// caminho crítico, mas o produtor remoto precisa saber quando o gateway
+/// respondeu `410 Gone` para não continuar gerando numa sessão abandonada.
+#[derive(Clone)]
+pub struct CallbackStatus {
+    gateway_gone: Arc<AtomicBool>,
+    transport_failed: Arc<AtomicBool>,
+}
+
+impl CallbackStatus {
+    fn new() -> Self {
+        Self {
+            gateway_gone: Arc::new(AtomicBool::new(false)),
+            transport_failed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn gateway_gone(&self) -> bool {
+        self.gateway_gone.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn transport_failed(&self) -> bool {
+        self.transport_failed.load(Ordering::Acquire)
+    }
+}
+
 /// Remove a entrega pendente em **qualquer** caminho de saída: resposta,
 /// erro, prazo, ou o chamador desistindo. Sem isto um cancelamento deixaria o
 /// registro crescendo com tickets que ninguém mais espera.
@@ -782,7 +808,7 @@ pub async fn send_body_without_response_with_session(
     body: Bytes,
     peer_label: &str,
     session_id: Option<&str>,
-) -> Result<()> {
+) -> Result<CallbackStatus> {
     let mut route_candidates = Vec::with_capacity(candidates.len() + 1);
     if !base_url.is_empty() {
         route_candidates.push(base_url.to_string());
@@ -815,9 +841,9 @@ pub async fn send_body_without_response_with_session(
         )
         .await
         {
-            Ok(()) => {
+            Ok(status) => {
                 clients.remember_route_success(&route_key, &base);
-                return Ok(());
+                return Ok(status);
             }
             Err(error) => {
                 last_error = error.to_string();
@@ -942,7 +968,7 @@ async fn send_frame_without_response(
     body: Bytes,
     peer_label: &str,
     channel_key: String,
-) -> Result<()> {
+) -> Result<CallbackStatus> {
     if !channel.alive.load(Ordering::Acquire) {
         return Err(anyhow!("canal com {node_id} já está encerrado"));
     }
@@ -973,13 +999,31 @@ async fn send_frame_without_response(
     let channel = channel.clone();
     let node_id = node_id.to_string();
     let batch_id = batch_id.to_string();
+    let status = CallbackStatus::new();
+    let ack_status = status.clone();
     tokio::spawn(async move {
         let failed = match tokio::time::timeout(CALL_TIMEOUT, reply_rx).await {
             Ok(Ok(Ok(envelope))) if (200..300).contains(&envelope.status) => None,
-            Ok(Ok(Ok(envelope))) => Some(format!("peer respondeu HTTP {}", envelope.status)),
-            Ok(Ok(Err(error))) => Some(error),
-            Ok(Err(_)) => Some("canal encerrou sem responder".to_string()),
-            Err(_) => Some("canal não respondeu ACK a tempo".to_string()),
+            Ok(Ok(Ok(envelope))) => {
+                if envelope.status == 410 {
+                    ack_status.gateway_gone.store(true, Ordering::Release);
+                } else {
+                    ack_status.transport_failed.store(true, Ordering::Release);
+                }
+                Some(format!("peer respondeu HTTP {}", envelope.status))
+            }
+            Ok(Ok(Err(error))) => {
+                ack_status.transport_failed.store(true, Ordering::Release);
+                Some(error)
+            }
+            Ok(Err(_)) => {
+                ack_status.transport_failed.store(true, Ordering::Release);
+                Some("canal encerrou sem responder".to_string())
+            }
+            Err(_) => {
+                ack_status.transport_failed.store(true, Ordering::Release);
+                Some("canal não respondeu ACK a tempo".to_string())
+            }
         };
         drop(guard);
         if let Some(error) = failed {
@@ -991,7 +1035,7 @@ async fn send_frame_without_response(
             warn!(peer = %node_id, batch = %batch_id, %error, "ACK assíncrono do callback falhou; canal descartado");
         }
     });
-    Ok(())
+    Ok(status)
 }
 
 #[cfg(test)]
@@ -1203,6 +1247,43 @@ mod tests {
             elapsed < Duration::from_millis(150),
             "o emissor esperou ACK por frame: {elapsed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn callback_assincrono_sinaliza_gateway_desaparecido() {
+        let url = spawn_link_server(|_path: String, _body: Bytes| {
+            axum::response::Response::builder()
+                .status(410)
+                .body(axum::body::Body::from("stream desconhecido"))
+                .unwrap()
+        })
+        .await;
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        let status = send_body_without_response_with_session(
+            &clients,
+            "gateway-gone",
+            &url,
+            &[],
+            "gone-frame",
+            Bytes::from(batch(
+                "/v1/remote-stream-result",
+                "gone-frame",
+                "gone-frame",
+            )),
+            "remote-stream-return",
+            Some("session-gone"),
+        )
+        .await
+        .expect("o callback deve ser enfileirado sem esperar o ACK");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !status.gateway_gone() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("o ACK 410 assíncrono deve ser observado");
+        assert!(!status.transport_failed());
     }
 
     #[tokio::test]

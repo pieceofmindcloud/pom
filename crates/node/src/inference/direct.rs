@@ -754,13 +754,16 @@ pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Respo
 
 /// Entrega callbacks do `remote-stream` por um canal persistente. A primeira
 /// falha desativa o canal para o restante deste stream e marca cada callback
-/// seguinte como fallback explícito para HTTPS por requisição. Isso mantém o
-/// caminho normal livre de request/reply por token sem transformar uma queda
+/// seguinte como fallback explícito para HTTPS por requisição. Um ACK 410 é
+/// diferente: ele prova que o gateway cancelou o ticket, então o produtor
+/// remoto recebe `GatewayGone` e para em vez de continuar gerando. Isso mantém
+/// o caminho normal livre de request/reply por token sem transformar uma queda
 /// transitória em uma tempestade de tentativas de abertura.
 pub struct RemoteStreamDelivery {
     http: crate::peer_client::PeerClients,
     reply_to: Value,
     persistent_failure: Option<String>,
+    callback_status: Option<crate::link::CallbackStatus>,
 }
 
 impl RemoteStreamDelivery {
@@ -769,10 +772,21 @@ impl RemoteStreamDelivery {
             http,
             reply_to,
             persistent_failure: None,
+            callback_status: None,
         }
     }
 
     pub async fn deliver(&mut self, meta: Value) -> Delivery {
+        if let Some(status) = &self.callback_status {
+            if status.gateway_gone() {
+                return Delivery::GatewayGone;
+            }
+            if status.transport_failed() {
+                self.persistent_failure =
+                    Some("https-link: ACK assíncrono do callback falhou; usando HTTPS".to_string());
+                self.callback_status = None;
+            }
+        }
         let Some(session_id) = meta
             .get("session_id")
             .and_then(Value::as_str)
@@ -822,23 +836,24 @@ impl RemoteStreamDelivery {
                             dtype: crate::wire::WireDtype::F16,
                         }],
                     ) {
-                        Ok(body) => {
-                            match crate::link::send_body_without_response_with_session(
-                                &self.http,
-                                node_id,
-                                "",
-                                &urls,
-                                &frame_id,
-                                Bytes::from(body),
-                                "remote-stream-return",
-                                meta.get("session_id").and_then(Value::as_str),
-                            )
-                            .await
-                            {
-                                Ok(()) => return Delivery::Accepted,
-                                Err(error) => Some(format!("https-link: {error}")),
+                        Ok(body) => match crate::link::send_body_without_response_with_session(
+                            &self.http,
+                            node_id,
+                            "",
+                            &urls,
+                            &frame_id,
+                            Bytes::from(body),
+                            "remote-stream-return",
+                            meta.get("session_id").and_then(Value::as_str),
+                        )
+                        .await
+                        {
+                            Ok(status) => {
+                                self.callback_status = Some(status);
+                                return Delivery::Accepted;
                             }
-                        }
+                            Err(error) => Some(format!("https-link: {error}")),
+                        },
                         Err(error) => Some(format!("https-link: frame inválido: {error}")),
                     }
                 }
@@ -1061,6 +1076,73 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ack_410_do_callback_para_o_stream_sem_fallback() {
+        use axum::{routing::post, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new()
+            .route(
+                crate::link::LINK_PATH,
+                post(|body: axum::body::Body| async move {
+                    crate::link::serve(body, |_path, _body| async move {
+                        Ok(Response::builder()
+                            .status(StatusCode::GONE)
+                            .body(axum::body::Body::from("stream desconhecido"))
+                            .unwrap())
+                    })
+                }),
+            )
+            .layer(axum::extract::DefaultBodyLimit::disable());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).tcp_nodelay(true).await;
+        });
+
+        let url = format!("http://{addr}");
+        let reply_to = json!({
+            "ticket": "gone-ticket",
+            "node_id": "gateway-gone",
+            "urls": [url],
+        });
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        let mut delivery = RemoteStreamDelivery::new(clients, reply_to);
+        let first = json!({
+            "session_id": "session-gone",
+            "stream_id": "stream-gone",
+            "remote_stream_frame_index": 0,
+            "accepted": [{"token_id": 1, "text": "x"}],
+        });
+
+        assert_eq!(delivery.deliver(first).await, Delivery::Accepted);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if delivery
+                    .callback_status
+                    .as_ref()
+                    .is_some_and(crate::link::CallbackStatus::gateway_gone)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("o ACK 410 deve chegar ao emissor");
+
+        assert_eq!(
+            delivery
+                .deliver(json!({
+                    "session_id": "session-gone",
+                    "stream_id": "stream-gone",
+                    "remote_stream_frame_index": 1,
+                    "accepted": [{"token_id": 2, "text": "y"}],
+                }))
+                .await,
+            Delivery::GatewayGone
+        );
+    }
 
     #[tokio::test]
     async fn a_blackholed_reply_address_is_tried_only_once_across_stream_batches() {

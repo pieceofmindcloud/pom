@@ -581,10 +581,13 @@ faz o download autenticado do blob persistido.
   reason for the request to fail. A peer that reports an unknown session also
   triggers that same single cold retry, even when the original request did not
   use prefix reuse, because a later chunk cannot be reconstructed from hidden
-  state alone. When the stream receiver closes,
-  `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
-  next retry, hop or chunk; already accepted peer frames are cleaned up by the
-  normal session release. `start_gateway` registers
+  state alone. When the stream receiver closes, the event pump observes
+  `Sender::closed()` even though the generation keeps a sender clone for
+  end-of-turn bookkeeping, and cancels the local HTTP future before the next
+  retry, hop or chunk. The remote-stream callback propagates an asynchronous
+  `410 Gone` ACK as `GatewayGone`, so an abandoned remote producer stops too;
+  already accepted peer frames are cleaned up by the normal session release.
+  `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), `POST /v1/relay-result`,
   `POST /v1/remote-stream-result` and `POST /v1/link`

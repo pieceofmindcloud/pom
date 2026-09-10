@@ -276,6 +276,32 @@ mod reload_tests {
     }
 }
 
+#[cfg(test)]
+mod generation_pump_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn desconexao_do_cliente_cancela_a_geracao_mesmo_sem_evento() {
+        let (client_tx, client_rx) = mpsc::channel(1);
+        let (_inner_tx, inner_rx) = mpsc::channel(1);
+        let cancellation = crate::prefill::Cancellation::new();
+        let pump = tokio::spawn(forward_generation_events(
+            client_tx,
+            inner_rx,
+            cancellation.clone(),
+        ));
+
+        drop(client_rx);
+        let result = tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("a bomba deve observar a desconexão")
+            .expect("a bomba não deve entrar em panic");
+
+        assert!(result.is_none());
+        assert!(cancellation.is_cancelled());
+    }
+}
+
 pub(super) async fn generate_stream_inner(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
@@ -658,26 +684,12 @@ pub(super) async fn generate_stream_inner(
     // acabado de escrever. Aqui os eventos de token seguem na hora, ao vivo, e
     // só o terminal (`Done`/`Failed`) espera a arrumação.
     let client_tx = tx;
-    let (tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    let pump = {
-        let client_tx = client_tx.clone();
-        tokio::spawn(async move {
-            let mut terminal = None;
-            while let Some(event) = inner_rx.recv().await {
-                match event {
-                    event @ (GenEvent::Done(_) | GenEvent::Failed(_)) => terminal = Some(event),
-                    event => {
-                        if client_tx.send(event).await.is_err() {
-                            // Cliente foi embora. Fechar o lado de cá é o que
-                            // faz o laço de geração perceber e cancelar.
-                            break;
-                        }
-                    }
-                }
-            }
-            terminal
-        })
-    };
+    let (tx, inner_rx) = mpsc::channel::<GenEvent>(64);
+    let pump = tokio::spawn(forward_generation_events(
+        client_tx.clone(),
+        inner_rx,
+        cancellation.clone(),
+    ));
 
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
@@ -1522,6 +1534,46 @@ pub(super) async fn generate_stream_inner(
     if let Some(event) = terminal {
         let _ = client_tx.send(event).await;
     }
+}
+
+/// Encaminha os eventos da geração para o adaptador HTTP e transforma o
+/// desaparecimento do consumidor em cancelamento explícito.
+///
+/// O `Sender::closed` precisa ser observado em paralelo ao recebimento de
+/// eventos. Manter outro clone do sender no gerador impede que um monitor
+/// baseado somente em `closed` veja a desconexão, e um produtor remoto pode
+/// continuar consumindo KV mesmo depois de o SSE ter sido abandonado.
+async fn forward_generation_events(
+    client_tx: mpsc::Sender<GenEvent>,
+    mut inner_rx: mpsc::Receiver<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
+) -> Option<GenEvent> {
+    let mut terminal = None;
+    loop {
+        let event = tokio::select! {
+            _ = client_tx.closed() => {
+                cancellation.cancel();
+                break;
+            }
+            event = inner_rx.recv() => event,
+        };
+        let Some(event) = event else {
+            break;
+        };
+        match event {
+            event @ (GenEvent::Done(_) | GenEvent::Failed(_)) => {
+                terminal = Some(event);
+                break;
+            }
+            event => {
+                if client_tx.send(event).await.is_err() {
+                    cancellation.cancel();
+                    break;
+                }
+            }
+        }
+    }
+    terminal
 }
 
 /// Confirma em cada peer que a sessão ficou parada no fim do prompt, pronta

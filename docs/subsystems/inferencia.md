@@ -497,8 +497,9 @@ tradicionais:
   min e a entrega tem teto de 500 ms por tentativa, então uma rota que engole
   SYN não é repetida a cada lote. EOS e erro enviam
    um lote terminal; stop, limite, ciclo e cancelamento removem o ticket e
-   fazem uma entrega atrasada receber `410 Gone`. Se o emitter detectar esse
-   `410` ou uma falha de entrega, ele encerra junto o producer do head remoto,
+   fazem uma entrega atrasada receber `410 Gone`. No retorno persistente, o ACK
+   continua assíncrono para não impor um RTT por token, mas o `410` é propagado
+   ao emitter como `GatewayGone`; ele encerra junto o producer do head remoto,
    liberando a sessão de KV e a admissão do scheduler em vez de deixar uma
    geração órfã rodando até um timeout. Em plano MTP fatiado, o
    control frame inicial leva `speculate.source="mtp"`; a cauda devolve
@@ -912,10 +913,12 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   um modelo inteiro, para o gateway e os hops seguintes não fabricarem a
   posição pelo índice do chunk.
 - O fechamento do stream cria um cancelamento cooperativo por geração.
-  `prefill::Cancellation` interrompe a espera HTTP em voo e impede o próximo
-  retry, hop ou chunk. Um frame que o peer já aceitou pode terminar, porque o
-  contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
-  libera as sessões dos peers alcançados.
+  O pump observa o fechamento do `Sender` HTTP mesmo mantendo um clone para a
+  escrituração do turno, e `prefill::Cancellation` interrompe a espera HTTP em
+  voo e impede o próximo retry, hop ou chunk. Um frame de callback já aceito
+  não espera ACK no caminho crítico; seu ACK assíncrono distingue `410 Gone`
+  do gateway de falha de transporte, e o primeiro encerra o producer remoto.
+  Depois disso o gateway libera as sessões dos peers alcançados.
 
 **Pipeline de prefill (H1).** Nos caminhos hub e resposta direta, quando há
 mais de um hop, o prefill roda como um pipeline em ordem, não como um par

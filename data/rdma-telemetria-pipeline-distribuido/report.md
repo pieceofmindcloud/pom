@@ -959,3 +959,67 @@ pendurado e confirma que ele é descartado quando a entrega termina. A mudança
 foi publicada em `82c17b11`. Ela corrige vazamento de trabalho e evita que
 requisições abandonadas falseiem o throughput posterior, mas não é declarada
 como ganho de tok/s até ser redeployada e medida no cluster.
+
+### 17.14 Série de cinco E2E após `82c17b11`
+
+Com `POM_PROFILE=trace` e os dois peers em serviço, foram executadas cinco
+chamadas sequenciais pelo gateway KSIA. O pedido foi o mesmo usado na série
+anterior (`Escreva hello world 30 vezes. Não escreva explicações.`,
+`max_tokens=200`, resposta não streaming). Todas retornaram HTTP 200, com
+`trace_complete=true`, `response_complete` e zero fallback HTTPS.
+
+| corrida | tokens | TTFT (ms) | geração (ms) | geração tok/s | wall tok/s |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 94 | 1.361 | 4.276 | 21,98 | 16,68 |
+| 2 | 90 | 591 | 3.969 | 22,68 | 19,74 |
+| 3 | 90 | 310 | 3.996 | 22,52 | 20,90 |
+| 4 | 60 | 602 | 2.661 | 22,55 | 18,39 |
+| 5 | 90 | 1.414 | 3.932 | 22,89 | 16,84 |
+
+O conjunto produziu 424 tokens. A média aritmética foi geração **22,52
+tok/s**, wall **18,51 tok/s** e TTFT **856 ms**; as medianas foram 22,55
+tok/s, 18,39 tok/s e 602 ms. Contra a referência de `15caf764` (21,71
+tok/s de geração e 16,33 tok/s wall), isso representa +3,7% e +13,3%,
+respectivamente. A comparação tem comprimentos naturais diferentes e não
+fixa seed, portanto a média não isola causalmente o cancelamento de stream.
+
+Foi feita também uma interrupção controlada de um stream após aproximadamente
+1 s. Antes do abandono, os dois infer servers tinham `queue_depth=0` e 429
+batches/items. Depois do abandono, a fila continuou reportando zero, mas os
+contadores avançaram para 441/442 imediatamente, 468/469 em 1 s, 517/519 em
+2 s, 635/636 em 5 s e 1.185/1.186 em 15 s. Após 35 s, o health da KSIA
+expirou, enquanto Salem ainda mostrava 1.344 batches/items. A conclusão é
+que `queue_depth` mede espera de admissão, não trabalho ativo: o callback
+abandonado continuou consumindo a sessão e o scheduler.
+
+### 17.15 Causa raiz do abandono persistente e correção preparada
+
+Há duas falhas complementares:
+
+1. O pump entre `generate_stream_inner` e o adaptador HTTP só esperava um
+   evento em `inner_rx`. Como o gerador mantém outro clone do sender para o
+   fechamento da sessão, o `Sender::closed()` observado dentro da geração não
+   detectava prontamente o cliente que abandonou o stream, sobretudo quando
+   ainda não havia evento disponível. Assim, a geração seguia usando KV e
+   recursos remotos.
+2. No caminho persistente `/v1/link`, o envio do callback retorna antes do ACK.
+   Quando o gateway responde `410 Gone`, a tarefa de ACK marcava apenas o
+   canal como morto e removia o registro. `RemoteStreamDelivery` continuava
+   vendo `Delivery::Accepted`, logo `run_remote_stream_tasks` não recebia
+   `GatewayGone` e o produtor permanecia ativo.
+
+A correção local torna o pump sensível a `client_tx.closed()` em paralelo ao
+recebimento de eventos e cancela a geração imediatamente. O ACK assíncrono
+agora publica um estado explícito: `410 Gone` vira `GatewayGone`, enquanto
+erro de transporte continua acionando o fallback HTTPS com motivo visível.
+A entrega persistente propaga esse estado ao produtor, que encerra o stream
+sem cair para HTTPS quando o cliente apenas abandonou o ticket.
+
+Os testes de regressão passaram isoladamente: o pump cancela sem evento,
+`callback_assincrono_sinaliza_gateway_desaparecido`,
+`ack_410_do_callback_para_o_stream_sem_fallback` e as suítes de `link` (13)
+e `direct` (19). A suíte completa do binário passou com **1.268 testes
+aprovados e 5 ignorados** em execução serial. Ainda falta publicar esta
+correção e um novo deploy nas duas máquinas para confirmar no E2E que os
+contadores param após o abandono e que o health permanece responsivo. Não
+houve alteração no llama.cpp nem início de MTP/especulação.

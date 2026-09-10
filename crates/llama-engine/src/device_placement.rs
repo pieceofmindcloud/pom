@@ -86,8 +86,14 @@ mod tests {
     fn velocidade_indeterminada_mantem_a_ordem_atual() {
         assert_eq!(confident_slow_to_fast_order(&[Some(400.0), None]), None);
         assert_eq!(confident_slow_to_fast_order(&[None, None]), None);
-        assert_eq!(confident_slow_to_fast_order(&[Some(f64::NAN), Some(400.0)]), None);
-        assert_eq!(confident_slow_to_fast_order(&[Some(0.0), Some(400.0)]), None);
+        assert_eq!(
+            confident_slow_to_fast_order(&[Some(f64::NAN), Some(400.0)]),
+            None
+        );
+        assert_eq!(
+            confident_slow_to_fast_order(&[Some(0.0), Some(400.0)]),
+            None
+        );
     }
 
     #[test]

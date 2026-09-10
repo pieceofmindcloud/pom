@@ -531,9 +531,7 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             "split.tensors.count" => {
                 info.split_tensors_count = r.value_as_u32(vtype)?.map(u64::from)
             }
-            k if k == brand::gguf_key("start_layer") => {
-                start_layer = r.value_as_u32(vtype)?
-            }
+            k if k == brand::gguf_key("start_layer") => start_layer = r.value_as_u32(vtype)?,
             k if k == brand::gguf_key("end_layer") => end_layer = r.value_as_u32(vtype)?,
             // `<arch>.block_count` / `<arch>.embedding_length` — the arch prefix
             // varies per model, so match on the suffix.

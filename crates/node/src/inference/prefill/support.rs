@@ -489,9 +489,8 @@ impl RemoteStreamTelemetry {
             .get("remote_stream_queue_wait_ms")
             .and_then(serde_json::Value::as_u64)
         {
-            self.remote_stream_queue_wait_total_ms = self
-                .remote_stream_queue_wait_total_ms
-                .saturating_add(value);
+            self.remote_stream_queue_wait_total_ms =
+                self.remote_stream_queue_wait_total_ms.saturating_add(value);
             self.queue_wait.record(value);
         }
         self.refresh_percentiles();

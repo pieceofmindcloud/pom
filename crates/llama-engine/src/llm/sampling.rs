@@ -153,7 +153,11 @@ pub(super) fn sampling_candidates_profiled(
 }
 
 #[cfg(test)]
-pub(super) fn sampling_candidates(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> Vec<(usize, f32)> {
+pub(super) fn sampling_candidates(
+    logits: &[f32],
+    recent: &[i32],
+    cfg: &SamplingConfig,
+) -> Vec<(usize, f32)> {
     sampling_candidates_profiled(logits, recent, cfg, &mut SamplingTimings::default())
 }
 

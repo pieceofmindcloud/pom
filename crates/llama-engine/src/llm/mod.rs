@@ -33,8 +33,8 @@
 //! with two contexts decoding in parallel that became a race in which one
 //! request would carry the other's residual - no error, just a wrong answer.
 
-pub(crate) use crate::KvCacheType;
 pub(crate) use crate::wire::TensorShape;
+pub(crate) use crate::KvCacheType;
 pub(crate) use anyhow::{bail, Context, Result};
 pub(crate) use std::collections::{HashMap, HashSet};
 pub(crate) use std::ffi::{c_void, CStr, CString};
@@ -53,6 +53,8 @@ pub(crate) use llama_cpp_sys_2 as sys;
 
 // ── Capture state, one per context ────────────────────────────────────────────
 
+#[path = "batch.rs"]
+mod batch;
 /// Estado da captura de um contexto.
 ///
 /// Já foi global de processo, e o comentário do topo deste arquivo dizia que
@@ -66,25 +68,23 @@ pub(crate) use llama_cpp_sys_2 as sys;
 mod capture;
 #[path = "config.rs"]
 mod config;
-#[path = "model.rs"]
-mod model;
 #[path = "engine.rs"]
 mod engine;
-#[path = "batch.rs"]
-mod batch;
+#[path = "model.rs"]
+mod model;
 #[path = "sampling.rs"]
 mod sampling;
 #[path = "tests.rs"]
 mod tests;
 
+pub(super) use batch::*;
 pub(super) use capture::*;
 pub(super) use config::*;
 pub(super) use model::*;
-pub(super) use batch::*;
 pub(super) use sampling::*;
 
+pub use batch::*;
 pub use capture::*;
 pub use config::*;
 pub use model::*;
-pub use batch::*;
 pub use sampling::*;

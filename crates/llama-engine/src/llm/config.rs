@@ -32,9 +32,7 @@ impl MtpAllocation {
     }
 }
 
-pub fn mtp_allocation_from_context_memory(
-    value: &serde_json::Value,
-) -> Option<MtpAllocation> {
+pub fn mtp_allocation_from_context_memory(value: &serde_json::Value) -> Option<MtpAllocation> {
     let mut vram_bytes = 0u64;
     let mut ram_bytes = 0u64;
     for buffer in value.get("buffers")?.as_array()? {
@@ -303,7 +301,10 @@ pub(super) fn mtp_fit_mode_for_model(
     (requested, None)
 }
 
-pub(super) fn mtp_mode_for_nextn_availability(requested: MtpFitMode, has_nextn: bool) -> MtpFitMode {
+pub(super) fn mtp_mode_for_nextn_availability(
+    requested: MtpFitMode,
+    has_nextn: bool,
+) -> MtpFitMode {
     if !has_nextn {
         MtpFitMode::Disabled
     } else {
@@ -413,7 +414,10 @@ pub(super) fn fit_device_count(
     counted.clamp(1, max_devices.max(1))
 }
 
-pub(super) fn fit_memory_snapshots(memories: &[FitDeviceMemory], margins: &[usize]) -> Vec<FitMemorySnapshot> {
+pub(super) fn fit_memory_snapshots(
+    memories: &[FitDeviceMemory],
+    margins: &[usize],
+) -> Vec<FitMemorySnapshot> {
     margins
         .iter()
         .enumerate()
@@ -767,7 +771,11 @@ pub(super) fn empty_fit_plan_with_mtp_mode_and_reason(
 /// copiar o resultado de embeddings. Essa cópia usa `n_embd_out` como se fosse
 /// a largura real do tensor; quando as duas larguras divergem, o pedido pode
 /// ultrapassar `ggml_nbytes(tensor)` antes de o callback ser consumido.
-pub(super) fn generic_embeddings_compatible(need_embeddings: bool, n_embd: usize, n_embd_out: usize) -> bool {
+pub(super) fn generic_embeddings_compatible(
+    need_embeddings: bool,
+    n_embd: usize,
+    n_embd_out: usize,
+) -> bool {
     need_embeddings && n_embd == n_embd_out
 }
 
@@ -800,15 +808,16 @@ pub fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
 
 /// Aplica a política única de lote público e microlote de computação a cada
 /// contexto que o motor cria, inclusive o contexto MTP.
-pub fn apply_context_batch_params(
-    cparams: &mut sys::llama_context_params,
-    cfg: &EngineConfig,
-) {
+pub fn apply_context_batch_params(cparams: &mut sys::llama_context_params, cfg: &EngineConfig) {
     cparams.n_batch = cfg.n_batch;
     cparams.n_ubatch = effective_n_ubatch(cfg);
 }
 
-pub(super) fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Result<FitPlan> {
+pub(super) fn fit_plan(
+    model_path: &str,
+    cfg: &EngineConfig,
+    mtp_mode: MtpFitMode,
+) -> Result<FitPlan> {
     let (mtp_mode, mtp_unavailable_reason) = if mtp_mode == MtpFitMode::Disabled {
         (MtpFitMode::Disabled, None)
     } else {

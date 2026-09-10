@@ -456,9 +456,8 @@ unsafe impl Send for KQuantRoutePipelineHandle {}
 impl KQuantRoutePipelineHandle {
     fn new(hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
         let mut handle = std::ptr::null_mut();
-        let status = unsafe {
-            pom_moe_kquant_route_pipeline_create(hidden, intermediate, &mut handle)
-        };
+        let status =
+            unsafe { pom_moe_kquant_route_pipeline_create(hidden, intermediate, &mut handle) };
         if status != 0 {
             return Err(CudaMoeError::BackendUnavailable(format!(
                 "pipeline CUDA K-quant não pôde ser criado (código {status})"
@@ -1997,7 +1996,10 @@ mod tests {
             .unwrap();
         assert_eq!(actual.len(), expected.len());
         for (actual, expected) in actual.iter().zip(expected) {
-            assert!((actual - expected).abs() <= 1.0e-3, "{actual} != {expected}");
+            assert!(
+                (actual - expected).abs() <= 1.0e-3,
+                "{actual} != {expected}"
+            );
         }
     }
 
@@ -2293,9 +2295,7 @@ mod tests {
                             .unwrap()
                     })
                     .collect::<Vec<_>>();
-                (0..hidden).map(move |index| {
-                    0.25 * experts[0][index] + 0.75 * experts[1][index]
-                })
+                (0..hidden).map(move |index| 0.25 * experts[0][index] + 0.75 * experts[1][index])
             })
             .collect::<Vec<_>>();
         let executor = KQuantCudaExecutor::new_with_cache(
@@ -2312,12 +2312,7 @@ mod tests {
             .map(|(expert, payload)| {
                 executor
                     .resident_admit(
-                        super::super::cache::ExpertKey::new(
-                            model,
-                            0,
-                            expert as u32,
-                            format.name(),
-                        ),
+                        super::super::cache::ExpertKey::new(model, 0, expert as u32, format.name()),
                         payload,
                     )
                     .unwrap()
@@ -2474,9 +2469,9 @@ mod tests {
             let mut token_offsets = Vec::with_capacity(tokens + 1);
             token_offsets.push(0);
             for token in 0..tokens {
-                hidden_values.extend((0..hidden).map(|index| {
-                    ((token * hidden + index) as f32 * 0.001).sin()
-                }));
+                hidden_values.extend(
+                    (0..hidden).map(|index| ((token * hidden + index) as f32 * 0.001).sin()),
+                );
                 token_ids.extend(std::iter::repeat_n(token as u32, leases.len()));
                 weights.extend(std::iter::repeat_n(1.0 / leases.len() as f32, leases.len()));
                 token_offsets.push(token_ids.len());
@@ -2675,7 +2670,11 @@ mod tests {
             .map(|index| (index as f32 - 127.0) * 0.0078125)
             .collect::<Vec<_>>();
         let mut failures = Vec::new();
-        for format in [IqQuantFormat::Iq3S, IqQuantFormat::Iq2S, IqQuantFormat::Iq4XS] {
+        for format in [
+            IqQuantFormat::Iq3S,
+            IqQuantFormat::Iq2S,
+            IqQuantFormat::Iq4XS,
+        ] {
             let payload = iq_payload(format, hidden, intermediate);
             let expected = IqQuantExpert::from_payload(format, hidden, intermediate, &payload)
                 .unwrap()

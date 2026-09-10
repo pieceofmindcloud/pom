@@ -350,18 +350,33 @@ mod tests {
         );
         assert_eq!(trace.telemetry.remote_stream.remote_stream_wait_p95_ms, 22);
         assert_eq!(
-            trace.telemetry.remote_stream.remote_stream_producer_wait_total_ms,
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_producer_wait_total_ms,
             17
         );
         assert_eq!(
-            trace.telemetry.remote_stream.remote_stream_producer_wait_p95_ms,
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_producer_wait_p95_ms,
             9
         );
         assert_eq!(
-            trace.telemetry.remote_stream.remote_stream_queue_wait_total_ms,
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_queue_wait_total_ms,
             7
         );
-        assert_eq!(trace.telemetry.remote_stream.remote_stream_queue_wait_p95_ms, 4);
+        assert_eq!(
+            trace
+                .telemetry
+                .remote_stream
+                .remote_stream_queue_wait_p95_ms,
+            4
+        );
         assert_eq!(trace.telemetry.status, "complete");
     }
 

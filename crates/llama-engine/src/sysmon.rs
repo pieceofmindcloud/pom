@@ -325,16 +325,7 @@ pub fn sample_disk_at(path: &Path) -> DiskStat {
 /// NVMe faria a tela prometer espaço que não existe. O corte é por nome do
 /// dispositivo porque o `df -P` não informa o tipo do sistema de arquivos.
 const PSEUDO_FILESYSTEMS: &[&str] = &[
-    "devfs",
-    "devtmpfs",
-    "tmpfs",
-    "overlay",
-    "squashfs",
-    "efivarfs",
-    "udev",
-    "none",
-    "map",
-    "shm",
+    "devfs", "devtmpfs", "tmpfs", "overlay", "squashfs", "efivarfs", "udev", "none", "map", "shm",
 ];
 
 /// Uma linha do `df -k -P`, lida da direita para a esquerda.
@@ -401,7 +392,11 @@ pub fn sample_all_disks() -> Vec<DiskStat> {
     #[cfg(windows)]
     {
         let only = sample_disk();
-        return if only.total_mb > 0 { vec![only] } else { Vec::new() };
+        return if only.total_mb > 0 {
+            vec![only]
+        } else {
+            Vec::new()
+        };
     }
 
     #[cfg(not(windows))]
@@ -1003,7 +998,11 @@ async fn amd_gpu_processes() -> Vec<GpuProcess> {
             .unwrap_or_default();
         out.push(GpuProcess {
             pid,
-            name: if comm.is_empty() { format!("pid {pid}") } else { comm },
+            name: if comm.is_empty() {
+                format!("pid {pid}")
+            } else {
+                comm
+            },
             used_mb: bytes as f64 / 1_048_576.0,
         });
     }
@@ -1051,7 +1050,15 @@ async fn mac_accelerator_stats() -> Option<MacAcceleratorStats> {
     for class in ["AGXAccelerator", "IOAccelerator"] {
         let out = command_output(
             "ioreg",
-            vec!["-r".into(), "-d".into(), "1".into(), "-w".into(), "0".into(), "-c".into(), class.to_string()],
+            vec![
+                "-r".into(),
+                "-d".into(),
+                "1".into(),
+                "-w".into(),
+                "0".into(),
+                "-c".into(),
+                class.to_string(),
+            ],
         )
         .await;
         let Some(out) = out else { continue };
@@ -1328,10 +1335,17 @@ mod tests {
     #[tokio::test]
     async fn os_volumes_desta_maquina_batem_com_o_df_do_projeto() {
         let disks = tokio::task::spawn_blocking(sample_all_disks).await.unwrap();
-        assert!(!disks.is_empty(), "a máquina deveria ter ao menos um volume");
+        assert!(
+            !disks.is_empty(),
+            "a máquina deveria ter ao menos um volume"
+        );
         for disk in &disks {
             assert!(disk.total_mb > 0, "{} sem tamanho", disk.mount_point);
-            assert!(disk.free_mb <= disk.total_mb, "{} livre > total", disk.mount_point);
+            assert!(
+                disk.free_mb <= disk.total_mb,
+                "{} livre > total",
+                disk.mount_point
+            );
         }
 
         let raiz = disks
@@ -1684,7 +1698,8 @@ mod gpu_selection_tests {
         assert_eq!(disk.free_mb, 17_190);
         assert_eq!(disk.mount_point, "/");
 
-        let com_espaco = parse_df_line("map auto_home  0  0  0  100%  /System/Volumes/home").unwrap();
+        let com_espaco =
+            parse_df_line("map auto_home  0  0  0  100%  /System/Volumes/home").unwrap();
         assert_eq!(com_espaco.device, "map auto_home");
         assert_eq!(com_espaco.mount_point, "/System/Volumes/home");
     }
@@ -1721,7 +1736,10 @@ mod gpu_selection_tests {
         assert_eq!(stats.utilization_pct, Some(37.0));
         assert_eq!(stats.in_use_memory_mb, Some(1024.0));
 
-        assert_eq!(parse_ioreg_accelerator("sem nada"), MacAcceleratorStats::default());
+        assert_eq!(
+            parse_ioreg_accelerator("sem nada"),
+            MacAcceleratorStats::default()
+        );
     }
 
     /// O `fdinfo` do amdgpu escreve a unidade junto do número. Lê-lo sem a
@@ -1747,7 +1765,10 @@ mod gpu_selection_tests {
         );
 
         // Descritor que não é do amdgpu não entra na conta.
-        assert_eq!(parse_amdgpu_fdinfo("drm-driver:\ti915\ndrm-client-id:\t1\n"), None);
+        assert_eq!(
+            parse_amdgpu_fdinfo("drm-driver:\ti915\ndrm-client-id:\t1\n"),
+            None
+        );
         assert_eq!(parse_amdgpu_fdinfo("pos:\t0\n"), None);
     }
 }

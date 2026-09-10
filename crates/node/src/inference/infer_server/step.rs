@@ -1494,13 +1494,15 @@ mod remote_stream_tests {
     }
 
     #[tokio::test]
-    async fn emitter_separa_tempo_do_produtor_e_fila_de_entrega() {
+    async fn emitter_nao_conta_fila_anterior_ao_inicio_da_janela() {
         use std::time::{Duration, Instant};
 
         let (items_tx, items_rx) = mpsc::channel(1);
         let mut item = token(7, "token", true);
         if let RemoteStreamItem::Token(token) = &mut item {
-            token.ready_at = Instant::now() - Duration::from_millis(5);
+            let queued_at = Instant::now() - Duration::from_millis(5);
+            token.ready_at = queued_at;
+            token.enqueued_at = queued_at;
         }
         items_tx.send(item).await.expect("token enfileirado");
         drop(items_tx);
@@ -1524,12 +1526,7 @@ mod remote_stream_tests {
 
         let batch = deliveries_rx.recv().await.expect("callback");
         assert_eq!(batch["remote_stream_producer_wait_ms"], 0);
-        assert!(
-            batch["remote_stream_queue_wait_ms"]
-                .as_u64()
-                .is_some_and(|value| value >= 4),
-            "token pronto deve ser contabilizado como espera de fila"
-        );
+        assert_eq!(batch["remote_stream_queue_wait_ms"], 0);
     }
 
     #[tokio::test]

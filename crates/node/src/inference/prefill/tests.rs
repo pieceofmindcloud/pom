@@ -371,28 +371,28 @@ mod tests {
                 .telemetry
                 .remote_stream
                 .remote_stream_channel_send_wait_total_ms,
-            3
+            5
         );
         assert_eq!(
             trace
                 .telemetry
                 .remote_stream
                 .remote_stream_channel_send_wait_p95_ms,
-            2
+            3
         );
         assert_eq!(
             trace
                 .telemetry
                 .remote_stream
                 .remote_stream_downstream_wait_total_ms,
-            31
+            33
         );
         assert_eq!(
             trace
                 .telemetry
                 .remote_stream
                 .remote_stream_downstream_wait_p95_ms,
-            16
+            17
         );
         assert_eq!(
             trace
@@ -413,14 +413,14 @@ mod tests {
                 .telemetry
                 .remote_stream
                 .remote_stream_delivery_total_ms,
-            7
+            9
         );
         assert_eq!(
             trace
                 .telemetry
                 .remote_stream
                 .remote_stream_delivery_p95_ms,
-            4
+            5
         );
         assert_eq!(trace.telemetry.status, "complete");
     }

@@ -452,12 +452,13 @@ Comportamento atual do código:
    observado ou anunciado continua sendo usado.
 2. **O tráfego de inferência escolhe um transporte por preferência.** Quando
    QUIC está ligado, o gateway e os relays tentam HTTP/3 via
-   `relay::send_frame_or_tunnel` e, se ele falhar, caem diretamente para o
-   cliente TCP pinado: HTTP quando TLS está desligado e HTTPS quando está ativo.
-   Esse caminho nunca usa o túnel libp2p. Quando QUIC está desligado, o túnel
-   `network/infer_tunnel.rs` pode ser usado quando o hop anuncia
-   `transport/libp2p-tunnel-v1` e um `PeerId` válido; ele é protegido por Noise
-   e leva a credencial da inferência até o loopback do destino.
+   `relay::send_frame_or_tunnel` e, se ele falhar, caem para o cliente TCP
+   pinado: HTTP quando TLS está desligado e HTTPS quando está ativo. Só depois
+   de todos os endereços diretos falharem o túnel `network/infer_tunnel.rs`
+   pode ser usado, quando o hop anuncia `transport/libp2p-tunnel-v1` e um
+   `PeerId` válido; ele é protegido por Noise e leva a credencial da inferência
+   até o loopback do destino. Quando QUIC está desligado, a mesma ordem direta
+   antes do túnel preserva HTTP/HTTPS como transporte efetivo preferencial.
    Antes de cada envio, o swarm reidrata uma única multiaddress TCP a partir do
    endpoint canônico levado pelo plano quando disponível, ou do primeiro
    endereço válido do anúncio vivo como fallback, quando ainda não há conexão.
@@ -655,7 +656,8 @@ do `node_id`; portanto QUIC permanece cifrado mesmo quando `tls_required` está
 desligado. A política TLS continua escolhendo apenas `http://` ou `https://`
 para o fallback TCP. Se o peer não tiver endpoint QUIC, a porta não estiver
 escutando, a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e
-marca `transport_fallback`; ele não usa o túnel libp2p como substituto de QUIC.
+marca `transport_fallback`; o túnel só é a última reserva depois de uma falha
+de transporte também no caminho TCP.
 A telemetria por hop publica o transporte efetivo como `http`, `https` ou
 `quic`.
 

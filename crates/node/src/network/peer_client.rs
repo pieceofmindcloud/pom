@@ -237,6 +237,16 @@ impl PeerClients {
         self.quic.load(Ordering::Relaxed)
     }
 
+    /// Preferência efetiva do nó para novas travessias de inferência.
+    ///
+    /// A política do principal também é mantida no atômico global para
+    /// alcançar os clientes lazy do servidor de inferência. Consultar os dois
+    /// evita que um `PeerClients` criado antes da adoção da política continue
+    /// escolhendo o túnel enquanto o restante do processo já escolhe QUIC.
+    pub fn effective_quic_enabled(&self) -> bool {
+        self.quic_enabled() || quic_ativo()
+    }
+
     /// Atualiza a preferência sem tocar em clientes TCP já abertos. A política
     /// só escolhe chamadas novas; uma travessia em andamento conserva o canal
     /// que já adquiriu.

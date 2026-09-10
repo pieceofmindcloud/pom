@@ -3007,6 +3007,15 @@ mod tests {
             .unwrap()
             .with_identity(crate::profile::NodeProfile::Admin, "macbook".into())
             .with_quic_ports(Some(8182), Some(8081));
+        net.set_advertise_addr(Some("198.51.100.9:8080"));
+        assert_eq!(
+            net.inference_quic_addr_candidates(),
+            vec!["198.51.100.9:8182"]
+        );
+        assert_eq!(
+            net.gateway_quic_addr_candidates(),
+            vec!["198.51.100.9:8081"]
+        );
 
         let asgn = LayerAssignment {
             deploy_id: String::new(),

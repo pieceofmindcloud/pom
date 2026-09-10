@@ -651,12 +651,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   requisição (18/08). Cru é 4x menor e não passa por parse.
 
   `relay::send_bytes_or_tunnel` tenta primeiro os candidatos HTTPS diretos
-  pinados. Quando QUIC está ligado, HTTP/3 vem antes do túnel e uma falha cai
-  somente para HTTP/HTTPS; o túnel nunca substitui um QUIC indisponível. Com
-  QUIC desligado, tenta o `infer_tunnel` quando o membro anunciou
-  `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. Essa ordem é importante no
-  reduce TP: a chamada fica dentro da barreira e um túnel indisponível não deve
-  atrasar um endereço HTTPS alcançável. `broadcast_to` mantém a URL base e a rota separadas, porque
+  pinados. HTTP/3 vem antes de HTTP/HTTPS quando QUIC está ligado; o túnel só
+  entra depois que todos os endereços diretos falham por transporte. Com QUIC
+  desligado, o membro ainda precisa anunciar `libp2p_peer_id` e
+  `transport/libp2p-tunnel-v1` para habilitar a última reserva. Essa ordem é
+  importante no reduce TP: a chamada fica dentro da barreira e um túnel
+  indisponível não deve atrasar um endereço HTTPS alcançável. `broadcast_to` mantém a URL base e a rota separadas, porque
   o túnel encaminha a rota para o loopback do worker. O
   plano também leva os candidatos UDP do peer para o `TunnelOutbound`, então o
   swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
@@ -1038,18 +1038,19 @@ falha de transporte.
 - `send_batch_body` é o único ponto por onde todo lote remoto passa, inclusive
   as ativações `remote_stream` que não podem ser agrupadas com uma sessão
   diferente. É ali que a seleção de transporte vive: com QUIC ligado, tenta
-  QUIC e cai diretamente para HTTP/HTTPS; com QUIC desligado, tenta o canal
-  persistente (`link::send_batch`, quando o hop anuncia `transport/link-v1`),
-  depois o túnel libp2p e então HTTP/HTTPS por requisição. Cada degrau só é
+  QUIC e cai para HTTP/HTTPS; com QUIC desligado, tenta o canal persistente
+  (`link::send_batch`, quando o hop anuncia `transport/link-v1`), depois
+  HTTP/HTTPS por requisição e só então o túnel libp2p. Cada degrau só é
   usado depois de o anterior falhar por **transporte**; uma recusa HTTP do peer
   é final, exceto 404/405 no QUIC, que significam peer sem a rota HTTP/3. O
   degrau usado vira `transport`, e ter descido a escada vira
   `transport_fallback`.
-- O transporte por requisição tenta QUIC antes do túnel libp2p/Noise quando a
-  preferência está ligada; uma falha QUIC nunca cai no túnel, apenas no cliente
-  HTTP pinado. Os destinos QUIC vêm do `host:porta` anunciado pelo peer, não
-  da `inference_url`, e usam a porta UDP dedicada publicada no `Announce`. Com
-  QUIC desligado, o túnel continua sendo a alternativa antes do cliente HTTP;
+- O transporte por requisição tenta QUIC antes do cliente TCP quando a
+  preferência está ligada; uma falha QUIC cai no cliente HTTP pinado e, só se
+  todos os endereços diretos falharem, no túnel libp2p/Noise. Os destinos QUIC
+  vêm do `host:porta` anunciado pelo peer, não da `inference_url`, e usam a
+  porta UDP dedicada publicada no `Announce`. Com QUIC desligado, o cliente
+  HTTP/HTTPS continua sendo tentado antes do túnel;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de
   topologia. O `round_trip_ms` de `SentFrame` inclui processamento remoto e
   não alimenta a tabela direcional de rotas.

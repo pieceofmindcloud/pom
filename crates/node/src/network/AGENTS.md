@@ -84,7 +84,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   Ollama e
   loopback não envia essa marca. `for_peer_with_state` informa ao trace se o
   cliente TLS foi criado ou reutilizado; transporte local, túnel e cliente
-  sem TLS permanecem explicitamente desconhecidos.
+  sem TLS permanecem explicitamente desconhecidos. `effective_quic_enabled`
+  combina a flag do pool com a preferência global confirmada pelo principal,
+  para que clientes lazy criados antes da propagação não desviem inferência
+  para o túnel.
 - `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
   QUIC por peer e endereço anunciado, usa o mesmo pinning Ed25519 da conexão
   TCP e deixa o endpoint UDP pronto na porta dedicada anunciada

@@ -918,7 +918,7 @@ async fn send_frame_with_protocol(
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
             let started = Instant::now();
-            if clients.quic_enabled() {
+            if clients.effective_quic_enabled() {
                 match clients
                     .quic_post(
                         peer_id,
@@ -1255,16 +1255,16 @@ async fn send_batch_body(
         .libp2p_peer_id
         .as_deref()
         .and_then(|value| value.parse::<PeerId>().ok());
-    // QUIC is an explicit transport preference. While it is enabled, do not
-    // consume the libp2p tunnel before the direct HTTP/3 attempt: a successful
-    // tunnel would hide both the QUIC attempt and its fallback telemetry.
-    let can_use_tunnel = !clients.quic_enabled()
-        && tunnel_is_allowed_for_peer(
-            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
-            peer_id.is_some(),
-            tunnel.is_some(),
-            crate::infer_tunnel::is_local_node(&step.node_id),
-        );
+    // The batch path follows the same ladder as the single-frame path:
+    // persistent HTTP link when selected, then QUIC/TCP direct, and only then
+    // the libp2p tunnel. Keeping this order here is essential because
+    // `/v1/step` commonly enters the coordinator with a hidden-state tensor.
+    let can_use_tunnel = tunnel_is_allowed_for_peer(
+        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+        peer_id.is_some(),
+        tunnel.is_some(),
+        crate::infer_tunnel::is_local_node(&step.node_id),
+    );
     let mut transport_fallback_reason = None;
     let mut transport_fallback = false;
 
@@ -1273,7 +1273,7 @@ async fn send_batch_body(
     // capability, endereço direto inalcançável, canal caído - a chamada segue
     // pela escada de sempre e o `transport_fallback` diz que isso aconteceu.
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
-        && !clients.quic_enabled()
+        && !clients.effective_quic_enabled()
         && !crate::infer_tunnel::is_local_node(&step.node_id)
     {
         match crate::link::send_batch_with_session_profile(
@@ -1317,40 +1317,6 @@ async fn send_batch_body(
         }
     }
 
-    if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = clients.internal_node_token().await;
-        match send_batch_via_tunnel(
-            tunnel,
-            peer_id,
-            &step.libp2p_addr_candidates,
-            path,
-            body.to_vec(),
-            peer_label,
-            auth,
-            session_id,
-            profiling.as_ref(),
-        )
-        .await
-        {
-            Ok(mut response) => {
-                if let Some(reason) = transport_fallback_reason.take() {
-                    response.transport_fallback = true;
-                    response.transport_fallback_reason = Some(reason);
-                }
-                return Ok(response);
-            }
-            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(error) => {
-                transport_fallback_reason = Some(match transport_fallback_reason.take() {
-                    Some(previous) => format!("{previous}; libp2p-tunnel: {error}"),
-                    None => format!("libp2p-tunnel: {error}"),
-                });
-                transport_fallback = true;
-                warn!("{peer_label}: libp2p batch falhou ({error}), tentando HTTP direto")
-            }
-        }
-    }
-
     let (client, connection_state) = clients.for_peer_with_state(&step.node_id)?;
     let mut route_candidates = Vec::with_capacity(step.inference_candidates.len() + 1);
     if !step.inference_url.is_empty() {
@@ -1375,7 +1341,7 @@ async fn send_batch_body(
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
             let started = Instant::now();
-            if clients.quic_enabled() {
+            if clients.effective_quic_enabled() {
                 match clients
                     .quic_post(
                         &step.node_id,
@@ -1508,9 +1474,38 @@ async fn send_batch_body(
             tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
         }
     }
-    Err(anyhow!(
-        "{peer_label} não respondeu após {attempts} tentativa(s): {last_error}"
-    ))
+    let direct_error =
+        anyhow!("{peer_label} não respondeu após {attempts} tentativa(s): {last_error}");
+    if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
+        let auth = clients.internal_node_token().await;
+        match send_batch_via_tunnel(
+            tunnel,
+            peer_id,
+            &step.libp2p_addr_candidates,
+            path,
+            body.to_vec(),
+            peer_label,
+            auth,
+            session_id,
+            profiling.as_ref(),
+        )
+        .await
+        {
+            Ok(mut response) => {
+                response.transport_fallback = true;
+                response.transport_fallback_reason = Some(match transport_fallback_reason {
+                    Some(previous) => format!("{previous}; http: {direct_error}"),
+                    None => format!("http: {direct_error}"),
+                });
+                return Ok(response);
+            }
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(tunnel_error) => {
+                return Err(anyhow!("{direct_error}; libp2p-tunnel: {tunnel_error}"));
+            }
+        }
+    }
+    Err(direct_error)
 }
 
 async fn send_batch_via_tunnel(
@@ -1790,11 +1785,11 @@ async fn send_bytes_via_tunnel(
     })
 }
 
-/// Envia um frame pelo túnel libp2p quando o hop anuncia a capability, tem um
-/// `libp2p_peer_id` conhecido e o swarm local está disponível. O túnel usa
-/// Noise e leva a mesma credencial da porta de inferência. Se o transporte do
-/// túnel falhar, a chamada segue pelo cliente direto pinado; uma recusa HTTP
-/// do peer é final e não é repetida em outro transporte.
+/// Seleciona o transporte de um frame na ordem QUIC, HTTP/HTTPS direto e,
+/// somente como último recurso, túnel libp2p. O túnel exige a capability, um
+/// `libp2p_peer_id` conhecido e um swarm local disponível. Ele usa Noise e a
+/// mesma credencial da porta de inferência. Uma recusa HTTP é final e não é
+/// repetida em outro transporte.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_frame_or_tunnel(
     clients: &crate::peer_client::PeerClients,
@@ -1869,19 +1864,21 @@ pub async fn send_frame_or_tunnel(
         .as_deref()
         .and_then(|s| s.parse::<PeerId>().ok());
 
-    // Keep the transport selector single-valued: QUIC takes precedence over
-    // the tunnel, and a failed QUIC attempt falls through to TCP only.
-    let can_use_tunnel = !clients.quic_enabled()
-        && tunnel_is_allowed_for_peer(
-            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
-            peer_id.is_some(),
-            tunnel.is_some(),
-            crate::infer_tunnel::is_local_node(&step.node_id),
-        );
+    // Keep the transport selector single-valued: QUIC, when preferred, takes
+    // precedence over direct TCP; HTTP/HTTPS remains the first fallback and
+    // the libp2p tunnel is the last resort. A tunnel must never hide a direct
+    // endpoint that is reachable, because that would turn a healthy
+    // `/v1/step` or `/v1/prefill` hop into the slower NAT path.
+    let can_use_tunnel = tunnel_is_allowed_for_peer(
+        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+        peer_id.is_some(),
+        tunnel.is_some(),
+        crate::infer_tunnel::is_local_node(&step.node_id),
+    );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
     let session_id = meta.get("session_id").and_then(Value::as_str);
     let mut transport_fallback = false;
-    let mut transport_fallback_reason = None;
+    let mut transport_fallback_reason: Option<String> = None;
 
     // Direct prefill carries `reply_to`, so it deliberately cannot enter the
     // process-local BatchCoordinator. It must still use the same persistent
@@ -1889,7 +1886,7 @@ pub async fn send_frame_or_tunnel(
     // back to the libp2p tunnel while decode uses HTTP/HTTPS/QUIC.
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
         && can_use_single_link(path)
-        && !clients.quic_enabled()
+        && !clients.effective_quic_enabled()
     {
         let batch_id = uuid::Uuid::new_v4().to_string();
         let encode_started = Instant::now();
@@ -1957,41 +1954,7 @@ pub async fn send_frame_or_tunnel(
         }
     }
 
-    if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = clients.internal_node_token().await;
-        match send_frame_via_tunnel_with_auth(
-            tunnel,
-            peer_id,
-            &step.libp2p_addr_candidates,
-            path,
-            meta,
-            tensor.clone(),
-            dtype,
-            encoding,
-            use_batch_frame,
-            peer_label,
-            auth,
-            session_id,
-        )
-        .await
-        {
-            Ok(mut sent) => {
-                if let Some(reason) = transport_fallback_reason.take() {
-                    sent.transport_fallback = true;
-                    sent.transport_fallback_reason = Some(reason);
-                }
-                return Ok(sent);
-            }
-            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(error) => {
-                transport_fallback = true;
-                transport_fallback_reason = Some(format!("libp2p-tunnel: {error}"));
-                warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto")
-            }
-        }
-    }
-
-    send_frame_with_protocol(
+    let direct = send_frame_with_protocol(
         clients,
         &step.node_id,
         &step.inference_url,
@@ -1999,18 +1962,65 @@ pub async fn send_frame_or_tunnel(
         &step.quic_addr_candidates,
         path,
         meta,
-        tensor,
+        tensor.clone(),
         dtype,
         encoding,
         use_batch_frame,
         attempts,
         peer_label,
         transport_fallback,
-        transport_fallback_reason,
+        transport_fallback_reason.clone(),
         on_issue,
         session_id,
     )
-    .await
+    .await;
+
+    match direct {
+        Ok(sent) => Ok(sent),
+        Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => Err(error),
+        Err(direct_error) => {
+            let direct_stage = if clients.effective_quic_enabled() {
+                format!("quic/http: {direct_error}")
+            } else {
+                format!("http: {direct_error}")
+            };
+            let direct_reason = match &transport_fallback_reason {
+                Some(previous) => format!("{previous}; {direct_stage}"),
+                None => direct_stage,
+            };
+            if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
+                let auth = clients.internal_node_token().await;
+                match send_frame_via_tunnel_with_auth(
+                    tunnel,
+                    peer_id,
+                    &step.libp2p_addr_candidates,
+                    path,
+                    meta,
+                    tensor,
+                    dtype,
+                    encoding,
+                    use_batch_frame,
+                    peer_label,
+                    auth,
+                    session_id,
+                )
+                .await
+                {
+                    Ok(mut sent) => {
+                        sent.transport_fallback = true;
+                        sent.transport_fallback_reason = Some(direct_reason);
+                        Ok(sent)
+                    }
+                    Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => Err(error),
+                    Err(tunnel_error) => {
+                        Err(anyhow!("{direct_reason}; libp2p-tunnel: {tunnel_error}"))
+                    }
+                }
+            } else {
+                Err(direct_error)
+            }
+        }
+    }
 }
 
 /// A local pipeline step is dispatched directly to this process's inference
@@ -2025,9 +2035,9 @@ fn tunnel_is_allowed_for_peer(
 }
 
 /// Predicado mantido para os testes e para consumidores que ainda classificam
-/// uma falha antes de decidir o transporte. O caminho de produção atual tenta
-/// o túnel primeiro e só usa essa classificação para a política de retry
-/// legada.
+/// uma falha antes de decidir o transporte. A seleção de produção já tenta
+/// HTTP/HTTPS antes do túnel; esta função continua descrevendo quais falhas de
+/// transporte podem justificar a última reserva.
 ///
 /// `Http`-class issues are excluded on purpose: the peer *was* reached and
 /// gave a considered refusal (bad request, model error, …) — retrying over a
@@ -2847,9 +2857,9 @@ mod tests {
         }
     }
 
-    /// A hop that advertises the tunnel uses it before trying HTTP. The
-    /// response is supplied by a fake swarm, so this test never waits for the
-    /// 75-second tunnel timeout.
+    /// A hop that advertises the tunnel uses it only after direct HTTP fails.
+    /// The response is supplied by a fake swarm, so this test never waits for
+    /// the 75-second tunnel timeout.
     #[tokio::test]
     async fn a_qualified_peer_prefers_the_tunnel() {
         let step = step_with(
@@ -2883,7 +2893,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_remote_peer_tries_the_tunnel_before_http_fallback() {
+    async fn a_remote_peer_uses_http_before_tunnel_fallback() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let port = spawn_fake_inference_server(|_body| {
@@ -2924,8 +2934,58 @@ mod tests {
         .await
         .expect("remote HTTP fallback must succeed after tunnel failure");
 
-        assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 0);
         assert_eq!(sent.meta["done"], true);
+    }
+
+    #[tokio::test]
+    async fn prefill_uses_direct_http_before_the_tunnel() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let port = spawn_fake_inference_server(|_body| {
+            (
+                200,
+                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        let tunnel_attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_swarm = tunnel_attempts.clone();
+        let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
+        tokio::spawn(async move {
+            if let Some(outbound) = tunnel_rx.recv().await {
+                attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                let body = wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap();
+                let _ = outbound.reply.send(Ok(crate::infer_tunnel::TunnelResponse {
+                    status: 200,
+                    body,
+                }));
+            }
+        });
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
+            &step,
+            Some(&tunnel_tx),
+            "/v1/prefill",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("prefill deve usar o endpoint direto alcançável");
+
+        assert_eq!(sent.transport, InferenceTransport::Http);
+        assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -3007,6 +3067,45 @@ mod tests {
             .transport_fallback_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("quic")));
+    }
+
+    #[tokio::test]
+    async fn quic_enabled_http_failure_uses_tunnel_only_as_last_fallback() {
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        clients.set_quic(true);
+        let step = step_with(
+            "http://127.0.0.1:1",
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
+
+        let sent = send_frame_or_tunnel(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("o túnel deve ser a última reserva quando HTTP e QUIC falham");
+
+        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert!(sent.transport_fallback);
+        assert!(sent
+            .transport_fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("quic/http") && reason.contains("http")));
     }
 
     #[tokio::test]
@@ -3153,16 +3252,29 @@ mod tests {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let router = Router::new().route(
-            "/v1/step",
-            post(move |body: Bytes| {
-                let handler = handler.clone();
-                async move {
-                    let (status, body) = handler(body.to_vec());
-                    (axum::http::StatusCode::from_u16(status).unwrap(), body)
-                }
-            }),
-        );
+        let step_handler = handler.clone();
+        let prefill_handler = handler;
+        let router = Router::new()
+            .route(
+                "/v1/step",
+                post(move |body: Bytes| {
+                    let handler = step_handler.clone();
+                    async move {
+                        let (status, body) = handler(body.to_vec());
+                        (axum::http::StatusCode::from_u16(status).unwrap(), body)
+                    }
+                }),
+            )
+            .route(
+                "/v1/prefill",
+                post(move |body: Bytes| {
+                    let handler = prefill_handler.clone();
+                    async move {
+                        let (status, body) = handler(body.to_vec());
+                        (axum::http::StatusCode::from_u16(status).unwrap(), body)
+                    }
+                }),
+            );
         tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
@@ -3249,6 +3361,84 @@ mod tests {
         .expect("capable peer must accept the v3 adapter");
 
         assert_eq!(sent.meta["done"], true);
+    }
+
+    #[tokio::test]
+    async fn batched_step_uses_direct_http_before_the_tunnel() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let port = spawn_fake_inference_server(|body| {
+            let batch = wire::decode_batch(&body).expect("batch válido");
+            let item = &batch.items[0];
+            (
+                200,
+                wire::encode_batch_items(
+                    batch.kind,
+                    batch.batch_id,
+                    &[wire::BatchPayloadItem {
+                        item_id: item.item_id.clone(),
+                        session_id: item.session_id.clone(),
+                        meta: json!({"done": true}),
+                        tensor: None,
+                        dtype: WireDtype::F16,
+                    }],
+                )
+                .unwrap(),
+            )
+        })
+        .await;
+        let mut step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        step.inference_frame_capabilities
+            .push(crate::pipeline::CAP_FRAME_BATCH.into());
+        let tunnel_attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_swarm = tunnel_attempts.clone();
+        let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
+        tokio::spawn(async move {
+            if let Some(outbound) = tunnel_rx.recv().await {
+                attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                let batch = wire::decode_batch(&outbound.request.body).unwrap();
+                let item = &batch.items[0];
+                let body = wire::encode_batch_items(
+                    batch.kind,
+                    batch.batch_id,
+                    &[wire::BatchPayloadItem {
+                        item_id: item.item_id.clone(),
+                        session_id: item.session_id.clone(),
+                        meta: json!({"done": false}),
+                        tensor: None,
+                        dtype: WireDtype::F16,
+                    }],
+                )
+                .unwrap();
+                let _ = outbound.reply.send(Ok(crate::infer_tunnel::TunnelResponse {
+                    status: 200,
+                    body,
+                }));
+            }
+        });
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({"session_id": "batch-session", "is_last": true}),
+            Some((&[0.25_f32, -0.5], vec![1, 2])),
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("step em batch deve usar o endpoint direto alcançável");
+
+        assert_eq!(sent.transport, InferenceTransport::Http);
+        assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -3361,10 +3551,10 @@ mod tests {
         );
     }
 
-    /// A refusal generated by libp2p is final. HTTPS must not repeat the same
-    /// frame after the peer explicitly rejected it.
+    /// A refusal generated by direct HTTP is final. The tunnel must not repeat
+    /// the same frame after the peer explicitly rejected it.
     #[tokio::test]
-    async fn a_tunnel_http_refusal_never_falls_back_to_https() {
+    async fn a_direct_http_refusal_never_falls_back_to_the_tunnel() {
         let port = spawn_fake_inference_server(|_body| (500, b"model crashed".to_vec())).await;
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
@@ -3393,7 +3583,7 @@ mod tests {
 
         let err = expect_err(result, "an HTTP refusal must surface as an error");
         assert!(err.downcast_ref::<HttpRefusal>().is_some());
-        assert!(err.to_string().contains("model crashed in tunnel"));
+        assert!(err.to_string().contains("model crashed"));
     }
 
     /// A troca de transporte, contra uma máquina que está mesmo na rede.

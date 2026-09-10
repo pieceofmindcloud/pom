@@ -836,7 +836,7 @@ impl RemoteStreamDelivery {
         // silently keep using the persistent TCP link when the cluster opted
         // into QUIC: otherwise the MTP/remote-stream trace would describe a
         // different transport than the one the gateway requested.
-        if self.persistent_failure.is_none() && !self.http.quic_enabled() {
+        if self.persistent_failure.is_none() && !self.http.effective_quic_enabled() {
             let reason = match (node_id, urls.is_empty()) {
                 (None, _) => Some(format!("{link_transport}: reply_to sem node_id")),
                 (Some(_), true) => Some(format!("{link_transport}: reply_to sem endereço")),

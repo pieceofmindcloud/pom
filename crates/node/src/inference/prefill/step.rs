@@ -322,6 +322,9 @@ pub struct SpeculativeStep {
     pub speculation_active: bool,
     /// Stable reason why a requested speculative cycle was disabled.
     pub speculation_disabled_reason: Option<String>,
+    /// Detailed evidence from the hop that disabled a requested cycle. This
+    /// is deliberately separate from the stable reason used by older peers.
+    pub speculation_disabled_detail: Option<String>,
     /// Rascunho que a cauda de um pipeline fatiado produziu para a **próxima**
     /// rodada (bloco `nextn`). No stream remoto, a cabeça o instala
     /// internamente antes de continuar o ciclo. `None` quando esta rodada não
@@ -647,6 +650,12 @@ pub(super) async fn step_speculative_hub(
             if let Some(draft) = meta.get("draft") {
                 m["draft"] = draft.clone();
             }
+            if let Some(tokens) = meta.get("tokens") {
+                m["tokens"] = tokens.clone();
+            }
+            if let Some(mtp_k) = meta.get("mtp_k") {
+                m["mtp_k"] = mtp_k.clone();
+            }
             m
         };
         if let Some(trace_id) = trace_id {
@@ -787,6 +796,10 @@ pub(super) fn speculative_step_from_meta(
         .get("speculation_disabled_reason")
         .and_then(|v| v.as_str())
         .map(ToOwned::to_owned);
+    let speculation_disabled_detail = meta
+        .get("speculation_disabled_detail")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
     let accepted: Vec<(u32, String)> = meta
         .get("accepted")
         .and_then(|v| v.as_array())
@@ -822,6 +835,7 @@ pub(super) fn speculative_step_from_meta(
             speculated: explicit_speculated.unwrap_or(false),
             speculation_active: explicit_active.unwrap_or(next_draft.is_some()),
             speculation_disabled_reason,
+            speculation_disabled_detail,
             next_draft,
             trace,
         });
@@ -843,6 +857,7 @@ pub(super) fn speculative_step_from_meta(
         speculated: explicit_speculated.unwrap_or(true),
         speculation_active: explicit_active.unwrap_or(true),
         speculation_disabled_reason,
+        speculation_disabled_detail,
         next_draft,
         trace,
     })

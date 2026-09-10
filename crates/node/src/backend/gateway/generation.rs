@@ -1134,8 +1134,13 @@ pub(super) async fn generate_stream_inner(
                                     .unwrap_or(
                                         crate::infer_server::SPECULATION_REASON_MODEL_WITHOUT_MTP,
                                     );
+                                let detail = step
+                                    .speculation_disabled_detail
+                                    .as_deref()
+                                    .unwrap_or("cauda não informou a causa da desativação");
                                 info!(
                                     reason,
+                                    detail,
                                     "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
                                 );
                                 especulando = false;
@@ -1151,8 +1156,13 @@ pub(super) async fn generate_stream_inner(
                                     .unwrap_or(
                                         crate::infer_server::SPECULATION_REASON_MODEL_WITHOUT_MTP,
                                     );
+                                let detail = step
+                                    .speculation_disabled_detail
+                                    .as_deref()
+                                    .unwrap_or("cauda não informou a causa da desativação");
                                 info!(
                                     reason,
+                                    detail,
                                     "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
                                 );
                                 especulando = false;

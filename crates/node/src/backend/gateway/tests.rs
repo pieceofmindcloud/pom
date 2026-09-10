@@ -1993,6 +1993,7 @@ mod remote_stream_selection_tests {
             speculated: false,
             speculation_active: true,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft: Some(vec![5, 6]),
             trace: crate::prefill::RequestTrace::new("qwen", &[("remote-head", 0, 31)]),
         };

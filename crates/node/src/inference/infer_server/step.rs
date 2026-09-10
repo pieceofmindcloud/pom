@@ -537,6 +537,7 @@ pub(super) struct RemoteStreamToken {
     pub(super) speculated: bool,
     pub(super) speculation_active: bool,
     pub(super) speculation_disabled_reason: Option<String>,
+    pub(super) speculation_disabled_detail: Option<String>,
     pub(super) next_draft: Option<Vec<i32>>,
     /// Momento monotônico em que o produtor terminou de montar este token.
     /// Não é serializado: serve apenas para separar produção de espera local.
@@ -552,6 +553,7 @@ pub(super) fn remote_stream_install_draft(
     step_meta: &mut Value,
     next_draft: Option<&[i32]>,
     disabled_reason: Option<&str>,
+    disabled_detail: Option<&str>,
 ) -> bool {
     let Some(object) = step_meta.as_object_mut() else {
         return false;
@@ -566,6 +568,9 @@ pub(super) fn remote_stream_install_draft(
         object.remove("speculate");
         if let Some(reason) = disabled_reason {
             object.insert("speculation_disabled_reason".into(), json!(reason));
+        }
+        if let Some(detail) = disabled_detail {
+            object.insert("speculation_disabled_detail".into(), json!(detail));
         }
         false
     }
@@ -707,11 +712,24 @@ pub(super) async fn remote_stream_producer(
                 .unwrap_or(SPECULATION_REASON_MODEL_WITHOUT_MTP)
                 .to_string()
         });
+        let speculation_disabled_detail = (!speculation_active && requested_mtp).then(|| {
+            reply_meta
+                .get("speculation_disabled_detail")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    reply_meta
+                        .get("speculation_disabled_reason")
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("nenhum detalhe foi devolvido pela cauda")
+                .to_owned()
+        });
         if requested_mtp {
             remote_stream_install_draft(
                 &mut step_meta,
                 next_draft.as_deref(),
                 speculation_disabled_reason.as_deref(),
+                speculation_disabled_detail.as_deref(),
             );
         }
         if !accepted.is_empty() {
@@ -728,6 +746,7 @@ pub(super) async fn remote_stream_producer(
                         speculated,
                         speculation_active,
                         speculation_disabled_reason: speculation_disabled_reason.clone(),
+                        speculation_disabled_detail: speculation_disabled_detail.clone(),
                         next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
                         ready_at: Instant::now(),
                     }))
@@ -776,6 +795,7 @@ pub(super) async fn remote_stream_producer(
                 speculated,
                 speculation_active,
                 speculation_disabled_reason,
+                speculation_disabled_detail,
                 next_draft,
                 ready_at: Instant::now(),
             }))
@@ -907,6 +927,7 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
                     token.speculated,
                     token.speculation_active,
                     token.speculation_disabled_reason.clone(),
+                    token.speculation_disabled_detail.clone(),
                 ));
                 if next_draft.is_none() {
                     next_draft = token.next_draft.clone();
@@ -916,8 +937,8 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
         }
     }
     let terminal = done || error.is_some();
-    let (speculated, speculation_active, speculation_disabled_reason) =
-        status.unwrap_or((false, false, None));
+    let (speculated, speculation_active, speculation_disabled_reason, speculation_disabled_detail) =
+        status.unwrap_or((false, false, None, None));
     let batch = json!({
         "accepted": tokens,
         "done": done && error.is_none(),
@@ -928,6 +949,7 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
         "speculated": speculated,
         "speculation_active": speculation_active,
         "speculation_disabled_reason": speculation_disabled_reason,
+        "speculation_disabled_detail": speculation_disabled_detail,
         "next_draft": next_draft,
     });
     (batch, error, terminal)
@@ -1124,6 +1146,7 @@ mod remote_stream_tests {
             speculated,
             speculation_active,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft,
             ready_at: Instant::now(),
         })
@@ -1230,6 +1253,7 @@ mod remote_stream_tests {
             speculated: true,
             speculation_active: true,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft: None,
             ready_at: Instant::now(),
         })
@@ -1255,6 +1279,7 @@ mod remote_stream_tests {
             speculated: false,
             speculation_active: true,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft: Some(vec![5, 6]),
             ready_at: Instant::now(),
         });
@@ -1280,6 +1305,7 @@ mod remote_stream_tests {
             &mut step_meta,
             Some(&[5, 6]),
             None,
+            None,
         ));
         assert_eq!(step_meta["speculate"]["draft"], json!([5, 6]));
 
@@ -1302,11 +1328,16 @@ mod remote_stream_tests {
             &mut step_meta,
             None,
             Some(SPECULATION_REASON_MODEL_WITHOUT_MTP),
+            Some("MTP desligado nesta sessão: teste"),
         ));
         assert!(step_meta.get("speculate").is_none());
         assert_eq!(
             step_meta["speculation_disabled_reason"],
             SPECULATION_REASON_MODEL_WITHOUT_MTP
+        );
+        assert_eq!(
+            step_meta["speculation_disabled_detail"],
+            "MTP desligado nesta sessão: teste"
         );
     }
 
@@ -1386,16 +1417,20 @@ mod remote_stream_tests {
         drop(items_tx);
 
         let (deliveries_tx, mut deliveries_rx) = mpsc::channel(1);
-        emit_remote_stream_batches(json!({"ticket": "split-wait"}), items_rx, move |_, batch| {
-            let deliveries_tx = deliveries_tx.clone();
-            async move {
-                deliveries_tx
-                    .send(batch)
-                    .await
-                    .map(|_| crate::direct::Delivery::Accepted)
-                    .unwrap_or(crate::direct::Delivery::Failed)
-            }
-        })
+        emit_remote_stream_batches(
+            json!({"ticket": "split-wait"}),
+            items_rx,
+            move |_, batch| {
+                let deliveries_tx = deliveries_tx.clone();
+                async move {
+                    deliveries_tx
+                        .send(batch)
+                        .await
+                        .map(|_| crate::direct::Delivery::Accepted)
+                        .unwrap_or(crate::direct::Delivery::Failed)
+                }
+            },
+        )
         .await;
 
         let batch = deliveries_rx.recv().await.expect("callback");

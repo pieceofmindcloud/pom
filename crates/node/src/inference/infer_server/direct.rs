@@ -192,15 +192,13 @@ pub(crate) fn mtp_tail_speculation_reason(
     mtp_unavailable_reason: Option<&str>,
 ) -> Option<&'static str> {
     if !mtp_ready {
-        return Some(
-            if mtp_unavailable_reason
-                .is_some_and(|reason| reason == crate::llm::MTP_NO_NEXTN_REASON)
-            {
+        return Some(match mtp_unavailable_reason {
+            Some(reason) if reason == crate::llm::MTP_NO_NEXTN_REASON => {
                 SPECULATION_REASON_TAIL_WITHOUT_NEXTN
-            } else {
-                SPECULATION_REASON_MODEL_WITHOUT_MTP
-            },
-        );
+            }
+            Some(_) => SPECULATION_REASON_MTP_RUNTIME_DISABLED,
+            None => SPECULATION_REASON_MODEL_WITHOUT_MTP,
+        });
     }
     None
 }
@@ -414,7 +412,7 @@ mod speculative_tests {
         );
         assert_eq!(
             mtp_tail_speculation_reason(false, Some("falha de alocação")),
-            Some(SPECULATION_REASON_MODEL_WITHOUT_MTP)
+            Some(SPECULATION_REASON_MTP_RUNTIME_DISABLED)
         );
         assert_eq!(mtp_tail_speculation_reason(true, None), None);
     }

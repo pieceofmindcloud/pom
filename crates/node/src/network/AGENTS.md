@@ -59,11 +59,15 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
   dual-stack, gossip, lifecycle de peers, varredura de descoberta e admissão.
   A `connection_key` não vai no `Announce`: em rede privada, o handler faz
-  uma sonda no `/handshake` antes de registrar o peer. Em rede pública,
-  `cluster_id` só seleciona a cadeia e a tupla `{node_id, peer_id, pubkey}`
-  precisa ser uma concessão ativa em `admin_trust.rs`; campo `profile` não
-  concede acesso. `PeerList` é revalidado, e `connection_verified` só é
-  escrito pelo gate local. O perfil anunciado por `with_identity` pode ser
+  uma sonda no `/handshake` antes de registrar o peer. Em rede pública o rigor
+  segue o `network.access_policy`: com `authorized` (padrão) o `cluster_id` só
+  seleciona a cadeia e a tupla `{node_id, peer_id, pubkey}` precisa ser uma
+  concessão ativa em `admin_trust.rs`; com `anyone_with_anchor` basta uma
+  cadeia local ancorada exatamente nesse `cluster_id`
+  (`AdminTrust::anchors_cluster`) mais o vínculo de identidade, sem concessão -
+  é o que admite um worker co-locado sem grant. Campo `profile` nunca concede
+  acesso. `PeerList` é revalidado, e `connection_verified` só é escrito pelo
+  gate local. O perfil anunciado por `with_identity` pode ser
   atualizado por `set_profile`; a capacidade de admin não vem do anúncio, mas
   da cadeia em `admin_trust.rs`. O campo `idle` também é anunciado por peer
   para distinguir modelo descarregado de deployment fora do ar; ele não altera

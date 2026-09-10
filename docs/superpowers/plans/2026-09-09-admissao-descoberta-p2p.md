@@ -15,6 +15,14 @@ derivado do peer.
 - Rede pública exige âncora local válida, `cluster_id` igual ao da âncora e a
   tupla assinada `{node_id, peer_id, pubkey}` de um principal ou concessão
   administrativa não demovida. `cluster_id` isolado nunca é credencial.
+  - Seguimento (2026-09-10): a regra acima passou a valer só para
+    `access_policy = authorized` (padrão). Ela recusava todo nó worker comum,
+    inclusive os co-locados legítimos, que nunca recebem concessão. Com
+    `access_policy = anyone_with_anchor` a admissão pública exige apenas âncora
+    local válida para o `cluster_id` anunciado (`AdminTrust::anchors_cluster`)
+    mais o vínculo de identidade; o `cluster_id` continua não sendo credencial
+    sozinho porque a identidade é amarrada e o `Announce` do gossip é assinado.
+    Ver `docs/subsystems/rede-p2p.md`.
 - `Announce` passa a carregar `cluster_id` opcional para selecionar a âncora;
   UDP e gossipsub usam o mesmo gate. `PeerList` também é revalidado e não
   herda `connection_verified` de outro nó.

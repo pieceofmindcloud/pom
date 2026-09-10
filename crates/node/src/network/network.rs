@@ -2727,7 +2727,11 @@ impl Network {
         libp2p::PeerId::from_public_key(&public).to_string() == peer_id
     }
 
-    fn public_peer_is_admitted(peer: &PeerInfo, admission: &PeerAdmission) -> bool {
+    fn public_peer_is_admitted(
+        peer: &PeerInfo,
+        admission: &PeerAdmission,
+        access_policy: crate::config::NetworkAccessPolicy,
+    ) -> bool {
         if !Self::legacy_identity_matches(&peer.node_id, &peer.pubkey)
             || !Self::authority_peer_id_matches(peer)
         {
@@ -2739,6 +2743,19 @@ impl Network {
         let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
             return false;
         };
+        // `anyone_with_anchor`: o operador declarou que qualquer nó que segura a
+        // âncora correspondente participa. Um worker comum nunca recebe
+        // concessão de autoridade, então `admits_participant` o recusaria. Aqui a
+        // barra é uma âncora local válida para o `cluster_id` anunciado, somada
+        // ao vínculo de identidade já conferido acima (node_id ↔ pubkey ↔ chave
+        // de autoridade ↔ PeerId, e o Announce do gossip vem assinado por esse
+        // PeerId). As políticas mais estritas continuam exigindo concessão.
+        if matches!(
+            access_policy,
+            crate::config::NetworkAccessPolicy::AnyoneWithAnchor
+        ) {
+            return admission.trust.anchors_cluster(cluster_id);
+        }
         let principal = crate::admin_trust::AuthorityPrincipal {
             node_id: peer.node_id.clone(),
             peer_id: peer_id.to_string(),
@@ -2820,15 +2837,16 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return true;
         };
-        let (connection_key, is_public_network) = {
+        let (connection_key, is_public_network, access_policy) = {
             let config = admission.auth.read().await;
             (
                 config.connection_key.clone(),
                 config.network.visibility == crate::config::NetworkVisibility::Public,
+                config.network.access_policy,
             )
         };
         if is_public_network {
-            return Self::public_peer_is_admitted(peer, admission);
+            return Self::public_peer_is_admitted(peer, admission, access_policy);
         }
         if connection_key.is_empty() {
             return false;
@@ -4349,6 +4367,160 @@ mod tests {
         assert_eq!(trusted.peer_count().await, 1);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    fn admission_config_with_policy(
+        key: &str,
+        visibility: crate::config::NetworkVisibility,
+        access_policy: crate::config::NetworkAccessPolicy,
+    ) -> crate::auth::AuthState {
+        let state = admission_config(key, visibility);
+        state
+            .try_write()
+            .expect("fresh admission config lock is uncontended")
+            .network
+            .access_policy = access_policy;
+        state
+    }
+
+    /// Um worker co-locado só tem a âncora e a `connection_key`, nunca uma
+    /// concessão de autoridade. Sob `anyone_with_anchor` o Announce dele — com a
+    /// identidade amarrada (node_id ↔ pubkey ↔ chave de autoridade ↔ PeerId) e o
+    /// `cluster_id` da âncora local — basta para entrar em `peers`. Foi isto que
+    /// `6c3b19db` quebrou: só o primário/secundário passava.
+    #[tokio::test]
+    async fn public_anyone_with_anchor_admits_anchored_worker_without_grant() {
+        let local = crate::identity::Identity::generate();
+
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "admin-node",
+            "admin-peer",
+            &primary_key,
+        );
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "cluster",
+            primary,
+            &primary_key,
+        )
+        .unwrap();
+
+        // Peer worker: chave de autoridade própria, distinta do primário.
+        let worker_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut seed = worker_key.to_bytes();
+        let worker_peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+            .unwrap()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let mut worker = admission_peer(8081);
+        worker.authority_pubkey = hex::encode(worker_key.verifying_key().as_bytes());
+        worker.libp2p_peer_id = Some(worker_peer_id);
+        worker.cluster_id = Some("cluster".into());
+
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config_with_policy(
+                "shared",
+                crate::config::NetworkVisibility::Public,
+                crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            ),
+            Arc::new(trust),
+        );
+        net.insert_peer(worker.clone()).await;
+        assert_eq!(net.peer_count().await, 1);
+    }
+
+    /// A relaxação vale só para `anyone_with_anchor`. Com `authorized` (padrão) o
+    /// mesmo worker sem concessão continua fora, e um `cluster_id` que não é o da
+    /// âncora nunca entra sob nenhuma política.
+    #[tokio::test]
+    async fn public_authorized_still_requires_a_grant_and_anchor_rejects_wrong_cluster() {
+        let local = crate::identity::Identity::generate();
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+
+        let worker_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut seed = worker_key.to_bytes();
+        let worker_peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+            .unwrap()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let mut worker = admission_peer(8081);
+        worker.authority_pubkey = hex::encode(worker_key.verifying_key().as_bytes());
+        worker.libp2p_peer_id = Some(worker_peer_id);
+        worker.cluster_id = Some("cluster".into());
+
+        let build = |cluster: Option<&'static str>| {
+            let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "cluster",
+                crate::admin_trust::AuthorityPrincipal::from_signing_key(
+                    "admin-node",
+                    "admin-peer",
+                    &primary_key,
+                ),
+                &primary_key,
+            )
+            .unwrap();
+            let mut peer = worker.clone();
+            peer.cluster_id = cluster.map(str::to_string);
+            (trust, peer)
+        };
+
+        // authorized + worker sem concessão => recusado.
+        let (trust, peer) = build(Some("cluster"));
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config_with_policy(
+                "shared",
+                crate::config::NetworkVisibility::Public,
+                crate::config::NetworkAccessPolicy::Authorized,
+            ),
+            Arc::new(trust),
+        );
+        net.insert_peer(peer).await;
+        assert_eq!(net.peer_count().await, 0);
+
+        // anyone_with_anchor + cluster_id que não é o da âncora => recusado.
+        let (trust, peer) = build(Some("outro-enxame"));
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config_with_policy(
+                "shared",
+                crate::config::NetworkVisibility::Public,
+                crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            ),
+            Arc::new(trust),
+        );
+        net.insert_peer(peer).await;
+        assert_eq!(net.peer_count().await, 0);
     }
 
     #[tokio::test]

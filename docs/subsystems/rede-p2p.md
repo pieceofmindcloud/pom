@@ -40,15 +40,24 @@ consomem a tabela depois desse ponto.
   considera a resposta `approved` ou `challenge_required` como prova de que o
   destino conhece a chave compartilhada. Chave errada, chave ausente, peer
   sem gateway ou timeout são recusados. A chave não aparece no `Announce`.
-- Em rede pública, a âncora local precisa ser válida. O `Announce` carrega o
-  `cluster_id`, mas ele é apenas um seletor de cadeia e pode ser falsificado.
-  A admissão exige também a tupla exata `{node_id, libp2p peer_id,
-  authority_pubkey}` presente como principal atual ou concessão secundária
-  não demovida. A chave pública legada precisa derivar o `node_id`, e a chave
-  de autoridade precisa derivar o `libp2p peer_id`. A `connection_key` local do
-  admin não participa dessa admissão nem é enviada aos peers. Sem trust local,
-  nenhum
-  peer público é membro.
+- Em rede pública, a âncora local precisa ser válida, e o rigor depende do
+  `network.access_policy`. Em ambos os casos a chave pública legada precisa
+  derivar o `node_id`, a chave de autoridade precisa derivar o `libp2p peer_id`,
+  e o `Announce` do gossip já vem assinado por esse `peer_id`. A `connection_key`
+  local do admin não participa dessa admissão nem é enviada aos peers.
+  - `authorized` (padrão): além do vínculo de identidade, a admissão exige a
+    tupla exata `{node_id, libp2p peer_id, authority_pubkey}` presente como
+    principal atual ou concessão secundária não demovida. O `cluster_id` do
+    `Announce` é só um seletor de cadeia e pode ser falsificado; sozinho não
+    passa pela catraca. Sem trust local, nenhum peer público é membro.
+  - `anyone_with_anchor`: o operador declarou que segurar a âncora
+    correspondente já é a prova de pertencimento. A admissão exige uma cadeia
+    local válida ancorada exatamente no `cluster_id` anunciado
+    (`AdminTrust::anchors_cluster`) mais o vínculo de identidade acima - **sem**
+    concessão de autoridade. É o que deixa um nó worker comum, co-locado ou não,
+    que só tem a âncora e nunca recebeu concessão, entrar em `peers`. Um
+    `Announce` sem `cluster_id`, com `cluster_id` diferente do da âncora, ou com
+    identidade inconsistente continua recusado.
 - `connection_verified` é uma marca produzida pelo gate local. O valor vindo
   de `PeerList` nunca é aceito como prova e a lista transitiva é revalidada
   antes de inserir um peer desconhecido ou atualizar um peer existente.
@@ -61,12 +70,16 @@ nas rotas ou no planejamento de inferência. A sonda privada tem timeout curto e
 cacheia o resultado por identidade e endereço por 30 segundos; recusas ficam
 cacheadas por 5 segundos para não permitir uma tempestade de anúncios.
 
-O `cluster_id` sozinho não protege contra falsificação. A proteção vem da
-comparação da tupla com a cadeia assinada carregada por `AdminTrust`; anunciar
-o id correto sem a chave pública e a concessão correspondentes não passa pela
-catraca. Isso mantém a decisão de `admin-control-signature-scope`: quadros de
-inferência não ganham assinatura administrativa, mas o controle de admissão
-usa a cadeia de confiança antes de qualquer roteamento.
+Sob `authorized`, o `cluster_id` sozinho não protege contra falsificação: a
+proteção vem da comparação da tupla com a cadeia assinada carregada por
+`AdminTrust`; anunciar o id correto sem a chave pública e a concessão
+correspondentes não passa pela catraca. Sob `anyone_with_anchor` o operador
+troca essa exigência pela posse da âncora do `cluster_id`, e o que resta
+protegendo contra um estranho é o vínculo de identidade e a assinatura do
+`Announce` no gossip. Em ambos os casos vale a decisão de
+`admin-control-signature-scope`: quadros de inferência não ganham assinatura
+administrativa, mas o controle de admissão usa a cadeia de confiança antes de
+qualquer roteamento.
 
 ## 2. Protocolo UDP
 

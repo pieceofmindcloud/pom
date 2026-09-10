@@ -317,6 +317,21 @@ impl AdminTrust {
             .then(|| document.anchor.cluster_id)
     }
 
+    /// Há uma cadeia local válida ancorada exatamente neste `cluster_id`?
+    ///
+    /// Ao contrário de [`Self::admits_participant`], não exige que o peer tenha
+    /// uma concessão de autoridade primária ou secundária. É a prova de
+    /// participação de `access_policy = anyone_with_anchor`: sob essa política o
+    /// operador declarou que segurar a âncora correspondente já é a prova de
+    /// pertencimento, então um nó worker comum que nunca recebeu concessão
+    /// continua sendo participante legítimo. A identidade do peer (nó ↔ chave ↔
+    /// PeerId, e o Announce assinado por esse PeerId) é conferida à parte por
+    /// quem chama.
+    pub(crate) fn anchors_cluster(&self, cluster_id: &str) -> bool {
+        let document = self.document();
+        validate_document(&document).is_ok() && document.anchor.cluster_id == cluster_id
+    }
+
     /// Confere uma prova de participação contra a cadeia já validada.
     ///
     /// No formato atual, a cadeia só tem concessões de autoridade primária e

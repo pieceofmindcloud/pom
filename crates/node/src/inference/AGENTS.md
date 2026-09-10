@@ -1009,13 +1009,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   também identifica `transport` (`local`, `libp2p-tunnel`, `https`,
   `https-link` ou `remote-stream`) e se o transporte usado foi fallback depois
   de falha de outro.
-- `send_batch_body` é o único ponto por onde todo lote remoto passa, e é ali
-  que a escada de transporte vive, nesta ordem: canal persistente
-  (`link::send_batch`, quando o hop anuncia `transport/link-v1`), túnel libp2p,
-  HTTPS por requisição. Cada degrau só é usado depois de o anterior falhar por
-  **transporte**; uma recusa HTTP do peer é final em qualquer degrau, porque
-  trocar de via não muda uma resposta considerada. O degrau usado vira
-  `transport`, e ter descido a escada vira `transport_fallback`.
+- `send_batch_body` é o único ponto por onde todo lote remoto passa, inclusive
+  as ativações `remote_stream` que não podem ser agrupadas com uma sessão
+  diferente. É ali que a escada de transporte vive, nesta ordem: canal
+  persistente (`link::send_batch`, quando o hop anuncia
+  `transport/link-v1`), túnel libp2p, HTTPS por requisição. Cada degrau só é
+  usado depois de o anterior falhar por **transporte**; uma recusa HTTP do peer
+  é final em qualquer degrau, porque trocar de via não muda uma resposta
+  considerada. O degrau usado vira `transport`, e ter descido a escada vira
+  `transport_fallback`.
 - O transporte por requisição tenta o túnel libp2p/Noise antes do cliente HTTP
   pinado;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de

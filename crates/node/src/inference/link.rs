@@ -2,9 +2,10 @@
 //!
 //! O commit dos lotes remotos tirou a travessia por ficha do trecho
 //! **gateway → cabeça**: um control frame vai uma vez e os tokens voltam em
-//! lotes por callback. Dentro do laço da cabeça, porém, cada ativação ainda
-//! abria uma requisição nova para o hop seguinte - `POST /v1/step`, cabeçalhos,
-//! roteamento e enquadramento reconstruídos por ficha, por salto.
+//! lotes por callback. O laço da cabeça também usa o mesmo canal para cada
+//! ativação do hop seguinte quando a capability está presente - `POST /v1/step`
+//! continua sendo a rota lógica, mas o request HTTP e o enquadramento vivem
+//! em um fluxo persistente por aresta.
 //!
 //! A dependência causal do transformer proíbe adiantar o token seguinte de uma
 //! sessão, mas não obriga a reconstruir a chamada. Aqui a aresta da pipeline

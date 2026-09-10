@@ -1,11 +1,11 @@
 # Relatório técnico - telemetria do pipeline distribuído
 
-Data: 2026-09-09
+Data: 2026-09-10
 
 Status: instrumentação e correção implementadas e validadas em nível unitário,
-de laboratório e frontend. A captura E2E com Ornith e dois peers continua
-bloqueada pelo ambiente local sem modelo servido; portanto não há ganho de
-tok/s medido neste worktree. O executor MoE foi ignorado, conforme a spec.
+de laboratório e frontend. A captura E2E com Ornith e dois peers foi executada
+no cluster em 2026-09-10 após o deploy de `65e88d10`; o executor MoE foi
+ignorado, conforme a spec.
 
 ## Resumo executivo
 
@@ -391,10 +391,13 @@ prova de propagação, em vez de inferi-la apenas do ping.
    callback. O emitter entrega os itens em paralelo. A fila absorve rajadas
    curtas de jitter e aplica contrapressão apenas quando a entrega fica
    sustentadamente mais lenta que o compute.
-2. A travessia normal entre peers usa o canal persistente `/v1/link` quando a
-   capability está presente. O `BatchCoordinator` não intercepta o
-   `remote-stream`, e cada frame permanece correlacionado por `batch_id` sem
-   reconstruir uma chamada HTTP por token.
+2. O retorno de `remote-stream` para o gateway usa o canal persistente
+   `/v1/link` quando a capability está presente. A travessia interna A -> B
+   agora admite também `remote_stream=true` no `BatchCoordinator`, portanto
+   reutiliza o canal persistente e mantém a correlação por `batch_id`. O trace
+   longo de `65e88d10` foi capturado antes desta alteração e confirmou o
+   comportamento antigo: uma chamada `libp2p-tunnel` por ativação. A resposta
+   ainda é aguardada para respeitar a dependência autoregressiva.
 3. O retorno do head remoto para o gateway usa também `/v1/link`, com um frame
    de `REMOTE_STREAM_RESULT_PATH` dentro de um canal full-duplex. O gateway
    entrega o frame ao ticket e devolve apenas o ACK do envelope. Se a abertura
@@ -699,10 +702,10 @@ dos dois peers, correlacionados pelo mesmo `trace_id`, `request_id` e
 Este resultado é uma linha de base válida, mas não é comparação de throughput
 de 16 tokens: o modelo encerrou a resposta em 2 tokens. O próximo benchmark
 deve forçar uma saída longa e medir separadamente TTFT, geração, p50/p95/p99
-do ciclo por token e o retorno full-duplex. O commit local em andamento
-implementa esse último corte: callbacks persistentes são enfileirados sem
-esperar o ACK individual, mantendo contrapressão na fila limitada e
-monitoramento assíncrono de falha.
+do ciclo por token e o retorno full-duplex. O commit `65e88d10` implementa
+esse último corte: callbacks persistentes são enfileirados sem esperar o ACK
+individual, mantendo contrapressão na fila limitada e monitoramento
+assíncrono de falha.
 
 A próxima rodada deve ser implantada nas duas máquinas, com a Salem na mesma
 versão e a KSIA anunciando o host `100.71.127.127` nas portas próprias
@@ -745,3 +748,100 @@ depois do ajuste.
 
 A execução completa seguinte, serializada após a correção, terminou com 1.272
 testes aprovados e 5 ignorados.
+
+### 17.9 E2E após o corte do ACK por callback
+
+Em 2026-09-10, com `65e88d10` nas duas máquinas, `POM_PROFILE=trace` e
+`POM_PROFILE_SYNC=1`, foi repetido o mesmo pedido frio pelo gateway KSIA:
+modelo Ornith, prompt `Responda apenas OK.`, 29 tokens de entrada,
+`max_tokens=16` e resposta não streaming. O trace completo retornado pelo
+gateway foi `27485236485841f99d02ff8e4dd1d08d`, com pipeline
+`0bda9121 -> 02eb8c40`, e registrou ambos os peers e os spans detalhados dos
+dois nós.
+
+| Métrica | `e0c747e` / `dea4ae15` | `65e88d10` | Diferença observada |
+|---|---:|---:|---:|
+| TTFT | 1.314 ms | 1.316 ms | +2 ms |
+| E2E wall | 1.520 ms | 1.515 ms | -5 ms |
+| Geração | 206 ms | 199 ms | -7 ms |
+| Geração | 9,7087 tok/s | 10,0503 tok/s | +3,5% |
+| Remote-stream lifetime | 204 ms | 197 ms | -7 ms |
+| Remote-stream wait | 203 ms | 197 ms | -6 ms |
+| Espera de fila do remote-stream | 0 ms | 0 ms | estável |
+| Decode B | 99 ms, RTT 182 ms | 99 ms, RTT 174 ms | compute estável, RTT -8 ms |
+| Fallback HTTPS | 0 | 0 | estável |
+
+O segundo peer continuou sem fila artificial: `node_queue_ms=0,043`,
+`node_scheduler_wait_ms=0,021` e `node_decode_ms=600,699` no prefill, contra
+nenhum valor próximo de 5.002 ms. A correção de identidade de sessão segue
+confirmada.
+
+O corte do ACK não produziu ganho material nesta corrida curta. Os dois
+tokens foram entregues em um único frame (`frames_sent=1`), então não houve
+uma sequência longa de ACKs para multiplicar o custo removido. O frame teve
+197 ms de lifetime, espera de produção de 197 ms e espera de fila de 0 ms;
+isso mostra que a espera residual está no ciclo remoto/compute, não em ACK ou
+fila local. A pequena melhora de 3,5% na taxa e de 7 ms no frame é compatível
+com a variação de RTT observada, pois o RTT de B também caiu 8 ms e o TTFT
+subiu 2 ms.
+
+Há uma mudança semântica importante visível no trace: `trace.complete=true`,
+mas `transport_trace_complete=false` e `telemetry.status=response_complete`.
+Isto é esperado no novo caminho: a resposta ao cliente não espera o ACK do
+callback; o ACK fica sendo observado em background. A entrega foi aceita pelo
+canal persistente e não houve fallback, mas a reconciliação do transporte
+continua independente do fechamento da resposta.
+
+Conclusão desta medição: o corte de ACK removeu a barreira por frame sem
+regredir o caminho e manteve o retorno normal em `/v1/link`, porém o gargalo
+dominante ainda é o request/reply síncrono de cada ativação entre A e B. O
+trace mostra `libp2p-tunnel`, uma chamada de decode em B com RTT de 174 ms,
+enquanto o retorno `remote-stream` já é um frame persistente. Uma saída longa
+é necessária para quantificar o ganho do ACK; o próximo ajuste deve tornar a
+travessia A -> B persistente também, preservando a dependência autoregressiva.
+
+### 17.10 E2E longo para medir a geração
+
+Ainda em 2026-09-10, foi executado no mesmo gateway KSIA um pedido longo com
+`max_tokens=200`, usando o prompt `Escreva hello world 30 vezes. Não escreva
+explicações.`. O modelo encerrou naturalmente em 90 tokens. O trace completo
+foi `3d5f2efe26264d4581680e1169ffe91f`, com 2/2 peers, 178/178 spans de
+decode, `complete=true` e `response_complete=true`.
+
+| Métrica | Resultado `65e88d10` |
+|---|---:|
+| TTFT | 636 ms |
+| Geração | 6.280 ms |
+| Geração tok/s | 14,33 |
+| Wall tok/s | 13,01 |
+| Remote-stream frames | 89 |
+| Frame/delivery p50 | 70 ms |
+| Frame/delivery p95 | 74 ms |
+| Frame/delivery máximo | 96 ms |
+| Producer wait total / p50 / p95 | 6.209 ms / 69 ms / 74 ms |
+| Queue wait total | 0 ms |
+| Compute remoto total / p50 | 357 ms / 4 ms |
+
+O resultado fica acima da referência de geração de 13,5 tok/s em cerca de
+6,2%, mas abaixo da referência de 18,8 tok/s em cerca de 23,8%. Não é possível
+atribuir os 6,2% ao corte do ACK: a amostra anterior de dois tokens variou o
+RTT de B em 8 ms, e não há antes/depois longo no mesmo commit. A evidência
+causal mais forte é outra: 89 frames tiveram `queue_wait=0`, enquanto quase
+todo o `remote_stream_wait` foi `producer_wait`; portanto a remoção do ACK
+eliminou a fila do retorno, mas não a espera do produtor.
+
+O produtor esperou p50 de 69 ms por token. A tentativa com 100 repetições
+produziu 99 tokens antes de ser interrompida pelo detector de repetição, por
+isso não é usada como throughput final, embora tenha confirmado
+`producer_wait` p50 de 70 ms, p95 de 74 ms, fila total de 0 ms e 98 chamadas
+`libp2p-tunnel` no peer B, com RTT p50 de 65 ms, p95 de 69 ms e máximo de
+96 ms. Assim, o caminho crítico ainda expõe a cauda de cada request/reply
+interno, sem amortecimento por um canal persistente A -> B.
+
+Conclusão operacional: o retorno persistente está funcionando e o corte de
+ACK não era o gargalo restante. A alteração local agora faz o mesmo no hop
+interno: `send_frame_or_tunnel` admite `remote_stream=true` no caminho
+persistente correlacionado, mantendo a espera causal de um token antes do
+seguinte. O E2E longo precisa ser repetido após o deploy dessa alteração, com
+um prompt que evite o detector de repetição e com TTFT, geração, wall,
+p50/p95/p99 e fallback HTTPS registrados separadamente.

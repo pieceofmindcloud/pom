@@ -1570,8 +1570,7 @@ pub async fn send_frame_or_tunnel(
         && !meta.get("reply_to").is_some_and(|value| !value.is_null())
         && meta.get("speculate").is_none()
         && meta.get("draft").is_none()
-        && meta.get("mtp_k").is_none()
-        && !is_remote_stream(meta);
+        && meta.get("mtp_k").is_none();
     if can_batch {
         let coordinator = BatchCoordinator::global().clone();
         let mut on_issue = on_issue;
@@ -1679,12 +1678,6 @@ pub async fn send_frame_or_tunnel(
         session_id,
     )
     .await
-}
-
-fn is_remote_stream(meta: &Value) -> bool {
-    meta.get("remote_stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
 }
 
 /// A local pipeline step is dispatched directly to this process's inference
@@ -2202,13 +2195,6 @@ mod tests {
     fn the_local_peer_is_never_sent_through_the_tunnel() {
         assert!(!tunnel_is_allowed_for_peer(true, true, true, true));
         assert!(tunnel_is_allowed_for_peer(true, true, true, false));
-    }
-
-    #[test]
-    fn remote_stream_never_enters_the_request_batch_coordinator() {
-        assert!(is_remote_stream(&json!({"remote_stream": true})));
-        assert!(!is_remote_stream(&json!({"remote_stream": false})));
-        assert!(!is_remote_stream(&json!({})));
     }
 
     #[derive(Clone)]

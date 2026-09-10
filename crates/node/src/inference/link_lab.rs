@@ -482,6 +482,66 @@ async fn canal_indisponivel_degrada_para_o_caminho_por_requisicao() {
     );
 }
 
+/// O hop interno de um `remote-stream` continua sendo autoregressivo, mas não
+/// precisa reconstruir um POST a cada ativação. A capability do link deve
+/// valer também quando a flag `remote_stream` impede a coalescência entre
+/// sessões.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_stream_interno_reutiliza_a_ligacao_persistente() {
+    let clients = crate::peer_client::PeerClients::new(Duration::from_secs(30));
+    let (url, counters) = spawn_hop(Hop {
+        clients: clients.clone(),
+    })
+    .await;
+    let step = step_for("lab-remote-stream-link", &url, 0, true);
+    let residual = vec![0.25f32; HIDDEN_DIM];
+    let shape = vec![1usize, HIDDEN_DIM];
+
+    for token_id in 0..4 {
+        let meta = json!({
+            "session_id": "sessao-remote-stream",
+            "remote_stream": true,
+            "token_id": token_id,
+            "is_last": true,
+            "scale": 1.0,
+            "next_hops": [],
+            "exec_start": 0,
+            "exec_end": 0,
+        });
+        let sent = crate::relay::send_frame_or_tunnel(
+            &clients,
+            &step,
+            None,
+            "/v1/step",
+            &meta,
+            Some((&residual, shape.clone())),
+            WireDtype::F16,
+            WireDtype::F16.frame_encoding(),
+            1,
+            &step.node_id,
+            |_| {},
+        )
+        .await
+        .expect("travessia interna");
+        assert_eq!(
+            sent.transport,
+            crate::relay::InferenceTransport::HttpsLink,
+            "remote-stream deve usar o canal persistente quando anunciado"
+        );
+        assert_eq!(sent.meta["token_id"], json!(1234));
+    }
+
+    assert_eq!(
+        counters.connections.load(Ordering::Relaxed),
+        1,
+        "quatro ativações internas devem compartilhar uma conexão"
+    );
+    assert_eq!(
+        crate::link::channels_opened("lab-remote-stream-link", &url),
+        1
+    );
+}
+
 /// Duas sessões atravessando a mesma aresta compartilham **uma** ligação, e o
 /// `batch_id` é o que as mantém separadas.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

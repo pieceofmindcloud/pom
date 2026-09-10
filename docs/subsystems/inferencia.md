@@ -649,12 +649,13 @@ O quadro acima descreve **o que** atravessa. Esta seção descreve **por onde**,
 dentro da pipeline: entre um hop e o hop seguinte.
 
 O transporte remoto por lotes (seção 1, item 1) tirou a travessia por ficha do
-trecho gateway → cabeça. Dentro do laço da cabeça, porém, cada ativação ainda
-montava uma requisição nova para o hop seguinte: `POST /v1/step`, cabeçalhos,
-roteamento e enquadramento reconstruídos por ficha, por salto. A conexão TCP/TLS
-por baixo já vinha do pool (é por isso que `tls_handshake_ms` só aparece no
-salto que abre conexão); o que se refazia por ativação era a abstração de
-requisição por cima dela.
+trecho gateway → cabeça. O laço da cabeça também usa o canal persistente no hop
+seguinte quando ele anuncia `transport/link-v1`: `POST /v1/step` continua sendo
+a rota lógica, mas cabeçalhos, roteamento e enquadramento viajam dentro do
+fluxo por aresta. A flag `remote_stream` não exclui mais esse caminho. Quando a
+capability não existe ou o canal falha, a escada de fallback ainda pode fazer
+uma requisição por ativação. A conexão TCP/TLS por baixo já vinha do pool (é por
+isso que `tls_handshake_ms` só aparece no salto que abre conexão).
 
 `transport/link-v1` mantém **um canal por aresta** (`node_id` + URL de
 inferência): um único `POST /v1/link` cujo corpo de ida é um fluxo de quadros
@@ -703,7 +704,11 @@ abre canal novo.
 
 No retorno do `remote-stream`, o head remoto reutiliza esse mesmo protocolo
 persistente para enviar frames de callback ao gateway, que os entrega ao ticket
-e responde somente o ACK do envelope. O emissor enfileira os callbacks sem
+e responde somente o ACK do envelope. O hop interno do produtor usa o mesmo
+canal para as ativações `/v1/step`, correlacionadas por `batch_id`; a espera da
+resposta continua necessária para respeitar a dependência autoregressiva, mas a
+abertura de uma requisição HTTP nova deixa de ser parte de cada token. O emissor
+enfileira os callbacks sem
 esperar o ACK individual, de modo que o round-trip do retorno não vira uma
 barreira por token; a fila limitada do canal ainda aplica contrapressão e uma
 tarefa leitora observa ACKs tardios e falhas. Se a abertura ou o uso do canal falhar,

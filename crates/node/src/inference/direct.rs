@@ -399,6 +399,7 @@ impl Drop for StreamTicket {
 pub struct DirectReply {
     inbox: ReplyInbox,
     urls: Vec<String>,
+    quic_addresses: Vec<String>,
     /// node_id de quem vai receber a resposta.
     ///
     /// Viaja no `reply_to` porque quem entrega precisa dele para fixar o
@@ -419,8 +420,17 @@ impl DirectReply {
         Some(Self {
             inbox,
             urls,
+            quic_addresses: Vec::new(),
             node_id,
         })
+    }
+
+    /// Endereços `host:porta` do endpoint QUIC do gateway. Eles são separados
+    /// das URLs HTTP para que o callback nunca tente transformar `http://...`
+    /// em destino UDP.
+    pub fn with_quic_addresses(mut self, addresses: Vec<String>) -> Self {
+        self.quic_addresses = addresses;
+        self
     }
 
     pub fn ticket_for_hops(&self, expected_hops: usize) -> Ticket {
@@ -430,6 +440,7 @@ impl DirectReply {
     pub fn reply_to(&self, ticket: &str) -> Value {
         json!({
             "urls": self.urls,
+            "quic_addresses": self.quic_addresses,
             "ticket": ticket,
             "node_id": self.node_id,
         })
@@ -949,6 +960,14 @@ async fn deliver_meta_at(
         None => http.plain(),
     };
     let ordered = http.route_order(&route_key, &urls);
+    let quic_addresses: Vec<String> = reply_to
+        .get("quic_addresses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
     let last_index = ordered.len().saturating_sub(1);
     let mut last = String::new();
     let mut quic_failed = false;
@@ -985,6 +1004,7 @@ async fn deliver_meta_at(
                         .and_then(Value::as_str)
                         .unwrap_or("unknown"),
                     &url,
+                    &quic_addresses,
                     path,
                     body.clone(),
                     None,
@@ -1480,6 +1500,7 @@ mod tests {
             "ticket": "quic-return-ticket",
             "node_id": identity.node_id.0,
             "urls": [format!("http://127.0.0.1:{port}")],
+            "quic_addresses": [format!("127.0.0.1:{port}")],
         });
         assert!(deliver_result(&http, &reply_to, json!({"done": true})).await);
 

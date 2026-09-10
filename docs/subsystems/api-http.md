@@ -767,8 +767,10 @@ em lotes e a recuperação do WAL não alcançam `audit_requests`,
 desliga a preferência HTTP/3 sobre QUIC para novos hops de inferência. Só o
 principal pode alterar; não há reinício e peers adotam a decisão pela catraca
 autenticada. `GET /api/ui/node` devolve `quic_enabled` e `quic_authority` para
-a tela distinguir estado de autoridade. Falha de negociação mantém o caminho
-TCP e aparece como fallback na telemetria.
+a tela distinguir estado de autoridade. Os endpoints UDP usam as portas
+dedicadas anunciadas em `inference_quic_port` e `gateway_quic_port`, sem
+reutilizar a porta TCP nem a `inference_url`. Falha de negociação mantém o
+caminho TCP e aparece como fallback na telemetria.
 
 **`GET /api/cluster/logs`** - exige `ConnectionAuth` e devolve
 `{ logs_enabled }`. É a fonte autenticada que os nós consultam quando o campo

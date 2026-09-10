@@ -530,6 +530,7 @@ pub async fn run(
     batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
     quic: Option<crate::serve::QuicServerConfig>,
+    quic_port: Option<u16>,
     auth: Option<crate::auth::AuthState>,
     model_cache: Arc<ModelCache>,
     reuse_weights: bool,
@@ -803,17 +804,18 @@ pub async fn run(
     // para de aceitar e encerra as conexões que restaram, só depois a VRAM é
     // devolvida. Na ordem inversa uma requisição em voo tocaria um contexto já
     // liberado.
-    let resultado = crate::serve::serve_with_quic(listener, router, tls, quic, async move {
-        loop {
-            if stop_rx.changed().await.is_err() {
-                break;
+    let resultado =
+        crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
+            loop {
+                if stop_rx.changed().await.is_err() {
+                    break;
+                }
+                if *stop_rx.borrow() != generation {
+                    break;
+                }
             }
-            if *stop_rx.borrow() != generation {
-                break;
-            }
-        }
-    })
-    .await;
+        })
+        .await;
     crate::relay::clear_local_inference(generation).await;
 
     // O aquecimento é cooperativo e pode estar lendo o GGUF enquanto o

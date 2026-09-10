@@ -6,6 +6,8 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     crate::config::validate_gateway_port(port)?;
     let warm = state.clone();
     let tls_server = state.tls_server.clone();
+    let quic_server = state.quic_server.clone();
+    let quic_port = state.quic_port;
     let admin = admin::admin_routes().with_state(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
@@ -85,7 +87,15 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     // o lado servidor ficava com Nagle ligado em todas as respostas. O
     // `tcp_nodelay` mudou de lugar, não sumiu: `serve` o aplica em cada conexão
     // aceita, junto com a decisão entre TLS e texto claro.
-    crate::serve::serve(listener, app, tls_server).await?;
+    crate::serve::serve_with_quic(
+        listener,
+        app,
+        tls_server,
+        quic_server,
+        quic_port,
+        std::future::pending::<()>(),
+    )
+    .await?;
     Ok(())
 }
 

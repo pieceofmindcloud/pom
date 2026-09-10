@@ -479,10 +479,11 @@ profile policy remains the effective authorization boundary.
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
   `peer_http.plain()`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta. O endpoint HTTP/3 recebe
-  configuração QUIC separada e sobe na porta de inferência mesmo quando o TCP
-  está em HTTP puro; `TlsServer` cobre somente o certificado TCP, modo estrito
-  e duração do último handshake. Ver `docs/subsystems/rede-p2p.md`, seção 5.
+  request e serve TLS ou texto claro na mesma porta TCP. O endpoint HTTP/3
+  recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
+  mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
+  TCP, modo estrito e duração do último handshake. Ver
+  `docs/subsystems/rede-p2p.md`, seção 5.
 - `models::OllamaClient::is_available` é apenas uma sonda opcional do
   `/health`: tem limite próprio de 500 ms e não herda os 300 s da geração, para
   que um Ollama frio ou ausente nunca esconda o readiness do gateway.

@@ -747,12 +747,16 @@ confundida com o nome agregado do transporte.
 
 Quando `Config.quic_enabled` está ligado pelo principal, os novos hops de
 estado oculto e as entregas diretas de retorno preferem HTTP/3 sobre QUIC. O
-endpoint usa a mesma porta numérica da inferência TCP, mas UDP e TCP podem
-coexistir; a configuração do endpoint é criada separadamente da configuração
-TLS TCP e o servidor HTTP/3 fica preparado desde o arranque para que virar a
-preferência não reinicie o modelo nem interrompa uma chamada em voo. Cada
-request abre um stream independente da conexão QUIC por peer e URL, e a sessão
-fica no pool para permitir multiplexação futura.
+endpoint usa uma porta UDP dedicada, derivada da porta TCP por `TCP + 1` e
+anunciada como `inference_quic_port` (o gateway anuncia
+`gateway_quic_port`). O cliente recebe os endereços `host:porta` do anúncio
+público do peer, com IPv6 devidamente colchetado; `inference_url` continua
+sendo apenas o fallback TCP. A configuração do endpoint é criada
+separadamente da configuração TLS TCP e o servidor HTTP/3 fica preparado desde
+o arranque para que virar a preferência não reinicie o modelo nem interrompa
+uma chamada em voo. Cada request abre um stream independente da conexão QUIC
+por peer e endereço anunciado, e a sessão fica no pool para permitir
+multiplexação futura.
 
 QUIC sempre negocia TLS 1.3 próprio e valida o certificado Ed25519 contra o
 `node_id`; por isso `quic` é cifrado mesmo com `tls_required=false`. Se a

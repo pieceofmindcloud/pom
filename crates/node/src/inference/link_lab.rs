@@ -258,6 +258,7 @@ fn step_for(node_id: &str, url: &str, layer: u32, link: bool) -> PipelineStep {
         node_id: node_id.into(),
         inference_url: url.into(),
         inference_candidates: vec![],
+        quic_addr_candidates: vec![],
         start_layer: layer,
         end_layer: layer,
         exec_start: layer,

@@ -81,6 +81,11 @@ pub struct PipelineStep {
     /// plano pode ter sido montado por uma maquina noutra rede.
     #[serde(default)]
     pub inference_candidates: Vec<String>,
+    /// Endereços `host:porta` anunciados para o endpoint HTTP/3 deste hop.
+    /// Nunca é derivado de `inference_url`, que continua sendo exclusivamente
+    /// uma URL TCP para HTTP/1.1 ou HTTPS.
+    #[serde(default)]
+    pub quic_addr_candidates: Vec<String>,
     pub start_layer: u32,
     pub end_layer: u32,
     /// A sub-faixa que **este passo executa**, que nem sempre é a faixa que ele
@@ -595,6 +600,7 @@ pub async fn plan_pipeline_with_rtt_from_head(
             node_id: chosen.node_id.clone(),
             inference_url,
             inference_candidates: chosen.inference_candidates(),
+            quic_addr_candidates: chosen.quic_addr_candidates(),
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
             // O que falta cobrir a partir de `pos`, não a fatia inteira. Quando
@@ -697,7 +703,9 @@ mod ipv6_tests {
             last_seen: chrono::Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: None,
             gateway_port: Some(8090),
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
@@ -964,6 +972,7 @@ mod ipv6_tests {
             node_id: "old".into(),
             inference_url: "http://127.0.0.1:8181".into(),
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
             exec_start: 0,
@@ -1007,6 +1016,7 @@ mod ipv6_tests {
                     node_id: "replica-a".into(),
                     inference_url: "http://127.0.0.1:8181".into(),
                     inference_candidates: Vec::new(),
+                    quic_addr_candidates: Vec::new(),
                     start_layer: 0,
                     end_layer: 7,
                     exec_start: 0,
@@ -1019,6 +1029,7 @@ mod ipv6_tests {
                     node_id: "replica-b".into(),
                     inference_url: "http://127.0.0.1:8182".into(),
                     inference_candidates: Vec::new(),
+                    quic_addr_candidates: Vec::new(),
                     start_layer: 8,
                     end_layer: 15,
                     exec_start: 8,
@@ -1044,6 +1055,7 @@ mod ipv6_tests {
             node_id: "n1".into(),
             inference_url: url.into(),
             inference_candidates: candidatos.into_iter().map(String::from).collect(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 9,
             exec_start: 0,
@@ -1147,6 +1159,7 @@ mod ipv6_tests {
             node_id: "n".into(),
             inference_url: "http://127.0.0.1:8181".into(),
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
             exec_start: 0,

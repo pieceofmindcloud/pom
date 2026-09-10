@@ -78,7 +78,8 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   `cluster_id` (se houver uma cadeia pública ancorada),
   `libp2p_peer_id`, `addr`, `addr_candidates`,
   `model`, `start_layer`, `end_layer`, `total_layers`, `memory_mb`, `timestamp`,
-  `ollama_port`, `inference_port`, `inference_frame_capabilities`, `gateway_port`,
+  `ollama_port`, `inference_port`, `inference_quic_port`,
+  `inference_frame_capabilities`, `gateway_port`, `gateway_quic_port`,
   `profile`, `hostname`, `capabilities` (catálogo completo de `ModelCapability`),
   `disk_total_mb`, `disk_free_mb`, e `tp` (a `TpIdentity` de tensor parallelism:
   `{role, group_id, size, rank, rank0_url, members}`, `None` = nó sem TP - ver
@@ -640,17 +641,23 @@ catraca de TLS. Falha na consulta preserva o valor local. A troca é atômica e
 vale somente para chamadas novas; conexões e inferências em andamento não são
 interrompidas.
 
-Quando ligada, a porta de inferência também escuta HTTP/3 sobre QUIC na mesma
-porta numérica do TCP. O endpoint QUIC é criado pela identidade do nó,
-independentemente de `tls_required` ou do `announced_tls` usado apenas para
-consultar a política no principal. Quinn negocia TLS 1.3 próprio e o cliente fixa o
-certificado Ed25519 do `node_id`; portanto QUIC permanece cifrado mesmo quando
-`tls_required` está desligado. A política TLS continua escolhendo apenas
-`http://` ou `https://` para o fallback TCP. Se o peer não tiver endpoint QUIC,
-a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e marca
-`transport_fallback`. A telemetria por hop publica o transporte efetivo como
-`http`, `https` ou `quic`; o túnel libp2p continua fora dessa chave porque usa
-Noise.
+Quando ligada, o servidor de inferência e o gateway escutam HTTP/3 em endpoints
+UDP dedicados, derivados da porta TCP por `dedicated_port` (`TCP + 1`). As
+portas são publicadas no `Announce` como `inference_quic_port` e
+`gateway_quic_port`. O cliente constrói `host:porta` a partir do endereço
+público anunciado pelo peer, incluindo a forma com IPv6 entre colchetes; nunca
+extrai um destino UDP de `inference_url` nem tenta a porta TCP.
+
+O endpoint QUIC é criado pela identidade do nó, independentemente de
+`tls_required` ou do `announced_tls` usado apenas para consultar a política no
+principal. Quinn negocia TLS 1.3 próprio e o cliente fixa o certificado Ed25519
+do `node_id`; portanto QUIC permanece cifrado mesmo quando `tls_required` está
+desligado. A política TLS continua escolhendo apenas `http://` ou `https://`
+para o fallback TCP. Se o peer não tiver endpoint QUIC, a porta não estiver
+escutando, a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e
+marca `transport_fallback`; ele não usa o túnel libp2p como substituto de QUIC.
+A telemetria por hop publica o transporte efetivo como `http`, `https` ou
+`quic`.
 
 ## Logs de processo do cluster
 

@@ -271,6 +271,10 @@ pub struct GatewayState {
     /// conseguiu derivá-los da identidade. `None` só nos servidores de teste,
     /// que sobem em `127.0.0.1:0` e não têm par de chaves a apresentar.
     pub tls_server: Option<crate::serve::TlsServer>,
+    /// Certificado HTTP/3 do gateway, independente da política TLS sobre TCP.
+    pub quic_server: Option<crate::serve::QuicServerConfig>,
+    /// Porta UDP dedicada anunciada para o endpoint HTTP/3 do gateway.
+    pub quic_port: Option<u16>,
     /// Captura, transporte e persistência dos logs de processo do cluster.
     pub cluster_logs: Arc<crate::cluster_logs::ClusterLogs>,
     /// Canal global da rede, validado e retransmitido pelo principal.
@@ -804,6 +808,7 @@ impl GatewayState {
                 last_seen: chrono::Utc::now(),
                 ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
+                inference_quic_port: self.network.inference_quic_port,
                 // Keep in sync with network.rs's `self_announce` and
                 // infer_server.rs's health/announce builder, and with the
                 // capability constants in routing/pipeline.rs.
@@ -833,6 +838,7 @@ impl GatewayState {
                     caps
                 },
                 gateway_port: Some(self.gateway_port),
+                gateway_quic_port: self.network.gateway_quic_port,
                 profile: self.network.profile(),
                 hostname: self.network.hostname.clone(),
                 capabilities: local

@@ -222,7 +222,7 @@ pub async fn serve_with_shutdown(
     tls: Option<TlsServer>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
-    serve_with_quic(listener, app, tls, None, shutdown).await
+    serve_with_quic(listener, app, tls, None, None, shutdown).await
 }
 
 /// Como `serve_with_shutdown`, mas com um endpoint HTTP/3 independente da
@@ -233,18 +233,26 @@ pub async fn serve_with_quic(
     app: Router,
     tls: Option<TlsServer>,
     quic: Option<QuicServerConfig>,
+    quic_port: Option<u16>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
     let quic_shutdown = Arc::new(tokio::sync::Notify::new());
     let quic_task = quic.and_then(|config| {
-        let port = listener.local_addr().ok()?.port();
+        let port = quic_port?;
         let router = app.clone();
         let stop = quic_shutdown.clone();
         Some(tokio::spawn(async move {
-            crate::quic::serve(port, router, config, async move {
+            let result = crate::quic::serve(port, router, config, async move {
                 stop.notified().await;
             })
-            .await
+            .await;
+            if let Err(error) = &result {
+                warn!(
+                    port,
+                    "endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}"
+                );
+            }
+            result
         }))
     });
     let acceptor = tls
@@ -488,10 +496,20 @@ mod integracao {
         );
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let quic = quic_server_config(&identity).unwrap();
+        let udp_probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let quic_port = udp_probe.local_addr().unwrap().port();
+        drop(udp_probe);
         let server = tokio::spawn(async move {
-            serve_with_quic(listener, app, None, Some(quic), async move {
-                let _ = stop_rx.await;
-            })
+            serve_with_quic(
+                listener,
+                app,
+                None,
+                Some(quic),
+                Some(quic_port),
+                async move {
+                    let _ = stop_rx.await;
+                },
+            )
             .await
             .unwrap();
         });
@@ -500,6 +518,7 @@ mod integracao {
             .request(
                 &identity.node_id.0,
                 &format!("http://127.0.0.1:{port}"),
+                &[format!("127.0.0.1:{quic_port}")],
                 "/test",
                 None,
                 None,

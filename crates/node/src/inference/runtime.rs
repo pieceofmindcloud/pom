@@ -658,6 +658,8 @@ pub struct NodeRuntime {
     tls: Option<crate::serve::TlsServer>,
     /// Endpoint HTTP/3 da inferência. Não depende da política TLS sobre TCP.
     quic: Option<crate::serve::QuicServerConfig>,
+    /// Porta UDP dedicada anunciada para o endpoint HTTP/3 da inferência.
+    quic_port: Option<u16>,
     /// Configuração viva usada para autorizar chamadas internas de inferência.
     auth: Option<crate::auth::AuthState>,
     /// Dono do último conjunto de pesos carregado. O servidor de cada geração
@@ -712,6 +714,7 @@ impl NodeRuntime {
         auth: Option<crate::auth::AuthState>,
     ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
+        let quic_port = net.inference_quic_port;
         Arc::new(Self {
             config: RwLock::new(None),
             status: Arc::new(RwLock::new(RuntimeStatus::new(
@@ -723,6 +726,7 @@ impl NodeRuntime {
             generation,
             tls,
             quic,
+            quic_port,
             auth,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
             loads: Arc::new(crate::pipeline::LoadTracker::new()),
@@ -1274,6 +1278,7 @@ impl NodeRuntime {
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
         let quic = self.quic.clone();
+        let quic_port = self.quic_port;
 
         tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
@@ -1343,6 +1348,7 @@ impl NodeRuntime {
                     batching_ready.clone(),
                     tls.clone(),
                     quic.clone(),
+                    quic_port,
                     auth.clone(),
                     model_cache.clone(),
                     reuse_weights,

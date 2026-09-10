@@ -116,6 +116,10 @@ pub(crate) mod profile;
 #[cfg(test)]
 #[path = "profile_tests.rs"]
 mod profile_tests;
+#[path = "network/quic.rs"]
+pub mod quic;
+#[path = "network/quic_policy.rs"]
+pub mod quic_policy;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
@@ -146,10 +150,6 @@ mod thermal;
 pub mod tls;
 #[path = "network/tls_policy.rs"]
 pub mod tls_policy;
-#[path = "network/quic.rs"]
-pub mod quic;
-#[path = "network/quic_policy.rs"]
-pub mod quic_policy;
 #[path = "backend/tool_call.rs"]
 mod tool_call;
 #[path = "inference/tp.rs"]
@@ -874,6 +874,8 @@ async fn async_main(
 
     // ── Determine Ollama port to advertise ───────────────────────────────────
     let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
+    let inference_quic_port = inference_port.and_then(crate::quic::dedicated_port);
+    let gateway_quic_port = crate::quic::dedicated_port(gateway_port);
 
     peer_client::set_quic_ativo(app_config.quic_enabled);
 
@@ -894,7 +896,9 @@ async fn async_main(
         bootstrap_nodes: bootstrap_nodes.clone(),
         ollama_port,
         inference_port,
+        inference_quic_port,
         gateway_port,
+        gateway_quic_port,
         profile: app_config.profile,
         node_display_name,
         advertise_addr: advertise_addr.clone(),
@@ -1142,6 +1146,8 @@ async fn async_main(
             audit: reqlog::AuditLog::new(database.clone()),
             database: database.clone(),
             gateway_port,
+            quic_server: quic_config.clone(),
+            quic_port: net.gateway_quic_port,
             auth: auth_config,
             admin_trust: admin_trust.clone(),
             authority_signing_key: authority_signing_key.clone(),
@@ -1560,7 +1566,9 @@ struct P2pStackArgs {
     bootstrap_nodes: Vec<String>,
     ollama_port: Option<u16>,
     inference_port: Option<u16>,
+    inference_quic_port: Option<u16>,
     gateway_port: u16,
+    gateway_quic_port: Option<u16>,
     profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
@@ -1696,6 +1704,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .await?
         .with_identity(args.profile, args.node_display_name)
         .with_advertise_addr(args.advertise_addr)
+        .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
         .with_authority_pubkey(hex::encode(
             authority_signing_key.verifying_key().as_bytes(),
         ))
@@ -1824,6 +1833,9 @@ async fn start_gateway_only(
         app_config.advertise_addr.as_deref(),
     );
     let ollama_port = advertised_ollama_port(&ollama_url);
+    let inference_port = Some(app_config.inference_port_or_default());
+    let inference_quic_port = inference_port.and_then(crate::quic::dedicated_port);
+    let gateway_quic_port = crate::quic::dedicated_port(gateway_port);
     peer_client::set_quic_ativo(app_config.quic_enabled);
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
@@ -1835,8 +1847,10 @@ async fn start_gateway_only(
         p2p_port: app_config.p2p_port,
         bootstrap_nodes: app_config.bootstrap_nodes.clone(),
         ollama_port,
-        inference_port: Some(app_config.inference_port_or_default()),
+        inference_port,
+        inference_quic_port,
         gateway_port,
+        gateway_quic_port,
         profile: app_config.profile,
         node_display_name,
         advertise_addr: advertise_addr.clone(),
@@ -2016,6 +2030,8 @@ async fn start_gateway_only(
         // "no tunnel available" outcome `send_frame_via_tunnel` treats as.
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
+        quic_server: quic_config.clone(),
+        quic_port: net.gateway_quic_port,
         cluster_logs,
         network_chat,
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),

@@ -17,7 +17,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::lookup_host;
-use tracing::debug;
+use tracing::{debug, info};
+
+/// Porta UDP dedicada do HTTP/3, derivada da porta TCP do mesmo serviço.
+/// TCP e UDP podem compartilhar o número, mas uma porta própria torna o
+/// endpoint anunciado inequívoco e evita que o cliente confunda os dois.
+pub fn dedicated_port(tcp_port: u16) -> Option<u16> {
+    tcp_port.checked_add(1)
+}
 
 pub struct QuicResponse {
     pub status: StatusCode,
@@ -56,19 +63,55 @@ impl ClientPool {
         &self,
         peer_id: &str,
         base_url: &str,
+        quic_addresses: &[String],
         path: &str,
         authorization: Option<String>,
         session_id: Option<&str>,
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<QuicResponse> {
-        let key = format!("{peer_id}@{}", base_url.trim_end_matches('/'));
-        let session = match self.session(&key, peer_id, base_url, timeout).await {
-            Ok(session) => session,
-            Err(error) => {
-                self.sessions.lock().await.remove(&key);
-                return Err(error);
+        let mut last_error = anyhow!("nenhum endereço QUIC anunciado para {peer_id}");
+        for advertised in quic_addresses {
+            let key = format!("{peer_id}@{}", advertised.trim());
+            match self
+                .request_one(
+                    &key,
+                    peer_id,
+                    advertised,
+                    base_url,
+                    path,
+                    authorization.clone(),
+                    session_id,
+                    body.clone(),
+                    timeout,
+                )
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    last_error = anyhow!("{advertised}: {error}");
+                    self.sessions.lock().await.remove(&key);
+                }
             }
+        }
+        Err(last_error)
+    }
+
+    async fn request_one(
+        &self,
+        key: &str,
+        peer_id: &str,
+        advertised: &str,
+        base_url: &str,
+        path: &str,
+        authorization: Option<String>,
+        session_id: Option<&str>,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<QuicResponse> {
+        let session = match self.session(key, peer_id, advertised, timeout).await {
+            Ok(session) => session,
+            Err(error) => return Err(error),
         };
         let result: Result<QuicResponse> = async {
             let mut request_builder = Request::builder()
@@ -122,7 +165,7 @@ impl ClientPool {
         }
         .await;
         if result.is_err() {
-            self.sessions.lock().await.remove(&key);
+            self.sessions.lock().await.remove(key);
         }
         result
     }
@@ -131,13 +174,13 @@ impl ClientPool {
         &self,
         key: &str,
         peer_id: &str,
-        base_url: &str,
+        advertised: &str,
         timeout: Duration,
     ) -> Result<Arc<QuicSession>> {
         if let Some(session) = self.sessions.lock().await.get(key).cloned() {
             return Ok(session);
         }
-        let addr = resolve_addr(base_url).await?;
+        let addr = resolve_addr(advertised).await?;
         let tls = crate::tls::quic_client_config(peer_id)?;
         let config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(tls)?,
@@ -195,6 +238,7 @@ pub async fn serve(
 ) -> Result<()> {
     let endpoint =
         quinn::Endpoint::server(config.as_ref().clone(), format!("[::]:{port}").parse()?)?;
+    info!(port, "endpoint QUIC HTTP/3 bound on [::]:{port}");
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
         tokio::select! {
@@ -301,12 +345,35 @@ fn authority(base_url: &str) -> Result<String> {
     ))
 }
 
-async fn resolve_addr(base_url: &str) -> Result<SocketAddr> {
-    let authority = authority(base_url)?;
-    lookup_host(authority)
+async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {
+    if advertised.contains("://") {
+        return Err(anyhow!(
+            "endereço QUIC precisa ser host:porta, não uma URL HTTP"
+        ));
+    }
+    if let Ok(addr) = advertised.parse::<SocketAddr>() {
+        return quic_socket_addr(advertised, addr.port());
+    }
+    lookup_host(advertised)
         .await?
         .next()
         .ok_or_else(|| anyhow!("endereço QUIC não resolveu"))
+}
+
+fn quic_socket_addr(advertised_host: &str, quic_port: u16) -> Result<SocketAddr> {
+    if advertised_host.contains("://") {
+        return Err(anyhow!("endereço anunciado não pode conter scheme"));
+    }
+    let host = advertised_host
+        .parse::<SocketAddr>()
+        .map(|addr| addr.ip())
+        .or_else(|_| {
+            advertised_host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+        })?;
+    Ok(SocketAddr::new(host, quic_port))
 }
 
 #[cfg(test)]
@@ -314,6 +381,19 @@ mod tests {
     use super::*;
     use axum::{routing::post, Router};
     use tokio::sync::oneshot;
+
+    #[test]
+    fn endpoint_quic_deriva_socketaddr_do_anuncio_e_nao_de_url_http() {
+        assert_eq!(
+            quic_socket_addr("[2001:db8::42]:42777", 8182).unwrap(),
+            "[2001:db8::42]:8182".parse().unwrap()
+        );
+        assert_eq!(
+            quic_socket_addr("2001:db8::42", 8182).unwrap(),
+            "[2001:db8::42]:8182".parse().unwrap()
+        );
+        assert!(quic_socket_addr("http://[2001:db8::42]:8181", 8182).is_err());
+    }
 
     #[tokio::test]
     async fn cliente_e_servidor_http3_falam_com_o_certificado_do_no() {
@@ -341,6 +421,7 @@ mod tests {
             .request(
                 &identity.node_id.0,
                 &format!("http://127.0.0.1:{port}"),
+                &[format!("127.0.0.1:{port}")],
                 "/test",
                 None,
                 None,

@@ -10,9 +10,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `pipeline.rs` - `LoadTracker`/`LoadGuard` (contagem RAII de requisições em
   voo por peer), `PipelineStep`/`PipelinePlan`/`PipelineEdge`, `plan_pipeline`
   (greedy) e `resolve_step_url` (endereço por hop, por sessão). Cada
-  `PipelineStep` preserva os candidatos HTTP e UDP do hop; os transportes
-  tentam a lista com memória de falha expirável em vez de tratar `addr` como
-  verdade permanente.
+  `PipelineStep` preserva os candidatos HTTP e os destinos `host:porta` da
+  porta UDP QUIC anunciada do hop; os transportes tentam a lista com memória de
+  falha expirável em vez de tratar `addr` como verdade permanente. O destino
+  QUIC nunca é derivado da `inference_url`.
 
 ## Funções-chave
 

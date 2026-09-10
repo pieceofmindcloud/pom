@@ -44,6 +44,10 @@ gateway são outra fronteira: o `Ticket` por quadro é a credencial deles.
 O listener HTTP de inferência é dual-stack, ou cai para IPv4 quando a máquina
 não oferece IPv6, independentemente da exposição da interface administrativa:
 ele é a reserva quando o túnel libp2p falha.
+O listener HTTP/3 usa uma porta UDP dedicada, anunciada em
+`inference_quic_port`, derivada da porta TCP por `TCP + 1`; o cliente usa os
+endereços públicos `host:porta` do anúncio e cai para HTTP/HTTPS se o endpoint
+não responder.
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
@@ -1039,8 +1043,9 @@ falha de transporte.
   `transport_fallback`.
 - O transporte por requisição tenta QUIC antes do túnel libp2p/Noise quando a
   preferência está ligada; uma falha QUIC nunca cai no túnel, apenas no cliente
-  HTTP pinado. Com QUIC desligado, o túnel continua sendo a alternativa antes
-  do cliente HTTP;
+  HTTP pinado. Os destinos QUIC vêm do `host:porta` anunciado pelo peer, não
+  da `inference_url`, e usam a porta UDP dedicada publicada no `Announce`. Com
+  QUIC desligado, o túnel continua sendo a alternativa antes do cliente HTTP;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de
   topologia. O `round_trip_ms` de `SentFrame` inclui processamento remoto e
   não alimenta a tabela direcional de rotas.

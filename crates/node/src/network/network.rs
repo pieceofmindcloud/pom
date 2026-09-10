@@ -148,7 +148,9 @@ struct NetworkInit {
     bootstrap_nodes: Vec<String>,
     ollama_port: Option<u16>,
     inference_port: Option<u16>,
+    inference_quic_port: Option<u16>,
     gateway_port: Option<u16>,
+    gateway_quic_port: Option<u16>,
 }
 
 struct PeerAdmission {
@@ -194,6 +196,9 @@ pub enum P2PMessage {
         ollama_port: Option<u16>,
         #[serde(default)]
         inference_port: Option<u16>,
+        /// Dedicated UDP port for this node's inference HTTP/3 endpoint.
+        #[serde(default)]
+        inference_quic_port: Option<u16>,
         /// Inference capabilities this peer can receive. The current product
         /// exposes the canonical batch frame only after inference is ready.
         #[serde(default)]
@@ -202,6 +207,9 @@ pub enum P2PMessage {
         /// running an older build parseable.
         #[serde(default)]
         gateway_port: Option<u16>,
+        /// Dedicated UDP port for this node's gateway HTTP/3 endpoint.
+        #[serde(default)]
+        gateway_quic_port: Option<u16>,
         #[serde(default)]
         profile: crate::profile::NodeProfile,
         /// Se este nó fala TLS com os peers.
@@ -301,12 +309,18 @@ pub struct PeerInfo {
     /// Used by the gateway pipeline to POST hidden states.
     #[serde(default)]
     pub inference_port: Option<u16>,
+    /// Dedicated UDP port for this peer's inference HTTP/3 endpoint.
+    #[serde(default)]
+    pub inference_quic_port: Option<u16>,
     #[serde(default)]
     pub inference_frame_capabilities: Vec<String>,
     /// Port serving this peer's HTTP API and web UI, so the dashboard can pull
     /// load figures straight from each peer.
     #[serde(default)]
     pub gateway_port: Option<u16>,
+    /// Dedicated UDP port for this peer's gateway HTTP/3 endpoint.
+    #[serde(default)]
+    pub gateway_quic_port: Option<u16>,
     #[serde(default)]
     pub profile: crate::profile::NodeProfile,
     /// Ver `P2PMessage::Announce::tls`: gatilho para a catraca, nunca valor.
@@ -616,6 +630,19 @@ impl PeerInfo {
         self.inference_candidates().into_iter().next()
     }
 
+    /// Endereços `host:porta` do endpoint QUIC de inferência, construídos a
+    /// partir do endereço público anunciado pelo peer e da porta UDP dedicada.
+    /// Este caminho não lê nem faz parse de `inference_url`.
+    pub fn quic_addr_candidates(&self) -> Vec<String> {
+        let Some(port) = self.inference_quic_port else {
+            return Vec::new();
+        };
+        self.dialable_addrs()
+            .into_iter()
+            .map(|address| format!("{}:{port}", ip_host(&address)))
+            .collect()
+    }
+
     /// Base URL of this peer's HTTP API / web UI.
     ///
     /// É o **primeiro** candidato, não o único. Quem tem como tentar mais de
@@ -683,8 +710,12 @@ pub struct Network {
     pub ollama_port: Option<u16>,
     /// Port of the local llama-cpp-python inference server.
     pub inference_port: Option<u16>,
+    /// Dedicated UDP port of the local inference HTTP/3 endpoint.
+    pub inference_quic_port: Option<u16>,
     /// Port of this node's HTTP API / web UI.
     pub gateway_port: Option<u16>,
+    /// Dedicated UDP port of the local gateway HTTP/3 endpoint.
+    pub gateway_quic_port: Option<u16>,
     /// Anúncios públicos que ainda não provaram pertencimento à rede local.
     ///
     /// Esta tabela é deliberadamente separada de `peers`: candidatos públicos
@@ -1047,7 +1078,9 @@ impl Network {
                 bootstrap_nodes,
                 ollama_port,
                 inference_port,
+                inference_quic_port: None,
                 gateway_port,
+                gateway_quic_port: None,
             },
         )
         .await
@@ -1114,7 +1147,9 @@ impl Network {
                 bootstrap_nodes,
                 ollama_port,
                 inference_port,
+                inference_quic_port: None,
                 gateway_port,
+                gateway_quic_port: None,
             },
         ))
     }
@@ -1144,7 +1179,9 @@ impl Network {
                 bootstrap_nodes,
                 ollama_port,
                 inference_port,
+                inference_quic_port: None,
                 gateway_port,
+                gateway_quic_port: None,
             },
         ))
     }
@@ -1167,7 +1204,9 @@ impl Network {
             bootstrap_nodes: init.bootstrap_nodes,
             ollama_port: init.ollama_port,
             inference_port: init.inference_port,
+            inference_quic_port: init.inference_quic_port,
             gateway_port: init.gateway_port,
+            gateway_quic_port: init.gateway_quic_port,
             public_discovery: Arc::new(RwLock::new(HashMap::new())),
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Node)),
             hostname: String::new(),
@@ -1259,6 +1298,15 @@ impl Network {
     /// Pin the address peers should reach this node at, at construction time.
     pub fn with_advertise_addr(self, raw: Option<String>) -> Self {
         self.set_advertise_addr(raw.as_deref());
+        self
+    }
+
+    /// Configura as portas UDP dedicadas do HTTP/3 antes de o nó entrar no
+    /// cluster. Elas são anunciadas junto do endereço público, nunca
+    /// inferidas a partir da URL TCP de inferência.
+    pub fn with_quic_ports(mut self, inference: Option<u16>, gateway: Option<u16>) -> Self {
+        self.inference_quic_port = inference;
+        self.gateway_quic_port = gateway;
         self
     }
 
@@ -1371,6 +1419,24 @@ impl Network {
             .into_iter()
             .map(|ip| host_port(&ip, porta))
             .collect()
+    }
+
+    fn quic_addr_candidates_for(&self, port: Option<u16>) -> Vec<String> {
+        let Some(port) = port else {
+            return Vec::new();
+        };
+        self.self_addr_candidates()
+            .into_iter()
+            .map(|address| format!("{}:{port}", ip_host(&address)))
+            .collect()
+    }
+
+    pub fn inference_quic_addr_candidates(&self) -> Vec<String> {
+        self.quic_addr_candidates_for(self.inference_quic_port)
+    }
+
+    pub fn gateway_quic_addr_candidates(&self) -> Vec<String> {
+        self.quic_addr_candidates_for(self.gateway_quic_port)
     }
 
     /// What this node puts in `Announce.addr`.
@@ -1524,6 +1590,7 @@ impl Network {
             timestamp: Utc::now(),
             ollama_port: self.ollama_port,
             inference_port: self.inference_port,
+            inference_quic_port: self.inference_quic_port,
             // Keep this list in sync with the other two `Announce` builders
             // (gateway.rs, infer_server.rs) and with the capability constants
             // in routing/pipeline.rs (`CAP_RELAY_CHAIN`, `CAP_SPECULATE_LOOKUP`,
@@ -1560,6 +1627,7 @@ impl Network {
                 caps
             },
             gateway_port: self.gateway_port,
+            gateway_quic_port: self.gateway_quic_port,
             profile: self.profile(),
             tls: self.tls_enabled(),
             quic: crate::peer_client::quic_ativo(),
@@ -2288,8 +2356,10 @@ impl Network {
                 timestamp,
                 ollama_port,
                 inference_port,
+                inference_quic_port,
                 inference_frame_capabilities,
                 gateway_port,
+                gateway_quic_port,
                 profile,
                 tls,
                 quic,
@@ -2335,8 +2405,10 @@ impl Network {
                     last_seen: timestamp,
                     ollama_port,
                     inference_port,
+                    inference_quic_port,
                     inference_frame_capabilities,
                     gateway_port,
+                    gateway_quic_port,
                     profile,
                     tls,
                     hostname,
@@ -2933,7 +3005,8 @@ mod tests {
         let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
             .await
             .unwrap()
-            .with_identity(crate::profile::NodeProfile::Admin, "macbook".into());
+            .with_identity(crate::profile::NodeProfile::Admin, "macbook".into())
+            .with_quic_ports(Some(8182), Some(8081));
 
         let asgn = LayerAssignment {
             deploy_id: String::new(),
@@ -2976,6 +3049,8 @@ mod tests {
             // um carregasse, a virada chegaria por um caminho e não pelo outro,
             // e o cluster ficaria meio cifrado sem ninguém notar.
             assert_eq!(gossip["tls"], false);
+            assert_eq!(gossip["inference_quic_port"], 8182);
+            assert_eq!(gossip["gateway_quic_port"], 8081);
             assert_eq!(gossip["hostname"], "macbook");
         }
 
@@ -3441,7 +3516,9 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: Some(8182),
             gateway_port: Some(8090),
+            gateway_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
@@ -3458,6 +3535,10 @@ mod tests {
         assert_eq!(
             peer.inference_url().as_deref(),
             Some("http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8181")
+        );
+        assert_eq!(
+            peer.quic_addr_candidates(),
+            vec!["[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8182"]
         );
         assert_eq!(
             peer.gateway_url().as_deref(),
@@ -3486,7 +3567,9 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: None,
             gateway_port: Some(8090),
+            gateway_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             profile: crate::profile::NodeProfile::Admin,
             hostname: "ksia".into(),
@@ -3575,8 +3658,10 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(8080),
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: "h".into(),
             capabilities: Vec::new(),
@@ -3715,8 +3800,10 @@ mod tests {
                 timestamp: Utc::now(),
                 ollama_port: None,
                 inference_port: Some(8181),
+                inference_quic_port: None,
                 inference_frame_capabilities: Vec::new(),
                 gateway_port: Some(8080),
+                gateway_quic_port: None,
                 profile: crate::profile::NodeProfile::Node,
                 tls: false,
                 quic: false,
@@ -4030,8 +4117,10 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: None,
+            inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: None,
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
@@ -4111,8 +4200,10 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: None,
+            inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(gateway_port),
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             tls: false,
             hostname: String::new(),

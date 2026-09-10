@@ -539,6 +539,7 @@ fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> Pip
         node_id: node_id.into(),
         inference_url: url.into(),
         inference_candidates: vec![],
+        quic_addr_candidates: vec![],
         start_layer: start,
         end_layer: end,
         exec_start: start,

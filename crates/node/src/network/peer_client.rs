@@ -248,6 +248,7 @@ impl PeerClients {
         &self,
         peer_id: &str,
         base_url: &str,
+        quic_addresses: &[String],
         path: &str,
         body: Vec<u8>,
         session_id: Option<&str>,
@@ -255,7 +256,16 @@ impl PeerClients {
     ) -> anyhow::Result<crate::quic::QuicResponse> {
         let token = self.internal_node_token().await;
         self.quic_pool
-            .request(peer_id, base_url, path, token, session_id, body, timeout)
+            .request(
+                peer_id,
+                base_url,
+                quic_addresses,
+                path,
+                token,
+                session_id,
+                body,
+                timeout,
+            )
             .await
     }
 

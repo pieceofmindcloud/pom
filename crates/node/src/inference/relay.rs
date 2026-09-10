@@ -816,6 +816,7 @@ pub async fn send_frame(
         peer_id,
         base_url,
         &[],
+        &[],
         path,
         meta,
         tensor,
@@ -838,6 +839,7 @@ async fn send_frame_with_protocol(
     peer_id: &str,
     base_url: &str,
     candidates: &[String],
+    quic_addresses: &[String],
     path: &str,
     meta: &Value,
     tensor: Option<(&[f32], TensorShape)>,
@@ -887,6 +889,7 @@ async fn send_frame_with_protocol(
                     .quic_post(
                         peer_id,
                         &base,
+                        quic_addresses,
                         path,
                         body.clone(),
                         session_id,
@@ -1343,6 +1346,7 @@ async fn send_batch_body(
                     .quic_post(
                         &step.node_id,
                         &base,
+                        &step.quic_addr_candidates,
                         path,
                         body.to_vec(),
                         session_id,
@@ -1878,6 +1882,7 @@ pub async fn send_frame_or_tunnel(
         &step.node_id,
         &step.inference_url,
         &step.inference_candidates,
+        &step.quic_addr_candidates,
         path,
         meta,
         tensor,
@@ -2724,6 +2729,7 @@ mod tests {
             },
             libp2p_peer_id: peer_id,
             libp2p_addr_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
         }
     }
 
@@ -2908,22 +2914,33 @@ mod tests {
         );
         let (stop_tx, stop_rx) = oneshot::channel();
         let quic = crate::serve::quic_server_config(&identity).unwrap();
+        let udp_probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let quic_port = udp_probe.local_addr().unwrap().port();
+        drop(udp_probe);
         let server = tokio::spawn(async move {
-            crate::serve::serve_with_quic(listener, app, None, Some(quic), async move {
-                let _ = stop_rx.await;
-            })
+            crate::serve::serve_with_quic(
+                listener,
+                app,
+                None,
+                Some(quic),
+                Some(quic_port),
+                async move {
+                    let _ = stop_rx.await;
+                },
+            )
             .await
             .unwrap();
         });
 
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
         clients.set_quic(true);
-        let step = step_with_node(
+        let mut step = step_with_node(
             &identity.node_id.0,
             &format!("http://127.0.0.1:{port}"),
             true,
             Some(PeerId::random().to_string()),
         );
+        step.quic_addr_candidates = vec![format!("127.0.0.1:{quic_port}")];
         let tunnel_body = wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap();
         let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,

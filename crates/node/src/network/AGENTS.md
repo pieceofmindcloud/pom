@@ -86,10 +86,12 @@ fallback continua em `addr_candidates` + `RouteTable`.
   cliente TLS foi criado ou reutilizado; transporte local, túnel e cliente
   sem TLS permanecem explicitamente desconhecidos.
 - `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
-  QUIC por peer e endereço, usa o mesmo pinning Ed25519 da conexão TCP e deixa
-  o endpoint UDP pronto na porta de inferência mesmo quando a preferência está
-  desligada. A configuração do listener é independente do `tls_required` do
-  TCP, porque QUIC leva seu próprio TLS 1.3.
+  QUIC por peer e endereço anunciado, usa o mesmo pinning Ed25519 da conexão
+  TCP e deixa o endpoint UDP pronto na porta dedicada anunciada
+  (`inference_quic_port`/`gateway_quic_port`) mesmo quando a preferência está
+  desligada. O dial exige `host:porta` e nunca deriva o destino de uma URL HTTP.
+  A configuração do listener é independente do `tls_required` do TCP, porque
+  QUIC leva seu próprio TLS 1.3.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o

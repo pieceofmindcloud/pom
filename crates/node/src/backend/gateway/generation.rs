@@ -208,6 +208,7 @@ mod reload_tests {
                     node_id: (*node_id).into(),
                     inference_url: String::new(),
                     inference_candidates: Vec::new(),
+                    quic_addr_candidates: Vec::new(),
                     start_layer: 0,
                     end_layer: 0,
                     exec_start: 0,
@@ -573,7 +574,8 @@ pub(super) async fn generate_stream_inner(
             state.gateway_port,
         ),
         state.network.node_id.clone(),
-    );
+    )
+    .map(|reply| reply.with_quic_addresses(state.network.gateway_quic_addr_candidates()));
 
     info!(
         "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",

@@ -748,6 +748,12 @@ pub(super) async fn generate_stream_inner(
                      não é recuperável repetindo o mesmo chunk"
                 );
             } else if !crate::prefill::is_cancelled(e) {
+                // Falha de repasse head->tail causada pelo transporte (caminho
+                // morto, timeout, ou 401/403 de credencial): um gap transitório
+                // na propagação da política de rede some sozinho, então vale um
+                // único prefill frio antes de desistir - `run_direct` trata
+                // qualquer erro no chunk 0 como terminal e não retenta.
+                let original_transport_relay = crate::relay::is_transport_relay_failure(e);
                 // Um erro depois de um chunk aceito não revela se o peer
                 // avançou o KV antes de a resposta se perder. Não se pode
                 // tentar uma remoção parcial: modelos recorrentes recusam-na
@@ -761,17 +767,20 @@ pub(super) async fn generate_stream_inner(
                     prefill_result = prefill_attempt(false, None).await;
                 }
                 // Uma segunda recuperação fria só é necessária para prefixo
-                // reutilizado ou sessão desconhecida. Uma falha durante a
-                // reconstrução já tem a sessão em estado incerto e deve cair
-                // direto no cleanup, sem uma nova tentativa parcial.
+                // reutilizado, sessão desconhecida ou falha transitória de
+                // transporte. Uma falha durante a reconstrução já tem a sessão
+                // em estado incerto e deve cair direto no cleanup, sem uma nova
+                // tentativa parcial.
                 if let Err(e2) = &prefill_result {
                     let unknown_session =
                         original_unknown_session || crate::relay::is_unknown_session_error(e2);
-                    if reuse_prefix || unknown_session {
+                    let transport_relay =
+                        original_transport_relay || crate::relay::is_transport_relay_failure(e2);
+                    if reuse_prefix || unknown_session || transport_relay {
                         unknown_session_recovery_attempted = unknown_session;
                         warn!(
-                            "prefill falhou com estado de sessão incompatível ({e2}); \
-                             reconstruindo o prefill inteiro a frio uma vez"
+                            "prefill falhou com estado de sessão incompatível ou transporte \
+                             transitório ({e2}); reconstruindo o prefill inteiro a frio uma vez"
                         );
                         prefill_result = prefill_attempt(false, None).await;
                     }

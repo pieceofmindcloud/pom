@@ -621,6 +621,38 @@ pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
     text.contains("sessão") && text.contains("desconhecida")
 }
 
+/// Uma falha de repasse entre hops causada pelo **transporte** - caminho
+/// morto, timeout, ou recusa de autenticação 401/403 - e não pelo conteúdo do
+/// pedido. Um gap transitório na propagação da política de rede (TLS/QUIC
+/// ainda não confirmados num peer, credencial interna ainda não adotada) cai
+/// aqui e some sozinho, então vale um único prefill frio antes de desistir.
+///
+/// Um `400`/`413`/erro de modelo do peer **não** casa: repetir não muda nada.
+/// A mensagem chega achatada por `anyhow::Error::to_string`, venha de um
+/// `HttpRefusal`, de um `RelayFailure` serializado pelo anel/resposta direta
+/// (`"pipeline falhou em <no>: <kind> ..."`) ou do texto do próprio frame.
+pub fn is_transport_relay_failure(error: &anyhow::Error) -> bool {
+    if let Some(failure) = extract_relay_failure(error) {
+        let kind = failure.kind.trim().to_ascii_lowercase();
+        if kind == "transport" || kind == "timeout" {
+            return true;
+        }
+    }
+    let text = error.to_string().to_lowercase();
+    if text.contains("missing authorization header") {
+        return true;
+    }
+    if text.contains("pipeline falhou em")
+        && (text.contains(": transport") || text.contains(": timeout"))
+    {
+        return true;
+    }
+    text.contains("recusou: 401")
+        || text.contains("recusou: 403")
+        || text.contains("http 401:")
+        || text.contains("http 403:")
+}
+
 /// The request payload does not reveal the size of a hidden-state response
 /// produced by a head hop. Coalescing such calls could create a response batch
 /// larger than the wire limit even when every request was tiny. Ring frames
@@ -2394,6 +2426,42 @@ mod tests {
 
         assert!(is_unknown_session_error(&unknown));
         assert!(!is_unknown_session_error(&other));
+    }
+
+    /// Regressão: um 401/403 ou falha de transporte no repasse head->tail
+    /// (que `run_direct` trata como terminal no chunk 0) tem que ser
+    /// reconhecível para o gateway conceder **um** prefill frio. Um
+    /// 400/erro de modelo não pode casar - repetir não muda nada.
+    #[test]
+    fn transport_relay_failure_is_classified() {
+        // O achatado que o gateway vê pela resposta direta (kind "http",
+        // corpo do 401 do peer), build pré-fallback.
+        let direct_http_401 = anyhow!(
+            "pipeline falhou em 02eb8c40: http — peer recusou: 401 {{\"error\":\"missing Authorization header\"}}"
+        );
+        // O mesmo caminho já com a classificação de transporte nova.
+        let direct_transport = anyhow!(
+            "pipeline falhou em 02eb8c40: transport — quic/http: caminho morto"
+        );
+        // HttpRefusal direto de um hop 403.
+        let refusal_403 = anyhow::Error::new(HttpRefusal {
+            status: 403,
+            body: "peer-y recusou: 403 forbidden".into(),
+            peer_label: "peer-y".into(),
+        });
+        // Não é falha de transporte: pedido malformado / erro de modelo.
+        let bad_request = anyhow::Error::new(HttpRefusal {
+            status: 400,
+            body: "chunk fora de ordem".into(),
+            peer_label: "peer-x".into(),
+        });
+        let unknown_session = anyhow!("sessão 's' desconhecida");
+
+        assert!(is_transport_relay_failure(&direct_http_401));
+        assert!(is_transport_relay_failure(&direct_transport));
+        assert!(is_transport_relay_failure(&refusal_403));
+        assert!(!is_transport_relay_failure(&bad_request));
+        assert!(!is_transport_relay_failure(&unknown_session));
     }
 
     #[tokio::test]

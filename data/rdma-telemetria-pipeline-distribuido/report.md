@@ -939,3 +939,23 @@ próximo mecanismo tecnicamente válido é uma rodada multi-token (MTP ou
 especulação) quando o runtime anunciar a capability e o modelo estiver pronto.
 Forçar múltiplos tokens para um modelo sem draft seria incorreto; não foi feita
 essa alteração nem tocado o fork vendorizado do llama.cpp.
+
+### 17.13 Correção de stream órfão
+
+Além do ciclo normal, foi encontrado um caso de serialização de recursos que
+podia contaminar as medições seguintes: `handle_step_stream` devolvia o ACK de
+aceite e depois aguardava `producer` e `emitter` com `tokio::join!`. Se o
+gateway fechasse o ticket, o emitter terminava ao observar `410 Gone`, mas o
+producer continuava executando o laço autoregressivo, mantendo a sessão de KV,
+o permit de carga e novas entradas no scheduler até a próxima falha de
+callback ou timeout.
+
+`run_remote_stream_tasks` agora executa os dois lados como tarefas irmãs. Se o
+emitter termina primeiro, o producer é abortado e seu `JoinHandle` é aguardado;
+se o producer termina normalmente, o emitter ainda drena a fila limitada para
+entregar o último token. O teste
+`emissor_para_quando_a_entrega_termina_antes_do_produtor` reproduz um producer
+pendurado e confirma que ele é descartado quando a entrega termina. A mudança
+foi publicada em `82c17b11`. Ela corrige vazamento de trabalho e evita que
+requisições abandonadas falseiem o throughput posterior, mas não é declarada
+como ganho de tok/s até ser redeployada e medida no cluster.

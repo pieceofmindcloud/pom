@@ -899,3 +899,43 @@ trace diagnóstico posterior serve somente para validar o transporte. O
 próximo benchmark deve repetir pelo menos cinco corridas com o mesmo prompt,
 separar primeira corrida de canal aquecido e publicar mediana/p95 de TTFT,
 geração, wall e RTT A -> B.
+
+### 17.12 Fechamento do caminho crítico por token
+
+O trace diagnóstico `chatcmpl-d5d8e71f686d4962abb4775e1865e6b5`, embora tenha
+terminado com `telemetry.status=collecting` por causa do detector de repetição,
+tem 95 ciclos completos e permite fechar a aritmética do caminho crítico:
+
+| Componente | Medição | Leitura correta |
+|---|---:|---|
+| A decode | 381 ms / 95 = 4,0 ms por token | Compute do head antes de enviar o próximo estado |
+| B decode | 1.046 ms / 95 = 11,0 ms por token | Está dentro do RTT da chamada A -> B, não deve ser somado outra vez |
+| A -> B `https-link` | 95 chamadas, p50 38 ms, p95 43 ms, máximo 43 ms | Um frame por token no canal persistente, ainda com resposta necessária |
+| Ciclo do produtor | p50 43 ms, p95 48 ms, máximo 50 ms | A compute + RTT A -> B + enquadramento/scheduling residual |
+| Fila callback | p50/p95 0 ms, total 0 ms | Não há bloqueio do emitter/gateway acrescentando espera |
+
+Assim, os 43-44 ms chamados de `remote_stream_wait` são a espera causal pelo
+próximo token, não um timer, ACK ou fila ociosa escondida. O RTT físico informado
+de 28-33 ms é o piso de rede; o RTT de aplicação de 38-43 ms inclui o trabalho
+de B e o protocolo. A diferença entre as duas medições não pode ser atribuída
+inteiramente à rede, mas também não aparece como uma espera separada no trace.
+
+Não existe sobreposição arbitrária adicional para uma única sequência: B não
+pode calcular N+1 antes de receber de A o estado derivado do token N, e A não
+pode produzir esse estado antes de receber/samplar a resposta de B. O trace
+também exclui a hipótese de serialização desnecessária no retorno: `queue_wait`
+é zero, o callback não aguarda o ACK para liberar o produtor e o canal
+persistente foi reutilizado sem reabertura por token.
+
+O campo `wall tok/s` não revela overhead de stream nesta amostra. Ele é
+exatamente menor que `generation tok/s` pelo TTFT: 5.513 ms totais - 4.146 ms
+de geração = 1.367 ms de TTFT. O restante do ganho precisa vir de reduzir o
+número de ciclos causais, não de subtrair novamente spans sobrepostos.
+
+Conclusão de implementação: a alteração de `15caf764` eliminou o custo evitável
+de abrir/requestar o transporte interno por ativação e elevou a geração para
+21,71 tok/s. Para avançar em direção ao throughput de uma máquina única, o
+próximo mecanismo tecnicamente válido é uma rodada multi-token (MTP ou
+especulação) quando o runtime anunciar a capability e o modelo estiver pronto.
+Forçar múltiplos tokens para um modelo sem draft seria incorreto; não foi feita
+essa alteração nem tocado o fork vendorizado do llama.cpp.

@@ -653,7 +653,10 @@ quantas vezes quiser.
 editável somente pelo principal em `POST /api/ui/network/quic`. O anúncio leva
 `quic` apenas como gatilho: o peer confirma o valor em
 `GET /api/cluster/quic`, autenticado pela `connection_key`, exatamente como a
-catraca de TLS. Falha na consulta preserva o valor local. A troca é atômica e
+catraca de TLS. O gatilho só é aceito quando o `authority_pubkey` anunciado
+corresponde ao principal ancorado localmente; um admin secundário não pode
+forçar a consulta nem reverter a preferência. Falha na consulta preserva o
+valor local. A troca é atômica e
 vale somente para chamadas novas; conexões e inferências em andamento não são
 interrompidas.
 

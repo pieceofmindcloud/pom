@@ -605,6 +605,7 @@ async fn handle_event(
                 gateway_quic_port,
                 profile,
                 tls,
+                quic,
                 hostname,
                 capabilities,
                 disk_total_mb,
@@ -695,6 +696,7 @@ async fn handle_event(
                 network.insert_admitted_peer(peer).await;
 
                 network.trigger_cluster_logs_probe(&node_id, profile, cluster_logs_enabled, tls);
+                network.trigger_quic_probe(&node_id, &authority_pubkey, quic, tls);
                 network.trigger_network_chat_probe(
                     &node_id,
                     &authority_pubkey,

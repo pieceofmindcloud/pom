@@ -88,6 +88,24 @@ async fn network_chat_probe_only_accepts_the_configured_principal_identity() {
 }
 
 #[tokio::test]
+async fn quic_policy_probe_only_accepts_the_configured_principal_identity() {
+    let network = Network::testkit("local".into(), "pk-local".into(), vec![], None, None, None)
+        .await
+        .unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    network.set_quic_probe(sender);
+    network.set_policy_principal_pubkey("authority-primary");
+
+    // Um admin secundário pode anunciar a mesma capacidade, mas não pode
+    // reverter a preferência que o principal acabou de gravar.
+    network.trigger_quic_probe("secondary", "authority-secondary", true, false);
+    assert!(receiver.try_recv().is_err());
+
+    network.trigger_quic_probe("primary", "authority-primary", true, false);
+    assert_eq!(receiver.try_recv().unwrap(), ("primary".into(), false));
+}
+
+#[tokio::test]
 async fn principal_rejects_invalid_and_blocked_api_keys_before_relay() {
     let path =
         std::env::temp_dir().join(format!("pom-network-chat-auth-{}.db", uuid::Uuid::new_v4()));

@@ -112,8 +112,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
 - `quic_policy.rs` - catraca autenticada da preferência QUIC: o campo `quic`
-  do Announce só dispara `GET /api/cluster/quic`; apenas a resposta do
-  principal é adotada e falha preserva o valor local.
+  do Announce só dispara `GET /api/cluster/quic`; o gatilho só é aceito quando
+  `authority_pubkey` identifica o principal ancorado, nunca por `profile: admin`;
+  apenas a resposta do principal é adotada e falha preserva o valor local.
 - `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
   `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
   é a fonte, e falha preserva o valor local.

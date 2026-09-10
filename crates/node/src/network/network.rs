@@ -1836,6 +1836,38 @@ impl Network {
         }
     }
 
+    pub fn trigger_quic_probe(
+        &self,
+        node_id: &str,
+        authority_pubkey: &str,
+        announced: bool,
+        tls: bool,
+    ) {
+        let from_principal = self
+            .policy_principal_pubkey
+            .read()
+            .ok()
+            .and_then(|current| current.as_deref().map(|key| key == authority_pubkey))
+            .unwrap_or(false);
+        if let crate::quic_policy::PolicyOutcome::Fetch { principal } =
+            crate::quic_policy::on_announce(
+                crate::peer_client::quic_ativo(),
+                announced,
+                from_principal,
+                node_id,
+            )
+        {
+            if let Ok(slot) = self.quic_probe.read() {
+                if let Some(tx) = slot.as_ref() {
+                    // O valor anunciado continua sendo só o gatilho. A task
+                    // da política busca o valor no endpoint autenticado do
+                    // principal antes de o adotar.
+                    let _ = tx.send((principal, tls));
+                }
+            }
+        }
+    }
+
     pub fn trigger_network_chat_probe(
         &self,
         node_id: &str,
@@ -2487,23 +2519,7 @@ impl Network {
                     }
                 }
 
-                if let crate::quic_policy::PolicyOutcome::Fetch { principal } =
-                    crate::quic_policy::on_announce(
-                        crate::peer_client::quic_ativo(),
-                        quic,
-                        peer.profile == crate::profile::NodeProfile::Admin,
-                        &peer.node_id,
-                    )
-                {
-                    if let Ok(slot) = self.quic_probe.read() {
-                        if let Some(tx) = slot.as_ref() {
-                            // A flag QUIC só dispara a sonda. O esquema da
-                            // sonda continua sendo a política TLS anunciada,
-                            // que é independente do transporte escolhido.
-                            let _ = tx.send((principal, tls));
-                        }
-                    }
-                }
+                self.trigger_quic_probe(&peer.node_id, &peer.authority_pubkey, quic, tls);
 
                 self.trigger_cluster_logs_probe(
                     &peer.node_id,

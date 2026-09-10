@@ -10,7 +10,7 @@ use futures::StreamExt;
 use libp2p::{
     autonat, dcutr, gossipsub, identify, kad, mdns, noise, relay,
     request_response::{self, OutboundRequestId},
-    swarm::{NetworkBehaviour, SwarmEvent},
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm,
 };
 use std::{
@@ -218,7 +218,7 @@ fn announce_message_id(message: &gossipsub::Message) -> gossipsub::MessageId {
 struct DiscBehaviour {
     gossipsub: gossipsub::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
-    mdns: mdns::tokio::Behaviour,
+    mdns: Toggle<mdns::tokio::Behaviour>,
     identify: identify::Behaviour,
     relay: relay::client::Behaviour,
     dcutr: dcutr::Behaviour,
@@ -296,6 +296,7 @@ impl Discovery {
             }
         }
 
+        let mdns_enabled = network.advertised_host().is_none();
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -325,8 +326,11 @@ impl Discovery {
                     kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
                 kademlia.set_mode(Some(kad::Mode::Server));
 
-                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
-                    .expect("mdns init");
+                let mdns = mdns_enabled
+                    .then(|| mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id))
+                    .transpose()
+                    .expect("mdns init")
+                    .into();
 
                 let identify = identify::Behaviour::new(identify::Config::new(
                     "/pom/1.0.0".to_string(),

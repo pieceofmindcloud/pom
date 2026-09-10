@@ -618,7 +618,10 @@ Agora, com um pin como `100.122.132.97:42777`:
   usam um único endpoint canônico, e o warm-up gossipsub registra somente a
   multiaddr correspondente;
 - listen addresses recebidos via Identify não entram em Kademlia; entradas
-  antigas do mesmo evento são removidas, e mDNS é ignorado quando há pin.
+  antigas do mesmo evento são removidas. O boot seguinte também não constrói o
+  comportamento mDNS quando há pin, porque o próprio mDNS emitia os logs
+  `discovered/expired peer on address` antes de o handler poder ignorar o
+  evento. Sem pin, a descoberta LAN continua disponível.
 
 A política preserva múltiplos candidatos apenas para o caminho UDP de controle
 quando não há pin e para compatibilidade com anúncios antigos. Não há mais

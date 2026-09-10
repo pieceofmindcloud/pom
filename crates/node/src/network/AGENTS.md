@@ -215,7 +215,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
   anunciado) e registra somente o endpoint canônico como multiaddress
   `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS descobre na LAN e
-  só alimenta Kademlia sem pin; Identify não grava `listen_addrs` no livro de
+  só é construído quando não há `advertise_addr` pinado; com pin, nem o
+  comportamento mDNS roda. Identify não grava `listen_addrs` no livro de
   endereços e, para relays conectados, escuta no
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop

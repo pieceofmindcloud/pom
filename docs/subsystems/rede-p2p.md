@@ -401,8 +401,9 @@ ociosidade; a decisão usa a atividade local registrada e o monitor existente.
   administrativa: concessões e comandos continuam exigindo a chave Ed25519 e a
   cadeia local.
 - **mDNS:** descoberta na LAN que alimenta o endereço da Kademlia e diala o peer
-  somente quando não há `advertise_addr` fixado. Com pin, endereços LAN do mDNS
-  são ignorados para evitar churn fora do endpoint configurado.
+  somente quando não há `advertise_addr` fixado. Com pin, o comportamento nem
+  é construído, evitando churn e os eventos de descoberta fora do endpoint
+  configurado.
 - **Identify:** não transforma `listen_addrs` do remoto em candidatos da
   Kademlia. Essa lista é a interface de escuta do processo, não o contrato de
   endpoint do cluster, e pode conter LAN, bridge Docker e endereços Tailscale

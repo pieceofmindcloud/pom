@@ -1042,7 +1042,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o ticket desconhecido vira `410` e nunca cai no token seguinte.
 - `StreamTicket`/`deliver_stream` - canal mpsc limitado a 16 lotes; um emissor
   remoto aguarda o receptor quando a fila enche, e `Drop` remove o ticket para
-  que cancelamento, stop, ciclo ou erro não deixem entregas pendentes.
+  que cancelamento, stop, ciclo ou erro não deixem entregas pendentes. O par
+  producer/emitter também é encerrado junto: se a entrega detecta que o
+  gateway sumiu, `run_remote_stream_tasks` aborta o producer em vez de deixar
+  a sessão de KV e a admissão do scheduler vivas até o próximo timeout.
 - `DirectReply::new(inbox, urls)` - `None` quando o nó não conhece nenhum
   endereço de si mesmo; aí o anel assume em vez de despachar quadro que nunca
   volta.

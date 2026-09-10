@@ -470,12 +470,13 @@ pub(crate) async fn handle_step_stream(
     // The queue is bounded, so a persistently slow callback still applies
     // backpressure instead of growing memory without limit.
     let (producer_tx, producer_rx) = mpsc::channel(64);
-    tokio::spawn(async move {
+    let producer = async move {
         let _load_guard = loads.acquire(&load_node_id).await;
         let producer = remote_stream_producer(app, meta, dtype, producer_tx);
         let emitter = remote_stream_emitter(reply_to, producer_rx, stream_started);
-        let _ = tokio::join!(producer, emitter);
-    });
+        run_remote_stream_tasks(producer, emitter).await;
+    };
+    tokio::spawn(producer);
 
     match wire::encode(
         &json!({"stream_accepted": true, "processing_ms": 0, "node_timings": {}}),
@@ -489,6 +490,35 @@ pub(crate) async fn handle_step_stream(
         )
             .into_response(),
         Err(error) => err500(error),
+    }
+}
+
+/// Keep the producer and emitter coupled for the lifetime of one stream.
+///
+/// The HTTP control request returns as soon as the stream is accepted, so a
+/// client disconnect cannot cancel the task that owns the autoregressive
+/// loop. If the emitter notices a gone gateway first, waiting on a plain
+/// `join!` would leave that loop running until its next callback or until the
+/// inference timeout. Aborting the producer at that boundary releases its
+/// scheduler admission and its generation KV promptly. When the producer
+/// finishes normally, the emitter is still allowed to drain the bounded
+/// queue and deliver the final token.
+async fn run_remote_stream_tasks<P, E>(producer: P, emitter: E)
+where
+    P: std::future::Future<Output = ()> + Send + 'static,
+    E: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut producer = tokio::spawn(producer);
+    let mut emitter = tokio::spawn(emitter);
+
+    tokio::select! {
+        _ = &mut producer => {
+            let _ = emitter.await;
+        }
+        _ = &mut emitter => {
+            producer.abort();
+            let _ = producer.await;
+        }
     }
 }
 
@@ -1038,6 +1068,35 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
 #[cfg(test)]
 mod remote_stream_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn emissor_para_quando_a_entrega_termina_antes_do_produtor() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        struct DropSignal(Arc<AtomicBool>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let producer_dropped = Arc::new(AtomicBool::new(false));
+        let producer_guard = DropSignal(producer_dropped.clone());
+        let producer = async move {
+            let _guard = producer_guard;
+            std::future::pending::<()>().await;
+        };
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            run_remote_stream_tasks(producer, async {}),
+        )
+        .await
+        .expect("a entrega encerrada deve cancelar o produtor");
+        assert!(producer_dropped.load(Ordering::Acquire));
+    }
 
     fn token(token_id: u32, text: &str, done: bool) -> RemoteStreamItem {
         token_state(token_id, text, done, false, false, None)

@@ -497,7 +497,10 @@ tradicionais:
   min e a entrega tem teto de 500 ms por tentativa, então uma rota que engole
   SYN não é repetida a cada lote. EOS e erro enviam
    um lote terminal; stop, limite, ciclo e cancelamento removem o ticket e
-   fazem uma entrega atrasada receber `410 Gone`. Em plano MTP fatiado, o
+   fazem uma entrega atrasada receber `410 Gone`. Se o emitter detectar esse
+   `410` ou uma falha de entrega, ele encerra junto o producer do head remoto,
+   liberando a sessão de KV e a admissão do scheduler em vez de deixar uma
+   geração órfã rodando até um timeout. Em plano MTP fatiado, o
    control frame inicial leva `speculate.source="mtp"`; a cauda devolve
    `next_draft` no mesmo callback e o head instala o draft no próximo `step`
    interno. O callback também informa `speculated`, `speculation_active` e

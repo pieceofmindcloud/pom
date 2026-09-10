@@ -16,6 +16,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
+        .route(crate::quic_policy::QUIC_POLICY_PATH, get(cluster_quic))
         .route(
             crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
             get(cluster_logs_policy),
@@ -389,6 +390,15 @@ pub(super) async fn cluster_tls(
 ) -> impl IntoResponse {
     Json(serde_json::json!({
         "tls_required": state.auth.read().await.tls_required,
+    }))
+}
+
+pub(super) async fn cluster_quic(
+    _auth: crate::auth::ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "quic_enabled": state.auth.read().await.quic_enabled,
     }))
 }
 

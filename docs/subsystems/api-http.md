@@ -348,6 +348,11 @@ não estão no router principal e só existem antes da configuração inicial.
   principal e rebaixar o cluster para texto claro.
   Ver `rede-p2p.md`, seção 5.
 
+- **`GET /api/cluster/quic`** - `{ quic_enabled }`. É a fonte autenticada da
+  preferência HTTP/3 consultada pelos peers quando o campo `quic` do Announce
+  dispara a catraca. Não aceita o anúncio como política e exige a mesma
+  `connection_key` compartilhada.
+
 ### OpenAI (`/v1/*`)
 
 Camada de protocolo pura sobre `gateway::generate_stream_with_stops`.
@@ -758,6 +763,17 @@ altera o console. O principal poda `cluster_logs` periodicamente, mantendo os
 últimos sete dias e no máximo 500.000 linhas, o que ocorrer primeiro. A poda
 em lotes e a recuperação do WAL não alcançam `audit_requests`,
 `audit_request_hops` nem `audit_prompt_fts*`.
+**`POST /api/ui/network/quic`** - corpo `{ quic_enabled: bool }`, liga ou
+desliga a preferência HTTP/3 sobre QUIC para novos hops de inferência. Só o
+principal pode alterar; não há reinício e peers adotam a decisão pela catraca
+autenticada. `GET /api/ui/node` devolve `quic_enabled` e `quic_authority` para
+a tela distinguir estado de autoridade. Falha de negociação mantém o caminho
+TCP e aparece como fallback na telemetria.
+
+**`GET /api/cluster/logs`** - exige `ConnectionAuth` e devolve
+`{ logs_enabled }`. É a fonte autenticada que os nós consultam quando o campo
+`cluster_logs_enabled` do anúncio dispara a catraca; não aceita o anúncio como
+política.
 
 **`POST /api/ui/network/logs`** - corpo `{ logs_enabled: bool }`, liga ou
 desliga a captura e o envio do log de processo do cluster em tempo real. Só o

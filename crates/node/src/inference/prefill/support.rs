@@ -810,7 +810,7 @@ impl TransportSummary {
 impl TransportTrace {
     pub(super) fn from_sent(sent: &crate::relay::SentFrame) -> Self {
         Self {
-            transport: sent.transport,
+            transport: sent.telemetry_transport(),
             fallback: sent.transport_fallback,
             round_trip_ms: sent.round_trip_ms,
             bytes_sent: sent.bytes_sent,

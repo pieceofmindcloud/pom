@@ -705,7 +705,7 @@ global do mapa de canais. Cada quadro, nas duas direções:
   **daquele quadro** - o canal continua servindo os seguintes.
 
 **Degradação.** Falha de transporte no canal não mata a geração: a chamada volta
-pela escada de sempre (túnel libp2p, depois HTTPS por requisição) com
+pela escada de sempre (túnel libp2p, depois HTTP ou HTTPS por requisição) com
 `transport_fallback=true`, e o canal morto sai do pool. Um destino cuja abertura
 falhou fica 5 min em quarentena, o mesmo prazo da memória de rotas, para a
 tentativa de abrir não se pagar por ficha num cluster onde o endereço direto não
@@ -728,6 +728,30 @@ tarefa leitora observa ACKs tardios e falhas. Se a abertura ou o uso do canal fa
 `remote_stream_transport_fallback` e
 `remote_stream_transport_fallback_reason`; a troca fica visível e não é
 confundida com o nome agregado do transporte.
+
+### 2.2 HTTP/3 opcional sobre QUIC
+
+Quando `Config.quic_enabled` está ligado pelo principal, os novos hops de
+estado oculto e as entregas diretas de retorno preferem HTTP/3 sobre QUIC. O
+endpoint usa a mesma porta numérica da inferência TCP, mas UDP e TCP podem
+coexistir; o servidor HTTP/3 fica preparado desde o arranque para que virar a
+preferência não reinicie o modelo nem interrompa uma chamada em voo. Cada
+request abre um stream independente da conexão QUIC por peer e URL, e a sessão
+fica no pool para permitir multiplexação futura.
+
+QUIC sempre negocia TLS 1.3 próprio e valida o certificado Ed25519 contra o
+`node_id`; por isso `quic` é cifrado mesmo com `tls_required=false`. Se a
+negociação falhar, o peer ainda não oferecer HTTP/3 ou a rota responder 404/405,
+o mesmo frame é tentado no TCP escolhido pela política TLS: `http://` quando ela
+está desligada e `https://` quando ligada. O caminho de fallback conserva a
+execução e publica `transport_fallback=true`; uma recusa HTTP de inferência
+fora desses códigos continua sendo final.
+
+Em `hop_timings` e no `transport_summary`, o campo `transport` representa o
+fio real e é limitado a `http`, `https` e `quic` para esses hops. O detalhe
+interno do link persistente não aparece como uma quarta camada: é normalizado
+para `http` ou `https`. O campo `tls` fica verdadeiro para QUIC porque o TLS
+1.3 pertence ao próprio protocolo, independentemente do interruptor TCP.
 
 **Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
 `Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,
@@ -1567,7 +1591,7 @@ chunk reaproveita um prefixo. `direct_lab.rs` recusa chunks posteriores sem
 **Telemetria** (`direct::hop_entry`/`accumulate`/`record_transport`): cada hop
 descreve a si mesmo na ida e o chamador envia uma evidência separada da
 travessia. `transport_traversals` contém uma entrada por chamada, em ordem,
-com `transport` (`local`, `libp2p-tunnel` ou `https`), `transport_fallback`,
+com `transport` (`local`, `libp2p-tunnel`, `http`, `https` ou `quic`), `transport_fallback`,
 tempo e bytes enviados e recebidos. O trace copia cada entrada para o hop e
 fase correspondentes, sem lançar o residual no primeiro hop. O resultado não
 espera recibos atrasados: se uma evidência ainda não chegou, o pedido segue com
@@ -2007,7 +2031,7 @@ cada travessia, e eles aparecem numa linha própria da tabela de telemetria do
 Chat.
 
 - **`transport_summary`** - resumo limitado das travessias deste hop, agrupado
-  por transporte (`local`, `libp2p-tunnel`, `https`, `https-link`,
+  por transporte (`local`, `libp2p-tunnel`, `http`, `https`, `quic`,
   `remote-stream` ou `unknown`). Cada entrada
   informa chamadas, bytes enviados e recebidos, RTT mínimo, mediana, p95 e
   máximo, além de quantas chamadas chegaram por fallback naquele transporte.
@@ -2047,10 +2071,10 @@ cifra do record layer, diluída dentro de `response_body_ms` e não separável s
 instrumentar o socket; a tela nomeia essa limitação em vez de inventar uma
 coluna.
 
-**`https-link` é o canal persistente da seção 2.1.** Ele é o mesmo HTTPS
-pinado - `tls` segue a política do cluster, como em `https` -, mas uma
+**O canal persistente da seção 2.1 não é um transporte público separado.** Ele
+usa o mesmo HTTP ou HTTPS pinado - `tls` segue a política do cluster -, mas uma
 travessia por ali não abriu requisição: o quadro entrou num corpo já aberto.
-Uma travessia que aparece como `https` ou `libp2p-tunnel` com
+Uma travessia que aparece como `http` ou `https` com
 `transport_fallback=true` num hop que anuncia `transport/link-v1` é o canal
 tendo falhado e a geração tendo continuado - que é o comportamento pedido, não
 um defeito. `tls_handshake_ms` fica zero nas travessias do canal pelo mesmo

@@ -80,6 +80,9 @@ pub fn plain_action(path: &str) -> PlainAction {
 #[derive(Clone)]
 pub struct TlsServer {
     pub config: Arc<rustls::ServerConfig>,
+    /// Configuração TLS 1.3 embutida no endpoint HTTP/3, sempre disponível
+    /// quando a identidade do nó pôde ser derivada.
+    pub quic_config: Option<Arc<h3_quinn::quinn::ServerConfig>>,
     /// O que fazer com texto claro remoto quando a política está ligada.
     pub plain: PlainPolicy,
     /// Com `true`, texto claro de fora do loopback é recusado.
@@ -101,8 +104,16 @@ impl TlsServer {
         strict: bool,
         sans: &[String],
     ) -> Result<Self> {
+        let quic_config = match crate::quic::server_config(id) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                warn!("endpoint HTTP/3 indisponível, mantendo TCP: {error}");
+                None
+            }
+        };
         Ok(Self {
             config: crate::tls::server_config(id, sans)?,
+            quic_config,
             plain: PlainPolicy::Redirect,
             strict: Arc::new(AtomicBool::new(strict)),
             last_handshake_ms: Arc::new(AtomicU64::new(0)),
@@ -213,6 +224,21 @@ pub async fn serve_with_shutdown(
     tls: Option<TlsServer>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
+    let quic_shutdown = Arc::new(tokio::sync::Notify::new());
+    let quic_task = tls
+        .as_ref()
+        .and_then(|server| server.quic_config.clone())
+        .and_then(|config| {
+            let port = listener.local_addr().ok()?.port();
+            let router = app.clone();
+            let stop = quic_shutdown.clone();
+            Some(tokio::spawn(async move {
+                crate::quic::serve(port, router, config, async move {
+                    stop.notified().await;
+                })
+                .await
+            }))
+        });
     let acceptor = tls
         .as_ref()
         .map(|t| tokio_rustls::TlsAcceptor::from(t.config.clone()));
@@ -261,6 +287,14 @@ pub async fn serve_with_shutdown(
     {
         warn!("conexões ainda vivas depois de {DRAIN_DEADLINE:?}; encerrando");
         conns.shutdown().await;
+    }
+    quic_shutdown.notify_waiters();
+    if let Some(task) = quic_task {
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}"),
+            Err(error) => warn!("task HTTP/3 terminou de forma inesperada: {error}"),
+        }
     }
     Ok(())
 }

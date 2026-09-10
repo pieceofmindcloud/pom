@@ -1016,17 +1016,19 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
   também identifica `transport` (`local`, `libp2p-tunnel`, `https`,
-  `https-link` ou `remote-stream`) e se o transporte usado foi fallback depois
-  de falha de outro.
+`http`, `https`, `quic` ou `remote-stream`). O detalhe interno
+`https-link` é normalizado para `http`/`https` na telemetria. O campo
+`transport_fallback` denuncia quando a chamada desceu a escada depois de
+falha de transporte.
 - `send_batch_body` é o único ponto por onde todo lote remoto passa, inclusive
   as ativações `remote_stream` que não podem ser agrupadas com uma sessão
   diferente. É ali que a escada de transporte vive, nesta ordem: canal
-  persistente (`link::send_batch`, quando o hop anuncia
-  `transport/link-v1`), túnel libp2p, HTTPS por requisição. Cada degrau só é
-  usado depois de o anterior falhar por **transporte**; uma recusa HTTP do peer
-  é final em qualquer degrau, porque trocar de via não muda uma resposta
-  considerada. O degrau usado vira `transport`, e ter descido a escada vira
-  `transport_fallback`.
+  persistente (`link::send_batch`, quando QUIC está desligado e o hop anuncia
+  `transport/link-v1`), túnel libp2p, QUIC quando a política está ligada e
+  HTTP/HTTPS por requisição. Cada degrau só é usado depois de o anterior falhar
+  por **transporte**; uma recusa HTTP do peer é final, exceto 404/405 no QUIC,
+  que significam peer sem a rota HTTP/3. O degrau usado vira `transport`, e
+  ter descido a escada vira `transport_fallback`.
 - O transporte por requisição tenta o túnel libp2p/Noise antes do cliente HTTP
   pinado;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de

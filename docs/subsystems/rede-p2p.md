@@ -454,13 +454,17 @@ Comportamento atual do código:
    hop anuncia `transport/libp2p-tunnel-v1` e um `PeerId` válido. O túnel é
    protegido por Noise e leva a credencial da inferência até o loopback do
    destino. Se ele estiver indisponível ou falhar por transporte, o mesmo
-   quadro segue pelo cliente direto pinado, usando HTTPS quando TLS está ativo.
+   quadro segue pelo cliente direto pinado, usando QUIC quando a preferência está
+   ativa, ou HTTP quando TLS está desligado e HTTPS quando está ativo.
    Antes de cada envio, o swarm reidrata uma única multiaddress TCP a partir do
    endpoint canônico levado pelo plano quando disponível, ou do primeiro
    endereço válido do anúncio vivo como fallback, quando ainda não há conexão.
    Com `advertise_addr`, esse endpoint é o único publicado; não existe chamada
    a `Swarm::add_external_address` que substitua ou complemente os listen
    addresses do Identify. Isso cobre a janela em que o
+   Antes de cada envio, o swarm reidrata as multiaddresses TCP a partir dos
+   candidatos UDP levados pelo plano quando disponíveis, ou do anúncio vivo
+   como fallback, quando ainda não há conexão. Isso cobre a janela em que o
    gateway já conhece o `PeerId`, mas o evento gossipsub ainda não registrou um
    endereço no livro de endereços do libp2p.
    Uma resposta HTTP explícita do peer não é repetida em outro transporte.
@@ -624,6 +628,26 @@ rede partida nunca rebaixam o cluster.
 clientes, muda o que o anúncio diz e liga/desliga a recusa de texto claro. Os
 demais nós adotam dentro de um ciclo de gossip (5 s), e o operador pode virar
 quantas vezes quiser.
+
+### 5.1 QUIC opcional para a inferência
+
+`Config.quic_enabled` é uma preferência network-wide, desligada por padrão e
+editável somente pelo principal em `POST /api/ui/network/quic`. O anúncio leva
+`quic` apenas como gatilho: o peer confirma o valor em
+`GET /api/cluster/quic`, autenticado pela `connection_key`, exatamente como a
+catraca de TLS. Falha na consulta preserva o valor local. A troca é atômica e
+vale somente para chamadas novas; conexões e inferências em andamento não são
+interrompidas.
+
+Quando ligada, a porta de inferência também escuta HTTP/3 sobre QUIC na mesma
+porta numérica do TCP. Quinn negocia TLS 1.3 próprio e o cliente fixa o
+certificado Ed25519 do `node_id`; portanto QUIC permanece cifrado mesmo quando
+`tls_required` está desligado. A política TLS continua escolhendo apenas
+`http://` ou `https://` para o fallback TCP. Se o peer não tiver endpoint QUIC,
+a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e marca
+`transport_fallback`. A telemetria por hop publica o transporte efetivo como
+`http`, `https` ou `quic`; o túnel libp2p continua fora dessa chave porque usa
+Noise.
 
 ## Logs de processo do cluster
 

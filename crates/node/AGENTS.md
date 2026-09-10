@@ -18,7 +18,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
   `socket2`, `tower-http` (compression-full), `rusqlite` bundled para a
   auditoria persistente, `arc-swap` para snapshots lock-free do contexto de
-  captura de logs, `routing-contract` (path).
+  captura de logs, `h3`/`h3-quinn`/`quinn` para o HTTP/3 opcional dos hops de
+  inferência, `routing-contract` (path).
 - O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
   runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.

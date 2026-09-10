@@ -1094,6 +1094,19 @@ network.publicName,Public name,Nome público
 network.publicNameRequired,Required for a public network,Obrigatório para uma rede pública
 network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
 network.readOnly,Read-only,Somente leitura
+network.quicDisable,Turn QUIC off,Desligar QUIC
+network.quicDisabled,QUIC turned off,QUIC desligado
+network.quicEnable,Turn QUIC on,Ligar QUIC
+network.quicEnabled,QUIC turned on,QUIC ligado
+network.quicFailed,Could not change the QUIC policy,Não deu para mudar a política de QUIC
+network.quicHowItWorks,"When on, new inference hops prefer HTTP/3 over QUIC. QUIC always includes TLS 1.3 and falls back to HTTP or HTTPS if a peer cannot use it.","Ligado, novos hops de inferência preferem HTTP/3 sobre QUIC. QUIC sempre inclui TLS 1.3 e recua para HTTP ou HTTPS se um peer não puder usá-lo."
+network.quicNotAuthority,Only the main node decides this preference.,Só o nó principal decide esta preferência.
+network.quicOff,disabled,desligado
+network.quicOn,HTTP/3 over QUIC,HTTP/3 sobre QUIC
+network.quicPropagates,No restart needed. Peers adopt the preference after confirming it with the main node.,Não precisa reiniciar. Os peers adotam a preferência depois de confirmá-la com o principal.
+network.quicState,Transport,Transporte
+network.quicSubtitle,"Prefer HTTP/3 for inference hops while keeping HTTP/HTTPS fallback available.","Preferir HTTP/3 nos hops de inferência mantendo o fallback HTTP/HTTPS disponível."
+network.quicTitle,QUIC transport,Transporte QUIC
 network.rejoin,Rejoin network,Voltar para a rede
 network.relinquishNode,Become an infer node,Virar um nó infer
 network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."

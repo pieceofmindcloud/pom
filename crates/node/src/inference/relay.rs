@@ -87,13 +87,15 @@ const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
 pub enum InferenceTransport {
     Local,
     Libp2pTunnel,
+    Http,
     Https,
+    Quic,
     /// The remote decode stream's callback transport. It carries batches
     /// rather than one request/response per generated token.
     RemoteStream,
     /// A ligação persistente entre andares (`transport/link-v1`): o mesmo
-    /// HTTPS pinado, mas um corpo em fluxo que carrega quadros sucessivos em
-    /// vez de uma requisição por ativação.
+    /// HTTP ou HTTPS pinado, mas um corpo em fluxo que carrega quadros
+    /// sucessivos em vez de uma requisição por ativação.
     HttpsLink,
     Unknown,
 }
@@ -103,7 +105,9 @@ impl InferenceTransport {
         match self {
             Self::Local => "local",
             Self::Libp2pTunnel => "libp2p-tunnel",
+            Self::Http => "http",
             Self::Https => "https",
+            Self::Quic => "quic",
             Self::RemoteStream => "remote-stream",
             Self::HttpsLink => "https-link",
             Self::Unknown => "unknown",
@@ -114,11 +118,21 @@ impl InferenceTransport {
         match value {
             "local" => Self::Local,
             "libp2p-tunnel" => Self::Libp2pTunnel,
+            "http" => Self::Http,
             "https" => Self::Https,
+            "quic" => Self::Quic,
             "remote-stream" => Self::RemoteStream,
             "https-link" => Self::HttpsLink,
             _ => Self::Unknown,
         }
+    }
+}
+
+fn tcp_transport_for_url(url: &str) -> InferenceTransport {
+    if url.starts_with("https://") {
+        InferenceTransport::Https
+    } else {
+        InferenceTransport::Http
     }
 }
 
@@ -159,7 +173,7 @@ pub struct SentFrame {
     /// Transporte escolhido para esta travessia, sem agregar os hops
     /// seguintes.
     pub transport: InferenceTransport,
-    /// True quando HTTPS foi usado depois de uma falha de transporte no túnel.
+    /// True quando o transporte preferido falhou e o frame usou uma reserva.
     pub transport_fallback: bool,
     /// Motivo da queda para HTTPS, preservado para a UI e para o relatório de
     /// diagnóstico. `None` no caminho normal ou quando não houve fallback.
@@ -469,12 +483,24 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
 }
 
 impl SentFrame {
+    /// O canal persistente é uma otimização do hop HTTP, não um transporte
+    /// observável separado. A telemetria pública informa a camada que cifrou
+    /// o tráfego, mantendo `HttpsLink` apenas para a bancada interna.
+    pub fn telemetry_transport(&self) -> InferenceTransport {
+        match self.transport {
+            InferenceTransport::HttpsLink if self.tls => InferenceTransport::Https,
+            InferenceTransport::HttpsLink => InferenceTransport::Http,
+            transport => transport,
+        }
+    }
+
     /// This hop's own contribution to a bubbled-back `hop_timings` array:
     /// what the *caller* observed of the round trip (`self`'s fields)
     /// combined with what the *callee* reported about itself in its own
     /// reply meta (`processing_ms`, `node_timings` — already present in
     /// every reply today, hub or ring). One entry, for the peer just called.
     pub fn as_hop_timing_entry(&self) -> Value {
+        let transport = self.telemetry_transport().as_str();
         json!({
             "round_trip_ms": self.round_trip_ms,
             "processing_ms": self.meta.get("processing_ms").cloned().unwrap_or(json!(0)),
@@ -490,7 +516,7 @@ impl SentFrame {
             "connection_state": self.connection_state.as_str(),
             "tls": self.tls,
             "tls_handshake_ms": self.tls_handshake_ms,
-            "transport": self.transport.as_str(),
+            "transport": transport,
             "transport_fallback": self.transport_fallback,
             "transport_fallback_reason": self.transport_fallback_reason,
             "profiling_spans": self.profiling_spans,
@@ -820,8 +846,8 @@ async fn send_frame_with_protocol(
     use_batch_frame: bool,
     attempts: u32,
     peer_label: &str,
-    transport_fallback: bool,
-    transport_fallback_reason: Option<String>,
+    mut transport_fallback: bool,
+    mut transport_fallback_reason: Option<String>,
     mut on_issue: impl FnMut(SendIssue),
     session_id: Option<&str>,
 ) -> Result<SentFrame> {
@@ -856,6 +882,101 @@ async fn send_frame_with_protocol(
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
             let started = Instant::now();
+            if clients.quic_enabled() {
+                match clients
+                    .quic_post(
+                        peer_id,
+                        &base,
+                        path,
+                        body.clone(),
+                        session_id,
+                        DIRECT_FRAME_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(response) if response.status.is_success() => {
+                        let client_decode_started = Instant::now();
+                        let (meta, tensor) = wire::decode(&response.body)?;
+                        let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+                        let hidden_state_bytes_received = received_hidden_state_bytes(
+                            &meta,
+                            tensor
+                                .as_ref()
+                                .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                            dtype,
+                            peer_label,
+                        )?;
+                        let received_at = Instant::now();
+                        let profiling_spans = profile_transport_spans(
+                            profile_context_for_path(&meta, peer_label, path, started).as_ref(),
+                            "quic",
+                            started,
+                            started,
+                            received_at,
+                            received_at,
+                        );
+                        clients.remember_route_success(&route_key, &base);
+                        return Ok(SentFrame {
+                            meta,
+                            tensor,
+                            // HTTP/3 always carries TLS 1.3 inside QUIC, even
+                            // when the separate TCP TLS preference is off.
+                            tls: true,
+                            tls_handshake_ms: 0,
+                            round_trip_ms: started.elapsed().as_millis() as u64,
+                            bytes_sent: body.len() as u64,
+                            bytes_received: response.body.len() as u64,
+                            hidden_state_bytes_sent,
+                            hidden_state_bytes_received,
+                            hidden_state_dtype: dtype,
+                            client_encode_ms,
+                            response_headers_ms: response.response_headers_ms,
+                            response_body_ms: response.response_body_ms,
+                            client_decode_ms,
+                            connection_state: crate::peer_client::ConnectionState::Unknown,
+                            transport: InferenceTransport::Quic,
+                            transport_fallback,
+                            transport_fallback_reason,
+                            profiling_spans,
+                        });
+                    }
+                    Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
+                        transport_fallback = true;
+                        transport_fallback_reason = Some(match transport_fallback_reason.take() {
+                            Some(previous) => format!("{previous}; quic: HTTP {}", response.status),
+                            None => format!("quic: HTTP {}", response.status),
+                        });
+                        on_issue(SendIssue {
+                            kind: SendIssueKind::Transport,
+                            attempt,
+                            message: format!("QUIC HTTP/3 não suportado: {}", response.status),
+                        });
+                        warn!("peer {peer_label} recusou a rota HTTP/3, usando TCP");
+                    }
+                    Ok(response) => {
+                        return Err(anyhow::Error::new(HttpRefusal {
+                            status: response.status.as_u16(),
+                            body: String::from_utf8_lossy(&response.body).into_owned(),
+                            peer_label: peer_label.to_string(),
+                        }));
+                    }
+                    Err(error) => {
+                        transport_fallback = true;
+                        transport_fallback_reason = Some(match transport_fallback_reason.take() {
+                            Some(previous) => format!("{previous}; quic: {error}"),
+                            None => format!("quic: {error}"),
+                        });
+                        on_issue(SendIssue {
+                            kind: SendIssueKind::Transport,
+                            attempt,
+                            message: format!("QUIC: {error}"),
+                        });
+                        warn!(
+                            "chamada QUIC para {peer_label} em {base} falhou ({error}), usando TCP"
+                        );
+                    }
+                }
+            }
             let request = http
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -877,9 +998,10 @@ async fn send_frame_with_protocol(
                     let bytes = r.bytes().await?;
                     let response_body_ms = response_body_started.elapsed().as_millis() as u64;
                     let response_received_at = Instant::now();
+                    let transport = tcp_transport_for_url(&url);
                     let profiling_spans = profile_transport_spans(
                         profile_context_for_path(meta, peer_label, path, started).as_ref(),
-                        "https",
+                        transport.as_str(),
                         started,
                         started,
                         response_headers_at,
@@ -929,7 +1051,7 @@ async fn send_frame_with_protocol(
                         response_body_ms,
                         client_decode_ms,
                         connection_state,
-                        transport: InferenceTransport::Https,
+                        transport,
                         transport_fallback,
                         transport_fallback_reason,
                         profiling_spans,
@@ -1103,12 +1225,14 @@ async fn send_batch_body(
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
     let mut transport_fallback_reason = None;
+    let mut transport_fallback = false;
 
     // A ligação persistente vem antes porque é a única que não reconstrói a
     // abstração de chamada por ativação. Quando ela não serve - peer sem a
     // capability, endereço direto inalcançável, canal caído - a chamada segue
     // pela escada de sempre e o `transport_fallback` diz que isso aconteceu.
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
+        && !clients.quic_enabled()
         && !crate::infer_tunnel::is_local_node(&step.node_id)
     {
         match crate::link::send_batch_with_session_profile(
@@ -1135,6 +1259,8 @@ async fn send_batch_body(
                     client_decode_ms: 0,
                     connection_state: crate::peer_client::ConnectionState::Unknown,
                     tls: step.inference_url.starts_with("https://"),
+                    // Preserve the internal distinction for the link lab;
+                    // `as_hop_timing_entry` exposes http/https to operators.
                     transport: InferenceTransport::HttpsLink,
                     transport_fallback: false,
                     transport_fallback_reason: None,
@@ -1164,14 +1290,21 @@ async fn send_batch_body(
         )
         .await
         {
-            Ok(response) => return Ok(response),
+            Ok(mut response) => {
+                if let Some(reason) = transport_fallback_reason.take() {
+                    response.transport_fallback = true;
+                    response.transport_fallback_reason = Some(reason);
+                }
+                return Ok(response);
+            }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
                 transport_fallback_reason = Some(match transport_fallback_reason.take() {
                     Some(previous) => format!("{previous}; libp2p-tunnel: {error}"),
                     None => format!("libp2p-tunnel: {error}"),
                 });
-                warn!("{peer_label}: libp2p batch falhou ({error}), tentando HTTPS direto")
+                transport_fallback = true;
+                warn!("{peer_label}: libp2p batch falhou ({error}), tentando HTTP direto")
             }
         }
     }
@@ -1200,6 +1333,71 @@ async fn send_batch_body(
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
             let started = Instant::now();
+            if clients.quic_enabled() {
+                match clients
+                    .quic_post(
+                        &step.node_id,
+                        &base,
+                        path,
+                        body.to_vec(),
+                        session_id,
+                        DIRECT_FRAME_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(response) if response.status.is_success() => {
+                        wire::validate_batch_bytes(&response.body)?;
+                        let received_at = Instant::now();
+                        let profiling_spans = profile_transport_spans(
+                            profiling.as_ref(),
+                            "quic",
+                            started,
+                            started,
+                            received_at,
+                            received_at,
+                        );
+                        clients.remember_route_success(&route_key, &base);
+                        return Ok(BatchTransportResponse {
+                            body: response.body,
+                            round_trip_ms: started.elapsed().as_millis() as u64,
+                            bytes_sent: body.len() as u64,
+                            client_encode_ms,
+                            response_headers_ms: response.response_headers_ms,
+                            response_body_ms: response.response_body_ms,
+                            client_decode_ms: 0,
+                            tls: true,
+                            connection_state: crate::peer_client::ConnectionState::Unknown,
+                            transport: InferenceTransport::Quic,
+                            transport_fallback,
+                            transport_fallback_reason,
+                            profiling_spans,
+                        });
+                    }
+                    Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
+                        transport_fallback = true;
+                        transport_fallback_reason = Some(match transport_fallback_reason.take() {
+                            Some(previous) => format!("{previous}; quic: HTTP {}", response.status),
+                            None => format!("quic: HTTP {}", response.status),
+                        });
+                        warn!("peer {peer_label} recusou a rota HTTP/3 do batch, usando TCP");
+                    }
+                    Ok(response) => {
+                        return Err(anyhow::Error::new(HttpRefusal {
+                            status: response.status.as_u16(),
+                            body: String::from_utf8_lossy(&response.body).into_owned(),
+                            peer_label: peer_label.to_string(),
+                        }));
+                    }
+                    Err(error) => {
+                        transport_fallback = true;
+                        transport_fallback_reason = Some(match transport_fallback_reason.take() {
+                            Some(previous) => format!("{previous}; quic: {error}"),
+                            None => format!("quic: {error}"),
+                        });
+                        warn!("{peer_label}: QUIC batch falhou ({error}), tentando TCP direto");
+                    }
+                }
+            }
             let request = client
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -1220,6 +1418,7 @@ async fn send_batch_body(
                     let bytes = response.bytes().await?.to_vec();
                     let response_body_ms = body_started.elapsed().as_millis() as u64;
                     let response_received_at = Instant::now();
+                    let transport = tcp_transport_for_url(&url);
                     let decode_started = Instant::now();
                     wire::validate_batch_bytes(&bytes)?;
                     let client_decode_ms = decode_started.elapsed().as_millis() as u64;
@@ -1234,12 +1433,12 @@ async fn send_batch_body(
                         client_decode_ms,
                         connection_state,
                         tls: url.starts_with("https://"),
-                        transport: InferenceTransport::Https,
-                        transport_fallback: transport_fallback_reason.is_some(),
+                        transport,
+                        transport_fallback,
                         transport_fallback_reason,
                         profiling_spans: profile_transport_spans(
                             profiling.as_ref(),
-                            "https",
+                            transport.as_str(),
                             started,
                             started,
                             response_headers_at,
@@ -1374,7 +1573,7 @@ pub struct RawPeerResponse {
     pub fallback: bool,
 }
 
-/// Envia bytes pelo HTTPS direto pinado e, se todos os endereços anunciados
+/// Envia bytes pelo HTTP(S) direto pinado e, se todos os endereços anunciados
 /// falharem por transporte, tenta o túnel libp2p. O caminho direto vem
 /// primeiro porque a coletiva TP espera a resposta HTTP dentro da barreira e
 /// um túnel indisponível não deve impor seu timeout antes de usar um endereço
@@ -2599,6 +2798,40 @@ mod tests {
 
         assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 1);
         assert_eq!(sent.meta["done"], true);
+    }
+
+    #[tokio::test]
+    async fn quic_falls_back_to_http_and_marks_the_real_transport() {
+        let port = spawn_fake_inference_server(|_body| {
+            (
+                200,
+                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        clients.set_quic(true);
+        let step = step_with(&format!("http://127.0.0.1:{port}"), false, None);
+
+        let sent = send_frame_or_tunnel(
+            &clients,
+            &step,
+            None,
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("HTTP deve assumir quando o peer não fala QUIC");
+
+        assert_eq!(sent.transport, InferenceTransport::Http);
+        assert!(sent.transport_fallback);
+        assert_eq!(sent.as_hop_timing_entry()["transport"], "http");
     }
 
     #[tokio::test]

@@ -42,6 +42,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow.workspace = true
 libc = "0.2"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-manual-roots"] }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+http = "1"
+bytes = "1"
 url = "2"
 axum = "0.7"
 # TLS entre peers: certificado auto assinado derivado da identidade do nó.

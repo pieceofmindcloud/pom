@@ -495,6 +495,17 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
             rtt_max_ms: 40,
             fallback_calls: 1,
           },
+          {
+            transport: "quic",
+            calls: 3,
+            bytes_sent: 300,
+            bytes_received: 600,
+            rtt_min_ms: 20,
+            rtt_median_ms: 25,
+            rtt_p95_ms: 30,
+            rtt_max_ms: 35,
+            fallback_calls: 0,
+          },
         ],
         transport_switches: [{ from: "local", to: "https", calls: 1 }],
       },
@@ -526,6 +537,7 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
     expect(screen.getByText(/local: 5001 chamadas/)).toBeTruthy();
     expect(screen.getByText(/RTT mínimo\/mediana\/p95\/máximo 10\/10\/10\/50 ms/)).toBeTruthy();
     expect(screen.getByText(/fallback total 1/)).toBeTruthy();
+    expect(screen.getByText(/quic: 3 chamadas/)).toBeTruthy();
     expect(screen.getByText(/troca de transporte local -> https \(1\)/)).toBeTruthy();
   });
 });

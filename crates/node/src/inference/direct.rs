@@ -457,7 +457,7 @@ impl DirectReply {
 fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value {
     json!({
         "hop_index": hop_index,
-        "transport": sent.transport.as_str(),
+        "transport": sent.telemetry_transport().as_str(),
         "transport_fallback": sent.transport_fallback,
         "transport_fallback_reason": sent.transport_fallback_reason,
         "round_trip_ms": sent.round_trip_ms,
@@ -948,6 +948,41 @@ async fn deliver_meta_at(
         } else {
             DELIVERY_TIMEOUT
         };
+        if http.quic_enabled() && reply_to.get("node_id").and_then(Value::as_str).is_some() {
+            match http
+                .quic_post(
+                    reply_to
+                        .get("node_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown"),
+                    &url,
+                    path,
+                    body.clone(),
+                    None,
+                    ceiling,
+                )
+                .await
+            {
+                Ok(response) if response.status.is_success() => {
+                    http.remember_route_success(&route_key, &url);
+                    return Delivery::Accepted;
+                }
+                Ok(response) if response.status == StatusCode::GONE => {
+                    debug!("gateway já havia desistido do quadro entregue em {target}");
+                    return Delivery::GatewayGone;
+                }
+                Ok(response) => {
+                    debug!(
+                        "{target} respondeu {} via QUIC; tentando TCP",
+                        response.status
+                    );
+                }
+                Err(error) => {
+                    last = format!("{target} via QUIC: {error}");
+                    debug!("fallback QUIC para entrega direta: {last}");
+                }
+            }
+        }
         let request = cliente
             .post(&target)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -1069,7 +1104,7 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
     hop["client_decode_ms"] = json!(sent.client_decode_ms);
     hop["tls"] = json!(sent.tls);
     hop["tls_handshake_ms"] = json!(sent.tls_handshake_ms);
-    hop["transport"] = json!(sent.transport.as_str());
+    hop["transport"] = json!(sent.telemetry_transport().as_str());
     hop["transport_fallback"] = json!(sent.transport_fallback);
 }
 
@@ -1309,6 +1344,42 @@ mod tests {
         );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(http.route_failure_streak(route_key, &url), 0);
+    }
+
+    #[tokio::test]
+    async fn resposta_direta_prefere_quic_no_canal_de_retorno() {
+        use axum::{body::Bytes, routing::post, Router};
+        use tokio::sync::oneshot;
+
+        let identity = crate::identity::Identity::generate();
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let router = Router::new().route(
+            RELAY_RESULT_PATH,
+            post(|_body: Bytes| async { StatusCode::OK }),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let server_config = crate::quic::server_config(&identity).unwrap();
+        let server = tokio::spawn(async move {
+            crate::quic::serve(port, router, server_config, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        http.set_quic(true);
+        let reply_to = json!({
+            "ticket": "quic-return-ticket",
+            "node_id": identity.node_id.0,
+            "urls": [format!("http://127.0.0.1:{port}")],
+        });
+        assert!(deliver_result(&http, &reply_to, json!({"done": true})).await);
+
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]

@@ -62,6 +62,10 @@ pub struct NodeInfo {
     /// decidir entre interruptor e leitura; a checagem que vale é a do
     /// `save_tls`, no servidor.
     pub tls_authority: bool,
+    /// Se o cluster prefere HTTP/3 sobre QUIC nos novos hops.
+    pub quic_enabled: bool,
+    /// Só o principal pode mudar a preferência QUIC.
+    pub quic_authority: bool,
     /// Se este nó recolhe e envia logs de processo do cluster.
     pub cluster_logs_enabled: bool,
     /// Só o principal pode mudar a política de logs.
@@ -88,7 +92,9 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         authority_fingerprint,
         advertise_addr,
         tls_required,
+        quic_enabled,
         tls_authority,
+        quic_authority,
         cluster_logs_authority,
         network_chat_authority,
         thermal,
@@ -116,6 +122,11 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .then(|| crate::admin_trust::fingerprint_of(&state.authority_principal.pubkey)),
             cfg.advertise_addr.clone(),
             cfg.tls_required,
+            cfg.quic_enabled,
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, cfg.profile)
+                == Some(crate::admin_trust::EffectiveAuthority::Primary),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
@@ -194,7 +205,9 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         advertise_addr,
         effective_address: state.network.announce_addr(),
         tls_required,
+        quic_enabled,
         tls_authority,
+        quic_authority,
         cluster_logs_enabled: state.network.cluster_logs_enabled(),
         cluster_logs_authority,
         network_chat_enabled: state.network.network_chat_enabled(),
@@ -1051,6 +1064,46 @@ pub(super) async fn save_advertise_addr(
 #[derive(Deserialize)]
 pub struct SaveTlsRequest {
     pub tls_required: bool,
+}
+
+#[derive(Deserialize)]
+pub struct SaveQuicRequest {
+    pub quic_enabled: bool,
+}
+
+pub(super) async fn save_quic(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveQuicRequest>,
+) -> Response {
+    if !local_is_primary(&state).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "só o nó principal decide o QUIC do cluster." })),
+        )
+            .into_response();
+    }
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.quic_enabled = req.quic_enabled;
+        if let Err(error) = cfg.save() {
+            return bad_request(format!(
+                "não deu para gravar {}: {error}",
+                crate::brand::config_filename()
+            ));
+        }
+    }
+    state.peer_http.set_quic(req.quic_enabled);
+    crate::peer_client::set_quic_ativo(req.quic_enabled);
+    info!(
+        "QUIC entre peers {} pela interface",
+        if req.quic_enabled {
+            "ligado"
+        } else {
+            "desligado"
+        }
+    );
+    Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
 }
 
 /// Liga ou desliga o TLS entre peers, para o cluster inteiro.

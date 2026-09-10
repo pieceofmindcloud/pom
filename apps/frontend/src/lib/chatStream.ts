@@ -244,7 +244,9 @@ export interface TransportSummaryEntry {
   transport:
     | "local"
     | "libp2p-tunnel"
+    | "http"
     | "https"
+    | "quic"
     // A ligação persistente entre andares: o mesmo HTTPS pinado, mas com o
     // quadro entrando num corpo já aberto em vez de numa requisição nova.
     | "https-link"

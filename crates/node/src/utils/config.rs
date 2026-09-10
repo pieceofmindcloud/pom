@@ -238,6 +238,8 @@ pub struct Config {
     /// `tls_policy`.
     #[serde(default)]
     pub tls_required: bool,
+    #[serde(default)]
+    pub quic_enabled: bool,
     /// Coleta de logs de processo para o nó principal. A decisão é do
     /// principal e os demais nós só adotam a resposta autenticada da catraca.
     #[serde(default)]
@@ -869,6 +871,7 @@ mod tests {
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
             cluster_logs_min_level: Default::default(),
@@ -964,6 +967,7 @@ mod tests {
             profile: crate::profile::NodeProfile::Node,
             setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
             cluster_logs_min_level: Default::default(),
@@ -1102,6 +1106,7 @@ mod tests {
             api_keys: vec![],
             blocked_nodes: vec![],
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
             cluster_logs_min_level: Default::default(),
@@ -1209,6 +1214,7 @@ mod tests {
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
             network_chat_enabled: false,
             cluster_logs_min_level: Default::default(),

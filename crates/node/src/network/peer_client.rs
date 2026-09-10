@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 /// argumento por dezenas de assinaturas para carregar um único bit que nunca
 /// difere entre eles. Dois nós no mesmo processo só acontecem em teste.
 static TLS_ATIVO: AtomicBool = AtomicBool::new(false);
+static QUIC_ATIVO: AtomicBool = AtomicBool::new(false);
 
 pub fn tls_ativo() -> bool {
     TLS_ATIVO.load(Ordering::Relaxed)
@@ -36,6 +37,14 @@ pub fn tls_ativo() -> bool {
 
 pub fn set_tls_ativo(on: bool) {
     TLS_ATIVO.store(on, Ordering::Relaxed);
+}
+
+pub fn quic_ativo() -> bool {
+    QUIC_ATIVO.load(Ordering::Relaxed)
+}
+
+pub fn set_quic_ativo(on: bool) {
+    QUIC_ATIVO.store(on, Ordering::Relaxed);
 }
 
 /// Esquema em vigor para falar com um peer.
@@ -103,6 +112,8 @@ pub fn peer_base_url(host: &str, port: u16, tls: bool) -> String {
 pub struct PeerClients {
     timeout: Duration,
     tls: Arc<AtomicBool>,
+    quic: Arc<AtomicBool>,
+    quic_pool: crate::quic::ClientPool,
     plain: reqwest::Client,
     internal_plain: reqwest::Client,
     per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
@@ -152,6 +163,8 @@ impl PeerClients {
         Self {
             timeout,
             tls: Arc::new(AtomicBool::new(false)),
+            quic: Arc::new(AtomicBool::new(false)),
+            quic_pool: crate::quic::ClientPool::new(),
             plain: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
@@ -218,6 +231,32 @@ impl PeerClients {
 
     pub fn tls_enabled(&self) -> bool {
         self.tls.load(Ordering::Relaxed)
+    }
+
+    pub fn quic_enabled(&self) -> bool {
+        self.quic.load(Ordering::Relaxed)
+    }
+
+    /// Atualiza a preferência sem tocar em clientes TCP já abertos. A política
+    /// só escolhe chamadas novas; uma travessia em andamento conserva o canal
+    /// que já adquiriu.
+    pub fn set_quic(&self, on: bool) {
+        self.quic.store(on, Ordering::Relaxed);
+    }
+
+    pub async fn quic_post(
+        &self,
+        peer_id: &str,
+        base_url: &str,
+        path: &str,
+        body: Vec<u8>,
+        session_id: Option<&str>,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::quic::QuicResponse> {
+        let token = self.internal_node_token().await;
+        self.quic_pool
+            .request(peer_id, base_url, path, token, session_id, body, timeout)
+            .await
     }
 
     /// Vira a flag e joga fora os clientes: um cliente construído para falar

@@ -146,6 +146,10 @@ mod thermal;
 pub mod tls;
 #[path = "network/tls_policy.rs"]
 pub mod tls_policy;
+#[path = "network/quic.rs"]
+pub mod quic;
+#[path = "network/quic_policy.rs"]
+pub mod quic_policy;
 #[path = "backend/tool_call.rs"]
 mod tool_call;
 #[path = "inference/tp.rs"]
@@ -871,6 +875,8 @@ async fn async_main(
     // ── Determine Ollama port to advertise ───────────────────────────────────
     let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
 
+    peer_client::set_quic_ativo(app_config.quic_enabled);
+
     // ── Start P2P network + (best-effort) libp2p discovery ───────────────────
     let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
         Arc::new(tokio::sync::RwLock::new(app_config.clone()));
@@ -1077,6 +1083,7 @@ async fn async_main(
     {
         let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
         peer_clients.apply_cluster_policy(app_config.tls_required);
+        peer_clients.set_quic(app_config.quic_enabled);
         peer_clients.set_auth_state(auth_config.clone());
         // A catraca do TLS: escuta o gatilho do gossip e confirma a política
         // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
@@ -1089,6 +1096,7 @@ async fn async_main(
             authority_principal.clone(),
             admin_trust.clone(),
         );
+        quic_policy::spawn_ratchet(net.clone(), peer_clients.clone(), auth_config.clone());
         cluster_logs_policy::spawn_ratchet(
             net.clone(),
             peer_clients.clone(),
@@ -1396,6 +1404,7 @@ async fn start_setup_mode(
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
         tls_required: false,
+        quic_enabled: false,
         cluster_logs_enabled: false,
         network_chat_enabled: false,
         cluster_logs_min_level: Default::default(),
@@ -1807,6 +1816,7 @@ async fn start_gateway_only(
         app_config.advertise_addr.as_deref(),
     );
     let ollama_port = advertised_ollama_port(&ollama_url);
+    peer_client::set_quic_ativo(app_config.quic_enabled);
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
         config::admin_trust_path(),
@@ -1925,6 +1935,7 @@ async fn start_gateway_only(
     // schedule a model load, but that load must never hide the control plane.
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
     peer_clients.apply_cluster_policy(app_config.tls_required);
+    peer_clients.set_quic(app_config.quic_enabled);
     peer_clients.set_auth_state(auth_state.clone());
 
     tls_policy::spawn_ratchet(
@@ -1936,6 +1947,7 @@ async fn start_gateway_only(
         authority_principal.clone(),
         admin_trust.clone(),
     );
+    quic_policy::spawn_ratchet(net.clone(), peer_clients.clone(), auth_state.clone());
     cluster_logs_policy::spawn_ratchet(
         net.clone(),
         peer_clients.clone(),

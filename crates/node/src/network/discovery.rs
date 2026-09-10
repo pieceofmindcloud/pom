@@ -614,6 +614,7 @@ async fn handle_event(
                 idle,
                 network_chat_enabled,
                 cluster_id,
+                ..
             }) = serde_json::from_slice(&message.data)
             {
                 if libp2p_peer_id.as_deref() != Some(source.to_string().as_str()) {

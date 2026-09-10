@@ -2,7 +2,7 @@
  * Preferências locais deste nó: fronteira administrativa, TLS entre nós,
  * proteção térmica e credencial opcional do provedor Hugging Face.
  */
-import { Ban, Check, Copy, Lock, MessagesSquare, ScrollText, ShieldCheck, ShieldOff, Thermometer } from "lucide-react";
+import { Ban, Check, Copy, Lock, MessagesSquare, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
@@ -83,6 +83,57 @@ export function TlsPanel({
         {!authority && (
           <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
             {t("network.tlsNotAuthority")}
+          </Footnote>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+export function QuicPanel({
+  enabled,
+  authority,
+  busy = false,
+  onToggle,
+}: {
+  enabled: boolean;
+  authority: boolean;
+  busy?: boolean;
+  onToggle?: (next: boolean) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Panel>
+      <PanelHeader
+        title={t("network.quicTitle")}
+        subtitle={t("network.quicSubtitle")}
+        actions={
+          <Button
+            variant={enabled ? "danger" : "primary"}
+            role="switch"
+            aria-checked={enabled}
+            disabled={!authority || busy}
+            loading={busy}
+            icon={<Zap className="h-3.5 w-3.5" />}
+            onClick={() => onToggle?.(!enabled)}
+          >
+            {t(enabled ? "network.quicDisable" : "network.quicEnable")}
+          </Button>
+        }
+      />
+      <div className="space-y-3 px-5 py-4">
+        <KeyValue label={t("network.quicState")}>
+          <Badge tone={enabled ? "aqua" : "amber"}>
+            <Zap className="h-3.5 w-3.5" />
+            {t(enabled ? "network.quicOn" : "network.quicOff")}
+          </Badge>
+        </KeyValue>
+        <Footnote icon={<Zap className="h-3.5 w-3.5" />}>
+          {t("network.quicHowItWorks")}
+        </Footnote>
+        {!authority && (
+          <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
+            {t("network.quicNotAuthority")}
           </Footnote>
         )}
       </div>
@@ -412,6 +463,7 @@ export function Preferences() {
   const invalidate = useInvalidate();
   const [thermalSaving, setThermalSaving] = useState(false);
   const [tlsSaving, setTlsSaving] = useState(false);
+  const [quicSaving, setQuicSaving] = useState(false);
   const [logsSaving, setLogsSaving] = useState(false);
   const [networkChatSaving, setNetworkChatSaving] = useState(false);
 
@@ -441,6 +493,22 @@ export function Preferences() {
       toast.fromError(t("network.tlsFailed"), error);
     } finally {
       setTlsSaving(false);
+    }
+  }
+
+  async function toggleQuic(next: boolean) {
+    setQuicSaving(true);
+    try {
+      await api.post("/api/ui/network/quic", { quic_enabled: next });
+      toast.success(
+        t(next ? "network.quicEnabled" : "network.quicDisabled"),
+        t("network.quicPropagates"),
+      );
+      invalidate();
+    } catch (error) {
+      toast.fromError(t("network.quicFailed"), error);
+    } finally {
+      setQuicSaving(false);
     }
   }
 
@@ -489,6 +557,12 @@ export function Preferences() {
           authority={node.data?.tls_authority ?? false}
           busy={tlsSaving}
           onToggle={(next) => void toggleTls(next)}
+        />
+        <QuicPanel
+          enabled={node.data?.quic_enabled ?? false}
+          authority={node.data?.quic_authority ?? false}
+          busy={quicSaving}
+          onToggle={(next) => void toggleQuic(next)}
         />
         <ClusterLogsPanel
           enabled={node.data?.cluster_logs_enabled ?? false}

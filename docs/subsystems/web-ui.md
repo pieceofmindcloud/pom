@@ -625,6 +625,16 @@ Virar não pede reinício e vale nos dois sentidos; o toast diz que os demais n�
 adotam em poucos segundos, que é o ciclo de gossip mais a busca autenticada da
 catraca (ver `rede-p2p.md`, seção 5).
 
+## Configurações / Preferências: transporte QUIC
+
+O painel "Transporte QUIC" (`QuicPanel`) fica ao lado do TLS. O estado é
+visível em todos os perfis, mas o interruptor fica desabilitado fora do
+principal; o servidor também responde 403 se outro nó tentar
+`POST /api/ui/network/quic`. A alteração não reinicia o modelo: novos hops
+preferem HTTP/3 sobre QUIC, e uma falha cai para o HTTP/HTTPS da política TLS.
+O card de telemetria mostra `http`, `https` ou `quic` conforme o transporte que
+realmente carregou cada hop, além de marcar o fallback.
+
 ## Logs de processo da implantação
 
 `DeploymentLogs.tsx`, em `/implantacoes/logs`, é a consola terminal do processo

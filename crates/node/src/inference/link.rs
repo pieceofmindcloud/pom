@@ -36,7 +36,7 @@
 //! ## Degradação
 //!
 //! Falha de transporte no canal **não mata a geração**: a chamada volta pelo
-//! caminho de sempre (túnel libp2p, depois HTTPS por requisição) com
+//! caminho de sempre (túnel libp2p, depois HTTP ou HTTPS por requisição) com
 //! `transport_fallback=true`, e o canal morto sai do pool. Um destino que
 //! recusou abrir fica em quarentena por [`OPEN_FAILURE_COOLDOWN`], para que a
 //! tentativa de abrir não se pague por ficha num cluster onde o endereço

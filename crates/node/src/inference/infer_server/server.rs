@@ -928,6 +928,10 @@ pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
     // pode virar a flag depois. `set_tls` só faz trabalho quando o valor muda,
     // então isto custa uma leitura atômica no caminho comum.
     c.set_tls(crate::peer_client::tls_ativo());
+    // O cliente é lazy e vive separado do cliente do gateway. Sincronize a
+    // preferência QUIC a cada uso para que uma mudança propagada pela
+    // política também alcance os relays e as respostas diretas deste nó.
+    c.set_quic(crate::peer_client::quic_ativo());
     c
 }
 

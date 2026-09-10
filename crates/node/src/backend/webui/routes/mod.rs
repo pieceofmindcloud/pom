@@ -78,6 +78,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/cluster/quic",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/api/cluster/logs",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -317,6 +322,11 @@ const ROUTE_RULES: &[RouteRule] = &[
     },
     RouteRule {
         prefix: "/api/ui/network/tls",
+        method: None,
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/quic",
         method: None,
         scope: RouteScope::AdminOnly,
     },

@@ -353,6 +353,7 @@ async fn measure(hops: usize, link: bool, tokens: usize) -> Measurement {
         transport = match sent.transport {
             crate::relay::InferenceTransport::HttpsLink => "https-link",
             crate::relay::InferenceTransport::Https => "https",
+            crate::relay::InferenceTransport::Http => "http",
             other => {
                 panic!("transporte inesperado na bancada: {}", other.as_str())
             }
@@ -407,7 +408,7 @@ async fn a_ligacao_persistente_custa_menos_bytes_por_ficha() {
                 m.ms_per_token
             );
         }
-        assert_eq!(before.transport, "https");
+        assert_eq!(before.transport, "http");
         assert_eq!(after.transport, "https-link");
         assert_eq!(
             after.connections_first_hop, 0,
@@ -506,7 +507,7 @@ async fn canal_indisponivel_degrada_para_o_caminho_por_requisicao() {
     )
     .await
     .expect("a geração continua pelo caminho de sempre");
-    assert_eq!(sent.transport, crate::relay::InferenceTransport::Https);
+    assert_eq!(sent.transport, crate::relay::InferenceTransport::Http);
     assert!(
         sent.transport_fallback,
         "a telemetria tem que denunciar que o canal não serviu"

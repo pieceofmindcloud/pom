@@ -35,6 +35,12 @@ vi.mock("../lib/queries", () => ({
   useNode: () => ({
     data: {
       thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
+      tls_required: false,
+      tls_authority: true,
+      quic_enabled: false,
+      quic_authority: true,
+      cluster_logs_enabled: false,
+      cluster_logs_authority: true,
     },
   }),
 }));
@@ -87,6 +93,20 @@ describe("Preferences", () => {
         limit_c: 82,
         hysteresis_c: 7,
         cooldown_secs: 45,
+      });
+    });
+  });
+
+  it("mostra QUIC ao lado de TLS e salva a preferência do principal", async () => {
+    mocks.post.mockResolvedValue({ quic_enabled: true });
+    mount(<Preferences />);
+
+    expect(screen.getByText("Transporte QUIC")).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: /ligar quic/i }));
+
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/quic", {
+        quic_enabled: true,
       });
     });
   });

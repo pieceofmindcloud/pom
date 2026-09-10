@@ -211,6 +211,9 @@ pub enum P2PMessage {
         /// a ele seria oferecer o rebaixamento que o TLS existe para impedir.
         #[serde(default)]
         tls: bool,
+        /// Gatilho da catraca autenticada da política QUIC.
+        #[serde(default)]
+        quic: bool,
         #[serde(default)]
         hostname: String,
         /// Full inventory for new peers. The legacy model/range fields remain
@@ -783,6 +786,8 @@ pub struct Network {
     /// configuração nem a chave de conexão - quem sabe buscar e gravar é a task
     /// montada no `main.rs`. Ver `tls_policy`.
     tls_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
+    /// Canal da catraca autenticada da política QUIC.
+    quic_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     /// Canal da catraca autenticada da política de logs.
     cluster_logs_probe:
         std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
@@ -1185,6 +1190,7 @@ impl Network {
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
+            quic_probe: std::sync::RwLock::new(None),
             cluster_logs_probe: std::sync::RwLock::new(None),
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
             network_chat_probe: std::sync::RwLock::new(None),
@@ -1556,6 +1562,7 @@ impl Network {
             gateway_port: self.gateway_port,
             profile: self.profile(),
             tls: self.tls_enabled(),
+            quic: crate::peer_client::quic_ativo(),
             hostname: self.hostname.clone(),
             capabilities: assignment
                 .map(|a| {
@@ -1709,6 +1716,12 @@ impl Network {
     /// que é o comportamento certo para um nó de teste, sem config para gravar.
     pub fn set_tls_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
         if let Ok(mut slot) = self.tls_probe.write() {
+            *slot = Some(tx);
+        }
+    }
+
+    pub fn set_quic_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
+        if let Ok(mut slot) = self.quic_probe.write() {
             *slot = Some(tx);
         }
     }
@@ -2279,6 +2292,7 @@ impl Network {
                 gateway_port,
                 profile,
                 tls,
+                quic,
                 hostname,
                 capabilities,
                 disk_total_mb,
@@ -2396,6 +2410,24 @@ impl Network {
                             // seria recusado, e a catraca nunca conseguiria
                             // ligar. Forjar a dica não muda o que é gravado -
                             // só faz a sonda bater na porta errada e falhar.
+                            let _ = tx.send((principal, tls));
+                        }
+                    }
+                }
+
+                if let crate::quic_policy::PolicyOutcome::Fetch { principal } =
+                    crate::quic_policy::on_announce(
+                        crate::peer_client::quic_ativo(),
+                        quic,
+                        peer.profile == crate::profile::NodeProfile::Admin,
+                        &peer.node_id,
+                    )
+                {
+                    if let Ok(slot) = self.quic_probe.read() {
+                        if let Some(tx) = slot.as_ref() {
+                            // A flag QUIC só dispara a sonda. O esquema da
+                            // sonda continua sendo a política TLS anunciada,
+                            // que é independente do transporte escolhido.
                             let _ = tx.send((principal, tls));
                         }
                     }
@@ -3687,6 +3719,7 @@ mod tests {
                 gateway_port: Some(8080),
                 profile: crate::profile::NodeProfile::Node,
                 tls: false,
+                quic: false,
                 hostname: "salem".into(),
                 capabilities: Vec::new(),
                 disk_total_mb: 0,

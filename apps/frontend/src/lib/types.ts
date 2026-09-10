@@ -220,6 +220,10 @@ export interface NodeInfo {
   node_promotion_request?: "none" | "pending" | "rejected";
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
+  /** Se o cluster prefere HTTP/3 sobre QUIC nos novos hops. */
+  quic_enabled: boolean;
+  /** Só o principal pode alterar a preferência QUIC. */
+  quic_authority: boolean;
   /** Se este nó coleta e envia logs de processo do cluster. */
   cluster_logs_enabled: boolean;
   /** Só o principal pode mudar a política de logs. */

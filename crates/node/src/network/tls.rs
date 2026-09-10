@@ -295,6 +295,14 @@ pub fn client_config(expected: &str) -> Result<rustls::ClientConfig> {
     Ok(cfg)
 }
 
+/// Configuração TLS 1.3 do HTTP/3, com o mesmo pinning de identidade do HTTP
+/// sobre TCP. QUIC usa ALPN `h3` e nunca participa da chave `tls_required`.
+pub fn quic_client_config(expected: &str) -> Result<rustls::ClientConfig> {
+    let mut cfg = client_config(expected)?;
+    cfg.alpn_protocols = vec![b"h3".to_vec()];
+    Ok(cfg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

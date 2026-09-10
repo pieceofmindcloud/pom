@@ -85,6 +85,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   loopback não envia essa marca. `for_peer_with_state` informa ao trace se o
   cliente TLS foi criado ou reutilizado; transporte local, túnel e cliente
   sem TLS permanecem explicitamente desconhecidos.
+- `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
+  QUIC por peer e endereço, usa o mesmo pinning Ed25519 da conexão TCP e deixa
+  o endpoint UDP pronto na porta de inferência mesmo quando a preferência está
+  desligada.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
@@ -93,6 +97,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `tls_policy.rs` - a catraca: o campo `tls` do Announce é gatilho, e só a
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
+- `quic_policy.rs` - catraca autenticada da preferência QUIC: o campo `quic`
+  do Announce só dispara `GET /api/cluster/quic`; apenas a resposta do
+  principal é adotada e falha preserva o valor local.
 - `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
   `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
   é a fonte, e falha preserva o valor local.

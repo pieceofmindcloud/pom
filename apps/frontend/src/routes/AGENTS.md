@@ -404,8 +404,10 @@ Per-file list:
   `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
   choice out of Network and explains when it is useful, plus `ThermalPanel` and
   `HuggingFaceSettingsPanel`. Também monta o interruptor de logs do cluster,
-  disponível apenas ao principal e aplicado em tempo real. The access token is
-  a human credential and is not the cluster `connection_key`.
+  disponível apenas ao principal e aplicado em tempo real, e `QuicPanel`, que
+  alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
+  controle de autoridade. The access token is a human credential and is not the
+  cluster `connection_key`.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e

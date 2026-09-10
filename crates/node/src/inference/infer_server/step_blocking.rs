@@ -359,11 +359,7 @@ pub(crate) fn step_blocking(
             // devolver o rascunho.
             let mut speculation_disabled_reason = None;
             let mtp_tail_reason = mtp_k.is_some().then(|| {
-                mtp_tail_speculation_reason(
-                    s.engine.mtp_ready(),
-                    s.engine.mtp_unavailable_reason(),
-                    s.engine.kv_can_shift(),
-                )
+                mtp_tail_speculation_reason(s.engine.mtp_ready(), s.engine.mtp_unavailable_reason())
             });
             let next_draft: Option<Vec<i32>> =
                 if !done && batch_tokens.is_some() && mtp_tail_reason.flatten().is_none() {
@@ -513,11 +509,7 @@ pub(crate) fn step_blocking(
         // tem `mtp_k` — nada a devolver, e não há segunda máquina esperando.
         let mut speculation_disabled_reason = None;
         let mtp_tail_reason = mtp_k.is_some().then(|| {
-            mtp_tail_speculation_reason(
-                s.engine.mtp_ready(),
-                s.engine.mtp_unavailable_reason(),
-                s.engine.kv_can_shift(),
-            )
+            mtp_tail_speculation_reason(s.engine.mtp_ready(), s.engine.mtp_unavailable_reason())
         });
         let next_draft: Option<Vec<i32>> = if !done && mtp_tail_reason.flatten().is_none() {
             if let Some(k) = mtp_k {

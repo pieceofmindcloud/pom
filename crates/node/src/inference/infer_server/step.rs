@@ -1298,12 +1298,12 @@ mod remote_stream_tests {
         assert!(!remote_stream_install_draft(
             &mut step_meta,
             None,
-            Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK),
+            Some(SPECULATION_REASON_MODEL_WITHOUT_MTP),
         ));
         assert!(step_meta.get("speculate").is_none());
         assert_eq!(
             step_meta["speculation_disabled_reason"],
-            SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK
+            SPECULATION_REASON_MODEL_WITHOUT_MTP
         );
     }
 

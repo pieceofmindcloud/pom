@@ -52,8 +52,9 @@ de integração existentes do gateway/inferência.
 - Implementar o estado do produtor: instalar o draft na próxima rodada,
   removê-lo quando a cauda desativar a especulação e transportar a razão
   nomeada no callback.
-- Adicionar o estado de cauda híbrida/recorrente com `kv_can_shift=false`:
-  não gerar `next_draft` e responder com `hybrid_tail_no_rollback`.
+- Manter `kv_can_shift` como diagnóstico: a cauda pronta pode gerar
+  `next_draft` mesmo com esse campo falso, e o rollback efetivo via `kv_remove`
+  continua falha fechada.
 - Cobrir peer sem a capacidade de MTP fatiado e callbacks sem campos novos.
 - Verificar por contador de chamadas que o draft não causa uma requisição
   adicional por token.

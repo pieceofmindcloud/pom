@@ -180,17 +180,16 @@ pub(super) fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'s
 /// antes da rodada seguinte (`gateway::rollback_sessions`, via
 /// `/v1/session/rollback` -> `kv_remove` -> `llama_memory_seq_rm`).
 ///
-/// `kv_can_shift` não decide se a cabeça monta o lote. A cauda, porém, usa
-/// essa evidência antes de criar o próximo `next_draft`: em modelos
-/// híbridos/recorrentes que reportam `false`, não há rollback especulativo
-/// seguro para iniciar outra rodada e a resposta leva
-/// `hybrid_tail_no_rollback`. O caminho remoto faz o rollback local em cada
+/// `kv_can_shift` não decide se a cauda monta o próximo `next_draft`: ele é a
+/// capacidade de K-shift usada pelo `--ctx-shift` de referência do llama.cpp,
+/// não a capacidade de desfazer um rascunho. O rollback especulativo real usa
+/// `kv_remove` (`llama_memory_seq_rm`) depois de cada lote e falha fechado se o
+/// motor recusar a remoção. O caminho remoto faz esse rollback local em cada
 /// hop antes de borbulhar a resposta; o caminho legado mantém o endpoint
 /// `handle_rollback` e o fan-out do gateway.
 pub(crate) fn mtp_tail_speculation_reason(
     mtp_ready: bool,
     mtp_unavailable_reason: Option<&str>,
-    kv_can_shift: bool,
 ) -> Option<&'static str> {
     if !mtp_ready {
         return Some(
@@ -202,9 +201,6 @@ pub(crate) fn mtp_tail_speculation_reason(
                 SPECULATION_REASON_MODEL_WITHOUT_MTP
             },
         );
-    }
-    if !kv_can_shift {
-        return Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK);
     }
     None
 }
@@ -411,20 +407,16 @@ mod speculative_tests {
     }
 
     #[test]
-    fn razoes_da_cauda_separam_nextn_modelo_e_hibrido() {
+    fn razoes_da_cauda_separam_nextn_modelo_e_prontidao() {
         assert_eq!(
-            mtp_tail_speculation_reason(false, Some(crate::llm::MTP_NO_NEXTN_REASON), true,),
+            mtp_tail_speculation_reason(false, Some(crate::llm::MTP_NO_NEXTN_REASON)),
             Some(SPECULATION_REASON_TAIL_WITHOUT_NEXTN)
         );
         assert_eq!(
-            mtp_tail_speculation_reason(false, Some("falha de alocação"), true),
+            mtp_tail_speculation_reason(false, Some("falha de alocação")),
             Some(SPECULATION_REASON_MODEL_WITHOUT_MTP)
         );
-        assert_eq!(
-            mtp_tail_speculation_reason(true, None, false),
-            Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK)
-        );
-        assert_eq!(mtp_tail_speculation_reason(true, None, true), None);
+        assert_eq!(mtp_tail_speculation_reason(true, None), None);
     }
 
     /// Um rascunho MTP já pronto (a cauda de um pipeline fatiado produziu na

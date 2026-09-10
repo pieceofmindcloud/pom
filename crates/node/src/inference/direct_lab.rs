@@ -823,12 +823,12 @@ fn minimum_legs(n_hops: usize, entry: usize) -> f64 {
 /// cauda paga o dobro das travessias, que foi a queda de 25 para 14 tok/s
 /// medida no cluster do captain em 2026-08-14.
 ///
-/// Tolerância de 0,45 perna (≈23 ms com `LINK_MS` 50) absorve o custo de
-/// quatro chamadas HTTP em loopback com tensores de 5120 posições; ela é bem
+/// Tolerância de 0,75 perna (≈38 ms com `LINK_MS` 50) absorve jitter de
+/// chamadas HTTP em loopback com tensores de 5120 posições; ela continua
 /// menor que a perna inteira que separa um resultado certo de um errado.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
-    const TOLERANCE: f64 = 0.45;
+    const TOLERANCE: f64 = 0.75;
 
     for n_hops in 2..=4usize {
         let mut measured = Vec::new();

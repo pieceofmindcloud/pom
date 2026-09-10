@@ -591,7 +591,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   anuncia batching, pois o endpoint falso atende frames unitários. Os cenários
   também conferem que a resposta real do gateway traz `GenerationTimings`
   agregados, inclusive no limite de um token; a política de
-  `kv_can_shift=false` e o estado do stream remoto ficam cobertos nos testes
+  `kv_remove` efetivo e o estado do stream remoto ficam cobertos nos testes
   de `infer_server`/`prefill`. A fixture do orçamento desliga o detector de
   ciclos para que sua sequência periódica não encerre a geração antes do teto
   e a comparação continue isolando `n_batch` do orçamento total.
@@ -815,9 +815,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Recusar é resposta legítima, não erro: a cabeça omite `draft` no quadro e a
   cauda responde no formato antigo de um token (ver
   `step_blocking::incoming_draft` e a seção de duas formas de resposta em
-  `prefill/`). A cauda aplica separadamente o gate
-  `kv_can_shift=false` para não produzir o próximo draft em modelos
-  híbridos/recorrentes.
+  `prefill/`). A cauda exige `mtp_ready` para produzir o próximo draft;
+  `kv_can_shift` é somente um diagnóstico do K-shift de `--ctx-shift`. O
+  rollback real continua sendo conferido por `kv_remove` e falha fechado se
+  o motor recusar a remoção.
 
 `llm.rs`:
 - `LlmEngine::load_with_cache` - carga com `EngineConfig` (n_ctx total, n_batch,
@@ -979,8 +980,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `should_draft(speculate, mtp_ready)` - `Mtp` exige a cabeça local pronta ou
   um draft pré-fabricado; `Lookup` só exige o convite. Pedir MTP a um motor sem
   a cabeça `nextn` é recusa, nunca troca silenciosa por lookup. A cauda de um
-  pipeline ainda aplica um gate próprio: se `kv_can_shift=false`, não devolve
-  `next_draft` e informa `hybrid_tail_no_rollback`. As demais recusas usam
+  pipeline só deixa de devolver `next_draft` quando `mtp_ready=false` ou o
+  rascunho produzido está vazio. `kv_can_shift` é exposto como diagnóstico,
+  não como requisito de rollback; a remoção efetiva via `kv_remove` continua
+  falha fechada. As demais recusas usam
   `tail_without_nextn`, `model_without_mtp` ou
   `peer_without_sliced_mtp_wire` conforme a evidência disponível.
 - `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
@@ -1257,9 +1260,10 @@ composição do lote (`tokens`) e a largura pedida (`mtp_k`) no reply, os hops
 do meio repassam, e a cauda alimenta o `observe` com isso
 (`decode_hidden(..., tokens)`). `PipelinePlan::supports_mtp` exige
 `speculate/v1-mtp-sliced` em **todos** os hops e `speculate/v1-mtp` na cauda.
-Cauda híbrida/recorrente (`kv_can_shift` falso) não devolve `next_draft` e
-informa `hybrid_tail_no_rollback`; o gateway para de pedir pelo resto da
-requisição.
+Cauda híbrida/recorrente pronta (`mtp_ready` verdadeiro) pode devolver
+`next_draft` mesmo quando `kv_can_shift` é falso: K-shift é diagnóstico do
+motor, não prova de rollback. Cada hop desfaz o excedente com `kv_remove` e
+aborta a rodada se a remoção efetiva falhar.
 
 **Ainda sem medição de tok/s** (cortado por cota em 2026-08-16): o ganho
 prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S,

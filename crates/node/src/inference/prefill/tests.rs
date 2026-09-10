@@ -1270,7 +1270,7 @@ mod tests {
                 "text": "A",
                 "speculated": false,
                 "speculation_active": false,
-                "speculation_disabled_reason": "hybrid_tail_no_rollback",
+                "speculation_disabled_reason": "model_without_mtp",
             }),
             trace_vazio(),
         )
@@ -1280,7 +1280,7 @@ mod tests {
         assert!(!passo.speculation_active);
         assert_eq!(
             passo.speculation_disabled_reason.as_deref(),
-            Some("hybrid_tail_no_rollback")
+            Some("model_without_mtp")
         );
     }
 

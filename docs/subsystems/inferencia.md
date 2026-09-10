@@ -1602,14 +1602,12 @@ extra), `accept_count` e `batch_width`.
   `rollback_from` descartam do KV o que não foi confirmado; sessão desconhecida
   é no-op, não erro). Todo hop decodificou o lote inteiro, então todo hop
   precisa do rollback - não só a cauda.
-- **Modelo híbrido/recorrente não produz draft quando
-  `kv_can_shift=false`.** A cauda aplica essa guarda no momento de produzir o
-  `next_draft`, informa `hybrid_tail_no_rollback` e o gateway desativa MTP pelo
-  restante da requisição. A cabeça ainda pode aceitar um draft que já tenha
-  chegado para concluir uma rodada; o que não pode acontecer é iniciar outra
-  rodada com estado cuja cauda não consegue reverter. `should_draft` continua
-  decidindo apenas se a cabeça monta o lote, com base em `mtp_ready` ou em
-  draft pronto.
+- **`kv_can_shift` não é a guarda de rollback.** Esse campo expõe o K-shift do
+  `--ctx-shift` de referência do llama.cpp. A cauda pronta (`mtp_ready=true`)
+  pode produzir `next_draft` mesmo quando ele é falso; o rollback especulativo
+  real usa `kv_remove` (`llama_memory_seq_rm`) após cada lote e falha fechado
+  quando o motor recusa a remoção. `should_draft` continua decidindo apenas
+  se a cabeça monta o lote, com base em `mtp_ready` ou em draft pronto.
 - **A prova de verdade não é mais estática, é o `seq_rm` de cada rodada.**
   `handle_rollback` (`/v1/session/rollback`) chama `kv_remove`
   (`llama_memory_seq_rm`) e devolve `{rolled_back, reason}` no corpo -
@@ -1721,11 +1719,11 @@ valores são iguais.
   `speculate/v1-mtp-sliced` em cada step (o protocolo `tokens`/`mtp_k`/
   `next_draft` só existe em build novo - um peer velho no anel receberia um
   `speculate` que não entende) **e** `speculate/v1-mtp` na cauda.
-- **Modelo híbrido/recorrente não rascunha quando `kv_can_shift=false`.** A
-  cauda informa `hybrid_tail_no_rollback` e não devolve `next_draft`; o gateway
-  encerra a especulação de forma limpa. Em stream remoto, cada hop faz
-  rollback local antes de a resposta subir, sem endpoint extra. No caminho
-  legado, permanece o fan-out de `/v1/session/rollback`.
+- **Modelo híbrido/recorrente pronto rascunha mesmo quando
+  `kv_can_shift=false`.** Em stream remoto, cada hop faz rollback local com
+  `kv_remove` antes de a resposta subir, sem endpoint extra, e encerra com
+  erro se a remoção efetiva falhar. No caminho legado, permanece o fan-out de
+  `/v1/session/rollback`.
 - O MTP fatiado usa `step_stream` quando o head é remoto: um control frame
   inicia o ciclo e os callbacks carregam os tokens e o estado. Se o head é
   local, o gateway mantém o caminho direto `prefill::step` +

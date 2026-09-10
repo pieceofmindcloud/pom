@@ -1086,5 +1086,49 @@ cliente não deixou batches crescendo depois do primeiro intervalo de
 observação, os dois health endpoints continuaram responsivos por 35 s e o
 spam de FD não retornou. Ela não resolve o limite arquitetural ainda aberto:
 o decode continua serial por dependência autoregressiva e o TTFT/wall ainda
-carrega a latência entre hops. MTP/especulação permanece pausado conforme
-decisão do captain.
+carrega a latência entre hops. MTP/especulação ainda não estava engatado
+nessa medição; a seção seguinte registra a causa encontrada e a correção
+autorizada pelo captain.
+
+### 17.17 Causa raiz do MTP não engatado no pipeline
+
+Antes da correção, uma execução E2E no cluster com `146c2deb` produziu o trace
+`chatcmpl-4a70496f44c24917aa68e55fddaa495f`. O pedido terminou completo, mas
+teve 89 chamadas de decode e 89 frames, com
+`mtp_draft_tokens_proposed=0`, `mtp_draft_tokens_accepted=0` e
+`mtp_draft_tokens_rejected=0`. Isso confirma que não houve rodada com lote
+MTP, e não apenas uma taxa de aceitação baixa.
+
+A negociação do pipeline não era a causa. No mesmo cluster, o plano atendia
+às três condições de `PipelinePlan::supports_mtp`: o head anunciava
+`speculate/v1-mtp-sliced` e `speculate/v1-lookup`, e a cauda anunciava essas
+duas capabilities mais `speculate/v1-mtp`. A configuração persistida da fatia
+head também tinha `mtp_enabled=true` e `mtp_draft_tokens=3`. O health do peer
+Salem `02eb8c40` confirmou `mtp_ready=true`, `mtp_allocation="vram"` e
+`kv_can_shift=false`; o health do head `0bda91213fe5` tinha `mtp_ready=false`,
+como esperado para a fatia não-final, que não carrega o bloco `nextn`.
+
+O bloqueio estava em `infer_server::step_blocking`, nos dois caminhos de
+resposta da cauda. `mtp_tail_speculation_reason` recebia
+`s.engine.kv_can_shift()` e, apesar de MTP estar pronto, transformava
+`kv_can_shift=false` em `hybrid_tail_no_rollback`. Com isso `next_draft` era
+omitido antes de chamar `mtp_draft`, e o gateway permanecia no ciclo unitário.
+O campo `kv_can_shift` é uma chamada a `llama_memory_can_shift`, relacionada ao
+K-shift de `--ctx-shift`; ele não prova se o motor consegue desfazer um lote
+especulativo. O rollback efetivo do pipeline usa
+`LlmEngine::kv_remove`, que chama `llama_memory_seq_rm`.
+
+A correção removeu o gate por `kv_can_shift` da decisão de produzir
+`next_draft`, mantendo as recusas de `mtp_ready=false` e draft vazio. Os dois
+caminhos continuam chamando `kv_remove` depois da rodada e falham fechado se a
+remoção efetiva for recusada. Assim, um modelo recorrente pronto pode tentar
+MTP, mas nunca avança com tokens especulativos que o motor não consiga
+reverter. Não houve alteração no wire nem no fork vendorizado do llama.cpp.
+
+O teste de regressão foi primeiro colocado em RED com o caso pronto e
+K-shift falso, reproduzindo a razão antiga, e depois passou com a nova
+assinatura. Ainda não há número pós-correção de tok/s ou aceitação MTP nesta
+seção: ele depende do redeploy dos dois peers. A próxima medição deve registrar
+`proposed`, `accepted`, `rejected`, largura dos lotes, TTFT, geração tok/s e
+wall tok/s, comparando com a base de 22,57 tok/s de geração, 18,52 tok/s wall
+e TTFT de 944 ms da seção 17.16.

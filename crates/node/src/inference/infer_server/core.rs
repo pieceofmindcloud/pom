@@ -39,7 +39,6 @@ pub(super) fn required_session_id(meta: &Value) -> Result<String> {
 
 pub(crate) const SPECULATION_REASON_TAIL_WITHOUT_NEXTN: &str = "tail_without_nextn";
 pub(crate) const SPECULATION_REASON_MODEL_WITHOUT_MTP: &str = "model_without_mtp";
-pub(crate) const SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK: &str = "hybrid_tail_no_rollback";
 pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
     "peer_without_sliced_mtp_wire";
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";

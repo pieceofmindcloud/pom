@@ -1019,7 +1019,72 @@ Os testes de regressão passaram isoladamente: o pump cancela sem evento,
 `callback_assincrono_sinaliza_gateway_desaparecido`,
 `ack_410_do_callback_para_o_stream_sem_fallback` e as suítes de `link` (13)
 e `direct` (19). A suíte completa do binário passou com **1.268 testes
-aprovados e 5 ignorados** em execução serial. Ainda falta publicar esta
-correção e um novo deploy nas duas máquinas para confirmar no E2E que os
-contadores param após o abandono e que o health permanece responsivo. Não
-houve alteração no llama.cpp nem início de MTP/especulação.
+aprovados e 5 ignorados** em execução serial. A correção foi publicada em
+`146c2deb` e validada nas duas máquinas na seção 17.16. Não houve alteração
+no llama.cpp nem início de MTP/especulação.
+
+### 17.16 Validação em cluster após `146c2deb`
+
+O commit `146c2deb` foi implantado nas duas máquinas com `POM_PROFILE=trace`.
+A KSIA estava com 4/4 nós saudáveis, incluindo o node-3 com Ornith e slice
+0-15; Salem estava com 3/3 containers saudáveis e o modelo carregado. O
+gateway usado foi `100.71.127.127:8080`, com o mesmo prompt da série anterior
+e `max_tokens=200`. A corrida 1 foi executada antes das corridas 2-5 e os
+cinco traces retornaram resposta completa, 90 tokens, sem erro e
+`trace.complete=true`:
+
+O campo `transport_trace_complete` veio `false` na resposta da corrida 1,
+como já observado no caminho de ACK assíncrono; isso não impediu o fechamento
+do trace principal (`trace.complete=true`) nem a entrega da resposta. O
+campo de fallback HTTPS foi zero nas cinco respostas.
+
+| corrida | trace_id | tokens | TTFT (ms) | geração (ms) | geração tok/s | wall tok/s |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | `chatcmpl-08b9bc6b6b8647b2bacce77adca73e52` | 90 | 1.344 | 4.181 | 21,53 | 16,29 |
+| 2 | `chatcmpl-b4d9a9ed902b42578e37511cce42f73c` | 90 | 599 | 3.937 | 22,86 | 19,84 |
+| 3 | `chatcmpl-f86db09b7c33444eae0d07eead2a72a1` | 90 | 317 | 3.971 | 22,66 | 20,99 |
+| 4 | `chatcmpl-aed8d19eca9d47809d7d746826742158` | 90 | 1.877 | 3.941 | 22,84 | 15,47 |
+| 5 | `chatcmpl-8b799f5fa3444f2792f61ca5ec0de2c7` | 90 | 582 | 3.919 | 22,97 | 20,00 |
+
+A média foi **22,57 tok/s de geração**, **18,52 tok/s wall** e **944 ms de
+TTFT**. As medianas foram 22,84 tok/s, 19,84 tok/s e 599 ms. Contra a
+referência de geração de `15caf764` (21,71 tok/s), o ganho médio é **+4,0%**;
+contra o wall de 16,33 tok/s da mesma referência, é **+13,4%**. A geração
+ficou praticamente no mesmo nível da média de `82c17b11` (22,52 tok/s), o que
+não atribui ganho mensurável de throughput ao cancelamento isoladamente. O
+TTFT variou de 317 a 1.877 ms, portanto continua dependente de jitter e
+estado quente/frio.
+
+O teste de abandono abriu o mesmo pedido em streaming e encerrou o cliente
+por `--max-time 1`; o curl terminou com código 28 após 1.007 ms e 2.308
+bytes recebidos. Antes do abandono, os infer servers estavam em 455
+batches/items cada. Na primeira leitura após o fechamento, os contadores
+estavam em 469/469 na KSIA e 468/468 em Salem, com `queue_depth=0`; esse
+pequeno avanço é trabalho já em voo. Em todas as leituras seguintes os
+contadores permaneceram inalterados:
+
+| momento | KSIA batches/items | Salem batches/items | queue_depth | `/health` |
+|---|---:|---:|---:|---|
+| imediato | 469/469 | 468/468 | 0/0 | `ok`/`ok` |
+| +1 s | 469/469 | 468/468 | 0/0 | `ok`/`ok` |
+| +2 s | 469/469 | 468/468 | 0/0 | `ok`/`ok` |
+| +5 s | 469/469 | 468/468 | 0/0 | `ok`/`ok` |
+| +15 s | 469/469 | 468/468 | 0/0 | `ok`/`ok` |
+| +35 s | 469/469 | 468/468 | 0/0 | `ok`/`ok` |
+
+No node-3, o log `/tmp/pom-ksia-node-3.log` tinha 124.092 bytes antes da
+rodada, 124.524 bytes após as cinco gerações e 124.821 bytes no abandono;
+ficou estável em 124.821 bytes de imediato até +35 s. A contagem exata de
+`Too many open files` foi zero em todas as leituras do abandono. O limite
+continuou em `ulimit -n=1024`; os processos usaram no máximo 128 FDs (e
+caíram gradualmente até 121-29 por processo na última leitura), sem sinal de
+pileup. Portanto o `146c2deb` passou este cenário sem exigir aumento de
+ulimit, embora o limite baixo continue sendo um risco operacional separado.
+
+Esta rodada confirma o objetivo específico do commit: o fechamento do
+cliente não deixou batches crescendo depois do primeiro intervalo de
+observação, os dois health endpoints continuaram responsivos por 35 s e o
+spam de FD não retornou. Ela não resolve o limite arquitetural ainda aberto:
+o decode continua serial por dependência autoregressiva e o TTFT/wall ainda
+carrega a latência entre hops. MTP/especulação permanece pausado conforme
+decisão do captain.

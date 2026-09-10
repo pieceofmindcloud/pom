@@ -216,12 +216,14 @@ impl PeerClients {
     /// Anexa a credencial POM de um salto interno de inferência, **idêntica** à
     /// que o túnel libp2p e o cliente QUIC já mandam: o marcador
     /// `x-pom-internal-node: 1` sempre, e `Authorization: Bearer <token>` quando
-    /// há um (a `connection_key` compartilhada, em redes privadas). Sem o
+    /// há uma `connection_key` configurada, inclusive no fallback HTTP de uma
+    /// rede pública. Sem o
     /// marcador, `require_inference_auth` do peer recusa o canal HTTP
     /// persistente e as chamadas de ciclo de vida de sessão com 401/403 mesmo
-    /// numa rede privada; numa rede pública, o marcador é o que habilita o
-    /// desvio por transporte seguro. O túnel funcionava só porque montava esses
-    /// dois cabeçalhos à mão (`send_frame_via_tunnel_with_auth`).
+    /// numa rede privada; numa rede pública, o marcador habilita o desvio por
+    /// transporte seguro e o bearer mantém o caminho HTTP em claro autenticado.
+    /// O túnel funcionava só porque montava esses dois cabeçalhos à mão
+    /// (`send_frame_via_tunnel_with_auth`).
     pub async fn authorize_inference_request(
         &self,
         request: reqwest::RequestBuilder,
@@ -789,6 +791,63 @@ mod tests {
 
         let externo = capture_headers(c.plain()).await;
         assert!(!externo.contains("x-pom-internal-node:"));
+    }
+
+    #[tokio::test]
+    async fn http_fallback_preserves_connection_authorization_on_public_network() {
+        let state = crate::gateway::testkit::state_with("cluster-secret", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.connection_key = "cluster-secret".into();
+            config.network.visibility = crate::config::NetworkVisibility::Public;
+        }
+        let clients = PeerClients::new(Duration::from_secs(5));
+        clients.set_auth_state(state.auth.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = seen_tx.send(String::from_utf8_lossy(&request).into_owned());
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let request = clients
+            .for_peer("peer-public")
+            .unwrap()
+            .post(format!("http://{address}/v1/prefill"))
+            .body("prefill-frame");
+        let response = clients
+            .authorize_inference_request_for_session(request, Some("session-public"))
+            .await
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let request = seen_rx.await.unwrap().to_ascii_lowercase();
+        server.await.unwrap();
+
+        assert!(request.contains("authorization: bearer cluster-secret"));
+        assert!(request.contains("x-pom-internal-node: 1"));
+        assert!(request.contains("x-pom-inference-session: session-public"));
     }
 
     /// Com TLS, cada peer precisa do seu, porque o verifier é fixado na

@@ -99,6 +99,9 @@ Per-file list:
   O resumo exibe sempre a contagem e as razões do fallback HTTPS e, quando há
   amostras, os quantis do intervalo de entrega de tokens do `remote-stream`,
   separando espera do produtor e espera do token pronto na fila.
+  O resumo por transporte diferencia RTT de execução, que inclui processamento
+  remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
+  medição da conexão quando disponível.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

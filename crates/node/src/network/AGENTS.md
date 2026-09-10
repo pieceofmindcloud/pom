@@ -82,9 +82,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   uma rota de controle autenticada; inclusive 401/403 fazem a sonda tentar o
   próximo endereço, porque um endereço fantasma pode responder como outro nó.
   O cliente destinado a outro nó marca requests de controle com
-  `x-pom-internal-node`, usa a `connection_key` somente nas rotas privadas de
-  inferência e limita a abertura TCP a 2 s; em rede pública a inferência direta
-  usa TLS e o mesmo marcador sem segredo compartilhado. O cliente `plain()` para
+  `x-pom-internal-node`, usa a `connection_key` compartilhada também no fallback
+  HTTP de inferência em rede pública e limita a abertura TCP a 2 s; HTTPS e
+  QUIC podem validar pelo transporte seguro e o mesmo marcador. O cliente `plain()` para
   Ollama e
   loopback não envia essa marca. `for_peer_with_state` informa ao trace se o
   cliente TLS foi criado ou reutilizado; transporte local, túnel e cliente
@@ -98,7 +98,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
   (`inference_quic_port`/`gateway_quic_port`) mesmo quando a preferência está
   desligada. O dial exige `host:porta` e nunca deriva o destino de uma URL HTTP.
   A configuração do listener é independente do `tls_required` do TCP, porque
-  QUIC leva seu próprio TLS 1.3.
+  QUIC leva seu próprio TLS 1.3. Cada resposta também expõe o RTT suavizado da
+  conexão Quinn em microssegundos, separado do processamento do handler remoto.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o

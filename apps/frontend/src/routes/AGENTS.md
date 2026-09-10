@@ -515,8 +515,10 @@ Key logic carriers:
   prefill/decode phases, selected
   path versus backend-reported executed engine, mixed/mismatch evidence,
   gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
-  optional TP collective table, aggregate transport identity/RTT distribution/
-  bytes with fallback and switch counts, prefix reuse counters, overlap counters and a pure diagnosis card. The request summary also shows TTFT, prompt-token prefill rate, output-token generation rate and end-to-end total, including an explicit unavailable state when a rate has no measurable interval. The AI action sends
+  optional TP collective table, aggregate transport identity, execution RTT and
+  measured network RTT distributions, bytes with fallback and switch counts,
+  prefix reuse counters, overlap counters and a pure diagnosis card. The
+  request summary also shows TTFT, prompt-token prefill rate, output-token generation rate and end-to-end total, including an explicit unavailable state when a rate has no measurable interval. The AI action sends
   both tables as private request content, while the initial model is shown as
   a non-turn mark before chat messages.
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime

@@ -123,14 +123,13 @@ pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 
 /// Escolhe a credencial que um nó usa nas chamadas internas de inferência.
 /// API keys pertencem à superfície do cliente e nunca atravessam um salto
-/// interno. Em redes privadas, os peers compartilham a `connection_key` para
-/// esse canal. Em redes públicas, a chave que permanece local para o admin
-/// não é um segredo de entrada entre peers: o transporte seguro e a cadeia
-/// assinada fazem esse trabalho.
+/// interno. A `connection_key` compartilhada é anexada também ao fallback HTTP
+/// sem TLS: o transporte pode ser protegido por Noise ou Tailscale por baixo,
+/// mas a porta de inferência ainda precisa receber a mesma credencial em toda a
+/// escada HTTP/HTTPS/QUIC. QUIC e HTTPS continuam podendo validar pelo
+/// transporte seguro na rede pública, sem depender desse cabeçalho.
 pub fn internal_node_token(config: &Config) -> Option<String> {
-    (config.network.visibility != crate::config::NetworkVisibility::Public
-        && !config.connection_key.is_empty())
-    .then(|| config.connection_key.clone())
+    (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
 }
 
 /// Confere a credencial compartilhada de um peer na porta de inferência.
@@ -1115,7 +1114,9 @@ mod tests {
         assert_eq!(internal_node_token(&cfg).as_deref(), Some("cluster-secret"));
 
         cfg.network.visibility = crate::config::NetworkVisibility::Public;
-        assert_eq!(internal_node_token(&cfg), None);
+        // Plain HTTP is still a supported inference fallback. It must carry
+        // the same shared credential as HTTPS and QUIC when one is configured.
+        assert_eq!(internal_node_token(&cfg).as_deref(), Some("cluster-secret"));
 
         cfg.connection_key.clear();
         assert_eq!(internal_node_token(&cfg), None);

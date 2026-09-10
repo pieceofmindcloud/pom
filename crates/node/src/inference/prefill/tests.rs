@@ -435,6 +435,7 @@ mod tests {
                 transport: crate::relay::InferenceTransport::Libp2pTunnel,
                 fallback: false,
                 round_trip_ms: 20,
+                network_ms: 20,
                 bytes_sent: 40,
                 bytes_received: 60,
             },
@@ -1069,6 +1070,39 @@ mod tests {
     }
 
     #[test]
+    fn quic_transport_rtt_is_separate_from_remote_processing() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop_from_json(
+            0,
+            Phase::Prefill,
+            &json!({
+                "transport": "quic",
+                "round_trip_ms": 76,
+                "processing_ms": 75,
+                "transport_rtt_us": 500,
+                "node_timings": {},
+            }),
+        );
+        trace.record_transport(
+            0,
+            Phase::Prefill,
+            TransportTrace::from_json(&json!({
+                "transport": "quic",
+                "round_trip_ms": 76,
+                "processing_ms": 75,
+                "transport_rtt_us": 500,
+            })),
+        );
+
+        let phase = &trace.hops[0].prefill;
+        assert_eq!(phase.round_trip_ms, 76);
+        assert_eq!(phase.processing_ms, 75);
+        assert_eq!(phase.network_ms, 1);
+        assert_eq!(phase.transport_summary.transports[0].rtt_median_ms, 76);
+        assert_eq!(phase.transport_summary.transports[0].net_rtt_median_ms, 1);
+    }
+
+    #[test]
     fn transport_telemetry_is_aggregated_instead_of_serializing_every_call() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         for (transport, fallback, round_trip_ms) in [
@@ -1085,6 +1119,7 @@ mod tests {
                     transport,
                     fallback,
                     round_trip_ms,
+                    network_ms: round_trip_ms,
                     bytes_sent: 100,
                     bytes_received: 200,
                 },
@@ -1099,6 +1134,7 @@ mod tests {
                     transport: crate::relay::InferenceTransport::Local,
                     fallback: false,
                     round_trip_ms: 10,
+                    network_ms: 10,
                     bytes_sent: 1818,
                     bytes_received: 192,
                 },

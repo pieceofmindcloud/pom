@@ -170,6 +170,10 @@ pub struct SentFrame {
     /// de medição: é custo de estabelecimento de conexão, não custo por token,
     /// e a tela precisa dizer isso - ver `Chat.tsx`.
     pub tls_handshake_ms: u64,
+    /// RTT suavizado medido pela pilha QUIC, sem o processamento do handler
+    /// remoto. TCP não expõe esse valor pelo reqwest e usa a diferença entre
+    /// wall-clock e `processing_ms` como medição de transporte.
+    pub transport_rtt_us: Option<u64>,
     /// Transporte escolhido para esta travessia, sem agregar os hops
     /// seguintes.
     pub transport: InferenceTransport,
@@ -455,6 +459,7 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
                         connection_state: response.connection_state,
                         tls: response.tls,
                         tls_handshake_ms,
+                        transport_rtt_us: response.transport_rtt_us,
                         transport: response.transport,
                         transport_fallback: response.transport_fallback,
                         transport_fallback_reason: response.transport_fallback_reason.clone(),
@@ -516,6 +521,7 @@ impl SentFrame {
             "connection_state": self.connection_state.as_str(),
             "tls": self.tls,
             "tls_handshake_ms": self.tls_handshake_ms,
+            "transport_rtt_us": self.transport_rtt_us,
             "transport": transport,
             "transport_fallback": self.transport_fallback,
             "transport_fallback_reason": self.transport_fallback_reason,
@@ -855,6 +861,7 @@ async fn send_frame_in_process(
         connection_state: crate::peer_client::ConnectionState::Unknown,
         tls: false,
         tls_handshake_ms,
+        transport_rtt_us: None,
         transport: InferenceTransport::Local,
         transport_fallback: false,
         transport_fallback_reason: None,
@@ -1003,6 +1010,7 @@ async fn send_frame_with_protocol(
                             response_body_ms: response.response_body_ms,
                             client_decode_ms,
                             connection_state: crate::peer_client::ConnectionState::Unknown,
+                            transport_rtt_us: Some(response.transport_rtt_us),
                             transport: InferenceTransport::Quic,
                             transport_fallback,
                             transport_fallback_reason,
@@ -1130,6 +1138,7 @@ async fn send_frame_with_protocol(
                         response_body_ms,
                         client_decode_ms,
                         connection_state,
+                        transport_rtt_us: None,
                         transport,
                         transport_fallback,
                         transport_fallback_reason,
@@ -1208,6 +1217,7 @@ struct BatchTransportResponse {
     response_body_ms: u64,
     client_decode_ms: u64,
     connection_state: crate::peer_client::ConnectionState,
+    transport_rtt_us: Option<u64>,
     tls: bool,
     transport: InferenceTransport,
     transport_fallback: bool,
@@ -1306,6 +1316,7 @@ async fn send_batch_body(
             response_body_ms: 0,
             client_decode_ms: 0,
             connection_state: crate::peer_client::ConnectionState::Unknown,
+            transport_rtt_us: None,
             tls: false,
             transport: InferenceTransport::Local,
             transport_fallback: false,
@@ -1362,6 +1373,7 @@ async fn send_batch_body(
                     response_body_ms: 0,
                     client_decode_ms: 0,
                     connection_state: crate::peer_client::ConnectionState::Unknown,
+                    transport_rtt_us: None,
                     tls: response.tls,
                     // Preserve the internal distinction for the link lab;
                     // `as_hop_timing_entry` exposes http/https to operators.
@@ -1437,8 +1449,9 @@ async fn send_batch_body(
                             response_headers_ms: response.response_headers_ms,
                             response_body_ms: response.response_body_ms,
                             client_decode_ms: 0,
-                            tls: true,
                             connection_state: crate::peer_client::ConnectionState::Unknown,
+                            transport_rtt_us: Some(response.transport_rtt_us),
+                            tls: true,
                             transport: InferenceTransport::Quic,
                             transport_fallback,
                             transport_fallback_reason,
@@ -1511,6 +1524,7 @@ async fn send_batch_body(
                         response_body_ms,
                         client_decode_ms,
                         connection_state,
+                        transport_rtt_us: None,
                         tls: url.starts_with("https://"),
                         transport,
                         transport_fallback,
@@ -1668,6 +1682,7 @@ async fn send_batch_via_tunnel(
         response_body_ms: 0,
         client_decode_ms: 0,
         connection_state: crate::peer_client::ConnectionState::Unknown,
+        transport_rtt_us: None,
         tls: false,
         transport: InferenceTransport::Libp2pTunnel,
         transport_fallback: false,
@@ -2021,6 +2036,7 @@ pub async fn send_frame_or_tunnel(
                     connection_state: crate::peer_client::ConnectionState::Unknown,
                     tls: response.tls,
                     tls_handshake_ms,
+                    transport_rtt_us: None,
                     transport: InferenceTransport::HttpsLink,
                     transport_fallback: false,
                     transport_fallback_reason: None,
@@ -2300,6 +2316,7 @@ async fn send_frame_via_tunnel_with_auth(
         response_body_ms,
         client_decode_ms,
         connection_state: crate::peer_client::ConnectionState::Unknown,
+        transport_rtt_us: None,
         transport: InferenceTransport::Libp2pTunnel,
         transport_fallback: false,
         transport_fallback_reason: None,
@@ -2614,6 +2631,7 @@ mod tests {
             connection_state: crate::peer_client::ConnectionState::Unknown,
             tls,
             tls_handshake_ms: handshake,
+            transport_rtt_us: None,
             transport: if tls {
                 InferenceTransport::Https
             } else {

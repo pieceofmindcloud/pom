@@ -22,10 +22,10 @@ mas o callback persistente termina no `ReplyInbox` do gateway. O
 anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
 a condição de a cabeça rascunhar na decodificação especulativa.
 As rotas internas desse listener exigem a `connection_key` e
-`x-pom-internal-node: 1` em redes privadas; em redes públicas exigem o
-transporte TLS e o marcador, sem segredo compartilhado. A chave local que o
-admin mantém para a UI pública não é enviada aos peers. Elas não aceitam API
-keys de cliente. Essa reconferência não assina os quadros de inferência. A
+`x-pom-internal-node: 1` em redes privadas; em redes públicas, HTTPS e QUIC
+podem usar o transporte seguro e o marcador, enquanto o fallback HTTP leva a
+mesma `connection_key` compartilhada com o marcador. Elas não aceitam API keys
+de cliente. Essa reconferência não assina os quadros de inferência. A
 chave pública e a assinatura Ed25519 são usadas separadamente no handshake para
 provar a identidade do peer.
 

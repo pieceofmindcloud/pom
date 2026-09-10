@@ -77,10 +77,15 @@ pub struct QuicResponse {
     pub body: Vec<u8>,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
+    /// Smoothed RTT measured by QUIC for the path, independent of handler
+    /// processing. Microseconds preserve sub-millisecond links such as the
+    /// co-located ksia peers.
+    pub transport_rtt_us: u64,
 }
 
 struct QuicSession {
     sender: tokio::sync::Mutex<h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>>,
+    connection: quinn::Connection,
 }
 
 #[derive(Clone)]
@@ -223,6 +228,7 @@ impl ClientPool {
                 body: output,
                 response_headers_ms,
                 response_body_ms: body_started.elapsed().as_millis() as u64,
+                transport_rtt_us: session.connection.rtt().as_micros() as u64,
             })
         }
         .await;
@@ -264,12 +270,14 @@ impl ClientPool {
         )
         .await
         .context("handshake QUIC não fechou no orçamento de RTT")??;
+        let connection_for_metrics = connection.clone();
         let (mut driver, sender) = h3::client::new(H3Connection::new(connection)).await?;
         tokio::spawn(async move {
             let _ = poll_fn(|cx| driver.poll_close(cx)).await;
         });
         let session = Arc::new(QuicSession {
             sender: tokio::sync::Mutex::new(sender),
+            connection: connection_for_metrics,
         });
         self.sessions
             .lock()
@@ -564,6 +572,11 @@ mod tests {
 
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(response.body, b"http3");
+        assert!(
+            response.transport_rtt_us < 100_000,
+            "warm QUIC path should report low transport RTT: {} us",
+            response.transport_rtt_us
+        );
         stop_tx.send(()).unwrap();
         server.await.unwrap();
     }

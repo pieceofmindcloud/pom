@@ -356,7 +356,8 @@ histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
   report prefix reuse means "unknown", and the chat shows nothing rather than
   claiming savings it cannot prove. The trace also carries prefix candidate and
   transmitted-token counts, reuse status, bounded prefill-overlap counters, and
-  per-transport traversal distributions with fallback and switch counts. The
+  per-transport traversal distributions with execution RTT, measured network
+  RTT, fallback and switch counts. The
   transport contract is aggregate by default, never one serialized entry per
   decode call. `RequestTrace` also exposes explicit HTTPS fallback counts and
   reasons, normal-mode token-cycle quantiles, and remote-stream delivery

@@ -31,9 +31,10 @@ retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
 abaixo do limite de religar durante o cooldown. `stop` limpa essa recuperação
 para respeitar uma desimplantação manual.
 As rotas de inferência entre peers usam a `connection_key` compartilhada com o
-marcador `x-pom-internal-node: 1` em redes privadas; em redes públicas usam
-transporte TLS e o marcador, sem segredo compartilhado. API keys de cliente não
-atravessam os hops. Cada quadro privado reconfere localmente o segredo em tempo
+marcador `x-pom-internal-node: 1` em redes privadas e também no fallback HTTP
+público; HTTPS e QUIC podem validar pelo transporte seguro e pelo marcador,
+sem depender do segredo. API keys de cliente não atravessam os hops. Cada quadro
+reconfere localmente o segredo em tempo
 constante, sem chamada extra à rede. A chave pública e a assinatura Ed25519
 pertencem ao handshake e à identidade do peer, não substituem a credencial
 simétrica do canal privado.

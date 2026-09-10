@@ -391,6 +391,10 @@ function transportLine(
     median: entry.rtt_median_ms,
     p95: entry.rtt_p95_ms,
     max: entry.rtt_max_ms,
+    netMin: entry.net_rtt_min_ms,
+    netMedian: entry.net_rtt_median_ms,
+    netP95: entry.net_rtt_p95_ms,
+    netMax: entry.net_rtt_max_ms,
     fallback: entry.fallback_calls,
   }));
   const switches = summary.transport_switches.map((switchEntry) => t("chat.telemetry.transportSwitch", {

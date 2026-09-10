@@ -91,9 +91,9 @@ uma falha de transporte direta, quando o membro anunciou `PeerId` e capability.
 Essa ordem é necessária para a coletiva: a chamada fica aguardando dentro da
 barreira e um túnel indisponível não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
-As rotas entre peers aceitam exclusivamente `Authorization: Bearer
-<connection_key>` junto de `x-pom-internal-node: 1` em redes privadas; em redes
- públicas o transporte TLS e o marcador substituem o segredo compartilhado. Uma
+As rotas entre peers aceitam `Authorization: Bearer <connection_key>` junto de
+`x-pom-internal-node: 1` em redes privadas e no fallback HTTP público; HTTPS e
+QUIC podem usar o transporte seguro e o marcador sem depender do segredo. Uma
 API key de cliente não é fallback e não atravessa o pipeline. O loopback do túnel
 mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
@@ -141,7 +141,10 @@ camadas completas por nó troca um frame de hidden state entre blocos e evita
 essas coletivas TP.
 
 O `PhaseTrace` também preserva `round_trip_ms`, a soma das idas e voltas
-observadas das chamadas daquela fase. Esse campo segue no `x_pom` do stream
+observadas das chamadas daquela fase, e `network_ms`, que usa o RTT de conexão
+medido pelo QUIC quando disponível ou o residual de `round_trip_ms` menos o
+`processing_ms` remoto no restante. O resumo publica os quantis de ambos. O
+campo segue no `x_pom` do stream
 para a tela do Chat e não entra no frame entre peers nem no planejador. O Chat
 usa `/api/ui/chat/telemetry` para buscar separadamente o RTT direcional das
 arestas entre os peers do trace. O `/health` publica `profile_sync_enabled`
@@ -776,8 +779,10 @@ fora desses códigos continua sendo final.
 Em `hop_timings` e no `transport_summary`, o campo `transport` representa o
 fio real e é limitado a `http`, `https` e `quic` para esses hops. O detalhe
 interno do link persistente não aparece como uma quarta camada: é normalizado
-para `http` ou `https`. O campo `tls` fica verdadeiro para QUIC porque o TLS
-1.3 pertence ao próprio protocolo, independentemente do interruptor TCP.
+para `http` ou `https`. O campo `transport_rtt_us` carrega o RTT medido pela
+conexão QUIC, sem o processamento do handler remoto. O campo `tls` fica
+verdadeiro para QUIC porque o TLS 1.3 pertence ao próprio protocolo,
+independentemente do interruptor TCP.
 
 **Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
 `Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,

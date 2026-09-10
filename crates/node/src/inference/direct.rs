@@ -472,6 +472,8 @@ fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value 
         "transport_fallback": sent.transport_fallback,
         "transport_fallback_reason": sent.transport_fallback_reason,
         "round_trip_ms": sent.round_trip_ms,
+        "processing_ms": sent.meta.get("processing_ms").cloned().unwrap_or(json!(0)),
+        "transport_rtt_us": sent.transport_rtt_us,
         "bytes_sent": sent.bytes_sent,
         "bytes_received": sent.bytes_received,
         "tls": sent.tls,
@@ -1229,6 +1231,7 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
     hop["client_decode_ms"] = json!(sent.client_decode_ms);
     hop["tls"] = json!(sent.tls);
     hop["tls_handshake_ms"] = json!(sent.tls_handshake_ms);
+    hop["transport_rtt_us"] = json!(sent.transport_rtt_us);
     hop["transport"] = json!(sent.telemetry_transport().as_str());
     hop["transport_fallback"] = json!(sent.transport_fallback);
 }
@@ -1574,6 +1577,7 @@ mod tests {
                 connection_state: crate::peer_client::ConnectionState::Unknown,
                 tls: false,
                 tls_handshake_ms: 0,
+                transport_rtt_us: None,
                 transport: crate::relay::InferenceTransport::Libp2pTunnel,
                 transport_fallback: false,
                 transport_fallback_reason: None,
@@ -1851,6 +1855,7 @@ mod tests {
             connection_state: crate::peer_client::ConnectionState::Unknown,
             tls: false,
             tls_handshake_ms: 0,
+            transport_rtt_us: None,
             transport: crate::relay::InferenceTransport::Libp2pTunnel,
             transport_fallback: false,
             transport_fallback_reason: None,

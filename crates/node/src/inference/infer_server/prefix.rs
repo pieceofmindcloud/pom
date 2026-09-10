@@ -882,8 +882,21 @@ mod internal_auth_tests {
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(
-            app.oneshot(insecure_request).await.unwrap().status(),
+            app.clone().oneshot(insecure_request).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
+        );
+
+        let authorized_insecure_request = Request::post("/v1/prefill")
+            .header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1")
+            .header("authorization", "Bearer local-admin-credential")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(authorized_insecure_request)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
         );
     }
 }

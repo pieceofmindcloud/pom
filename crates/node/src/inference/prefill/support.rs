@@ -252,7 +252,14 @@ pub struct TlsHop {
 pub struct TransportTrace {
     pub transport: crate::relay::InferenceTransport,
     pub fallback: bool,
+    /// Wall-clock do chamador: enfileirar o frame até a resposta chegar.
+    /// **Inclui** o nó remoto rodando o handler de step/prefill.
     pub round_trip_ms: u64,
+    /// `round_trip_ms` menos o `processing_ms` que o nó remoto reportou de si:
+    /// o custo de transporte de fio, sem o compute do outro lado. É o número
+    /// que o card de telemetria deve mostrar por perna - um `round_trip` cheio
+    /// nunca chega perto do RTT de rede medido em 0,5 ms entre nós co-locados.
+    pub network_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
@@ -654,13 +661,24 @@ pub struct TransportSummaryEntry {
     pub calls: u32,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// RTT cheio, incluindo o compute do nó remoto. Mantido para o total de
+    /// RTT de execução e compatibilidade com o front antigo.
     pub rtt_min_ms: u64,
     pub rtt_median_ms: u64,
     pub rtt_p95_ms: u64,
     pub rtt_max_ms: u64,
+    /// RTT só de transporte: `round_trip - processing_ms` remoto. É o que a
+    /// perna do card deve exibir; sem ele um link QUIC entre nós co-locados
+    /// aparecia com ~76 ms de "RTT" que era compute do outro lado.
+    pub net_rtt_min_ms: u64,
+    pub net_rtt_median_ms: u64,
+    pub net_rtt_p95_ms: u64,
+    pub net_rtt_max_ms: u64,
     pub fallback_calls: u32,
     #[serde(skip)]
     pub(super) rtt: RttDistribution,
+    #[serde(skip)]
+    pub(super) net_rtt: RttDistribution,
 }
 
 impl TransportSummaryEntry {
@@ -674,8 +692,13 @@ impl TransportSummaryEntry {
             rtt_median_ms: 0,
             rtt_p95_ms: 0,
             rtt_max_ms: 0,
+            net_rtt_min_ms: 0,
+            net_rtt_median_ms: 0,
+            net_rtt_p95_ms: 0,
+            net_rtt_max_ms: 0,
             fallback_calls: 0,
             rtt: RttDistribution::default(),
+            net_rtt: RttDistribution::default(),
         }
     }
 
@@ -687,6 +710,7 @@ impl TransportSummaryEntry {
             self.fallback_calls = self.fallback_calls.saturating_add(1);
         }
         self.rtt.record(trace.round_trip_ms);
+        self.net_rtt.record(trace.network_ms);
         self.refresh_percentiles();
     }
 
@@ -696,6 +720,7 @@ impl TransportSummaryEntry {
         self.bytes_received = self.bytes_received.saturating_add(other.bytes_received);
         self.fallback_calls = self.fallback_calls.saturating_add(other.fallback_calls);
         self.rtt.merge(&other.rtt);
+        self.net_rtt.merge(&other.net_rtt);
         self.refresh_percentiles();
     }
 
@@ -704,6 +729,10 @@ impl TransportSummaryEntry {
         self.rtt_median_ms = self.rtt.percentile(50);
         self.rtt_p95_ms = self.rtt.percentile(95);
         self.rtt_max_ms = self.rtt.max_ms;
+        self.net_rtt_min_ms = self.net_rtt.min_ms;
+        self.net_rtt_median_ms = self.net_rtt.percentile(50);
+        self.net_rtt_p95_ms = self.net_rtt.percentile(95);
+        self.net_rtt_max_ms = self.net_rtt.max_ms;
     }
 }
 
@@ -899,17 +928,34 @@ impl PipelineCycleTelemetry {
 }
 
 impl TransportTrace {
+    fn measured_network_ms(transport_rtt_us: Option<u64>) -> Option<u64> {
+        transport_rtt_us.map(|microseconds| microseconds.saturating_add(999) / 1_000)
+    }
+
     pub(super) fn from_sent(sent: &crate::relay::SentFrame) -> Self {
+        let processing_ms = sent
+            .meta
+            .get("processing_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
         Self {
             transport: sent.telemetry_transport(),
             fallback: sent.transport_fallback,
             round_trip_ms: sent.round_trip_ms,
+            network_ms: Self::measured_network_ms(sent.transport_rtt_us)
+                .unwrap_or_else(|| sent.round_trip_ms.saturating_sub(processing_ms)),
             bytes_sent: sent.bytes_sent,
             bytes_received: sent.bytes_received,
         }
     }
 
     pub(super) fn from_json(entry: &serde_json::Value) -> Self {
+        let get = |key: &str| entry.get(key).and_then(|value| value.as_u64()).unwrap_or(0);
+        let round_trip_ms = get("round_trip_ms");
+        let processing_ms = get("processing_ms");
+        let measured_network_ms = Self::measured_network_ms(
+            entry.get("transport_rtt_us").and_then(|value| value.as_u64()),
+        );
         Self {
             transport: entry
                 .get("transport")
@@ -920,18 +966,11 @@ impl TransportTrace {
                 .get("transport_fallback")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false),
-            round_trip_ms: entry
-                .get("round_trip_ms")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0),
-            bytes_sent: entry
-                .get("bytes_sent")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0),
-            bytes_received: entry
-                .get("bytes_received")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0),
+            round_trip_ms,
+            network_ms: measured_network_ms
+                .unwrap_or_else(|| round_trip_ms.saturating_sub(processing_ms)),
+            bytes_sent: get("bytes_sent"),
+            bytes_received: get("bytes_received"),
         }
     }
 }
@@ -2234,6 +2273,20 @@ impl RequestTrace {
             },
             &sent.meta["node_timings"],
         );
+        if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
+            sent.transport_rtt_us,
+        ) {
+            if let Some(entry) = self.hops.get_mut(hop) {
+                let slot = match phase {
+                    Phase::Prefill => &mut entry.prefill,
+                    Phase::Decode => &mut entry.decode,
+                };
+                slot.network_ms = slot
+                    .network_ms
+                    .saturating_sub(sent.round_trip_ms.saturating_sub(processing_ms))
+                    .saturating_add(measured_network_ms);
+            }
+        }
         self.record_hidden_state(
             hop,
             phase,
@@ -2605,6 +2658,20 @@ impl RequestTrace {
             },
             &entry["node_timings"],
         );
+        if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
+            entry.get("transport_rtt_us").and_then(|value| value.as_u64()),
+        ) {
+            if let Some(entry) = self.hops.get_mut(hop) {
+                let slot = match phase {
+                    Phase::Prefill => &mut entry.prefill,
+                    Phase::Decode => &mut entry.decode,
+                };
+                slot.network_ms = slot
+                    .network_ms
+                    .saturating_sub(get("round_trip_ms").saturating_sub(get("processing_ms")))
+                    .saturating_add(measured_network_ms);
+            }
+        }
         let represented_spans = get("span_count");
         if represented_spans > 1 {
             if let Some(hop_entry) = self.hops.get_mut(hop) {

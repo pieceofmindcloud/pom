@@ -1025,6 +1025,8 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
             };
             for field in [
                 "round_trip_ms",
+                "processing_ms",
+                "transport_rtt_us",
                 "bytes_sent",
                 "bytes_received",
                 "client_encode_ms",

@@ -277,6 +277,11 @@ export interface TransportSummaryEntry {
   rtt_median_ms: number;
   rtt_p95_ms: number;
   rtt_max_ms: number;
+  /** RTT de rede medido no transporte, sem o processamento remoto. */
+  net_rtt_min_ms: number;
+  net_rtt_median_ms: number;
+  net_rtt_p95_ms: number;
+  net_rtt_max_ms: number;
   fallback_calls: number;
 }
 

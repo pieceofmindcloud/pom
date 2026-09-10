@@ -493,9 +493,11 @@ Comportamento atual do código:
    `/v1/step-stream`, `/v1/session/release`, `/v1/session/rollback` e
    `/v1/tp/reduce` aceitam a
    `connection_key` compartilhada ou uma API key ativa no nó receptor. A
-   `connection_key` é a credencial usada nas chamadas internas; API keys são
-   aceitas para manter o mesmo contrato de autenticação disponível nas APIs
-   externas. `/health` permanece público para readiness.
+   `connection_key` é a credencial usada nas chamadas internas, inclusive no
+   fallback HTTP público; HTTPS e QUIC também podem provar o canal pelo
+   transporte seguro. API keys são aceitas para manter o mesmo contrato de
+   autenticação disponível nas APIs externas. `/health` permanece público para
+   readiness.
 
 ## 5. TLS entre peers
 
@@ -677,7 +679,8 @@ escutando, a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e
 marca `transport_fallback`; o túnel só é a última reserva depois de uma falha
 de transporte também no caminho TCP.
 A telemetria por hop publica o transporte efetivo como `http`, `https` ou
-`quic`.
+`quic`. Para QUIC, `transport_rtt_us` é o RTT medido pela conexão UDP e os
+quantis de rede ficam separados do tempo de processamento remoto.
 
 ## Logs de processo do cluster
 

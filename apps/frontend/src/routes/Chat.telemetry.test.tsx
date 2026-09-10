@@ -482,6 +482,10 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
             rtt_median_ms: 10,
             rtt_p95_ms: 10,
             rtt_max_ms: 50,
+            net_rtt_min_ms: 0,
+            net_rtt_median_ms: 0,
+            net_rtt_p95_ms: 0,
+            net_rtt_max_ms: 0,
             fallback_calls: 0,
           },
           {
@@ -493,6 +497,10 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
             rtt_median_ms: 40,
             rtt_p95_ms: 40,
             rtt_max_ms: 40,
+            net_rtt_min_ms: 1,
+            net_rtt_median_ms: 1,
+            net_rtt_p95_ms: 2,
+            net_rtt_max_ms: 2,
             fallback_calls: 1,
           },
           {
@@ -504,6 +512,10 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
             rtt_median_ms: 25,
             rtt_p95_ms: 30,
             rtt_max_ms: 35,
+            net_rtt_min_ms: 1,
+            net_rtt_median_ms: 1,
+            net_rtt_p95_ms: 2,
+            net_rtt_max_ms: 2,
             fallback_calls: 0,
           },
         ],
@@ -535,7 +547,8 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
   it("mostra a distribuição de transporte e a troca sem listar cada chamada", () => {
     mount(<ExecutionTelemetry trace={summaryTrace} />);
     expect(screen.getByText(/local: 5001 chamadas/)).toBeTruthy();
-    expect(screen.getByText(/RTT mínimo\/mediana\/p95\/máximo 10\/10\/10\/50 ms/)).toBeTruthy();
+    expect(screen.getByText(/RTT de execução mínimo\/mediana\/p95\/máximo 10\/10\/10\/50 ms/)).toBeTruthy();
+    expect(screen.getByText(/RTT de rede mínimo\/mediana\/p95\/máximo 0\/0\/0\/0 ms/)).toBeTruthy();
     expect(screen.getByText(/fallback total 1/)).toBeTruthy();
     expect(screen.getByText(/quic: 3 chamadas/)).toBeTruthy();
     expect(screen.getByText(/troca de transporte local -> https \(1\)/)).toBeTruthy();

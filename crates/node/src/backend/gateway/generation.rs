@@ -1642,13 +1642,12 @@ fn inference_route_candidates(step: &crate::pipeline::PipelineStep) -> Vec<Strin
 /// peer, pelo mesmo transporte que o decode: QUIC primeiro quando a preferência
 /// do cluster é QUIC, e HTTP/HTTPS como reserva.
 ///
-/// Por que não só `http.post(...).json(...)`: numa rede pública sem TLS de
-/// aplicação, o peer não compartilha `connection_key`, então
-/// `authorize_inference_request_for_session` não anexa `Authorization` e o
-/// `require_inference_auth` do peer responde `401 missing Authorization
-/// header` - deixando a sessão retida. Pelo QUIC a requisição carrega o
-/// marcador interno sobre transporte cifrado, que é a credencial aceita nesse
-/// caso (e o bearer da `connection_key` quando a rede é privada). Uma falha de
+/// Por que não só `http.post(...).json(...)`: toda requisição precisa carregar
+/// o marcador interno e o bearer da `connection_key` quando configurado. Isso
+/// mantém o mesmo contrato de autenticação no HTTP, HTTPS e no fallback de
+/// QUIC; sem o header, `require_inference_auth` responde `401 missing
+/// Authorization header` e deixa a sessão retida. QUIC também pode ser aceito
+/// pelo marcador sobre transporte cifrado na rede pública. Uma falha de
 /// transporte QUIC cai para o caminho HTTP; um 404/405 significa peer sem a
 /// rota HTTP/3 e também cai para HTTP.
 ///

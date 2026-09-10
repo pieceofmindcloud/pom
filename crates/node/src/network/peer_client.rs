@@ -151,9 +151,11 @@ const ROUTE_FAILURE_STREAK: u32 = 3;
 
 /// Um endereço anunciado que engole SYN não pode entregar o controle do
 /// processo ao timeout do sistema operacional. O timeout total da requisição
-/// continua sendo escolhido pelo chamador, mas a conexão tem teto próprio.
+/// continua sendo escolhido pelo chamador, mas a conexão tem teto próprio -
+/// sub-segundo, para um endereço direto morto virar fallback (para o túnel
+/// Noise) quase de imediato, no mesmo espírito do orçamento de RTT do QUIC.
 #[cfg(not(test))]
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 
 #[cfg(test)]
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(50);

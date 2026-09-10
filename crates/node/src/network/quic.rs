@@ -55,6 +55,23 @@ pub fn inference_quic_port(p2p_port: u16) -> Option<u16> {
     p2p_port.checked_add(INFERENCE_QUIC_OFFSET)
 }
 
+/// Estabelecer a conexão/stream QUIC é caminho de controle: num link vivo
+/// leva um RTT. Se não fechou nesse orçamento, o caminho UDP está morto e o
+/// hop precisa cair para o próximo transporte **sem esperar**.
+pub(crate) const QUIC_ESTABLISH_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Empurrar o corpo (o estado oculto do prefill são alguns MB) é o único
+/// trecho de envio que pode legitimamente demorar mais que um RTT. Ainda
+/// assim, num link são drena em dezenas de ms; 1,5 s é teto de "algo travou".
+pub(crate) const QUIC_SEND_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Sem tráfego reconhecido por este período a conexão fecha com erro - é o
+/// que detecta um caminho UDP morto em ~1 s em vez dos 600 s do frame. O
+/// keep-alive mantém uma conexão viva-porém-lenta (o peer computando o
+/// prefill/decode) sob esse teto, porque cada PING volta reconhecido.
+pub(crate) const QUIC_MAX_IDLE: Duration = Duration::from_millis(1200);
+pub(crate) const QUIC_KEEP_ALIVE: Duration = Duration::from_millis(250);
+
 pub struct QuicResponse {
     pub status: StatusCode,
     pub body: Vec<u8>,
@@ -163,24 +180,29 @@ impl ClientPool {
             }
             let request = request_builder.body(())?;
             let mut sender = session.sender.lock().await.clone();
-            let mut stream = tokio::time::timeout(timeout, sender.send_request(request))
+            // Abrir o stream é controle: um RTT num link vivo. Passou de
+            // `QUIC_ESTABLISH_TIMEOUT` => caminho UDP morto, aborta já para o
+            // chamador cair no próximo transporte sem penalidade de espera.
+            let mut stream =
+                tokio::time::timeout(QUIC_ESTABLISH_TIMEOUT, sender.send_request(request))
+                    .await
+                    .context("abertura do stream HTTP/3 não fechou no orçamento de RTT")??;
+            // `send_data`/`finish` empurram o corpo (o estado oculto do prefill
+            // são alguns MB). Num link são drena em dezenas de ms; passou de
+            // `QUIC_SEND_TIMEOUT` => travou, cai para TCP.
+            tokio::time::timeout(QUIC_SEND_TIMEOUT, stream.send_data(Bytes::from(body)))
                 .await
-                .context("abertura do stream HTTP/3 expirou")??;
-            // `send_data`/`finish` pendem no controle de fluxo do QUIC: um
-            // corpo grande (o handoff de prefill leva o estado oculto de todo
-            // o prompt) trava aqui até o peer liberar janela. Sem o timeout,
-            // um peer que não drena o corpo pendura o hop de prefill para
-            // sempre - o decode tinha fallback, o prefill não. Com o timeout,
-            // o erro sobe e `send_frame_with_protocol` cai para TCP.
-            tokio::time::timeout(timeout, stream.send_data(Bytes::from(body)))
-                .await
-                .context("envio do corpo HTTP/3 expirou")?
+                .context("envio do corpo HTTP/3 travou")?
                 .map_err(|error| anyhow!("envio do corpo HTTP/3 falhou: {error}"))?;
-            tokio::time::timeout(timeout, stream.finish())
+            tokio::time::timeout(QUIC_SEND_TIMEOUT, stream.finish())
                 .await
-                .context("finalização do corpo HTTP/3 expirou")?
+                .context("finalização do corpo HTTP/3 travou")?
                 .map_err(|error| anyhow!("finalização do corpo HTTP/3 falhou: {error}"))?;
             let headers_started = std::time::Instant::now();
+            // A espera da resposta cobre o processamento remoto (prefill/decode
+            // legítimos passam de 1 s), então mantém o orçamento do frame como
+            // teto - mas o `max_idle_timeout` da conexão (~1,2 s) faz um
+            // caminho morto **aqui** errar em ~1 s, não em `timeout`.
             let response = tokio::time::timeout(timeout, stream.recv_response())
                 .await
                 .context("resposta HTTP/3 expirou")??;
@@ -215,7 +237,7 @@ impl ClientPool {
         key: &str,
         peer_id: &str,
         advertised: &str,
-        timeout: Duration,
+        _timeout: Duration,
     ) -> Result<Arc<QuicSession>> {
         if let Some(session) = self.sessions.lock().await.get(key).cloned() {
             return Ok(session);
@@ -229,8 +251,11 @@ impl ClientPool {
         // prefill também recebe alguns MB de estado oculto.
         config.transport_config(Arc::new(inference_transport_config()));
         let endpoint = self.endpoint().await?;
+        // O handshake QUIC é 1-RTT (0-RTT quando há ticket). Um orçamento de
+        // sub-segundo é o que transforma "peer QUIC inalcançável" em um
+        // fallback imediato para TCP, em vez de segurar o hop de inferência.
         let connection = tokio::time::timeout(
-            timeout,
+            QUIC_ESTABLISH_TIMEOUT,
             endpoint
                 // The certificate verifier pins the full node_id. SNI only
                 // needs a valid DNS label; a 64-character hex node_id can
@@ -238,7 +263,7 @@ impl ClientPool {
                 .connect_with(config, addr, &format!("peer.{}", crate::brand::slug()))?,
         )
         .await
-        .context("handshake QUIC expirou")??;
+        .context("handshake QUIC não fechou no orçamento de RTT")??;
         let (mut driver, sender) = h3::client::new(H3Connection::new(connection)).await?;
         tokio::spawn(async move {
             let _ = poll_fn(|cx| driver.poll_close(cx)).await;
@@ -291,11 +316,9 @@ pub(crate) fn inference_transport_config() -> quinn::TransportConfig {
     // idle timeout curto e keep-alive, um caminho morto falha em segundos e o
     // `send_frame_with_protocol` cai para TCP.
     transport.max_idle_timeout(Some(
-        Duration::from_secs(20)
-            .try_into()
-            .expect("20 s cabe em VarInt"),
+        QUIC_MAX_IDLE.try_into().expect("QUIC_MAX_IDLE cabe em VarInt"),
     ));
-    transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    transport.keep_alive_interval(Some(QUIC_KEEP_ALIVE));
     transport
 }
 

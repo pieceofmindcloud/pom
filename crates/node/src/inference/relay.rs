@@ -3201,6 +3201,51 @@ mod tests {
             .is_some_and(|reason| reason.contains("401")));
     }
 
+    /// Um endereço QUIC anunciado que não responde (porta UDP fechada, caminho
+    /// morto) não pode segurar o hop: o handshake tem orçamento de RTT e o
+    /// chamador cai para o próximo transporte em bem menos de 1 s.
+    #[tokio::test]
+    async fn a_dead_quic_address_fails_over_fast() {
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        clients.set_quic(true);
+        let mut step = step_with(
+            "http://127.0.0.1:1",
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        // 127.0.0.1:9 (discard) não tem endpoint QUIC: o handshake nunca fecha.
+        step.quic_addr_candidates = vec!["127.0.0.1:9".to_string()];
+        let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
+
+        let started = Instant::now();
+        let sent = send_frame_or_tunnel(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            "/v1/prefill",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("QUIC morto deve cair para o túnel, não pendurar");
+
+        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "fallback demorou {:?}, deveria ser sub-segundo por transporte",
+            started.elapsed()
+        );
+    }
+
     #[tokio::test]
     async fn quic_precedes_the_tunnel_when_the_endpoint_is_available() {
         use axum::{body::Bytes, http::StatusCode, routing::post, Router};

@@ -19,11 +19,40 @@ use std::time::Duration;
 use tokio::net::lookup_host;
 use tracing::{debug, info};
 
-/// Porta UDP dedicada do HTTP/3, derivada da porta TCP do mesmo serviço.
-/// TCP e UDP podem compartilhar o número, mas uma porta própria torna o
-/// endpoint anunciado inequívoco e evita que o cliente confunda os dois.
-pub fn dedicated_port(tcp_port: u16) -> Option<u16> {
-    tcp_port.checked_add(1)
+/// Offsets a partir do `p2p_port` do próprio nó para as portas UDP dos
+/// endpoints HTTP/3.
+///
+/// A derivação **não** pode partir de `gateway_port`/`inference_port`: num
+/// cluster co-locado (host networking, todos os nós no mesmo namespace) esses
+/// números são consecutivos entre nós, então `porta + 1` cai exatamente na
+/// `gateway_port` do nó vizinho. Foi o que quebrou a descoberta na ksia -
+/// a porta QUIC de um nó ocupava a porta de gateway do seguinte.
+///
+/// O `p2p_port` já é único por nó co-locado (42777/42778/…). Os offsets são
+/// altos e distintos para que as bandas de gateway-QUIC e inference-QUIC não
+/// recolidam entre si nem com a faixa de `p2p_port`.
+const GATEWAY_QUIC_OFFSET: u16 = 2000;
+const INFERENCE_QUIC_OFFSET: u16 = 1000;
+
+/// Porta UDP do HTTP/3 do gateway, derivada do `p2p_port` deste nó.
+///
+/// `None` quando `p2p_port` é 0 (bind efêmero pedido na config, ainda sem
+/// número real) ou quando o offset estoura `u16`: nos dois casos o QUIC fica
+/// desligado e o hop cai no TCP, em vez de arriscar uma colisão de porta.
+pub fn gateway_quic_port(p2p_port: u16) -> Option<u16> {
+    if p2p_port == 0 {
+        return None;
+    }
+    p2p_port.checked_add(GATEWAY_QUIC_OFFSET)
+}
+
+/// Porta UDP do HTTP/3 da inferência, derivada do `p2p_port` deste nó.
+/// Mesmas condições de `None` que [`gateway_quic_port`].
+pub fn inference_quic_port(p2p_port: u16) -> Option<u16> {
+    if p2p_port == 0 {
+        return None;
+    }
+    p2p_port.checked_add(INFERENCE_QUIC_OFFSET)
 }
 
 pub struct QuicResponse {
@@ -381,6 +410,44 @@ mod tests {
     use super::*;
     use axum::{routing::post, Router};
     use tokio::sync::oneshot;
+
+    #[test]
+    fn portas_quic_derivam_do_p2p_port_e_nao_estouram() {
+        assert_eq!(gateway_quic_port(42777), Some(44777));
+        assert_eq!(inference_quic_port(42777), Some(43777));
+        // p2p efêmero ou offset que estoura u16 => QUIC desligado, não colisão.
+        assert_eq!(gateway_quic_port(0), None);
+        assert_eq!(inference_quic_port(0), None);
+        assert_eq!(gateway_quic_port(u16::MAX - 10), None);
+    }
+
+    /// Cenário da ksia: 4 nós co-locados no mesmo namespace (host networking),
+    /// `p2p_port` 42777..=42780, gateways 8080..=8083, inferências 8180..=8183.
+    /// Nenhuma porta QUIC pode cair sobre a gateway_port/inference_port/p2p_port
+    /// de outro nó - era isso que `gateway_port + 1` fazia.
+    #[test]
+    fn quatro_nos_colocados_nao_tem_colisao_de_porta() {
+        let mut todas = Vec::new();
+        for i in 0..4u16 {
+            let p2p = 42777 + i;
+            let gateway = 8080 + i;
+            let inference = 8180 + i;
+            todas.push(("p2p", p2p));
+            todas.push(("gateway", gateway));
+            todas.push(("inference", inference));
+            todas.push(("gateway_quic", gateway_quic_port(p2p).unwrap()));
+            todas.push(("inference_quic", inference_quic_port(p2p).unwrap()));
+        }
+        for a in 0..todas.len() {
+            for b in (a + 1)..todas.len() {
+                assert_ne!(
+                    todas[a].1, todas[b].1,
+                    "colisão de porta entre {} e {} ({})",
+                    todas[a].0, todas[b].0, todas[a].1
+                );
+            }
+        }
+    }
 
     #[test]
     fn endpoint_quic_deriva_socketaddr_do_anuncio_e_nao_de_url_http() {

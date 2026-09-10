@@ -45,9 +45,12 @@ O listener HTTP de inferência é dual-stack, ou cai para IPv4 quando a máquina
 não oferece IPv6, independentemente da exposição da interface administrativa:
 ele é a reserva quando o túnel libp2p falha.
 O listener HTTP/3 usa uma porta UDP dedicada, anunciada em
-`inference_quic_port`, derivada da porta TCP por `TCP + 1`; o cliente usa os
-endereços públicos `host:porta` do anúncio e cai para HTTP/HTTPS se o endpoint
-não responder.
+`inference_quic_port`, derivada do `p2p_port` **deste nó**
+(`quic::inference_quic_port` = `p2p_port + 1000`); nunca de
+`inference_port`/`gateway_port`, que são consecutivos entre nós co-locados e
+fariam a porta QUIC de um nó cair sobre a porta de gateway do vizinho. O
+cliente usa os endereços públicos `host:porta` do anúncio e cai para
+HTTP/HTTPS se o endpoint não responder.
 No handoff entre peers, a preferência QUIC escolhe o endpoint HTTP/3; sem ela,
 o link persistente publica `https-link` ou `http-link` conforme o endereço
 efetivamente usado. O prefill e o decode usam essa mesma escada, e uma queda

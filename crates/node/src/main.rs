@@ -874,8 +874,11 @@ async fn async_main(
 
     // ── Determine Ollama port to advertise ───────────────────────────────────
     let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
-    let inference_quic_port = inference_port.and_then(crate::quic::dedicated_port);
-    let gateway_quic_port = crate::quic::dedicated_port(gateway_port);
+    // Portas QUIC derivadas do `p2p_port` deste nó, nunca de gateway/inference:
+    // ver `quic::gateway_quic_port`.
+    let inference_quic_port =
+        inference_port.and_then(|_| crate::quic::inference_quic_port(p2p_port));
+    let gateway_quic_port = crate::quic::gateway_quic_port(p2p_port);
 
     peer_client::set_quic_ativo(app_config.quic_enabled);
 
@@ -1834,8 +1837,10 @@ async fn start_gateway_only(
     );
     let ollama_port = advertised_ollama_port(&ollama_url);
     let inference_port = Some(app_config.inference_port_or_default());
-    let inference_quic_port = inference_port.and_then(crate::quic::dedicated_port);
-    let gateway_quic_port = crate::quic::dedicated_port(gateway_port);
+    // Portas QUIC derivadas do `p2p_port` deste nó: ver `quic::gateway_quic_port`.
+    let inference_quic_port =
+        inference_port.and_then(|_| crate::quic::inference_quic_port(app_config.p2p_port));
+    let gateway_quic_port = crate::quic::gateway_quic_port(app_config.p2p_port);
     peer_client::set_quic_ativo(app_config.quic_enabled);
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(

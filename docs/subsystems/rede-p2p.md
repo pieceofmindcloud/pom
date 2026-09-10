@@ -643,9 +643,14 @@ vale somente para chamadas novas; conexões e inferências em andamento não sã
 interrompidas.
 
 Quando ligada, o servidor de inferência e o gateway escutam HTTP/3 em endpoints
-UDP dedicados, derivados da porta TCP por `dedicated_port` (`TCP + 1`). As
-portas são publicadas no `Announce` como `inference_quic_port` e
-`gateway_quic_port`. O cliente constrói `host:porta` a partir do endereço
+UDP dedicados, derivados do `p2p_port` **do próprio nó**:
+`quic::inference_quic_port` = `p2p_port + 1000` e `quic::gateway_quic_port` =
+`p2p_port + 2000`. A derivação nunca parte de `inference_port`/`gateway_port`:
+num cluster co-locado (host networking) esses números são consecutivos entre
+nós, então `porta + 1` cairia na porta de gateway do nó vizinho e quebrava a
+descoberta. O `p2p_port` já é único por nó co-locado; `p2p_port` 0 (bind
+efêmero) ou offset que estoura `u16` desligam o QUIC e mantêm o TCP. As portas
+são publicadas no `Announce` como `inference_quic_port` e `gateway_quic_port`. O cliente constrói `host:porta` a partir do endereço
 público anunciado pelo peer, incluindo a forma com IPv6 entre colchetes; nunca
 extrai um destino UDP de `inference_url` nem tenta a porta TCP.
 

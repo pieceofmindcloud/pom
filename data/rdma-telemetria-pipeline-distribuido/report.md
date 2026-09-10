@@ -845,3 +845,57 @@ persistente correlacionado, mantendo a espera causal de um token antes do
 seguinte. O E2E longo precisa ser repetido após o deploy dessa alteração, com
 um prompt que evite o detector de repetição e com TTFT, geração, wall,
 p50/p95/p99 e fallback HTTPS registrados separadamente.
+
+### 17.11 E2E após o canal persistente A -> B
+
+Depois do deploy de `15caf764` nas duas máquinas, com `POM_PROFILE=trace` e
+`POM_PROFILE_SYNC=1`, foi repetido o pedido longo de `max_tokens=200` pelo
+gateway KSIA. O modelo encerrou em 90 tokens. O trace completo foi
+`chatcmpl-f553641ffcc849fba1fb666f1582d4c7`, com 2/2 peers, 178/178 spans,
+`trace.complete=true`, `telemetry.status=complete` e zero fallback HTTPS.
+
+| Métrica | `65e88d10` | `15caf764` | Variação |
+|---|---:|---:|---:|
+| TTFT | 636 ms | 1.367 ms | +731 ms |
+| Geração | 6.280 ms | 4.146 ms | -2.134 ms |
+| Geração tok/s | 14,33 | 21,71 | +51,5% |
+| Wall tok/s | 13,01 | 16,33 | +25,5% |
+| Remote-stream wait p50 | 70 ms | 44 ms | -26 ms |
+| Remote-stream wait p95 | 74 ms | 48 ms | -26 ms |
+| Producer wait p50 | 69 ms | 44 ms | -25 ms |
+| Queue wait total | 0 ms | 0 ms | estável |
+| Frames | 89 | 89 | estável |
+
+O ganho de geração supera tanto a referência anterior de 13,5 tok/s (+60,8%)
+quanto a referência de 18,8 tok/s (+15,5%). A amostra, porém, não deve ser
+usada para declarar melhoria de TTFT: o TTFT subiu 731 ms nesta corrida
+isolada, apesar de o prefill ter durado 1.065 ms e não haver fila de reclaim;
+é necessária uma série fria/quente controlada para separar inicialização e
+jitter do efeito do hop. O alvo de geração foi atingido: o tempo de decode
+caiu 34,0% e o wall-clock total caiu 20,3%.
+
+Uma segunda leitura longa, feita somente para extrair os campos por hop, teve
+96 tokens e terminou com `telemetry.status=collecting`; por isso não entra na
+taxa final. Mesmo assim, ela fechou a prova de transporte: no peer B, o decode
+teve 95 chamadas `https-link`, RTT mínimo 35 ms, mediana 38 ms, p95 43 ms e
+máximo 43 ms, com zero fallback. Não houve as 95 chamadas
+`libp2p-tunnel` por token observadas no diagnóstico anterior. Os 95 itens de
+retorno aparecem no A como `remote-stream`; a única chamada `libp2p-tunnel`
+restante é o frame de controle/abertura do stream. O frame interno agora
+reutiliza uma única ligação persistente, exatamente como o teste de bancada
+publicado em `link_lab` exige.
+
+O novo trace também confirma que a fila local não voltou a ser o gargalo:
+`remote_stream_queue_wait_total_ms=0`, `remote_stream_producer_wait_p50_ms=44`
+e `remote_stream_producer_wait_p95_ms=47`. O compute remoto somou 373 ms, com
+p50 de 4 ms. A redução de aproximadamente 70 para 44 ms por rodada é,
+portanto, coerente com a troca comprovada de request/reply libp2p por frame
+para o canal `/v1/link`; a dependência autoregressiva continua serial, mas o
+overhead de transporte e enquadramento por ativação deixou de ser pago como
+uma nova chamada.
+
+O traço longo anterior de 65e88d10 permanece a comparação de geração, e o
+trace diagnóstico posterior serve somente para validar o transporte. O
+próximo benchmark deve repetir pelo menos cinco corridas com o mesmo prompt,
+separar primeira corrida de canal aquecido e publicar mediana/p95 de TTFT,
+geração, wall e RTT A -> B.

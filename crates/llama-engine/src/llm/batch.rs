@@ -94,7 +94,13 @@ pub struct BatchEntry {
 
 impl BatchEntry {
     #[cfg(test)]
-    pub(super) fn test(item_id: &str, seq_id: u32, pos: u32, tokens: usize, want_logits: bool) -> Self {
+    pub(super) fn test(
+        item_id: &str,
+        seq_id: u32,
+        pos: u32,
+        tokens: usize,
+        want_logits: bool,
+    ) -> Self {
         Self {
             item_id: item_id.into(),
             seq_id,
@@ -389,6 +395,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
 
         let n_embd = 4;
@@ -432,6 +439,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
         accumulate_capture(&mut slot, vec![1.0, 2.0]);
         slot.buf = None; // o que `reset_capture_slot` faz antes de cada decode
@@ -455,6 +463,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
 
         accumulate_capture(&mut slot, vec![1.0, 2.0, 3.0, 4.0]);
@@ -482,6 +491,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         }
     }
 

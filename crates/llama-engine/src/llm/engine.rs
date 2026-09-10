@@ -408,7 +408,12 @@ impl LlmEngine {
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
+            capture_requested_at: None,
+            ready_wait_us: 0,
             copy_us: 0,
+            postprocess_us: 0,
+            copy_bytes: 0,
+            copy_calls: 0,
         }));
         let capture_ok = if cfg.need_embeddings {
             // Target tensor: l_out-<last_layer_index> of this slice.
@@ -657,8 +662,8 @@ impl LlmEngine {
             .as_ref()
             .map(|vision| vision.ctx)
             .ok_or_else(|| anyhow::anyhow!("este modelo não tem visão"))?;
-        let prompt = CString::new(prompt)
-            .map_err(|_| anyhow::anyhow!("o prompt multimodal contém NUL"))?;
+        let prompt =
+            CString::new(prompt).map_err(|_| anyhow::anyhow!("o prompt multimodal contém NUL"))?;
         let mut bitmaps = Vec::with_capacity(images.len());
         for image in images {
             let wrapper = unsafe {
@@ -747,9 +752,9 @@ impl LlmEngine {
         }
         let mut timings = DecodeTimings {
             enqueue_us: started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
+        self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
@@ -805,12 +810,15 @@ impl LlmEngine {
                     positions.push([position, position, position, 0]);
                 }
             } else {
-                let mut image_positions = vec![sys::mtmd_decoder_pos {
-                    t: 0,
-                    x: 0,
-                    y: 0,
-                    z: 0,
-                }; n_tokens];
+                let mut image_positions = vec![
+                    sys::mtmd_decoder_pos {
+                        t: 0,
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                    };
+                    n_tokens
+                ];
                 unsafe {
                     sys::mtmd_helper_image_get_decoder_pos(
                         image,
@@ -1305,7 +1313,7 @@ impl LlmEngine {
                     );
                 }
             } else {
-                    feature_shape = Some(&entry.shape[1..]);
+                feature_shape = Some(&entry.shape[1..]);
             }
             if let Some(positions) = &entry.mrope_positions {
                 if positions.len() != entry.descriptor.tokens {
@@ -1327,9 +1335,8 @@ impl LlmEngine {
         let enqueue_started = Instant::now();
         let has_mrope_positions = entries.iter().any(|entry| entry.mrope_positions.is_some());
         self.reset_capture_slot_with_physical_chunks(layout.total_tokens(), has_mrope_positions);
-        let mut flattened_positions = has_mrope_positions.then(|| {
-            vec![0 as sys::llama_pos; layout.total_tokens().saturating_mul(4)]
-        });
+        let mut flattened_positions = has_mrope_positions
+            .then(|| vec![0 as sys::llama_pos; layout.total_tokens().saturating_mul(4)]);
         if let Some(storage) = flattened_positions.as_mut() {
             let mut row = 0usize;
             for entry in entries {
@@ -1408,7 +1415,24 @@ impl LlmEngine {
         capture.last_shape = None;
         capture.last_strides = None;
         capture.last_nbytes = None;
+        capture.capture_requested_at = None;
+        capture.ready_wait_us = 0;
         capture.copy_us = 0;
+        capture.postprocess_us = 0;
+        capture.copy_bytes = 0;
+        capture.copy_calls = 0;
+    }
+
+    fn record_capture_timings(&self, timings: &mut DecodeTimings) {
+        let capture = self.capture.lock().unwrap();
+        let metrics = capture.metrics();
+        timings.residual_capture_ready_wait_us = metrics.ready_wait_us;
+        timings.residual_capture_copy_us = metrics.copy_us;
+        timings.residual_capture_postprocess_us = metrics.postprocess_us;
+        timings.residual_capture_bytes = metrics.copy_bytes;
+        timings.residual_capture_copies = metrics.copy_calls;
+        timings.residual_capture_d2h_sync_us =
+            metrics.ready_wait_us.saturating_add(metrics.copy_us);
     }
 
     pub(super) fn finish_batch(
@@ -1442,9 +1466,9 @@ impl LlmEngine {
         let residual = residual.map(|captured| captured.values);
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
+        self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
@@ -1578,9 +1602,9 @@ impl LlmEngine {
 
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
+        self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
@@ -1606,14 +1630,7 @@ impl LlmEngine {
         tokens: Option<&[i32]>,
     ) -> Result<DecodeTimings> {
         self.decode_hidden_with_positions(
-            hidden,
-            shape,
-            n_tokens,
-            pos_offset,
-            seq_id,
-            logits_all,
-            tokens,
-            None,
+            hidden, shape, n_tokens, pos_offset, seq_id, logits_all, tokens, None,
         )
     }
 
@@ -1750,9 +1767,9 @@ impl LlmEngine {
         }
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
+        self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
@@ -1907,7 +1924,10 @@ impl LlmEngine {
             )
         };
         if written == 0 {
-            bail!("llama_state_seq_save_file devolveu 0 para {}", path.display());
+            bail!(
+                "llama_state_seq_save_file devolveu 0 para {}",
+                path.display()
+            );
         }
         Ok(written)
     }

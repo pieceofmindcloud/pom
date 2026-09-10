@@ -69,6 +69,7 @@ mod tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
         let values = (0..(11 * 4096 * 4))
             .map(|value| value as f32)
@@ -122,6 +123,7 @@ mod tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
         let record = |slot: &mut CaptureSlot, tokens: usize, start: usize| {
             let values = (start..start + tokens * 2048)

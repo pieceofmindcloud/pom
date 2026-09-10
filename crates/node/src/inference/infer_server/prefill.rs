@@ -928,7 +928,7 @@ pub(super) fn prefill_blocking(
     timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
-    timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;
+    timings.merge_engine_capture(&engine_timing);
 
     // ── Session update ───────────────────────────────────────────────────────
     {
@@ -1530,9 +1530,9 @@ pub(super) fn prefill_batch_blocking(
                 lock_wait_us,
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,
-                residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
                 ..Default::default()
             };
+            timings.merge_engine_capture(&engine_timings);
             timings.merge_engine_moe(&engine_timings);
             if let Some(moe) = moe_input_items.remove(&item.sid_key) {
                 timings.merge_moe(&moe);
@@ -2038,9 +2038,9 @@ pub(super) fn step_batch_blocking(
                 lock_wait_us,
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,
-                residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
                 ..Default::default()
             };
+            timings.merge_engine_capture(&engine_timings);
             timings.merge_engine_moe(&engine_timings);
             if let Some(moe) = moe_input_items.remove(&item.sid_key) {
                 timings.merge_moe(&moe);

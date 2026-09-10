@@ -241,7 +241,14 @@ impl ModelCache {
 pub struct DecodeTimings {
     pub enqueue_us: u64,
     pub backend_completion_us: u64,
+    /// Compatibility total for the old aggregate field: ready wait plus the
+    /// actual device-to-host read.
     pub residual_capture_d2h_sync_us: u64,
+    pub residual_capture_ready_wait_us: u64,
+    pub residual_capture_copy_us: u64,
+    pub residual_capture_postprocess_us: u64,
+    pub residual_capture_bytes: u64,
+    pub residual_capture_copies: u64,
     pub moe_forward_us: u64,
     pub moe_executors: Vec<crate::moe::runtime::MoeExecutorKind>,
     pub moe_executor: Option<crate::moe::runtime::MoeExecutorTelemetry>,
@@ -331,10 +338,7 @@ impl LlmEngine {
             );
         }
         if let Some(mtp) = self.mtp.as_ref() {
-            mtp.set_moe_callback(
-                Some(moe_ffn_callback),
-                Arc::as_ptr(&state) as *mut c_void,
-            );
+            mtp.set_moe_callback(Some(moe_ffn_callback), Arc::as_ptr(&state) as *mut c_void);
         }
         self.moe_callback = Some(state);
         Ok(())
@@ -402,7 +406,11 @@ impl LoadedModel {
     /// Lê os pesos com a opção MTP explícita. O recuo para RAM usa isso para
     /// retirar os pesos `nextn` que a primeira tentativa deixou na VRAM do
     /// modelo alvo, já que o rascunho passa a usar o modelo CPU-only irmão.
-    pub(super) fn load_with_mtp(model_path: &str, plan: &FitPlan, load_mtp: bool) -> Result<Arc<Self>> {
+    pub(super) fn load_with_mtp(
+        model_path: &str,
+        plan: &FitPlan,
+        load_mtp: bool,
+    ) -> Result<Arc<Self>> {
         log_moe_route_diagnostics_configuration();
         // llama_backend_init is idempotent; call it on every load.
         unsafe { sys::llama_backend_init() };

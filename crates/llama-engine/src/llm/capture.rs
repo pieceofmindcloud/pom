@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Default)]
 pub(super) struct CaptureSlot {
     pub(super) want: Option<CString>,
     pub(super) buf: Option<Vec<f32>>,
@@ -13,7 +14,39 @@ pub(super) struct CaptureSlot {
     pub(super) last_shape: Option<[i64; 4]>,
     pub(super) last_strides: Option<[usize; 4]>,
     pub(super) last_nbytes: Option<usize>,
+    /// Monotonic point at which the scheduler asked whether this tensor needs
+    /// a ready callback. The callback itself is still the ownership boundary:
+    /// llama.cpp may reuse graph buffers between microbatches, so postponing
+    /// the read until `llama_decode` returns would lose earlier residual rows.
+    pub(super) capture_requested_at: Option<Instant>,
+    /// Time from the scheduler's ask callback until the bulk read begins.
+    /// This is intentionally separate from the device-to-host read itself.
+    pub(super) ready_wait_us: u64,
     pub(super) copy_us: u64,
+    pub(super) postprocess_us: u64,
+    pub(super) copy_bytes: u64,
+    pub(super) copy_calls: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct CaptureMetrics {
+    pub(super) ready_wait_us: u64,
+    pub(super) copy_us: u64,
+    pub(super) postprocess_us: u64,
+    pub(super) copy_bytes: u64,
+    pub(super) copy_calls: u64,
+}
+
+impl CaptureSlot {
+    pub(super) fn metrics(&self) -> CaptureMetrics {
+        CaptureMetrics {
+            ready_wait_us: self.ready_wait_us,
+            copy_us: self.copy_us,
+            postprocess_us: self.postprocess_us,
+            copy_bytes: self.copy_bytes,
+            copy_calls: self.copy_calls,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -528,9 +561,7 @@ pub(super) unsafe extern "C" fn moe_ffn_callback(
     }
     let metadata = metadata_owned
         .iter()
-        .map(|(role, name, dtype, n_dims, dims)| {
-            (*role, name.as_str(), *dtype, *n_dims, *dims)
-        })
+        .map(|(role, name, dtype, n_dims, dims)| (*role, name.as_str(), *dtype, *n_dims, *dims))
         .collect::<Vec<_>>();
     if let Err(error) = state
         .runtime
@@ -766,6 +797,27 @@ mod moe_route_tests {
         assert!(first_non_finite(&[0.0, f32::INFINITY])
             .is_some_and(|(index, value)| index == 1 && value == f32::INFINITY));
         assert_eq!(first_non_finite(&[0.0, -1.0]), None);
+    }
+
+    #[test]
+    fn metricas_da_captura_separam_espera_copia_e_pos_processamento() {
+        let mut slot = CaptureSlot::default();
+        slot.ready_wait_us = 1_468_000;
+        slot.copy_us = 1_200;
+        slot.postprocess_us = 340;
+        slot.copy_bytes = 1_048_576;
+        slot.copy_calls = 2;
+
+        assert_eq!(
+            slot.metrics(),
+            CaptureMetrics {
+                ready_wait_us: 1_468_000,
+                copy_us: 1_200,
+                postprocess_us: 340,
+                copy_bytes: 1_048_576,
+                copy_calls: 2,
+            }
+        );
     }
 
     #[test]
@@ -1020,7 +1072,7 @@ pub(super) unsafe extern "C" fn capture_callback(
     });
 
     // The two phases mean different things, and the return value means something
-    // different in each — see `ggml_backend_sched_compute_splits`:
+    // different in each - see `ggml_backend_sched_compute_splits`:
     //
     //   ask = true   "will you want this tensor?" `false` lets ggml batch this
     //                node with the following ones, which is what we want for
@@ -1031,42 +1083,57 @@ pub(super) unsafe extern "C" fn capture_callback(
     //
     // Returning `ask` for a non-matching tensor got both wrong at once: it
     // claimed every node, forcing them to be computed one at a time, and then
-    // returned false on the first one — so the forward pass stopped at the very
+    // returned false on the first one - so the forward pass stopped at the very
     // first node while `llama_decode` still reported success. Nothing after the
     // input embedding was ever computed.
     if ask {
+        if matches {
+            // Preserve the scheduler split: its ready callback is the only
+            // point where this microbatch's graph buffer is stable. Record
+            // the interval separately so it cannot be mistaken for the bulk
+            // device-to-host copy below.
+            slot.capture_requested_at = Some(Instant::now());
+        }
         return matches;
     }
     if !matches {
         return true; // keep going; this node was simply not ours
     }
 
-    // Compute phase: copy the tensor bytes.
-    let copy_started = Instant::now();
+    let ready_at = Instant::now();
+    if let Some(requested_at) = slot.capture_requested_at.take() {
+        slot.ready_wait_us += ready_at.saturating_duration_since(requested_at).as_micros() as u64;
+    }
     let tensor_shape = unsafe { (*t).ne };
     let tensor_strides = unsafe { (*t).nb };
     let n_bytes = unsafe { sys::ggml_nbytes(t) } as usize;
     slot.last_shape = Some(tensor_shape);
     slot.last_strides = Some(tensor_strides);
     slot.last_nbytes = Some(n_bytes);
-    let n_floats = n_bytes / 4;
-    let mut raw = vec![0u8; n_bytes];
-    unsafe {
-        sys::ggml_backend_tensor_get(t, raw.as_mut_ptr() as *mut c_void, 0, n_bytes);
-    }
-    let floats: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect();
-    if floats.len() == n_floats {
-        if let Err(error) = record_capture(&mut slot, tensor_shape, tensor_strides, n_bytes, floats)
-        {
-            if slot.error.is_none() {
-                slot.error = Some(error.to_string());
-            }
+    if n_bytes % std::mem::size_of::<f32>() != 0 {
+        if slot.error.is_none() {
+            slot.error = Some(format!(
+                "residual capture: tensor ocupa {n_bytes} bytes, não é múltiplo de f32"
+            ));
         }
+        return true;
+    }
+    let mut floats = vec![0.0f32; n_bytes / std::mem::size_of::<f32>()];
+    let copy_started = Instant::now();
+    unsafe {
+        sys::ggml_backend_tensor_get(t, floats.as_mut_ptr() as *mut c_void, 0, n_bytes);
     }
     slot.copy_us += copy_started.elapsed().as_micros() as u64;
+    slot.copy_bytes = slot.copy_bytes.saturating_add(n_bytes as u64);
+    slot.copy_calls = slot.copy_calls.saturating_add(1);
+
+    let postprocess_started = Instant::now();
+    if let Err(error) = record_capture(&mut slot, tensor_shape, tensor_strides, n_bytes, floats) {
+        if slot.error.is_none() {
+            slot.error = Some(error.to_string());
+        }
+    }
+    slot.postprocess_us += postprocess_started.elapsed().as_micros() as u64;
     true
 }
 

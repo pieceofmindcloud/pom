@@ -248,7 +248,7 @@ pub(crate) fn step_blocking(
     }
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
-    timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;
+    timings.merge_engine_capture(&engine_timing);
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
 
@@ -357,12 +357,34 @@ pub(crate) fn step_blocking(
             // um pipeline (a composição do lote veio de fora, via `tokens`):
             // numa máquina só a cabeça é a própria cauda e não há para onde
             // devolver o rascunho.
+            let (mtp_tail_reason, mut speculation_disabled_detail) = if mtp_k.is_some() {
+                if let Some(reason) = mtp_tail_speculation_reason(
+                    s.engine.mtp_ready(),
+                    s.engine.mtp_unavailable_reason(),
+                ) {
+                    (
+                        Some(reason),
+                        Some(
+                            s.engine
+                                .mtp_unavailable_reason()
+                                .unwrap_or(reason)
+                                .to_owned(),
+                        ),
+                    )
+                } else if batch_tokens.is_none() {
+                    (
+                        Some(SPECULATION_REASON_MTP_INPUT_MISSING),
+                        Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                    )
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
             let mut speculation_disabled_reason = None;
-            let mtp_tail_reason = mtp_k.is_some().then(|| {
-                mtp_tail_speculation_reason(s.engine.mtp_ready(), s.engine.mtp_unavailable_reason())
-            });
             let next_draft: Option<Vec<i32>> =
-                if !done && batch_tokens.is_some() && mtp_tail_reason.flatten().is_none() {
+                if !done && batch_tokens.is_some() && mtp_tail_reason.is_none() {
                     // A sessão já avançou `n_tokens`; só as primeiras `keep`
                     // posições foram confirmadas, então o próximo slot livre do
                     // tronco é `n_past - (n_tokens - keep)`.
@@ -375,12 +397,14 @@ pub(crate) fn step_blocking(
                             .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
                     if dr.is_empty() {
                         speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
+                        speculation_disabled_detail =
+                            Some("nextn não produziu tokens para a rodada seguinte".to_owned());
                         None
                     } else {
                         Some(dr)
                     }
                 } else {
-                    speculation_disabled_reason = mtp_tail_reason.flatten();
+                    speculation_disabled_reason = mtp_tail_reason;
                     None
                 };
 
@@ -421,6 +445,7 @@ pub(crate) fn step_blocking(
                     "speculated": true,
                     "speculation_active": next_draft.is_some(),
                     "speculation_disabled_reason": speculation_disabled_reason,
+                    "speculation_disabled_detail": speculation_disabled_detail,
                     "next_draft": next_draft,
                 }),
                 None,
@@ -507,11 +532,32 @@ pub(crate) fn step_blocking(
         // decodificado; sem ele o draft seguinte usaria a linha de uma posição
         // anterior e parearia errado. Rodada de modelo inteiro recusada não
         // tem `mtp_k` — nada a devolver, e não há segunda máquina esperando.
+        let (mtp_tail_reason, mut speculation_disabled_detail) = if mtp_k.is_some() {
+            if let Some(reason) =
+                mtp_tail_speculation_reason(s.engine.mtp_ready(), s.engine.mtp_unavailable_reason())
+            {
+                (
+                    Some(reason),
+                    Some(
+                        s.engine
+                            .mtp_unavailable_reason()
+                            .unwrap_or(reason)
+                            .to_owned(),
+                    ),
+                )
+            } else if batch_tokens.is_none() {
+                (
+                    Some(SPECULATION_REASON_MTP_INPUT_MISSING),
+                    Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                )
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
         let mut speculation_disabled_reason = None;
-        let mtp_tail_reason = mtp_k.is_some().then(|| {
-            mtp_tail_speculation_reason(s.engine.mtp_ready(), s.engine.mtp_unavailable_reason())
-        });
-        let next_draft: Option<Vec<i32>> = if !done && mtp_tail_reason.flatten().is_none() {
+        let next_draft: Option<Vec<i32>> = if !done && mtp_tail_reason.is_none() {
             if let Some(k) = mtp_k {
                 s.engine.mtp_accept(0);
                 let session_n_past = s.sessions[&sid_key].n_past;
@@ -521,6 +567,8 @@ pub(crate) fn step_blocking(
                         .mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
                 if dr.is_empty() {
                     speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
+                    speculation_disabled_detail =
+                        Some("nextn não produziu tokens para a rodada seguinte".to_owned());
                     None
                 } else {
                     Some(dr)
@@ -529,7 +577,7 @@ pub(crate) fn step_blocking(
                 None
             }
         } else {
-            speculation_disabled_reason = mtp_tail_reason.flatten();
+            speculation_disabled_reason = mtp_tail_reason;
             None
         };
         let encode_started = Instant::now();
@@ -537,6 +585,7 @@ pub(crate) fn step_blocking(
         reply["speculated"] = json!(false);
         reply["speculation_active"] = json!(next_draft.is_some());
         reply["speculation_disabled_reason"] = json!(speculation_disabled_reason);
+        reply["speculation_disabled_detail"] = json!(speculation_disabled_detail);
         if let Some(nd) = &next_draft {
             reply["next_draft"] = json!(nd);
         }

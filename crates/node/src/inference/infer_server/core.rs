@@ -39,6 +39,8 @@ pub(super) fn required_session_id(meta: &Value) -> Result<String> {
 
 pub(crate) const SPECULATION_REASON_TAIL_WITHOUT_NEXTN: &str = "tail_without_nextn";
 pub(crate) const SPECULATION_REASON_MODEL_WITHOUT_MTP: &str = "model_without_mtp";
+pub(crate) const SPECULATION_REASON_MTP_INPUT_MISSING: &str = "mtp_input_missing";
+pub(crate) const SPECULATION_REASON_MTP_RUNTIME_DISABLED: &str = "mtp_runtime_disabled";
 pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
     "peer_without_sliced_mtp_wire";
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
@@ -164,6 +166,11 @@ pub(super) struct NodeTimings {
     pub(super) backend_enqueue_us: u64,
     pub(super) backend_completion_us: u64,
     pub(super) residual_capture_d2h_sync_us: u64,
+    pub(super) residual_capture_ready_wait_us: u64,
+    pub(super) residual_capture_copy_us: u64,
+    pub(super) residual_capture_postprocess_us: u64,
+    pub(super) residual_capture_bytes: u64,
+    pub(super) residual_capture_copies: u64,
     pub(super) residual_us: u64,
     pub(super) logits_access_us: u64,
     pub(super) logits_clone_us: u64,
@@ -284,6 +291,27 @@ impl NodeTimings {
         }
     }
 
+    pub(super) fn merge_engine_capture(&mut self, other: &crate::llm::DecodeTimings) {
+        self.residual_capture_d2h_sync_us = self
+            .residual_capture_d2h_sync_us
+            .saturating_add(other.residual_capture_d2h_sync_us);
+        self.residual_capture_ready_wait_us = self
+            .residual_capture_ready_wait_us
+            .saturating_add(other.residual_capture_ready_wait_us);
+        self.residual_capture_copy_us = self
+            .residual_capture_copy_us
+            .saturating_add(other.residual_capture_copy_us);
+        self.residual_capture_postprocess_us = self
+            .residual_capture_postprocess_us
+            .saturating_add(other.residual_capture_postprocess_us);
+        self.residual_capture_bytes = self
+            .residual_capture_bytes
+            .saturating_add(other.residual_capture_bytes);
+        self.residual_capture_copies = self
+            .residual_capture_copies
+            .saturating_add(other.residual_capture_copies);
+    }
+
     pub(super) fn moe_executor(&self) -> &'static str {
         match self.moe.executors.as_slice() {
             [executor] => executor.as_str(),
@@ -378,6 +406,13 @@ impl NodeTimings {
             serde_json::to_value(self.scheduler_wait_reason).unwrap_or(Value::Null);
         value["scheduler_session_existing"] = Value::from(self.scheduler_session_existing);
         value["pipeline_session"] = Value::from(self.pipeline_session);
+        value["residual_capture_ready_wait_ms"] =
+            Value::from(ms(self.residual_capture_ready_wait_us));
+        value["residual_capture_copy_ms"] = Value::from(ms(self.residual_capture_copy_us));
+        value["residual_capture_postprocess_ms"] =
+            Value::from(ms(self.residual_capture_postprocess_us));
+        value["residual_capture_bytes"] = Value::from(self.residual_capture_bytes);
+        value["residual_capture_copies"] = Value::from(self.residual_capture_copies);
         if let Some(spans) = &self.profiling_spans {
             value["profiling_spans"] = serde_json::to_value(spans).unwrap_or_else(|_| json!([]));
         }
@@ -1224,6 +1259,11 @@ mod tests {
         let timings = NodeTimings {
             frame_decode_us: 999,
             backend_completion_us: 999,
+            residual_capture_ready_wait_us: 1_468_000,
+            residual_capture_copy_us: 1_200,
+            residual_capture_postprocess_us: 340,
+            residual_capture_bytes: 1_048_576,
+            residual_capture_copies: 2,
             residual_us: 1_234,
             sampling_us: 1,
             first_token_produced_at_ms: 1_700_000_000_006,
@@ -1236,6 +1276,14 @@ mod tests {
         assert_eq!(json["frame_decode_ms"].as_f64(), Some(0.999));
         assert_eq!(json["backend_completion_ms"].as_f64(), Some(0.999));
         assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
+        assert_eq!(
+            json["residual_capture_ready_wait_ms"].as_f64(),
+            Some(1_468.0)
+        );
+        assert_eq!(json["residual_capture_copy_ms"].as_f64(), Some(1.2));
+        assert_eq!(json["residual_capture_postprocess_ms"].as_f64(), Some(0.34));
+        assert_eq!(json["residual_capture_bytes"], 1_048_576_u64);
+        assert_eq!(json["residual_capture_copies"], 2_u64);
         assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
         assert_eq!(json["first_token_produced_at_ms"], 1_700_000_000_006_u64);
         assert_eq!(json["first_token_serialized_at_ms"], 1_700_000_000_007_u64);

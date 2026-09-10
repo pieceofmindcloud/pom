@@ -55,7 +55,11 @@ x-node: &node
     # side. NVIDIA stays on CUDA, AMD stays on Vulkan/RADV.
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     POM_SLOT_PERSIST_PREFIX_CACHE: 1
-    RUST_LOG: info,pom=debug
+    # RUST_LOG: info,pom=debug
+    # ^ comentada: `pom=debug` gerava spam (ex "DEBUG pom::discovery",
+    # "infer-tunnel ...") que enchia cluster_logs no SQLite (94M linhas / 23 GB
+    # na salem). Sem a linha, o binario cai no default `info`
+    # (crates/node/src/main.rs). Descomente para depurar.
 
 services:
   # salem-gpu : NVIDIA(0) + Radeon

@@ -278,7 +278,7 @@ export function Dashboard() {
     </div>
 
     {!detailed || view === "minima" ? (
-      <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} /></div>
+      <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} /></div>
     ) : (
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (

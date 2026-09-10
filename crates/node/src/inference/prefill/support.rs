@@ -807,6 +807,98 @@ impl TransportSummary {
     }
 }
 
+/// Uma perna observada do ciclo lógico do pipeline.
+///
+/// `from_node_id -> to_node_id` é a direção da travessia que foi observada no
+/// executor. O valor continua sendo a duração da operação de transporte
+/// observada (a distribuição antiga de RTT), não uma metade inferida de um
+/// relógio de ida e volta. O mapa usa cada perna uma vez, portanto não soma um
+/// retorno inexistente entre peers de avanço.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PipelineCycleLeg {
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub transport_summary: TransportSummary,
+}
+
+impl PipelineCycleLeg {
+    fn new(from_node_id: &str, to_node_id: &str, trace: TransportTrace) -> Self {
+        let mut transport_summary = TransportSummary::default();
+        transport_summary.record(trace);
+        Self {
+            from_node_id: from_node_id.to_owned(),
+            to_node_id: to_node_id.to_owned(),
+            transport_summary,
+        }
+    }
+
+    fn record(&mut self, trace: TransportTrace) {
+        self.transport_summary.record(trace);
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.transport_summary.merge(&other.transport_summary);
+    }
+}
+
+/// Decomposição agregada do ciclo, separada por workload para que prefill não
+/// altere o RTT mostrado para decode. No modo normal guarda apenas contadores,
+/// histogramas e uma entrada por perna, sem span por token.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PipelineCycleTelemetry {
+    pub prefill: Vec<PipelineCycleLeg>,
+    pub decode: Vec<PipelineCycleLeg>,
+}
+
+impl PipelineCycleTelemetry {
+    fn legs_mut(&mut self, phase: Phase) -> &mut Vec<PipelineCycleLeg> {
+        match phase {
+            Phase::Prefill => &mut self.prefill,
+            Phase::Decode => &mut self.decode,
+        }
+    }
+
+    fn record(
+        &mut self,
+        phase: Phase,
+        from_node_id: &str,
+        to_node_id: &str,
+        trace: TransportTrace,
+    ) {
+        let legs = self.legs_mut(phase);
+        if let Some(leg) = legs
+            .iter_mut()
+            .find(|leg| leg.from_node_id == from_node_id && leg.to_node_id == to_node_id)
+        {
+            leg.record(trace);
+        } else {
+            legs.push(PipelineCycleLeg::new(from_node_id, to_node_id, trace));
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        for (current, next) in [&mut self.prefill, &mut self.decode]
+            .into_iter()
+            .zip([&other.prefill, &other.decode])
+        {
+            for leg in next {
+                if let Some(existing) = current.iter_mut().find(|candidate| {
+                    candidate.from_node_id == leg.from_node_id
+                        && candidate.to_node_id == leg.to_node_id
+                }) {
+                    existing.merge(leg);
+                } else {
+                    current.push(leg.clone());
+                }
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.prefill.is_empty() && self.decode.is_empty()
+    }
+}
+
 impl TransportTrace {
     pub(super) fn from_sent(sent: &crate::relay::SentFrame) -> Self {
         Self {
@@ -1582,6 +1674,11 @@ pub struct RequestTrace {
     /// revelar p95/p99 e propagação de jitter sem alocar um span por token.
     #[serde(skip_serializing_if = "TokenCycleTelemetry::is_empty")]
     pub token_cycle: TokenCycleTelemetry,
+    /// Pernas direcionais do ciclo lógico observadas no caminho direto. Inclui
+    /// a entrada do gateway, as transições de avanço e o retorno final quando
+    /// o recibo da entrega chegou ao gateway.
+    #[serde(skip_serializing_if = "PipelineCycleTelemetry::is_empty")]
+    pub pipeline_cycle: PipelineCycleTelemetry,
     /// Tokens draft que o caminho MTP propôs nesta requisição, somados entre
     /// todos os hops e steps.
     pub mtp_draft_tokens_proposed: u64,
@@ -1872,6 +1969,7 @@ impl RequestTrace {
             telemetry: TelemetrySummary::default(),
             profiling_spans: profile_sync_enabled().then(Vec::new),
             token_cycle: TokenCycleTelemetry::default(),
+            pipeline_cycle: PipelineCycleTelemetry::default(),
             mtp_draft_tokens_proposed: 0,
             mtp_draft_tokens_accepted: 0,
             mtp_draft_tokens_rejected: 0,
@@ -2168,6 +2266,31 @@ impl RequestTrace {
         }
     }
 
+    /// Registra uma travessia no ciclo em sua direção real. A amostra é
+    /// agregada por aresta e transporte, sem alocar um span por token no modo
+    /// normal.
+    pub(super) fn record_cycle_transport(
+        &mut self,
+        phase: Phase,
+        from_node_id: &str,
+        to_node_id: &str,
+        transport: TransportTrace,
+    ) {
+        self.pipeline_cycle
+            .record(phase, from_node_id, to_node_id, transport);
+    }
+
+    /// Registra a última perna, que não pertence a nenhum `HopTrace`: a cauda
+    /// entrega o resultado ao gateway por uma operação separada.
+    pub(super) fn record_cycle_return(
+        &mut self,
+        phase: Phase,
+        from_node_id: &str,
+        transport: TransportTrace,
+    ) {
+        self.record_cycle_transport(phase, from_node_id, "gateway", transport);
+    }
+
     /// Registra a travessia de controle que abriu um `remote-stream` sem
     /// contá-la como decode. O ACK confirma a abertura do stream, mas não é
     /// um span de token e não pode inflar a completude observada.
@@ -2421,15 +2544,16 @@ impl RequestTrace {
         } else {
             100.0
         };
+        // A result can win the race before the independent transport receipts
+        // reach the inbox. This is a pending transport reconciliation, not a
+        // missing peer/span: the distributed span collection can already be
+        // complete and must not downgrade the diagnosis to "incomplete".
         let spans_complete = missing_peers.is_empty()
-            && self.transport_trace_complete
             && (expected_decode_spans == 0 || reported_decode_spans >= expected_decode_spans);
         self.telemetry.status = if spans_complete && self.complete {
             "complete"
         } else if self.complete {
             "response_complete"
-        } else if !self.transport_trace_complete {
-            "collecting"
         } else {
             "incomplete"
         }
@@ -2607,6 +2731,7 @@ impl RequestTrace {
         self.refresh_mtp_acceptance_rate();
         self.transport_trace_complete &= other.transport_trace_complete;
         self.token_cycle.merge(&other.token_cycle);
+        self.pipeline_cycle.merge(&other.pipeline_cycle);
         self.connection_new_calls += other.connection_new_calls;
         self.connection_reused_calls += other.connection_reused_calls;
         self.connection_unknown_calls += other.connection_unknown_calls;

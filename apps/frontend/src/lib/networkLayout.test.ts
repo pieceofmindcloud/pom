@@ -5,7 +5,12 @@ import {
   clearPositions,
   deploymentLayoutKey,
   fallbackPosition,
+  GATEWAY_HEIGHT,
+  gatewayRouteGeometry,
   mergePositions,
+  pipelineGatewayPosition,
+  CARD_HEIGHT,
+  CARD_WIDTH,
   writePositions,
 } from "./networkLayout";
 
@@ -120,6 +125,27 @@ describe("autoLayout", () => {
     const posicoes = autoLayout([{ id: "vazio", start_layer: 0, end_layer: 0 }]);
     expect(Number.isFinite(posicoes.vazio.left)).toBe(true);
     expect(Number.isFinite(posicoes.vazio.top)).toBe(true);
+  });
+
+  it("coloca o gateway virtual depois da última coluna", () => {
+    const peers = [
+      { left: 48, top: 96 },
+      { left: 404, top: 136 },
+    ];
+    const gateway = pipelineGatewayPosition(peers);
+    expect(gateway).not.toBeNull();
+    expect(gateway!.left).toBe(404 + CARD_WIDTH + 92);
+    expect(gateway!.top + GATEWAY_HEIGHT / 2).toBe((96 + CARD_HEIGHT / 2 + 136 + CARD_HEIGHT / 2) / 2);
+  });
+
+  it("mantém a seta da perna final apontando para a direita", () => {
+    const from = { left: 404, top: 136 };
+    const gateway = { left: 760, top: 136 };
+    const geometry = gatewayRouteGeometry(from, gateway);
+    expect(geometry.x1).toBe(from.left + CARD_WIDTH);
+    expect(geometry.x2).toBe(gateway.left);
+    expect(geometry.c1x).toBeGreaterThan(geometry.x1);
+    expect(geometry.c2x).toBeLessThan(geometry.x2);
   });
 
   it("preserva posições existentes quando um peer novo entra no canvas", () => {

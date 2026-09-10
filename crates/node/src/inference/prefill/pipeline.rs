@@ -1009,6 +1009,20 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                 trace.transport_trace_complete = false;
                 continue;
             };
+            let destination = destination as usize;
+            let Some(to_node_id) = trace.hops.get(destination).map(|hop| hop.node_id.clone())
+            else {
+                trace.transport_trace_complete = false;
+                continue;
+            };
+            let from_node_id = if destination == 0 {
+                "gateway".to_owned()
+            } else if let Some(hop) = trace.hops.get(destination.saturating_sub(1)) {
+                hop.node_id.clone()
+            } else {
+                trace.transport_trace_complete = false;
+                continue;
+            };
             for field in [
                 "round_trip_ms",
                 "bytes_sent",
@@ -1027,12 +1041,45 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                     hop[field] = value.clone();
                 }
             }
+            trace.record_cycle_transport(
+                phase,
+                &from_node_id,
+                &to_node_id,
+                TransportTrace::from_json(traversal),
+            );
         }
     } else {
         trace.transport_trace_complete = false;
     }
     for (i, entry) in hops.iter().enumerate() {
         trace.record_hop_from_json(i, phase, entry);
+    }
+    if let Some(mut return_transport) = meta.get("pipeline_return_transport").cloned() {
+        let missing_rtt = return_transport.get("round_trip_ms").is_none()
+            || return_transport
+                .get("round_trip_ms")
+                .is_some_and(serde_json::Value::is_null);
+        if missing_rtt {
+            return_transport["round_trip_ms"] = return_transport
+                .get("rtt_ms")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
+        let has_rtt = return_transport
+            .get("round_trip_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some();
+        if let Some(from_node_id) = trace.hops.last().map(|hop| hop.node_id.clone()) {
+            if has_rtt {
+                trace.record_cycle_return(
+                    phase,
+                    &from_node_id,
+                    TransportTrace::from_json(&return_transport),
+                );
+            }
+        } else {
+            trace.transport_trace_complete = false;
+        }
     }
     if let Some(complete) = meta
         .get("transport_trace_complete")

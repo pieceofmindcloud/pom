@@ -754,7 +754,7 @@ pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Respo
 
 /// Entrega callbacks do `remote-stream` por um canal persistente. A primeira
 /// falha desativa o canal para o restante deste stream e marca cada callback
-/// seguinte como fallback explícito para HTTPS por requisição. Um ACK 410 é
+/// seguinte como fallback explícito para HTTP(S) por requisição. Um ACK 410 é
 /// diferente: ele prova que o gateway cancelou o ticket, então o produtor
 /// remoto recebe `GatewayGone` e para em vez de continuar gerando. Isso mantém
 /// o caminho normal livre de request/reply por token sem transformar uma queda
@@ -777,13 +777,19 @@ impl RemoteStreamDelivery {
     }
 
     pub async fn deliver(&mut self, meta: Value) -> Delivery {
+        let link_transport = if crate::peer_client::tls_ativo() {
+            "https-link"
+        } else {
+            "http"
+        };
         if let Some(status) = &self.callback_status {
             if status.gateway_gone() {
                 return Delivery::GatewayGone;
             }
             if status.transport_failed() {
-                self.persistent_failure =
-                    Some("https-link: ACK assíncrono do callback falhou; usando HTTPS".to_string());
+                self.persistent_failure = Some(format!(
+                    "{link_transport}: ACK assíncrono do callback falhou; usando {link_transport}"
+                ));
                 self.callback_status = None;
             }
         }
@@ -815,15 +821,24 @@ impl RemoteStreamDelivery {
             .map(str::to_owned)
             .collect();
 
-        if self.persistent_failure.is_none() {
+        // QUIC is the authoritative preference for a new delivery. Do not
+        // silently keep using the persistent TCP link when the cluster opted
+        // into QUIC: otherwise the MTP/remote-stream trace would describe a
+        // different transport than the one the gateway requested.
+        if self.persistent_failure.is_none() && !self.http.quic_enabled() {
             let reason = match (node_id, urls.is_empty()) {
-                (None, _) => Some("https-link: reply_to sem node_id".to_string()),
-                (Some(_), true) => Some("https-link: reply_to sem endereço".to_string()),
+                (None, _) => Some(format!("{link_transport}: reply_to sem node_id")),
+                (Some(_), true) => Some(format!("{link_transport}: reply_to sem endereço")),
                 (Some(node_id), false) => {
                     let mut link_meta = meta.clone();
                     link_meta["ticket"] =
                         self.reply_to.get("ticket").cloned().unwrap_or(Value::Null);
-                    link_meta["remote_stream_transport"] = json!("https-link");
+                    link_meta["remote_stream_transport"] =
+                        json!(if crate::peer_client::tls_ativo() {
+                            link_transport
+                        } else {
+                            "http"
+                        });
                     link_meta["remote_stream_transport_fallback"] = json!(false);
                     match crate::wire::encode_batch_items(
                         REMOTE_STREAM_RESULT_PATH,
@@ -852,9 +867,9 @@ impl RemoteStreamDelivery {
                                 self.callback_status = Some(status);
                                 return Delivery::Accepted;
                             }
-                            Err(error) => Some(format!("https-link: {error}")),
+                            Err(error) => Some(format!("{link_transport}: {error}")),
                         },
-                        Err(error) => Some(format!("https-link: frame inválido: {error}")),
+                        Err(error) => Some(format!("{link_transport}: frame inválido: {error}")),
                     }
                 }
             };
@@ -862,12 +877,17 @@ impl RemoteStreamDelivery {
         }
 
         let mut fallback_meta = meta;
-        fallback_meta["remote_stream_transport"] = json!("https");
+        let fallback_transport = if crate::peer_client::tls_ativo() {
+            "https"
+        } else {
+            "http"
+        };
+        fallback_meta["remote_stream_transport"] = json!(fallback_transport);
         fallback_meta["remote_stream_transport_fallback"] = json!(true);
-        fallback_meta["remote_stream_transport_fallback_reason"] = json!(self
-            .persistent_failure
-            .clone()
-            .unwrap_or_else(|| { "https-link: canal persistente indisponível".to_string() }));
+        fallback_meta["remote_stream_transport_fallback_reason"] =
+            json!(self.persistent_failure.clone().unwrap_or_else(|| {
+                format!("{fallback_transport}: canal persistente indisponível")
+            }));
         deliver_stream_batch(&self.http, &self.reply_to, fallback_meta).await
     }
 }
@@ -891,21 +911,14 @@ async fn deliver_meta_at(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
     path: &str,
-    mut meta: Value,
+    meta: Value,
 ) -> Delivery {
     let Some(ticket) = reply_to.get("ticket").and_then(|v| v.as_str()) else {
         warn!("reply_to sem ticket — resultado direto descartado");
         return Delivery::Failed;
     };
-    meta["ticket"] = json!(ticket);
-
-    let body = match crate::wire::encode(&meta, None, crate::wire::WireDtype::F16) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!("resultado direto não pôde ser codificado: {e}");
-            return Delivery::Failed;
-        }
-    };
+    let mut base_meta = meta;
+    base_meta["ticket"] = json!(ticket);
 
     let urls = reply_to
         .get("urls")
@@ -938,6 +951,7 @@ async fn deliver_meta_at(
     let ordered = http.route_order(&route_key, &urls);
     let last_index = ordered.len().saturating_sub(1);
     let mut last = String::new();
+    let mut quic_failed = false;
     for (index, url) in ordered.into_iter().enumerate() {
         let target = format!("{url}{path}");
         // O último candidato ganha o teto longo: não há terceira via depois
@@ -949,6 +963,21 @@ async fn deliver_meta_at(
             DELIVERY_TIMEOUT
         };
         if http.quic_enabled() && reply_to.get("node_id").and_then(Value::as_str).is_some() {
+            let attempt_meta = delivery_meta(
+                &base_meta,
+                path,
+                "quic",
+                quic_failed,
+                quic_failed.then_some(last.as_str()),
+                None,
+            );
+            let body = match encode_delivery_body(&attempt_meta) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!("resultado direto não pôde ser codificado: {error}");
+                    return Delivery::Failed;
+                }
+            };
             match http
                 .quic_post(
                     reply_to
@@ -972,17 +1001,35 @@ async fn deliver_meta_at(
                     return Delivery::GatewayGone;
                 }
                 Ok(response) => {
+                    quic_failed = true;
                     debug!(
                         "{target} respondeu {} via QUIC; tentando TCP",
                         response.status
                     );
                 }
                 Err(error) => {
+                    quic_failed = true;
                     last = format!("{target} via QUIC: {error}");
                     debug!("fallback QUIC para entrega direta: {last}");
                 }
             }
         }
+        let transport = tcp_transport_for_url(&url);
+        let attempt_meta = delivery_meta(
+            &base_meta,
+            path,
+            transport,
+            quic_failed,
+            quic_failed.then_some(last.as_str()),
+            None,
+        );
+        let body = match encode_delivery_body(&attempt_meta) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!("resultado direto não pôde ser codificado: {error}");
+                return Delivery::Failed;
+            }
+        };
         let request = cliente
             .post(&target)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -1015,6 +1062,64 @@ async fn deliver_meta_at(
     }
     warn!("resultado direto não chegou ao gateway ({last})");
     Delivery::Failed
+}
+
+fn tcp_transport_for_url(url: &str) -> &'static str {
+    if url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    }
+}
+
+fn encode_delivery_body(meta: &Value) -> Result<Vec<u8>> {
+    crate::wire::encode(meta, None, crate::wire::WireDtype::F16).map_err(|error| anyhow!("{error}"))
+}
+
+/// Anexa ao quadro o transporte que será efetivamente usado nesta tentativa.
+/// A metadata é codificada novamente por tentativa para que um fallback QUIC
+/// -> TCP nunca seja publicado como QUIC no trace do gateway.
+fn delivery_meta(
+    base: &Value,
+    path: &str,
+    transport: &str,
+    fallback: bool,
+    fallback_reason: Option<&str>,
+    rtt_ms: Option<u64>,
+) -> Value {
+    let mut meta = base.clone();
+    meta["delivery_transport"] = json!(transport);
+    meta["delivery_transport_fallback"] = json!(fallback);
+    if let Some(reason) = fallback_reason.filter(|reason| !reason.is_empty()) {
+        meta["delivery_transport_fallback_reason"] = json!(reason);
+    }
+    if path == RELAY_RESULT_PATH
+        && !meta
+            .get("transport_update")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        let mut observation = json!({
+            "transport": transport,
+            "transport_fallback": fallback,
+            "transport_fallback_reason": fallback_reason,
+        });
+        if let Some(rtt_ms) = rtt_ms {
+            observation["round_trip_ms"] = json!(rtt_ms);
+        }
+        meta["pipeline_return_transport"] = observation;
+    }
+    if path == REMOTE_STREAM_RESULT_PATH {
+        meta["remote_stream_transport"] = json!(transport);
+        meta["remote_stream_transport_fallback"] = json!(fallback);
+        if let Some(reason) = fallback_reason.filter(|reason| !reason.is_empty()) {
+            meta["remote_stream_transport_fallback_reason"] = json!(reason);
+        }
+        if let Some(rtt_ms) = rtt_ms {
+            meta["remote_stream_transport_rtt_ms"] = json!(rtt_ms);
+        }
+    }
+    meta
 }
 
 /// Entrega uma falha no lugar do resultado, para que o gateway nomeie o nó que

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
+import type { PipelineCycleCost } from "./PipelineGatewayNode";
 import { LocaleProvider } from "../i18n/provider";
 import type { ChatTelemetryRtt, ClusterView } from "../lib/types";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
@@ -32,12 +33,12 @@ describe("edgeStyle", () => {
 
 const cluster = fakeCluster([fakeSlicePeer("a", 0, 15), fakeSlicePeer("b", 16, 31)]);
 
-function mount(view: ClusterView = cluster, rttMeasurements: ChatTelemetryRtt[] = []) {
+function mount(view: ClusterView = cluster, rttMeasurements: ChatTelemetryRtt[] = [], pipelineCost?: PipelineCycleCost) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-      <ModelNetworkCanvas cluster={view} rttMeasurements={rttMeasurements} />
+      <ModelNetworkCanvas cluster={view} rttMeasurements={rttMeasurements} pipelineCost={pipelineCost} />
       </LocaleProvider>
     </QueryClientProvider>,
   );
@@ -67,6 +68,50 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
     }]);
 
     expect(screen.getByText("RTT 7.4 ms")).toBeTruthy();
+  });
+
+  it("desenha o retorno do último peer para o gateway sem arestas reversas", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+      fakeSlicePeer("c", 32, 47),
+    ]);
+    view.routing_edges = [
+      { from_node_id: "a", to_node_id: "b", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+      { from_node_id: "b", to_node_id: "c", model_id: "qwen35", from_end_layer: 31, to_start_layer: 32 },
+      { from_node_id: "c", to_node_id: "b", model_id: "qwen35", from_end_layer: 47, to_start_layer: 16 },
+    ];
+
+    const { container } = mount(view, [
+      { from_node_id: "a", to_node_id: "b", rtt_ms: 30, transport: "https" },
+      { from_node_id: "b", to_node_id: "c", rtt_ms: 31, transport: "https" },
+      { from_node_id: "c", to_node_id: "gateway", rtt_ms: 29, transport: "https" },
+    ]);
+
+    expect(screen.getByRole("heading", { name: "Gateway" })).toBeTruthy();
+    expect(container.querySelectorAll('svg[aria-hidden="true"] path[marker-end]').length).toBe(3);
+    expect(screen.getByText("RTT 29.0 ms")).toBeTruthy();
+    expect(screen.queryByText("RTT 31.0 ms")).toBeTruthy();
+    const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
+    const lastPeer = Array.from(container.querySelectorAll("h3")).find((heading) => heading.textContent === "c")?.closest("article") as HTMLElement;
+    expect(parseFloat(gateway.style.left)).toBeGreaterThan(parseFloat(lastPeer.style.left));
+  });
+
+  it("mostra no gateway o custo completo das pernas e do compute", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+      fakeSlicePeer("c", 32, 47),
+    ]);
+    const cost: PipelineCycleCost = {
+      legsMs: [20, 30, 31, 29],
+      computeMs: 40,
+    };
+
+    mount(view, [], cost);
+
+    expect(screen.getByText("Total do pipeline: 150.0 ms")).toBeTruthy();
+    expect(screen.getByText("rede 110.0 ms · compute 40.0 ms")).toBeTruthy();
   });
 });
 

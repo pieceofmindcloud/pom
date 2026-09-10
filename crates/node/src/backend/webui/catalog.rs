@@ -1573,6 +1573,48 @@ pub(super) struct ChatTelemetryMeasurement {
 #[derive(Debug, Serialize)]
 pub(super) struct ChatTelemetryResponse {
     pub(super) measurements: Vec<ChatTelemetryMeasurement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) pipeline_cost: Option<ChatTelemetryPipelineCost>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub(super) struct ChatTelemetryPipelineCost {
+    pub(super) legs_ms: Vec<Option<f64>>,
+    pub(super) compute_ms: Option<f64>,
+}
+
+fn dominant_transport_measurement(summary: &serde_json::Value) -> Option<(String, f64)> {
+    summary
+        .get("transports")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter_map(|entry| {
+            let transport = entry.get("transport")?.as_str()?.to_owned();
+            let calls = entry.get("calls")?.as_u64()?;
+            if calls == 0 {
+                return None;
+            }
+            let rtt_ms = entry
+                .get("rtt_median_ms")
+                .and_then(serde_json::Value::as_f64)
+                .or_else(|| {
+                    entry
+                        .get("rtt_median_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|value| value as f64)
+                })?;
+            Some((calls, transport, rtt_ms))
+        })
+        .max_by_key(|(calls, _, _)| *calls)
+        .map(|(_, transport, rtt_ms)| (transport, rtt_ms))
+}
+
+fn cycle_legs(trace: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    trace
+        .get("pipeline_cycle")
+        .and_then(|cycle| cycle.get("decode"))
+        .and_then(serde_json::Value::as_array)
+        .filter(|legs| !legs.is_empty())
 }
 
 /// Extrai a medição da aresta de modelo a partir do trace que a execução
@@ -1587,6 +1629,30 @@ pub(super) fn execution_transport_measurements(
     trace: &serde_json::Value,
     requested: &std::collections::HashSet<String>,
 ) -> Vec<ChatTelemetryMeasurement> {
+    if let Some(legs) = cycle_legs(trace) {
+        return legs
+            .iter()
+            .filter_map(|leg| {
+                let from_node_id = leg.get("from_node_id")?.as_str()?;
+                let to_node_id = leg.get("to_node_id")?.as_str()?;
+                if from_node_id == "gateway"
+                    || !requested.contains(from_node_id)
+                    || (to_node_id != "gateway" && !requested.contains(to_node_id))
+                {
+                    return None;
+                }
+                let summary = leg.get("transport_summary")?;
+                let (transport, rtt_ms) = dominant_transport_measurement(summary)?;
+                Some(ChatTelemetryMeasurement {
+                    from_node_id: from_node_id.to_owned(),
+                    to_node_id: to_node_id.to_owned(),
+                    rtt_ms,
+                    transport,
+                })
+            })
+            .collect();
+    }
+
     let Some(hops) = trace.get("hops").and_then(serde_json::Value::as_array) else {
         return Vec::new();
     };
@@ -1620,28 +1686,75 @@ pub(super) fn execution_transport_measurements(
                 .get("transport_summary")
                 .and_then(|summary| summary.get("transports"))
                 .and_then(serde_json::Value::as_array)?;
-            let dominant = entries
-                .iter()
-                .filter_map(|entry| {
-                    let transport = entry.get("transport")?.as_str()?;
-                    let calls = entry.get("calls")?.as_u64()?;
-                    if calls == 0 {
-                        return None;
-                    }
-                    Some((calls, transport, entry))
-                })
-                .max_by(|left, right| left.0.cmp(&right.0));
-            let (_, transport, dominant) = dominant?;
-            let rtt_ms = dominant.get("rtt_median_ms")?.as_u64()? as f64;
+            let (transport, rtt_ms) = dominant_transport_measurement(&json!({
+                "transports": entries,
+            }))?;
 
             Some(ChatTelemetryMeasurement {
                 from_node_id: from_node_id.to_owned(),
                 to_node_id: to_node_id.to_owned(),
                 rtt_ms,
-                transport: transport.to_owned(),
+                transport,
             })
         })
         .collect()
+}
+
+/// Retorna as pernas na ordem do ciclo e o compute observado nos peers. Uma
+/// perna ausente permanece `null`: o card não transforma telemetria incompleta
+/// em zero e não fecha o total a partir de uma subtração do wall clock. Sem
+/// `pipeline_cycle`, mantém o contrato antigo sem inventar um custo parcial.
+pub(super) fn execution_pipeline_cost(
+    trace: &serde_json::Value,
+) -> Option<ChatTelemetryPipelineCost> {
+    let hops = trace.get("hops").and_then(serde_json::Value::as_array)?;
+    if hops.is_empty() {
+        return None;
+    }
+    let expected_pairs: Vec<(String, String)> = std::iter::once((
+        "gateway".to_owned(),
+        hops.first()?.get("node_id")?.as_str()?.to_owned(),
+    ))
+    .chain(hops.windows(2).filter_map(|window| {
+        Some((
+            window[0].get("node_id")?.as_str()?.to_owned(),
+            window[1].get("node_id")?.as_str()?.to_owned(),
+        ))
+    }))
+    .chain(std::iter::once((
+        hops.last()?.get("node_id")?.as_str()?.to_owned(),
+        "gateway".to_owned(),
+    )))
+    .collect();
+
+    let cycle = cycle_legs(trace)?;
+    let legs_ms = expected_pairs
+        .iter()
+        .map(|(from_node_id, to_node_id)| {
+            cycle
+                .iter()
+                .find(|leg| {
+                    leg.get("from_node_id").and_then(serde_json::Value::as_str)
+                        == Some(from_node_id.as_str())
+                        && leg.get("to_node_id").and_then(serde_json::Value::as_str)
+                            == Some(to_node_id.as_str())
+                })
+                .and_then(|leg| leg.get("transport_summary"))
+                .and_then(dominant_transport_measurement)
+                .map(|(_, rtt_ms)| rtt_ms)
+        })
+        .collect();
+
+    let compute_ms = hops
+        .iter()
+        .map(|hop| hop.get("decode")?.get("processing_ms")?.as_f64())
+        .collect::<Option<Vec<_>>>()
+        .map(|values| values.into_iter().sum());
+
+    Some(ChatTelemetryPipelineCost {
+        legs_ms,
+        compute_ms,
+    })
 }
 
 /// Retorna apenas o transporte observado na execução distribuída.
@@ -1663,6 +1776,7 @@ pub(super) async fn chat_telemetry(
     {
         return Json(ChatTelemetryResponse {
             measurements: Vec::new(),
+            pipeline_cost: None,
         });
     }
     let requested: std::collections::HashSet<String> = request
@@ -1673,6 +1787,7 @@ pub(super) async fn chat_telemetry(
     if requested.len() < 2 {
         return Json(ChatTelemetryResponse {
             measurements: Vec::new(),
+            pipeline_cost: None,
         });
     }
 
@@ -1709,13 +1824,17 @@ pub(super) async fn chat_telemetry(
         .as_ref()
         .map(|trace| execution_transport_measurements(trace, &requested))
         .unwrap_or_default();
+    let pipeline_cost = trace.as_ref().and_then(execution_pipeline_cost);
 
     measurements.sort_by(|a, b| {
         a.from_node_id
             .cmp(&b.from_node_id)
             .then_with(|| a.to_node_id.cmp(&b.to_node_id))
     });
-    Json(ChatTelemetryResponse { measurements })
+    Json(ChatTelemetryResponse {
+        measurements,
+        pipeline_cost,
+    })
 }
 
 pub(super) async fn chat_history(

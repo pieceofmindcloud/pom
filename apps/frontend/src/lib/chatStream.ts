@@ -94,6 +94,8 @@ export interface RequestTrace {
   telemetry?: TelemetrySummary;
   profiling_spans?: TelemetrySpan[];
   token_cycle?: TokenCycleTelemetry;
+  /** Pernas direcionais agregadas do ciclo lógico, quando observadas. */
+  pipeline_cycle?: PipelineCycleTelemetry;
   prefill_overlap_enabled?: boolean;
   prefill_max_inflight_chunks?: number;
   prefill_overlapped_chunks?: number;
@@ -201,6 +203,17 @@ export interface TokenCycleTelemetry {
   p95_ms: number;
   p99_ms: number;
   max_ms: number;
+}
+
+export interface PipelineCycleLeg {
+  from_node_id: string;
+  to_node_id: string;
+  transport_summary: TransportSummary;
+}
+
+export interface PipelineCycleTelemetry {
+  prefill: PipelineCycleLeg[];
+  decode: PipelineCycleLeg[];
 }
 
 export interface TelemetrySummary {

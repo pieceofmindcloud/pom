@@ -473,6 +473,11 @@ export interface ChatTelemetryRtt {
 
 export interface ChatTelemetryNetwork {
   measurements: ChatTelemetryRtt[];
+  /** Custo observado do ciclo completo, quando o trace fechou todas as pernas. */
+  pipeline_cost?: {
+    legs_ms: Array<number | null>;
+    compute_ms: number | null;
+  } | null;
 }
 
 /** Resposta do recorte de topologia que um nó infer pode consultar. */

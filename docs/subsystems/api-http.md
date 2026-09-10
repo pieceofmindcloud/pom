@@ -832,13 +832,16 @@ isso sem `--advertise-addr`: ver `docs/subsystems/rede-p2p.md`, "Endereço que
 deixou de responder".
 **`POST /api/ui/chat/telemetry`** - coleta sob demanda feita depois de uma
 execução do Chat. Com `execution_id`, o gateway lê o trace persistido daquela
-requisição e deriva cada aresta do `transport_summary` do hop downstream, que
-é a chamada que realmente cruzou entre os nós do modelo. Sem o id, o Painel
-consulta a última execução concluída e conserva somente as arestas solicitadas.
-Cada item responde `{ from_node_id, to_node_id, rtt_ms, transport }`. A medida
-é da execução real, não da probe periódica de `RttTable`/libp2p. Ausência de
-trace ou de uma aresta fica ausente na resposta; não há zero nem fallback que
-renomeie a probe como inferência.
+requisição e deriva cada aresta de `pipeline_cycle.decode`, que registra a
+travessia lógica observada e o transporte efetivo (`http`, `https` ou `quic`).
+Sem o id, o Painel consulta a última execução concluída e conserva somente as
+arestas solicitadas. Cada item responde `{ from_node_id, to_node_id, rtt_ms,
+transport }`; a resposta também pode conter
+`pipeline_cost: { legs_ms, compute_ms }`, na ordem
+`Gateway -> cabeça -> ... -> cauda -> Gateway`. Uma perna sem observação fica
+`null` e impede o total fechado. A medida é da execução real, não da probe
+periódica de `RttTable`/libp2p. Ausência de trace ou de uma aresta fica ausente
+na resposta; não há zero nem fallback que renomeie a probe como inferência.
 
 **`GET/POST/DELETE /api/ui/chat/history`** - exige `ConnectionAuth` e guarda
 sessões do Chat no `pom.db`, não no sistema de arquivos nem em um SQLite

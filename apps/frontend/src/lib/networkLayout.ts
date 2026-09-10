@@ -34,6 +34,8 @@ export function deploymentLayoutKey(model: string, peers: DeploymentPeer[]) {
 /** Medidas do card em `ModelNetworkCanvas`. Mudou lá, muda aqui. */
 export const CARD_WIDTH = 264;
 export const CARD_HEIGHT = 228;
+export const GATEWAY_WIDTH = 196;
+export const GATEWAY_HEIGHT = 132;
 const GAP_X = 92;
 const GAP_Y = 40;
 const ORIGIN_X = 48;
@@ -67,6 +69,42 @@ export function routeGeometry(from: CanvasPosition, to: CanvasPosition): RouteGe
   const labelX = (x1 + 3 * c1x + 3 * c2x + x2) / 8;
   const labelY = (y1 + 3 * y1 + 3 * y2 + y2) / 8;
   return { x1, y1, c1x, c1y: y1, c2x, c2y: y2, x2, y2, labelX, labelY };
+}
+
+/** Põe o gateway virtual depois do último estágio, alinhado ao seu centro. */
+export function pipelineGatewayPosition(
+  peers: CanvasPosition[],
+): CanvasPosition | null {
+  if (peers.length === 0) return null;
+  const right = Math.max(...peers.map((peer) => peer.left + CARD_WIDTH));
+  const center = peers.reduce((sum, peer) => sum + peer.top + CARD_HEIGHT / 2, 0) / peers.length;
+  return { left: right + GAP_X, top: center - GATEWAY_HEIGHT / 2 };
+}
+
+/** Geometria da perna final do ciclo, sempre desenhada para a direita. */
+export function gatewayRouteGeometry(
+  from: CanvasPosition,
+  gateway: CanvasPosition,
+): RouteGeometry {
+  const x1 = from.left + CARD_WIDTH;
+  const y1 = from.top + CARD_HEIGHT / 2;
+  const x2 = gateway.left;
+  const y2 = gateway.top + GATEWAY_HEIGHT / 2;
+  const bend = Math.max(60, Math.abs(x2 - x1) * 0.42);
+  const c1x = x1 + bend;
+  const c2x = x2 - bend;
+  return {
+    x1,
+    y1,
+    c1x,
+    c1y: y1,
+    c2x,
+    c2y: y2,
+    x2,
+    y2,
+    labelX: (x1 + 3 * c1x + 3 * c2x + x2) / 8,
+    labelY: (y1 + 3 * y1 + 3 * y2 + y2) / 8,
+  };
 }
 
 /**

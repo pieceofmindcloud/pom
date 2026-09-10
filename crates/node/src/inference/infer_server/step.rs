@@ -465,6 +465,7 @@ pub(crate) async fn handle_step_stream(
 
     let loads = app.loads.clone();
     let load_node_id = app.load_node_id.clone();
+    let source_node_id = load_node_id.clone();
     let stream_started = Instant::now();
     // Keep enough completed tokens in flight to absorb short network tails.
     // The queue is bounded, so a persistently slow callback still applies
@@ -473,7 +474,7 @@ pub(crate) async fn handle_step_stream(
     let producer = async move {
         let _load_guard = loads.acquire(&load_node_id).await;
         let producer = remote_stream_producer(app, meta, dtype, producer_tx);
-        let emitter = remote_stream_emitter(reply_to, producer_rx, stream_started);
+        let emitter = remote_stream_emitter(reply_to, producer_rx, stream_started, source_node_id);
         run_remote_stream_tasks(producer, emitter).await;
     };
     tokio::spawn(producer);
@@ -936,6 +937,7 @@ pub(super) async fn remote_stream_emitter(
     reply_to: Value,
     receiver: mpsc::Receiver<RemoteStreamItem>,
     stream_started: Instant,
+    source_node_id: String,
 ) {
     let stream_id = reply_to
         .get("ticket")
@@ -967,6 +969,7 @@ pub(super) async fn remote_stream_emitter(
         batch["remote_stream_lifetime_ms"] =
             json!(now.saturating_duration_since(stream_started).as_millis() as u64);
         batch["remote_stream_frame_latency_ms"] = json!(frame_latency_ms);
+        batch["remote_stream_source_node_id"] = json!(&source_node_id);
         if frame_index == 0 {
             batch["remote_stream_first_frame_latency_ms"] = json!(frame_latency_ms);
         }

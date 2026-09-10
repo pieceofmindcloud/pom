@@ -46,6 +46,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   observations and distributed `TelemetrySummary`/`TelemetrySpan`. TTFT keeps
   separate pipeline/server/client meanings; backend completion timing must not
   be used to infer `POM_PROFILE_SYNC` or the engine.
+  `RequestTrace.pipeline_cycle` preserves the measured directional legs of the
+  distributed cycle, including the final peer-to-gateway return when the
+  transport publishes one; missing legs remain unknown. The Dashboard uses
+  this data for the virtual Gateway cost card instead of a topology probe.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
   processamento medido no nó antes de nomear o gargalo. It refuses to label
@@ -142,6 +146,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   hidden-state bytes per hop. `RequestTrace` carries the server trace id, local
   spans, outside-node accounting, first-token boundaries, connection reuse
   counts and stream measurements when the backend publishes them.
+  `ChatTelemetryNetwork.pipeline_cost` carries the cycle legs and measured
+  per-hop compute used by the Dashboard's final Gateway card; it is optional
+  because an asynchronous return callback may not expose a sender-side RTT.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

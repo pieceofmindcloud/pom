@@ -134,6 +134,11 @@ Per-file list:
   slice and in-flight requests instead. A graph view ("minima",
   `ModelNetworkCanvas`) or a details grid ("estendida") is used where the
   profile permits it.
+  The model graph receives directional transport measurements and
+  `pipeline_cost` from the exact completed chat execution. It renders the
+  distributed cycle as Gateway -> peers -> Gateway, with the final virtual
+  Gateway showing the total only when every leg and compute measurement is
+  known.
   O detalhe local diferencia `idle` de `serving`: o primeiro mantém o nó
   ativo, mas informa que o modelo foi descarregado e será recarregado no
   próximo pedido.

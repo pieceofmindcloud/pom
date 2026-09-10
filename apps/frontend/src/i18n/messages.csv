@@ -66,6 +66,8 @@ adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
 canvas.fit,Fit to network,Ajustar à rede
+canvas.gateway,Gateway,Gateway
+canvas.gatewayReturn,return leg,perna de retorno
 canvas.inFlight,{count} in flight,{count} em voo
 canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
@@ -80,6 +82,10 @@ canvas.meterUnknown,unknown,desconhecido
 canvas.noCapacity,No inference capacity announced yet.,Nenhuma capacidade de inferência anunciada ainda.
 canvas.noModel,No model deployed,Nenhum modelo implantado
 canvas.openDetails,Double-click to open this machine''s details,Duplo clique abre os detalhes desta máquina
+canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
+canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
+canvas.pipelineTotalLabel,cycle cost,custo do ciclo
+canvas.pipelineTotalUnknown,not measured,não medido
 canvas.resetLayout,"Reset the arrangement, including what you dragged","Redefinir o arranjo, inclusive o que você arrastou"
 canvas.vramTotal,VRAM · {count} GPUs,VRAM · {count} GPUs
 canvas.zoomIn,Zoom in,Aumentar zoom

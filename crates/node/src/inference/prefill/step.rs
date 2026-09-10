@@ -394,6 +394,49 @@ impl RemoteDecodeStream {
             if let Some(hops) = meta.get("hop_timings").and_then(|value| value.as_array()) {
                 for (index, hop) in hops.iter().enumerate() {
                     trace.record_hop_from_json(index + 1, Phase::Decode, hop);
+                    let Some(from_node_id) =
+                        trace.hops.get(index).map(|entry| entry.node_id.clone())
+                    else {
+                        trace.transport_trace_complete = false;
+                        continue;
+                    };
+                    let Some(to_node_id) =
+                        trace.hops.get(index + 1).map(|entry| entry.node_id.clone())
+                    else {
+                        trace.transport_trace_complete = false;
+                        continue;
+                    };
+                    if hop.get("transport").is_some() {
+                        trace.record_cycle_transport(
+                            Phase::Decode,
+                            &from_node_id,
+                            &to_node_id,
+                            crate::prefill::TransportTrace::from_json(hop),
+                        );
+                    }
+                }
+            }
+            if let Some(round_trip_ms) = meta
+                .get("remote_stream_transport_rtt_ms")
+                .and_then(|value| value.as_u64())
+            {
+                let from_node_id = meta
+                    .get("remote_stream_source_node_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+                    .or_else(|| trace.hops.last().map(|entry| entry.node_id.clone()));
+                if let Some(from_node_id) = from_node_id {
+                    trace.record_cycle_return(
+                        Phase::Decode,
+                        &from_node_id,
+                        crate::prefill::TransportTrace::from_json(&json!({
+                            "transport": meta
+                                .get("remote_stream_transport")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("unknown"),
+                            "round_trip_ms": round_trip_ms,
+                        })),
+                    );
                 }
             }
         }

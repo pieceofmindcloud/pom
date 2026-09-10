@@ -308,7 +308,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   IDs de trace, request, pipeline e peer. Eventos de token sem intervalo
   individual permanecem com duração zero, sem repetir artificialmente o custo
   do lote. O perfil `off|basic|trace` controla apenas o detalhamento novo e
-  não substitui `POM_PROFILE_SYNC`.
+  não substitui `POM_PROFILE_SYNC`. O agregado `pipeline_cycle` guarda as
+  travessias em sua direção lógica (`gateway -> cabeça`, avanços e retorno),
+  por aresta e fase, sem dividir RTT por dois ou somar uma volta inexistente.
+  No `remote-stream`, os avanços são reconstruídos dos `hop_timings` e o
+  callback registra o peer emissor e o transporte efetivo; como o callback
+  persistente não espera ACK, seu RTT permanece ausente até existir uma
+  observação correspondente.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de

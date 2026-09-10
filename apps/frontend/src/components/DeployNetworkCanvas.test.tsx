@@ -5,6 +5,7 @@ import { LocaleProvider } from "../i18n/provider";
 import { CARD_HEIGHT, CARD_WIDTH, routeGeometry, type CanvasPosition } from "../lib/networkLayout";
 import type { DeployMachine, DeployPlan, DeploySelection, DeployStep } from "../lib/types";
 import { DeployNetworkCanvas } from "./DeployNetworkCanvas";
+import type { PipelineCycleCost } from "./PipelineGatewayNode";
 
 const params = {
   n_gpu_layers: 0,
@@ -115,7 +116,7 @@ function plan(steps: DeployStep[], route_options: DeployPlan["route_options"]): 
   };
 }
 
-function renderCanvas(current: DeployPlan, rows: DeploySelection[]) {
+function renderCanvas(current: DeployPlan, rows: DeploySelection[], pipelineCost?: PipelineCycleCost) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
       <DeployNetworkCanvas
@@ -127,6 +128,7 @@ function renderCanvas(current: DeployPlan, rows: DeploySelection[]) {
         onRemovePeer={vi.fn()}
         onDropPeer={vi.fn()}
         labelOf={(nodeId) => nodeId}
+        pipelineCost={pipelineCost}
       />
     </LocaleProvider>,
   );
@@ -138,7 +140,7 @@ describe("DeployNetworkCanvas", () => {
     localStorage.clear();
   });
 
-  it("desenha apenas o hop entre máquinas e preserva sua direção e RTT", async () => {
+  it("desenha os hops para frente e o retorno do último peer para o gateway", async () => {
     const steps = [
       step(0, 3, "a", 1),
       step(4, 7, "a", 2),
@@ -153,10 +155,11 @@ describe("DeployNetworkCanvas", () => {
     expect(canvas).not.toBeNull();
 
     await waitFor(() => {
-      expect(canvas!.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(1);
+      expect(canvas!.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(2);
     });
+    expect(within(canvas!).getByRole("heading", { name: "Gateway" })).toBeTruthy();
     expect(within(canvas!).getByText("RTT 7.4 ms")).toBeTruthy();
-    expect(within(canvas!).queryByText("RTT -")).toBeNull();
+    expect(within(canvas!).getByText("RTT -")).toBeTruthy();
     expect(within(canvas!).getByText("a → b · 7.4 ms")).toBeTruthy();
     expect(within(canvas!).queryByText("b → a · 74.0 ms")).toBeNull();
     view.unmount();
@@ -178,8 +181,11 @@ describe("DeployNetworkCanvas", () => {
     expect(canvas).not.toBeNull();
 
     await waitFor(() => {
-      expect(canvas!.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(0);
+      // Mesmo com um buraco no meio, o último peer continua tendo a perna de
+      // retorno para o gateway virtual. Nenhuma perna de avanço é inventada.
+      expect(canvas!.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(1);
     });
+    expect(within(canvas!).getByRole("heading", { name: "Gateway" })).toBeTruthy();
     view.unmount();
   });
 
@@ -205,5 +211,23 @@ describe("DeployNetworkCanvas", () => {
     expect(geometry.y2).toBe(100 + CARD_HEIGHT / 2);
     expect(geometry.c1x).toBeLessThan(geometry.x1);
     expect(geometry.c2x).toBeGreaterThan(geometry.x2);
+  });
+
+  it("mostra o custo total medido no gateway virtual", () => {
+    const steps = [
+      step(0, 3, "a", 1),
+      step(4, 7, "b", 2),
+      step(8, 11, "c", 3),
+    ];
+    const current = plan(steps, []);
+    const view = renderCanvas(
+      current,
+      steps.map(({ start_layer, end_layer, target_node_id }) => ({ start_layer, end_layer, target_node_id })),
+      { legsMs: [18, 30, 31, 29], computeMs: 42 },
+    );
+
+    expect(screen.getByText("Total do pipeline: 150.0 ms")).toBeTruthy();
+    expect(screen.getByText("rede 108.0 ms · compute 42.0 ms")).toBeTruthy();
+    view.unmount();
   });
 });

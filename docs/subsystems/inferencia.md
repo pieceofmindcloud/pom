@@ -114,10 +114,21 @@ contexto local de uma task Tokio. Por isso o registro do grupo captura o
 `tokio::runtime::Handle` do servidor e o callback usa esse handle para aguardar
 o reduce; chamar `Handle::current()` dentro da thread nativa causa panic.
 
-A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia
-um GET vazio para `/health` pelo mesmo túnel libp2p, sem prefill, decode ou
-estado oculto. Portanto `round_trip_ms` de um frame não é usado como RTT de
-topologia.
+A telemetria do mapa não inventa RTT a partir de uma sonda de topologia. O
+endpoint de Chat agrega as medições da execução concluída: cada hop de avanço
+é uma perna direcional origem->destino e o retorno final é uma perna
+peer->gateway. O valor é a duração observada da operação no transporte
+efetivo, sem dividir por dois nem copiar o RTT de outra origem. Se a operação
+assíncrona não publica uma observação compatível, a perna fica desconhecida.
+Uma sonda de `/health` continua podendo existir para admissão e planejamento,
+mas não é apresentada como RTT da execução nem misturada ao custo do ciclo.
+
+O ciclo visual e temporal de uma pipeline com três peers é
+`Gateway->A->B->C->Gateway`. A soma de rede usa somente essas pernas, uma vez
+cada, e o custo total acrescenta o compute medido de cada hop. O backend expõe
+isso em `RequestTrace.pipeline_cycle`; a UI mostra o agregado no Gateway
+virtual do fim da fila. A ausência de uma perna não vira zero: o total fica
+explicitamente não medido.
 
 Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
 reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de

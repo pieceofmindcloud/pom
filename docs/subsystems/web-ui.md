@@ -995,8 +995,9 @@ impressão digital é só modelo + conjunto de faixas.
   escolhida. No Tensor, somente peers que estão no mapa entram como
   primary/worker, mesmo que outros tenham o modelo.
   GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; o
-  mapa do Painel mostra o último RTT observado na execução de inferência para
-  cada aresta e deixa a medida desconhecida sem execução correspondente. O
+  mapa do Painel mostra o último RTT e transporte efetivos observados na
+  execução de inferência para cada aresta e deixa a medida desconhecida sem
+  execução correspondente. O
   survey direcional do planner continua reservado à escolha de rota e não é
   exibido como se fosse a execução. Uma GPU ausente aparece como `sem GPU`, sem barra
   indeterminada. Em Completa, todos os peers entram no canvas e na lista de
@@ -1041,8 +1042,10 @@ impressão digital é só modelo + conjunto de faixas.
   máquina, mas mantém `blocked` para gaps globais, sobreposição e outros
   problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
-  mostra apenas hops entre estágios consecutivos, com RTT direcional e rolagem
-  interna em viewport estreito para não cortar cards nem criar overflow na página.
+  mostra hops consecutivos somente para frente, acrescenta um Gateway virtual
+  no fim com a perna de retorno e exibe o custo total do ciclo quando todas as
+  pernas e compute foram medidos. A rolagem interna em viewport estreito não
+  corta cards nem cria overflow na página.
 - **Implantações** (`Deployments`): uma linha por `deploy_id`, "no ar" separado
   de "padrão", ordenada pela criação. Cada linha expande e lista as versões
   daquele `deploy_id` (o histórico de `RuntimeParams` já rodados sob o mesmo

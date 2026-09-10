@@ -258,6 +258,52 @@ Essas falhas se repetem no worktree sujo com alterações de outros trabalhos e
 nenhuma é uma falha dos testes de telemetria. A suíte completa não pode ser
 declarada totalmente verde neste estado compartilhado.
 
+## 11. Atualização sobre o caminho QUIC, o card e o ciclo visual
+
+Os traces do captain no `e19640c2`, sem QUIC, fecharam a hipótese de que o
+ganho de MTP já acontece no caminho distribuído: `tokens/decode = 1,99`,
+geração de `26,4 tok/s` e TTFT de `840 ms`, contra aproximadamente `22,5
+tok/s` antes. O mesmo trace observou o hop A -> B por `http`, com amostras de
+`51/66/68/130 ms`. Portanto, o card que ainda mostrava `86,0 ms` de libp2p
+estava consultando uma sonda separada, não a execução do Chat.
+
+Esta rodada mantém a seleção de transporte em um único ponto: QUIC é tentado
+quando a preferência está ativa; quando está desativada, o canal persistente
+é preferido; a reserva por URL publica `http` ou `https` conforme a URL real.
+Em caso de fallback, a metadata é codificada novamente por tentativa para que
+um sucesso TCP não apareça como QUIC. O MTP usa o mesmo `SentFrame` e a mesma
+identidade de transporte, portanto não há rótulo hardcoded no handoff.
+
+O trace agora também publica `pipeline_cycle.decode`: cada amostra é atribuída
+à perna lógica que a observou, na ordem `Gateway -> cabeça`, avanços entre
+peers e retorno. O painel consulta esse ciclo e mostra o transporte efetivo no
+selo da aresta. O total do Gateway final soma cada perna uma vez e o compute
+dos hops, mas só é fechado quando todas as pernas têm medição. A duração de
+uma operação de transporte é direcional no sentido da atribuição lógica; não
+é dividida por dois, porque o código ainda não tem relógios monotônicos
+sincronizados entre hosts para provar uma via física. O callback persistente
+do `remote-stream` não espera o ACK por token e, por isso, não recebe um RTT
+inventado a partir do intervalo entre lotes.
+
+O canvas deixou de desenhar arestas de retorno entre peers. Ele desenha
+somente os avanços, coloca um Gateway virtual no extremo final, liga o último
+peer a ele e apresenta a decomposição de rede + compute no card do Gateway.
+Uma perna sem evidência permanece `RTT -` e o total permanece `não medido`.
+
+Os novos dados de produção que motivaram esta rodada também ficam registrados:
+o residual do tail GPU -> CPU foi de `1924-2376 ms` no total, cerca de `9,5
+ms/token`; o transporte ainda representou aproximadamente `44%` do caminho
+crítico e `remote-stream wait` teve p50 de `75 ms/token`. A mensagem
+`Telemetria de transporte incompleta` era falso positivo quando havia `2/2`
+peers e `100%` dos spans: o estado de spans distribuídos agora é calculado
+separadamente da reconciliação tardia dos recibos de transporte.
+
+Limitação mantida deliberadamente: no callback persistente e na entrega final
+assíncrona não existe, no mesmo envelope, uma duração de ida e volta observada
+antes de o corpo ser enviado. O relatório e a UI deixam essa lacuna explícita;
+eles não substituem o valor pela sonda libp2p, por `frame latency`, por zero ou
+por uma subtração do E2E.
+
 ### Cenários A-L
 
 - A/B/C/D: `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`

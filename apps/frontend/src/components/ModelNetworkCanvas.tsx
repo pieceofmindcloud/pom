@@ -17,6 +17,8 @@ import {
   clearPositions,
   deploymentLayoutKey,
   fallbackPosition,
+  gatewayRouteGeometry,
+  pipelineGatewayPosition,
   readPositions,
   routeGeometry,
   writePositions,
@@ -27,6 +29,7 @@ import { sumVram } from "../lib/gpu";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
+import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNode";
 
 export type EdgeState = "principal" | "paralela" | "inativa";
 
@@ -192,7 +195,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
   </article>;
 }
 
-export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster: ClusterView; rttMeasurements?: ChatTelemetryRtt[] }) {
+export function ModelNetworkCanvas({ cluster, rttMeasurements = [], pipelineCost }: { cluster: ClusterView; rttMeasurements?: ChatTelemetryRtt[]; pipelineCost?: PipelineCycleCost }) {
   const { t } = useI18n();
   const graph = useMemo(() => graphFromCluster(cluster), [cluster]);
   const [model, setModel] = useState<string | undefined>();
@@ -225,7 +228,10 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
   const selectedEdgeIds = new Set(selectedEdges.map(edgeKey));
   const candidateIds = new Set(candidates.map(edgeKey));
   const rttByPair = useMemo(
-    () => new Map(rttMeasurements.map((measurement) => [`${measurement.from_node_id}:${measurement.to_node_id}`, measurement.rtt_ms])),
+    () => new Map(rttMeasurements.map((measurement) => [
+      `${measurement.from_node_id}:${measurement.to_node_id}`,
+      measurement,
+    ])),
     [rttMeasurements],
   );
   const edges = [...candidates, ...selectedEdges.filter((edge) => !candidates.some((candidate) => candidate.from_node_id === edge.from_node_id && candidate.to_node_id === edge.to_node_id && candidate.from_end_layer === edge.from_end_layer && candidate.to_start_layer === edge.to_start_layer))];
@@ -255,6 +261,16 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
 
   const detailPeer = detailNodeId ? cluster.peers.find((peer) => peer.node_id === detailNodeId) ?? null : null;
   const pipeline = pipelinePeers(cluster);
+  const terminalEndLayer = ranges.length > 0 ? Math.max(...ranges.map((range) => range.end_layer)) : null;
+  const terminalRanges = terminalEndLayer == null ? [] : ranges.filter((range) => range.end_layer === terminalEndLayer);
+  const gatewayPosition = pipelineGatewayPosition(
+    terminalRanges.map((range) => positionOf(range, ranges.indexOf(range))),
+  );
+  const forwardEdges = edges.filter((edge) => {
+    const from = rangeForEdge(ranges, edge, "from");
+    const to = rangeForEdge(ranges, edge, "to");
+    return Boolean(from && to && to.start_layer > from.start_layer);
+  });
 
   /**
    * Arruma a rede **sem jogar fora o que o operador arrastou**.
@@ -299,7 +315,7 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
     updatePosition(keyFor(range), { left, top });
   }
 
-  return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
+  return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
     <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 rounded-xl border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
       <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label="Modelo">{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}</div>
       {/*
@@ -319,7 +335,7 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
     {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
         <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>
-        {edges.map((edge) => {
+        {forwardEdges.map((edge) => {
           const from = rangeForEdge(ranges, edge, "from"); const to = rangeForEdge(ranges, edge, "to");
           if (!from || !to) return null;
           const fromIndex = ranges.indexOf(from); const toIndex = ranges.indexOf(to);
@@ -333,14 +349,25 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [] }: { cluster:
           const style = edgeStyle(state);
           return <path key={id} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
         })}
+        {gatewayPosition && terminalRanges.map((range) => {
+          const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition);
+          return <path key={`gateway-${range.node_id}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className="fill-none stroke-aqua" strokeWidth="3" markerEnd="url(#route-arrow)" />;
+        })}
       </svg>
-      {edges.map((edge, index) => {
+      {forwardEdges.map((edge, index) => {
         const from = rangeForEdge(ranges, edge, "from"); const to = rangeForEdge(ranges, edge, "to");
         if (!from || !to) return null;
         const geometry = routeGeometry(positionOf(from, ranges.indexOf(from)), positionOf(to, ranges.indexOf(to)));
-        return <RouteRttLabel key={`rtt-${edgeKey(edge)}-${index}`} rttMs={rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`)} left={geometry.labelX} top={geometry.labelY} />;
+        const measurement = rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`);
+        return <RouteRttLabel key={`rtt-${edgeKey(edge)}-${index}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} left={geometry.labelX} top={geometry.labelY} />;
+      })}
+      {gatewayPosition && terminalRanges.map((range) => {
+        const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition);
+        const measurement = rttByPair.get(`${range.node_id}:gateway`);
+        return <RouteRttLabel key={`rtt-gateway-${range.node_id}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} left={geometry.labelX} top={geometry.labelY} />;
       })}
       {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />)}
+      {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
     </div>}
     {/* A mesma visão que a aba Detalhes mostra, no mesmo componente. */}
     <PeerDetailDialog

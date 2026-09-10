@@ -219,10 +219,15 @@ Per-file list:
   label component as the deploy map. The cluster coverage badge is an admin
   summary; node and infer profiles use their own model and slice data instead.
   A missing peer load stays visibly unknown in the card meter and is never
-  rendered as zero.
+  rendered as zero. The selected pipeline is drawn only forward; a virtual
+  `Gateway` is placed after the last layer stage and receives the return-leg
+  arrow. Its card shows the complete cycle cost only when every directional
+  leg and peer compute measurement is present, never treating an absent leg as
+  zero.
 - `RouteRttLabel.tsx` - selo visual de RTT direcional compartilhado pelo mapa
-  do Painel e pelo mapa de implantação. O texto e as classes são os mesmos nos
-  dois contextos, inclusive quando a medição ainda não existe (`RTT -`).
+  do Painel e pelo mapa de implantação. No Painel ele também identifica o
+  transporte efetivo (`HTTP`, `HTTPS` ou `QUIC`) observado na execução; quando
+  a medição ainda não existe, conserva `RTT -` em vez de usar a sonda libp2p.
 - `PeerDetailCard.tsx` — The card of one machine, in the same drawing for every
   machine. It lives outside `Dashboard` because it shows in two places: the
   details tab stacks one card per machine (`networkPeers` splits the whole

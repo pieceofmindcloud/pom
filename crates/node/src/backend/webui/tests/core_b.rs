@@ -280,6 +280,80 @@ mod chat_telemetry_tests {
         );
     }
 
+    #[test]
+    fn execution_telemetry_uses_the_real_directional_cycle() {
+        let requested = ["a", "b", "c"].into_iter().map(str::to_string).collect();
+        let trace = json!({
+            "hops": [
+                {"node_id": "a", "decode": {"processing_ms": 10}},
+                {"node_id": "b", "decode": {"processing_ms": 12}},
+                {"node_id": "c", "decode": {"processing_ms": 14}}
+            ],
+            "pipeline_cycle": {
+                "decode": [
+                    {"from_node_id": "gateway", "to_node_id": "a", "transport_summary": {"transports": [{"transport": "http", "calls": 1, "rtt_median_ms": 18}]}},
+                    {"from_node_id": "a", "to_node_id": "b", "transport_summary": {"transports": [{"transport": "http", "calls": 4, "rtt_median_ms": 30}]}},
+                    {"from_node_id": "b", "to_node_id": "c", "transport_summary": {"transports": [{"transport": "quic", "calls": 4, "rtt_median_ms": 31}]}},
+                    {"from_node_id": "c", "to_node_id": "gateway", "transport_summary": {"transports": [{"transport": "https", "calls": 4, "rtt_median_ms": 29}]}}
+                ]
+            }
+        });
+
+        assert_eq!(
+            execution_transport_measurements(&trace, &requested),
+            vec![
+                ChatTelemetryMeasurement {
+                    from_node_id: "a".into(),
+                    to_node_id: "b".into(),
+                    rtt_ms: 30.0,
+                    transport: "http".into(),
+                },
+                ChatTelemetryMeasurement {
+                    from_node_id: "b".into(),
+                    to_node_id: "c".into(),
+                    rtt_ms: 31.0,
+                    transport: "quic".into(),
+                },
+                ChatTelemetryMeasurement {
+                    from_node_id: "c".into(),
+                    to_node_id: "gateway".into(),
+                    rtt_ms: 29.0,
+                    transport: "https".into(),
+                },
+            ]
+        );
+        assert!(execution_transport_measurements(&trace, &requested)
+            .iter()
+            .all(|measurement| measurement.transport != "libp2p-tunnel"));
+    }
+
+    #[test]
+    fn execution_pipeline_cost_sums_each_cycle_leg_once_and_adds_compute() {
+        let trace = json!({
+            "hops": [
+                {"node_id": "a", "decode": {"processing_ms": 10}},
+                {"node_id": "b", "decode": {"processing_ms": 12}},
+                {"node_id": "c", "decode": {"processing_ms": 14}}
+            ],
+            "pipeline_cycle": {
+                "decode": [
+                    {"from_node_id": "gateway", "to_node_id": "a", "transport_summary": {"transports": [{"transport": "http", "calls": 1, "rtt_median_ms": 18}]}},
+                    {"from_node_id": "a", "to_node_id": "b", "transport_summary": {"transports": [{"transport": "http", "calls": 4, "rtt_median_ms": 30}]}},
+                    {"from_node_id": "b", "to_node_id": "c", "transport_summary": {"transports": [{"transport": "quic", "calls": 4, "rtt_median_ms": 31}]}},
+                    {"from_node_id": "c", "to_node_id": "gateway", "transport_summary": {"transports": [{"transport": "https", "calls": 4, "rtt_median_ms": 29}]}}
+                ]
+            }
+        });
+
+        assert_eq!(
+            execution_pipeline_cost(&trace),
+            Some(ChatTelemetryPipelineCost {
+                legs_ms: vec![Some(18.0), Some(30.0), Some(31.0), Some(29.0)],
+                compute_ms: Some(36.0),
+            })
+        );
+    }
+
     #[tokio::test]
     async fn chat_telemetry_ignores_libp2p_probe_when_execution_trace_exists() {
         let state = crate::gateway::testkit::state_with("gateway", vec![]).await;

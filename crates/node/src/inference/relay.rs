@@ -611,6 +611,18 @@ fn can_coalesce_frame(path: &str, meta: &Value, tensor: Option<(&[f32], TensorSh
     !hidden_response
 }
 
+fn can_use_batch_transport(
+    step: &crate::pipeline::PipelineStep,
+    path: &str,
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+) -> bool {
+    can_coalesce_frame(path, meta, tensor)
+        && step.supports(crate::pipeline::CAP_FRAME_BATCH)
+        && !meta.get("reply_to").is_some_and(|value| !value.is_null())
+        && meta.get("speculate").is_none()
+}
+
 /// Partition item indexes so every coalesced tensor payload leaves room for
 /// the batch header. An item larger than the budget remains alone and fails
 /// with the precise single-frame error during encoding.
@@ -1565,12 +1577,7 @@ pub async fn send_frame_or_tunnel(
     } else {
         None
     };
-    let can_batch = can_coalesce_frame(path, meta, tensor.clone())
-        && step.supports(crate::pipeline::CAP_FRAME_BATCH)
-        && !meta.get("reply_to").is_some_and(|value| !value.is_null())
-        && meta.get("speculate").is_none()
-        && meta.get("draft").is_none()
-        && meta.get("mtp_k").is_none();
+    let can_batch = can_use_batch_transport(step, path, meta, tensor.clone());
     if can_batch {
         let coordinator = BatchCoordinator::global().clone();
         let mut on_issue = on_issue;
@@ -1902,6 +1909,50 @@ mod tests {
         assert!(can_coalesce_frame(
             "/v1/prefill",
             &json!({"is_last": false, "next_hops": ["tail"]}),
+            None,
+        ));
+    }
+
+    #[test]
+    fn mtp_handoff_can_use_persistent_link_batch_transport() {
+        let mut step = step_with("https://peer.example", false, None);
+        step.inference_frame_capabilities = vec![
+            crate::pipeline::CAP_FRAME_BATCH.to_string(),
+            crate::pipeline::CAP_LINK_STREAM.to_string(),
+        ];
+
+        assert!(can_use_batch_transport(
+            &step,
+            "/v1/step",
+            &json!({
+                "session_id": "session-mtp",
+                "is_last": true,
+                "tokens": [10, 11, 12],
+                "draft": [11, 12],
+                "mtp_k": 3
+            }),
+            None,
+        ));
+    }
+
+    #[test]
+    fn remote_stream_control_stays_out_of_persistent_link_batch_transport() {
+        let mut step = step_with("https://peer.example", false, None);
+        step.inference_frame_capabilities = vec![
+            crate::pipeline::CAP_FRAME_BATCH.to_string(),
+            crate::pipeline::CAP_LINK_STREAM.to_string(),
+        ];
+
+        assert!(!can_use_batch_transport(
+            &step,
+            "/v1/step-stream",
+            &json!({
+                "session_id": "session-mtp",
+                "reply_to": "gateway-ticket",
+                "speculate": true,
+                "draft": [11, 12],
+                "mtp_k": 3
+            }),
             None,
         ));
     }

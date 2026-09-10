@@ -426,6 +426,42 @@ async fn a_ligacao_persistente_custa_menos_bytes_por_ficha() {
     }
 }
 
+/// O handoff MTP tem metadados extras, mas continua sendo um frame de
+/// `/v1/step` compatível com o envelope do canal persistente.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handoff_mtp_usa_a_ligacao_persistente() {
+    let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
+    let (url, _counter) = spawn_hop(Hop {
+        clients: clients.clone(),
+    })
+    .await;
+    let step = step_for("mtp-tail", &url, 0, true);
+    let residual = vec![0.25f32; HIDDEN_DIM];
+    let sent = crate::relay::send_frame_or_tunnel(
+        &clients,
+        &step,
+        None,
+        "/v1/step",
+        &json!({
+            "session_id": "mtp-session",
+            "is_last": true,
+            "tokens": [41, 42, 43],
+            "draft": [42, 43],
+            "mtp_k": 3
+        }),
+        Some((&residual, vec![1, HIDDEN_DIM])),
+        WireDtype::F16,
+        WireDtype::F16.frame_encoding(),
+        1,
+        "mtp-tail",
+        |_| {},
+    )
+    .await
+    .expect("handoff MTP");
+
+    assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
+}
+
 /// Um hop que anuncia o canal mas não o serve não pode matar a geração: a
 /// travessia degrada para o caminho por requisição e a telemetria diz isso.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

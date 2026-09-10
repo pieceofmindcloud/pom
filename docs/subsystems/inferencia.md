@@ -661,6 +661,14 @@ capability não existe ou o canal falha, a escada de fallback ainda pode fazer
 uma requisição por ativação. A conexão TCP/TLS por baixo já vinha do pool (é por
 isso que `tls_handshake_ms` só aparece no salto que abre conexão).
 
+O controle inicial de `/v1/step-stream` não é encapsulado como lote porque o
+receptor dessa rota espera o wire de controle. Depois que a cabeça inicia o
+laço, o handoff MTP em `/v1/step` leva `draft` e `mtp_k` num lote de um item;
+esses campos não podem impedir o `BatchCoordinator`, e o lote é entregue pelo
+canal persistente quando o hop anuncia `transport/link-v1`. A chave do
+coordenador marca o contrato como especulativo, mantendo esse frame separado
+dos lotes densos.
+
 `transport/link-v1` mantém **um canal por aresta** (`node_id` + URL de
 inferência): um único `POST /v1/link` cujo corpo de ida é um fluxo de quadros
 binários e cujo corpo de volta é outro fluxo de quadros binários. A abertura

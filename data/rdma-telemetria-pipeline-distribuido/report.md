@@ -1220,3 +1220,49 @@ confirmar que `mtp_draft_tokens_proposed` deixou de ser zero e medir a nova
 geração. A correção de telemetria torna essa captura confiável, mas não
 substitui a medição de produção. A tabela `RttTable` permanece deliberadamente
 libp2p para o planner; ela não deve ser usada como RTT de execução.
+
+### 17.19 E2E pós-deploy 0c671617: MTP ainda desviava para libp2p
+
+O Chat foi exercitado contra a pipeline implantada com o binário de
+`0c671617`, `POM_PROFILE=trace` e uma resposta longa de 199 tokens. A captura
+persistida foi a execução `chatcmpl-e4fc6ee32b2847f8b0d2d7287bc7b480`.
+
+| métrica | 0c671617 | base registrada |
+| --- | ---: | ---: |
+| geração | 21,77 tok/s | 22,57 tok/s |
+| wall throughput | 20,43 tok/s | 18,52 tok/s |
+| TTFT do servidor | 601 ms | 944 ms |
+| MTP proposed / accepted / rejected | 279 / 104 / 175 | 0 / 0 / 0 |
+| aceitação | 37,28% | - |
+
+O tempo total desta captura foi 9,74 s para os 199 tokens gerados.
+
+O trace comprovou que MTP já está engatado no gateway real, mas a aresta
+`0bda9121 -> 02eb8c40` registrou 94 chamadas downstream como
+`libp2p-tunnel`, com RTT mediano de 88 ms (mínimo 74 ms, p95 91 ms). A mesma
+consulta autenticada ao endpoint usado pelo Painel retornou
+`transport=libp2p-tunnel` e `rtt_ms=88`; portanto o valor de 86 ms observado
+antes não era apenas cache visual ou sonda renomeada. O Painel estava refletindo
+corretamente o transporte efetivo daquela execução, que ainda estava errado.
+
+A causa raiz comum com o MTP ficou localizada em `relay::send_frame_or_tunnel`.
+`send_batch_body` já priorizava `CAP_LINK_STREAM`, mas a seleção do
+`BatchCoordinator` recusava qualquer meta com `draft` ou `mtp_k`. Cada handoff
+MTP para o peer seguinte caía então diretamente no túnel libp2p. O controle
+inicial de `/v1/step-stream` não pode ser alterado dessa forma, pois o receptor
+espera seu wire de controle e não `frame/v1-batch`.
+
+A correção remove essa exclusão somente da elegibilidade de lote. O handoff
+`/v1/step` MTP agora é encapsulado como lote de um item e passa pela ordem já
+existente: canal persistente (`https-link`), túnel libp2p e HTTPS direto como
+fallback. `reply_to` e `speculate` continuam impedindo o lote de controle. A
+chave do coordenador já separava contratos especulativos, então não há mistura
+entre frames MTP e densos.
+
+O teste novo foi observado primeiro em RED com a exclusão antiga e passou após
+a correção: `mtp_handoff_can_use_persistent_link_batch_transport`. A regressão
+`remote_stream_control_stays_out_of_persistent_link_batch_transport` preserva
+o limite do controle inicial. Ainda falta o redeploy desta correção para
+confirmar no Chat `https-link`, RTT de execução próximo dos ~30 ms do ping e a
+melhora de geração. Os números acima são a medição anterior à correção e não
+devem ser apresentados como resultado final.

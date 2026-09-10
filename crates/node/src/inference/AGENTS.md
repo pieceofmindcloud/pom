@@ -96,6 +96,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `send_body_without_response_with_session`: cada frame é enfileirado no
   canal full-duplex sem barreira de ACK por token; a fila limitada mantém
   contrapressão e uma tarefa leitora observa ACKs tardios e falhas do canal.
+  O controle inicial de `/v1/step-stream` continua fora do lote, pois o
+  receptor espera o wire de controle dessa rota. Já o handoff normal de
+  `/v1/step` com MTP, que carrega `draft` e `mtp_k`, entra como lote de um
+  item: assim ele usa o mesmo canal persistente e aparece como `https-link`.
+  A chave do `BatchCoordinator` marca esses lotes como especulativos para não
+  misturá-los com frames densos.
   Ver `docs/subsystems/inferencia.md` §2.1.
 - `link_lab.rs` (520, `#![cfg(test)]`) - a bancada do custo de rede por ficha
   no salto interno: hops falsos servidos por cima de um `TcpStream` com

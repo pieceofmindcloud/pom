@@ -43,6 +43,11 @@ x-node: &node
     POM_HOME: /data
     POM_UI_DIST: /app/apps/frontend/dist
     POM_PROFILE_SYNC: 1
+    # Telemetry profile (crates/node/src/telemetry.rs: off|basic|trace). `trace`
+    # keeps the execution telemetry card COMPLETE - per-chunk detail and the
+    # transport spans; without it the trace is `basic` and the UI shows
+    # "telemetria de transporte incompleta". Override to basic/off to trim.
+    POM_PROFILE: trace
     # NVIDIA is injected by the toolkit (deploy.resources below). Keep its
     # capabilities at compute+utility on purpose: adding `graphics` would also
     # mount an NVIDIA Vulkan ICD, and then the Vulkan backend would enumerate

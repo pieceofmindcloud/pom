@@ -529,6 +529,7 @@ pub async fn run(
     mtp_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
+    quic: Option<crate::serve::QuicServerConfig>,
     auth: Option<crate::auth::AuthState>,
     model_cache: Arc<ModelCache>,
     reuse_weights: bool,
@@ -802,7 +803,7 @@ pub async fn run(
     // para de aceitar e encerra as conexões que restaram, só depois a VRAM é
     // devolvida. Na ordem inversa uma requisição em voo tocaria um contexto já
     // liberado.
-    let resultado = crate::serve::serve_with_shutdown(listener, router, tls, async move {
+    let resultado = crate::serve::serve_with_quic(listener, router, tls, quic, async move {
         loop {
             if stop_rx.changed().await.is_err() {
                 break;

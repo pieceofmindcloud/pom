@@ -1050,6 +1050,13 @@ async fn async_main(
     // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
     // reclamaria do host, e não do emissor.
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
+    let quic_config = match serve::quic_server_config(&identity) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}");
+            None
+        }
+    };
     let tls_server =
         match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
             Ok(t) => Some(t),
@@ -1059,10 +1066,11 @@ async fn async_main(
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_quic_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        quic_config.clone(),
         Some(auth_config.clone()),
     );
     node_runtime
@@ -1912,6 +1920,13 @@ async fn start_gateway_only(
     // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
     // reclamaria do host, e não do emissor.
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
+    let quic_config = match serve::quic_server_config(&identity) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}");
+            None
+        }
+    };
     let tls_server =
         match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
             Ok(t) => Some(t),
@@ -1923,10 +1938,11 @@ async fn start_gateway_only(
 
     let hf_token_store =
         huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_quic_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        quic_config.clone(),
         Some(auth_state.clone()),
     );
     node_runtime.start_thermal_monitor(auth_state.clone()).await;

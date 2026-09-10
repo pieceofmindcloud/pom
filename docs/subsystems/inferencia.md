@@ -84,11 +84,12 @@ cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
 forward pass. O rank 0 contribui diretamente na `ReduceBarrier` local; os
 workers enviam a parcial ao primary. `broadcast_to` mantém a URL base e a rota
 separadas para o túnel encaminhar a requisição ao path correto no loopback do
-worker. O broadcast e o reduce remoto tentam primeiro os candidatos HTTPS
-diretos pinados. Se nenhum endereço responde por falha de transporte, tentam o
-túnel libp2p quando o membro anunciou `PeerId` e capability. Essa ordem é
-necessária para a coletiva: a chamada fica aguardando dentro da barreira e um
-túnel indisponível não deve atrasar um endereço HTTPS alcançável.
+worker. O broadcast e o reduce remoto seguem a preferência do transporte: com
+QUIC ligado, tentam HTTP/3 e caem diretamente para HTTP/HTTPS; com QUIC
+desligado, tentam os candidatos diretos e, se necessário, o túnel libp2p quando
+o membro anunciou `PeerId` e capability. Essa ordem é necessária para a
+coletiva: a chamada fica aguardando dentro da barreira e um túnel indisponível
+não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas entre peers aceitam exclusivamente `Authorization: Bearer
 <connection_key>` junto de `x-pom-internal-node: 1` em redes privadas; em redes
@@ -102,8 +103,9 @@ autenticação dos hops internos.
 Quando o destino anunciado de um passo é o próprio `node_id` deste processo, o
 relay despacha o quadro diretamente para o handler de inferência em processo.
 Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência
-continua ativo para health checks e para peers remotos; nesses peers a ordem é
-túnel libp2p e fallback HTTP direto.
+continua ativo para health checks e para peers remotos; com QUIC ligado, a
+ordem remota é QUIC e fallback HTTP direto, sem túnel libp2p. Com QUIC
+desligado, o túnel continua sendo a alternativa antes do HTTP direto.
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
@@ -704,10 +706,11 @@ global do mapa de canais. Cada quadro, nas duas direções:
   administrativa Ed25519 a cada frame de inferência. Um quadro recusado é recusa
   **daquele quadro** - o canal continua servindo os seguintes.
 
-**Degradação.** Falha de transporte no canal não mata a geração: a chamada volta
-pela escada de sempre (túnel libp2p, depois HTTP ou HTTPS por requisição) com
-`transport_fallback=true`, e o canal morto sai do pool. Um destino cuja abertura
-falhou fica 5 min em quarentena, o mesmo prazo da memória de rotas, para a
+**Degradação.** Falha de transporte no canal não mata a geração: com QUIC
+desligado, a chamada volta pelo túnel libp2p e depois HTTP/HTTPS por requisição;
+com QUIC ligado, cai diretamente para HTTP/HTTPS, nunca para libp2p. Em ambos
+os casos publica `transport_fallback=true`, e o canal morto sai do pool. Um
+destino cuja abertura falhou fica 5 min em quarentena, o mesmo prazo da memória de rotas, para a
 tentativa de abrir não se pagar por ficha num cluster onde o endereço direto não
 serve (peer atrás de NAT alcançável só pelo túnel). O canal tem teto de vida de
 12 h, porque o timeout do cliente HTTP vale para a requisição inteira e o corpo
@@ -734,7 +737,8 @@ confundida com o nome agregado do transporte.
 Quando `Config.quic_enabled` está ligado pelo principal, os novos hops de
 estado oculto e as entregas diretas de retorno preferem HTTP/3 sobre QUIC. O
 endpoint usa a mesma porta numérica da inferência TCP, mas UDP e TCP podem
-coexistir; o servidor HTTP/3 fica preparado desde o arranque para que virar a
+coexistir; a configuração do endpoint é criada separadamente da configuração
+TLS TCP e o servidor HTTP/3 fica preparado desde o arranque para que virar a
 preferência não reinicie o modelo nem interrompa uma chamada em voo. Cada
 request abre um stream independente da conexão QUIC por peer e URL, e a sessão
 fica no pool para permitir multiplexação futura.

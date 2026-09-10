@@ -656,6 +656,8 @@ pub struct NodeRuntime {
     /// Certificado que o servidor de inferência apresenta, quando há um.
     /// `None` nos testes, que sobem em `127.0.0.1` e falam em claro.
     tls: Option<crate::serve::TlsServer>,
+    /// Endpoint HTTP/3 da inferência. Não depende da política TLS sobre TCP.
+    quic: Option<crate::serve::QuicServerConfig>,
     /// Configuração viva usada para autorizar chamadas internas de inferência.
     auth: Option<crate::auth::AuthState>,
     /// Dono do último conjunto de pesos carregado. O servidor de cada geração
@@ -690,13 +692,23 @@ impl NodeRuntime {
         assignment: Arc<RwLock<Option<LayerAssignment>>>,
         tls: Option<crate::serve::TlsServer>,
     ) -> Arc<Self> {
-        Self::new_with_tls_and_auth(net, assignment, tls, None)
+        Self::new_with_tls_and_quic_and_auth(net, assignment, tls, None, None)
     }
 
     pub fn new_with_tls_and_auth(
         net: Arc<Network>,
         assignment: Arc<RwLock<Option<LayerAssignment>>>,
         tls: Option<crate::serve::TlsServer>,
+        auth: Option<crate::auth::AuthState>,
+    ) -> Arc<Self> {
+        Self::new_with_tls_and_quic_and_auth(net, assignment, tls, None, auth)
+    }
+
+    pub fn new_with_tls_and_quic_and_auth(
+        net: Arc<Network>,
+        assignment: Arc<RwLock<Option<LayerAssignment>>>,
+        tls: Option<crate::serve::TlsServer>,
+        quic: Option<crate::serve::QuicServerConfig>,
         auth: Option<crate::auth::AuthState>,
     ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
@@ -710,6 +722,7 @@ impl NodeRuntime {
             net,
             generation,
             tls,
+            quic,
             auth,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
             loads: Arc::new(crate::pipeline::LoadTracker::new()),
@@ -1260,6 +1273,7 @@ impl NodeRuntime {
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
+        let quic = self.quic.clone();
 
         tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
@@ -1328,6 +1342,7 @@ impl NodeRuntime {
                     mtp_ready.clone(),
                     batching_ready.clone(),
                     tls.clone(),
+                    quic.clone(),
                     auth.clone(),
                     model_cache.clone(),
                     reuse_weights,

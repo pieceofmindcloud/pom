@@ -1218,12 +1218,16 @@ async fn send_batch_body(
         .libp2p_peer_id
         .as_deref()
         .and_then(|value| value.parse::<PeerId>().ok());
-    let can_use_tunnel = tunnel_is_allowed_for_peer(
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
-        peer_id.is_some(),
-        tunnel.is_some(),
-        crate::infer_tunnel::is_local_node(&step.node_id),
-    );
+    // QUIC is an explicit transport preference. While it is enabled, do not
+    // consume the libp2p tunnel before the direct HTTP/3 attempt: a successful
+    // tunnel would hide both the QUIC attempt and its fallback telemetry.
+    let can_use_tunnel = !clients.quic_enabled()
+        && tunnel_is_allowed_for_peer(
+            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+            peer_id.is_some(),
+            tunnel.is_some(),
+            crate::infer_tunnel::is_local_node(&step.node_id),
+        );
     let mut transport_fallback_reason = None;
     let mut transport_fallback = false;
 
@@ -1265,7 +1269,7 @@ async fn send_batch_body(
                     transport_fallback: false,
                     transport_fallback_reason: None,
                     profiling_spans: response.profiling_spans,
-                })
+                });
             }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
@@ -1827,12 +1831,15 @@ pub async fn send_frame_or_tunnel(
         .as_deref()
         .and_then(|s| s.parse::<PeerId>().ok());
 
-    let can_use_tunnel = tunnel_is_allowed_for_peer(
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
-        peer_id.is_some(),
-        tunnel.is_some(),
-        crate::infer_tunnel::is_local_node(&step.node_id),
-    );
+    // Keep the transport selector single-valued: QUIC takes precedence over
+    // the tunnel, and a failed QUIC attempt falls through to TCP only.
+    let can_use_tunnel = !clients.quic_enabled()
+        && tunnel_is_allowed_for_peer(
+            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+            peer_id.is_some(),
+            tunnel.is_some(),
+            crate::infer_tunnel::is_local_node(&step.node_id),
+        );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
     let session_id = meta.get("session_id").and_then(Value::as_str);
     let mut transport_fallback = false;
@@ -2833,6 +2840,117 @@ mod tests {
         assert_eq!(sent.transport, InferenceTransport::Http);
         assert!(sent.transport_fallback);
         assert_eq!(sent.as_hop_timing_entry()["transport"], "http");
+    }
+
+    #[tokio::test]
+    async fn quic_precedes_the_tunnel_and_falls_back_to_http_when_unavailable() {
+        let port = spawn_fake_inference_server(|_body| {
+            (
+                200,
+                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        clients.set_quic(true);
+        let step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        let tunnel_body = wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
+
+        let sent = send_frame_or_tunnel(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("HTTP deve assumir quando QUIC não está disponível");
+
+        assert_eq!(sent.meta["done"], true);
+        assert_eq!(sent.transport, InferenceTransport::Http);
+        assert!(sent.transport_fallback);
+        assert!(sent
+            .transport_fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("quic")));
+    }
+
+    #[tokio::test]
+    async fn quic_precedes_the_tunnel_when_the_endpoint_is_available() {
+        use axum::{body::Bytes, http::StatusCode, routing::post, Router};
+        use tokio::sync::oneshot;
+
+        let identity = crate::identity::Identity::generate();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route(
+            "/v1/step",
+            post(|_body: Bytes| async {
+                (
+                    StatusCode::OK,
+                    wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+                )
+            }),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let quic = crate::serve::quic_server_config(&identity).unwrap();
+        let server = tokio::spawn(async move {
+            crate::serve::serve_with_quic(listener, app, None, Some(quic), async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        clients.set_quic(true);
+        let step = step_with_node(
+            &identity.node_id.0,
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        let tunnel_body = wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
+
+        let sent = send_frame_or_tunnel(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "quic-peer",
+            |_| {},
+        )
+        .await
+        .expect("QUIC deve vencer o túnel quando o endpoint existe");
+
+        assert_eq!(sent.meta["done"], true);
+        assert_eq!(sent.transport, InferenceTransport::Quic);
+        assert!(!sent.transport_fallback);
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]

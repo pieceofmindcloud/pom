@@ -88,7 +88,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
   QUIC por peer e endereço, usa o mesmo pinning Ed25519 da conexão TCP e deixa
   o endpoint UDP pronto na porta de inferência mesmo quando a preferência está
-  desligada.
+  desligada. A configuração do listener é independente do `tls_required` do
+  TCP, porque QUIC leva seu próprio TLS 1.3.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o

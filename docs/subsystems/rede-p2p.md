@@ -449,13 +449,14 @@ Comportamento atual do código:
    `insert_peer` (libp2p) não reescreve, mas a guarda de destino impede que esse
    sentinel seja discado ou convertido em URL/multiaddr. Um candidato válido
    observado ou anunciado continua sendo usado.
-2. **O tráfego de inferência prefere libp2p por hop.** O gateway e os relays
-   usam `network/infer_tunnel.rs` via `relay::send_frame_or_tunnel` quando o
-   hop anuncia `transport/libp2p-tunnel-v1` e um `PeerId` válido. O túnel é
-   protegido por Noise e leva a credencial da inferência até o loopback do
-   destino. Se ele estiver indisponível ou falhar por transporte, o mesmo
-   quadro segue pelo cliente direto pinado, usando QUIC quando a preferência está
-   ativa, ou HTTP quando TLS está desligado e HTTPS quando está ativo.
+2. **O tráfego de inferência escolhe um transporte por preferência.** Quando
+   QUIC está ligado, o gateway e os relays tentam HTTP/3 via
+   `relay::send_frame_or_tunnel` e, se ele falhar, caem diretamente para o
+   cliente TCP pinado: HTTP quando TLS está desligado e HTTPS quando está ativo.
+   Esse caminho nunca usa o túnel libp2p. Quando QUIC está desligado, o túnel
+   `network/infer_tunnel.rs` pode ser usado quando o hop anuncia
+   `transport/libp2p-tunnel-v1` e um `PeerId` válido; ele é protegido por Noise
+   e leva a credencial da inferência até o loopback do destino.
    Antes de cada envio, o swarm reidrata uma única multiaddress TCP a partir do
    endpoint canônico levado pelo plano quando disponível, ou do primeiro
    endereço válido do anúncio vivo como fallback, quando ainda não há conexão.
@@ -640,7 +641,9 @@ vale somente para chamadas novas; conexões e inferências em andamento não sã
 interrompidas.
 
 Quando ligada, a porta de inferência também escuta HTTP/3 sobre QUIC na mesma
-porta numérica do TCP. Quinn negocia TLS 1.3 próprio e o cliente fixa o
+porta numérica do TCP. O endpoint QUIC é criado pela identidade do nó,
+independentemente de `tls_required` ou do `announced_tls` usado apenas para
+consultar a política no principal. Quinn negocia TLS 1.3 próprio e o cliente fixa o
 certificado Ed25519 do `node_id`; portanto QUIC permanece cifrado mesmo quando
 `tls_required` está desligado. A política TLS continua escolhendo apenas
 `http://` ou `https://` para o fallback TCP. Se o peer não tiver endpoint QUIC,

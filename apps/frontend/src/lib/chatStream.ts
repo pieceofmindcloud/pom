@@ -45,7 +45,9 @@ export interface FirstTokenTrace {
 export interface StreamingTrace {
   time_to_first_chunk_ms?: number | null;
   time_to_first_token_ms?: number | null;
+  /** Browser-local first SSE data frame through receipt of the [DONE] frame. */
   stream_duration_ms?: number | null;
+  /** Browser-local last token data frame through receipt of the [DONE] frame. */
   time_last_token_to_response_end_ms?: number | null;
   chunks: number;
   bytes: number;
@@ -125,6 +127,9 @@ export function withClientStreamTiming(
 ): StreamMetrics {
   const clientTtft = elapsedMs(observation.requestStartedAt, observation.firstTokenAt);
   const firstChunk = elapsedMs(observation.requestStartedAt, observation.firstChunkAt);
+  // This intentionally excludes TTFT and includes any terminal work before
+  // the response body closes. The adjacent last-token value makes that tail
+  // visible instead of attributing it to generation.
   const streamDuration = observation.firstChunkAt == null
     ? null
     : Math.max(0, Math.round(observation.responseEndedAt - observation.firstChunkAt));

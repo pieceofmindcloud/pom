@@ -41,6 +41,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   and owns the active stream so route unmounts preserve live partial replies.
   Direct Chat consumers get an isolated provider wrapper.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+  `stream_duration_ms` is measured locally from the first SSE data frame to
+  receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
+  separate `time_last_token_to_response_end_ms` isolates that tail.
   `chatStream.ts` also carries trace spans, outside-node accounting,
   first-token boundaries, connection counts, decode counts, browser-local stream
   observations and distributed `TelemetrySummary`/`TelemetrySpan`. TTFT keeps

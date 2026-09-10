@@ -267,7 +267,7 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText("1,96 s")).toBeTruthy();
     expect(screen.getByText(/primeiro token no motor: 128 ms/)).toBeTruthy();
     expect(screen.getByText(/nó até gateway: 3 ms/)).toBeTruthy();
-    expect(screen.getByText(/último token até fim: 12 ms/)).toBeTruthy();
+    expect(screen.getByText(/último token -> \[DONE\]: 12 ms/)).toBeTruthy();
     expect(screen.getByText(/chamadas de decode: 64 · tokens: 119/)).toBeTruthy();
     expect(screen.getByText(/conexões: 1 novas · 65 reutilizadas/)).toBeTruthy();
   });

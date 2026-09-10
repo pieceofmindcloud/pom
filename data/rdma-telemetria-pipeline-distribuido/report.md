@@ -1312,3 +1312,97 @@ o limite do controle inicial. Ainda falta o redeploy desta correção para
 confirmar no Chat `https-link`, RTT de execução próximo dos ~30 ms do ping e a
 melhora de geração. Os números acima são a medição anterior à correção e não
 devem ser apresentados como resultado final.
+
+### 17.20 Relógios do stream, captura de residual e estado dos blocos (2026-09-10)
+
+#### Relógios do stream
+
+O arquivo bruto do trace `5b035803` não está presente nesta cópia; a análise
+abaixo usa os números fornecidos pelo captain. O código permite localizar a
+origem dos três valores:
+
+| campo | fronteira medida | interpretação |
+| --- | --- | --- |
+| `stream_duration_ms` | primeiro frame de dados SSE até `[DONE]`, no navegador | exclui TTFT e inclui o fechamento do corpo e qualquer cauda terminal |
+| `time_last_token_to_response_end_ms` | último frame que carregou token até `[DONE]` | isola a cauda depois do último token |
+| `timings.total_ms` | entrada do pedido até `summary_for` no gateway | resumo do servidor, criado antes do rewind/release final |
+| `node_backend_completion_ms` | `llama_synchronize` no peer | barreira real que inclui trabalho CUDA enfileirado e cópias assíncronas pendentes, não só kernels |
+
+Portanto, `6,24 s`, `2,00 s` e `34 ms` não podem ser três leituras da
+mesma fronteira. Se `34 ms` é a cauda do mesmo pedido, não há 4,2 s ocultos no
+teardown desse stream. A geração de 197 tokens a 100 tok/s explica cerca de
+`1,97 s` de forma proporcional, mas não explica sozinha um stream de `6,24 s`.
+Isso indica campos de pedidos/fronteiras diferentes ou uma leitura ambígua da
+UI, e não um sleep fixo comprovado.
+
+A busca no caminho de decode não encontrou um sleep de 2 s. Há janelas que
+podem aparecer em falhas ou caminhos específicos: `ADMISSION_PROBE_TIMEOUT`
+de 300 ms, `LINK_OPEN_TIMEOUT` de 2 s somente ao abrir um link que falha,
+`REWIND_TIMEOUT` de 3 s, release de 10 s e a carência de 5 s para reclamar um
+slot retido. A antiga sonda de admissão de 2,005 s foi reduzida para 300 ms.
+Nenhuma delas é um atraso fixo normal do decode single-machine.
+
+Os 907 ms de conclusão acumulada para aproximadamente 197 chamadas dão
+4,60 ms por chamada. A medição é real como intervalo de barreira: o runtime
+chama `llama_synchronize`, e o scheduler do backend sincroniza o trabalho
+enfileirado e as transferências de saída. Ela é proporcional ao número de
+chamadas, mas não é throughput puro do kernel; separar essa espera exige
+medição interna do backend, que o contrato atual não publica.
+
+#### Bucket A: captura de residual
+
+O campo anterior media a borda inteira ao redor do callback e chamava tudo de
+D2H. A implementação agora publica `residual_capture_ready_wait_ms`,
+`residual_capture_copy_ms`, `residual_capture_postprocess_ms`, bytes e número
+de cópias, preservando `residual_capture_d2h_sync_ms` como agregado compatível.
+O callback ainda lê o buffer enquanto o scheduler garante a prontidão, porque
+o llama.cpp pode reutilizar os buffers entre microlotes; adiar a leitura até o
+retorno de `llama_decode` perderia linhas anteriores. A leitura é uma alocação
+bulk f32 e uma chamada `ggml_backend_tensor_get` por captura, em vez de
+conversão elemento a elemento.
+
+A evidência no código vendorizado é `ggml_backend_sched_compute_splits`, que
+chama `ggml_backend_synchronize` antes do callback de tensor pronto. Assim, se
+os próximos traces mostrarem ~1468 ms em `ready_wait_ms` e ~1 ms em
+`copy_ms`, o gargalo é espera/sincronização do backend, não a largura de banda
+de um D2H de 1 MB. Se `copy_ms` continuar alto, a nova contagem delimita a
+investigação para a transferência. A otimização está instrumentada, mas ainda
+não é declarada como ganho de produção sem redeploy e captura comparável.
+
+#### Bucket B: handoff de prefill
+
+`relay::send_frame_or_tunnel` agora encapsula o `/v1/prefill` direto em um
+lote de um item no canal persistente quando o hop anuncia `transport/link-v1`.
+A preferência QUIC continua vencendo quando habilitada; sem ela o link efetivo
+é `https-link` ou `http-link` conforme a URL usada, com fallback explícito e
+motivo para libp2p/HTTP direto. O teste cobre o handoff de prefill sem
+`BatchCoordinator`, que era o buraco que mantinha o prefill no túnel mesmo
+depois de o decode mudar de transporte. A confirmação do tempo e do transporte
+no Chat depende do próximo deploy.
+
+#### Bucket C: MTP fatiado
+
+O gate mantém MTP para a cauda de uma pipeline fatiada quando o plano publica
+`CAP_SPECULATE_MTP_SLICED` em todos os hops e `CAP_SPECULATE_MTP` na cauda.
+`tokens`, `mtp_k` e `next_draft` agora atravessam cada relay; a cauda separa
+`mtp_input_missing`, `mtp_runtime_disabled`, `tail_without_nextn` e rascunho
+vazio, em vez de chamar toda indisponibilidade de `model_without_mtp`.
+`model_without_mtp` ficou reservado à ausência de evidência de razão na cauda.
+Os testes unitários confirmam a seleção e a propagação, mas o número de
+propostas/aceites no deploy ainda precisa ser medido pelo captain.
+
+#### Entrega em blocos, validação e limites
+
+Os blocos de código foram publicados separadamente: captura A em
+`b3547968`, handoff B em `450695b0`, e gate e propagação C em `5d4e9da2`.
+O commit de formatação que tornou o checkout limpo é `de7936e4`; esse também é
+o topo publicado após o rebase.
+
+Validações focadas: testes de `remote_stream` (32), testes de MTP (22),
+`persistent_link`, handoff direto de prefill, separação das métricas de captura,
+serialização de timing submilissegundo, `step_forward_meta`, `cargo check` de
+`llama-engine` e `node`, além de `git diff --check`. O overhead normal novo é
+somente leitura de relógio e contadores no callback de captura e campos de
+metadata no caminho MTP; os spans detalhados continuam condicionados ao modo
+de profiling. Ainda faltam as medidas E2E pós-deploy para quantificar o ganho
+real de A/B e confirmar o comportamento de C em todos os peers.

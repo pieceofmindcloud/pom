@@ -200,6 +200,13 @@ produzido e serializado com duração monotônica e um wall timestamp local. O
 cliente web acrescenta a recepção no navegador com `performance.now()` e
 `Date.now()` somente para correlação. `streaming` separa primeiro chunk,
 primeiro token, duração, fim do último token, quantidade de chunks e bytes.
+Mais precisamente, `stream_duration_ms` é `primeiro frame SSE -> [DONE]` no
+relógio monotônico do navegador: exclui TTFT e inclui o intervalo terminal até
+o corpo fechar. `time_last_token_to_response_end_ms` é
+`último frame com token -> [DONE]`, isolando esse intervalo terminal. Já
+`timings.total_ms` é medido no gateway quando `summary_for` monta o resumo,
+antes do rewind/release final que pode atrasar o `[DONE]`. Os campos não são
+intercambiáveis nem devem ser comparados como se fossem um único relógio.
 Campos que a arquitetura não mede permanecem ausentes e aparecem como não
 atribuídos na UI.
 

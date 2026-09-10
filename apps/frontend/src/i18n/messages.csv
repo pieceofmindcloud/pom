@@ -317,7 +317,7 @@ chat.telemetry.status.incomplete,incomplete,incompleta
 chat.telemetry.status.response_complete,response complete,resposta completa
 chat.telemetry.status.timeout,timeout,expirada
 chat.telemetry.statusLabel,Trace status: {status},Estado do trace: {status}
-chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk: {firstChunk} · duration: {duration} · last token to end: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk: {firstChunk} · duração: {duration} · último token até fim: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
+chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk -> [DONE]: {duration} · last token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk -> [DONE]: {duration} · último token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
 chat.telemetry.timelineTitle,Execution timeline,Linha do tempo da execução
 chat.telemetry.timelineUnavailable,Detailed spans are not available for this trace. The missing time remains unaccounted.,Spans detalhados indisponíveis para este trace. O tempo ausente continua não atribuído.
 chat.telemetry.title,Execution telemetry,Telemetria da execução

@@ -48,6 +48,10 @@ O listener HTTP/3 usa uma porta UDP dedicada, anunciada em
 `inference_quic_port`, derivada da porta TCP por `TCP + 1`; o cliente usa os
 endereços públicos `host:porta` do anúncio e cai para HTTP/HTTPS se o endpoint
 não responder.
+No handoff entre peers, a preferência QUIC escolhe o endpoint HTTP/3; sem ela,
+o link persistente publica `https-link` ou `http-link` conforme o endereço
+efetivamente usado. O prefill e o decode usam essa mesma escada, e uma queda
+para libp2p ou para HTTP direto permanece registrada com a razão de fallback.
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção

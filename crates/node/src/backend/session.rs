@@ -4,10 +4,10 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 
 const HANDSHAKE_NONCE_BYTES: usize = 32;
 const HANDSHAKE_CHALLENGE_TTL: Duration = Duration::from_secs(30);

@@ -605,7 +605,7 @@ pub async fn plan_pipeline_with_rtt_from_head(
             exec_end: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
-            libp2p_addr_candidates: chosen.dialable_addrs(),
+            libp2p_addr_candidates: chosen.libp2p_dialable_addrs(),
         });
 
         pos = chosen.end_layer + 1;
@@ -949,16 +949,10 @@ mod ipv6_tests {
             (String::from("quiet-entry"), 2.0),
         ]);
 
-        let plan = plan_pipeline_with_rtt(
-            &[busy, quiet, tail],
-            "qwen35",
-            None,
-            16,
-            &tracker,
-            &rtts,
-        )
-        .await
-        .expect("as duas entradas cobrem o mesmo ramo");
+        let plan =
+            plan_pipeline_with_rtt(&[busy, quiet, tail], "qwen35", None, 16, &tracker, &rtts)
+                .await
+                .expect("as duas entradas cobrem o mesmo ramo");
 
         assert_eq!(plan.steps[0].node_id, "quiet-entry");
         drop(busy_requests);

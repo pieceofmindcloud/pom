@@ -1744,10 +1744,7 @@ mod tests {
 
         assert!(trust.admits_participant("cluster", &root));
         assert!(!trust.admits_participant("outro-cluster", &root));
-        assert!(!trust.admits_participant(
-            "cluster",
-            &principal(2, "attacker", "peer-attacker")
-        ));
+        assert!(!trust.admits_participant("cluster", &principal(2, "attacker", "peer-attacker")));
         assert!(!AdminTrust::empty().admits_participant("cluster", &root));
     }
 

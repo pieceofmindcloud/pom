@@ -306,6 +306,8 @@ mod tests {
                 "remote_stream_frame_latency_ms": 9 + index,
                 "remote_stream_remote_compute_ms": 4,
                 "remote_stream_wait_ms": 20 + index,
+                "remote_stream_producer_wait_ms": 7 + index,
+                "remote_stream_queue_wait_ms": 2 + index,
             })
         };
         let hop = |span_count: u64, processing_ms: u64| {
@@ -347,6 +349,19 @@ mod tests {
             43
         );
         assert_eq!(trace.telemetry.remote_stream.remote_stream_wait_p95_ms, 22);
+        assert_eq!(
+            trace.telemetry.remote_stream.remote_stream_producer_wait_total_ms,
+            17
+        );
+        assert_eq!(
+            trace.telemetry.remote_stream.remote_stream_producer_wait_p95_ms,
+            9
+        );
+        assert_eq!(
+            trace.telemetry.remote_stream.remote_stream_queue_wait_total_ms,
+            7
+        );
+        assert_eq!(trace.telemetry.remote_stream.remote_stream_queue_wait_p95_ms, 4);
         assert_eq!(trace.telemetry.status, "complete");
     }
 

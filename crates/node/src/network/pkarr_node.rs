@@ -171,7 +171,9 @@ impl PkarrNode {
             e: end_layer,
             t: total_layers,
             r: if is_relay { Some(true) } else { None },
-            g: geo_label.filter(|label| !label.trim().is_empty()).map(str::to_owned),
+            g: geo_label
+                .filter(|label| !label.trim().is_empty())
+                .map(str::to_owned),
         };
 
         let json = serde_json::to_string(&payload)?;

@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value;
 use std::collections::HashSet;
 
 /// Prompt tokens pushed through the pipeline per round trip.
@@ -388,6 +389,16 @@ pub struct RemoteStreamTelemetry {
     pub remote_stream_wait_total_ms: u64,
     pub remote_stream_wait_p50_ms: u64,
     pub remote_stream_wait_p95_ms: u64,
+    /// Espera entre o início do ciclo e o token ficar pronto no produtor.
+    /// Mede compute/produção ainda em andamento, sem chamá-la de fila.
+    pub remote_stream_producer_wait_total_ms: u64,
+    pub remote_stream_producer_wait_p50_ms: u64,
+    pub remote_stream_producer_wait_p95_ms: u64,
+    /// Tempo em que o token já pronto permaneceu no canal antes do emitter.
+    /// Pode incluir backpressure quando o canal limitado está cheio.
+    pub remote_stream_queue_wait_total_ms: u64,
+    pub remote_stream_queue_wait_p50_ms: u64,
+    pub remote_stream_queue_wait_p95_ms: u64,
     /// Intervalo observado no gateway entre lotes de tokens recebidos. Em um
     /// lote de um token, é o ciclo de entrega por token; lotes maiores são
     /// contados como um ciclo, sem inventar intervalos internos.
@@ -403,6 +414,10 @@ pub struct RemoteStreamTelemetry {
     remote_compute: RttDistribution,
     #[serde(skip)]
     wait: RttDistribution,
+    #[serde(skip)]
+    producer_wait: RttDistribution,
+    #[serde(skip)]
+    queue_wait: RttDistribution,
     #[serde(skip)]
     token_delivery_interval: RttDistribution,
 }
@@ -461,6 +476,24 @@ impl RemoteStreamTelemetry {
                 self.remote_stream_wait_total_ms.saturating_add(value);
             self.wait.record(value);
         }
+        if let Some(value) = meta
+            .get("remote_stream_producer_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_producer_wait_total_ms = self
+                .remote_stream_producer_wait_total_ms
+                .saturating_add(value);
+            self.producer_wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_queue_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_queue_wait_total_ms = self
+                .remote_stream_queue_wait_total_ms
+                .saturating_add(value);
+            self.queue_wait.record(value);
+        }
         self.refresh_percentiles();
     }
 
@@ -486,9 +519,17 @@ impl RemoteStreamTelemetry {
         self.remote_stream_wait_total_ms = self
             .remote_stream_wait_total_ms
             .saturating_add(other.remote_stream_wait_total_ms);
+        self.remote_stream_producer_wait_total_ms = self
+            .remote_stream_producer_wait_total_ms
+            .saturating_add(other.remote_stream_producer_wait_total_ms);
+        self.remote_stream_queue_wait_total_ms = self
+            .remote_stream_queue_wait_total_ms
+            .saturating_add(other.remote_stream_queue_wait_total_ms);
         self.frame_latency.merge(&other.frame_latency);
         self.remote_compute.merge(&other.remote_compute);
         self.wait.merge(&other.wait);
+        self.producer_wait.merge(&other.producer_wait);
+        self.queue_wait.merge(&other.queue_wait);
         self.token_delivery_interval
             .merge(&other.token_delivery_interval);
         self.refresh_percentiles();
@@ -507,6 +548,10 @@ impl RemoteStreamTelemetry {
         self.remote_compute_max_ms = self.remote_compute.max_ms;
         self.remote_stream_wait_p50_ms = self.wait.percentile(50);
         self.remote_stream_wait_p95_ms = self.wait.percentile(95);
+        self.remote_stream_producer_wait_p50_ms = self.producer_wait.percentile(50);
+        self.remote_stream_producer_wait_p95_ms = self.producer_wait.percentile(95);
+        self.remote_stream_queue_wait_p50_ms = self.queue_wait.percentile(50);
+        self.remote_stream_queue_wait_p95_ms = self.queue_wait.percentile(95);
         self.token_delivery_interval_min_ms = self.token_delivery_interval.min_ms;
         self.token_delivery_interval_p50_ms = self.token_delivery_interval.percentile(50);
         self.token_delivery_interval_p95_ms = self.token_delivery_interval.percentile(95);
@@ -589,7 +634,11 @@ impl Default for TelemetrySummary {
 }
 
 pub(super) fn telemetry_profile_enabled() -> bool {
-    std::env::var("POM_TELEMETRY_PROFILE")
+    // The fleet already enables detailed backend profiling with this flag.
+    // Reuse that single policy instead of creating a second environment
+    // variable for the same profiling mode. The backend's own default remains
+    // independent: spans are opt-in so normal inference keeps aggregates only.
+    std::env::var("POM_PROFILE_SYNC")
         .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 }
@@ -851,6 +900,12 @@ pub struct PhaseTrace {
     pub node_frame_decode_ms: f64,
     pub node_input_prepare_ms: f64,
     pub node_queue_ms: f64,
+    /// Subconjunto da fila que ficou aguardando seleção/admissão do scheduler.
+    /// Normalmente coincide com `node_queue_ms`; a separação existe para
+    /// nomear a carência de reclamação de sessões retidas sem subtrair tempos.
+    pub node_scheduler_wait_ms: f64,
+    /// Motivos observados para a espera do scheduler nesta fase.
+    pub scheduler_wait_reasons: Vec<String>,
     /// Espera pelo mutex do motor no nó: o preço de outra requisição estar
     /// decodificando ali. É o que separa "o nó é lento" de "o nó está ocupado".
     pub node_lock_wait_ms: f64,
@@ -1016,6 +1071,16 @@ impl PhaseTrace {
         self.node_frame_decode_ms += node_ms("frame_decode_ms");
         self.node_input_prepare_ms += node_ms("input_prepare_ms");
         self.node_queue_ms += node_ms("queue_ms");
+        self.node_scheduler_wait_ms += node_ms("scheduler_wait_ms");
+        if let Some(reason) = node.get("scheduler_wait_reason").and_then(Value::as_str) {
+            if !self
+                .scheduler_wait_reasons
+                .iter()
+                .any(|seen| seen == reason)
+            {
+                self.scheduler_wait_reasons.push(reason.to_owned());
+            }
+        }
         self.node_lock_wait_ms += node_ms("lock_wait_ms");
         self.node_setup_ms += node_ms("setup_ms");
         self.node_decode_ms += node_decode_ms;
@@ -1169,6 +1234,16 @@ impl PhaseTrace {
         self.node_frame_decode_ms += next.node_frame_decode_ms;
         self.node_input_prepare_ms += next.node_input_prepare_ms;
         self.node_queue_ms += next.node_queue_ms;
+        self.node_scheduler_wait_ms += next.node_scheduler_wait_ms;
+        for reason in &next.scheduler_wait_reasons {
+            if !self
+                .scheduler_wait_reasons
+                .iter()
+                .any(|seen| seen == reason)
+            {
+                self.scheduler_wait_reasons.push(reason.clone());
+            }
+        }
         self.node_lock_wait_ms += next.node_lock_wait_ms;
         self.node_setup_ms += next.node_setup_ms;
         self.node_decode_ms += next.node_decode_ms;
@@ -1498,7 +1573,7 @@ pub struct RequestTrace {
     /// intervalos temporais explícitos, nunca por subtração de somatórios.
     pub telemetry: TelemetrySummary,
     /// Spans de frame e eventos por token somente quando
-    /// `POM_TELEMETRY_PROFILE` está ativo. Um evento de token tem duração zero
+    /// `POM_PROFILE_SYNC=1` está ativo. Um evento de token tem duração zero
     /// quando o lote não traz intervalos individuais, em vez de repetir o
     /// custo do lote como se cada token tivesse sido medido separadamente.
     pub profiling_spans: Option<Vec<TelemetrySpan>>,
@@ -2650,6 +2725,7 @@ pub(super) fn head_prefill_meta(
 ) -> serde_json::Value {
     let mut meta = json!({
         "session_id": session_id,
+        "pipeline_session": true,
         "chunk_index": chunk_index,
         "chunk_size": chunk_size,
         "is_last": is_last,

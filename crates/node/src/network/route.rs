@@ -244,9 +244,7 @@ impl RouteTable {
             return false;
         };
         falhas.iter().any(|((id, url), falhou_em)| {
-            id == node_id
-                && host_of(url) == alvo
-                && falhou_em.elapsed() < FAILURE_COOLDOWN
+            id == node_id && host_of(url) == alvo && falhou_em.elapsed() < FAILURE_COOLDOWN
         })
     }
 
@@ -653,8 +651,7 @@ mod tests {
         let with_age = table.snapshot_with_age();
         assert_eq!(with_age.len(), 2);
         assert!(with_age.iter().any(|entry| {
-            entry.measurement.target_node_id == "stale"
-                && entry.age >= RTT_INTERVALO_MEDICAO
+            entry.measurement.target_node_id == "stale" && entry.age >= RTT_INTERVALO_MEDICAO
         }));
         assert_eq!(
             table
@@ -777,11 +774,17 @@ mod tests {
         ];
         assert_eq!(tabela.usable("n1", &candidatos), candidatos);
         tabela.mark_failure("n1", &candidatos[0]);
-        assert_eq!(tabela.usable("n1", &candidatos), vec![candidatos[1].clone()]);
+        assert_eq!(
+            tabela.usable("n1", &candidatos),
+            vec![candidatos[1].clone()]
+        );
         tabela.mark_failure("n1", &candidatos[1]);
         assert!(tabela.usable("n1", &candidatos).is_empty());
         tabela.mark_success("n1", &candidatos[0]);
-        assert_eq!(tabela.usable("n1", &candidatos), vec![candidatos[0].clone()]);
+        assert_eq!(
+            tabela.usable("n1", &candidatos),
+            vec![candidatos[0].clone()]
+        );
     }
 
     #[tokio::test]

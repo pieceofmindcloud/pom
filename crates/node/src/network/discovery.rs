@@ -1,7 +1,9 @@
 use crate::cluster_logs::{self, ClusterLogs, ClusterLogsCodec, LogOutbound};
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
-use crate::network_chat::{self, ChatOutbound, ChatRequest, ChatResponse, NetworkChat, NetworkChatCodec};
 use crate::network::{is_valid_destination, Network, P2PMessage, PeerInfo};
+use crate::network_chat::{
+    self, ChatOutbound, ChatRequest, ChatResponse, NetworkChat, NetworkChatCodec,
+};
 use crate::wire;
 use anyhow::Result;
 use futures::StreamExt;
@@ -117,11 +119,7 @@ async fn ensure_tunnel_peer_address(
         let Some(peer) = peer else {
             return Err(format!("nenhum anúncio vivo para o PeerId {peer_id}"));
         };
-        let mut advertised = peer.addr_candidates;
-        if advertised.is_empty() {
-            advertised.push(peer.addr);
-        }
-        advertised
+        peer.libp2p_dialable_addrs()
     } else {
         advertised_override.to_vec()
     };
@@ -471,10 +469,8 @@ impl Discovery {
             OutboundRequestId,
             oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
         > = HashMap::new();
-        let mut pending_chat: HashMap<
-            OutboundRequestId,
-            oneshot::Sender<ChatResponse>,
-        > = HashMap::new();
+        let mut pending_chat: HashMap<OutboundRequestId, oneshot::Sender<ChatResponse>> =
+            HashMap::new();
         let (inbound_response_tx, mut inbound_response_rx) =
             mpsc::channel::<InboundTunnelResponse>(64);
         loop {
@@ -632,10 +628,14 @@ async fn handle_event(
                             .any(|c| c == "transport/libp2p-tunnel-v1")
                     });
                 let tunnel_peer_addrs = dial_for_tunnel.map(|peer_id| {
-                    let mut advertised = addr_candidates.clone();
-                    if advertised.is_empty() {
-                        advertised.push(addr.clone());
-                    }
+                    // `addr` is the sender's canonical advertised endpoint.
+                    // Do not turn the optional legacy candidate list into a
+                    // libp2p dial fan-out: identify/listen addresses are not
+                    // part of the cluster's advertised endpoint contract.
+                    let advertised = vec![addr_candidates
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| addr.clone())];
                     (peer_id, tunnel_peer_multiaddrs(peer_id, &advertised))
                 });
 
@@ -685,12 +685,7 @@ async fn handle_event(
                 }
                 network.insert_admitted_peer(peer).await;
 
-                network.trigger_cluster_logs_probe(
-                    &node_id,
-                    profile,
-                    cluster_logs_enabled,
-                    tls,
-                );
+                network.trigger_cluster_logs_probe(&node_id, profile, cluster_logs_enabled, tls);
                 network.trigger_network_chat_probe(
                     &node_id,
                     &authority_pubkey,
@@ -728,6 +723,10 @@ async fn handle_event(
 
         // ── mDNS: LAN peer found ─────────────────────────────────────────────
         SwarmEvent::Behaviour(DiscBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+            if network.advertised_host().is_some() {
+                debug!("mDNS: ignorando endereços LAN porque advertise_addr está fixado");
+                return;
+            }
             for (peer_id, addr) in list {
                 info!("mDNS: {} at {}", peer_id, addr);
                 swarm
@@ -764,8 +763,25 @@ async fn handle_event(
             if let Some(host_port) = observed_host_port(&info.observed_addr) {
                 network.set_observed_addr(&host_port);
             }
-            for addr in info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+            // Identify's listen_addrs describe the interfaces the remote
+            // process bound, not the endpoint it explicitly advertised to the
+            // cluster. In particular, they include Docker bridges, LAN IPs,
+            // and stale Tailscale addresses. They are deliberately not added
+            // to Kademlia: Announce.addr_candidates is the sole dial source.
+            let ignored_addresses = info.listen_addrs.len();
+            if ignored_addresses > 0 {
+                for address in &info.listen_addrs {
+                    // Remove entries learned by an older binary before the
+                    // Announce-only policy took effect. `remove_address` is
+                    // harmless when the address was never in the store.
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .remove_address(&peer_id, address);
+                }
+                debug!(
+                    "identify: ignorando {ignored_addresses} listen address(es) de {peer_id}; usando apenas Announce"
+                );
             }
             if connected_relays.contains(&peer_id) {
                 if let Some(relay_addr) = relay_peer_addrs.iter().find(|ma| {
@@ -927,7 +943,8 @@ async fn handle_event(
                             .await
                             .into_iter()
                             .find(|candidate| {
-                                candidate.libp2p_peer_id.as_deref() == Some(peer.to_string().as_str())
+                                candidate.libp2p_peer_id.as_deref()
+                                    == Some(peer.to_string().as_str())
                             })
                             .is_some_and(|candidate| {
                                 candidate.profile == crate::profile::NodeProfile::Admin
@@ -937,7 +954,8 @@ async fn handle_event(
                         } else {
                             match chat.accept(request.action.clone()) {
                                 Ok(true) => {
-                                    relay_chat(swarm, network, chat, request.action, Some(peer)).await;
+                                    relay_chat(swarm, network, chat, request.action, Some(peer))
+                                        .await;
                                     ChatResponse::accepted()
                                 }
                                 Ok(false) => ChatResponse::rejected("network_chat_disabled"),
@@ -950,7 +968,8 @@ async fn handle_event(
                             .await
                             .into_iter()
                             .find(|candidate| {
-                                candidate.libp2p_peer_id.as_deref() == Some(peer.to_string().as_str())
+                                candidate.libp2p_peer_id.as_deref()
+                                    == Some(peer.to_string().as_str())
                             })
                             .map(|candidate| candidate.node_id);
                         match source_node_id {
@@ -1095,10 +1114,15 @@ async fn relay_chat(
         let Ok(peer_id) = peer_id_text.parse::<PeerId>() else {
             continue;
         };
-        let addresses = peer.dialable_addrs();
+        let addresses = peer.libp2p_dialable_addrs();
         if !swarm.is_connected(&peer_id) {
-            if let Err(error) = ensure_tunnel_peer_address(swarm, network, peer_id, &addresses).await {
-                debug!("network-chat: peer {} indisponível: {}", peer.node_id, error);
+            if let Err(error) =
+                ensure_tunnel_peer_address(swarm, network, peer_id, &addresses).await
+            {
+                debug!(
+                    "network-chat: peer {} indisponível: {}",
+                    peer.node_id, error
+                );
                 continue;
             }
         }
@@ -1178,6 +1202,18 @@ mod tests {
                 format!("/ip6/2001:db8::42/tcp/52777/p2p/{peer_id}"),
                 format!("/ip4/192.0.2.42/tcp/52777/p2p/{peer_id}"),
             ]
+        );
+    }
+
+    #[test]
+    fn tunnel_addresses_preserve_only_the_explicit_advertised_set() {
+        let peer_id = PeerId::random();
+        let addrs = tunnel_peer_multiaddrs(peer_id, &["100.122.132.97:42777".into()]);
+
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(
+            addrs[0].to_string(),
+            format!("/ip4/100.122.132.97/tcp/52777/p2p/{peer_id}")
         );
     }
 

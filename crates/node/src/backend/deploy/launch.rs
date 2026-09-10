@@ -520,7 +520,9 @@ pub(super) fn launch_targets(
                     },
                     &membros,
                 )),
-                mmproj_path: (target.rank == 0).then(|| held.mmproj_path.clone()).flatten(),
+                mmproj_path: (target.rank == 0)
+                    .then(|| held.mmproj_path.clone())
+                    .flatten(),
                 use_mmproj: false,
             });
         }
@@ -642,7 +644,9 @@ pub(super) fn launch_targets(
             peer_index,
             peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
-            mmproj_path: (step.start_layer == 0).then(|| held.mmproj_path.clone()).flatten(),
+            mmproj_path: (step.start_layer == 0)
+                .then(|| held.mmproj_path.clone())
+                .flatten(),
             use_mmproj: false,
         });
     }

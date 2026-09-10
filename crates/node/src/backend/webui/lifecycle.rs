@@ -310,21 +310,22 @@ pub(super) async fn leave_network_and_reset(
         }
     }
 
-    let mut config = match crate::config::Config::load() {
-        Ok(config) => config,
-        Err(error) => {
-            return (
+    let mut config =
+        match crate::config::Config::load() {
+            Ok(config) => config,
+            Err(error) => return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": format!("não foi possível ler a configuração: {error:#}") })),
             )
-                .into_response()
-        }
-    };
+                .into_response(),
+        };
     config.prepare_for_setup();
     if let Err(error) = config.save() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("não foi possível preparar o próximo setup: {error:#}") })),
+            Json(
+                json!({ "error": format!("não foi possível preparar o próximo setup: {error:#}") }),
+            ),
         )
             .into_response();
     }

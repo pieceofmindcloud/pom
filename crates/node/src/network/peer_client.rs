@@ -297,11 +297,7 @@ impl PeerClients {
             if !connection_key.is_empty() {
                 request = request.bearer_auth(connection_key);
             }
-            match request
-                .timeout(crate::webui::PEER_TIMEOUT)
-                .send()
-                .await
-            {
+            match request.timeout(crate::webui::PEER_TIMEOUT).send().await {
                 Ok(response) if response.status().is_success() => return Ok(response),
                 Ok(response) => failures.push(format!("{url}: {}", response.status())),
                 Err(error) => failures.push(format!("{url}: {error}")),

@@ -1162,7 +1162,10 @@ async fn the_first_argument_fragment_arrives_well_before_the_last() {
     // o primeiro quadro parecer tardio mesmo quando o servidor já o emitiu
     // separado. A prova estável de que o streaming não represou a chamada é
     // haver muitos fragmentos e o primeiro ser observado antes do último.
-    assert!(primeiro < ultimo, "o primeiro quadro não chegou antes do último");
+    assert!(
+        primeiro < ultimo,
+        "o primeiro quadro não chegou antes do último"
+    );
 }
 
 /// O freio contra o modelo em laço: o teto que o cliente pediu é o único que

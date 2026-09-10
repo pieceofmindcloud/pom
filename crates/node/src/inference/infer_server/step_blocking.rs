@@ -32,10 +32,19 @@ pub(crate) fn step_blocking(
     // cabeça a ecoa a partir do próprio `speculate` (`mtp_k_hint`).
     mtp_k: Option<u32>,
     queued_at: Instant,
+    scheduler_wait_us: u64,
+    scheduler_wait_reason: Option<&'static str>,
+    scheduler_session_existing: bool,
+    pipeline_session: bool,
     profiling: Option<crate::prefill::TelemetryContext>,
 ) -> Result<TimedReply> {
     let mut timings = NodeTimings {
+        session_id: Some(sid_key.clone()),
         queue_us: queued_at.elapsed().as_micros() as u64,
+        scheduler_wait_us,
+        scheduler_wait_reason,
+        scheduler_session_existing,
+        pipeline_session,
         profiling_spans: profiling.as_ref().map(|_| Vec::new()),
         ..Default::default()
     };

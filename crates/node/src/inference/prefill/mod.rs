@@ -36,16 +36,15 @@ pub(crate) use std::time::Instant;
 pub(crate) use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 pub(crate) use tracing::info;
 
-
-#[path = "support.rs"]
-mod support;
 #[path = "pipeline.rs"]
 mod pipeline;
 #[path = "step.rs"]
 mod step;
+#[path = "support.rs"]
+mod support;
 #[path = "tests.rs"]
 mod tests;
 
-pub(super) use support::*;
 pub(super) use pipeline::*;
 pub(super) use step::*;
+pub(super) use support::*;

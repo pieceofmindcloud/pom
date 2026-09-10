@@ -53,6 +53,7 @@ pub async fn step(
         let mut body_meta = if i == 0 {
             let mut m = json!({
                 "session_id": session_id,
+                "pipeline_session": true,
                 "is_last": is_last,
                 "token_id": token_id,
                 "exec_start": peer.exec_start,
@@ -65,6 +66,7 @@ pub async fn step(
         } else {
             let mut m = json!({
                 "session_id": session_id,
+                "pipeline_session": true,
                 "is_last": is_last,
                 "scale": 1.0,
                 "exec_start": peer.exec_start,
@@ -142,6 +144,7 @@ pub(super) async fn step_ring(
     let next_hops = &plan.steps[1..];
     let mut body_meta = json!({
         "session_id": session_id,
+        "pipeline_session": true,
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
         "next_hops": next_hops,
@@ -216,6 +219,7 @@ pub(super) async fn step_direct(
     let ticket_id = ticket.id().to_owned();
     let mut body_meta = json!({
         "session_id": session_id,
+        "pipeline_session": true,
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
         "next_hops": next_hops,
@@ -578,6 +582,7 @@ pub(super) async fn step_speculative_hub(
         let mut body_meta = if i == 0 {
             json!({
                 "session_id": session_id,
+                "pipeline_session": true,
                 "is_last": is_last,
                 "token_id": token_id,
                 "speculate": {"k": k, "m": m, "source": source.wire()},
@@ -587,6 +592,7 @@ pub(super) async fn step_speculative_hub(
         } else {
             let mut m = json!({
                 "session_id": session_id,
+                "pipeline_session": true,
                 "is_last": is_last,
                 "scale": 1.0,
                 "exec_start": peer.exec_start,
@@ -656,6 +662,7 @@ pub(super) async fn step_speculative_ring(
     let next_hops = &plan.steps[1..];
     let mut head_meta = json!({
         "session_id": session_id,
+        "pipeline_session": true,
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
         "speculate": {"k": k, "m": m, "source": source.wire()},

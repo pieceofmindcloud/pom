@@ -580,6 +580,11 @@ fn decode_item_from(
     meta["frame_version"] = Value::from(BATCH_FRAME_VERSION);
     meta["batch_id"] = Value::from(batch_id.to_string());
     meta["item_id"] = Value::from(item.item_id.clone());
+    // The envelope is the authoritative identity for a batch item. Metadata
+    // can have been copied from an older relay or a response, but the
+    // scheduler must never fall back to a synthetic session when the wire
+    // already carries the real one.
+    meta["session_id"] = Value::from(item.session_id.clone());
     decode_tensor_payload(&meta, &payload[item.offset..end])
 }
 
@@ -1266,6 +1271,25 @@ mod tests {
         assert_eq!(shape, vec![1, 2]);
         assert!((decoded_values[0] - values[0]).abs() < 0.001);
         assert!((decoded_values[1] - values[1]).abs() < 0.001);
+    }
+
+    #[test]
+    fn decoded_session_identity_comes_from_the_batch_envelope() {
+        let framed = encode_batch_items(
+            "/v1/step",
+            "batch-session",
+            &[BatchPayloadItem {
+                item_id: "item-session".into(),
+                session_id: "wire-session".into(),
+                meta: serde_json::json!({"session_id": "stale-meta-session"}),
+                tensor: None,
+                dtype: WireDtype::F16,
+            }],
+        )
+        .unwrap();
+
+        let (_, items) = decode_batch_items(&framed).unwrap();
+        assert_eq!(items[0].meta["session_id"], "wire-session");
     }
 
     #[test]

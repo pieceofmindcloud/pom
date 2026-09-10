@@ -12,7 +12,7 @@
 - Investigar e registrar evidencias antes de alterar calculos.
 - Ignorar completamente o executor MoE.
 - Nunca subtrair a soma de spans acumulados do wall-clock para criar uma decomposicao exclusiva.
-- Nao adicionar sincronizacao ao hot path de inferencia; detalhamento por token somente quando `POM_TELEMETRY_PROFILE=1`.
+- Nao adicionar sincronizacao ao hot path de inferencia; detalhamento por token somente quando `POM_PROFILE_SYNC=1`.
 - Atualizar a documentacao da pasta e dos subsistemas afetados no mesmo commit.
 - Nao alterar o llama.cpp vendorizado, nao reduzir `FIT_MAX_UBATCH`, nao fazer push ou PR.
 
@@ -31,7 +31,7 @@
 - [ ] Medir explicitamente abertura, lifetime, frames, bytes, primeira entrega, latencias de frame, processamento remoto e espera do remote-stream.
 - [ ] Instrumentar TTFT em campos semanticamente separados: primeiro evento do motor local, primeiro token do pipeline, TTFT do servidor e TTFT observado no cliente quando disponivel.
 - [ ] Permitir que recibos de transporte atrasados atualizem o estado do ledger depois da resposta, com expiracao e sem segurar a resposta do cliente.
-- [ ] Expor apenas contadores/histogramas no modo normal; guardar eventos por token em ring buffer amostrado quando `POM_TELEMETRY_PROFILE=1`.
+- [ ] Expor apenas contadores/histogramas no modo normal; guardar eventos por token em ring buffer amostrado quando `POM_PROFILE_SYNC=1`.
 
 ## Fase 3 - diagnostico e UI
 

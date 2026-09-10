@@ -5,7 +5,9 @@ o UDP nativo (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`) e o
 libp2p/pkarr para a internet (`discovery.rs`, `pkarr_node.rs`).
 `main.rs` monta `Network` e `Discovery`; `gateway.rs` e `routing/pipeline.rs`
 consomem `PeerInfo` e `RouteTable`. A regra da casa: a decisão de endereço
-pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `RouteTable`).
+pertence a quem vai discar, não a quem anunciou. Com `advertise_addr` fixado,
+ele é o único endpoint anunciado e discado pelo libp2p; sem pin, a política de
+fallback continua em `addr_candidates` + `RouteTable`.
 
 ## Arquivos
 
@@ -122,18 +124,21 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   é aplicada antes de `start`; a task sonda `/health` na porta de inferência de
   cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel. Cada
   `self_announce` enumera as interfaces uma vez por anúncio, portanto a
-  troca de IPv6 temporário entra no gossip seguinte sem sondagem de rede. O
+  troca de IPv6 temporário entra no gossip seguinte sem sondagem de rede. Com
+  pin explícito, essa enumeração não é publicada: o pin substitui a lista local.
+  O
   tratamento de cada datagrama é protegido por `catch_unwind`, com contexto no
   aviso e limite de frequência para não inundar o log se o pânico se repetir.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
-  origem e chama `merge_observed` com o endereço efetivo do socket), PeerRequest
+  origem e chama `merge_observed` somente quando não há candidatos explícitos), PeerRequest
   (responde Announce imediato + `PeerList` fatiado), PeerList, Heartbeat,
   LocalDiscover. O `PeerList` também
   atualiza um peer já conhecido quando o snapshot é mais novo, preservando o
   estado local de verificação e os candidatos de endereço **que este nó ainda
   não provou mortos**; snapshots antigos são
   ignorados para não reverter a cobertura. Nó destacado (`is_detached`) não
-  aprende nem responde.
+  aprende nem responde. Um pin recebido não ganha o endereço de origem como
+  candidato adicional.
 - `Network::request_peer_addresses` - quando **todo** endereço conhecido de um
   peer está desacreditado, manda `PeerRequest` aos bootstrap nodes e aos outros
   peers vivos e poda os candidatos mortos da entrada local, para que o
@@ -148,6 +153,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   nasça desacreditado.
 - `PeerInfo::dialable_addrs` - todos os endereços UDP válidos, com deduplicação,
   para que descoberta e reencontro tentem os candidatos antes de desistir.
+  `PeerInfo::libp2p_dialable_addrs` reduz o conjunto a um endpoint canônico,
+  impedindo que o pipeline ou o Chat transforme listen addresses antigos em
+  fan-out de túneis.
 - `PeerInfo::gateway_candidates` / `gateway_url` - uma URL de gateway por
   endereço conhecido, com `addr` primeiro (fato conhecido: é de onde os pacotes
   do peer chegaram) e os candidatos anunciados depois; `gateway_url` é só a
@@ -172,11 +180,12 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   assignment, para que nó configurado pela UI ainda seja visível. Relê as
   interfaces uma vez a cada anúncio, a cada 5 s no gossip e também em anúncios
   imediatos; é uma leitura local de `ifconfig`/`ip`, sem sonda de rede. O mesmo
-  snapshot alimenta `addr` e `addr_candidates`. O endereço segue a mesma ordem
-  em UDP e gossip: fixação explícita, endereço público atual das interfaces com
-  estável antes de temporário, endereço observado por `identify`, demais
-  interfaces locais e o sentinela `0.0.0.0`. Bridges e pares virtuais de
-  container não entram nos candidatos automáticos. Quando o
+  snapshot alimenta `addr` e `addr_candidates`. Com fixação explícita, ambos
+  contêm somente o `advertise_addr`; sem ela, o endereço segue a ordem em UDP e
+  gossip: endereço público atual das interfaces com estável antes de temporário,
+  endereço observado por `identify`, demais interfaces locais e o sentinela
+  `0.0.0.0`. Bridges e pares virtuais de container não entram nos candidatos
+  automáticos. Quando o
   servidor de inferência está carregado, o anúncio também inclui
   `inference/remote-token-stream-v1`, que permite ao gateway remoto pedir o
   laço de decode com callbacks em lotes limitados. O mesmo anúncio leva
@@ -204,9 +213,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   convertido por `udp_to_libp2p_multiaddr` e os relays (padrão IPFS + `--relay-peers`).
 - `handle_event` - Gossipsub Announce vira `PeerInfo` usando
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
-  anunciado) e registra os candidatos como multiaddresses `/p2p/<peer-id>`
-  antes de aquecer a conexão do túnel; mDNS descobre na LAN e alimenta
-  Kademlia; Identify grava listen_addrs e, para relays conectados, escuta no
+  anunciado) e registra somente o endpoint canônico como multiaddress
+  `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS descobre na LAN e
+  só alimenta Kademlia sem pin; Identify não grava `listen_addrs` no livro de
+  endereços e, para relays conectados, escuta no
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT

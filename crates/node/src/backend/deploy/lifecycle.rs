@@ -510,7 +510,10 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
     // registros em máquinas que nunca participaram.
     for peer in peers.iter().filter(|peer| peer.node_id != self_id) {
         let Some(base) = peer.gateway_url() else {
-            warn!("{} não anuncia gateway; sem cópia do registro", peer.node_id);
+            warn!(
+                "{} não anuncia gateway; sem cópia do registro",
+                peer.node_id
+            );
             continue;
         };
         let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
@@ -534,7 +537,10 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
             }
         };
         if let Err(e) = envio {
-            warn!("{} não aceitou o registro da implantação: {e}", peer.node_id);
+            warn!(
+                "{} não aceitou o registro da implantação: {e}",
+                peer.node_id
+            );
         }
     }
 }

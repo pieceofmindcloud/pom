@@ -1665,7 +1665,10 @@ mod budget_tests {
         let state = crate::gateway::testkit::state_with("self", vec![ready, alternative]).await;
         let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
 
-        assert!(!pending, "a route not selected by the planner cannot block the request");
+        assert!(
+            !pending,
+            "a route not selected by the planner cannot block the request"
+        );
     }
 
     #[tokio::test]
@@ -1693,7 +1696,10 @@ mod budget_tests {
         let state = crate::gateway::testkit::state_with("self", vec![head, tail]).await;
         let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
 
-        assert!(!pending, "idle planned peers are woken by generation before inference");
+        assert!(
+            !pending,
+            "idle planned peers are woken by generation before inference"
+        );
     }
 
     /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não
@@ -2330,11 +2336,8 @@ pub(crate) mod testkit {
             resources: Default::default(),
             setup_model: None,
         }));
-        let (network_chat, _) = crate::network_chat::NetworkChat::new(
-            database.clone(),
-            auth.clone(),
-            false,
-        );
+        let (network_chat, _) =
+            crate::network_chat::NetworkChat::new(database.clone(), auth.clone(), false);
         GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),

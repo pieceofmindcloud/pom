@@ -795,52 +795,62 @@ impl PomDb {
         action
             .validate()
             .map_err(|error| anyhow::anyhow!("ação de chat inválida: {error}"))?;
-        let (message_id, room_id, sender_node_id, recipient_node_id, kind, text, file_name, mime_type, file_data, sent_at) =
-            match action {
-                crate::network_chat::ChatAction::Text {
-                    message_id,
-                    room_id,
-                    sender_node_id,
-                    recipient_node_id,
-                    text,
-                    sent_at,
-                } => (
-                    message_id,
-                    room_id,
-                    sender_node_id,
-                    recipient_node_id,
-                    "text",
-                    Some(text),
-                    None,
-                    None,
-                    Vec::new(),
-                    sent_at.to_rfc3339(),
-                ),
-                crate::network_chat::ChatAction::File {
-                    message_id,
-                    room_id,
-                    sender_node_id,
-                    recipient_node_id,
-                    file_name,
-                    mime_type,
-                    data,
-                    sent_at,
-                } => (
-                    message_id,
-                    room_id,
-                    sender_node_id,
-                    recipient_node_id,
-                    "file",
-                    None,
-                    Some(file_name),
-                    Some(mime_type),
-                    data.clone(),
-                    sent_at.to_rfc3339(),
-                ),
-                crate::network_chat::ChatAction::Typing { .. } => {
-                    anyhow::bail!("digitação não é persistente")
-                }
-            };
+        let (
+            message_id,
+            room_id,
+            sender_node_id,
+            recipient_node_id,
+            kind,
+            text,
+            file_name,
+            mime_type,
+            file_data,
+            sent_at,
+        ) = match action {
+            crate::network_chat::ChatAction::Text {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                text,
+                sent_at,
+            } => (
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                "text",
+                Some(text),
+                None,
+                None,
+                Vec::new(),
+                sent_at.to_rfc3339(),
+            ),
+            crate::network_chat::ChatAction::File {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                file_name,
+                mime_type,
+                data,
+                sent_at,
+            } => (
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                "file",
+                None,
+                Some(file_name),
+                Some(mime_type),
+                data.clone(),
+                sent_at.to_rfc3339(),
+            ),
+            crate::network_chat::ChatAction::Typing { .. } => {
+                anyhow::bail!("digitação não é persistente")
+            }
+        };
         self.with_write("salvar mensagem do Chat da rede", |connection| {
             let changed = connection.execute(
                 "INSERT OR IGNORE INTO network_chat_messages (
@@ -913,9 +923,8 @@ impl PomDb {
                     |row| {
                         Ok((
                             row.get::<_, Option<Vec<u8>>>(0)?.unwrap_or_default(),
-                            row.get::<_, Option<String>>(1)?.unwrap_or_else(|| {
-                                "application/octet-stream".to_string()
-                            }),
+                            row.get::<_, Option<String>>(1)?
+                                .unwrap_or_else(|| "application/octet-stream".to_string()),
                         ))
                     },
                 )

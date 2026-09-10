@@ -207,10 +207,11 @@ No `remote-stream`, o head envia `hop_timings` dos peers downstream junto ao
 lote de tokens. O modo normal agrega frames, bytes, abertura, lifetime,
 primeira entrega, latências, processamento remoto e espera com histogramas de
 amostra limitada. O produtor usa uma fila limitada de 64 itens e o emitter
-mede `remote_stream_wait` como espera real na fila, sem timer artificial. O
+  separa `remote_stream_wait` entre produção ainda em andamento e espera real
+  do token pronto na fila, sem timer artificial. O
 retorno normal do callback usa `/v1/link` full-duplex no gateway; somente uma
 falha explícita do canal cai para `/v1/remote-stream-result`, com contagem e
-razão de fallback HTTPS na telemetria. `POM_TELEMETRY_PROFILE=1` acrescenta
+  razão de fallback HTTPS na telemetria. `POM_PROFILE_SYNC=1` acrescenta
 spans de frame e eventos por token, mantendo duração zero para um evento cujo
 lote não mede um intervalo individual. O relógio publicado identifica o
 domínio monotônico do peer e nunca é subtraído de um relógio de outra máquina.

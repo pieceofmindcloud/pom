@@ -97,7 +97,8 @@ Per-file list:
   de `outside_node`, TTFT do servidor/motor/cliente, primeiro token, stream,
   conexões e tokens por chamada; fronteiras ausentes permanecem não medidas.
   O resumo exibe sempre a contagem e as razões do fallback HTTPS e, quando há
-  amostras, os quantis do intervalo de entrega de tokens do `remote-stream`.
+  amostras, os quantis do intervalo de entrega de tokens do `remote-stream`,
+  separando espera do produtor e espera do token pronto na fila.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

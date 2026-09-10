@@ -1296,11 +1296,9 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
                                 .strip_suffix(".gguf")
                                 .or_else(|| model.name.strip_suffix(".GGUF"))
                                 .unwrap_or(&model.name);
-                            let exact = [model.name.as_str(), stem]
-                                .into_iter()
-                                .any(|name| {
-                                    name == model_label || name == group || name == origin_name
-                                });
+                            let exact = [model.name.as_str(), stem].into_iter().any(|name| {
+                                name == model_label || name == group || name == origin_name
+                            });
                             let quantized = origin_quant.is_some_and(|quant| {
                                 stem == format!("{origin_name}-{quant}")
                                     || stem == format!("{origin_name}_{quant}")
@@ -1548,7 +1546,10 @@ mod tests {
 
         let sets = build_shard_sets(&[source, slice, second]);
         assert_eq!(sets.len(), 1);
-        assert_eq!(sets[0].mmproj_path.as_deref(), Some("/models/mmproj-vision-model.gguf"));
+        assert_eq!(
+            sets[0].mmproj_path.as_deref(),
+            Some("/models/mmproj-vision-model.gguf")
+        );
     }
 
     #[test]

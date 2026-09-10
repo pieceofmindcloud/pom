@@ -181,6 +181,12 @@ export interface RemoteStreamTelemetry {
   remote_stream_wait_total_ms: number;
   remote_stream_wait_p50_ms: number;
   remote_stream_wait_p95_ms: number;
+  remote_stream_producer_wait_total_ms?: number;
+  remote_stream_producer_wait_p50_ms?: number;
+  remote_stream_producer_wait_p95_ms?: number;
+  remote_stream_queue_wait_total_ms?: number;
+  remote_stream_queue_wait_p50_ms?: number;
+  remote_stream_queue_wait_p95_ms?: number;
   token_delivery_interval_min_ms?: number;
   token_delivery_interval_p50_ms?: number;
   token_delivery_interval_p95_ms?: number;

@@ -339,7 +339,8 @@ histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
   transport contract is aggregate by default, never one serialized entry per
   decode call. `RequestTrace` also exposes explicit HTTPS fallback counts and
   reasons, normal-mode token-cycle quantiles, and remote-stream delivery
-  interval quantiles; profiling spans remain opt-in.
+  interval quantiles; the remote-stream contract also separates producer wait
+  from queue wait, and profiling spans remain opt-in.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.

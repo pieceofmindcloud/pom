@@ -11,6 +11,10 @@ pub(super) struct PreparedStep {
     pub(super) capture_block: Option<u32>,
     pub(super) input: PreparedStepInput,
     pub(super) queued_at: Instant,
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    pub(super) scheduler_session_existing: bool,
+    pub(super) pipeline_session: bool,
 }
 
 pub(super) enum PreparedStepInput {
@@ -77,12 +81,10 @@ pub(crate) async fn handle_step(
         None => return err400("quadro sem dtype de estado oculto"),
     };
 
-    let sid_key = meta
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("__session__")
-        .to_string();
+    let sid_key = match required_session_id(&meta) {
+        Ok(session_id) => session_id,
+        Err(error) => return err400(error),
+    };
     // Present and non-empty only when the sender negotiated relay mode
     // (`PipelinePlan::supports_relay_chain`) — the ordered chain from *our*
     // next hop through the tail. An empty list still parses as `Some(vec![])`
@@ -100,6 +102,10 @@ pub(crate) async fn handle_step(
         });
     let remote_stream = meta
         .get("remote_stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let pipeline_session = meta
+        .get("pipeline_session")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
@@ -184,6 +190,10 @@ pub(crate) async fn handle_step(
         batch_tokens,
         mtp_k,
         queued_at,
+        scheduler_wait_us: 0,
+        scheduler_wait_reason: None,
+        scheduler_session_existing: false,
+        pipeline_session,
         profiling: profiling.clone(),
     }) {
         Ok(receiver) => receiver.await,
@@ -448,8 +458,7 @@ pub(crate) async fn handle_step_stream(
     else {
         return err400("quadro sem dtype de estado oculto");
     };
-    if meta.get("session_id").and_then(Value::as_str).is_none()
-        || meta.get("token_id").and_then(Value::as_i64).is_none()
+    if required_session_id(&meta).is_err() || meta.get("token_id").and_then(Value::as_i64).is_none()
     {
         return err400("transporte remoto por lotes sem sessão ou token inicial");
     }
@@ -498,6 +507,9 @@ pub(super) struct RemoteStreamToken {
     pub(super) speculation_active: bool,
     pub(super) speculation_disabled_reason: Option<String>,
     pub(super) next_draft: Option<Vec<i32>>,
+    /// Momento monotônico em que o produtor terminou de montar este token.
+    /// Não é serializado: serve apenas para separar produção de espera local.
+    pub(super) ready_at: Instant,
 }
 
 pub(super) enum RemoteStreamItem {
@@ -686,6 +698,7 @@ pub(super) async fn remote_stream_producer(
                         speculation_active,
                         speculation_disabled_reason: speculation_disabled_reason.clone(),
                         next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
+                        ready_at: Instant::now(),
                     }))
                     .await
                     .is_err()
@@ -733,6 +746,7 @@ pub(super) async fn remote_stream_producer(
                 speculation_active,
                 speculation_disabled_reason,
                 next_draft,
+                ready_at: Instant::now(),
             }))
             .await
             .is_err()
@@ -955,9 +969,24 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
     let mut wait_started = Instant::now();
     while let Some(first) = receiver.recv().await {
         let wait_ms = wait_started.elapsed().as_millis() as u64;
+        let received_at = Instant::now();
+        let (producer_wait_ms, queue_wait_ms) = match &first {
+            RemoteStreamItem::Token(token) => (
+                token
+                    .ready_at
+                    .saturating_duration_since(wait_started)
+                    .as_millis() as u64,
+                received_at
+                    .saturating_duration_since(token.ready_at)
+                    .as_millis() as u64,
+            ),
+            RemoteStreamItem::Error(_) => (0, 0),
+        };
         let items = crate::prefill::drain_opportunistic_batch(first, &mut receiver);
         let (mut batch, error, terminal) = remote_stream_batch(&items);
         batch["remote_stream_wait_ms"] = json!(wait_ms);
+        batch["remote_stream_producer_wait_ms"] = json!(producer_wait_ms);
+        batch["remote_stream_queue_wait_ms"] = json!(queue_wait_ms);
         let has_tokens = batch
             .get("accepted")
             .and_then(Value::as_array)
@@ -1031,6 +1060,7 @@ mod remote_stream_tests {
             speculation_active,
             speculation_disabled_reason: None,
             next_draft,
+            ready_at: Instant::now(),
         })
     }
 
@@ -1116,6 +1146,7 @@ mod remote_stream_tests {
             speculation_active: true,
             speculation_disabled_reason: None,
             next_draft: None,
+            ready_at: Instant::now(),
         })
     }
 
@@ -1140,6 +1171,7 @@ mod remote_stream_tests {
             speculation_active: true,
             speculation_disabled_reason: None,
             next_draft: Some(vec![5, 6]),
+            ready_at: Instant::now(),
         });
 
         let (batch, error, terminal) = remote_stream_batch(&[item]);
@@ -1253,6 +1285,41 @@ mod remote_stream_tests {
         assert!(
             deliveries_rx.try_recv().is_err(),
             "oito tokens e o rascunho, um callback"
+        );
+    }
+
+    #[tokio::test]
+    async fn emitter_separa_tempo_do_produtor_e_fila_de_entrega() {
+        use std::time::{Duration, Instant};
+
+        let (items_tx, items_rx) = mpsc::channel(1);
+        let mut item = token(7, "token", true);
+        if let RemoteStreamItem::Token(token) = &mut item {
+            token.ready_at = Instant::now() - Duration::from_millis(5);
+        }
+        items_tx.send(item).await.expect("token enfileirado");
+        drop(items_tx);
+
+        let (deliveries_tx, mut deliveries_rx) = mpsc::channel(1);
+        emit_remote_stream_batches(json!({"ticket": "split-wait"}), items_rx, move |_, batch| {
+            let deliveries_tx = deliveries_tx.clone();
+            async move {
+                deliveries_tx
+                    .send(batch)
+                    .await
+                    .map(|_| crate::direct::Delivery::Accepted)
+                    .unwrap_or(crate::direct::Delivery::Failed)
+            }
+        })
+        .await;
+
+        let batch = deliveries_rx.recv().await.expect("callback");
+        assert_eq!(batch["remote_stream_producer_wait_ms"], 0);
+        assert!(
+            batch["remote_stream_queue_wait_ms"]
+                .as_u64()
+                .is_some_and(|value| value >= 4),
+            "token pronto deve ser contabilizado como espera de fila"
         );
     }
 

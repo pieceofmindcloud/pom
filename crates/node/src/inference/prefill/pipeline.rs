@@ -405,6 +405,7 @@ pub(super) async fn forward_hub_chunk(
         };
         let mut body_meta = json!({
             "session_id": session_id,
+            "pipeline_session": true,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
             "is_last": is_last,

@@ -1485,7 +1485,7 @@ pub(crate) async fn accept_authority_transfer(
                 StatusCode::CONFLICT,
                 Json(json!({ "error": format!("aceitação recusada: {error}") })),
             )
-            .into_response()
+                .into_response()
         }
     };
     state

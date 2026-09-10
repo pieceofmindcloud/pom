@@ -77,6 +77,12 @@ function emptyRemoteStream(): TelemetrySummary["remote_stream"] {
     remote_stream_wait_total_ms: 0,
     remote_stream_wait_p50_ms: 0,
     remote_stream_wait_p95_ms: 0,
+    remote_stream_producer_wait_total_ms: 0,
+    remote_stream_producer_wait_p50_ms: 0,
+    remote_stream_producer_wait_p95_ms: 0,
+    remote_stream_queue_wait_total_ms: 0,
+    remote_stream_queue_wait_p50_ms: 0,
+    remote_stream_queue_wait_p95_ms: 0,
   };
 }
 

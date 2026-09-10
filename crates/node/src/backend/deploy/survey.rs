@@ -614,7 +614,8 @@ pub(super) async fn survey(
                         })
                         .flat_map(|set| {
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
-                            let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
+                            let mmproj_path =
+                                set.get("mmproj_path").and_then(|value| value.as_str());
                             set.get("shards")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
@@ -641,7 +642,8 @@ pub(super) async fn survey(
                         })
                         .flat_map(|set| {
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
-                            let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
+                            let mmproj_path =
+                                set.get("mmproj_path").and_then(|value| value.as_str());
                             set.get("tp_parts")
                                 .and_then(|v| v.as_array())
                                 .into_iter()

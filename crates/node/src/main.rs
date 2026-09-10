@@ -24,15 +24,8 @@ mod catalog;
 mod cluster_logs;
 #[path = "network/cluster_logs_policy.rs"]
 mod cluster_logs_policy;
-#[path = "network/network_chat.rs"]
-mod network_chat;
-#[path = "network/network_chat_policy.rs"]
-mod network_chat_policy;
 #[path = "utils/config.rs"]
 mod config;
-#[cfg(test)]
-#[path = "network/network_chat_tests.rs"]
-mod network_chat_tests;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
@@ -87,6 +80,13 @@ mod model_provider;
 mod model_provider_backend;
 #[path = "network/network.rs"]
 mod network;
+#[path = "network/network_chat.rs"]
+mod network_chat;
+#[path = "network/network_chat_policy.rs"]
+mod network_chat_policy;
+#[cfg(test)]
+#[path = "network/network_chat_tests.rs"]
+mod network_chat_tests;
 #[path = "models/ollama.rs"]
 mod ollama;
 #[path = "backend/openai.rs"]
@@ -631,9 +631,7 @@ async fn async_main(
     if app_config.connection_key.trim().is_empty() {
         app_config.connection_key = crate::webui::fresh_connection_key();
         app_config.save()?;
-        info!(
-            "Generated a local admin credential for the configured node"
-        );
+        info!("Generated a local admin credential for the configured node");
     }
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
     app_config.api_keys = database.api_keys()?;
@@ -1437,7 +1435,10 @@ async fn start_setup_mode(
     let app = Router::new()
         .route("/api/setup/hardware", get(webui::get_setup_hardware))
         .route("/api/setup/models", get(webui::get_setup_models))
-        .route("/api/setup/geo-reference", get(webui::get_setup_geo_reference))
+        .route(
+            "/api/setup/geo-reference",
+            get(webui::get_setup_geo_reference),
+        )
         .route(
             "/api/setup/admin-anchor/preview",
             axum::routing::post(webui::preview_setup_anchor),
@@ -1523,10 +1524,7 @@ fn pkarr_multiaddr_for_advertise(
     } else {
         "ip4"
     };
-    format!(
-        "/{protocol}/{host}/tcp/{}",
-        udp_port.saturating_add(10000)
-    )
+    format!("/{protocol}/{host}/tcp/{}", udp_port.saturating_add(10000))
 }
 
 /// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,

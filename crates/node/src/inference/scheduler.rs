@@ -66,6 +66,10 @@ impl SchedulerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueItem<T> {
     pub session_id: String,
+    /// A request that came from the distributed pipeline. It has one logical
+    /// identity across hops, but its first prefill may still need a local KV
+    /// slot on this peer.
+    pub pipeline_session: bool,
     pub class: WorkClass,
     pub tokens: usize,
     pub enqueued_at: Instant,
@@ -77,11 +81,19 @@ impl QueueItem<()> {
     fn test(session_id: &str, class: WorkClass, tokens: usize) -> Self {
         Self {
             session_id: session_id.into(),
+            pipeline_session: false,
             class,
             tokens,
             enqueued_at: Instant::now(),
             payload: (),
         }
+    }
+
+    #[cfg(test)]
+    fn pipeline_test(session_id: &str, class: WorkClass, tokens: usize) -> Self {
+        let mut item = Self::test(session_id, class, tokens);
+        item.pipeline_session = true;
+        item
     }
 }
 
@@ -149,10 +161,26 @@ impl<T> SchedulerQueue<T> {
                 matches!(
                     item.class,
                     WorkClass::PrefillTokens | WorkClass::PrefillHidden
-                ) && !is_existing(item.session_id.as_str())
+                ) && !item.pipeline_session
+                    && !is_existing(item.session_id.as_str())
             })
             .map(|item| now.saturating_duration_since(item.enqueued_at))
             .max()
+    }
+
+    /// Whether a first prefill from the distributed pipeline is blocked by a
+    /// full local sequence pool. This is intentionally separate from the
+    /// standalone request grace timer: every hop shares the gateway's logical
+    /// session, so a pipeline frame must never sleep for that timer.
+    pub fn has_pipeline_new_session_wait(&self, is_existing: impl Fn(&str) -> bool) -> bool {
+        self.pending.iter().any(|item| {
+            item.pipeline_session
+                && matches!(
+                    item.class,
+                    WorkClass::PrefillTokens | WorkClass::PrefillHidden
+                )
+                && !is_existing(item.session_id.as_str())
+        })
     }
 
     /// Seleciona um microbatch da classe `class`, respeitando os limites e a
@@ -301,6 +329,24 @@ mod tests {
         assert!(q
             .oldest_new_session_wait(Instant::now(), |_| true)
             .is_none());
+    }
+
+    #[test]
+    fn prefill_de_pipeline_nao_entra_na_carencia_de_pedido_avulso() {
+        let mut q = SchedulerQueue::new(SchedulerConfig::test(4, 1));
+        q.try_push(QueueItem::pipeline_test(
+            "pipeline",
+            WorkClass::PrefillTokens,
+            35,
+        ))
+        .unwrap();
+
+        assert!(q.has_pipeline_new_session_wait(|_| false));
+        assert!(
+            q.oldest_new_session_wait(Instant::now(), |_| false)
+                .is_none(),
+            "uma requisição de pipeline não pode armar o timer do pedido avulso"
+        );
     }
 
     #[test]

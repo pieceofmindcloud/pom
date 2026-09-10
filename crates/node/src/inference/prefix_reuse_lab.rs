@@ -925,7 +925,7 @@ async fn conversa_com_hops_fault_kind(
                 preferred_head: None,
                 request_details: serde_json::json!({}),
                 trace_id: None,
-        },
+            },
             tx,
         ));
 

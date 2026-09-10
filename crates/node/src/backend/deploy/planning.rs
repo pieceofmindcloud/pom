@@ -1146,9 +1146,7 @@ pub(super) fn plan_with_rtt_options(
     // state and must never be asked to load the raw image projector.
     let mmproj_path = chosen
         .iter()
-        .find(|(index, target, _)| {
-            !target.is_empty() && available[*index].start_layer == 0
-        })
+        .find(|(index, target, _)| !target.is_empty() && available[*index].start_layer == 0)
         .and_then(|(_, target, _)| machines.iter().find(|machine| machine.node_id == *target))
         .and_then(|machine| {
             machine

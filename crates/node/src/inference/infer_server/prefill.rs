@@ -55,12 +55,10 @@ pub(super) async fn handle_prefill(
         None => return err400("quadro sem dtype de estado oculto"),
     };
 
-    let sid_key = meta
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("__session__")
-        .to_string();
+    let sid_key = match required_session_id(&meta) {
+        Ok(session_id) => session_id,
+        Err(error) => return err400(error),
+    };
     let chunk_index = meta
         .get("chunk_index")
         .and_then(|v| v.as_u64())
@@ -77,6 +75,10 @@ pub(super) async fn handle_prefill(
     let reuse_prefix = meta
         .get("reuse_prefix")
         .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let pipeline_session = meta
+        .get("pipeline_session")
+        .and_then(Value::as_bool)
         .unwrap_or(false);
     let cached_tokens = meta
         .get("cached_tokens")
@@ -226,6 +228,10 @@ pub(super) async fn handle_prefill(
         capture_block,
         chunk_tokens,
         queued_at,
+        scheduler_wait_us: 0,
+        scheduler_wait_reason: None,
+        scheduler_session_existing: false,
+        pipeline_session,
     }) {
         Ok(receiver) => receiver.await,
         Err(SchedulerSubmitError::Full { limit }) => {
@@ -333,6 +339,7 @@ pub(super) async fn handle_prefill(
 
         let mut forward = json!({
             "session_id": sid_for_forward,
+            "pipeline_session": true,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
             "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
@@ -420,6 +427,7 @@ pub(super) async fn handle_prefill(
         {
             let mut relay_meta = json!({
                 "session_id": sid_for_forward,
+                "pipeline_session": true,
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
                 "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
@@ -703,12 +711,21 @@ pub(super) fn prefill_blocking(
     chunk_tokens: Option<Vec<i32>>,
     mrope_positions: Option<Vec<[u32; 4]>>,
     queued_at: Instant,
+    scheduler_wait_us: u64,
+    scheduler_wait_reason: Option<&'static str>,
+    scheduler_session_existing: bool,
+    pipeline_session: bool,
 ) -> Result<TimedReply> {
     let mut is_final_chunk = is_final_chunk;
     let owns_prompt_tokens = prompt.is_some();
     let has_images = images.as_ref().is_some_and(|images| !images.is_empty());
     let mut timings = NodeTimings {
+        session_id: Some(sid_key.clone()),
         queue_us: queued_at.elapsed().as_micros() as u64,
+        scheduler_wait_us,
+        scheduler_wait_reason,
+        scheduler_session_existing,
+        pipeline_session,
         ..Default::default()
     };
     // O prefill espera no mesmo mutex do decode: um prompt grande de outra
@@ -1135,6 +1152,10 @@ pub(super) struct PreparedPrefill {
     pub(super) wire_dtype: WireDtype,
     pub(super) capture_block: Option<u32>,
     pub(super) queued_at: Instant,
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    pub(super) scheduler_session_existing: bool,
+    pub(super) pipeline_session: bool,
 }
 
 pub(super) enum PreparedPrefillInput {
@@ -1187,6 +1208,10 @@ pub(super) fn prefill_batch_blocking(
             capture_block,
             chunk_tokens,
             queued_at,
+            scheduler_wait_us,
+            scheduler_wait_reason,
+            scheduler_session_existing,
+            pipeline_session,
         } = job;
 
         let result = (|| -> Result<PreparedPrefill> {
@@ -1320,6 +1345,10 @@ pub(super) fn prefill_batch_blocking(
                 wire_dtype,
                 capture_block,
                 queued_at,
+                scheduler_wait_us,
+                scheduler_wait_reason,
+                scheduler_session_existing,
+                pipeline_session,
             })
         })();
 
@@ -1491,8 +1520,13 @@ pub(super) fn prefill_batch_blocking(
             }
 
             let mut timings = NodeTimings {
+                session_id: Some(item.sid_key.clone()),
                 selected_path,
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
+                scheduler_wait_us: item.scheduler_wait_us,
+                scheduler_wait_reason: item.scheduler_wait_reason,
+                scheduler_session_existing: item.scheduler_session_existing,
+                pipeline_session: item.pipeline_session,
                 lock_wait_us,
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,
@@ -1768,6 +1802,10 @@ pub(super) fn step_batch_blocking(
                     job.batch_tokens,
                     job.mtp_k,
                     job.queued_at,
+                    job.scheduler_wait_us,
+                    job.scheduler_wait_reason,
+                    job.scheduler_session_existing,
+                    job.pipeline_session,
                     job.profiling,
                 );
                 (reply, result)
@@ -1800,6 +1838,10 @@ pub(super) fn step_batch_blocking(
             tensor,
             capture_block,
             queued_at,
+            scheduler_wait_us,
+            scheduler_wait_reason,
+            scheduler_session_existing,
+            pipeline_session,
             ..
         } = job;
         let result = (|| -> Result<PreparedStep> {
@@ -1851,6 +1893,10 @@ pub(super) fn step_batch_blocking(
                 capture_block,
                 input,
                 queued_at,
+                scheduler_wait_us,
+                scheduler_wait_reason,
+                scheduler_session_existing,
+                pipeline_session,
             })
         })();
         match result {
@@ -1982,8 +2028,13 @@ pub(super) fn step_batch_blocking(
                 .saturating_add(item.n_tokens as u32);
             s.sessions.get_mut(&item.sid_key).unwrap().n_past = new_n_past;
             let mut timings = NodeTimings {
+                session_id: Some(item.sid_key.clone()),
                 selected_path,
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
+                scheduler_wait_us: item.scheduler_wait_us,
+                scheduler_wait_reason: item.scheduler_wait_reason,
+                scheduler_session_existing: item.scheduler_session_existing,
+                pipeline_session: item.pipeline_session,
                 lock_wait_us,
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,

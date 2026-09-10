@@ -84,7 +84,11 @@ fn auth_failure(headers: &HeaderMap, probe: Option<&AuthProbe>) -> Option<Respon
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .or_else(|| headers.get("x-api-key").and_then(|value| value.to_str().ok()));
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        });
     let internal = headers
         .get(crate::auth::INTERNAL_NODE_REQUEST_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -95,7 +99,11 @@ fn auth_failure(headers: &HeaderMap, probe: Option<&AuthProbe>) -> Option<Respon
             Some((StatusCode::UNAUTHORIZED, "missing inference credential").into_response())
         }
         Some(token)
-            if internal && probe.accepted_tokens.iter().any(|accepted| accepted == token) =>
+            if internal
+                && probe
+                    .accepted_tokens
+                    .iter()
+                    .any(|accepted| accepted == token) =>
         {
             None
         }
@@ -360,11 +368,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     response
 }
 
-async fn auth_prefill(
-    State(hop): State<Hop>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+async fn auth_prefill(State(hop): State<Hop>, headers: HeaderMap, body: Bytes) -> Response {
     if let Some(response) = auth_failure(&headers, hop.auth.as_ref()) {
         return response;
     }
@@ -602,11 +606,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         edges: vec![],
     };
     let session = uuid::Uuid::new_v4().to_string();
-    let reply = crate::direct::DirectReply::new(
-        inbox,
-        vec![gateway_url],
-        "gateway".into(),
-    );
+    let reply = crate::direct::DirectReply::new(inbox, vec![gateway_url], "gateway".into());
     let http = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
     let routes = crate::route::RouteTable::new();
 
@@ -732,12 +732,8 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
         step_for("tail", &tail_url, 1, 1, true),
     ];
     let session = uuid::Uuid::new_v4().to_string();
-    let reply = crate::direct::DirectReply::new(
-        inbox.clone(),
-        vec![gateway_url],
-        "gateway".into(),
-    )
-    .expect("gateway de teste precisa ser alcançável");
+    let reply = crate::direct::DirectReply::new(inbox.clone(), vec![gateway_url], "gateway".into())
+        .expect("gateway de teste precisa ser alcançável");
     let ticket = reply.ticket_for_hops(steps.len());
     let meta = json!({
         "session_id": session,

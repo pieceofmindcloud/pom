@@ -773,6 +773,14 @@ impl RemoteStreamDelivery {
     }
 
     pub async fn deliver(&mut self, meta: Value) -> Delivery {
+        let Some(session_id) = meta
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|session_id| !session_id.trim().is_empty())
+        else {
+            warn!("callback de remote-stream sem session_id; recusando identidade sintética");
+            return Delivery::Failed;
+        };
         let frame_id = meta
             .get("stream_id")
             .and_then(Value::as_str)
@@ -808,11 +816,7 @@ impl RemoteStreamDelivery {
                         &frame_id,
                         &[crate::wire::BatchPayloadItem {
                             item_id: frame_id.clone(),
-                            session_id: link_meta
-                                .get("session_id")
-                                .and_then(Value::as_str)
-                                .unwrap_or("__session__")
-                                .to_string(),
+                            session_id: session_id.to_string(),
                             meta: link_meta,
                             tensor: None,
                             dtype: crate::wire::WireDtype::F16,

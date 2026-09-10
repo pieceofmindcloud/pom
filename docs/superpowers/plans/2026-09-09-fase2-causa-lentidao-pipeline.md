@@ -4,7 +4,7 @@
 
 **Objetivo:** medir, no modo de profiling, cada etapa por token do pipeline distribuido para separar compute, transporte, callback, espera e gaps de serializacao. Com a autorizacao do captain, a fase seguinte tambem implementa o transporte persistente e o desacoplamento limitado por fila.
 
-**Arquitetura:** O caminho normal continua usando apenas agregados. O modo `POM_TELEMETRY_PROFILE=1` propaga `trace_id` e `token_index` e registra eventos monotonicos locais no gateway, na cabeca remota, em cada hop e no callback. Eventos de peers diferentes nao sao subtraidos diretamente; a analise correlaciona-os por token e por identificador de frame.
+**Arquitetura:** O caminho normal continua usando apenas agregados. O modo `POM_PROFILE_SYNC=1` propaga `trace_id` e `token_index` e registra eventos monotonicos locais no gateway, na cabeca remota, em cada hop e no callback. Eventos de peers diferentes nao sao subtraidos diretamente; a analise correlaciona-os por token e por identificador de frame.
 
 **Stack:** Rust/Tokio, `serde_json`, `tracing`, `cargo test`, testes de bancada existentes de `relay`, `link`, `direct` e `prefill`.
 
@@ -16,7 +16,7 @@
 - A alteracao de transporte, batching e pipeline foi autorizada pelo captain depois da instrumentacao e da evidencia da fase 2.
 - Nao tocar no `llama.cpp` vendorizado.
 - Ignorar o executor MoE nesta inferencia e nesta analise.
-- Detalhamento por token somente sob `POM_TELEMETRY_PROFILE`; modo normal deve manter contadores e histogramas agregados sem sincronizacao extra no hot path.
+- Detalhamento por token somente sob `POM_PROFILE_SYNC=1`; modo normal deve manter contadores e histogramas agregados sem sincronizacao extra no hot path.
 - Relatorio deve distinguir piso fisico de RTT, espera inevitavel, custo evitavel e limitacoes da coleta.
 
 ### Tarefa 1: Mapear o caminho e fixar o contrato da evidencia

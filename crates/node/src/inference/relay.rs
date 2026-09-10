@@ -347,103 +347,111 @@ impl BatchCoordinator {
 
 async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
     let batch_id = uuid::Uuid::new_v4().to_string();
-    let items: Vec<wire::BatchPayloadItem> = calls
+    let items = calls
         .iter()
-        .map(|call| wire::BatchPayloadItem {
-            item_id: call.item_id.clone(),
-            session_id: call
+        .map(|call| {
+            let session_id = call
                 .meta
                 .get("session_id")
                 .and_then(Value::as_str)
-                .unwrap_or("__session__")
-                .to_string(),
-            meta: call.meta.clone(),
-            tensor: call.tensor.clone(),
-            dtype: call.dtype,
+                .filter(|session_id| !session_id.trim().is_empty())
+                .ok_or_else(|| anyhow!("chamada batch {} sem session_id", call.item_id))?;
+            Ok(wire::BatchPayloadItem {
+                item_id: call.item_id.clone(),
+                session_id: session_id.to_string(),
+                meta: call.meta.clone(),
+                tensor: call.tensor.clone(),
+                dtype: call.dtype,
+            })
         })
-        .collect();
-    let result = async {
-        let body = wire::encode_batch_items(&path, batch_id.clone(), &items)?;
-        let first = calls.first().expect("non-empty calls");
-        let profiling = crate::prefill::TelemetryContext::from_meta(
-            &first.meta,
-            first.peer_label.clone(),
-            if path == "/v1/prefill" {
-                crate::prefill::Phase::Prefill
-            } else {
-                crate::prefill::Phase::Decode
-            },
-            Instant::now(),
-            None,
-        );
-        let response = send_batch_body(
-            &first.clients,
-            &first.step,
-            first.tunnel.as_ref(),
-            first.local.clone(),
-            &first.path,
-            &batch_id,
-            Bytes::from(body),
-            first.attempts,
-            &first.peer_label,
-            first.meta.get("session_id").and_then(Value::as_str),
-            profiling,
-        )
-        .await?;
-        let (_, decoded) = wire::decode_batch_items(&response.body)?;
-        let mut by_id = decoded
-            .into_iter()
-            .map(|item| (item.item_id.clone(), item))
-            .collect::<HashMap<_, _>>();
-        let mut output = Vec::with_capacity(calls.len());
-        for call in &calls {
-            let item = by_id
-                .remove(&call.item_id)
-                .ok_or_else(|| anyhow!("resposta batch não contém o item {}", call.item_id))?;
-            let hidden_state_bytes_sent = hidden_state_bytes(
-                call.tensor
-                    .as_ref()
-                    .map(|(values, shape)| (values.as_slice(), shape.clone())),
-                call.dtype,
-            )?;
-            let hidden_state_bytes_received = received_hidden_state_bytes(
-                &item.meta,
-                item.tensor
-                    .as_ref()
-                    .map(|(values, shape)| (values.as_slice(), shape.clone())),
-                call.dtype,
-                &call.peer_label,
-            )?;
-            let tls_handshake_ms = item
-                .meta
-                .get("tls_handshake_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            output.push(SentFrame {
-                meta: item.meta,
-                tensor: item.tensor,
-                round_trip_ms: response.round_trip_ms,
-                bytes_sent: response.bytes_sent / calls.len() as u64,
-                bytes_received: response.body.len() as u64 / calls.len() as u64,
-                hidden_state_bytes_sent,
-                hidden_state_bytes_received,
-                hidden_state_dtype: call.dtype,
-                client_encode_ms: response.client_encode_ms,
-                response_headers_ms: response.response_headers_ms,
-                response_body_ms: response.response_body_ms,
-                client_decode_ms: response.client_decode_ms,
-                connection_state: response.connection_state,
-                tls: response.tls,
-                tls_handshake_ms,
-                transport: response.transport,
-                transport_fallback: response.transport_fallback,
-                transport_fallback_reason: response.transport_fallback_reason.clone(),
-                profiling_spans: response.profiling_spans.clone(),
-            });
+        .collect::<Result<Vec<_>>>();
+    let result = match items {
+        Err(error) => Err(error),
+        Ok(items) => {
+            async {
+                let body = wire::encode_batch_items(&path, batch_id.clone(), &items)?;
+                let first = calls.first().expect("non-empty calls");
+                let profiling = crate::prefill::TelemetryContext::from_meta(
+                    &first.meta,
+                    first.peer_label.clone(),
+                    if path == "/v1/prefill" {
+                        crate::prefill::Phase::Prefill
+                    } else {
+                        crate::prefill::Phase::Decode
+                    },
+                    Instant::now(),
+                    None,
+                );
+                let response = send_batch_body(
+                    &first.clients,
+                    &first.step,
+                    first.tunnel.as_ref(),
+                    first.local.clone(),
+                    &first.path,
+                    &batch_id,
+                    Bytes::from(body),
+                    first.attempts,
+                    &first.peer_label,
+                    first.meta.get("session_id").and_then(Value::as_str),
+                    profiling,
+                )
+                .await?;
+                let (_, decoded) = wire::decode_batch_items(&response.body)?;
+                let mut by_id = decoded
+                    .into_iter()
+                    .map(|item| (item.item_id.clone(), item))
+                    .collect::<HashMap<_, _>>();
+                let mut output = Vec::with_capacity(calls.len());
+                for call in &calls {
+                    let item = by_id.remove(&call.item_id).ok_or_else(|| {
+                        anyhow!("resposta batch não contém o item {}", call.item_id)
+                    })?;
+                    let hidden_state_bytes_sent = hidden_state_bytes(
+                        call.tensor
+                            .as_ref()
+                            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                        call.dtype,
+                    )?;
+                    let hidden_state_bytes_received = received_hidden_state_bytes(
+                        &item.meta,
+                        item.tensor
+                            .as_ref()
+                            .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                        call.dtype,
+                        &call.peer_label,
+                    )?;
+                    let tls_handshake_ms = item
+                        .meta
+                        .get("tls_handshake_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    output.push(SentFrame {
+                        meta: item.meta,
+                        tensor: item.tensor,
+                        round_trip_ms: response.round_trip_ms,
+                        bytes_sent: response.bytes_sent / calls.len() as u64,
+                        bytes_received: response.body.len() as u64 / calls.len() as u64,
+                        hidden_state_bytes_sent,
+                        hidden_state_bytes_received,
+                        hidden_state_dtype: call.dtype,
+                        client_encode_ms: response.client_encode_ms,
+                        response_headers_ms: response.response_headers_ms,
+                        response_body_ms: response.response_body_ms,
+                        client_decode_ms: response.client_decode_ms,
+                        connection_state: response.connection_state,
+                        tls: response.tls,
+                        tls_handshake_ms,
+                        transport: response.transport,
+                        transport_fallback: response.transport_fallback,
+                        transport_fallback_reason: response.transport_fallback_reason.clone(),
+                        profiling_spans: response.profiling_spans.clone(),
+                    });
+                }
+                Ok::<_, anyhow::Error>(output)
+            }
+            .await
         }
-        Ok::<_, anyhow::Error>(output)
-    }
-    .await;
+    };
 
     match result {
         Ok(outputs) => {

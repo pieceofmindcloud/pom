@@ -6,8 +6,10 @@ do cluster e se anunciar para eles. São dois mundos no mesmo diretório
 `identity.rs`, `route.rs`), que é o coração da LAN, e o caminho libp2p/pkarr
 (`discovery.rs`, `pkarr_node.rs`, `bitswap.rs`), desenhado para a internet
 (Circuit Relay v2, DCuTR, AutoNAT, Kademlia, gossipsub, DHT pkarr). A regra da
-casa é que a decisão de endereço pertence a quem vai discar, não a quem anunciou
-- daí `addr_candidates` somado ao `RouteTable` (ver `crates/node/src/network/AGENTS.md`).
+casa é que a decisão de endereço pertence a quem vai discar, não a quem anunciou.
+Com `advertise_addr` fixado, ele é o único endpoint anunciado e discado pelo
+libp2p; sem pin, `addr_candidates` e `RouteTable` mantêm o fallback (ver
+`crates/node/src/network/AGENTS.md`).
 
 `main.rs` monta `Network` e `Discovery`; `backend/gateway.rs` e
 `routing/pipeline.rs` consomem `PeerInfo` e `RouteTable`.
@@ -112,7 +114,8 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
    ~2 s juntando `Announce` antes de calcular a faixa de camadas.
 3. **Gossip (5 s):** a cada `GOSSIP_INTERVAL_SECS` o nó re-anuncia
    incondicionalmente (bootstrap + peers vivos + broadcast local), roda
-   `discovery_sweep` e expira mortos.
+   `discovery_sweep` e expira mortos. Quando há `advertise_addr`, o anúncio
+   contém somente esse endpoint, não a enumeração de interfaces locais.
 4. **Varredura de descoberta:** `discovery_sweep` re-pergunta os peers a cada
    6 tiques (30 s), com rodízio de `SWEEP_FANOUT` = 3 por varredura começando em
    `k * 3` sobre a lista ordenada por `node_id`. É o que aprende peers
@@ -124,10 +127,10 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 
 - Um `addr` começando em `0.0.0.0` é reescrito com o endereço de origem do
   pacote (o "sentinel" de quem anuncia sem endereço). O endereço efetivo de
-  origem é sempre **acrescentado** a `addr_candidates` via `merge_observed`,
-  mesmo quando o anúncio trouxe outro `addr`: ele é o caminho comprovadamente
-  alcançável neste instante, enquanto o endereço anunciado continua sendo
-  apenas cache.
+  origem é acrescentado a `addr_candidates` via `merge_observed` somente quando
+  o anúncio não trouxe uma lista explícita. Com `advertise_addr`, a lista
+  anunciada é a autoridade e não ganha LAN, bridge ou endereço observado como
+  candidato adicional.
 - `PeerRequest` responde com um `Announce` imediato (mesmo sem assignment) e com
   o `PeerList` de peers vivos, fatiado para caber em `MAX_DATAGRAM_PAYLOAD`
   (1200 B, o piso que o IPv6 garante; `PeerList` cresce ~530 B por peer).
@@ -150,11 +153,11 @@ tem de aguentar isso sem configuração: o endereço que um par anunciou ontem p
 não existir em máquina nenhuma hoje. Fixar `--advertise-addr` **não** é a
 resposta - é um remendo por máquina para um defeito que é de todas.
 
-Quem anuncia já lida com a rotação: `self_announce` enumera as interfaces uma
-vez por anúncio e `filter_candidates` descarta `deprecated` e põe estável antes
-de temporário. Essa enumeração é uma leitura local, sem sonda de rede; acontece
-no gossip a cada 5 s e também em anúncios imediatos. Quem **guarda** é que não
-lidava:
+Sem pin, quem anuncia já lida com a rotação: `self_announce` enumera as
+interfaces uma vez por anúncio e `filter_candidates` descarta `deprecated` e
+põe estável antes de temporário. Essa enumeração é uma leitura local, sem sonda
+de rede; acontece no gossip a cada 5 s e também em anúncios imediatos. Com pin,
+essa lista não é publicada. Quem **guarda** é que não lidava:
 
 - `PeerInfo::gateway_url()` era só `peer.addr`, um endereço e nenhum plano B,
   enquanto `inference_url()` já preferia `addr_candidates`. Todo o plano de
@@ -281,6 +284,11 @@ a mesma para UDP e gossipsub - os dois leem do mesmo `Network`):
 4. demais interfaces locais desta máquina;
 5. o sentinela `0.0.0.0:<porta>`, só quando nada acima existe.
 
+Quando há endereço fixado, a precedência não significa "pin mais os demais":
+`self_announce`, `self_addr_candidates` e a multiaddress de túnel publicam
+somente o item 1. A lista de alternativas existe apenas no modo automático,
+ou no caminho UDP de controle que precisa reencontrar um nó sem pin.
+
 `addrs::is_private_or_local` decide se um endereço observado é novidade: RFC 1918,
 **`100.64/10` (RFC 6598, o CGNAT - e o que a Tailscale usa)** e IPv6 unique-local
 não contam, porque só provam que quem respondeu está na mesma rede privada.
@@ -392,9 +400,14 @@ ociosidade; a decisão usa a atividade local registrada e o monitor existente.
   Essa ligação prova quem transportou o anúncio, mas não é raiz da autoridade
   administrativa: concessões e comandos continuam exigindo a chave Ed25519 e a
   cadeia local.
-- **mDNS:** descoberta na LAN que alimenta o endereço da Kademlia e diala o peer.
-- **Identify:** grava `listen_addrs` do remoto na Kademlia e, para relays
-  conectados, escuta no circuito (`P2pCircuit`) do relay.
+- **mDNS:** descoberta na LAN que alimenta o endereço da Kademlia e diala o peer
+  somente quando não há `advertise_addr` fixado. Com pin, endereços LAN do mDNS
+  são ignorados para evitar churn fora do endpoint configurado.
+- **Identify:** não transforma `listen_addrs` do remoto em candidatos da
+  Kademlia. Essa lista é a interface de escuta do processo, não o contrato de
+  endpoint do cluster, e pode conter LAN, bridge Docker e endereços Tailscale
+  antigos. Para relays conectados, continua escutando no circuito
+  (`P2pCircuit`) do relay.
 - **DCuTR:** hole punch; sucesso loga conexão direta, falha avisa que o fallback
   do relay está ativo. **AutoNAT:** só loga a mudança de status do NAT.
 - **Bitswap:** protocolo request/response (`/pom/bitswap/1.0.0`) no swarm,
@@ -441,9 +454,12 @@ Comportamento atual do código:
    protegido por Noise e leva a credencial da inferência até o loopback do
    destino. Se ele estiver indisponível ou falhar por transporte, o mesmo
    quadro segue pelo cliente direto pinado, usando HTTPS quando TLS está ativo.
-   Antes de cada envio, o swarm reidrata as multiaddresses TCP a partir dos
-   candidatos UDP levados pelo plano quando disponíveis, ou do anúncio vivo
-   como fallback, quando ainda não há conexão. Isso cobre a janela em que o
+   Antes de cada envio, o swarm reidrata uma única multiaddress TCP a partir do
+   endpoint canônico levado pelo plano quando disponível, ou do primeiro
+   endereço válido do anúncio vivo como fallback, quando ainda não há conexão.
+   Com `advertise_addr`, esse endpoint é o único publicado; não existe chamada
+   a `Swarm::add_external_address` que substitua ou complemente os listen
+   addresses do Identify. Isso cobre a janela em que o
    gateway já conhece o `PeerId`, mas o evento gossipsub ainda não registrou um
    endereço no livro de endereços do libp2p.
    Uma resposta HTTP explícita do peer não é repetida em outro transporte.

@@ -161,7 +161,7 @@ Isso valida a ferramenta de cálculo, não substitui uma captura E2E real.
 | Remote stream | Sem métricas de frame/lifetime/espera | Contadores e histogramas agregados: open, lifetime, frames, bytes, primeira entrega, latências min/p50/p95/p99/máximo, compute min/p50/p95/p99/máximo e espera total/p50/p95 |
 | TTFT | Um campo ambíguo | `local_engine_first_event_ms`, `pipeline_first_token_ms`, `server_ttft_ms` e `client_ttft_ms` |
 | Overlap | Implícito na diferença E2E | `overlap_ms` e `true_residual_ms` nulos até haver intervalos suficientes |
-| Profiling | Sem correlação detalhada do stream | `POM_TELEMETRY_PROFILE=1` habilita spans de frame e eventos por token limitados |
+| Profiling | Sem correlação detalhada do stream | `POM_PROFILE_SYNC=1` habilita spans de frame e eventos por token limitados |
 
 `critical_path_ms` no resumo é o wall-clock medido da requisição. Ele não é
 uma reconstrução causal completa enquanto não houver timestamps sincronizáveis
@@ -283,7 +283,7 @@ Não há vetor por token nem sincronização adicional por token no hot path. O
 callback usa uma fila limitada a 64 lotes e a contrapressão continua
 sendo parte do transporte.
 
-`POM_TELEMETRY_PROFILE=1` mantém no máximo 1024 spans de frame/evento. Eventos
+`POM_PROFILE_SYNC=1` mantém no máximo 1024 spans de frame/evento. Eventos
 por token sem intervalo individual são eventos de duração zero: representam
 participação e ordem, não compute medido. Não foi possível medir percentual de
 overhead contra uma inferência real porque o ambiente não serviu um modelo.
@@ -406,7 +406,7 @@ prova de propagação, em vez de inferi-la apenas do ping.
    limitadas. A camada Rust agrega `https_fallback_calls` e
    `https_fallback_reasons`; o indicador não depende de renomear o transporte.
 5. A abertura do canal e o round-trip do frame têm spans distintos no modo
-   `POM_TELEMETRY_PROFILE=1`. O modo normal mantém contadores, histogramas e
+   `POM_PROFILE_SYNC=1`. O modo normal mantém contadores, histogramas e
    quantis de ciclo/entrega, sem vetor de evento por token.
 
 O `remote_stream_wait` não foi falsamente zerado. Ele continua sendo a medida
@@ -430,7 +430,7 @@ O baseline que deve ser repetido pelo captain é:
 | ICMP direto para Salem | mediana ~28-33 ms, picos 67/114 ms |
 
 Para a comparação, usar o mesmo prompt, modelo, número de tokens e rota, com
-`POM_TELEMETRY_PROFILE=1`, e calcular `output_tokens / (total_ms / 1000)`.
+`POM_PROFILE_SYNC=1`, e calcular `output_tokens / (total_ms / 1000)`.
 Registrar no antes e no depois: total E2E, TTFT, token cycle p50/p95/p99/máximo,
 delivery interval p50/p95/p99/máximo, `remote_stream_wait` total/p50/p95,
 frame latency p50/p95/máximo, compute remoto, transporte, fallback HTTPS e
@@ -482,7 +482,7 @@ Validações concluídas no worktree:
 rebase final. O modo normal não cria spans por token. A fila limitada e os
 contadores agregados adicionam apenas o estado necessário para contrapressão e
 histogramas; o custo detalhado de profiling fica atrás de
-`POM_TELEMETRY_PROFILE=1`, com limite de amostras.
+`POM_PROFILE_SYNC=1`, com limite de amostras.
 
 A principal limitação é a ausência de relógio sincronizado entre peers:
 timestamps monotônicos de A e B não são subtraídos entre si. A telemetria mede
@@ -501,3 +501,148 @@ throughput, e anexar os valores ao final deste relatório. Se o canal normal
 continuar com `remote_stream_wait` alto apesar de a fila permanecer abaixo de
 64, o próximo diagnóstico deve ser o ponto de entrega do gateway ou o compute
 do peer, não uma nova subtração de `outside-node`.
+
+## 17. Fase 3: prova dos 5 s, identidade de sessão e endereços de dial
+
+### 17.1 O que o trace comprovou
+
+O trace `trace-2sessoes-2026-09-09.md` é uma execução de duas pernas
+`0bda9121 -> 02eb8c40`, ainda com o resultado ruim: 13,5 tok/s na geração,
+TTFT de 5,85 s, E2E de 20,3 s e 9,6 tok/s E2E. A evidência decisiva é o
+prefill do segundo peer, com `queue 5002.31 ms`, enquanto o primeiro peer tem
+fila próxima de zero. Isto não é uma estimativa: `PrefillJob.queued_at` começa
+antes do submit e `NodeTimings.queue_us` inclui a espera até a seleção pelo
+scheduler.
+
+O código confirma a origem. `run_scheduler` em
+`crates/node/src/inference/infer_server/core.rs` calcula `new_session_slots`
+somente com sequências livres, não conta sessões `retained` como capacidade e,
+para um prefill novo, chama `evict_retained()` apenas depois de
+`RETAINED_RECLAIM_GRACE = Duration::from_secs(5)`. O mesmo laço usa
+`tokio::time::sleep(RETAINED_RECLAIM_GRACE)` para reavaliar a fila. Portanto os
+5002 ms observados são exatamente o ramo de carência de reclaim, e não compute
+do modelo, handshake ICMP ou uma diferença de relógios.
+
+Há uma nuance importante para não transformar o diagnóstico em uma falsa
+correção: uma sessão lógica pode ter o mesmo `session_id` em A e B, mas a
+primeira chegada em B ainda não tem uma entrada `Session` local. Portanto
+`is_existing(sid) == false` no primeiro prefill frio de B é esperado pelo
+modelo local atual. A solução aplicada marca frames internos com
+`pipeline_session=true` e faz reclaim imediato somente nesse caminho; a
+carência de cinco segundos continua reservada para um pedido avulso de outra
+sessão. Assim preserva a proteção contra despejar KV quente para uma chamada
+curta, sem alegar que uma entrada local inexistente já existe.
+
+### 17.2 Rastro de `session_id` e eliminação de identidades sintéticas
+
+A origem única continua em `backend/gateway/generation.rs`, onde
+`PrefixCache::acquire` recebe um UUID novo apenas no miss. O mesmo valor é
+passado a `prefill::run_with_options`, `prefill::step_stream` e às
+continuações. Os construtores de metadata em `inference/prefill/{pipeline,step}.rs`
+e os forwards em `infer_server/{prefill,step}.rs` agora carregam tanto
+`session_id` quanto `pipeline_session=true`. `/v1/session/rewind`,
+`/v1/session/rollback`, `/v1/session/release` e `/v1/session/slot` continuam
+recebendo o mesmo ID no JSON e no header
+`x-pom-inference-session`.
+
+Foi encontrado e corrigido um ponto de perda no wire: ao decodificar um batch
+de um item, metadata antiga podia permanecer e esconder a identidade do
+envelope. `llama-engine/src/wire.rs` agora sobrescreve explicitamente
+`meta.session_id` com `BatchItem.session_id`; o teste
+`decoded_session_identity_comes_from_the_batch_envelope` reproduz o caso
+divergente e passa. `handle_prefill`, `handle_step`, o batch coordinator e o
+retorno persistente não criam mais `__session__`: frame sem ID é rejeitado e
+fica visível como erro de protocolo.
+
+O resultado é uma propagação comprovada estaticamente de uma identidade por
+frame, não uma prova de que B já tem uma sessão local antes do primeiro
+prefill. O teste do scheduler
+`prefill_de_pipeline_nao_entra_na_carencia_de_pedido_avulso` confirma o
+comportamento novo de admissão imediata para o caso distribuído. Ainda falta
+confirmar no cluster que o próximo trace não mostra a fila de 5 s e que o
+`session_id` visto em A, B e no retorno é o mesmo.
+
+### 17.3 O que foi comprovado sobre `outside-node` e `unaccounted`
+
+Hoje esses campos não são `E2E - soma(spans)`. O caminho em
+`inference/prefill/support.rs::refresh_outside_node_accounting` calcula
+`outside_node_accounted_ms` como `critical_path_ms(&spans, "gateway")` e
+`outside_node_unaccounted_ms` como `outside_node_total_ms.saturating_sub(accounted)`.
+Porém `outside_node_total_ms` só é alimentado quando existe um residual
+explicitamente medido; `backend/gateway/budget.rs` não o fabrica a partir de
+E2E e compute acumulado. Logo, no trace atual, “total fora do nó: não medido”
+é uma ausência honesta, enquanto `accumulated_compute_ms` e
+`accumulated_transport_ms` são somas diagnósticas que podem se sobrepor e não
+formam uma decomposição exclusiva do wall-clock.
+
+### 17.4 Novo corte do `remote-stream`
+
+O trace anterior mostrava `remote_stream_wait` total de 14311 ms, p50 65 ms,
+p95 69 ms, frame p95 70 ms e máximo 1400 ms, com compute remoto de apenas
+784 ms. A espera antiga misturava o tempo em que o produtor ainda não tinha
+gerado o token com o tempo de um token pronto parado no canal. A nova
+instrumentação carrega um timestamp monotônico interno não serializado em
+cada `RemoteStreamToken` e publica, por lote, estes contadores e quantis:
+
+- `remote_stream_producer_wait_*`: do início do ciclo até o produtor montar o
+  token;
+- `remote_stream_queue_wait_*`: do token pronto até o emitter recebê-lo,
+  incluindo eventual backpressure do canal limitado de 64;
+- `remote_stream_wait_*`: o intervalo total entre entregas, mantido para
+  preservar comparabilidade e revelar sobreposição.
+
+O teste `emitter_separa_tempo_do_produtor_e_fila_de_entrega` força um token já
+pronto e demonstra que ele entra na segunda parcela. A agregação foi coberta
+também por `remote_stream_aggregation_is_order_independent_and_deduplicates_frames`.
+Isso permite separar, no próximo trace, um produtor lento de uma entrega
+bloqueada sem zerar artificialmente o `remote-stream wait`.
+
+### 17.5 Endereços não anunciados e churn de libp2p
+
+Foi confirmado no código que `advertise_addr` não substituía uma lista de
+external addresses do `Swarm`: não há chamada a `Swarm::add_external_address`
+no repositório, e o Identify continua reportando os listen addresses locais
+por contrato da libp2p. Antes da mudança, `announce_addresses` colocava o pin
+na frente e acrescentava os endereços locais; o recebimento de Identify
+copiava `info.listen_addrs` para Kademlia; mDNS e o fallback de túnel também
+podiam alimentar o livro de endereços. Isso explica a exposição de
+`192.168.100.x`, `172.17.0.1` e do Tailscale antigo nos logs de “expired peer on
+address”.
+
+Agora, com um pin como `100.122.132.97:42777`:
+
+- o `Announce.addr_candidates` contém somente o pin, e as respostas próprias
+  ao gateway também retornam somente ele;
+- o Announce recebido não acrescenta a origem UDP quando já há lista explícita;
+- o pipeline, o network-chat e o fallback de `ensure_tunnel_peer_address`
+  usam um único endpoint canônico, e o warm-up gossipsub registra somente a
+  multiaddr correspondente;
+- listen addresses recebidos via Identify não entram em Kademlia; entradas
+  antigas do mesmo evento são removidas, e mDNS é ignorado quando há pin.
+
+A política preserva múltiplos candidatos apenas para o caminho UDP de controle
+quando não há pin e para compatibilidade com anúncios antigos. Não há mais
+fan-out de libp2p a partir de interfaces locais quando o endpoint foi fixado.
+Os testes `a_pinned_address_replaces_local_announce_candidates`,
+`libp2p_dial_uses_addr_canonico_e_ignora_candidatos_legados` e
+`tunnel_addresses_preserve_only_the_explicit_advertised_set` passam.
+
+### 17.6 Estado da rodada e próximos números
+
+Validações locais desta rodada: `cargo test -p node --no-run`, a suíte Node
+com 1270 testes e 5 ignorados em modo serial, testes da agregação remota, do
+split produtor/fila, do wire da identidade, da admissão do scheduler e dos
+endereços canônicos. A suíte frontend passou com 541 testes e o build
+TypeScript/Vite passou. A execução paralela da suíte Node teve uma falha
+flutuante isolada no laboratório de prefill, que passou isoladamente e na
+execução serial. Não há novo número E2E pós-correção neste worktree: o último
+valor medido pelo captain continua sendo 13,5 tok/s de geração, 9,6 tok/s E2E
+e TTFT 5,85 s.
+
+A próxima rodada deve ser implantada nas duas máquinas, com a Salem na mesma
+versão e a KSIA anunciando `100.122.132.97:42777`. O critério objetivo é:
+fila de prefill do segundo peer sem os 5 s, nenhum dial para LAN/bridge/IPv6
+antigo, retorno normal pelo canal persistente, e comparação antes/depois de
+TTFT, E2E tok/s, p50/p95/p99 por token, máximo de frame, split produtor/fila
+e contagem de fallback HTTPS. Até essa execução, qualquer ganho de throughput
+seria especulação.

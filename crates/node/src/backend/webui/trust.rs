@@ -324,10 +324,7 @@ mod tests {
         request
             .extensions_mut()
             .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
-        let response = app(state)
-            .oneshot(request)
-            .await
-            .unwrap();
+        let response = app(state).oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_of(response).await;

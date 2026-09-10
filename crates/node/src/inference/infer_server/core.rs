@@ -6,6 +6,36 @@ pub(super) const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 /// before this limit and the handler applies it before decoding the body.
 pub(super) const INFERENCE_FRAME_BODY_LIMIT: usize = wire::MAX_FRAME_PAYLOAD_BYTES;
 pub(super) const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
+pub(super) const SCHEDULER_WAIT_REASON_QUEUE: &str = "scheduler-queue";
+pub(super) const SCHEDULER_WAIT_REASON_RETAINED_SESSION: &str = "retained-session-reclaim-grace";
+pub(super) const SCHEDULER_WAIT_REASON_PIPELINE_RETAINED_SESSION: &str =
+    "pipeline-retained-session-reclaim";
+
+pub(super) fn scheduler_wait_reason(reclaimed_retained_session: bool) -> &'static str {
+    if reclaimed_retained_session {
+        SCHEDULER_WAIT_REASON_RETAINED_SESSION
+    } else {
+        SCHEDULER_WAIT_REASON_QUEUE
+    }
+}
+
+pub(super) fn pipeline_scheduler_wait_reason() -> &'static str {
+    SCHEDULER_WAIT_REASON_PIPELINE_RETAINED_SESSION
+}
+
+/// Every inference frame belongs to the logical session allocated by the
+/// gateway. A synthetic fallback would make a downstream hop look like a new
+/// request and can route it into retained-session admission. Rejecting a
+/// missing identity at the protocol boundary makes that propagation failure
+/// visible instead of creating an unrelated local session.
+pub(super) fn required_session_id(meta: &Value) -> Result<String> {
+    meta.get("session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("quadro de inferência sem session_id"))
+}
 
 pub(crate) const SPECULATION_REASON_TAIL_WITHOUT_NEXTN: &str = "tail_without_nextn";
 pub(crate) const SPECULATION_REASON_MODEL_WITHOUT_MTP: &str = "model_without_mtp";
@@ -104,9 +134,24 @@ impl MoeTimings {
 
 #[derive(Default)]
 pub(super) struct NodeTimings {
+    /// Identidade lógica recebida no frame. O peer nunca cria uma identidade
+    /// nova para um item que já tem session_id no envelope.
+    pub(super) session_id: Option<String>,
     pub(super) frame_decode_us: u64,
     pub(super) input_prepare_us: u64,
     pub(super) queue_us: u64,
+    /// Parte da fila medida desde o submit até a seleção pelo scheduler.
+    /// Quando `scheduler_wait_reason` é `retained-session-reclaim-grace`, a
+    /// fila ficou parada porque só havia sessões retidas e o scheduler
+    /// aguardou a carência de 5 s antes de reclamá-las.
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    /// Estado observado pelo scheduler no momento da admissão.
+    pub(super) scheduler_session_existing: bool,
+    /// The frame carried the gateway's one logical pipeline-session marker.
+    /// This is distinct from `scheduler_session_existing`: the first prefill
+    /// necessarily creates a local KV session on a downstream peer.
+    pub(super) pipeline_session: bool,
     /// Espera pelo mutex do motor, antes de qualquer trabalho.
     ///
     /// O `llama_context` não é seguro para uso concorrente, então todo decode
@@ -325,6 +370,15 @@ impl NodeTimings {
                 .as_ref()
                 .map(|tp| serde_json::to_value(tp).unwrap_or(Value::Null)),
         });
+        // Keep these identity/admission fields outside the large json! literal
+        // so adding diagnostic fields does not hit serde_json's macro
+        // recursion limit.
+        value["session_id"] = serde_json::to_value(&self.session_id).unwrap_or(Value::Null);
+        value["scheduler_wait_ms"] = Value::from(ms(self.scheduler_wait_us));
+        value["scheduler_wait_reason"] =
+            serde_json::to_value(self.scheduler_wait_reason).unwrap_or(Value::Null);
+        value["scheduler_session_existing"] = Value::from(self.scheduler_session_existing);
+        value["pipeline_session"] = Value::from(self.pipeline_session);
         if let Some(spans) = &self.profiling_spans {
             value["profiling_spans"] = serde_json::to_value(spans).unwrap_or_else(|_| json!([]));
         }
@@ -394,6 +448,10 @@ pub(super) struct PrefillJob {
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
     pub(super) queued_at: Instant,
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    pub(super) scheduler_session_existing: bool,
+    pub(super) pipeline_session: bool,
 }
 
 pub(super) struct StepJob {
@@ -411,6 +469,10 @@ pub(super) struct StepJob {
     pub(super) batch_tokens: Option<Vec<i32>>,
     pub(super) mtp_k: Option<u32>,
     pub(super) queued_at: Instant,
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    pub(super) scheduler_session_existing: bool,
+    pub(super) pipeline_session: bool,
     pub(super) profiling: Option<crate::prefill::TelemetryContext>,
 }
 
@@ -428,10 +490,32 @@ pub(super) enum InferenceCommand {
 }
 
 impl InferenceCommand {
+    fn record_scheduler_wait(
+        &mut self,
+        queued_at: Instant,
+        reason: &'static str,
+        session_existing: bool,
+    ) {
+        let wait_us = queued_at.elapsed().as_micros() as u64;
+        match self {
+            Self::Prefill { job, .. } => {
+                job.scheduler_wait_us = wait_us;
+                job.scheduler_wait_reason = Some(reason);
+                job.scheduler_session_existing = session_existing;
+            }
+            Self::Step { job, .. } => {
+                job.scheduler_wait_us = wait_us;
+                job.scheduler_wait_reason = Some(reason);
+                job.scheduler_session_existing = session_existing;
+            }
+        }
+    }
+
     pub(super) fn into_queue_item(self) -> crate::scheduler::QueueItem<Self> {
-        let (session_id, class, tokens, queued_at) = match &self {
+        let (session_id, pipeline_session, class, tokens, queued_at) = match &self {
             Self::Prefill { job, .. } => (
                 job.sid_key.clone(),
+                job.pipeline_session,
                 if job.tensor.is_some() {
                     crate::scheduler::WorkClass::PrefillHidden
                 } else {
@@ -446,6 +530,7 @@ impl InferenceCommand {
             ),
             Self::Step { job, .. } => (
                 job.sid_key.clone(),
+                job.pipeline_session,
                 if job.tensor.is_some() {
                     crate::scheduler::WorkClass::DecodeHidden
                 } else {
@@ -461,6 +546,7 @@ impl InferenceCommand {
         };
         crate::scheduler::QueueItem {
             session_id,
+            pipeline_session,
             class,
             tokens,
             enqueued_at: queued_at,
@@ -776,6 +862,7 @@ pub(super) async fn run_scheduler(
     stats: Arc<SchedulerStats>,
 ) {
     let mut queue = crate::scheduler::SchedulerQueue::new(cfg.clone());
+    let mut admission_wait_reason = None;
     let slot_freed = {
         let guard = state.lock().unwrap_or_else(|e| e.into_inner());
         guard.slot_freed.clone()
@@ -832,6 +919,22 @@ pub(super) async fn run_scheduler(
         };
         let is_existing = |sid: &str| present.contains(sid);
 
+        // A downstream peer has no local Session entry until its first prefill
+        // runs, even though the frame carries the same logical session_id as
+        // the gateway and the preceding hop. Pipeline admission is therefore
+        // explicit: reclaim a retained KV slot immediately for this path, but
+        // keep the five-second protection for unrelated standalone requests.
+        if new_slots == 0 && retained > 0 && queue.has_pipeline_new_session_wait(is_existing) {
+            let reclaimed = {
+                let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+                guard.evict_retained()
+            };
+            if reclaimed {
+                admission_wait_reason = Some(pipeline_scheduler_wait_reason());
+                continue;
+            }
+        }
+
         // A classe da frente primeiro (FIFO por chegada); depois as demais, para
         // que a decodificação de uma sessão viva não fique presa atrás de um
         // prefill de sessão nova que está esperando um slot.
@@ -866,6 +969,7 @@ pub(super) async fn run_scheduler(
                     guard.evict_retained()
                 };
                 if reclaimed {
+                    admission_wait_reason = Some(scheduler_wait_reason(true));
                     continue;
                 }
             }
@@ -885,6 +989,16 @@ pub(super) async fn run_scheduler(
                 _ = tokio::time::sleep(RETAINED_RECLAIM_GRACE), if waited.is_some() => {}
             }
             continue;
+        }
+        let wait_reason = admission_wait_reason
+            .take()
+            .unwrap_or(scheduler_wait_reason(false));
+        for item in &mut selection.items {
+            item.payload.record_scheduler_wait(
+                item.enqueued_at,
+                wait_reason,
+                present.contains(item.session_id.as_str()),
+            );
         }
         stats.queue_depth.store(queue.len(), Ordering::Relaxed);
         stats
@@ -990,6 +1104,10 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.chunk_tokens,
                 job.mrope_positions,
                 job.queued_at,
+                job.scheduler_wait_us,
+                job.scheduler_wait_reason,
+                job.scheduler_session_existing,
+                job.pipeline_session,
             );
             let _ = reply.send(result);
         }
@@ -1008,6 +1126,10 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.batch_tokens,
                 job.mtp_k,
                 job.queued_at,
+                job.scheduler_wait_us,
+                job.scheduler_wait_reason,
+                job.scheduler_session_existing,
+                job.pipeline_session,
                 job.profiling,
             );
             let _ = reply.send(result);
@@ -1062,6 +1184,24 @@ mod tests {
     fn retained_sessions_do_not_create_capacity_for_a_new_prefill() {
         assert_eq!(new_session_slots(0, 1), 0);
         assert_eq!(new_session_slots(2, 1), 2);
+    }
+
+    #[test]
+    fn retained_session_grace_has_a_distinct_scheduler_wait_reason() {
+        assert_eq!(
+            scheduler_wait_reason(true),
+            "retained-session-reclaim-grace"
+        );
+    }
+
+    #[test]
+    fn session_id_deve_ser_obrigatorio_e_nao_vazio() {
+        assert_eq!(
+            required_session_id(&json!({"session_id": " sessao-1 "})).unwrap(),
+            "sessao-1"
+        );
+        assert!(required_session_id(&json!({})).is_err());
+        assert!(required_session_id(&json!({"session_id": "  "})).is_err());
     }
 
     #[test]

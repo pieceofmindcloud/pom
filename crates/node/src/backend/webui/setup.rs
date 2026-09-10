@@ -422,11 +422,7 @@ pub async fn save_setup(
         String::new()
     } else {
         let identity = crate::identity::Identity::load_or_create(&crate::identity::key_path());
-        crate::config::geo_network_label(
-            &network.country_code,
-            &network.city,
-            &identity.node_id.0,
-        )
+        crate::config::geo_network_label(&network.country_code, &network.city, &identity.node_id.0)
     };
     let visibility = network.visibility;
     let requires_connection_key = visibility != crate::config::NetworkVisibility::Public;
@@ -792,7 +788,10 @@ mod tests {
             connection_key_after_setup("old-local-key", " "),
             "old-local-key"
         );
-        assert_eq!(connection_key_after_setup("old-local-key", "new-key"), "new-key");
+        assert_eq!(
+            connection_key_after_setup("old-local-key", "new-key"),
+            "new-key"
+        );
         let generated = connection_key_after_setup("", "");
         assert!(!generated.is_empty());
     }

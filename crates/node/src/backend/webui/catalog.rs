@@ -1164,17 +1164,12 @@ async fn forward_network_chat_to_primary(
     req: &SaveNetworkChatRequest,
 ) -> Response {
     let primary = state.admin_trust.current_primary();
-    let Some(peer) = state
-        .all_peers()
-        .await
-        .into_iter()
-        .find(|peer| {
-            peer.node_id == primary.node_id
-                && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
-                && peer.authority_pubkey == primary.pubkey
-                && peer.gateway_port.is_some()
-        })
-    else {
+    let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
+        peer.node_id == primary.node_id
+            && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
+            && peer.authority_pubkey == primary.pubkey
+            && peer.gateway_port.is_some()
+    }) else {
         return bad_request("o nó principal não está disponível para decidir o Chat da rede");
     };
     let Some(base) = peer.gateway_url() else {
@@ -1236,11 +1231,17 @@ pub(super) async fn save_network_chat(
             ));
         }
     }
-    state.network.set_network_chat_enabled(req.network_chat_enabled);
+    state
+        .network
+        .set_network_chat_enabled(req.network_chat_enabled);
     state.network_chat.set_enabled(req.network_chat_enabled);
     info!(
         "Chat da rede {} pela interface",
-        if req.network_chat_enabled { "ligado" } else { "desligado" }
+        if req.network_chat_enabled {
+            "ligado"
+        } else {
+            "desligado"
+        }
     );
     Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
 }

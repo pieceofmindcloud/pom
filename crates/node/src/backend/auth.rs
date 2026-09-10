@@ -130,7 +130,7 @@ pub const INFERENCE_SESSION_HEADER: &str = "x-pom-inference-session";
 pub fn internal_node_token(config: &Config) -> Option<String> {
     (config.network.visibility != crate::config::NetworkVisibility::Public
         && !config.connection_key.is_empty())
-        .then(|| config.connection_key.clone())
+    .then(|| config.connection_key.clone())
 }
 
 /// Confere a credencial compartilhada de um peer na porta de inferência.

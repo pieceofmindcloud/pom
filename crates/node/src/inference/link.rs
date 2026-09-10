@@ -108,6 +108,10 @@ pub struct LinkResponse {
     pub body: Vec<u8>,
     pub round_trip_ms: u64,
     pub bytes_sent: u64,
+    /// Whether the concrete route that opened/reused this channel is TLS.
+    /// The caller must use this value instead of the planned primary URL:
+    /// candidates can change which route actually carried the frame.
+    pub tls: bool,
     pub profiling_spans: Vec<crate::prefill::TelemetrySpan>,
 }
 
@@ -705,6 +709,7 @@ pub async fn send_batch_with_session_profile(
         .await
         {
             Ok(mut response) => {
+                set_effective_link_transport(&mut response, &base);
                 if opened {
                     if let Some(context) = profiling.as_ref() {
                         response.profiling_spans.push(context.span(
@@ -712,7 +717,7 @@ pub async fn send_batch_with_session_profile(
                             setup_started,
                             Instant::now(),
                             None,
-                            Some("https-link".into()),
+                            Some(effective_link_transport(&base).into()),
                         ));
                     }
                 }
@@ -780,6 +785,8 @@ pub async fn send_body_with_session(
         .await
         {
             Ok(response) => {
+                let mut response = response;
+                set_effective_link_transport(&mut response, &base);
                 clients.remember_route_success(&route_key, &base);
                 return Ok(response);
             }
@@ -792,6 +799,22 @@ pub async fn send_body_with_session(
     Err(anyhow!(
         "canal de retorno com {node_id} não abriu por nenhuma rota: {last_error}"
     ))
+}
+
+fn effective_link_transport(base_url: &str) -> &'static str {
+    if base_url.starts_with("https://") {
+        "https-link"
+    } else {
+        "http-link"
+    }
+}
+
+fn set_effective_link_transport(response: &mut LinkResponse, base_url: &str) {
+    response.tls = base_url.starts_with("https://");
+    let transport = effective_link_transport(base_url).to_owned();
+    for span in &mut response.profiling_spans {
+        span.transport = Some(transport.clone());
+    }
 }
 
 /// Enfileira um frame de callback no canal persistente e não espera o ACK HTTP
@@ -953,6 +976,7 @@ async fn send_frame_on_channel(
         body: envelope.body,
         round_trip_ms: started.elapsed().as_millis() as u64,
         bytes_sent,
+        tls: false,
         profiling_spans,
     })
 }

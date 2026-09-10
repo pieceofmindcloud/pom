@@ -703,6 +703,40 @@ fn encode_frame_body(
     }
 }
 
+fn can_use_single_link(path: &str) -> bool {
+    matches!(path, "/v1/prefill" | "/v1/step")
+}
+
+fn encode_link_single(
+    path: &str,
+    batch_id: &str,
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+) -> Result<Vec<u8>> {
+    let session_id = meta
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("quadro persistente sem session_id"))?;
+    let item_id = meta
+        .get("item_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(batch_id);
+    wire::encode_batch_items(
+        path,
+        batch_id,
+        &[wire::BatchPayloadItem {
+            item_id: item_id.to_owned(),
+            session_id: session_id.to_owned(),
+            meta: meta.clone(),
+            tensor: tensor.map(|(values, shape)| (values.to_vec(), shape)),
+            dtype,
+        }],
+    )
+}
+
 fn hidden_state_bytes(tensor: Option<(&[f32], TensorShape)>, dtype: WireDtype) -> Result<u64> {
     Ok(wire::tensor_payload_len(tensor, dtype)? as u64)
 }
@@ -1265,7 +1299,7 @@ async fn send_batch_body(
                     response_body_ms: 0,
                     client_decode_ms: 0,
                     connection_state: crate::peer_client::ConnectionState::Unknown,
-                    tls: step.inference_url.starts_with("https://"),
+                    tls: response.tls,
                     // Preserve the internal distinction for the link lab;
                     // `as_hop_timing_entry` exposes http/https to operators.
                     transport: InferenceTransport::HttpsLink,
@@ -1849,6 +1883,80 @@ pub async fn send_frame_or_tunnel(
     let mut transport_fallback = false;
     let mut transport_fallback_reason = None;
 
+    // Direct prefill carries `reply_to`, so it deliberately cannot enter the
+    // process-local BatchCoordinator. It must still use the same persistent
+    // channel as ordinary batch frames; otherwise this path silently falls
+    // back to the libp2p tunnel while decode uses HTTP/HTTPS/QUIC.
+    if step.supports(crate::pipeline::CAP_LINK_STREAM)
+        && can_use_single_link(path)
+        && !clients.quic_enabled()
+    {
+        let batch_id = uuid::Uuid::new_v4().to_string();
+        let encode_started = Instant::now();
+        let body = encode_link_single(path, &batch_id, meta, tensor.clone(), dtype)?;
+        let client_encode_ms = encode_started.elapsed().as_millis() as u64;
+        let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
+        let profiling = profile_context_for_path(meta, peer_label, path, encode_started);
+        match crate::link::send_batch_with_session_profile(
+            clients,
+            &step.node_id,
+            &step.inference_url,
+            &step.inference_candidates,
+            &batch_id,
+            Bytes::from(body),
+            peer_label,
+            session_id,
+            profiling,
+        )
+        .await
+        {
+            Ok(response) => {
+                let client_decode_started = Instant::now();
+                let (meta, tensor) = wire::decode_batch_single(&response.body)?;
+                let hidden_state_bytes_received = received_hidden_state_bytes(
+                    &meta,
+                    tensor
+                        .as_ref()
+                        .map(|(values, shape)| (values.as_slice(), shape.clone())),
+                    dtype,
+                    peer_label,
+                )?;
+                let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+                let tls_handshake_ms = meta
+                    .get("tls_handshake_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                return Ok(SentFrame {
+                    meta,
+                    tensor,
+                    round_trip_ms: response.round_trip_ms,
+                    bytes_sent: response.bytes_sent,
+                    bytes_received: response.body.len() as u64,
+                    hidden_state_bytes_sent,
+                    hidden_state_bytes_received,
+                    hidden_state_dtype: dtype,
+                    client_encode_ms,
+                    response_headers_ms: 0,
+                    response_body_ms: 0,
+                    client_decode_ms,
+                    connection_state: crate::peer_client::ConnectionState::Unknown,
+                    tls: response.tls,
+                    tls_handshake_ms,
+                    transport: InferenceTransport::HttpsLink,
+                    transport_fallback: false,
+                    transport_fallback_reason: None,
+                    profiling_spans: response.profiling_spans,
+                });
+            }
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) => {
+                transport_fallback = true;
+                transport_fallback_reason = Some(format!("https-link: {error}"));
+                warn!("{peer_label}: canal persistente falhou ({error}), tentando transporte de reserva");
+            }
+        }
+    }
+
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.internal_node_token().await;
         match send_frame_via_tunnel_with_auth(
@@ -1867,7 +1975,13 @@ pub async fn send_frame_or_tunnel(
         )
         .await
         {
-            Ok(sent) => return Ok(sent),
+            Ok(mut sent) => {
+                if let Some(reason) = transport_fallback_reason.take() {
+                    sent.transport_fallback = true;
+                    sent.transport_fallback_reason = Some(reason);
+                }
+                return Ok(sent);
+            }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
                 transport_fallback = true;

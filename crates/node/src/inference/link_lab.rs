@@ -200,7 +200,7 @@ async fn handle_link(State(hop): State<Hop>, body: axum::body::Body) -> Response
     crate::link::serve(body, move |path, bytes| {
         let hop = hop.clone();
         async move {
-            if path != "/v1/step" {
+            if !matches!(path.as_str(), "/v1/step" | "/v1/prefill") {
                 return Err(anyhow::anyhow!("rota inesperada no canal: {path}"));
             }
             Ok(fake_step(State(hop), bytes).await)
@@ -462,6 +462,44 @@ async fn handoff_mtp_usa_a_ligacao_persistente() {
     .expect("handoff MTP");
 
     assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
+}
+
+/// O prefill direto leva `reply_to`, por isso não pode entrar no
+/// `BatchCoordinator`. Ele ainda precisa usar a mesma ligação persistente do
+/// decode, ou o primeiro handoff continuaria pagando libp2p por chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handoff_prefill_direto_usa_a_ligacao_persistente() {
+    let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
+    let (url, _counter) = spawn_hop(Hop {
+        clients: clients.clone(),
+    })
+    .await;
+    let node_id = format!("prefill-link-{}", uuid::Uuid::new_v4());
+    let step = step_for(&node_id, &url, 0, true);
+    let residual = vec![0.25f32; HIDDEN_DIM];
+    let sent = crate::relay::send_frame_or_tunnel(
+        &clients,
+        &step,
+        None,
+        "/v1/prefill",
+        &json!({
+            "session_id": "prefill-session",
+            "reply_to": {"ticket": "gateway-ticket"},
+            "is_last": true,
+            "is_final_chunk": true,
+        }),
+        Some((&residual, vec![1, HIDDEN_DIM])),
+        WireDtype::F16,
+        WireDtype::F16.frame_encoding(),
+        1,
+        &node_id,
+        |_| {},
+    )
+    .await
+    .expect("handoff de prefill");
+
+    assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
+    assert_eq!(crate::link::channels_opened(&node_id, &url), 1);
 }
 
 /// Um hop que anuncia o canal mas não o serve não pode matar a geração: a

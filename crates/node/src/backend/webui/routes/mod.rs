@@ -152,6 +152,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
+        prefix: "/api/ui/network/geo-reference",
+        method: Some(Method::GET),
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
         prefix: "/api/ui/network-chat",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -347,6 +352,11 @@ const ROUTE_RULES: &[RouteRule] = &[
     },
     RouteRule {
         prefix: "/api/ui/deployments",
+        method: Some(Method::GET),
+        scope: RouteScope::NodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/deployments",
         method: None,
         scope: RouteScope::AdminOnly,
     },
@@ -509,6 +519,15 @@ mod policy_tests {
         assert_eq!(
             scope_of("/api/ui/network/trust-anchor"),
             RouteScope::CommonOrInternal
+        );
+        assert_eq!(
+            scope_of("/api/ui/network/geo-reference"),
+            RouteScope::InferNodeAdmin
+        );
+        assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);
+        assert_eq!(
+            route_scope(&Method::POST, "/api/ui/deployments"),
+            RouteScope::AdminOnly
         );
         assert_eq!(
             scope_of("/api/ui/network/request-node"),

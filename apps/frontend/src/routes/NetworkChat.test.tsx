@@ -15,6 +15,7 @@ vi.mock("../lib/api", () => ({
 }));
 vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: { node_id: "node-local" } }),
+  useCluster: () => ({ data: { peers: [{ node_id: "node-peer", short_id: "node-peer", node: { hostname: "salem" } }] } }),
 }));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ error: vi.fn(), fromError: vi.fn() }),
@@ -65,7 +66,8 @@ describe("NetworkChat", () => {
     mount();
 
     expect(await screen.findByText("Olá da rede")).toBeTruthy();
-    expect(screen.getByText("salem")).toBeTruthy();
+    expect(screen.getAllByText("salem").length).toBeGreaterThan(1);
+    expect(screen.queryByText("node-peer [09:00")).toBeNull();
 
     const composer = screen.getByPlaceholderText("Escreva para a rede…");
     fireEvent.change(composer, { target: { value: "Mensagem nova" } });

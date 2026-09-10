@@ -76,6 +76,7 @@ vi.mock("../lib/queries", () => ({
   useNode: () => queryMocks.node,
   useCluster: () => queryMocks.cluster,
   useNetworkInfo: () => queryMocks.networkInfo,
+  useGeoReference: () => ({ data: { countries: [] } }),
   useAdminNodes: (enabled = true) => (enabled ? queryMocks.nodes : { data: undefined }),
   useInvalidate: () => vi.fn(),
 }));
@@ -179,7 +180,7 @@ describe("NetworkSettings", () => {
     expect(screen.queryByRole("button", { name: "Salvar detalhes da rede" })).toBeNull();
   });
 
-  it("oferece edição e compartilhamento somente ao administrador", async () => {
+  it("oferece edição ao administrador e mantém o compartilhamento na raiz de confiança", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -190,8 +191,7 @@ describe("NetworkSettings", () => {
     );
 
     expect(screen.getByRole("button", { name: "Salvar detalhes da rede" })).toBeTruthy();
-    await waitFor(() => expect(screen.getByText("Documento de confiança")).toBeTruthy());
-    expect(screen.getByText("Chave de conexão")).toBeTruthy();
+    expect(screen.queryByText("Documento de confiança")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Salvar detalhes da rede" }));
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });

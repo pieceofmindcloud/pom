@@ -3,6 +3,8 @@ import { motion } from "framer-motion";
 import {
   LayoutGrid,
   MemoryStick,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   Route as RouteIcon,
   Zap,
@@ -10,6 +12,8 @@ import {
 import { useMemo, useState } from "react";
 import { LayerRibbon, PipelineRail } from "../components/PipelineRail";
 import { PeerDetailCard } from "../components/PeerDetailCard";
+import { DeploymentInspector } from "../components/DeploymentInspector";
+import { DeploymentLogDock } from "../components/DeploymentLogDock";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
@@ -132,6 +136,7 @@ export function Dashboard() {
   const [view, setView] = useState<View>("minima");
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [showProperties, setShowProperties] = useState(true);
   const cluster = useCluster();
   const node = useNode();
   const deployments = useDeployments();
@@ -152,7 +157,8 @@ export function Dashboard() {
   const group = c?.active_model ?? "";
   const activeDeployment = deployments.data?.deployments.find(
     (row) => row.serving && row.deployment.model.label === group,
-  )?.deployment;
+  )?.deployment ?? deployments.data?.deployments.find((row) => row.deployment.model.label === group)?.deployment;
+  const activeVersion = activeDeployment?.versions.find((version) => version.version === activeDeployment.active_version);
   const activeDeployId =
     activeDeployment?.deploy_id
     ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
@@ -274,13 +280,16 @@ export function Dashboard() {
           </>
         )}
         {detailed && <ViewSwitch view={view} onChange={setView} />}
+        {activeVersion && <Button size="sm" variant="outline" aria-pressed={showProperties} onClick={() => setShowProperties((value) => !value)} icon={showProperties ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}>{t(showProperties ? "dashboard.hideProperties" : "dashboard.versionProperties")}</Button>}
       </div>
     </div>
 
-    {!detailed || view === "minima" ? (
-      <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} /></div>
-    ) : (
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {!detailed || view === "minima" ? (
+          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} /></div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (
           <Panel><Empty icon={<MemoryStick className="h-5 w-5" />} title={t("dashboard.noMachines")}>{t("dashboard.noMachinesDetail")}</Empty></Panel>
         ) : (
@@ -315,12 +324,17 @@ export function Dashboard() {
           </div>
         )}
         <Footnote icon={<Zap className="h-3.5 w-3.5" />} className="mt-5">{t("dashboard.sampled", { time: since(node.data?.system.sampled_at) })}</Footnote>
-      </div>
-    )}
+          </div>
+        )}
 
-    {/* Keep the former execution-order rail available for a later surface; the
-        graph above is now the primary operational view. */}
-    <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
+        {/* Keep the former execution-order rail available for a later surface; the
+            graph above is now the primary operational view. */}
+        <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
+        {isAdmin && <DeploymentLogDock />}
+      </div>
+
+      {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div><DeploymentInspector value={activeVersion.params} readOnly showInferenceMode showHiddenStateDtype={activeVersion.params.hidden_state_dtype != null} /></aside>}
+    </div>
 
     {isAdmin && (
       <AddNodeDialog

@@ -4,6 +4,7 @@
  */
 import { Ban, Check, Copy, Lock, MessagesSquare, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
   Badge,
@@ -456,7 +457,7 @@ export function ThermalPanel({
   );
 }
 
-export function Preferences() {
+export function Preferences({ administrative = false }: { administrative?: boolean }) {
   const { t } = useI18n();
   const node = useNode();
   const toast = useToast();
@@ -547,41 +548,23 @@ export function Preferences() {
   return (
     <>
       <PageHeader
-        title={t("preferences.title")}
-        subtitle={t("preferences.subtitle")}
+        title={t(administrative ? "preferences.adminTitle" : "preferences.title")}
+        subtitle={t(administrative ? "preferences.adminSubtitle" : "preferences.subtitle")}
       />
       <div className="space-y-5">
-        <AdminAccessPanel />
-        <TlsPanel
-          tlsRequired={node.data?.tls_required ?? false}
-          authority={node.data?.tls_authority ?? false}
-          busy={tlsSaving}
-          onToggle={(next) => void toggleTls(next)}
-        />
-        <QuicPanel
-          enabled={node.data?.quic_enabled ?? false}
-          authority={node.data?.quic_authority ?? false}
-          busy={quicSaving}
-          onToggle={(next) => void toggleQuic(next)}
-        />
-        <ClusterLogsPanel
-          enabled={node.data?.cluster_logs_enabled ?? false}
-          authority={node.data?.cluster_logs_authority ?? false}
-          busy={logsSaving}
-          onToggle={(next) => void toggleLogs(next)}
-        />
-        <NetworkChatPanel
-          enabled={node.data?.network_chat_enabled ?? false}
-          authority={node.data?.network_chat_authority ?? false}
-          busy={networkChatSaving}
-          onToggle={(next) => void toggleNetworkChat(next)}
-        />
-        <ThermalPanel
-          policy={node.data?.thermal}
-          busy={thermalSaving}
-          onSave={(next) => void saveThermal(next)}
-        />
-        <HuggingFaceSettingsPanel />
+        {administrative ? <>
+          <TlsPanel tlsRequired={node.data?.tls_required ?? false} authority={node.data?.tls_authority ?? false} busy={tlsSaving} onToggle={(next) => void toggleTls(next)} />
+          <QuicPanel enabled={node.data?.quic_enabled ?? false} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />
+          <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />
+          <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
+        </> : <>
+          <AdminAccessPanel />
+          <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />
+          <HuggingFaceSettingsPanel />
+          <Panel>
+            <PanelHeader title={t("preferences.storageTitle")} subtitle={t("preferences.storageSubtitle")} actions={<Link to="/config/armazenamento" className="text-sm text-iris hover:text-fg">{t("preferences.storageOpen")}</Link>} />
+          </Panel>
+        </>}
       </div>
     </>
   );

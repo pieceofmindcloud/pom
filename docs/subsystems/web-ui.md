@@ -134,8 +134,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
   dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens);
-  `/admin-ui/chat` é o alias compacto usado pelo app de barra do macOS e renderiza
-  o mesmo Chat sem o chrome administrativo
+  `/network-chat` é o Chat da rede em página própria, com o mesmo padrão visual
+  do Chat de IA; `/admin-ui/chat` é o alias compacto usado pelo app de barra do
+  macOS e renderiza o mesmo Chat sem o chrome administrativo
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
   `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
   fatiamento embutido
@@ -157,12 +158,15 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
   requisições paginadas por scroll infinito e inspetor JSON
-- `/estatisticas` -> Statistics, tela própria dos agregados da auditoria;
+- `/estatisticas` -> Statistics, tela full-bleed própria dos agregados da
+  auditoria, com um único título;
   `/logs/estatisticas` redireciona para a rota nova
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
-- `/redes-publicas` -> PublicNetworks, catálogo inicial de redes públicas
-  descobertas pela camada pkarr. Agrupa por país/cidade e ordena pela distância
-  aproximada autorizada no navegador; o botão de entrada reaproveita a tela de
+- `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas
+  descobertas pela camada pkarr. A tabela agrupa por país/cidade e ordena pela
+  distância aproximada autorizada no navegador; mostra as métricas calculadas
+  quando o cluster local corresponde à rede e marca como indisponível o que o
+  catálogo público não fornece. O botão de entrada reaproveita a tela de
   confiança sem segredo de rede pública.
 - `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
   sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
@@ -172,10 +176,13 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
   `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
   privadas. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
-- `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
-  `/config/keys/api` -> TokenKeys;
-  `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
-  (`/config/pastas` continua como alias)
+- `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
+  participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
+  `/config/preferencias/admin` -> preferências administrativas;
+  `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
+  `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
+  (`/config/pastas` continua como alias). O wizard de configuração não aparece
+  no menu, embora sua rota de teste continue disponível.
 - `*` -> NotFound
 
 No perfil `infer`, a Sidebar deixa de ser uma lista de telas: `ChatSessionList`
@@ -371,21 +378,19 @@ a âncora costuma ser um `node` ou um `infer`. Por isso `/config/confianca` não
 está em `RESTRICTED` (`lib/access.ts`), aparece no menu de Configurações e é
 promovida ao menu principal do `infer`.
 
-A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
-cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em `aqua` quando a política
-está ligada e `ShieldOff` em `amber` quando não. Ele é só ícone, mas o link para
-`/config/preferencias` conserva o significado em `aria-label` e `title`. O dado sai do
-`useNode()`, que já é polled: nenhuma chamada nova. **Um selo que sumisse quando
-o TLS caísse seria pior que nenhum**: a ausência se lê como "a tela não mostra
-isso", não como "está em texto claro" - por isso os dois estados têm formas e
-cores diferentes.
+O `admin` recebe na Sidebar, junto das bandeiras de idioma, o selo de
+criptografia do cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em
+`aqua` quando a política está ligada e `ShieldOff` em `amber` quando não. Ele
+é só ícone, mas o link para `/config/preferencias/admin` conserva o significado
+em `aria-label` e `title`. Node e infer não renderizam esse selo, conforme a
+regra de apresentação dos perfis. O dado sai do `useNode()`, que já é polled:
+nenhuma chamada nova.
 
-Na tela `TokenKeys`, o perfil `infer` vê apenas as chaves ativas do próprio
-nó, não escolhe outro nó e não oferece revogação manual. Gerar uma nova chave usa
-o endpoint atual e, em seguida, revoga a anterior; a semântica da vista é uma
-chave ativa por nó, com a nova substituindo a anterior. Esse fluxo ainda não é
-uma garantia do servidor nem uma operação atômica: o escopo e a autorização da
-credencial aguardam `rdma-perfis-escopo-backend`.
+Na tela `TokenKeys`, node e infer veem apenas as chaves do próprio nó, não
+escolhem outro nó e mantêm a criação vinculada a essa identidade. O admin pode
+escolher o nó ao criar, vê seus tokens completos e recebe os tokens de outros
+nós mascarados. Os tokens do admin ficam primeiro na tabela. No infer, gerar
+uma nova chave usa o endpoint atual e, em seguida, revoga a anterior.
 
 Sidebar e Topbar vivem em `ErrorBoundary` próprio, então uma tela quebrada não
 derruba o menu. O **cabeçalho** da Sidebar traz só o lockup da marca, numa faixa de borda a
@@ -475,10 +480,13 @@ até cada rank.
 descoberta pkarr existente. O label geo canônico (`com.<país>.<cidade>.<node>`)
 é campo do registro, nunca a chave pkarr. O índice local persiste labels já
 observados e aceita `geo_prefix`/`geo_suffix`, permitindo filtrar candidatos
-antes das sondas HTTP. A página `/redes-publicas` agrupa por país/cidade e
-mostra nome, fingerprint, label e endereço. O documento de confiança não é
-publicado por esta lista; o operador recebe-o do responsável da rede por um
-canal próprio.
+antes das sondas HTTP. A página `/redes-publicas` é full-bleed, como Logs, e
+mostra uma tabela com nome, organização, país/cidade, label, nós, latência,
+VRAM, modelos e endereço. As métricas do cluster local são calculadas de
+`ClusterView` quando a rede corresponde; os demais campos aparecem como
+indisponíveis porque o catálogo público atual não os fornece. O documento de
+confiança não é publicado por esta lista; o operador recebe-o do responsável
+da rede por um canal próprio.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
 local do navegador e não vale como credencial. As rotas administrativas usam a
@@ -594,28 +602,40 @@ Quando a configuração da máquina pediu MTP, o mesmo card mostra se a cabeça
 "MTP indisponível" e o `mtp_unavailable_reason` retornado pelo `/health`; o
 operador não precisa inferir a degradação pela ausência de logs.
 
-## Configurações / Preferências: proteção local
+## Configurações / Rede e Preferências
 
-`/config/preferencias` monta a fronteira de exposição administrativa, o painel
-de TLS entre nós, o `ThermalPanel` e o `HuggingFaceSettingsPanel`. A exposição
-é persistida no `pom.json`: localhost é o padrão instalado, e a rede gera um
-token separado da `connection_key`, mostrado somente depois da autenticação.
-Trocar para localhost limpa o token; regenerá-lo invalida o anterior. A porta
-é validada antes de salvar e uma colisão é informada sem iniciar em outra
-porta. O primeiro painel lê e grava a política térmica em `GET/POST
-/api/ui/thermal`; o último lê e grava a credencial opcional em
-`/api/ui/model-provider/config`. `/config/rede` fica concentrada em membership,
-endereços e nós conhecidos.
+`/config/rede` concentra as Informações da Rede: nome público, organização,
+descrição, regras, canais, visibilidade e localização. Node e infer recebem
+leitura somente, enquanto admin pode editar. País e cidade são selects
+alimentados por `GET /api/ui/network/geo-reference`, que lê as tabelas locais
+`geo_countries` e `geo_cities`; o código do país não é mostrado. A mesma tela
+calcula nós, latência média, VRAM conhecida e modelos do `ClusterView`.
+`/config/rede/participantes` reaproveita o card de nós conhecidos e fica
+disponível para admin e node.
+
+`/config/confianca` reúne esta máquina, compartilhamento da rede e chaves de
+conexão. `/config/preferencias` monta a exposição administrativa, o
+`ThermalPanel`, o `HuggingFaceSettingsPanel` e o link para armazenamento.
+`/config/preferencias/admin` mantém as preferências administrativas de TLS,
+QUIC, logs de processo entre nós e chat da rede. A separação reorganiza as
+mesmas operações e conserva a autorização existente.
+
+A exposição é persistida no `pom.json`: localhost é o padrão instalado, e a
+rede gera um token separado da `connection_key`, mostrado somente depois da
+autenticação. Trocar para localhost limpa o token; regenerá-lo invalida o
+anterior. A porta é validada antes de salvar e uma colisão é informada sem
+iniciar em outra porta. O `ThermalPanel` lê e grava a política em
+`GET/POST /api/ui/thermal`; o painel de Hugging Face usa
+`/api/ui/model-provider/config`.
 
 
 ## Configurações / Preferências: quando usar TLS entre nós
 
 O painel "Criptografia entre nós" (`TlsPanel`, em `routes/Preferences.tsx`)
 mostra o estado do cluster e, **só no nó principal**, o interruptor que o vira.
-Nos demais ele aparece desabilitado, com um rodapé dizendo que a decisão é do
-principal e vale para a rede inteira. O estado continua visível em todo nó de
-propósito: esconder o painel faria o operador de um nó comum não ter onde ver se
-o tráfego da máquina dele está cifrado.
+Ele pertence à rota de preferências administrativas; node e infer não recebem
+o painel nem o ícone de TLS na Sidebar. O estado continua sendo decidido pelo
+principal e vale para a rede inteira.
 
 A autoridade que vale é a do servidor - `POST /api/ui/network/tls` responde 403
 fora do principal (ver `api-http.md`). A tela usa `NodeInfo.tls_authority` só
@@ -625,11 +645,11 @@ Virar não pede reinício e vale nos dois sentidos; o toast diz que os demais n�
 adotam em poucos segundos, que é o ciclo de gossip mais a busca autenticada da
 catraca (ver `rede-p2p.md`, seção 5).
 
-## Configurações / Preferências: transporte QUIC
+## Configurações / Preferências administrativas: transporte QUIC
 
-O painel "Transporte QUIC" (`QuicPanel`) fica ao lado do TLS. O estado é
-visível em todos os perfis, mas o interruptor fica desabilitado fora do
-principal; o servidor também responde 403 se outro nó tentar
+O painel "Transporte QUIC" (`QuicPanel`) fica ao lado do TLS na rota
+administrativa. O interruptor fica desabilitado fora do principal; o servidor
+também responde 403 se outro nó tentar
 `POST /api/ui/network/quic`. A alteração não reinicia o modelo: novos hops
 preferem HTTP/3 sobre QUIC, e uma falha cai para o HTTP/HTTPS da política TLS.
 O card de telemetria mostra `http`, `https` ou `quic` conforme o transporte que
@@ -650,6 +670,14 @@ nós. O estado e a autoridade vêm de `GET /api/ui/node`; a alteração usa
 `POST /api/ui/network/logs` e não exige reinício. O contador de entradas
 descartadas pela fila limitada aparece acima do terminal, para a tela não
 apresentar uma visão incompleta como se fosse o fluxo integral.
+
+No Dashboard, o admin pode abrir `DeploymentLogDock` no rodapé. A barra
+recolhida ocupa uma única linha; aberta, cresce para cima até metade do painel,
+consulta `GET /api/ui/cluster-logs` em tempo real e acompanha o fim enquanto o
+leitor permanece no final. A versão ativa da implantação fica disponível num
+inspetor à direita, somente leitura, usando `DeploymentInspector` e os mesmos
+campos da configuração original. Node também pode ler as versões por
+`GET /api/ui/deployments`, mas continua sem as ações administrativas.
 
 ## Chat
 

@@ -12,35 +12,25 @@ import {
   Copy,
   Eye,
   EyeOff,
-  KeyRound,
-  Plus,
   RefreshCw,
   ShieldAlert,
-  Trash2,
 } from "lucide-react";
 import { useState } from "react";
 import { Confirm } from "../components/Confirm";
 import {
-  Badge,
   Button,
-  Empty,
   ErrorState,
-  Field,
-  Input,
   Mono,
   PageHeader,
   Panel,
   PanelHeader,
-  Select,
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { since } from "../lib/format";
-import { useApiKeys, useCluster, useNode } from "../lib/queries";
+import { useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
-import { useProfile } from "../lib/profile";
-import type { ApiKey } from "../lib/types";
+import { ApiKeysTable } from "../components/ApiKeysTable";
 
 function Secret({ value, label }: { value: string; label: string }) {
   const { t } = useI18n();
@@ -79,210 +69,11 @@ function Secret({ value, label }: { value: string; label: string }) {
   );
 }
 
-// ── API tokens ───────────────────────────────────────────────────────────────
+// ── Connection key ───────────────────────────────────────────────────────────
 
 export function TokenKeys() {
-  const { t } = useI18n();
-  const { profile } = useProfile();
-  const keys = useApiKeys();
-  const cluster = useCluster();
-  const node = useNode();
-  const toast = useToast();
-  const inference = profile === "infer";
-
-  const [label, setLabel] = useState("");
-  const [nodeId, setNodeId] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [revoking, setRevoking] = useState<{ key: string; label: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const visibleKeys = inference
-    ? (keys.data?.filter((key) => key.node_id === node.data?.node_id && key.active) ?? [])
-    : keys.data;
-  const previousKeys = inference ? visibleKeys ?? [] : [];
-
-  const nameOf = (id: string) =>
-    cluster.data?.peers.find((p) => p.node_id === id)?.node?.hostname ??
-    (id ? `${id.slice(0, 8)}…` : t("keys.allNetwork"));
-
-  async function create() {
-    setCreating(true);
-    try {
-      const created = await api.post<ApiKey>("/admin/api-keys", {
-        label: label.trim() || (inference ? t("keys.inferenceLabel") : t("keys.unnamed")),
-        node_id: inference ? node.data?.node_id ?? null : nodeId || null,
-      });
-      if (inference && previousKeys.length > 0) {
-        try {
-          await Promise.all(
-            previousKeys.map((key) =>
-              api.del(`/admin/api-keys/${encodeURIComponent(key.key)}`),
-            ),
-          );
-        } catch (error) {
-          // Keep the UI promise of one active key if the backend cannot revoke
-          // the previous one: remove the just-created replacement instead.
-          try {
-            await api.del(`/admin/api-keys/${encodeURIComponent(created.key)}`);
-          } catch {
-            // Preserve the original error. The next refresh exposes the state.
-          }
-          throw error;
-        }
-      }
-      toast.success(
-        t("keys.created"),
-        t(inference ? "keys.inferenceCreatedDetail" : "keys.createdDetail"),
-      );
-      setLabel("");
-      void keys.refetch();
-    } catch (e) {
-      toast.fromError(t("keys.createFailed"), e);
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function revoke(key: string) {
-    setBusy(true);
-    try {
-      await api.del(`/admin/api-keys/${encodeURIComponent(key)}`);
-      toast.success(t("keys.revoked"));
-      void keys.refetch();
-    } catch (e) {
-      toast.fromError(t("keys.revokeFailed"), e);
-    } finally {
-      setBusy(false);
-      setRevoking(null);
-    }
-  }
-
-  return (
-    <>
-      <PageHeader
-        title={t(inference ? "keys.inferenceTitle" : "keys.title")}
-        subtitle={t(inference ? "keys.inferenceSubtitle" : "keys.tokenSubtitle")}
-      />
-
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
-        <div className="space-y-5">
-          {keys.isError && (
-            <ErrorState error={keys.error} onRetry={() => void keys.refetch()} />
-          )}
-          {keys.isLoading && <Skeleton className="h-48 w-full" />}
-
-          {keys.data && (
-            <Panel>
-              <PanelHeader
-                title={t("keys.tokenCount", { count: visibleKeys?.length ?? 0 })}
-                subtitle={t(inference ? "keys.inferenceSingle" : "keys.tokensCoexist")}
-                actions={
-                  <Button
-                    size="sm"
-                    icon={<RefreshCw className="h-3.5 w-3.5" />}
-                    loading={keys.isFetching}
-                    onClick={() => void keys.refetch()}
-                  >
-                    {t("keys.refresh")}
-                  </Button>
-                }
-              />
-              {visibleKeys?.length === 0 ? (
-                <Empty icon={<KeyRound className="h-5 w-5" />} title={t("keys.empty")}>
-                  {t(inference ? "keys.inferenceEmptyDetail" : "keys.connectionOnly")}
-                </Empty>
-              ) : (
-                <div className="divide-y divide-line">
-                  {visibleKeys?.map((k) => (
-                    <div key={k.key} className="px-5 py-3.5">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <span className="font-medium text-fg">{k.label}</span>
-                          <Badge tone={k.active ? "aqua" : "neutral"}>
-                            {k.active ? t("keys.active") : t("keys.inactive")}
-                          </Badge>
-                          <Badge tone="neutral">{nameOf(k.node_id)}</Badge>
-                          <Mono className="text-faint">{k.id}</Mono>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-3">
-                          <span className="text-[0.72rem] text-faint">
-                            {t("keys.createdAt")} {since(k.created_at)}
-                          </span>
-                          {!inference && (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              aria-label={t("keys.revoke", { label: k.label })}
-                              icon={<Trash2 className="h-3.5 w-3.5" />}
-                              onClick={() => setRevoking({ key: k.key, label: k.label })}
-                            />
-                          )}
-                        </div>
-                      </div>
-                      <div className="mt-2.5">
-                        <Secret value={k.key} label={t("keys.tokenLabel", { label: k.label })} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Panel>
-          )}
-        </div>
-
-        <Panel className="self-start">
-          <PanelHeader title={t(inference ? "keys.inferenceNewToken" : "keys.newToken")} />
-          <div className="space-y-4 px-5 py-4">
-            <Field label={t("keys.purpose")} hint={t("keys.purposeHint")}>
-              <Input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="opencode, painel, CI…"
-              />
-            </Field>
-            {!inference && (
-              <Field
-                label={t("keys.networkNode")}
-                hint={t("keys.nodeHint")}
-              >
-                <Select value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
-                  <option value="">{t("keys.allNetwork")}</option>
-                  {(cluster.data?.peers ?? []).map((p) => (
-                    <option key={p.node_id} value={p.node_id}>
-                      {p.node?.hostname || p.short_id}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            )}
-            <Button
-              variant="primary"
-              icon={<Plus className="h-3.5 w-3.5" />}
-              loading={creating}
-              disabled={inference && !node.data?.node_id}
-              onClick={() => void create()}
-            >
-              {t(inference ? "keys.inferenceCreate" : "keys.create")}
-            </Button>
-          </div>
-        </Panel>
-      </div>
-
-      <Confirm
-        open={revoking !== null}
-        title={t("keys.revokeTitle", { label: revoking?.label ?? "" })}
-        description={t("keys.revokeDescription")}
-        confirmLabel={t("keys.revokeConfirm")}
-        tone="danger"
-        busy={busy}
-        onConfirm={() => revoking && void revoke(revoking.key)}
-        onCancel={() => setRevoking(null)}
-      />
-    </>
-  );
+  return <ApiKeysTable />;
 }
-
-// ── Connection key ───────────────────────────────────────────────────────────
 
 export function ConnectionKeys() {
   const { t } = useI18n();

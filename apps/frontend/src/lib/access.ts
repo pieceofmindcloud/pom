@@ -32,6 +32,7 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/logs": ["admin"],
   "/estatisticas": ["admin"],
   "/config/administracao": ["admin", "node"],
+  "/config/rede/participantes": ["admin", "node"],
 };
 
 /**
@@ -42,6 +43,7 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
 const INFER_ROUTES = [
   "/redes-publicas",
   "/chat",
+  "/network-chat",
   "/documentacao",
   "/config/keys/api",
   "/config/rede",
@@ -51,9 +53,14 @@ const INFER_ROUTES = [
   "/config/confianca",
 ] as const;
 
+const INFER_DENIED_ROUTES = [
+  "/config/rede/participantes",
+] as const;
+
 /** `/implantarx` não está sob `/implantar`. */
 function isUnder(path: string, prefix: string): boolean {
-  return path === prefix || path.startsWith(prefix + "/");
+  const pathname = path.split(/[?#]/, 1)[0];
+  return pathname === prefix || pathname.startsWith(prefix + "/");
 }
 
 /** Os perfis que entram nesta rota, ou `null` quando ela é livre. */
@@ -70,6 +77,7 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 /** Se este perfil pode abrir esta rota. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
   if (profile === "infer") {
+    if (INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
     return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
   }
   const allowed = routeProfiles(path);

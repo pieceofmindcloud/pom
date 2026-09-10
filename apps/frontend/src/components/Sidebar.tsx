@@ -1,21 +1,18 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, LogOut, Moon, Sun } from "lucide-react";
+import { ChevronDown, Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
 import { ChatSessionList } from "./ChatSessionList";
 import { brand } from "../lib/brand";
-import { api } from "../lib/api";
 import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
 import { useOptionalChatSessionController } from "../lib/chatStore";
 import { useNode } from "../lib/queries";
-import { useToast } from "../lib/toast";
 import { useTheme } from "../lib/theme";
 import { TlsChip } from "./TlsIndicator";
-import { Confirm } from "./Confirm";
 
 /**
  * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
@@ -139,7 +136,7 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
           </button>
         ))}
         <TlsChip />
-        {!collapsed && node?.build_commit && (
+        {!collapsed && profile !== "infer" && node?.build_commit && (
           <span
             title={t("sidebar.buildTitle")}
             className="min-w-0 flex-1 truncate px-1 text-center font-mono text-[0.68rem] text-muted"
@@ -160,45 +157,59 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+function leafHoldsPath(leaf: NonNullable<NavSection["children"]>[number], pathname: string): boolean {
+  return (leaf.end ? pathname === leaf.to : pathname === leaf.to || pathname.startsWith(`${leaf.to}/`))
+    || (leaf.children ?? []).some((child) => leafHoldsPath(child, pathname));
+}
+
 function sectionHoldsPath(section: NavSection, pathname: string) {
-  return (section.children ?? []).some((c) =>
-    c.end ? pathname === c.to : pathname.startsWith(c.to),
-  );
+  return (section.to ? pathname === section.to || pathname.startsWith(`${section.to}/`) : false)
+    || (section.children ?? []).some((child) => leafHoldsPath(child, pathname));
 }
 
 function Leaf({
   to,
   labelKey,
   end,
+  children,
   onNavigate,
 }: {
   to: string;
   labelKey: string;
   end?: boolean;
+  children?: NonNullable<NavSection["children"]>[number]["children"];
   onNavigate?: () => void;
 }) {
   const { t } = useI18n();
+  const linkEnd = end ?? Boolean(children?.length);
   return (
-    <NavLink to={to} end={end} onClick={onNavigate}>
-      {({ isActive }) => (
-        <span
-          className={clsx(
-            "relative flex items-center rounded-lg py-1.5 pl-3 pr-2.5 text-[0.83rem]",
-            "transition-colors duration-150",
-            isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
-          )}
-        >
-          {isActive && (
-            <motion.span
-              layoutId="nav-leaf"
-              className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
-              transition={{ type: "spring", stiffness: 520, damping: 42 }}
-            />
-          )}
-          <span className="relative truncate">{t(labelKey)}</span>
-        </span>
+    <div>
+      <NavLink to={to} end={linkEnd} onClick={onNavigate}>
+        {({ isActive }) => (
+          <span
+            className={clsx(
+              "relative flex items-center rounded-lg py-1.5 pl-3 pr-2.5 text-[0.83rem]",
+              "transition-colors duration-150",
+              isActive ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
+            )}
+          >
+            {isActive && (
+              <motion.span
+                layoutId="nav-leaf"
+                className="absolute inset-0 rounded-lg bg-iris/12 ring-1 ring-inset ring-iris/25"
+                transition={{ type: "spring", stiffness: 520, damping: 42 }}
+              />
+            )}
+            <span className="relative truncate">{t(labelKey)}</span>
+          </span>
+        )}
+      </NavLink>
+      {children && children.length > 0 && (
+        <div className="ml-3 border-l border-line pl-2">
+          {children.map((child) => <Leaf key={child.to} {...child} onNavigate={onNavigate} />)}
+        </div>
       )}
-    </NavLink>
+    </div>
   );
 }
 
@@ -206,16 +217,20 @@ function FlyoutLeaf({
   to,
   labelKey,
   end,
+  children,
   onNavigate,
 }: {
   to: string;
   labelKey: string;
   end?: boolean;
+  children?: NonNullable<NavSection["children"]>[number]["children"];
   onNavigate?: () => void;
 }) {
   const { t } = useI18n();
+  const linkEnd = end ?? Boolean(children?.length);
   return (
-    <NavLink to={to} end={end} onClick={onNavigate}>
+    <div>
+      <NavLink to={to} end={linkEnd} onClick={onNavigate}>
       {({ isActive }) => (
         <span
           className={clsx(
@@ -226,39 +241,10 @@ function FlyoutLeaf({
           {t(labelKey)}
         </span>
       )}
-    </NavLink>
+      </NavLink>
+      {children && children.length > 0 && <div className="ml-3 border-l border-line pl-2">{children.map((child) => <FlyoutLeaf key={child.to} {...child} onNavigate={onNavigate} />)}</div>}
+    </div>
   );
-}
-
-function LeaveNetworkControl({ collapsed }: { collapsed: boolean }) {
-  const { t } = useI18n();
-  const { data: node } = useNode();
-  const toast = useToast();
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const networkName = node?.network_name?.trim() || t("sidebar.thisNetwork");
-  const label = t("sidebar.leaveNetworkNamed", { name: networkName });
-
-  async function leave() {
-    setBusy(true);
-    try {
-      await api.post("/api/ui/network/leave");
-      window.setTimeout(() => window.location.assign("/setup"), 1500);
-    } catch (error) {
-      toast.fromError(t("sidebar.leaveNetworkFailed"), error);
-    } finally {
-      setBusy(false);
-      setConfirmOpen(false);
-    }
-  }
-
-  return <>
-    <button type="button" onClick={() => setConfirmOpen(true)} aria-label={label} title={label} className={clsx("flex w-full items-center rounded-lg border border-rose/25 text-rose transition-colors hover:bg-rose/8", collapsed ? "h-10 justify-center" : "gap-2.5 px-2.5 py-2 text-left text-sm")}>
-      <LogOut className="h-[1.05rem] w-[1.05rem] shrink-0" />
-      {!collapsed && <span className="min-w-0 truncate">{label}</span>}
-    </button>
-    <Confirm open={confirmOpen} title={label} description={t("sidebar.leaveNetworkDescription")} confirmLabel={t("sidebar.leaveNetworkConfirm")} tone="danger" busy={busy} onConfirm={() => void leave()} onCancel={() => setConfirmOpen(false)} />
-  </>;
 }
 
 function CollapsedSection({
@@ -487,9 +473,6 @@ function InferenceMainMenu({
           />
         ))}
       </div>
-      <div className="mt-3 shrink-0 border-t border-line pt-3">
-        <LeaveNetworkControl collapsed={collapsed} />
-      </div>
     </div>
   );
 }
@@ -522,9 +505,6 @@ export function SidebarContent({
           {navForProfile(profile).map((s) => (
             <Section key={s.labelKey} section={s} onNavigate={onNavigate} collapsed={collapsed} />
           ))}
-          <div className="mt-auto border-t border-line pt-3">
-            <LeaveNetworkControl collapsed={collapsed} />
-          </div>
         </nav>
       )}
       <SidebarUtilityControls collapsed={collapsed} />

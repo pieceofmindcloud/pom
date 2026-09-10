@@ -117,6 +117,9 @@ As chaves `network.networkInfo*`, `network.share*`, `network.publicName*`,
 de informações da rede e o compartilhamento da confiança. Cada nova chave
 desse fluxo precisa continuar presente nas colunas `en` e `pt-BR` do CSV;
 textos de documento e de chave são dados do servidor, não mensagens de locale.
+As chaves `publicNetworks.*`, `network.metrics*`, `network.participants*`,
+`keys.*`, `preferences.admin*` e `nav.*` cobrem a reorganização das telas,
+incluindo estados de métrica indisponível e os rótulos do Chat da rede separado.
 
 Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
 velocidade de pré-processamento do prompt, velocidade de geração da saída,

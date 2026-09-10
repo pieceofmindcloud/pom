@@ -137,12 +137,14 @@ export const routeLoaders = {
   setupWizard: () => import("./routes/SetupWizard").then(({ SetupWizard }) => SetupWizard),
   publicNetworks: () => import("./routes/PublicNetworks").then(({ PublicNetworks }) => PublicNetworks),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
+  networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
   statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
+  networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
@@ -169,12 +171,14 @@ const Setup = lazyRoute(routeLoaders.setup);
 const SetupWizard = lazyRoute(routeLoaders.setupWizard);
 const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
+const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
 const Statistics = lazyRoute(routeLoaders.statistics);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
+const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
 const Preferences = lazyRoute(routeLoaders.preferences);
@@ -250,7 +254,11 @@ export default function App() {
       location.pathname === "/implantar" ||
       location.pathname === "/implantacoes" ||
       location.pathname === "/logs" ||
-      location.pathname === "/implantacoes/logs");
+      location.pathname === "/implantacoes/logs" ||
+      location.pathname === "/redes-publicas" ||
+      location.pathname === "/network-chat" ||
+      location.pathname === "/estatisticas" ||
+      location.pathname === "/config/keys/api");
   /*
    * O assistente é a única tela que sai da moldura inteira: ele guia a
    * configuração do zero, com barra de progresso e uma pergunta por vez, e o
@@ -380,6 +388,7 @@ export default function App() {
                       <Routes location={location} key={location.pathname}>
                         <Route path="/" element={<Page><Dashboard /></Page>} />
                         <Route path="/redes-publicas" element={<Page><PublicNetworks /></Page>} />
+                        <Route path="/network-chat" element={<Page><NetworkChat /></Page>} />
                         <Route path="/modelos" element={<Page><WholeModels /></Page>} />
                         <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
                         <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
@@ -396,9 +405,11 @@ export default function App() {
                         <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
+                        <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
                         <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
                         <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
+                        <Route path="/config/preferencias/admin" element={<Page><Preferences administrative /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
                         <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />

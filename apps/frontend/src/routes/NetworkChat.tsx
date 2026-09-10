@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Empty, Input, Panel, PanelHeader } from "../components/ui";
 import { api, downloadNetworkChatFile, postNetworkChat } from "../lib/api";
 import { randomId } from "../lib/id";
-import { useNode } from "../lib/queries";
+import { useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type {
@@ -72,7 +72,7 @@ function fileAction(senderNodeId: string, file: File, data: number[]): NetworkCh
   };
 }
 
-function MessageRow({ message, localNodeId, onDownload }: { message: NetworkChatEvent; localNodeId: string; onDownload: (message: NetworkChatEvent) => void }) {
+function MessageRow({ message, localNodeId, nodeName, onDownload }: { message: NetworkChatEvent; localNodeId: string; nodeName: (id: string) => string; onDownload: (message: NetworkChatEvent) => void }) {
   const { t } = useI18n();
   const local = message.senderNodeId === localNodeId;
   const when = new Date(message.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -80,7 +80,7 @@ function MessageRow({ message, localNodeId, onDownload }: { message: NetworkChat
     <div className={`flex ${local ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-[min(38rem,88%)] rounded-2xl border px-3.5 py-2.5 ${local ? "border-iris/35 bg-iris/12" : "border-line bg-raised"}`}>
         <div className="mb-1 flex items-center gap-2 text-[0.68rem] text-faint">
-          <span className="font-mono">{shortNodeId(message.senderNodeId)}</span>
+          <span className="font-medium text-fg">{nodeName(message.senderNodeId)}</span>
           <span>{when}</span>
         </div>
         {message.kind === "text" && <p className="whitespace-pre-wrap break-words text-sm text-fg">{message.text}</p>}
@@ -96,13 +96,13 @@ function MessageRow({ message, localNodeId, onDownload }: { message: NetworkChat
             </button>
           </div>
         )}
-        <p className="mt-1 text-[0.65rem] text-faint">{t("networkChat.nodeLabel")}: {shortNodeId(message.senderNodeId)}</p>
+        <p className="mt-1 text-[0.65rem] text-faint">{t("networkChat.nodeLabel")}: <span className="font-mono">{shortNodeId(message.senderNodeId)}</span></p>
       </div>
     </div>
   );
 }
 
-function ParticipantList({ participants }: { participants: NetworkChatParticipant[] }) {
+function ParticipantList({ participants, nodeName }: { participants: NetworkChatParticipant[]; nodeName: (id: string) => string }) {
   const { t } = useI18n();
   return (
     <aside className="border-b border-line px-4 py-4 lg:border-b-0 lg:border-l lg:py-5">
@@ -115,7 +115,7 @@ function ParticipantList({ participants }: { participants: NetworkChatParticipan
           <div key={participant.nodeId} className="flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-line/30">
             <span className="h-2 w-2 shrink-0 rounded-full bg-aqua shadow-[0_0_0_3px_rgb(45_212_191/0.12)]" />
             <div className="min-w-0">
-              <p className="truncate text-sm text-fg">{participant.hostname || shortNodeId(participant.nodeId)}</p>
+              <p className="truncate text-sm text-fg">{nodeName(participant.nodeId)}</p>
               <p className="truncate font-mono text-[0.65rem] text-faint">{shortNodeId(participant.nodeId)}</p>
             </div>
           </div>
@@ -129,9 +129,23 @@ function ParticipantList({ participants }: { participants: NetworkChatParticipan
 export function NetworkChat() {
   const { t } = useI18n();
   const node = useNode();
+  const cluster = useCluster();
   const toast = useToast();
   const localNodeId = node.data?.node_id ?? "";
   const [snapshot, setSnapshot] = useState<NetworkChatSnapshot | null>(null);
+  const nodeName = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const peer of cluster.data?.peers ?? []) {
+      names.set(peer.node_id, peer.node?.hostname || peer.short_id);
+    }
+    if (localNodeId && node.data?.hostname) names.set(localNodeId, node.data.hostname);
+    for (const participant of snapshot?.participants ?? []) {
+      if (participant.hostname && !names.has(participant.nodeId)) {
+        names.set(participant.nodeId, participant.hostname);
+      }
+    }
+    return (id: string) => names.get(id) || shortNodeId(id);
+  }, [cluster.data?.peers, localNodeId, node.data?.hostname, snapshot?.participants]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -260,8 +274,8 @@ export function NetworkChat() {
       <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_15rem]">
         <div className="flex min-h-0 flex-col">
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6">
-            {messages.length ? messages.map((message) => <MessageRow key={message.messageId} message={message} localNodeId={localNodeId} onDownload={(fileMessage) => { void download(fileMessage); }} />) : <Empty title={t("networkChat.emptyTitle")}>{t("networkChat.emptyDetail")}</Empty>}
-            {typing.length > 0 && <p className="text-xs italic text-muted">{t("networkChat.typing", { node: shortNodeId(typing[0].senderNodeId) })}</p>}
+            {messages.length ? messages.map((message) => <MessageRow key={message.messageId} message={message} localNodeId={localNodeId} nodeName={nodeName} onDownload={(fileMessage) => { void download(fileMessage); }} />) : <Empty title={t("networkChat.emptyTitle")}>{t("networkChat.emptyDetail")}</Empty>}
+            {typing.length > 0 && <p className="text-xs italic text-muted">{t("networkChat.typing", { node: nodeName(typing[0].senderNodeId) })}</p>}
           </div>
           <div className="border-t border-line bg-ink/40 p-3 sm:p-4">
             <div className="flex items-end gap-2">
@@ -284,7 +298,7 @@ export function NetworkChat() {
             <p className="mt-2 text-[0.68rem] text-faint">{t("networkChat.hint")}</p>
           </div>
         </div>
-        <ParticipantList participants={snapshot?.participants ?? []} />
+        <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />
       </div>
     </Panel>
   );

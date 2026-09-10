@@ -29,7 +29,7 @@ class FakeApiError extends Error {
 
 vi.mock("../lib/api", () => ({ ApiError: FakeApiError }));
 vi.mock("../lib/adminAuthority", () => ({ trustAnchorApi: { install: (...args: unknown[]) => install(...args) } }));
-vi.mock("../lib/queries", () => ({ useTrustAnchor: () => anchorQuery }));
+vi.mock("../lib/queries", () => ({ useTrustAnchor: () => anchorQuery, useNode: () => ({ data: undefined }) }));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), fromError: vi.fn() }),
 }));

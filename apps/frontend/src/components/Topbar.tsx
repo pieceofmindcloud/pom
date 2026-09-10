@@ -2,7 +2,6 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronDown,
-  LogOut,
   Menu,
   PowerOff,
   X,
@@ -18,6 +17,7 @@ import { Confirm } from "./Confirm";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
+import { OpenNativeChatWindowButton } from "./OpenNativeChatWindowButton";
 export { TlsChip } from "./TlsIndicator";
 
 /** One line saying what this node is and whether the pipeline is closed. */
@@ -77,7 +77,7 @@ function ProfileBadge() {
   );
 }
 
-type PendingAction = "unload" | "leave" | null;
+type PendingAction = "unload" | null;
 
 function NodeActions() {
   const { t } = useI18n();
@@ -99,28 +99,17 @@ function NodeActions() {
   }, [open]);
 
   const loaded = node.data?.config != null || isServing(node.data?.status.state);
-  const leaveLabel = t("topbar.leaveNetworkNamed", {
-    name: node.data?.network_name?.trim() || t("sidebar.thisNetwork"),
-  });
-
   async function run(action: Exclude<PendingAction, null>) {
     setBusy(true);
     try {
       if (action === "unload") {
         await api.post("/api/ui/unload");
         toast.success(t("topbar.unloaded"), t("topbar.unloadedDetail"));
-      } else {
-        await api.post("/api/ui/network/leave");
-        toast.success(
-          t("topbar.left"),
-          t("topbar.leftDetail"),
-        );
-        window.setTimeout(() => window.location.assign("/setup"), 1500);
       }
       invalidate();
     } catch (e) {
       toast.fromError(
-        action === "unload" ? t("topbar.unloadFailed") : t("topbar.leaveFailed"),
+        t("topbar.unloadFailed"),
         e,
       );
     } finally {
@@ -176,23 +165,6 @@ function NodeActions() {
                 </span>
               </span>
             </button>
-            <button
-              onClick={() => {
-                setOpen(false);
-                setPending("leave");
-              }}
-              className="flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-line/50"
-            >
-              <LogOut className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
-              <span className="min-w-0">
-                <span className="block text-[0.84rem] font-medium text-fg">
-                  {leaveLabel}
-                </span>
-                <span className="block text-xs leading-relaxed text-muted">
-                  {t("sidebar.leaveNetworkDescription")}
-                </span>
-              </span>
-            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -211,16 +183,6 @@ function NodeActions() {
         tone="danger"
         busy={busy}
         onConfirm={() => run("unload")}
-        onCancel={() => setPending(null)}
-      />
-      <Confirm
-        open={pending === "leave"}
-        title={t("topbar.leaveTitle")}
-        description={t("sidebar.leaveNetworkDescription")}
-        confirmLabel={leaveLabel}
-        tone="danger"
-        busy={busy}
-        onConfirm={() => run("leave")}
         onCancel={() => setPending(null)}
       />
     </div>
@@ -247,6 +209,7 @@ export function Topbar() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          <OpenNativeChatWindowButton />
           <ProfileBadge />
           <Notifications />
           <NodeActions />

@@ -401,6 +401,7 @@ dashboard.groupDeployedDetail,"In pipeline order, serving {model}.","Na ordem do
 dashboard.groupOutside,Elsewhere on the network,No resto da rede
 dashboard.groupOutsideDetail,Connected machines with no slice in the active deployment.,Máquinas conectadas e sem fatia na implantação ativa.
 dashboard.here,here,aqui
+dashboard.hideProperties,Hide deployment properties,Ocultar propriedades da implantação
 dashboard.inFlight,In flight,Em voo
 dashboard.inFlightUnavailable,in-flight count unavailable,carga em voo indisponível
 dashboard.incompletePipeline,pipeline incomplete,pipeline incompleto
@@ -496,6 +497,7 @@ dashboard.updateRestart,Update and restart,Atualizar e reiniciar
 dashboard.updateTitle,Update this machine?,Atualizar esta máquina?
 dashboard.updateWarning,It stops if there are uncommitted changes or the repository is on another branch. An open cargo build is serialized with this one and the binary is replaced.,"Para se houver alterações não commitadas ou se o repositório estiver em outro branch. Um cargo build aberto é serializado com este, e o binário é substituído."
 dashboard.usedOf,{used} of {total},{used} de {total}
+dashboard.versionProperties,Deployment version properties,Propriedades da versão da implantação
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
 deploy.addNode,Add,Adicionar
@@ -878,6 +880,7 @@ jobs.sliceModel,Slice a model,Fatiar um modelo
 jobs.started,started,começou
 jobs.subtitle,"Progress belongs to the node, not the browser: reloading or closing this tab does not interrupt the work.","O progresso é do nó, não do navegador: recarregar a página não perde nada, e fechar a aba não interrompe nada."
 jobs.title,Slicing in progress,Fatiamentos em andamento
+keys.actions,Actions,Ações
 keys.active,active,ativo
 keys.adminAccess,Administration routes (/admin/*) and cluster configuration on this node and its peers.,As rotas de administração (/admin/*) e de configuração de cluster deste nó e dos peers.
 keys.allNetwork,Entire network,Toda a rede
@@ -914,6 +917,7 @@ keys.nodeHint,Shows where calls came from. It does not restrict the token to tha
 keys.openaiAccess,"OpenAI-compatible routes (/v1), so chat works without creating a token.","As rotas compatíveis com OpenAI (/v1), para que o chat funcione sem criar token."
 keys.purpose,Purpose,Para que serve
 keys.purposeHint,Appears on the Logs screen for every request.,Aparece na tela de Logs em todas as requisições.
+keys.purposePlaceholder,"opencode, dashboard, CI...","opencode, painel, CI..."
 keys.refresh,Refresh,Atualizar
 keys.revoke,Revoke {label},Revogar {label}
 keys.revokeConfirm,Revoke,Revogar
@@ -928,10 +932,12 @@ keys.rotated,Key rotated,Chave trocada
 keys.rotatedDetail,Other nodes need the new key to keep communicating with this one.,Os outros nós precisam da nova para continuar conversando com este.
 keys.rotationWarning,Changing the key here updates only this machine. The others keep the old key until updated and stop accepting calls from this one.,Trocar a chave aqui muda só esta máquina. As outras continuam com a antiga até serem atualizadas e param de aceitar as chamadas desta.
 keys.show,Show {label},Mostrar {label}
+keys.status,Status,Status
 keys.title,API keys,API keys
 keys.tokenCount,"{count}{count, plural, =1 { token} other { tokens}}","{count}{count, plural, =1 { token} other { tokens}}"
 keys.tokenLabel,token {label},token {label}
 keys.tokenSubtitle,One token per node or harness. Every request made with a token is attributed to it on the Logs screen.,Um token por nó ou harness. Toda requisição com token fica atribuída a ele na tela de Logs.
+keys.tokenValue,Token,Token
 keys.tokensCoexist,Tokens coexist: creating one does not revoke earlier tokens.,Tokens convivem: criar um novo não revoga os anteriores.
 keys.unnamed,unnamed,sem nome
 models.architecture,Architecture,Arquitetura
@@ -962,6 +968,7 @@ models.size,Size,Tamanho
 models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
 nav.administration,Administration,Administração
+nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.apiKeys,API keys,API keys
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
@@ -977,17 +984,24 @@ nav.logs,Logs,Logs
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
 nav.network,Network,Rede
+nav.networkChat,Network Chat,Chat da rede
+nav.networkInfo,Network information,Informações da rede
+nav.networkParticipants,Network participants,Participantes da rede
 nav.preferences,Preferences,Preferências
 nav.publicNetworks,Public networks,Redes públicas
 nav.remoteModels,Find HF models,Encontrar Modelos HF
+nav.requestLogs,Request logs,Logs de requisições
 nav.sendFile,Send a file,Enviar um arquivo
 nav.settings,Settings,Configurações
 nav.setupWizard,Setup wizard,Wizard de configuração
 nav.shards,Shards,Fatias
+nav.shareNetwork,Share network access,Compartilhar acesso à rede
 nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
+nav.storage,Storage,Armazenamento
 nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
+nav.trustMachine,This machine,Esta máquina
 network.accessAnyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
 network.accessAuthorized,Authorized people,Pessoas autorizadas
 network.accessLocalOnly,This machine only,Apenas esta máquina
@@ -1016,6 +1030,8 @@ network.blockTitle,Block {hostname}?,Bloquear {hostname}?
 network.blocked,Node blocked,Nó bloqueado
 network.blockedLabel,blocked,bloqueado
 network.channels,Discord or Telegram,Discord ou Telegram
+network.chooseCity,Choose a city,Escolha uma cidade
+network.chooseCountry,Choose a country,Escolha um país
 network.city,City,Cidade
 network.cityRequired,Required for a public network,Obrigatório para uma rede pública
 network.connected,connected,conectado
@@ -1057,6 +1073,13 @@ network.logsPropagates,No restart needed. Other nodes confirm the policy with th
 network.logsState,Cluster collection,Coleta do cluster
 network.logsSubtitle,"When on, this node reports its process log to the main node. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo ao principal. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
+network.metricsEyebrow,Network health,Saúde da rede
+network.metricsLatency,Average latency,Latência média
+network.metricsModels,Served models,Modelos servidos
+network.metricsNodes,Nodes,Nós
+network.metricsSubtitle,Calculated from the live data this node can currently read.,Calculado a partir dos dados ao vivo que esta máquina consegue ler.
+network.metricsTitle,Network metrics,Métricas da rede
+network.metricsVram,Total VRAM,VRAM total
 network.networkChatDisable,Turn network chat off,Desligar Chat da rede
 network.networkChatDisabled,Network chat turned off,Chat da rede desligado
 network.networkChatEnable,Turn network chat on,Ligar Chat da rede
@@ -1079,12 +1102,15 @@ network.noNodes,No known nodes,Nenhum nó conhecido
 network.noNodesDetail,"Not even this machine appears, which usually means it has not announced itself yet.","Nem esta máquina aparece, o que normalmente quer dizer que ela ainda não está anunciando."
 network.nodePromoted,Node promoted,Node promovido
 network.nodePromotedDetail,The administrator profile is now active on the selected machine.,O perfil Administrador agora está ativo na máquina selecionada.
+network.notAvailable,Not available,Indisponível
 network.notProvided,Not provided,Não informado
 network.notPublished,Not published,Não publicado
 network.offlineDetail,Off the network: stopped announcing and forgot known peers.,Fora da rede: parou de anunciar e esqueceu os peers que conhecia.
 network.onlineDetail,"On the network, announcing every five seconds.","Na rede, anunciando a cada cinco segundos."
 network.operationFailed,The node did not accept the operation,A operação não foi aceita pelo nó
 network.organization,Organization,Organização
+network.participantsSubtitle,Known machines in this network and their current reachability.,Máquinas conhecidas nesta rede e a conectividade atual.
+network.participantsTitle,Network participants,Participantes da rede
 network.portValues,P2P {p2p} · gateway {gateway} · inference {inference},P2P {p2p} · gateway {gateway} · inferência {inference}
 network.ports,Ports,Portas
 network.profile,Profile,Perfil
@@ -1099,7 +1125,6 @@ network.publicInfoPropagation,Changing these details updates the public director
 network.publicName,Public name,Nome público
 network.publicNameRequired,Required for a public network,Obrigatório para uma rede pública
 network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
-network.readOnly,Read-only,Somente leitura
 network.quicDisable,Turn QUIC off,Desligar QUIC
 network.quicDisabled,QUIC turned off,QUIC desligado
 network.quicEnable,Turn QUIC on,Ligar QUIC
@@ -1113,6 +1138,7 @@ network.quicPropagates,No restart needed. Peers adopt the preference after confi
 network.quicState,Transport,Transporte
 network.quicSubtitle,"Prefer HTTP/3 for inference hops while keeping HTTP/HTTPS fallback available.","Preferir HTTP/3 nos hops de inferência mantendo o fallback HTTP/HTTPS disponível."
 network.quicTitle,QUIC transport,Transporte QUIC
+network.readOnly,Read-only,Somente leitura
 network.rejoin,Rejoin network,Voltar para a rede
 network.relinquishNode,Become an infer node,Virar um nó infer
 network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
@@ -1307,12 +1333,18 @@ preferences.accessTokenLabel,Administrative access token,Token de acesso adminis
 preferences.accessTokenRegenerate,Generate a new token,Gerar novo token
 preferences.accessTokenTitle,Administrative access token,Token de acesso administrativo
 preferences.accessTokenUnavailable,Token unavailable,Token indisponível
+preferences.adminSubtitle,Cluster-wide controls reserved for the network authority.,Controles da rede reservados à autoridade administrativa.
+preferences.adminTitle,Administrative preferences,Preferências administrativas.
 preferences.portInvalid,Enter a port between 1 and 65535.,Informe uma porta entre 1 e 65535.
+preferences.storageOpen,Open storage,Abrir armazenamento
+preferences.storageSubtitle,Model storage is managed on its dedicated screen.,O armazenamento de modelos é gerenciado na tela própria.
+preferences.storageTitle,Storage,Armazenamento
 preferences.subtitle,Local protection and model-provider credentials for this node.,Proteção local e credenciais de provedor deste nó.
 preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
+publicNetworks.action,Action,Ação
 publicNetworks.address,Address,Endereço
 publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
 publicNetworks.discoveredTitle,Networks found,Redes encontradas
@@ -1327,14 +1359,22 @@ publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e con
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
 publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
 publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
+publicNetworks.latency,Average latency,Latência média
+publicNetworks.location,Country / city,País / cidade
 publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
+publicNetworks.models,Served models,Modelos servidos
+publicNetworks.name,Public name,Nome público
+publicNetworks.nodes,Nodes,Nós
+publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
 publicNetworks.refresh,Refresh,Atualizar
 publicNetworks.securityNote,The signed trust document is public metadata; the setup still asks you to confirm its calculated fingerprint.,O documento de confiança assinado é um dado público; o setup ainda pede que você confirme a impressão digital calculada.
 publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
 publicNetworks.title,Public networks,Redes públicas
+publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
+publicNetworks.vram,Total VRAM,VRAM total
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada

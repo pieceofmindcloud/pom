@@ -14,7 +14,6 @@ import {
   Check,
   ChevronDown,
   Copy,
-  ExternalLink,
   Mic,
   MicOff,
   MessagesSquare,
@@ -65,18 +64,10 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
 import { useProfile } from "../lib/profile";
-import { NetworkChat } from "./NetworkChat";
 
 export { ExecutionTelemetry } from "../components/ExecutionTelemetry";
 export type { ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
-
-type WebKitWindow = Window & {
-  webkit?: {
-    messageHandlers?: {
-      pomOpenWindow?: { postMessage: (message: string) => void };
-    };
-  };
-};
+export { OpenNativeChatWindowButton } from "../components/OpenNativeChatWindowButton";
 
 function isTextFile(file: File): boolean {
   if (file.type.startsWith("text/")) return true;
@@ -132,29 +123,6 @@ function estimatedAttachmentBytes(attachment: ChatAttachment): number {
   return attachment.size ?? new TextEncoder().encode(attachment.data).byteLength;
 }
 
-function nativeWindowHandler() {
-  if (typeof window === "undefined") return undefined;
-  return (window as WebKitWindow).webkit?.messageHandlers?.pomOpenWindow;
-}
-
-export function OpenNativeChatWindowButton() {
-  const { t } = useI18n();
-  const handler = nativeWindowHandler();
-  if (!handler) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={() => handler.postMessage("open")}
-      aria-label={t("chat.openLargerWindow")}
-      title={t("chat.openLargerWindow")}
-      className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-raised px-2.5 text-[0.76rem] text-muted transition-colors hover:border-line-strong hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
-    >
-      <ExternalLink className="h-3.5 w-3.5" />
-      <span className="hidden min-[360px]:inline">{t("chat.openLargerWindowShort")}</span>
-    </button>
-  );
-}
 
 /**
  * Something that happened to the conversation, on the line where it happened.
@@ -927,7 +895,6 @@ function ChatScreen() {
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <OpenNativeChatWindowButton />
             {!historyLivesInMainMenu && (
               <Button
                 size="sm"
@@ -1154,8 +1121,6 @@ function ChatScreen() {
 /** Direct consumers such as focused route tests still get an isolated chat. */
 export function Chat() {
   const controller = useOptionalChatSessionController();
-  const { t } = useI18n();
-  const [surface, setSurface] = useState<"ai" | "network">("ai");
   const ai = controller ? (
     <ChatScreen />
   ) : (
@@ -1163,29 +1128,5 @@ export function Chat() {
       <ChatScreen />
     </ChatSessionProvider>
   );
-  return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex shrink-0 items-center gap-1 rounded-xl border border-line bg-raised/60 p-1" role="tablist" aria-label={t("chat.surfaceLabel")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={surface === "ai"}
-          onClick={() => setSurface("ai")}
-          className={clsx("rounded-lg px-3 py-1.5 text-sm transition-colors", surface === "ai" ? "bg-iris text-white" : "text-muted hover:bg-line/40 hover:text-fg")}
-        >
-          {t("chat.aiTab")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={surface === "network"}
-          onClick={() => setSurface("network")}
-          className={clsx("rounded-lg px-3 py-1.5 text-sm transition-colors", surface === "network" ? "bg-aqua text-ink" : "text-muted hover:bg-line/40 hover:text-fg")}
-        >
-          {t("chat.networkTab")}
-        </button>
-      </div>
-      <div className="min-h-0 flex-1">{surface === "network" ? <NetworkChat /> : ai}</div>
-    </div>
-  );
+  return <div className="flex h-full min-h-0 flex-col">{ai}</div>;
 }

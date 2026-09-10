@@ -37,6 +37,22 @@ pub(crate) async fn network_info(
     Json(network_info_view(&state).await).into_response()
 }
 
+/// A referência geográfica do setup também é necessária ao editor autenticado
+/// da rede, que usa a mesma tabela SQLite para evitar nomes livres divergentes.
+pub(crate) async fn geo_reference(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    match state.database.geo_reference() {
+        Ok(countries) => Json(json!({ "countries": countries })).into_response(),
+        Err(error) => network_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "geo_reference_failed",
+            &format!("ler referência geográfica: {error:#}"),
+        ),
+    }
+}
+
 pub(crate) async fn save_network_settings(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,

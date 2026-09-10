@@ -71,6 +71,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
+- `networkStats.ts` - agrega somente dados presentes no `ClusterView`: nós,
+  RTT médio, VRAM conhecida e modelos servidos. Cada métrica permanece nula
+  quando a fonte não a fornece, para a UI mostrar indisponível sem inventar
+  zero.
 - `polling.ts` - the fast 2s and idle 10s cadences used by jobs and offers.
 - `queries.ts` - every read the panel does, as react-query hooks with polling
   intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
@@ -93,6 +97,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   this is a capability slice, not a general peer list.
   `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
   por `deploy_id`, e atualiza a consola a cada segundo.
+  `useGeoReference` consulta `/api/ui/network/geo-reference` para preencher os
+  selects de país e cidade da tela de Informações da Rede.
   `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
   available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
@@ -104,9 +110,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `localStorage`: o navegador só apresenta o valor e deriva dele o menu/guarda
   de rota. **Não é autorização** - o backend continua sendo a fronteira.
 - `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
-  para a lista de perfis; para `infer`, `/chat`, `/documentacao`, `/config/keys/api`
-  e `/config/rede` são visíveis. No Chat, esse perfil também esconde os resumos
-  e o painel de telemetria.
+  para a lista de perfis; para `infer`, `/chat`, `/network-chat`,
+  `/documentacao`, `/config/keys/api` e `/config/rede` são visíveis. A lista de
+  participantes da rede e as preferências administrativas continuam fechadas
+  para infer. No Chat, esse perfil também esconde os resumos e o painel de
+  telemetria.
   `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
@@ -194,7 +202,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### types.ts
 - `NetworkChatRequest`, `NetworkChatSnapshot` and related types mirror the
   network-chat action and snapshot contract. `NetworkChatEvent` preserves
-  `node_id` as the identity key instead of using hostname as a key.
+  `node_id` as the identity key instead of using hostname as a key; the route
+  resolves that identity to the dashboard's display-name map at render time.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
@@ -400,8 +409,9 @@ histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
 `types.ts` define o retrato compartilhado `NetworkSettings` e o envelope de
 leitura `NetworkInfoView`. `useNetworkInfo` em `queries.ts` consulta
 `/api/ui/network/info` para todos os perfis e `invalidateAfterAction` invalida
-esse retrato após mutações de configuração. A UI nunca guarda a chave de
-conexão no cache: os materiais de compartilhamento são buscados pelo admin
+esse retrato após mutações de configuração. `useGeoReference` lê a referência
+SQLite de países e cidades para os selects da tela. A UI nunca guarda a chave
+de conexão no cache: os materiais de compartilhamento são buscados pelo admin
 somente em `/api/ui/network/trust-share`.
 
 ### networkPeers.ts
@@ -455,7 +465,7 @@ would go.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
-- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
+- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo-reference`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
 - O Chat de qualquer perfil que tenha um modelo selecionado lê
   `/api/ui/infer/heads?model=...`, que é autorizado por `InferNodeAdmin` e
   devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT

@@ -107,9 +107,19 @@ Per-file list:
   uses the wide variant; the `infer` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
   delete action and localized new-conversation button.
-- `nav.ts` — `NAV`: the menu as data — a seção Implantações usa `Rocket` (era
-  `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e a consola de
-  processo usa `Terminal` logo abaixo de Histórico; o submenu não
+- `ApiKeysTable.tsx` - tabela full-bleed de API keys. O administrador escolhe o
+  nó na criação, vê seus próprios tokens completos e os demais mascarados;
+  node e infer ficam restritos às chaves do próprio nó.
+- `DeploymentLogDock.tsx` - barra recolhida do Dashboard para o admin, que
+  expande para cima até metade da área e acompanha o log de implantação em
+  tempo real com auto-scroll.
+- `OpenNativeChatWindowButton.tsx` - botão macOS usado somente quando a ponte
+  WebKit `pomOpenWindow` está disponível; fica na toolbar do `Topbar`, não no
+  corpo do Chat.
+- `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
+  `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
+  folhas separadas para requisições e implantação; Network Chat é uma entrada
+  própria. O submenu não
   desenha ícone de folha, então `Rocket` na seção e na folha `/implantar` não
   colidem. A tabela em si é an ordered array of `NavSection`
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and
@@ -139,13 +149,14 @@ Per-file list:
   shell, and a peer on an old binary looks healthy until inference.
   `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
   there now, beside the controls: the bare hash in mono, no "build" label in
-  front of it, with the explanation in a `title` tooltip. `SidebarUtilityControls` shows language as **flags**
+  front of it, with the explanation in a `title` tooltip; o hash fica oculto
+  para `infer`. `SidebarUtilityControls` shows language as **flags**
   (`brand.flags[locale]`, from `brand.json`) rather than "EN"/"PT-BR", since a
   text label only helps someone who already knows what the code means and the
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
-  keeps the TLS policy link beside those flags: icon-only, with different icon
+  keeps the TLS policy link beside those flags only for `admin`: icon-only, with different icon
   and tone for encrypted versus cleartext and the meaning in
   `aria-label`/`title`. Para `infer`, o rodapé também renderiza documentação e
   API keys, enquanto a coluna principal é substituída por `ChatSessionList` e
@@ -164,11 +175,11 @@ Per-file list:
   secondary admins and promotion chain. It exposes promotion, demotion and
   succession controls only when the presentation contract says this viewer is
   the principal; refusal states remain explicit.
-- `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
-  coverage), o selo i18n do perfil persistido do nó, the bell (`Notifications`), and `NodeActions` - a menu to unload
-  this node's slice (`POST /api/ui/unload`) or leave the network
-  (`POST /api/ui/leave`), each behind a `Confirm`. Mobile drawer renders
-  `SidebarContent` inside an animated panel.
+- `Topbar.tsx` - Sticky header: `NodeChip` (hostname, short_id, peer count,
+  coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
+  maior, the bell (`Notifications`) and `NodeActions` for unloading this
+  node's slice. Mobile drawer renders `SidebarContent` inside an animated
+  panel. A ação de sair da rede não fica exposta no menu.
 - `Notifications.tsx` — The activity bell: counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars

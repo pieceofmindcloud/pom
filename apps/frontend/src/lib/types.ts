@@ -264,6 +264,23 @@ export interface NetworkInfoView {
   can_edit: boolean;
 }
 
+export interface GeoCityReference {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface GeoCountryReference {
+  code: string;
+  name: string;
+  cities: GeoCityReference[];
+}
+
+export interface GeoReferenceResponse {
+  countries: GeoCountryReference[];
+}
+
 export interface TrustShareView {
   filename: string;
   document: string;
@@ -1116,6 +1133,7 @@ export interface ApiKey {
   key: string;
   label: string;
   node_id: string;
+  origin_node_id?: string;
   active: boolean;
   created_at: string;
 }

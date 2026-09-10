@@ -39,6 +39,7 @@ import type {
   Job,
   NodeInfo,
   NetworkInfoView,
+  GeoReferenceResponse,
   NetworkOffer,
   PathsResponse,
   PeerCatalog,
@@ -82,6 +83,7 @@ export const keys = {
   adminAuthority: ["admin-authority"] as const,
   trustAnchor: ["trust-anchor"] as const,
   networkInfo: ["network-info"] as const,
+  geoReference: ["geo-reference"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
@@ -496,6 +498,15 @@ export function useNetworkInfo(enabled = true) {
     queryFn: () => api.get<NetworkInfoView>("/api/ui/network/info"),
     enabled,
     refetchInterval: 10_000,
+  });
+}
+
+export function useGeoReference(enabled = true) {
+  return useQuery({
+    queryKey: keys.geoReference,
+    queryFn: () => api.get<GeoReferenceResponse>("/api/ui/network/geo-reference"),
+    enabled,
+    staleTime: Infinity,
   });
 }
 

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { Preferences, ThermalPanel } from "./Preferences";
@@ -63,7 +64,7 @@ afterEach(() => {
 function mount(child: React.ReactNode) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
-      {child}
+      <MemoryRouter>{child}</MemoryRouter>
     </LocaleProvider>,
   );
 }
@@ -99,7 +100,7 @@ describe("Preferences", () => {
 
   it("mostra QUIC ao lado de TLS e salva a preferência do principal", async () => {
     mocks.post.mockResolvedValue({ quic_enabled: true });
-    mount(<Preferences />);
+    mount(<Preferences administrative />);
 
     expect(screen.getByText("Transporte QUIC")).toBeTruthy();
     fireEvent.click(screen.getByRole("switch", { name: /ligar quic/i }));

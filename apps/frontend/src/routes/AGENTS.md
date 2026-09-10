@@ -29,10 +29,12 @@ Per-file list:
   telas conversam com `/api/setup/*`; não confundir com o protótipo
   `SetupWizard.tsx`.
 
-- `PublicNetworks.tsx` - Diretório inicial de redes públicas. Consulta
-  `/api/public/networks`, agrupa por país/cidade, ordena por distância da
-  localização do navegador e inicia a entrada sem chave compartilhada. O
-  documento assinado fica em `sessionStorage` só durante a transição; o nó sai
+- `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
+  padrão de Logs: tabela rolável com nome público, organização, localização,
+  label geo-hierárquico, nós, latência, VRAM, modelos e ação de entrada. Usa
+  `/api/public/networks`; métricas agregadas só aparecem quando o cluster local
+  corresponde à rede exibida, pois o catálogo público atual não as fornece.
+  O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
 - `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
@@ -40,8 +42,10 @@ Per-file list:
   nome, descrição, regras, organização, canais, visibilidade e localização;
   um administrador autorizado pode editar o bloco completo. A edição grava
   no nó, propaga o envelope assinado aos peers e atualiza a descoberta pública.
-  O administrador também pode copiar ou baixar a raiz de confiança e, em
-  redes privadas, a chave de conexão.
+  País e cidade usam a referência de geografia do nó em selects, sem expor o
+  código do país. A tela também agrega nós, latência média, VRAM e modelos
+  conhecidos. A lista de participantes foi movida para a rota
+  `/config/rede/participantes`, apenas para `admin` e `node`.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
@@ -87,12 +91,13 @@ Per-file list:
   deliberadamente invisível no navegador comum e só publica `open` na ponte
   WebKit `pomOpenWindow`, que abre a janela maior sem criar um fluxo paralelo de
   autenticação.
-- `NetworkChat.tsx` - The `Rede` tab beside the AI chat. It reads the
+- `NetworkChat.tsx` - Página própria `/network-chat`, com o mesmo padrão visual
+  do Chat de IA. It reads the
   authenticated snapshot and sends text, file and typing actions through the
-  node's libp2p-backed gateway. It displays `node_id` identity in participant
-  and message metadata, downloads persisted file blobs on demand, and polls
-  typing state without touching the AI session store. Message and typing ids
-  come from `lib/id.ts`, so sending over plain HTTP does not call the
+  node's libp2p-backed gateway. It resolves `node_id` to the node hostname/name
+  map used by the dashboard, downloads persisted file blobs on demand, and
+  polls typing state without touching the AI session store. Message and typing
+  ids come from `lib/id.ts`, so sending over plain HTTP does not call the
   secure-context-only `crypto.randomUUID` API.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
@@ -175,6 +180,10 @@ Per-file list:
   canvas receives the
   directional RTT measurements for its adjacent routing edges from
   `useNetworkRtt`, with the same badge presentation used by deployment.
+  A versão ativa do deployment também pode ser aberta num inspetor de leitura
+  à direita, usando o mesmo layout e os mesmos valores configurados no Deploy
+  Studio. No perfil `admin`, `DeploymentLogDock` fica recolhido no rodapé e
+  expande para cima com os logs em tempo real e auto-scroll.
 - In `Dashboard`, node and infer profiles do not reuse the administrator's
   cluster verdict: they show the local model, its real layer slice and local
   in-flight request count. A missing `/api/ui/node` response is rendered as
@@ -340,7 +349,8 @@ Per-file list:
   leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
   botão de estado visível para reativá-lo e copia as últimas 500 linhas. Não é a
   auditoria paginada de requisições em `Logs.tsx`.
-- `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
+- `Keys.tsx` - Two screens in one file. `TokenKeys` delega a tabela full-bleed
+  `ApiKeysTable`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   No perfil `infer`, mostra só a chave ativa deste nó, esconde o seletor de nó
   e, ao gerar uma chave nova, revoga a anterior. As rotas de API key são
@@ -350,7 +360,9 @@ Per-file list:
   está no `pom.json` dela e a tela só existe atrás da fronteira administrativa.
   **Trocá-la** (`POST /admin/regenerate-key`) é outra coisa: a chave é a mesma
   no cluster inteiro e girá-la corta todos os outros nós, então o botão só
-  aparece com `authority_level` presente.
+  aparece com `authority_level` presente. O administrador escolhe o nó ao
+  criar e vê os próprios tokens completos, enquanto os tokens de outros nós
+  ficam mascarados; node e infer veem e criam somente os seus.
 - `Logs.tsx` - tela autenticada de auditoria em largura total. A barra aplica
   filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a tela de
   requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
@@ -370,7 +382,10 @@ Per-file list:
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
   keeps `/config/pastas` as an alias.
-- `NetworkSettings.tsx` - This node's membership
+- `NetworkSettings.tsx` - This node's membership and network information
+  screen. Its `NetworkParticipants` export reuses the known-node area at
+  `/config/rede/participantes`; the route is allowed only to `admin` and
+  `node`, and block/unblock mutations remain admin-only.
   (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving
   is abdication, not a privilege) and the known-node list from
   `GET /admin/nodes` (`node+admin`: reading the roster is what this screen
@@ -412,7 +427,9 @@ Per-file list:
   disponível apenas ao principal e aplicado em tempo real, e `QuicPanel`, que
   alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
   controle de autoridade. The access token is a human credential and is not the
-  cluster `connection_key`.
+  cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
+  somente TLS, QUIC, logs de processo entre nós e chat da rede; a rota normal
+  mantém exposição, Hugging Face, proteção térmica e o link de armazenamento.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
@@ -438,9 +455,6 @@ Per-file list:
   admin token is generated only when the interface is exposed to the network;
   optional peer-link TLS starts disabled because libp2p already protects the
   peer connection.
-- `PublicNetworks.tsx` - initial public-network directory. It reads
-  `GET /api/public/networks`, shows name, fingerprint and address, and opens the
-  existing trust-root joining screen. It has no network administration.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and

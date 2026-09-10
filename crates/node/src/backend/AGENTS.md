@@ -166,6 +166,11 @@ profile policy remains the effective authorization boundary.
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). A
+  leitura `/api/ui/network/geo-reference` entrega a referência SQLite de
+  países e cidades para os selects da UI e é `InferNodeAdmin`; não cria nem
+  altera dados de rede. `GET /api/ui/deployments` é `NodeAdmin` para permitir
+  que node veja o inspetor somente leitura, enquanto mutações e ações de
+  implantação continuam sob a política administrativa existente.
   superfície de autoridade expõe o contrato de apresentação em
   `/api/ui/network/admin-authority`; pedidos infer-to-node e descida
   node-to-infer usam `/api/ui/network/request-node` e
@@ -929,7 +934,9 @@ faz o download autenticado do blob persistido.
   rede pública o valor local do admin não entra no envelope. A mutação remota
   exige a assinatura da autoridade. `GET
   /api/ui/network/trust-share` entrega ao administrador a raiz de confiança
-  para cópia ou download e, quando aplicável, a chave de conexão.
+  para cópia ou download e, quando aplicável, a chave de conexão. `GET
+  /api/ui/network/geo-reference` entrega países e cidades da referência local
+  para os selects da tela, sem expor uma mutação de banco.
 - `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=
   POM_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
   when closed. Routes `POST /api/ui/dev/update` (preflight: refuses non-main

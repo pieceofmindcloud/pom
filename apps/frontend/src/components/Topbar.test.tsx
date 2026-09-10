@@ -100,4 +100,24 @@ describe("perfil na toolbar", () => {
     expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
   });
+
+  it("mostra Larger Window na toolbar nativa quando o WebKit oferece a ponte", () => {
+    nodeData = fakeNode({ profile: "admin" });
+    Object.defineProperty(window, "webkit", {
+      configurable: true,
+      value: { messageHandlers: { pomOpenWindow: { postMessage: vi.fn() } } },
+    });
+    mountTopbar("admin");
+
+    expect(screen.getByRole("button", { name: /janela maior/i })).toBeTruthy();
+    delete (window as Window & { webkit?: unknown }).webkit;
+  });
+
+  it("oculta o indicador TLS e o hash do build fora do admin", () => {
+    nodeData = fakeNode({ profile: "infer", build_commit: "abc123" });
+    mountTopbar("infer");
+
+    expect(screen.queryByTestId("tls-indicator")).toBeNull();
+    expect(screen.queryByText("abc123")).toBeNull();
+  });
 });

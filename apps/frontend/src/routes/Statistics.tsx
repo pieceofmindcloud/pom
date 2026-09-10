@@ -17,13 +17,16 @@ export function Statistics() {
   const filters: Filters = {};
 
   return (
-    <div className="min-w-0">
-      <header className="mb-4">
-        <p className="eyebrow">{t("tokenLogs.statsTab")}</p>
-        <h1 className="font-display text-xl font-semibold tracking-tight text-fg">{t("tokenLogs.statsTitle")}</h1>
-        <p className="mt-1 text-sm text-muted">{t("tokenLogs.statsSubtitle")}</p>
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
+      <header className="flex shrink-0 flex-wrap items-end justify-between gap-2 border-b border-line bg-surface/70 px-4 py-4 sm:px-6">
+        <div>
+          <h1 className="font-display text-xl font-semibold tracking-tight text-fg">{t("tokenLogs.statsTitle")}</h1>
+          <p className="mt-1 text-sm text-muted">{t("tokenLogs.statsSubtitle")}</p>
+        </div>
       </header>
-      <StatsView filters={filters} name={name} />
+      <div className="min-h-0 flex-1 overflow-auto">
+        <StatsView filters={filters} name={name} />
+      </div>
     </div>
   );
 }

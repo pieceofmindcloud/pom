@@ -146,15 +146,15 @@ segue no metadata do prefill e do step entre gateway e peers. Um nó não
 subtrai relógios de outro: cada processo mede intervalos com `Instant`, e os
 campos `*_at_ms` usam wall clock apenas para correlação visual. O gateway
 registra spans locais de validação, orquestração, seleção da pipeline,
-resolução de rota, aquisição de sessão e retorno do primeiro token. A união
-dos intervalos do gateway, e não a soma ingênua de spans possivelmente
-paralelos, forma `outside_node_accounted_ms`.
-
-`outside_node_total_ms` mantém a medida de compatibilidade do tempo total menos
-o processamento agregado dos peers. `outside_node_unaccounted_ms` é o restante
-não explicado pelos spans locais e nunca é deixado negativo. Se o perfil for
-`off`, os spans detalhados e o cálculo de atribuição não são emitidos; o
-`POM_PROFILE_SYNC` continua sendo uma política independente do trace.
+resolução de rota, aquisição de sessão e retorno do primeiro token. Esses
+intervalos formam a timeline local e não são somados a spans de peers para
+fabricar uma partição E2E. Os campos `outside_node_total_ms`,
+`outside_node_accounted_ms` e `outside_node_unaccounted_ms` só são publicados
+quando uma medição explícita de residual, com fronteiras temporais compatíveis,
+for fornecida; o runtime não os deriva de E2E menos o processamento agregado.
+Se o perfil for `off`, os spans detalhados e o cálculo de atribuição não são
+emitidos; o `POM_PROFILE_SYNC` continua sendo uma política independente do
+trace.
 
 `decode_calls` e `tokens_per_decode_call` são **derivados dos saltos**
 (`RequestTrace::refresh_decode_counters`), não de um contador solto: o laço de
@@ -206,10 +206,14 @@ enquanto não houver intervalos sincronizáveis para sustentá-los.
 No `remote-stream`, o head envia `hop_timings` dos peers downstream junto ao
 lote de tokens. O modo normal agrega frames, bytes, abertura, lifetime,
 primeira entrega, latências, processamento remoto e espera com histogramas de
-amostra limitada. `POM_TELEMETRY_PROFILE=1` acrescenta spans de frame e
-eventos por token, mantendo duração zero para um evento cujo lote não mede um
-intervalo individual. O relógio publicado identifica o domínio monotônico do
-peer e nunca é subtraído de um relógio de outra máquina.
+amostra limitada. O produtor usa uma fila limitada de 64 itens e o emitter
+mede `remote_stream_wait` como espera real na fila, sem timer artificial. O
+retorno normal do callback usa `/v1/link` full-duplex no gateway; somente uma
+falha explícita do canal cai para `/v1/remote-stream-result`, com contagem e
+razão de fallback HTTPS na telemetria. `POM_TELEMETRY_PROFILE=1` acrescenta
+spans de frame e eventos por token, mantendo duração zero para um evento cujo
+lote não mede um intervalo individual. O relógio publicado identifica o
+domínio monotônico do peer e nunca é subtraído de um relógio de outra máquina.
 
 ### Cache KV e fallback de VRAM
 
@@ -693,6 +697,14 @@ serve (peer atrás de NAT alcançável só pelo túnel). O canal tem teto de vid
 12 h, porque o timeout do cliente HTTP vale para a requisição inteira e o corpo
 em fluxo conta para ele; vencido o teto, a chamada em voo degrada e a seguinte
 abre canal novo.
+
+No retorno do `remote-stream`, o head remoto reutiliza esse mesmo protocolo
+persistente para enviar frames de callback ao gateway, que os entrega ao ticket
+e responde somente o ACK do envelope. Se a abertura ou o uso do canal falhar,
+`direct::RemoteStreamDelivery` muda para o POST HTTPS por callback e grava
+`remote_stream_transport_fallback` e
+`remote_stream_transport_fallback_reason`; a troca fica visível e não é
+confundida com o nome agregado do transporte.
 
 **Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
 `Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,

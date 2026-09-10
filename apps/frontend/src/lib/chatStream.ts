@@ -71,6 +71,8 @@ export interface RequestTrace {
   connection_new_calls?: number;
   connection_reused_calls?: number;
   connection_unknown_calls?: number;
+  https_fallback_calls?: number;
+  https_fallback_reasons?: string[];
   model: string;
   input_tokens: number;
   /** Tokens do prompt que o pipeline não reprocessou porque já estavam no KV
@@ -91,6 +93,7 @@ export interface RequestTrace {
   transport_trace_complete?: boolean;
   telemetry?: TelemetrySummary;
   profiling_spans?: TelemetrySpan[];
+  token_cycle?: TokenCycleTelemetry;
   prefill_overlap_enabled?: boolean;
   prefill_max_inflight_chunks?: number;
   prefill_overlapped_chunks?: number;
@@ -178,6 +181,20 @@ export interface RemoteStreamTelemetry {
   remote_stream_wait_total_ms: number;
   remote_stream_wait_p50_ms: number;
   remote_stream_wait_p95_ms: number;
+  token_delivery_interval_min_ms?: number;
+  token_delivery_interval_p50_ms?: number;
+  token_delivery_interval_p95_ms?: number;
+  token_delivery_interval_p99_ms?: number;
+  token_delivery_interval_max_ms?: number;
+  token_delivery_interval_samples?: number;
+}
+
+export interface TokenCycleTelemetry {
+  samples: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  max_ms: number;
 }
 
 export interface TelemetrySummary {

@@ -32,14 +32,34 @@ pub(crate) fn step_blocking(
     // cabeça a ecoa a partir do próprio `speculate` (`mtp_k_hint`).
     mtp_k: Option<u32>,
     queued_at: Instant,
+    profiling: Option<crate::prefill::TelemetryContext>,
 ) -> Result<TimedReply> {
     let mut timings = NodeTimings {
         queue_us: queued_at.elapsed().as_micros() as u64,
+        profiling_spans: profiling.as_ref().map(|_| Vec::new()),
         ..Default::default()
     };
     let lock_started = Instant::now();
     let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "scheduler-queue",
+            queued_at,
+            lock_started,
+            None,
+            None,
+        );
+        timings.record_profile_span(
+            context,
+            "lock-wait",
+            lock_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
     timings.selected_path = s.inference_path;
 
     let setup_started = Instant::now();
@@ -54,6 +74,16 @@ pub(crate) fn step_blocking(
     let n_past = session.n_past;
     let seq_id = session.seq_id();
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "session-setup",
+            setup_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
 
     let n_tokens;
     let decode_started = Instant::now();
@@ -197,6 +227,16 @@ pub(crate) fn step_blocking(
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "decode",
+            decode_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
     timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;
@@ -248,6 +288,16 @@ pub(crate) fn step_blocking(
                 }
             }
             timings.sampling_us += verification_started.elapsed().as_micros() as u64;
+            if let Some(context) = profiling.as_ref() {
+                timings.record_profile_span(
+                    context,
+                    "sampling",
+                    verification_started,
+                    Instant::now(),
+                    None,
+                    None,
+                );
+            }
 
             let accept_len = longest_match(&sampled, &draft);
             record_mtp_verification(&mut timings, mtp_verification, draft.len(), accept_len);
@@ -372,6 +422,16 @@ pub(crate) fn step_blocking(
                 wire_dtype,
             )?;
             timings.encode_us += encode_started.elapsed().as_micros() as u64;
+            if let Some(context) = profiling.as_ref() {
+                timings.record_profile_span(
+                    context,
+                    "response-encode",
+                    encode_started,
+                    Instant::now(),
+                    None,
+                    None,
+                );
+            }
             return Ok(TimedReply { bytes, timings });
         }
 
@@ -423,6 +483,16 @@ pub(crate) fn step_blocking(
         timings.top_p_us += sampling_timing.top_p_us;
         timings.selection_us += sampling_timing.selection_us;
         timings.token_text_us += token_text_us;
+        if let Some(context) = profiling.as_ref() {
+            timings.record_profile_span(
+                context,
+                "sampling",
+                logits_access_started,
+                Instant::now(),
+                None,
+                None,
+            );
+        }
 
         // A cauda de um pipeline fatiado também rascunha na rodada em que a
         // cabeça recusou — a primeira, quando ainda não há rascunho pronto
@@ -471,6 +541,16 @@ pub(crate) fn step_blocking(
         }
         let bytes = wire::encode(&reply, None, wire_dtype)?;
         timings.encode_us += encode_started.elapsed().as_micros() as u64;
+        if let Some(context) = profiling.as_ref() {
+            timings.record_profile_span(
+                context,
+                "response-encode",
+                encode_started,
+                Instant::now(),
+                None,
+                None,
+            );
+        }
         return Ok(TimedReply { bytes, timings });
     }
 
@@ -505,6 +585,16 @@ pub(crate) fn step_blocking(
         wire_dtype,
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "response-encode",
+            encode_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
     Ok(TimedReply { bytes, timings })
 }
 

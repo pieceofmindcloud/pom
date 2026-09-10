@@ -450,10 +450,7 @@ pub(super) async fn forward_hub_chunk(
 
 /// Keeps the physical cells and their logical M-RoPE positions together when
 /// a hub forwards a hidden-state chunk to the next slice.
-pub(super) fn copy_mrope_positions(
-    meta: &serde_json::Value,
-    body_meta: &mut serde_json::Value,
-) {
+pub(super) fn copy_mrope_positions(meta: &serde_json::Value, body_meta: &mut serde_json::Value) {
     if let Some(positions) = meta.get("mrope_positions") {
         body_meta["mrope_positions"] = positions.clone();
     }
@@ -508,10 +505,7 @@ pub(super) async fn run_ring(
             next_start_pos,
             trace_id,
         );
-        head_meta = add_images_to_head_meta(
-            head_meta,
-            (chunk_index == 0).then_some(images),
-        );
+        head_meta = add_images_to_head_meta(head_meta, (chunk_index == 0).then_some(images));
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
         head_meta["exec_end"] = json!(head.exec_end);
@@ -1026,6 +1020,7 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                 "tls_handshake_ms",
                 "transport",
                 "transport_fallback",
+                "transport_fallback_reason",
             ] {
                 if let Some(value) = traversal.get(field) {
                     hop[field] = value.clone();

@@ -15,7 +15,9 @@ Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
 gateway HTTP `--gateway-port` (8080), e o servidor de inferência
 `--inference-port` (8181, `inference/infer_server.rs`, um router separado que
 serve `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/health` - não
-passa por este gateway). O
+passa por este gateway). O gateway também registra `/v1/link` para o retorno
+full-duplex do `remote-stream`; os dois listeners usam o mesmo enquadramento,
+mas o callback persistente termina no `ReplyInbox` do gateway. O
 `/health` do servidor de inferência responde `model_loaded` (o que promove a
 anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
 a condição de a cabeça rascunhar na decodificação especulativa.
@@ -35,7 +37,8 @@ provar a identidade do peer.
   `GET /peers`, `GET /health`, `POST /handshake` (`session::handle_handshake`),
   `POST /v1/relay-result` (`direct::RELAY_RESULT_PATH`, limite de corpo 1 MB),
   `POST /v1/remote-stream-result` (`direct::REMOTE_STREAM_RESULT_PATH`, o
-  callback limitado do transporte remoto).
+  callback HTTPS de fallback do transporte remoto) e `POST /v1/link` (canal
+  persistente full-duplex do retorno remoto, sem limite de corpo externo).
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
@@ -319,9 +322,9 @@ não estão no router principal e só existem antes da configuração inicial.
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Não usa API key de cliente: exige um
   ticket vivo no corpo; ticket morto = `410 Gone`.
-- **`POST /v1/remote-stream-result`** - callback do head remoto para cada lote
-  oportunista. Não usa API key de cliente: exige um ticket vivo. O ticket é
-  consumido por um `mpsc` limitado a 16 lotes; quando a
+- **`POST /v1/remote-stream-result`** - callback HTTPS de fallback do head remoto
+  para cada lote oportunista. Não usa API key de cliente: exige um ticket vivo.
+  O ticket é consumido por um `mpsc` limitado a 64 lotes; quando a
   fila está cheia, o handler espera e aplica contrapressão. Ticket cancelado ou
   lote terminal encerra o stream; ticket desconhecido responde `410 Gone`.
   Além de `accepted`, `done`, tempos e `node_timings`, o lote pode trazer
@@ -333,6 +336,12 @@ não estão no router principal e só existem antes da configuração inicial.
   para espera. O draft viaja nesse mesmo callback, mas a cabeça remota o
   instala internamente no próximo `step`; o gateway não faz uma chamada de
   reinjeção. Peers antigos sem esses campos continuam válidos.
+- **`POST /v1/link` no gateway** - retorno persistente full-duplex do
+  `remote-stream`. O corpo é um fluxo de envelopes do mesmo formato do canal de
+  inferência, cada frame carrega `REMOTE_STREAM_RESULT_PATH` e o item contém o
+  ticket. O handler reconfere a credencial interna antes de despachar cada
+  frame, entrega ao `ReplyInbox` e devolve o ACK no próprio canal. Falha desse
+  transporte é marcada como fallback HTTPS no lote seguinte.
 - **`GET /api/cluster/tls`** - `{ tls_required }`. É o que a catraca dos outros
   nós consulta no principal. Exige `InternalNodeAuth`, isto é, a chave de
   conexão e `x-pom-internal-node: 1`; isso impede um intruso de responder pelo
@@ -878,6 +887,11 @@ só quando o canal cair. O limite de corpo é desligado nessa rota porque o corp
 é a geração inteira, não um quadro - cada quadro dentro do fluxo continua
 limitado pelo enquadramento do canal. Ver `inferencia.md` §2.1.
 
+No gateway, o mesmo path é uma segunda terminação do protocolo, usada somente
+para o retorno do `remote-stream`. Ela não executa inferência: despacha apenas
+`REMOTE_STREAM_RESULT_PATH` para o `ReplyInbox`. Isso mantém o retorno aberto e
+evita um POST HTTPS por token no caminho normal.
+
 Entre peers, um lote de inferência desce esta escada de transporte, e só desce
 um degrau depois de o anterior falhar por **transporte**: canal persistente
 (`/v1/link`, quando o hop o anuncia), túnel libp2p/Noise, cliente direto
@@ -908,9 +922,10 @@ começando com `pipeline:` e com **dois** hops é a prova.
 respostas não-streaming. O formato compatível com OpenAI continua intacto:
 clientes que ignoram `x_pom` continuam lendo `usage`, `choices` e os demais
 campos padrão. `x_pom.trace` carrega o mesmo `RequestTrace`, incluindo os
-spans locais, `trace_id`, estado cold/warm, `outside_node_total_ms`,
-`outside_node_accounted_ms`, `outside_node_unaccounted_ms`, contadores de
-conexão, marcos do primeiro token, métricas de streaming e os quatro campos
+spans locais, `trace_id`, estado cold/warm e os campos opcionais
+`outside_node_total_ms`, `outside_node_accounted_ms` e
+`outside_node_unaccounted_ms` quando há residual explicitamente medido,
+contadores de conexão, marcos do primeiro token, métricas de streaming e os quatro campos
 de aceitação MTP por requisição. `x_pom.timings` separa TTFT legado,
 `server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`; campo ausente significa
 que a fronteira não foi medida, não zero. A auditoria em

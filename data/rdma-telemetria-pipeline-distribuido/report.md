@@ -4,8 +4,8 @@ Data: 2026-09-09
 
 Status: instrumentação e correção implementadas e validadas em nível unitário,
 de laboratório e frontend. A captura E2E com Ornith e dois peers continua
-bloqueada pelo ambiente local sem modelo servido. O executor MoE foi ignorado,
-conforme a spec.
+bloqueada pelo ambiente local sem modelo servido; portanto não há ganho de
+tok/s medido neste worktree. O executor MoE foi ignorado, conforme a spec.
 
 ## Resumo executivo
 
@@ -233,13 +233,13 @@ semântica de `remote-stream`, ticket, cobertura e quantis.
 
 Passaram:
 
-- `rtk cargo fmt --all -- --check`;
+- `rtk cargo fmt --all`;
 - `rtk git diff --check`;
-- `rtk cargo test -p node remote_stream`: 24 testes;
+- `rtk cargo test -p node remote_stream`: 27 testes;
 - testes direcionados de cobertura, ACK de abertura, ACK tardio do head, spans
   profiling, recibos tardios, recibos duplicados e agregação sem sincronização
   extra;
-- `rtk npm test -- --run`: 73 arquivos, 499 testes;
+- `rtk npm test -- --run`: 80 arquivos, 541 testes;
 - `rtk npm run build`: TypeScript e Vite concluídos;
 - testes frontend direcionados: 22 testes, incluindo a regressão nas seis
   cardinalidades e a paridade dos dois locales.
@@ -266,7 +266,7 @@ declarada totalmente verde neste estado compartilhado.
 - F: o cenário de resposta longa existe em `spec_lab`, mas
   `um_orcamento_acima_de_n_batch_nao_e_truncado` está entre as falhas
   preexistentes acima.
-- G: `remote_stream` tem 24 testes unitários, incluindo callbacks, hops
+- G: `remote_stream` tem 27 testes unitários, incluindo callbacks, hops
   downstream, cobertura de três peers e métricas agregadas. Não houve E2E real
   sem um modelo servido.
 - H: o laboratório direto cobre a resposta `relay/v2-direct` e o caminho sem
@@ -280,7 +280,7 @@ declarada totalmente verde neste estado compartilhado.
 No modo normal, o trace usa contadores, soma incremental e amostras limitadas
 a 1024 elementos. A deduplicação mantém no máximo 1024 IDs recentes de frame.
 Não há vetor por token nem sincronização adicional por token no hot path. O
-callback usa uma fila existente limitada a 16 lotes e a contrapressão continua
+callback usa uma fila limitada a 64 lotes e a contrapressão continua
 sendo parte do transporte.
 
 `POM_TELEMETRY_PROFILE=1` mantém no máximo 1024 spans de frame/evento. Eventos
@@ -307,3 +307,197 @@ de chamar a diferença E2E de `outside-node` quando a execução distribuída n�
 está explicada. A decomposição agora distingue evidência conhecida,
 telemetria pendente e medições acumuladas de uma partição exclusiva que o
 sistema ainda não consegue provar.
+
+## 12. Fase 2 - causa raiz da lentidao e correcao autorizada
+
+Esta seção incorpora a telemetria da execução fornecida pelo captain e a
+leitura do caminho de código. Os números do captain não são uma nova captura
+local. O baseline observado foi 90 tokens em 4,78 s, cerca de 23 tok/s
+distribuído contra cerca de 112 tok/s em um nó, e cerca de 11 tok/s quando a
+medição da aresta foi 807 ms.
+
+### 12.1 O RTT da aresta não é ICMP
+
+`crates/node/src/network/network.rs` chama
+`infer_tunnel::measure_rtt`. A medição começa antes de
+`TunnelOutbound::send` e termina quando o `TunnelRequest::get("/health")`
+recebe a resposta pelo request-response libp2p. Assim, os 51,1 ms da aresta
+`5b03 -> 02eb8c40` são um round-trip de aplicação no túnel: fila do swarm,
+eventual dial/estabelecimento, envio, processamento remoto de `/health` e
+retorno. Não é o RTT físico ICMP e não abre nem mede o `https-link`.
+
+O ping ICMP direto para `100.85.81.27` fornecido pelo captain tem mediana de
+aproximadamente 28-33 ms, com picos de 67 e 114 ms. A diferença para 51,1 ms
+não pode ser atribuída somente à rede física: a medição da aresta inclui o
+protocolo e o endpoint `/health`. No caminho HTTPS direto, o relógio do frame
+começa antes do `reqwest::send` e termina depois dos headers, corpo e
+validação; no `https-link`, a abertura é uma operação separada
+(`https-link-setup`) e o round-trip de cada frame começa depois que o canal
+persistente existe. Portanto o setup não é multiplicado por token.
+
+### 12.2 Onde foram os ~44 ms/token
+
+O cálculo direto do caso real é `4.780 / 90 = 53,11 ms/token`, não 44 ms. A
+telemetria fornecida também informa 1.670 ms de compute acumulado, 2.543 ms
+de transporte observado e 1.296 ms de `remote-stream wait`:
+
+| Evidência | Total | Média em 90 tokens | Interpretação |
+|---|---:|---:|---|
+| Compute acumulado | 1.670 ms | 18,56 ms/token | Soma de processamento nos peers, não wall-clock exclusivo |
+| Transporte observado | 2.543 ms | 28,26 ms/token | Inclui travessias e custo de aplicação; não é ICMP puro |
+| `remote-stream wait` | 1.296 ms | 14,40 ms/token | Intervalo real aguardando item na fila |
+| E2E | 4.780 ms | 53,11 ms/token | Caminho crítico medido pelo gateway |
+
+Essas linhas se sobrepõem e não formam uma decomposição: 18,56 + 28,26 +
+14,40 = 61,22 ms/token. Isso confirma por que `E2E - soma(spans)` não é uma
+correção válida. O piso evitável não é obtido subtraindo essas médias.
+
+O retorno antigo do peer B fazia uma unidade request/reply por token. O
+`HttpsLink` já reutilizava TCP/TLS, mas cada frame ainda esperava a resposta
+antes de a próxima rodada avançar. A telemetria do captain registra cerca de
+37 ms por frame, 88 chamadas, 234 KiB enviados e 134 KiB recebidos, com p50
+de 36-38 ms e máximo de 61 ms. Isso é custo de aplicação exposto pelo
+protocolo síncrono, não handshake repetido. O `remote-stream wait` de p50 13 ms
+e p95 16 ms era espera real pela chegada do item à fila, não um timer artificial
+encontrado no código. O emitter esperava `recv()`; o problema era que o
+produtor e a entrega ficavam pouco desacoplados e a callback HTTP podia impor
+a cadência do caminho.
+
+O piso físico para uma cadeia autoregressiva contém pelo menos uma travessia de
+estado por token e o compute necessário em A e B. O custo evitável comprovado
+é a serialização de cada callback e o request/reply por frame no retorno. O
+compute de token N+1 não pode consumir o estado oculto de N antes de N chegar,
+então não existe sobreposição arbitrária entre os computes de A e B sem
+especulação. O ganho permitido aqui é transportar a resposta N em paralelo
+com a preparação do próximo ciclo que não depende dela, usando fila limitada e
+canal persistente. MTP/especulação e o executor MoE não foram usados.
+
+### 12.3 Jitter e propagação sem amortecimento
+
+O p50 do frame de retorno era aproximadamente 42 ms, p95 43 ms e máximo
+71 ms. Junto dos picos ICMP de 67-114 ms, isso é compatível com uma cadeia que
+expõe a cauda de rede ao tempo de geração: sem buffer, um pico bloqueia o
+próximo callback e, por dependência autoregressiva, a resposta inteira. A
+telemetria anterior não permitia afirmar se cada pico era ICMP, callback ou
+compute; a instrumentação nova separa `token_delivery_interval_*`,
+`remote_stream_wait_*`, frame latency e compute remoto. O benchmark E2E ainda
+precisa coletar quantis por token no mesmo cenário RTT~30 ms para fechar a
+prova de propagação, em vez de inferi-la apenas do ping.
+
+### 12.4 O que foi implementado
+
+1. O produtor do `remote-stream` calcula uma rodada, coloca cada token numa
+   fila limitada de 64 entradas e pode iniciar a rodada seguinte sem esperar a
+   callback. O emitter entrega os itens em paralelo. A fila absorve rajadas
+   curtas de jitter e aplica contrapressão apenas quando a entrega fica
+   sustentadamente mais lenta que o compute.
+2. A travessia normal entre peers usa o canal persistente `/v1/link` quando a
+   capability está presente. O `BatchCoordinator` não intercepta o
+   `remote-stream`, e cada frame permanece correlacionado por `batch_id` sem
+   reconstruir uma chamada HTTP por token.
+3. O retorno do head remoto para o gateway usa também `/v1/link`, com um frame
+   de `REMOTE_STREAM_RESULT_PATH` dentro de um canal full-duplex. O gateway
+   entrega o frame ao ticket e devolve apenas o ACK do envelope. Se a abertura
+   ou o uso do canal persistente falhar, o emissor cai para o POST HTTPS por
+   callback e marca cada callback desse stream com
+   `remote_stream_transport_fallback=true` e
+   `remote_stream_transport_fallback_reason`.
+4. A UI mostra sempre `HTTPS fallback: N`, inclusive zero, e as razões
+   limitadas. A camada Rust agrega `https_fallback_calls` e
+   `https_fallback_reasons`; o indicador não depende de renomear o transporte.
+5. A abertura do canal e o round-trip do frame têm spans distintos no modo
+   `POM_TELEMETRY_PROFILE=1`. O modo normal mantém contadores, histogramas e
+   quantis de ciclo/entrega, sem vetor de evento por token.
+
+O `remote_stream_wait` não foi falsamente zerado. Ele continua sendo a medida
+`recv()` da fila do emitter. A correção reduz a espera causada por callback
+serial e torna observável a espera residual; zerá-la por apresentação apagaria
+a evidência. A fila não remove o piso físico e não converte a cadeia
+autoregressiva em execução especulativa.
+
+## 13. Antes/depois e medição de ganho
+
+Não foi possível executar Ornith com dois peers e modelo servido neste
+worktree: a UI local informa `The network is not serving any model`. Por isso
+não há número honesto de tok/s antes/depois nem promessa de ganho publicado.
+O baseline que deve ser repetido pelo captain é:
+
+| Cenário | Baseline informado |
+|---|---:|
+| Um nó | ~112 tok/s |
+| Distribuído, RTT da aresta ~51,1 ms | ~23 tok/s |
+| Distribuído, medição da aresta ~807 ms | ~11 tok/s |
+| ICMP direto para Salem | mediana ~28-33 ms, picos 67/114 ms |
+
+Para a comparação, usar o mesmo prompt, modelo, número de tokens e rota, com
+`POM_TELEMETRY_PROFILE=1`, e calcular `output_tokens / (total_ms / 1000)`.
+Registrar no antes e no depois: total E2E, TTFT, token cycle p50/p95/p99/máximo,
+delivery interval p50/p95/p99/máximo, `remote_stream_wait` total/p50/p95,
+frame latency p50/p95/máximo, compute remoto, transporte, fallback HTTPS e
+bytes. O ganho de tok/s só pode ser declarado depois dessa execução. O
+critério de sucesso da implementação é que o caminho normal mostre zero
+fallback HTTPS, canal persistente reutilizado e que um pico de entrega não
+congele o produtor até esgotar a fila.
+
+## 14. Arquivos e modelo de telemetria da fase 2
+
+- `crates/node/src/inference/link.rs`: canal enquadrado persistente aceita
+  frames de callback sem exigir resposta `frame/v1-batch`; setup, envio,
+  round-trip e recepção são separados em profiling.
+- `crates/node/src/inference/direct.rs`: handler do callback dentro de
+  `/v1/link`, `RemoteStreamDelivery` com fallback explícito e teste de entrega
+  ao ticket.
+- `crates/node/src/backend/gateway/http.rs`: `/v1/link` no gateway para o
+  retorno full-duplex, com validação da credencial interna por frame.
+- `crates/node/src/inference/infer_server/step.rs`: fila de 64 itens,
+  producer/emitter concorrentes, índice de token e quantis de entrega; a
+  espera continua medida, sem timer fixo.
+- `crates/node/src/inference/relay.rs`: caminho persistente antes de túnel e
+  HTTPS, com razão de fallback propagada no recibo.
+- `crates/node/src/inference/prefill/support.rs` e `prefill/step.rs`:
+  contadores de fallback, spans limitados, intervalos de callback e ciclos de
+  token.
+- `crates/node/src/backend/gateway/budget.rs`: o resumo não preenche mais
+  `outside_node_*` por subtração de E2E e processamento acumulado.
+- `apps/frontend/src/lib/chatStream.ts` e
+  `apps/frontend/src/components/ExecutionTelemetry.tsx`: contrato e
+  apresentação de fallback HTTPS e quantis de entrega.
+- `apps/frontend/src/i18n/messages.csv`: rótulos nos dois locales.
+- `docs/subsystems/inferencia.md`, `docs/subsystems/api-http.md` e mapas
+  `AGENTS.md`: contrato operacional do callback persistente e fallback.
+
+## 15. Validação, overhead e limitações da fase 2
+
+Validações concluídas no worktree:
+
+- `rtk cargo check -p node`;
+- `rtk cargo test -p node --no-run`;
+- `rtk cargo test -p node remote_stream -- --nocapture`;
+- `rtk cargo test -p node persistent_remote_stream -- --nocapture`;
+- `rtk cargo test -p node remote_stream_https_fallback -- --nocapture`;
+- `rtk npm test -- --run`: 80 arquivos, 541 testes;
+- `rtk npm run build`.
+
+`rtk cargo fmt --all` e `rtk git diff --check` devem ser repetidos depois do
+rebase final. O modo normal não cria spans por token. A fila limitada e os
+contadores agregados adicionam apenas o estado necessário para contrapressão e
+histogramas; o custo detalhado de profiling fica atrás de
+`POM_TELEMETRY_PROFILE=1`, com limite de amostras.
+
+A principal limitação é a ausência de relógio sincronizado entre peers:
+timestamps monotônicos de A e B não são subtraídos entre si. A telemetria mede
+relações causais por `trace_id`, `stream_id`, frame e `token_index`, e apresenta
+ausência quando a fronteira não foi medida. Outra limitação é que os números de
+RTT físico e baseline vieram do captain; o ganho final depende da repetição E2E
+no cluster.
+
+## 16. Recomendação para o benchmark do captain
+
+Executar o mesmo cenário com o código publicado, primeiro com o caminho
+normal e depois forçando uma queda controlada de `/v1/link` apenas para validar
+que o indicador mostra o contador e a razão. Não usar a queda controlada para
+medir throughput normal. Comparar os relatórios JSON de `x_pom.trace` e o
+throughput, e anexar os valores ao final deste relatório. Se o canal normal
+continuar com `remote_stream_wait` alto apesar de a fila permanecer abaixo de
+64, o próximo diagnóstico deve ser o ponto de entrega do gateway ou o compute
+do peer, não uma nova subtração de `outside-node`.

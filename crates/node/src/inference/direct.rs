@@ -120,7 +120,11 @@ struct ReplyState {
 
 /// Bounded on purpose: a slow gateway must apply backpressure to the remote
 /// emitter and, through it, to the inference producer.
-const REMOTE_STREAM_QUEUE_CAPACITY: usize = 16;
+// A bounded queue decouples the remote producer from callback jitter. 64
+// entries cover several transient 67-114 ms network spikes without allowing
+// an unbounded request-sized allocation; backpressure still closes the loop
+// when the client is genuinely slower than generation.
+const REMOTE_STREAM_QUEUE_CAPACITY: usize = 64;
 const REMOTE_STREAM_DEDUPE_WINDOW: usize = 1_024;
 
 struct StreamState {
@@ -455,6 +459,7 @@ fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value 
         "hop_index": hop_index,
         "transport": sent.transport.as_str(),
         "transport_fallback": sent.transport_fallback,
+        "transport_fallback_reason": sent.transport_fallback_reason,
         "round_trip_ms": sent.round_trip_ms,
         "bytes_sent": sent.bytes_sent,
         "bytes_received": sent.bytes_received,
@@ -711,6 +716,141 @@ pub async fn deliver_stream_batch(
     meta: Value,
 ) -> Delivery {
     deliver_meta_at(http, reply_to, REMOTE_STREAM_RESULT_PATH, meta).await
+}
+
+/// Recebe um callback remoto dentro do canal persistente `/v1/link`. O frame
+/// interno é um batch de um item só para que o próprio protocolo carregue a
+/// rota e mantenha a correlação do canal; o item contém a mesma metadata que o
+/// endpoint HTTP por callback receberia.
+pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Response {
+    let (header, mut items) = match crate::wire::decode_batch_items(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, format!("quadro inválido: {error}")).into_response()
+        }
+    };
+    if header.kind != REMOTE_STREAM_RESULT_PATH || items.len() != 1 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "quadro de retorno remoto deve conter um item",
+        )
+            .into_response();
+    }
+    let mut meta = items.remove(0).meta;
+    let Some(ticket) = meta
+        .get("ticket")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return (StatusCode::BAD_REQUEST, "lote sem ticket").into_response();
+    };
+    meta["stream_batch_bytes"] = json!(body.len());
+    if inbox.deliver_stream(&ticket, meta).await {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (StatusCode::GONE, "stream desconhecido").into_response()
+    }
+}
+
+/// Entrega callbacks do `remote-stream` por um canal persistente. A primeira
+/// falha desativa o canal para o restante deste stream e marca cada callback
+/// seguinte como fallback explícito para HTTPS por requisição. Isso mantém o
+/// caminho normal livre de request/reply por token sem transformar uma queda
+/// transitória em uma tempestade de tentativas de abertura.
+pub struct RemoteStreamDelivery {
+    http: crate::peer_client::PeerClients,
+    reply_to: Value,
+    persistent_failure: Option<String>,
+}
+
+impl RemoteStreamDelivery {
+    pub fn new(http: crate::peer_client::PeerClients, reply_to: Value) -> Self {
+        Self {
+            http,
+            reply_to,
+            persistent_failure: None,
+        }
+    }
+
+    pub async fn deliver(&mut self, meta: Value) -> Delivery {
+        let frame_id = meta
+            .get("stream_id")
+            .and_then(Value::as_str)
+            .zip(
+                meta.get("remote_stream_frame_index")
+                    .and_then(Value::as_u64),
+            )
+            .map(|(stream_id, index)| format!("{stream_id}:{index}"))
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let node_id = self.reply_to.get("node_id").and_then(Value::as_str);
+        let urls: Vec<String> = self
+            .reply_to
+            .get("urls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+
+        if self.persistent_failure.is_none() {
+            let reason = match (node_id, urls.is_empty()) {
+                (None, _) => Some("https-link: reply_to sem node_id".to_string()),
+                (Some(_), true) => Some("https-link: reply_to sem endereço".to_string()),
+                (Some(node_id), false) => {
+                    let mut link_meta = meta.clone();
+                    link_meta["ticket"] =
+                        self.reply_to.get("ticket").cloned().unwrap_or(Value::Null);
+                    link_meta["remote_stream_transport"] = json!("https-link");
+                    link_meta["remote_stream_transport_fallback"] = json!(false);
+                    match crate::wire::encode_batch_items(
+                        REMOTE_STREAM_RESULT_PATH,
+                        &frame_id,
+                        &[crate::wire::BatchPayloadItem {
+                            item_id: frame_id.clone(),
+                            session_id: link_meta
+                                .get("session_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("__session__")
+                                .to_string(),
+                            meta: link_meta,
+                            tensor: None,
+                            dtype: crate::wire::WireDtype::F16,
+                        }],
+                    ) {
+                        Ok(body) => {
+                            match crate::link::send_body_with_session(
+                                &self.http,
+                                node_id,
+                                "",
+                                &urls,
+                                &frame_id,
+                                Bytes::from(body),
+                                "remote-stream-return",
+                                meta.get("session_id").and_then(Value::as_str),
+                            )
+                            .await
+                            {
+                                Ok(_) => return Delivery::Accepted,
+                                Err(error) => Some(format!("https-link: {error}")),
+                            }
+                        }
+                        Err(error) => Some(format!("https-link: frame inválido: {error}")),
+                    }
+                }
+            };
+            self.persistent_failure = reason;
+        }
+
+        let mut fallback_meta = meta;
+        fallback_meta["remote_stream_transport"] = json!("https");
+        fallback_meta["remote_stream_transport_fallback"] = json!(true);
+        fallback_meta["remote_stream_transport_fallback_reason"] = json!(self
+            .persistent_failure
+            .clone()
+            .unwrap_or_else(|| { "https-link: canal persistente indisponível".to_string() }));
+        deliver_stream_batch(&self.http, &self.reply_to, fallback_meta).await
+    }
 }
 
 /// Entrega uma evidência de transporte pelo mesmo retorno autenticado do
@@ -1153,6 +1293,8 @@ mod tests {
                 tls_handshake_ms: 0,
                 transport: crate::relay::InferenceTransport::Libp2pTunnel,
                 transport_fallback: false,
+                transport_fallback_reason: None,
+                profiling_spans: Vec::new(),
             })
         };
         let deliver_inbox = inbox.clone();
@@ -1287,6 +1429,37 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_persistent_remote_stream_frame_reaches_its_ticket() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_stream();
+        let body = crate::wire::encode_batch_items(
+            REMOTE_STREAM_RESULT_PATH,
+            "stream-1:0",
+            &[crate::wire::BatchPayloadItem {
+                item_id: "stream-1:0".into(),
+                session_id: "session-1".into(),
+                meta: json!({
+                    "ticket": ticket.id(),
+                    "accepted": [{"token_id": 4, "text": "ok", "token_index": 0}],
+                    "done": true,
+                }),
+                tensor: None,
+                dtype: crate::wire::WireDtype::F16,
+            }],
+        )
+        .expect("frame persistente codificável");
+
+        let response = handle_remote_stream_link(&inbox, Bytes::from(body)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let received = ticket.recv().await.expect("frame recebido");
+        assert_eq!(received["accepted"][0]["token_id"], 4);
+        assert_eq!(
+            received["stream_batch_bytes"].as_u64().unwrap_or(0) > 0,
+            true
+        );
+    }
+
     /// O guarda tem que limpar o inbox sozinho: o caminho de erro e o de prazo
     /// estourado saem por `return`, e um ticket esquecido segura memória por
     /// requisição perdida.
@@ -1397,6 +1570,8 @@ mod tests {
             tls_handshake_ms: 0,
             transport: crate::relay::InferenceTransport::Libp2pTunnel,
             transport_fallback: false,
+            transport_fallback_reason: None,
+            profiling_spans: Vec::new(),
         };
 
         attach_transport(&mut hops, 1, &sent);

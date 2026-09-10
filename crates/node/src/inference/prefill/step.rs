@@ -334,6 +334,7 @@ pub(crate) struct RemoteDecodeStream {
     pub(super) model: String,
     pub(super) plan: PipelinePlan,
     pub(crate) initial_trace: RequestTrace,
+    pub(super) last_callback_at: Option<Instant>,
 }
 
 impl RemoteDecodeStream {
@@ -341,6 +342,11 @@ impl RemoteDecodeStream {
         let meta = cancelable(cancellation, async { Ok(self.ticket.recv().await) })
             .await?
             .ok_or_else(|| anyhow!("transporte remoto encerrou sem lote terminal"))?;
+        let callback_at = Instant::now();
+        let callback_interval_ms = self
+            .last_callback_at
+            .replace(callback_at)
+            .map(|previous| callback_at.saturating_duration_since(previous).as_millis() as u64);
         if let Some(error) = meta.get("error").and_then(|value| value.as_str()) {
             return Err(anyhow!("peer remoto falhou durante o stream: {error}"));
         }
@@ -362,6 +368,9 @@ impl RemoteDecodeStream {
             .and_then(|value| value.as_str())
             .unwrap_or(&self.initial_trace.trace_id);
         let mut trace = RequestTrace::from_plan_with_trace_id(trace_id, &self.model, &self.plan);
+        if let Some(interval_ms) = callback_interval_ms {
+            trace.record_remote_stream_token_delivery_interval(interval_ms);
+        }
         if trace.record_remote_stream_batch(&meta) {
             let entry = json!({
             "round_trip_ms": 0,
@@ -397,6 +406,7 @@ pub(crate) async fn step_stream(
     model: &str,
     session_id: &str,
     token_id: u32,
+    token_index: u64,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
@@ -421,6 +431,7 @@ pub(crate) async fn step_stream(
         "is_last": next_hops.is_empty(),
         "remote_stream": true,
         "token_id": token_id,
+        "telemetry_token_index": token_index,
         "next_hops": next_hops,
         "reply_to": direct.stream_reply_to(ticket.id()),
         "exec_start": head.exec_start,
@@ -472,11 +483,13 @@ pub(crate) async fn step_stream(
         ack.bytes_sent,
         ack.bytes_received,
     );
+    initial_trace.record_transport_fallback_from_sent(&ack);
     Ok(RemoteDecodeStream {
         ticket,
         model: model.to_string(),
         plan: plan.clone(),
         initial_trace,
+        last_callback_at: None,
     })
 }
 
@@ -506,8 +519,7 @@ pub async fn step_speculative(
     plan.validate_wire_dtype(dtype)?;
     if plan.supports_relay_chain() {
         return step_speculative_ring(
-            plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel,
-            trace_id,
+            plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel, trace_id,
         )
         .await;
     }

@@ -94,6 +94,7 @@ function DistributedTelemetry({ trace }: { trace: RequestTrace }) {
         <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamLatency", { first: remote.first_frame_latency_ms ?? 0, p50: remote.frame_latency_p50_ms, p95: remote.frame_latency_p95_ms, max: remote.frame_latency_max_ms })}</p>
         <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamCompute", { total: remote.remote_compute_total_ms, p50: remote.remote_compute_p50_ms, p95: remote.remote_compute_p95_ms })}</p>
         <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamWait", { total: remote.remote_stream_wait_total_ms, p50: remote.remote_stream_wait_p50_ms, p95: remote.remote_stream_wait_p95_ms })}</p>
+        {(remote.token_delivery_interval_samples ?? 0) > 0 && <p className="font-mono text-muted">{t("chat.telemetry.remoteStreamTokenDelivery", { samples: remote.token_delivery_interval_samples ?? 0, p50: remote.token_delivery_interval_p50_ms ?? 0, p95: remote.token_delivery_interval_p95_ms ?? 0, p99: remote.token_delivery_interval_p99_ms ?? 0, max: remote.token_delivery_interval_max_ms ?? 0 })}</p>}
       </div>}
       {(telemetry.duplicate_spans > 0 || telemetry.late_spans > 0 || telemetry.orphan_spans > 0) && <p className="mt-2 font-mono text-[0.66rem] text-faint">{t("chat.telemetry.integrity", { duplicates: telemetry.duplicate_spans, late: telemetry.late_spans, orphan: telemetry.orphan_spans })}</p>}
     </section>
@@ -677,6 +678,7 @@ export function ExecutionTelemetry({
     {timings && <TimingSummary timings={timings} />}
     {hasDetailedTrace(trace) && <ExecutionTimeline trace={trace} />}
     <DistributedTelemetry trace={trace} />
+    <p className="mt-1 break-words font-mono text-[0.68rem] text-faint">{t("chat.telemetry.transportHttpsFallback", { calls: trace.https_fallback_calls ?? 0, reasons: trace.https_fallback_reasons?.join("; ") || "-" })}</p>
     {trace.prefill_overlap_enabled && <p className="mt-1 font-mono text-[0.68rem] text-faint">{t("chat.telemetry.overlap", { chunks: trace.prefill_overlapped_chunks ?? 0, depth: trace.prefill_pipeline_depth_max ?? 1, limit: trace.prefill_max_inflight_chunks ?? 8 })}</p>}
     {trace.transport_trace_complete === false && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>

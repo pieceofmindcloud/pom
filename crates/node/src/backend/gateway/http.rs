@@ -36,6 +36,10 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
             post(handle_remote_stream_result)
                 .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
         )
+        .route(
+            crate::link::LINK_PATH,
+            post(handle_remote_stream_link).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .merge(crate::openai::routes())
         .merge(crate::messages::routes())
         .merge(crate::webui::routes())
@@ -257,7 +261,10 @@ pub(super) async fn public_networks(
         }
     }
 
-    let mut geo_cache = state.database.public_network_geo_cache().unwrap_or_default();
+    let mut geo_cache = state
+        .database
+        .public_network_geo_cache()
+        .unwrap_or_default();
     let mut candidates = state.network.alive_peers().await;
     for peer in state.network.public_discovered_peers().await {
         if !candidates.iter().any(|known| known.node_id == peer.node_id) {
@@ -397,6 +404,34 @@ pub(super) async fn handle_remote_stream_result(
     body: Bytes,
 ) -> impl IntoResponse {
     crate::direct::handle_remote_stream_result(&state.reply_inbox, body).await
+}
+
+/// Serve o retorno do `remote-stream` pelo mesmo canal persistente enquadrado
+/// que o transporte entre as fatias. A credencial é reconferida para cada
+/// frame, porque a conexão pode sobreviver à troca da chave do cluster.
+pub(super) async fn handle_remote_stream_link(
+    State(state): State<GatewayState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> axum::response::Response {
+    let inbox = state.reply_inbox.clone();
+    let auth = state.auth.clone();
+    crate::link::serve(body, move |path, bytes| {
+        let inbox = inbox.clone();
+        let auth = auth.clone();
+        let headers = headers.clone();
+        async move {
+            crate::auth::validate_internal_node_headers(&auth, &headers)
+                .await
+                .map_err(|_| anyhow::anyhow!("credencial de peer inválida"))?;
+            if path != crate::direct::REMOTE_STREAM_RESULT_PATH {
+                return Err(anyhow::anyhow!(
+                    "rota de retorno remoto desconhecida: {path}"
+                ));
+            }
+            Ok(crate::direct::handle_remote_stream_link(&inbox, bytes).await)
+        }
+    })
 }
 
 /// Accept raw bytes so callers don't need `Content-Type: application/json`.

@@ -107,6 +107,7 @@ pub struct LinkResponse {
     pub body: Vec<u8>,
     pub round_trip_ms: u64,
     pub bytes_sent: u64,
+    pub profiling_spans: Vec<crate::prefill::TelemetrySpan>,
 }
 
 // ── Envelope ─────────────────────────────────────────────────────────────────
@@ -407,13 +408,13 @@ async fn channel_for(
     node_id: &str,
     base_url: &str,
     session_id: Option<&str>,
-) -> Result<Arc<Channel>> {
+) -> Result<(Arc<Channel>, bool)> {
     let key = target_key(node_id, base_url);
     {
         let channels = pool().channels.lock().await;
         if let Some(channel) = channels.get(&key) {
             if channel.alive.load(Ordering::Relaxed) {
-                return Ok(channel.clone());
+                return Ok((channel.clone(), false));
             }
         }
     }
@@ -430,7 +431,7 @@ async fn channel_for(
         let channels = pool().channels.lock().await;
         if let Some(channel) = channels.get(&key) {
             if channel.alive.load(Ordering::Relaxed) {
-                return Ok(channel.clone());
+                return Ok((channel.clone(), false));
             }
         }
     }
@@ -445,7 +446,7 @@ async fn channel_for(
                 *opened.entry(key.clone()).or_default() += 1;
             }
             pool().channels.lock().await.insert(key, channel.clone());
-            Ok(channel)
+            Ok((channel, true))
         }
         Err(error) => {
             quarantine(&key);
@@ -599,6 +600,25 @@ pub async fn send_batch_with_session(
     peer_label: &str,
     session_id: Option<&str>,
 ) -> Result<LinkResponse> {
+    send_batch_with_session_profile(
+        clients, node_id, base_url, candidates, batch_id, body, peer_label, session_id, None,
+    )
+    .await
+}
+
+/// Variante usada pelo trace detalhado. O modo normal passa `None` e não
+/// aloca spans nem faz trabalho adicional no caminho quente.
+pub async fn send_batch_with_session_profile(
+    clients: &crate::peer_client::PeerClients,
+    node_id: &str,
+    base_url: &str,
+    candidates: &[String],
+    batch_id: &str,
+    body: Bytes,
+    peer_label: &str,
+    session_id: Option<&str>,
+    profiling: Option<crate::prefill::TelemetryContext>,
+) -> Result<LinkResponse> {
     let mut route_candidates = Vec::with_capacity(candidates.len() + 1);
     if !base_url.is_empty() {
         route_candidates.push(base_url.to_string());
@@ -613,7 +633,8 @@ pub async fn send_batch_with_session(
     let ordered = clients.route_order(&route_key, &route_candidates);
     let mut last_error = String::new();
     for base in ordered {
-        let channel = match channel_for(clients, node_id, &base, session_id).await {
+        let setup_started = Instant::now();
+        let (channel, opened) = match channel_for(clients, node_id, &base, session_id).await {
             Ok(channel) => channel,
             Err(error) => {
                 last_error = error.to_string();
@@ -621,8 +642,28 @@ pub async fn send_batch_with_session(
                 continue;
             }
         };
-        match send_batch_on_channel(&channel, node_id, batch_id, body.clone(), peer_label).await {
-            Ok(response) => {
+        match send_batch_on_channel(
+            &channel,
+            node_id,
+            batch_id,
+            body.clone(),
+            peer_label,
+            profiling.as_ref(),
+        )
+        .await
+        {
+            Ok(mut response) => {
+                if opened {
+                    if let Some(context) = profiling.as_ref() {
+                        response.profiling_spans.push(context.span(
+                            "https-link-setup",
+                            setup_started,
+                            Instant::now(),
+                            None,
+                            Some("https-link".into()),
+                        ));
+                    }
+                }
                 clients.remember_route_success(&route_key, &base);
                 return Ok(response);
             }
@@ -640,12 +681,89 @@ pub async fn send_batch_with_session(
     ))
 }
 
+/// Envia um frame já enquadrado pelo canal persistente, sem exigir que a
+/// resposta seja outro frame de inferência. O retorno remoto do
+/// `remote-stream` usa exatamente esta variante: cada lote é um frame do
+/// canal, mas o peer responde apenas com o ACK HTTP do callback.
+pub async fn send_body_with_session(
+    clients: &crate::peer_client::PeerClients,
+    node_id: &str,
+    base_url: &str,
+    candidates: &[String],
+    frame_id: &str,
+    body: Bytes,
+    peer_label: &str,
+    session_id: Option<&str>,
+) -> Result<LinkResponse> {
+    let mut route_candidates = Vec::with_capacity(candidates.len() + 1);
+    if !base_url.is_empty() {
+        route_candidates.push(base_url.to_string());
+    }
+    let additional: Vec<String> = candidates
+        .iter()
+        .filter(|candidate| !route_candidates.contains(candidate))
+        .cloned()
+        .collect();
+    route_candidates.extend(additional);
+    let route_key = format!("reply:{node_id}");
+    let mut last_error = String::new();
+    for base in clients.route_order(&route_key, &route_candidates) {
+        let (channel, _opened) = match channel_for(clients, node_id, &base, session_id).await {
+            Ok(channel) => channel,
+            Err(error) => {
+                last_error = error.to_string();
+                clients.remember_route_failure(&route_key, &base);
+                continue;
+            }
+        };
+        match send_frame_on_channel(
+            &channel,
+            node_id,
+            frame_id,
+            body.clone(),
+            peer_label,
+            false,
+            None,
+        )
+        .await
+        {
+            Ok(response) => {
+                clients.remember_route_success(&route_key, &base);
+                return Ok(response);
+            }
+            Err(error) => {
+                clients.remember_route_failure(&route_key, &base);
+                return Err(error);
+            }
+        }
+    }
+    Err(anyhow!(
+        "canal de retorno com {node_id} não abriu por nenhuma rota: {last_error}"
+    ))
+}
+
 async fn send_batch_on_channel(
     channel: &Arc<Channel>,
     node_id: &str,
     batch_id: &str,
     body: Bytes,
     peer_label: &str,
+    profiling: Option<&crate::prefill::TelemetryContext>,
+) -> Result<LinkResponse> {
+    send_frame_on_channel(
+        channel, node_id, batch_id, body, peer_label, true, profiling,
+    )
+    .await
+}
+
+async fn send_frame_on_channel(
+    channel: &Arc<Channel>,
+    node_id: &str,
+    batch_id: &str,
+    body: Bytes,
+    peer_label: &str,
+    validate_response_batch: bool,
+    profiling: Option<&crate::prefill::TelemetryContext>,
 ) -> Result<LinkResponse> {
     let frame = encode_envelope(0, batch_id, &body)?;
     let bytes_sent = frame.len() as u64;
@@ -667,12 +785,14 @@ async fn send_batch_on_channel(
     };
 
     let started = Instant::now();
+    let send_started = started;
     channel
         .outbound
         .clone()
         .send(Bytes::from(frame))
         .await
         .map_err(|_| anyhow!("canal com {node_id} fechou antes do envio"))?;
+    let send_finished = Instant::now();
 
     let envelope = match tokio::time::timeout(CALL_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(envelope))) => envelope,
@@ -680,6 +800,7 @@ async fn send_batch_on_channel(
         Ok(Err(_)) => return Err(anyhow!("{peer_label}: canal encerrou sem responder")),
         Err(_) => return Err(anyhow!("{peer_label}: canal não respondeu a tempo")),
     };
+    let received = Instant::now();
     if !(200..300).contains(&envelope.status) {
         return Err(anyhow::Error::new(crate::relay::HttpRefusal {
             status: envelope.status,
@@ -687,11 +808,38 @@ async fn send_batch_on_channel(
             peer_label: peer_label.to_string(),
         }));
     }
-    wire::validate_batch_bytes(&envelope.body)?;
+    if validate_response_batch {
+        wire::validate_batch_bytes(&envelope.body)?;
+    }
+    let mut profiling_spans = Vec::new();
+    if let Some(context) = profiling {
+        profiling_spans.push(context.span(
+            "frame-send",
+            send_started,
+            send_finished,
+            None,
+            Some("https-link".into()),
+        ));
+        profiling_spans.push(context.span(
+            "transport-round-trip",
+            started,
+            received,
+            None,
+            Some("https-link".into()),
+        ));
+        profiling_spans.push(context.span(
+            "frame-receive",
+            received,
+            received,
+            None,
+            Some("https-link".into()),
+        ));
+    }
     Ok(LinkResponse {
         body: envelope.body,
         round_trip_ms: started.elapsed().as_millis() as u64,
         bytes_sent,
+        profiling_spans,
     })
 }
 
@@ -842,6 +990,35 @@ mod tests {
             1,
             "oito travessias não podem abrir oito ligações"
         );
+    }
+
+    #[tokio::test]
+    async fn callback_persistente_aceita_ack_que_nao_e_batch() {
+        let url = spawn_link_server(|_path: String, _body: Bytes| {
+            axum::response::Response::builder()
+                .status(200)
+                .body(axum::body::Body::from("callback aceito"))
+                .unwrap()
+        })
+        .await;
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        let body = batch("/v1/remote-stream-result", "frame-0", "frame-0");
+
+        let response = send_body_with_session(
+            &clients,
+            "gateway",
+            &url,
+            &[],
+            "frame-0",
+            Bytes::from(body),
+            "remote-stream-return",
+            None,
+        )
+        .await
+        .expect("callback deve reutilizar o canal persistente");
+
+        assert_eq!(response.body, b"callback aceito");
+        assert_eq!(channels_opened("gateway", &url), 1);
     }
 
     #[tokio::test]

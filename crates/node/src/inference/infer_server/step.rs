@@ -1,4 +1,5 @@
 use super::*;
+use crate::prefill::Phase;
 
 pub(super) struct PreparedStep {
     pub(super) sid_key: String,
@@ -62,10 +63,11 @@ pub(crate) async fn handle_step(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode_inference_request(&body) {
+    let (mut meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
+    meta["telemetry_source_peer_id"] = json!(app.load_node_id.clone());
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
     let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
         Some(value) => match WireDtype::parse(value) {
@@ -123,6 +125,13 @@ pub(crate) async fn handle_step(
     // A largura de lote que o gateway quer na rodada seguinte, gerada na
     // cabeça (do `speculate`) e ecoada até a cauda (ver o doc de `mtp_k`).
     let mtp_k: Option<u32> = meta.get("mtp_k").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let profiling = crate::prefill::TelemetryContext::from_meta(
+        &meta,
+        app.load_node_id.clone(),
+        Phase::Decode,
+        processing_started,
+        None,
+    );
 
     let input_prepare_started = Instant::now();
     let tensor = match tensor {
@@ -175,6 +184,7 @@ pub(crate) async fn handle_step(
         batch_tokens,
         mtp_k,
         queued_at,
+        profiling: profiling.clone(),
     }) {
         Ok(receiver) => receiver.await,
         Err(SchedulerSubmitError::Full { limit }) => {
@@ -216,6 +226,16 @@ pub(crate) async fn handle_step(
         Ok(v) => v,
         Err(e) => return err500(e),
     };
+    if let Some(context) = profiling.as_ref() {
+        reply.timings.record_profile_span(
+            context,
+            "node-processing",
+            context.origin,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
     if local_meta
         .get("token_id")
         .and_then(|value| value.as_u64())
@@ -437,7 +457,10 @@ pub(crate) async fn handle_step_stream(
     let loads = app.loads.clone();
     let load_node_id = app.load_node_id.clone();
     let stream_started = Instant::now();
-    let (producer_tx, producer_rx) = mpsc::channel(16);
+    // Keep enough completed tokens in flight to absorb short network tails.
+    // The queue is bounded, so a persistently slow callback still applies
+    // backpressure instead of growing memory without limit.
+    let (producer_tx, producer_rx) = mpsc::channel(64);
     tokio::spawn(async move {
         let _load_guard = loads.acquire(&load_node_id).await;
         let producer = remote_stream_producer(app, meta, dtype, producer_tx);
@@ -462,6 +485,7 @@ pub(crate) async fn handle_step_stream(
 
 pub(super) struct RemoteStreamToken {
     pub(super) token_id: u32,
+    pub(super) token_index: u64,
     pub(super) text: String,
     pub(super) done: bool,
     pub(super) processing_ms: u64,
@@ -588,6 +612,10 @@ pub(super) async fn remote_stream_producer(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let token_index = step_meta
+            .get("telemetry_token_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let hop_timings = reply_meta
             .get("hop_timings")
             .and_then(Value::as_array)
@@ -648,6 +676,7 @@ pub(super) async fn remote_stream_producer(
                 if sender
                     .send(RemoteStreamItem::Token(RemoteStreamToken {
                         token_id: *token_id,
+                        token_index: token_index.saturating_add(index as u64),
                         text: text.clone(),
                         done: done && index + 1 == accepted.len(),
                         processing_ms: if index == 0 { processing_ms } else { 0 },
@@ -674,6 +703,8 @@ pub(super) async fn remote_stream_producer(
             if let Some(token_id) = accepted.last().map(|(token_id, _)| *token_id) {
                 step_meta["token_id"] = json!(token_id);
             }
+            step_meta["telemetry_token_index"] =
+                json!(token_index.saturating_add(accepted.len() as u64));
             continue;
         }
 
@@ -688,6 +719,7 @@ pub(super) async fn remote_stream_producer(
         if sender
             .send(RemoteStreamItem::Token(RemoteStreamToken {
                 token_id: token_id as u32,
+                token_index,
                 text: reply_meta
                     .get("text")
                     .and_then(Value::as_str)
@@ -711,6 +743,7 @@ pub(super) async fn remote_stream_producer(
             return;
         }
         step_meta["token_id"] = json!(token_id);
+        step_meta["telemetry_token_index"] = json!(token_index.saturating_add(1));
     }
 }
 
@@ -821,6 +854,7 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
                 tokens.push(json!({
                     "token_id": token.token_id,
                     "text": token.text,
+                    "token_index": token.token_index,
                 }));
                 processing_ms = processing_ms.saturating_add(token.processing_ms);
                 done |= token.done;
@@ -866,7 +900,10 @@ pub(super) async fn remote_stream_emitter(
         .to_owned();
     let mut frames_sent = 0_u64;
     let mut previous_frame_at = None;
-    emit_remote_stream_batches(reply_to, receiver, |reply_to, mut batch| {
+    let delivery = Arc::new(tokio::sync::Mutex::new(
+        crate::direct::RemoteStreamDelivery::new(http_client().clone(), reply_to.clone()),
+    ));
+    emit_remote_stream_batches(reply_to.clone(), receiver, |_reply_to, mut batch| {
         let stream_id = stream_id.clone();
         let frame_index = frames_sent;
         frames_sent = frames_sent.saturating_add(1);
@@ -889,7 +926,8 @@ pub(super) async fn remote_stream_emitter(
         if frame_index == 0 {
             batch["remote_stream_first_frame_latency_ms"] = json!(frame_latency_ms);
         }
-        async move { crate::direct::deliver_stream_batch(http_client(), &reply_to, batch).await }
+        let delivery = delivery.clone();
+        async move { delivery.lock().await.deliver(batch).await }
     })
     .await;
 }
@@ -983,6 +1021,7 @@ mod remote_stream_tests {
     ) -> RemoteStreamItem {
         RemoteStreamItem::Token(RemoteStreamToken {
             token_id,
+            token_index: token_id as u64,
             text: text.into(),
             done,
             processing_ms: 3,
@@ -1000,8 +1039,14 @@ mod remote_stream_tests {
         let (batch, error, terminal) =
             remote_stream_batch(&[token(4, "A", false), token(9, "ção", true)]);
 
-        assert_eq!(batch["accepted"][0], json!({"token_id": 4, "text": "A"}));
-        assert_eq!(batch["accepted"][1], json!({"token_id": 9, "text": "ção"}));
+        assert_eq!(
+            batch["accepted"][0],
+            json!({"token_id": 4, "text": "A", "token_index": 4})
+        );
+        assert_eq!(
+            batch["accepted"][1],
+            json!({"token_id": 9, "text": "ção", "token_index": 9})
+        );
         assert_eq!(batch["processing_ms"], 6);
         assert_eq!(batch["node_timings"]["decode_ms"], 4.0);
         assert_eq!(batch["done"], true);
@@ -1061,6 +1106,7 @@ mod remote_stream_tests {
     fn token_with_node_timings(node_timings: Value) -> RemoteStreamItem {
         RemoteStreamItem::Token(RemoteStreamToken {
             token_id: 0,
+            token_index: 0,
             text: String::new(),
             done: false,
             processing_ms: 0,
@@ -1077,6 +1123,7 @@ mod remote_stream_tests {
     fn lote_remoto_transporta_o_rascunho_no_mesmo_callback() {
         let item = RemoteStreamItem::Token(RemoteStreamToken {
             token_id: 4,
+            token_index: 4,
             text: "A".into(),
             done: false,
             processing_ms: 3,
@@ -1288,6 +1335,8 @@ pub(super) fn step_forward_meta(
         "trace_id",
         "request_id",
         "pipeline_id",
+        "telemetry_token_index",
+        "telemetry_source_peer_id",
     ] {
         if let Some(value) = local_meta.get(field).or_else(|| request_meta.get(field)) {
             meta[field] = value.clone();

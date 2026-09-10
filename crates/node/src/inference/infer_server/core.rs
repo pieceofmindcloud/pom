@@ -13,6 +13,7 @@ pub(crate) const SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK: &str = "hybrid_tail
 pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
     "peer_without_sliced_mtp_wire";
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
+const PROFILE_SPAN_LIMIT: usize = 64;
 
 /// Resolve a preferência persistida pelo deploy para o seletor operacional.
 ///
@@ -150,6 +151,10 @@ pub(super) struct NodeTimings {
     pub(super) mtp_draft_tokens_proposed: u64,
     pub(super) mtp_draft_tokens_accepted: u64,
     pub(super) mtp_draft_tokens_rejected: u64,
+    /// Spans por fronteira de um step, somente no modo profiling. O modo
+    /// normal mantém apenas os contadores acima e não aloca um vetor por
+    /// token.
+    pub(super) profiling_spans: Option<Vec<crate::prefill::TelemetrySpan>>,
 }
 
 pub(super) fn wall_clock_ms() -> u64 {
@@ -243,13 +248,30 @@ impl NodeTimings {
         }
     }
 
+    pub(super) fn record_profile_span(
+        &mut self,
+        context: &crate::prefill::TelemetryContext,
+        name: &str,
+        start: Instant,
+        end: Instant,
+        parent_span_id: Option<String>,
+        transport: Option<String>,
+    ) {
+        let Some(spans) = self.profiling_spans.as_mut() else {
+            return;
+        };
+        if spans.len() < PROFILE_SPAN_LIMIT {
+            spans.push(context.span(name, start, end, parent_span_id, transport));
+        }
+    }
+
     pub(super) fn json(&self) -> Value {
         // Counters are kept in microseconds so a stage costing less than a
         // millisecond is not truncated to zero on every call and lost in the
         // sum. The wire stays in milliseconds, with a fraction preserved for
         // the diagnostic fields the screen reads.
         let ms = |us: u64| us as f64 / 1_000.0;
-        json!({
+        let mut value = json!({
             "frame_decode_ms": ms(self.frame_decode_us),
             "input_prepare_ms": ms(self.input_prepare_us),
             "queue_ms": ms(self.queue_us),
@@ -302,7 +324,11 @@ impl NodeTimings {
                 .tp
                 .as_ref()
                 .map(|tp| serde_json::to_value(tp).unwrap_or(Value::Null)),
-        })
+        });
+        if let Some(spans) = &self.profiling_spans {
+            value["profiling_spans"] = serde_json::to_value(spans).unwrap_or_else(|_| json!([]));
+        }
+        value
     }
 }
 
@@ -385,6 +411,7 @@ pub(super) struct StepJob {
     pub(super) batch_tokens: Option<Vec<i32>>,
     pub(super) mtp_k: Option<u32>,
     pub(super) queued_at: Instant,
+    pub(super) profiling: Option<crate::prefill::TelemetryContext>,
 }
 
 pub(super) enum InferenceCommand {
@@ -981,6 +1008,7 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.batch_tokens,
                 job.mtp_k,
                 job.queued_at,
+                job.profiling,
             );
             let _ = reply.send(result);
         }

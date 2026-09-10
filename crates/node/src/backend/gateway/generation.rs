@@ -100,9 +100,7 @@ async fn reload_idle_pipeline_with_timeout(
             let urls = peer.gateway_candidates();
             if urls.is_empty() {
                 return Some(Ok(async move {
-                    Err(anyhow::anyhow!(
-                        "peer {node_id} sem endpoint de gateway"
-                    ))
+                    Err(anyhow::anyhow!("peer {node_id} sem endpoint de gateway"))
                 }
                 .boxed()));
             }
@@ -939,6 +937,7 @@ pub(super) async fn generate_stream_inner(
                 model,
                 &session_id,
                 next_token,
+                tokens_generated as u64,
                 dtype,
                 &state.peer_http,
                 &state.network.routes,
@@ -1296,6 +1295,7 @@ pub(super) async fn generate_stream_inner(
         }
 
         while remaining_generation_steps(budget.total, tokens_generated) > 0 {
+            let cycle_started = Instant::now();
             let res = if let Some(stream) = remote_stream.as_mut() {
                 stream.next(&cancellation).await
             } else {
@@ -1356,6 +1356,11 @@ pub(super) async fn generate_stream_inner(
                                 return;
                             }
                             StopSend::Continue => {}
+                        }
+                        if index == 0 {
+                            trace.record_token_cycle(
+                                cycle_started.elapsed().as_millis() as u64,
+                            );
                         }
                         if !step.done || index + 1 < take {
                             if let Some(cycle) = cycle_detector.observe(*token_id, text) {

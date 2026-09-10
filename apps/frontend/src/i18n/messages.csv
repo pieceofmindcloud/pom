@@ -283,6 +283,7 @@ chat.telemetry.remoteStreamCompute,remote compute total {total} ms · p50 {p50} 
 chat.telemetry.remoteStreamFrames,frames received / sent {received} / {sent} · bytes {bytes},frames recebidos / enviados {received} / {sent} · bytes {bytes}
 chat.telemetry.remoteStreamLatency,frame latency first / p50 / p95 / max {first} / {p50} / {p95} / {max} ms,latência de frame primeira / p50 / p95 / máxima {first} / {p50} / {p95} / {max} ms
 chat.telemetry.remoteStreamTitle,Remote stream,Remote stream
+chat.telemetry.remoteStreamTokenDelivery,token delivery interval samples {samples} · p50/p95/p99/max {p50}/{p95}/{p99}/{max} ms,amostras do intervalo de entrega de tokens {samples} · p50/p95/p99/máximo {p50}/{p95}/{p99}/{max} ms
 chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · p95 {p95} ms,espera do stream total {total} ms · p50 {p50} ms · p95 {p95} ms
 chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
 chat.telemetry.residualHeader,residual,residual
@@ -334,6 +335,7 @@ chat.telemetry.tpWait,TP wait,espera TP
 chat.telemetry.traceMissing,trace not reported,trace não informado
 chat.telemetry.transportFallbackTotal,fallback total {calls},fallback total {calls}
 chat.telemetry.transportHeader,transport,transporte
+chat.telemetry.transportHttpsFallback,"HTTPS fallback: {calls, plural, =0 {0 times} one {1 time} other {# times}} · reason(s): {reasons}","fallback para HTTPS: {calls, plural, =0 {0 vezes} one {1 vez} other {# vezes}} · motivo(s): {reasons}"
 chat.telemetry.transportMissing,transport traversal: not measured,travessia de transporte: não medida
 chat.telemetry.transportSummary,{transport}: {calls} calls · sent {sent} · received {received} · RTT min/median/p95/max {min}/{median}/{p95}/{max} ms · fallback {fallback},{transport}: {calls} chamadas · enviados {sent} · recebidos {received} · RTT mínimo/mediana/p95/máximo {min}/{median}/{p95}/{max} ms · fallback {fallback}
 chat.telemetry.transportSwitch,transport switch {from} -> {to} ({calls}),troca de transporte {from} -> {to} ({calls})

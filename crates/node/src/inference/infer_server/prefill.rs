@@ -923,12 +923,8 @@ pub(super) fn prefill_blocking(
             session.contains_media = true;
             session.stable_len = decoded_n_past;
         } else if let Some(positions) = mrope_positions.as_deref() {
-            session.n_past = logical_end_from_mrope_positions(
-                n_past,
-                positions,
-                n_tokens,
-                next_pos,
-            )?;
+            session.n_past =
+                logical_end_from_mrope_positions(n_past, positions, n_tokens, next_pos)?;
             session.prompt_cells = session.prompt_cells.saturating_add(n_tokens as u32);
         } else {
             session.n_past += n_tokens as u32;
@@ -942,12 +938,7 @@ pub(super) fn prefill_blocking(
         (session.prompt_tokens.len() as u32, session.n_past)
     };
     let owns_tokens = total_tokens > 0; // this peer has prompt_tokens → token path
-    let more = prefill_has_more_chunks(
-        owns_tokens,
-        total_tokens,
-        n_past_now,
-        multimodal_complete,
-    );
+    let more = prefill_has_more_chunks(owns_tokens, total_tokens, n_past_now, multimodal_complete);
     if owns_tokens && !more {
         is_final_chunk = true;
     }
@@ -1203,9 +1194,9 @@ pub(super) fn prefill_batch_blocking(
             // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
             let want_reuse = reuse_prefix
                 && chunk_index == 0
-                && s.sessions
-                    .get(&sid_key)
-                    .is_some_and(|session| session.retained && session.prompt_cells == session.n_past);
+                && s.sessions.get(&sid_key).is_some_and(|session| {
+                    session.retained && session.prompt_cells == session.n_past
+                });
             s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
             let mut prefix = PrefixDecision::default();
             // Ver `prefill_blocking`: quem não tokeniza recebe a fronteira.
@@ -1676,7 +1667,12 @@ mod multimodal_position_tests {
         ));
         // Sem mídia as duas grandezas coincidem, e o corte em pedaços continua
         // a valer: um prompt de texto por ingerir ainda pede outro pedaço.
-        assert!(prefill_has_more_chunks(true, celulas_fisicas, posicao_logica, false));
+        assert!(prefill_has_more_chunks(
+            true,
+            celulas_fisicas,
+            posicao_logica,
+            false
+        ));
         assert!(!prefill_has_more_chunks(true, 244, 244, false));
         assert!(!prefill_has_more_chunks(false, 244, 51, false));
     }
@@ -1685,7 +1681,9 @@ mod multimodal_position_tests {
     /// cabeça anunciou, nunca o número de linhas de embedding.
     #[test]
     fn mrope_hidden_state_keeps_logical_end_separate_from_cell_count() {
-        let positions: Vec<[u32; 4]> = (0..208).map(|i| [26, 26 + i / 16, 26 + i % 16, 0]).collect();
+        let positions: Vec<[u32; 4]> = (0..208)
+            .map(|i| [26, 26 + i / 16, 26 + i % 16, 0])
+            .collect();
 
         assert_eq!(
             logical_end_from_mrope_positions(26, &positions, 208, Some(51)).unwrap(),
@@ -1770,6 +1768,7 @@ pub(super) fn step_batch_blocking(
                     job.batch_tokens,
                     job.mtp_k,
                     job.queued_at,
+                    job.profiling,
                 );
                 (reply, result)
             })

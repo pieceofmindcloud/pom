@@ -25,7 +25,10 @@ envelope whose issuer must be a current authority in the trust chain. The client
 inference routes (`/api/generate`, `/v1/models`, `/v1/chat/completions`,
 `/v1/completions` and `/v1/messages`) accept only active inference API keys.
 The gateway callbacks `/v1/relay-result` and `/v1/remote-stream-result` use
-the per-frame `Ticket` in the body and no client API key. The separate
+the per-frame `Ticket` in the body and no client API key. The gateway also
+serves `/v1/link` for the persistent full-duplex return of `remote-stream`;
+its callback frame is authenticated per envelope and falls back to
+`/v1/remote-stream-result` only after an explicit transport failure. The separate
 inference listener accepts the connection key on private networks; public
 networks use TLS transport without a shared secret. A public node keeps a
 local `connection_key` for the browser/admin boundary, but it is never
@@ -540,7 +543,9 @@ faz o download autenticado do blob persistido.
   ring stays serialized by its nested response contract; the request trace
   reports pipeline depth, prefix reuse and transport per traversal. It also
   carries distributed telemetry status, peer/span coverage and bounded
-  `remote-stream` frame aggregates. A response may reach the client while
+  `remote-stream` frame aggregates. The normal stream return uses the
+  persistent `/v1/link` channel; a transport failure falls back to the HTTP
+  callback and is counted with an explicit reason. A response may reach the client while
   transport receipts remain pending; this is represented as
   `response_complete` until the retained trace is complete, not as an
   invented `unaccounted` duration;
@@ -562,8 +567,9 @@ faz o download autenticado do blob persistido.
   full pipeline: TTFT, prompt-token prefill speed, output-token generation
   speed from the first token, and end-to-end total. The summary trace carries
   the same `trace_id` used by the audit, local gateway spans, separate
-  outside-node total/accounted/unaccounted values, cold/warm state, connection
-  reuse counts and first-token boundaries. The historical
+  optional outside-node total/accounted/unaccounted values only when an
+  explicit residual is measured, cold/warm state, connection reuse counts and
+  first-token boundaries. The historical
   `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
@@ -580,11 +586,12 @@ faz o download autenticado do blob persistido.
   next retry, hop or chunk; already accepted peer frames are cleaned up by the
   normal session release. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
-  `POST /handshake` (session::handle_handshake), `POST /v1/relay-result` and
-  `POST /v1/remote-stream-result`
+  `POST /handshake` (session::handle_handshake), `POST /v1/relay-result`,
+  `POST /v1/remote-stream-result` and `POST /v1/link`
   (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, no client API-key auth -
-  the per-frame `Ticket` is the credential; handler `handle_relay_result`
-  delivers into `reply_inbox`); it serves with
+  the per-frame `Ticket` is the credential; the callback handlers deliver into
+  `reply_inbox`, while `/v1/link` keeps the response body streaming and checks
+  the internal node credential for each frame); it serves with
   `axum::serve(...).tcp_nodelay(true)` because Nagle delayed the small SSE
   writes. `#[cfg(test)] mod testkit` is the shared scaffold for route tests - a
   whole `GatewayState` with the peer table seeded by hand; its network socket

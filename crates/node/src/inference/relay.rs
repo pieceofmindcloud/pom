@@ -161,6 +161,12 @@ pub struct SentFrame {
     pub transport: InferenceTransport,
     /// True quando HTTPS foi usado depois de uma falha de transporte no túnel.
     pub transport_fallback: bool,
+    /// Motivo da queda para HTTPS, preservado para a UI e para o relatório de
+    /// diagnóstico. `None` no caminho normal ou quando não houve fallback.
+    pub transport_fallback_reason: Option<String>,
+    /// Eventos de transporte detalhados, somente quando o profiling está
+    /// ativo. O modo normal não cria esta coleção.
+    pub profiling_spans: Vec<crate::prefill::TelemetrySpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -359,6 +365,17 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
     let result = async {
         let body = wire::encode_batch_items(&path, batch_id.clone(), &items)?;
         let first = calls.first().expect("non-empty calls");
+        let profiling = crate::prefill::TelemetryContext::from_meta(
+            &first.meta,
+            first.peer_label.clone(),
+            if path == "/v1/prefill" {
+                crate::prefill::Phase::Prefill
+            } else {
+                crate::prefill::Phase::Decode
+            },
+            Instant::now(),
+            None,
+        );
         let response = send_batch_body(
             &first.clients,
             &first.step,
@@ -370,6 +387,7 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
             first.attempts,
             &first.peer_label,
             first.meta.get("session_id").and_then(Value::as_str),
+            profiling,
         )
         .await?;
         let (_, decoded) = wire::decode_batch_items(&response.body)?;
@@ -419,6 +437,8 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
                 tls_handshake_ms,
                 transport: response.transport,
                 transport_fallback: response.transport_fallback,
+                transport_fallback_reason: response.transport_fallback_reason.clone(),
+                profiling_spans: response.profiling_spans.clone(),
             });
         }
         Ok::<_, anyhow::Error>(output)
@@ -464,6 +484,8 @@ impl SentFrame {
             "tls_handshake_ms": self.tls_handshake_ms,
             "transport": self.transport.as_str(),
             "transport_fallback": self.transport_fallback,
+            "transport_fallback_reason": self.transport_fallback_reason,
+            "profiling_spans": self.profiling_spans,
             "node_timings": self.meta.get("node_timings").cloned().unwrap_or(json!({})),
         })
     }
@@ -723,6 +745,8 @@ async fn send_frame_in_process(
         tls_handshake_ms,
         transport: InferenceTransport::Local,
         transport_fallback: false,
+        transport_fallback_reason: None,
+        profiling_spans: Vec::new(),
     })
 }
 
@@ -755,6 +779,7 @@ pub async fn send_frame(
         attempts,
         peer_label,
         false,
+        None,
         on_issue,
         None,
     )
@@ -776,6 +801,7 @@ async fn send_frame_with_protocol(
     attempts: u32,
     peer_label: &str,
     transport_fallback: bool,
+    transport_fallback_reason: Option<String>,
     mut on_issue: impl FnMut(SendIssue),
     session_id: Option<&str>,
 ) -> Result<SentFrame> {
@@ -823,10 +849,22 @@ async fn send_frame_with_protocol(
 
             match sent {
                 Ok(r) if r.status().is_success() => {
-                    let response_headers_ms = started.elapsed().as_millis() as u64;
+                    let response_headers_at = Instant::now();
+                    let response_headers_ms = response_headers_at
+                        .saturating_duration_since(started)
+                        .as_millis() as u64;
                     let response_body_started = Instant::now();
                     let bytes = r.bytes().await?;
                     let response_body_ms = response_body_started.elapsed().as_millis() as u64;
+                    let response_received_at = Instant::now();
+                    let profiling_spans = profile_transport_spans(
+                        profile_context_for_path(meta, peer_label, path, started).as_ref(),
+                        "https",
+                        started,
+                        started,
+                        response_headers_at,
+                        response_received_at,
+                    );
                     let client_decode_started = Instant::now();
                     let (meta, tensor) = match wire::decode(&bytes) {
                         Ok(decoded) => decoded,
@@ -873,6 +911,8 @@ async fn send_frame_with_protocol(
                         connection_state,
                         transport: InferenceTransport::Https,
                         transport_fallback,
+                        transport_fallback_reason,
+                        profiling_spans,
                     });
                 }
                 Ok(r) => {
@@ -929,6 +969,58 @@ struct BatchTransportResponse {
     tls: bool,
     transport: InferenceTransport,
     transport_fallback: bool,
+    transport_fallback_reason: Option<String>,
+    profiling_spans: Vec<crate::prefill::TelemetrySpan>,
+}
+
+fn profile_transport_spans(
+    context: Option<&crate::prefill::TelemetryContext>,
+    transport: &str,
+    roundtrip_started: Instant,
+    frame_started: Instant,
+    frame_finished: Instant,
+    received: Instant,
+) -> Vec<crate::prefill::TelemetrySpan> {
+    let Some(context) = context else {
+        return Vec::new();
+    };
+    let transport = Some(transport.to_owned());
+    vec![
+        context.span(
+            "frame-send",
+            frame_started,
+            frame_finished,
+            None,
+            transport.clone(),
+        ),
+        context.span(
+            "transport-round-trip",
+            roundtrip_started,
+            received,
+            None,
+            transport.clone(),
+        ),
+        context.span("frame-receive", received, received, None, transport),
+    ]
+}
+
+fn profile_context_for_path(
+    meta: &Value,
+    peer_label: &str,
+    path: &str,
+    origin: Instant,
+) -> Option<crate::prefill::TelemetryContext> {
+    crate::prefill::TelemetryContext::from_meta(
+        meta,
+        peer_label.to_owned(),
+        if path == "/v1/prefill" {
+            crate::prefill::Phase::Prefill
+        } else {
+            crate::prefill::Phase::Decode
+        },
+        origin,
+        None,
+    )
 }
 
 /// Send one already encoded batch. The batch coordinator uses this function
@@ -946,6 +1038,7 @@ async fn send_batch_body(
     attempts: u32,
     peer_label: &str,
     session_id: Option<&str>,
+    profiling: Option<crate::prefill::TelemetryContext>,
 ) -> Result<BatchTransportResponse> {
     if let Some(local) = local {
         debug!(peer = peer_label, path, "inferência em processo em batch");
@@ -974,6 +1067,8 @@ async fn send_batch_body(
             tls: false,
             transport: InferenceTransport::Local,
             transport_fallback: false,
+            transport_fallback_reason: None,
+            profiling_spans: Vec::new(),
         });
     }
 
@@ -987,7 +1082,7 @@ async fn send_batch_body(
         tunnel.is_some(),
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
-    let mut transport_fallback = false;
+    let mut transport_fallback_reason = None;
 
     // A ligação persistente vem antes porque é a única que não reconstrói a
     // abstração de chamada por ativação. Quando ela não serve - peer sem a
@@ -996,7 +1091,7 @@ async fn send_batch_body(
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
         && !crate::infer_tunnel::is_local_node(&step.node_id)
     {
-        match crate::link::send_batch_with_session(
+        match crate::link::send_batch_with_session_profile(
             clients,
             &step.node_id,
             &step.inference_url,
@@ -1005,6 +1100,7 @@ async fn send_batch_body(
             body.clone(),
             peer_label,
             session_id,
+            profiling.clone(),
         )
         .await
         {
@@ -1021,11 +1117,13 @@ async fn send_batch_body(
                     tls: step.inference_url.starts_with("https://"),
                     transport: InferenceTransport::HttpsLink,
                     transport_fallback: false,
+                    transport_fallback_reason: None,
+                    profiling_spans: response.profiling_spans,
                 })
             }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
-                transport_fallback = true;
+                transport_fallback_reason = Some(format!("https-link: {error}"));
                 warn!("{peer_label}: canal persistente falhou ({error}), usando o caminho por requisição")
             }
         }
@@ -1042,13 +1140,17 @@ async fn send_batch_body(
             peer_label,
             auth,
             session_id,
+            profiling.as_ref(),
         )
         .await
         {
             Ok(response) => return Ok(response),
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
-                transport_fallback = true;
+                transport_fallback_reason = Some(match transport_fallback_reason.take() {
+                    Some(previous) => format!("{previous}; libp2p-tunnel: {error}"),
+                    None => format!("libp2p-tunnel: {error}"),
+                });
                 warn!("{peer_label}: libp2p batch falhou ({error}), tentando HTTPS direto")
             }
         }
@@ -1090,10 +1192,14 @@ async fn send_batch_body(
                 .await;
             match response {
                 Ok(response) if response.status().is_success() => {
-                    let response_headers_ms = started.elapsed().as_millis() as u64;
+                    let response_headers_at = Instant::now();
+                    let response_headers_ms = response_headers_at
+                        .saturating_duration_since(started)
+                        .as_millis() as u64;
                     let body_started = Instant::now();
                     let bytes = response.bytes().await?.to_vec();
                     let response_body_ms = body_started.elapsed().as_millis() as u64;
+                    let response_received_at = Instant::now();
                     let decode_started = Instant::now();
                     wire::validate_batch_bytes(&bytes)?;
                     let client_decode_ms = decode_started.elapsed().as_millis() as u64;
@@ -1109,7 +1215,16 @@ async fn send_batch_body(
                         connection_state,
                         tls: url.starts_with("https://"),
                         transport: InferenceTransport::Https,
-                        transport_fallback,
+                        transport_fallback: transport_fallback_reason.is_some(),
+                        transport_fallback_reason,
+                        profiling_spans: profile_transport_spans(
+                            profiling.as_ref(),
+                            "https",
+                            started,
+                            started,
+                            response_headers_at,
+                            response_received_at,
+                        ),
                     });
                 }
                 Ok(response) => {
@@ -1145,6 +1260,7 @@ async fn send_batch_via_tunnel(
     peer_label: &str,
     auth_token: Option<String>,
     session_id: Option<&str>,
+    profiling: Option<&crate::prefill::TelemetryContext>,
 ) -> Result<BatchTransportResponse> {
     let mut headers = Vec::new();
     if let Some(token) = auth_token {
@@ -1164,6 +1280,7 @@ async fn send_batch_via_tunnel(
         ));
     }
     let (reply_tx, reply_rx) = oneshot::channel();
+    let send_started = Instant::now();
     tunnel
         .send(TunnelOutbound {
             peer_id,
@@ -1175,7 +1292,11 @@ async fn send_batch_via_tunnel(
         .map_err(|_| {
             anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
         })?;
-    let started = Instant::now();
+    let send_finished = Instant::now();
+    // Include queueing the request into the swarm in the measured round-trip.
+    // Starting after `send` would report only the reply wait and undercount the
+    // same request-response operation used by `infer_tunnel::measure_rtt`.
+    let started = send_started;
     let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {error}")),
@@ -1189,7 +1310,16 @@ async fn send_batch_via_tunnel(
             peer_label: peer_label.to_string(),
         }));
     }
+    let received = Instant::now();
     wire::validate_batch_bytes(&response.body)?;
+    let profiling_spans = profile_transport_spans(
+        profiling,
+        "libp2p-tunnel",
+        send_started,
+        send_started,
+        send_finished,
+        received,
+    );
     Ok(BatchTransportResponse {
         body: response.body,
         round_trip_ms: started.elapsed().as_millis() as u64,
@@ -1202,6 +1332,8 @@ async fn send_batch_via_tunnel(
         tls: false,
         transport: InferenceTransport::Libp2pTunnel,
         transport_fallback: false,
+        transport_fallback_reason: None,
+        profiling_spans,
     })
 }
 
@@ -1430,7 +1562,8 @@ pub async fn send_frame_or_tunnel(
         && !meta.get("reply_to").is_some_and(|value| !value.is_null())
         && meta.get("speculate").is_none()
         && meta.get("draft").is_none()
-        && meta.get("mtp_k").is_none();
+        && meta.get("mtp_k").is_none()
+        && !is_remote_stream(meta);
     if can_batch {
         let coordinator = BatchCoordinator::global().clone();
         let mut on_issue = on_issue;
@@ -1489,6 +1622,7 @@ pub async fn send_frame_or_tunnel(
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
     let session_id = meta.get("session_id").and_then(Value::as_str);
     let mut transport_fallback = false;
+    let mut transport_fallback_reason = None;
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.internal_node_token().await;
@@ -1512,6 +1646,7 @@ pub async fn send_frame_or_tunnel(
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
                 transport_fallback = true;
+                transport_fallback_reason = Some(format!("libp2p-tunnel: {error}"));
                 warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto")
             }
         }
@@ -1531,10 +1666,17 @@ pub async fn send_frame_or_tunnel(
         attempts,
         peer_label,
         transport_fallback,
+        transport_fallback_reason,
         on_issue,
         session_id,
     )
     .await
+}
+
+fn is_remote_stream(meta: &Value) -> bool {
+    meta.get("remote_stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// A local pipeline step is dispatched directly to this process's inference
@@ -1642,6 +1784,7 @@ async fn send_frame_via_tunnel_with_auth(
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
 
     let (reply_tx, reply_rx) = oneshot::channel();
+    let call_started = Instant::now();
     let mut headers = Vec::new();
     if let Some(token) = auth_token {
         headers.push((
@@ -1668,14 +1811,19 @@ async fn send_frame_via_tunnel_with_auth(
     tunnel.send(outbound).await.map_err(|_| {
         anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
     })?;
+    let frame_sent_at = Instant::now();
 
-    let started = Instant::now();
+    // Keep the measurement boundary consistent with the direct HTTP path:
+    // enqueueing the tunnel request and waiting for its response are one
+    // application round-trip.
+    let started = call_started;
     let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(e))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {e}")),
         Ok(Err(_)) => return Err(anyhow!("{peer_label}: túnel libp2p encerrou sem responder")),
         Err(_) => return Err(anyhow!("{peer_label}: túnel libp2p não respondeu a tempo")),
     };
+    let response_received_at = Instant::now();
     let round_trip_ms = started.elapsed().as_millis() as u64;
 
     if !(200..300).contains(&response.status) {
@@ -1698,6 +1846,14 @@ async fn send_frame_via_tunnel_with_auth(
         peer_label,
     )?;
     let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+    let profiling_spans = profile_transport_spans(
+        profile_context_for_path(&meta, peer_label, path, call_started).as_ref(),
+        "libp2p-tunnel",
+        call_started,
+        call_started,
+        frame_sent_at,
+        response_received_at,
+    );
 
     Ok(SentFrame {
         meta,
@@ -1720,6 +1876,8 @@ async fn send_frame_via_tunnel_with_auth(
         connection_state: crate::peer_client::ConnectionState::Unknown,
         transport: InferenceTransport::Libp2pTunnel,
         transport_fallback: false,
+        transport_fallback_reason: None,
+        profiling_spans,
     })
 }
 
@@ -1956,6 +2114,8 @@ mod tests {
                 InferenceTransport::Unknown
             },
             transport_fallback: false,
+            transport_fallback_reason: None,
+            profiling_spans: Vec::new(),
         }
     }
 
@@ -2034,6 +2194,13 @@ mod tests {
     fn the_local_peer_is_never_sent_through_the_tunnel() {
         assert!(!tunnel_is_allowed_for_peer(true, true, true, true));
         assert!(tunnel_is_allowed_for_peer(true, true, true, false));
+    }
+
+    #[test]
+    fn remote_stream_never_enters_the_request_batch_coordinator() {
+        assert!(is_remote_stream(&json!({"remote_stream": true})));
+        assert!(!is_remote_stream(&json!({"remote_stream": false})));
+        assert!(!is_remote_stream(&json!({})));
     }
 
     #[derive(Clone)]

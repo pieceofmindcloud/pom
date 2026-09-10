@@ -235,10 +235,11 @@ pub fn tunnel_sender() -> Option<&'static TunnelOutboundSender> {
 /// Mede a latência de ida e volta entre este nó e um peer pelo mesmo caminho
 /// libp2p/Noise usado para transportar os frames de inferência.
 ///
-/// O endpoint remoto é `/health` no loopback do peer. Assim a medição inclui
-/// somente o transporte e o encaminhamento local, sem carregar o custo de
-/// prefill, decode ou transferência de estado oculto. A medição é direcional:
-/// cada processo registra apenas o tempo da sua própria origem.
+/// O endpoint remoto é `/health` no loopback do peer. A medição inclui a fila
+/// do swarm, eventual estabelecimento da conexão, o transporte, o
+/// encaminhamento local e o processamento do handler `/health`, sem carregar o
+/// custo de prefill, decode ou transferência de estado oculto. A medição é
+/// direcional: cada processo registra apenas o tempo da sua própria origem.
 pub async fn measure_rtt(
     sender: &TunnelOutboundSender,
     peer_id: PeerId,

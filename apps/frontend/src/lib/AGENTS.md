@@ -337,7 +337,9 @@ histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
   transmitted-token counts, reuse status, bounded prefill-overlap counters, and
   per-transport traversal distributions with fallback and switch counts. The
   transport contract is aggregate by default, never one serialized entry per
-  decode call.
+  decode call. `RequestTrace` also exposes explicit HTTPS fallback counts and
+  reasons, normal-mode token-cycle quantiles, and remote-stream delivery
+  interval quantiles; profiling spans remain opt-in.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.

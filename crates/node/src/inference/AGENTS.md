@@ -63,10 +63,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   ordem padrão do llama.cpp.
 - `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
   por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; também mantém
-  o inbox limitado do transporte remoto por lotes, entregue por
-  `/v1/remote-stream-result`. O resultado direto pode ser liberado antes de
-  recibos de transporte tardios; o `ReplyInbox` retém um snapshot limitado,
-  deduplica por ticket e índice de hop e o reconcilia até a expiração.
+  o inbox limitado do transporte remoto por lotes. O retorno normal do
+  `remote-stream` usa `/v1/link` full-duplex; falha de abertura ou uso cai para
+  `/v1/remote-stream-result` e leva motivo explícito de fallback HTTPS. O
+  resultado direto pode ser liberado antes de recibos de transporte tardios; o
+  `ReplyInbox` retém um snapshot limitado, deduplica por ticket e índice de hop
+  e o reconcilia até a expiração.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
@@ -88,6 +90,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   O receptor reconfere a `connection_key` e o marcador interno **a cada
   quadro**, porque uma conexão longa autenticada só na abertura manteria
   válido por horas um segredo que foi trocado por outro processo.
+  `send_body_with_session` reutiliza o mesmo canal para frames de callback que
+  carregam `REMOTE_STREAM_RESULT_PATH` e cuja resposta é apenas ACK HTTP, sem
+  exigir que o corpo de retorno seja outro batch de inferência.
   Ver `docs/subsystems/inferencia.md` §2.1.
 - `link_lab.rs` (520, `#![cfg(test)]`) - a bancada do custo de rede por ficha
   no salto interno: hops falsos servidos por cima de um `TcpStream` com
@@ -272,7 +277,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   também registra `prefix_match_tokens`, `prefix_reuse_status`,
   `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
   travessia. `RequestTrace` acrescenta o `trace_id`, spans locais do gateway,
-  atribuição de `outside_node`, estado cold/warm, conexões novas/reutilizadas,
+  campos explícitos de `outside_node` somente quando há residual medido,
+  estado cold/warm, conexões novas/reutilizadas,
   marcos do primeiro token e contadores de decode. `RequestTrace::telemetry`
   separa `response_complete` de `trace complete`: publica peers e spans
   esperados/observados, duplicatas, atrasos e o estado
@@ -281,7 +287,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `outside-node`; overlap e residual verdadeiro só aparecem quando há
   intervalos explícitos. O `remote-stream` carrega os `hop_timings` do head e
   dos peers downstream, além de contadores e histogramas limitados de frames,
-  espera e processamento remoto. O modo normal não serializa spans por token;
+  espera e processamento remoto. O produtor usa uma fila limitada de 64 itens
+  e o emitter mede `remote_stream_wait` como espera real na fila, sem timer
+  artificial. O retorno normal usa o canal persistente e só o fallback usa
+  HTTPS por callback, com contagem e razão visíveis. O modo normal não
+  serializa spans por token;
   `POM_TELEMETRY_PROFILE=1` acrescenta spans de frame e eventos de token com
   IDs de trace, request, pipeline e peer. Eventos de token sem intervalo
   individual permanecem com duração zero, sem repetir artificialmente o custo

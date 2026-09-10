@@ -49,6 +49,25 @@ mod tests {
         assert_eq!(trace.outside_node_unaccounted_ms, None);
     }
 
+    #[test]
+    fn refresh_nao_fabrica_outside_node_a_partir_do_e2e() {
+        let mut trace = RequestTrace::new_with_trace_id(
+            "trace",
+            "qwen",
+            &[("peer-a", 0, 15), ("peer-b", 16, 40)],
+        );
+        trace.complete = true;
+        trace.hops[0].decode.processing_ms = 900;
+        trace.hops[1].decode.processing_ms = 800;
+        trace.refresh_telemetry(4_780);
+
+        assert_eq!(trace.telemetry.wall_clock_ms, Some(4_780));
+        assert_eq!(trace.telemetry.accumulated_compute_ms, 1_700);
+        assert_eq!(trace.outside_node_total_ms, None);
+        assert_eq!(trace.outside_node_accounted_ms, None);
+        assert_eq!(trace.outside_node_unaccounted_ms, None);
+    }
+
     #[tokio::test]
     async fn lote_oportunista_drena_o_que_ja_existe_sem_esperar() {
         let (sender, mut receiver) = mpsc::channel(REMOTE_STREAM_BATCH_LIMIT);
@@ -415,6 +434,24 @@ mod tests {
     }
 
     #[test]
+    fn remote_stream_https_fallback_preserves_count_and_reason() {
+        let mut trace = RequestTrace::new("qwen", &[("head", 0, 15)]);
+        trace.record_remote_stream_batch(&json!({
+            "stream_id": "stream-fallback",
+            "remote_stream_frame_index": 0,
+            "accepted": [1],
+            "remote_stream_transport_fallback": true,
+            "remote_stream_transport_fallback_reason": "https-link: canal expirou",
+        }));
+
+        assert_eq!(trace.https_fallback_calls, 1);
+        assert_eq!(
+            trace.https_fallback_reasons,
+            vec!["https-link: canal expirou".to_string()]
+        );
+    }
+
+    #[test]
     fn profiling_trace_keeps_frame_parent_and_token_events_bounded() {
         let mut trace = RequestTrace::new("qwen", &[("head", 0, 15)]);
         trace.profiling_spans = Some(Vec::new());
@@ -467,6 +504,38 @@ mod tests {
             .filter_map(|span| span.token_index)
             .collect::<Vec<_>>();
         assert_eq!(token_indices, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn profiling_events_nameiam_o_caminho_critico_de_um_token() {
+        let spans = ["decode", "transport-round-trip", "sampling", "client-emit"]
+            .into_iter()
+            .map(|name| TelemetrySpan {
+                trace_id: "trace-critical".into(),
+                request_id: "request-critical".into(),
+                pipeline_id: "head>tail".into(),
+                peer_id: "head".into(),
+                span_id: format!("span-{name}"),
+                parent_span_id: None,
+                name: name.into(),
+                phase: Phase::Decode,
+                token_index: Some(7),
+                start_ns: 100,
+                end_ns: 200,
+                duration_ns: 100,
+                transport: Some("https-link".into()),
+                clock_domain: "peer-monotonic".into(),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["decode", "transport-round-trip", "sampling", "client-emit"]
+        );
+        assert!(spans.iter().all(|span| span.token_index == Some(7)));
     }
 
     #[test]

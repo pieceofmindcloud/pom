@@ -89,7 +89,8 @@ source-to-destination edge scope, machine capacity/configuration, effective
 placement, per-peer `POM_PROFILE_SYNC`, backend-reported execution engine,
   execution diagnosis, TP collective table, prefix reuse and transmitted-token
   counts, overlap status, per-traversal transport identity/bytes, distributed
-  telemetry status/coverage, remote-stream aggregates, semantic TTFT labels,
+  telemetry status/coverage, remote-stream aggregates and token delivery
+  quantiles, explicit HTTPS fallback counts/reasons, semantic TTFT labels,
   AI-analysis action, initial-model mark and the explicit "time outside the
   node" diagnosis must remain available in
 English and Brazilian Portuguese. Generic configuration state labels for

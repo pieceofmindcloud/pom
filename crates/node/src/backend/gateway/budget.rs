@@ -719,7 +719,11 @@ pub(super) fn summary_for(
     trace.set_generated_tokens(tokens_generated);
     trace.complete = !partial;
     trace.server_ttft_ms = Some(ttft_ms);
-    trace.set_outside_node_total_ms(total_ms.saturating_sub(trace.node_processing_ms()));
+    // Do not manufacture `outside_node` by subtracting accumulated peer
+    // processing from E2E. Those clocks are wall-clock and accumulated work,
+    // respectively, and the distributed pipeline overlaps them. The fields
+    // remain available only when an explicit, causally measured residual is
+    // supplied by a future synchronized trace.
     let mut timings = timing_metrics(
         total_ms,
         ttft_ms,

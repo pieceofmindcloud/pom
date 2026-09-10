@@ -609,7 +609,7 @@ podiam alimentar o livro de endereços. Isso explica a exposição de
 `192.168.100.x`, `172.17.0.1` e do Tailscale antigo nos logs de “expired peer on
 address”.
 
-Agora, com um pin como `100.122.132.97:42777`:
+Agora, com um pin como `100.71.127.127:42777`:
 
 - o `Announce.addr_candidates` contém somente o pin, e as respostas próprias
   ao gateway também retornam somente ele;
@@ -663,11 +663,85 @@ execução serial. Não há novo número E2E pós-correção neste worktree: o �
 valor medido pelo captain continua sendo 13,5 tok/s de geração, 9,6 tok/s E2E
 e TTFT 5,85 s.
 
+### 17.7 E2E pós-correção de `session_id`
+
+Em 2026-09-10, depois de o captain colocar `e0c747e` nas duas máquinas, foi
+executada uma única chamada fria pelo gateway KSIA, com
+`POM_PROFILE_SYNC=1`, prompt de 29 tokens, `max_tokens=16` e resposta não
+streaming. O retorno foi HTTP 200 e o trace completo foi:
+
+- `trace_id=dea4ae159bbf45ef887fb79683caadd4`;
+- `request_state=cold`, `telemetry.status=complete`, `response_complete=true`;
+- 2/2 peers, 2/2 spans de decode, 100% de completude, zero duplicatas, zero
+  spans tardios e zero órfãos;
+- 1.520 ms E2E, TTFT de 1.314 ms, 2 tokens e `tokens_per_sec=1,3158` no
+  wall-clock. O trecho de geração isolado foi 206 ms, ou `9,7087 tok/s`;
+- prefill de 1.013 ms e `prefill_tokens_per_sec=28,6278`;
+- `https_fallback_calls=0`.
+
+A fila artificial do segundo peer desapareceu. No hop `02eb8c40` o trace
+registrou `node_queue_ms=0,043`, `node_scheduler_wait_ms=0,019` e
+`node_decode_ms=602,768`; não há `queue` próximo de 5.002 ms. A espera do
+primeiro hop também ficou em `node_queue_ms=0,052`. Isto comprova o objetivo
+primário da propagação: o caminho não entrou na carência fixa de reclaim.
+
+O trace ainda mostra o gargalo que permanece para a próxima iteração: o
+retorno remoto agregou um frame com lifetime de 204 ms, `remote_stream_wait`
+de 203 ms e `remote_stream_producer_wait` de 203 ms, enquanto
+`remote_stream_queue_wait` foi 0 ms. Portanto, nesta execução a espera
+residual é produção/round-trip interno, não fila local do callback. O hop B
+teve decode de 99 ms e round-trip de 182 ms no decode; a telemetria de A
+registrou a abertura do stream por `libp2p-tunnel` e uma troca posterior para
+`remote-stream`, sem fallback HTTPS. O trace contém também os spans detalhados
+dos dois peers, correlacionados pelo mesmo `trace_id`, `request_id` e
+`pipeline_id`.
+
+Este resultado é uma linha de base válida, mas não é comparação de throughput
+de 16 tokens: o modelo encerrou a resposta em 2 tokens. O próximo benchmark
+deve forçar uma saída longa e medir separadamente TTFT, geração, p50/p95/p99
+do ciclo por token e o retorno full-duplex. O commit local em andamento
+implementa esse último corte: callbacks persistentes são enfileirados sem
+esperar o ACK individual, mantendo contrapressão na fila limitada e
+monitoramento assíncrono de falha.
+
 A próxima rodada deve ser implantada nas duas máquinas, com a Salem na mesma
-versão e a KSIA anunciando o host `100.122.132.97` nas portas próprias
+versão e a KSIA anunciando o host `100.71.127.127` nas portas próprias
 42777-42780. O critério objetivo é:
 fila de prefill do segundo peer sem os 5 s, nenhum dial para LAN/bridge/IPv6
 antigo, retorno normal pelo canal persistente, e comparação antes/depois de
 TTFT, E2E tok/s, p50/p95/p99 por token, máximo de frame, split produtor/fila
 e contagem de fallback HTTPS. Até essa execução, qualquer ganho de throughput
 seria especulação.
+
+### 17.8 Consolidação do controle de profiling e retorno assíncrono
+
+O último resíduo do controle antigo foi removido do backend de prefill. A
+função agora se chama `profile_sync_enabled` e consulta somente
+`POM_PROFILE_SYNC`; uma busca no código, documentação, configuração e contrato
+do frontend não encontra a variável legada nem o antigo helper. O
+`POM_PROFILE=off|basic|trace` continua sendo o
+nível do trace, enquanto `POM_PROFILE_SYNC=1` habilita a coleta detalhada de
+spans sincronizados e eventos de token. São políticas distintas e não há duas
+variáveis para o mesmo controle.
+
+Também foi removida a barreira de ACK por callback no caminho normal. O
+`RemoteStreamDelivery` agora enquadra e enfileira cada retorno no canal
+persistente full-duplex; o ACK continua registrado para detectar erro e
+descartar o canal de forma assíncrona. A fila limitada de 64 frames preserva
+contrapressão sem reintroduzir um round-trip por token. O teste
+`callbacks_persistentes_nao_esperam_ack_de_cada_frame` comprovou oito frames
+com ACK artificial de 200 ms sem esperar os ACKs individualmente. O fallback
+HTTPS continua sendo usado somente quando a entrega persistente falha, com
+razão explícita na telemetria.
+
+Na validação completa que antecedeu esse ajuste, a bancada Node terminou com
+1.263 testes aprovados, 1 falha e 5 ignorados: a fixture
+`spec_lab::quem_rascunha_no_anel_gera_o_texto_inteiro` completou o prefill
+falso em menos de 1 ms, tornando corretamente nula a taxa pública que usa
+milissegundos inteiros, mas o teste exigia que ela existisse. A reprodução
+isolada passou; o teste agora verifica `prefill_tokens > 0`, sem fabricar uma
+taxa a partir de duração zero. Os dois cenários da bancada passaram novamente
+depois do ajuste.
+
+A execução completa seguinte, serializada após a correção, terminou com 1.272
+testes aprovados e 5 ignorados.

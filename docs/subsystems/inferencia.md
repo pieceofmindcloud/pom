@@ -703,7 +703,10 @@ abre canal novo.
 
 No retorno do `remote-stream`, o head remoto reutiliza esse mesmo protocolo
 persistente para enviar frames de callback ao gateway, que os entrega ao ticket
-e responde somente o ACK do envelope. Se a abertura ou o uso do canal falhar,
+e responde somente o ACK do envelope. O emissor enfileira os callbacks sem
+esperar o ACK individual, de modo que o round-trip do retorno não vira uma
+barreira por token; a fila limitada do canal ainda aplica contrapressão e uma
+tarefa leitora observa ACKs tardios e falhas. Se a abertura ou o uso do canal falhar,
 `direct::RemoteStreamDelivery` muda para o POST HTTPS por callback e grava
 `remote_stream_transport_fallback` e
 `remote_stream_transport_fallback_reason`; a troca fica visível e não é

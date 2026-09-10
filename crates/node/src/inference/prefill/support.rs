@@ -633,7 +633,7 @@ impl Default for TelemetrySummary {
     }
 }
 
-pub(super) fn telemetry_profile_enabled() -> bool {
+pub(super) fn profile_sync_enabled() -> bool {
     // The fleet already enables detailed backend profiling with this flag.
     // Reuse that single policy instead of creating a second environment
     // variable for the same profiling mode. The backend's own default remains
@@ -1635,7 +1635,7 @@ impl TelemetryContext {
         origin: Instant,
         transport: Option<String>,
     ) -> Option<Self> {
-        if !telemetry_profile_enabled() {
+        if !profile_sync_enabled() {
             return None;
         }
         Some(Self {
@@ -1870,7 +1870,7 @@ impl RequestTrace {
             prefill_overlapped_chunks: 0,
             prefill_pipeline_depth_max: 0,
             telemetry: TelemetrySummary::default(),
-            profiling_spans: telemetry_profile_enabled().then(Vec::new),
+            profiling_spans: profile_sync_enabled().then(Vec::new),
             token_cycle: TokenCycleTelemetry::default(),
             mtp_draft_tokens_proposed: 0,
             mtp_draft_tokens_accepted: 0,

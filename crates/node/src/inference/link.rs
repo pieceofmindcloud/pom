@@ -206,9 +206,11 @@ impl FrameReader {
 /// rota que o próprio quadro nomeia (`kind`) e devolve as respostas pelo corpo
 /// da resposta, identificadas pelo `batch_id`.
 ///
-/// Cada quadro é despachado numa tarefa própria: um item lento de uma sessão
-/// não pode bloquear o quadro de outra, que é justamente o que o canal
-/// multiplexado existe para permitir.
+/// Frames de inferência são despachados em tarefas próprias: um item lento de
+/// uma sessão não bloqueia o quadro de outra. Callbacks `remote-stream` são
+/// encaminhados por uma fila serial limitada, pois sua ordem é a ordem dos
+/// tokens observados pelo gateway; isso preserva a causalidade sem transformar
+/// o ACK em espera no produtor.
 pub fn serve<D, F>(body: axum::body::Body, dispatch: D) -> axum::response::Response
 where
     D: Fn(String, Bytes) -> F + Send + Sync + 'static,
@@ -216,6 +218,18 @@ where
 {
     let dispatch = Arc::new(dispatch);
     let (out_tx, out_rx) = futures::channel::mpsc::channel::<Bytes>(OUTBOUND_QUEUE);
+    let (callback_tx, mut callback_rx) =
+        futures::channel::mpsc::channel::<Envelope>(OUTBOUND_QUEUE);
+    let callback_dispatch = dispatch.clone();
+    let mut callback_out_tx = out_tx.clone();
+    tokio::spawn(async move {
+        while let Some(envelope) = callback_rx.next().await {
+            let reply = serve_one(callback_dispatch.as_ref(), &envelope).await;
+            if callback_out_tx.send(Bytes::from(reply)).await.is_err() {
+                break;
+            }
+        }
+    });
     tokio::spawn(async move {
         let mut stream = body.into_data_stream();
         let mut reader = FrameReader::new();
@@ -231,6 +245,12 @@ where
             loop {
                 match reader.next() {
                     Ok(Some(envelope)) => {
+                        if is_remote_stream_callback(&envelope.body) {
+                            if callback_tx.clone().send(envelope).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
                         let dispatch = dispatch.clone();
                         let mut out_tx = out_tx.clone();
                         tokio::spawn(async move {
@@ -254,6 +274,11 @@ where
         .header("content-type", "application/octet-stream")
         .body(axum::body::Body::from_stream(stream))
         .expect("resposta de canal sempre montável")
+}
+
+fn is_remote_stream_callback(body: &[u8]) -> bool {
+    wire::peek_batch_header(body)
+        .is_ok_and(|header| header.kind == crate::direct::REMOTE_STREAM_RESULT_PATH)
 }
 
 async fn serve_one<D, F>(dispatch: &D, envelope: &Envelope) -> Vec<u8>
@@ -742,6 +767,68 @@ pub async fn send_body_with_session(
     ))
 }
 
+/// Enfileira um frame de callback no canal persistente e não espera o ACK HTTP
+/// correspondente. O próprio canal continua full-duplex: a tarefa leitora
+/// drena as respostas e o `pending` acompanha falhas assíncronas. A fila de
+/// saída limitada a [`OUTBOUND_QUEUE`] mantém contrapressão local sem impor
+/// um round-trip por token ao produtor remoto.
+pub async fn send_body_without_response_with_session(
+    clients: &crate::peer_client::PeerClients,
+    node_id: &str,
+    base_url: &str,
+    candidates: &[String],
+    frame_id: &str,
+    body: Bytes,
+    peer_label: &str,
+    session_id: Option<&str>,
+) -> Result<()> {
+    let mut route_candidates = Vec::with_capacity(candidates.len() + 1);
+    if !base_url.is_empty() {
+        route_candidates.push(base_url.to_string());
+    }
+    let additional: Vec<String> = candidates
+        .iter()
+        .filter(|candidate| !route_candidates.contains(candidate))
+        .cloned()
+        .collect();
+    route_candidates.extend(additional);
+    let route_key = format!("reply:{node_id}");
+    let mut last_error = String::new();
+    for base in clients.route_order(&route_key, &route_candidates) {
+        let (channel, _opened) = match channel_for(clients, node_id, &base, session_id).await {
+            Ok(channel) => channel,
+            Err(error) => {
+                last_error = error.to_string();
+                clients.remember_route_failure(&route_key, &base);
+                continue;
+            }
+        };
+        let channel_key = target_key(node_id, &base);
+        match send_frame_without_response(
+            &channel,
+            node_id,
+            frame_id,
+            body.clone(),
+            peer_label,
+            channel_key,
+        )
+        .await
+        {
+            Ok(()) => {
+                clients.remember_route_success(&route_key, &base);
+                return Ok(());
+            }
+            Err(error) => {
+                last_error = error.to_string();
+                clients.remember_route_failure(&route_key, &base);
+            }
+        }
+    }
+    Err(anyhow!(
+        "canal de retorno com {node_id} não enfileirou por nenhuma rota: {last_error}"
+    ))
+}
+
 async fn send_batch_on_channel(
     channel: &Arc<Channel>,
     node_id: &str,
@@ -841,6 +928,69 @@ async fn send_frame_on_channel(
         bytes_sent,
         profiling_spans,
     })
+}
+
+/// Envia um frame de callback sem converter o ACK do receptor em uma barreira
+/// no emissor. O ACK continua associado a um `Pending`, para que a tarefa
+/// leitora observe HTTP 4xx/5xx e perda do canal, mas não é aguardado pelo
+/// caminho de geração.
+async fn send_frame_without_response(
+    channel: &Arc<Channel>,
+    node_id: &str,
+    batch_id: &str,
+    body: Bytes,
+    peer_label: &str,
+    channel_key: String,
+) -> Result<()> {
+    if !channel.alive.load(Ordering::Acquire) {
+        return Err(anyhow!("canal com {node_id} já está encerrado"));
+    }
+    let frame = encode_envelope(0, batch_id, &body)?;
+    let (reply_tx, reply_rx) = oneshot::channel();
+    {
+        let mut map = channel
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("registro de entregas do canal corrompido"))?;
+        if map.contains_key(batch_id) {
+            return Err(anyhow!("batch_id repetido no canal: {batch_id}"));
+        }
+        map.insert(batch_id.to_string(), Pending { reply: reply_tx });
+    }
+    let guard = PendingGuard {
+        pending: channel.pending.clone(),
+        id: batch_id.to_string(),
+    };
+    channel
+        .outbound
+        .clone()
+        .send(Bytes::from(frame))
+        .await
+        .map_err(|_| anyhow!("{peer_label}: canal fechou antes do envio"))?;
+
+    let pending = channel.pending.clone();
+    let channel = channel.clone();
+    let node_id = node_id.to_string();
+    let batch_id = batch_id.to_string();
+    tokio::spawn(async move {
+        let failed = match tokio::time::timeout(CALL_TIMEOUT, reply_rx).await {
+            Ok(Ok(Ok(envelope))) if (200..300).contains(&envelope.status) => None,
+            Ok(Ok(Ok(envelope))) => Some(format!("peer respondeu HTTP {}", envelope.status)),
+            Ok(Ok(Err(error))) => Some(error),
+            Ok(Err(_)) => Some("canal encerrou sem responder".to_string()),
+            Err(_) => Some("canal não respondeu ACK a tempo".to_string()),
+        };
+        drop(guard);
+        if let Some(error) = failed {
+            channel.alive.store(false, Ordering::Release);
+            if let Ok(mut entries) = pending.lock() {
+                entries.remove(&batch_id);
+            }
+            forget(&channel_key, &channel).await;
+            warn!(peer = %node_id, batch = %batch_id, %error, "ACK assíncrono do callback falhou; canal descartado");
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1019,6 +1169,39 @@ mod tests {
 
         assert_eq!(response.body, b"callback aceito");
         assert_eq!(channels_opened("gateway", &url), 1);
+    }
+
+    #[tokio::test]
+    async fn callbacks_persistentes_nao_esperam_ack_de_cada_frame() {
+        let mut delays = std::collections::HashMap::new();
+        for index in 0..8 {
+            delays.insert(format!("frame-{index}"), 200u64);
+        }
+        let url = spawn_link_server(echo_after(delays)).await;
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        let started = Instant::now();
+
+        for index in 0..8 {
+            let id = format!("frame-{index}");
+            send_body_without_response_with_session(
+                &clients,
+                "callback-full-duplex",
+                &url,
+                &[],
+                &id,
+                Bytes::from(batch("/v1/remote-stream-result", &id, &id)),
+                "remote-stream-return",
+                Some("session-full-duplex"),
+            )
+            .await
+            .expect("o frame deve ser enfileirado sem esperar o ACK");
+        }
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "o emissor esperou ACK por frame: {elapsed:?}"
+        );
     }
 
     #[tokio::test]

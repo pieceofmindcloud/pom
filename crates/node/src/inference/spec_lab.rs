@@ -610,7 +610,10 @@ async fn quem_rascunha_no_anel_gera_o_texto_inteiro() {
     let timings = visto.timings.expect("a resposta deve trazer os tempos");
     assert_eq!(timings.generation_tokens, visto.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
-    assert!(timings.prefill_tokens_per_sec.is_some());
+    // A sub-millisecond fake prefill is intentionally unmeasurable at the
+    // public millisecond resolution; the contract here is that the prompt
+    // was processed, not that a rate is fabricated from a zero duration.
+    assert!(timings.prefill_tokens > 0);
     assert!(
         visto.direct_steps.iter().all(|c| *c == 0),
         "sem resposta direta negociada, nenhum passo pode sair por ali: {:?}",
@@ -631,7 +634,8 @@ async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
     let timings = visto.timings.expect("a resposta deve trazer os tempos");
     assert_eq!(timings.generation_tokens, visto.tokens);
     assert!(timings.ttft_ms >= timings.prefill_ms);
-    assert!(timings.prefill_tokens_per_sec.is_some());
+    // See the no-ring case above: this fake can complete below one millisecond.
+    assert!(timings.prefill_tokens > 0);
     assert_eq!(
         visto.direct_steps[0], 0,
         "toda rodada especulou, então nenhuma podia sair pelo caminho direto"

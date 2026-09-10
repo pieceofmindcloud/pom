@@ -823,7 +823,7 @@ impl RemoteStreamDelivery {
                         }],
                     ) {
                         Ok(body) => {
-                            match crate::link::send_body_with_session(
+                            match crate::link::send_body_without_response_with_session(
                                 &self.http,
                                 node_id,
                                 "",
@@ -835,7 +835,7 @@ impl RemoteStreamDelivery {
                             )
                             .await
                             {
-                                Ok(_) => return Delivery::Accepted,
+                                Ok(()) => return Delivery::Accepted,
                                 Err(error) => Some(format!("https-link: {error}")),
                             }
                         }

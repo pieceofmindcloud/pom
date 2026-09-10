@@ -91,8 +91,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   quadro**, porque uma conexão longa autenticada só na abertura manteria
   válido por horas um segredo que foi trocado por outro processo.
   `send_body_with_session` reutiliza o mesmo canal para frames de callback que
-  carregam `REMOTE_STREAM_RESULT_PATH` e cuja resposta é apenas ACK HTTP, sem
-  exigir que o corpo de retorno seja outro batch de inferência.
+  carregam `REMOTE_STREAM_RESULT_PATH` quando o chamador precisa do ACK. O
+  retorno normal do `remote-stream` usa
+  `send_body_without_response_with_session`: cada frame é enfileirado no
+  canal full-duplex sem barreira de ACK por token; a fila limitada mantém
+  contrapressão e uma tarefa leitora observa ACKs tardios e falhas do canal.
   Ver `docs/subsystems/inferencia.md` §2.1.
 - `link_lab.rs` (520, `#![cfg(test)]`) - a bancada do custo de rede por ficha
   no salto interno: hops falsos servidos por cima de um `TcpStream` com

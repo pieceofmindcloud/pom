@@ -44,7 +44,7 @@ export const KNOBS: Knob[] = [
 ];
 
 /** Ajustes do detector, mantidos fora da lista de sampling para deixar clara
- * a diferença entre penalizar a próxima ficha e interromper uma degeneração. */
+ * a diferença entre penalizar o próximo token e interromper uma degeneração. */
 export const CYCLE_KNOBS: Knob[] = [
   { key: "cycle_detection_min_window_tokens", min: 1, max: 1024 },
   { key: "cycle_detection_max_window_tokens", min: 1, max: 1024 },

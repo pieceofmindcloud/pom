@@ -939,7 +939,11 @@ fn where_clause(query: &AuditQuery) -> (String, Vec<Value>) {
         values.push(Value::Text(node_id.into()));
         values.push(Value::Text(node_id.into()));
     }
-    if let Some(user) = query.user.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(user) = query
+        .user
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         clauses.push("api_key_label LIKE ?");
         values.push(Value::Text(format!("%{}%", user.trim())));
     }
@@ -950,7 +954,11 @@ fn where_clause(query: &AuditQuery) -> (String, Vec<Value>) {
         values.push(Value::Text(pattern.clone()));
         values.push(Value::Text(pattern));
     }
-    if let Some(model) = query.model.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(model) = query
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         clauses.push("model LIKE ?");
         values.push(Value::Text(format!("%{}%", model.trim())));
     }

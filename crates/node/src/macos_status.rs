@@ -12,7 +12,7 @@
 //! convite a desencontro.
 
 use anyhow::Result;
-use std::ffi::{c_char, CString};
+use std::ffi::{c_char, c_int, CString};
 use std::path::PathBuf;
 
 /// Medida do painel, em pontos: exatamente a tela lógica de um iPhone 14/15
@@ -37,7 +37,7 @@ unsafe extern "C" {
         popover_height: f64,
         window_width: f64,
         window_height: f64,
-    );
+    ) -> c_int;
     fn pom_macos_status_stop();
 }
 
@@ -84,7 +84,7 @@ where
     });
     let url = CString::new(chat_url(port))?;
     let icon = CString::new(icon_path().to_string_lossy().as_bytes())?;
-    unsafe {
+    let user_quit = unsafe {
         pom_macos_status_run(
             url.as_ptr(),
             icon.as_ptr(),
@@ -94,6 +94,14 @@ where
             WINDOW_SIZE.1,
         )
     };
+
+    if user_quit != 0 {
+        // AppKit has completed the standard Quit action. The node service is
+        // deliberately not joined here because it owns a long-lived server
+        // loop without a cooperative shutdown signal; ending main terminates
+        // both the UI and that service thread as one process.
+        std::process::exit(0);
+    }
 
     // O laço de eventos só devolve o controlo quando o serviço já pediu a
     // paragem, então a thread termina sem espera. Propagar o erro dela é o que

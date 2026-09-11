@@ -70,7 +70,9 @@ Per-file list:
   telemetry snapshot cannot trigger a render loop that freezes navigation.
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
-  autorização.
+  autorização. `ChatSurfaceTabs` é renderizado acima da conversa para manter
+  `/chat` e `/network-chat` acessíveis nos dois sentidos sem depender da
+  Sidebar.
   No mesmo composer, `InferenceHeadChoice` mostra por qual cabeça de camada 0
   a próxima inferência entrará para qualquer perfil com modelo selecionado,
   mas só aparece quando há mais de uma candidata. Deixa explícito quando não
@@ -102,7 +104,8 @@ Per-file list:
   ids come from `lib/id.ts`, so sending over plain HTTP does not call the
   secure-context-only `crypto.randomUUID` API. The message viewport follows new
   messages while it is near the bottom, and the page uses the full-bleed
-  `PageHeader` pattern instead of a rounded outer panel.
+  `PageHeader` pattern instead of a rounded outer panel. Também renderiza
+  `ChatSurfaceTabs`, que retorna ao Chat de IA sem depender da Sidebar.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

@@ -1801,7 +1801,7 @@ tokenLogs.apiKey,API key identity,Identidade da API key
 tokenLogs.apiKeyPlaceholder,"label, id or node","rótulo, id ou nó"
 tokenLogs.applyFilters,Apply filters,Aplicar filtros
 tokenLogs.averageInference,Average inference,Tempo médio de inferência
-tokenLogs.averageTokPerSec,Average tokens/s,Média de fichas/s
+tokenLogs.averageTokPerSec,Average tokens/s,Média de Tokens/s
 tokenLogs.averageTtft,Average TTFT,TTFT médio
 tokenLogs.byNode,By network node,Por nó da rede
 tokenLogs.byToken,By API token,Por API token
@@ -1841,7 +1841,7 @@ tokenLogs.inspectorTitle,Request inspector,Inspetor de requisição
 tokenLogs.loadingMore,Loading more,Carregando mais
 tokenLogs.model,Model,Modelo
 tokenLogs.modelPlaceholder,model name,nome do modelo
-tokenLogs.modelSpeedSubtitle,"Mean total generation speed, in tokens per second.","Velocidade média total de geração, em fichas por segundo."
+tokenLogs.modelSpeedSubtitle,"Mean total generation speed, in tokens per second.","Velocidade média total de geração, em Tokens por segundo."
 tokenLogs.newPrompt,New prompt,Prompt novo
 tokenLogs.noHops,No hops recorded yet.,Nenhum salto registrado ainda.
 tokenLogs.noPipeline,no pipeline,sem pipeline
@@ -1881,7 +1881,7 @@ tokenLogs.statsSubtitle,Aggregated request usage across the network.,Consumo agr
 tokenLogs.statsTab,STATISTICS,ESTATÍSTICAS
 tokenLogs.statsTerminalStates,Terminal states,Estados terminais
 tokenLogs.statsTitle,Statistics,Estatísticas
-tokenLogs.statsTokensSubtitle,Input and output tokens recorded by the audit trail.,Fichas de entrada e saída registradas na auditoria.
+tokenLogs.statsTokensSubtitle,Input and output tokens recorded by the audit trail.,Tokens de entrada e saída registradas na auditoria.
 tokenLogs.status,Status,Estado
 tokenLogs.statusAbandoned,client left,cliente saiu
 tokenLogs.statusCompleted,completed,concluída
@@ -1898,8 +1898,8 @@ tokenLogs.token,Token,Token
 tokenLogs.tokens,Tokens,Tokens
 tokenLogs.tokensPerSecondUnit,tokens/s,tokens/s
 tokenLogs.total,total {value},total {value}
-tokenLogs.totalInputTokens,Input tokens,Fichas de entrada
-tokenLogs.totalOutputTokens,Output tokens,Fichas de saída
+tokenLogs.totalInputTokens,Input tokens,Tokens de entrada
+tokenLogs.totalOutputTokens,Output tokens,Tokens de saída
 tokenLogs.ttft,TTFT {value},TTFT {value}
 tokenLogs.unavailable,not available,indisponível
 tokenLogs.user,User,Usuário

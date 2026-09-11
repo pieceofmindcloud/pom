@@ -54,7 +54,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   aba ativa. Também nomeia os botões de expansão e a janela grande de leitura.
   O aviso
   sobre JSON selecionável foi removido; nenhuma mensagem dessa tela recebe o
-  segredo da chave.
+  segredo da chave. Nas mensagens pt-BR, `Tokens` é o termo de produto para
+  contagens e velocidades de tokens; não use `Fichas`.
 - O grupo `deploymentLogs.*` cobre o console de processo: estado do auto-scroll,
   cópia das últimas 500 linhas, retorno da cópia, filtro e estados de coleta.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.

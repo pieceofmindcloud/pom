@@ -3,7 +3,8 @@
 Reusable UI building blocks, split into two kinds. The small primitives live in
 `ui.tsx` (the design system: panels, buttons, inputs, badges, meters, states,
 formatters) and everything is composed from them. The bigger pieces are the
-app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), the cluster
+app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), chat surface
+navigation (`ChatSurfaceTabs`), the cluster
 visualizations (`PipelineRail`, `ModelNetworkCanvas`, `DeployNetworkCanvas`), and the dialogs/guards
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
@@ -122,7 +123,11 @@ Per-file list:
   tempo real com auto-scroll.
 - `OpenNativeChatWindowButton.tsx` - botão macOS usado somente quando a ponte
   WebKit `pomOpenWindow` está disponível; fica na toolbar do `Topbar`, não no
-  corpo do Chat.
+  corpo do Chat. É um controle icon-only: o nome completo permanece no nome
+  acessível e no tooltip.
+- `ChatSurfaceTabs.tsx` - abas de rota compartilhadas por `Chat` e
+  `NetworkChat`. Mantém `/chat` e `/network-chat` acessíveis nos dois sentidos,
+  com o estado ativo derivado do pathname.
 - `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
   folhas separadas para requisições e implantação; Network Chat é uma entrada

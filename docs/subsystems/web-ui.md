@@ -41,6 +41,10 @@ altura o painel encolhe para o que cabe; a largura de 390 é fixa. O botão
 nativo uma janela redimensionável de 1120 x 880 points, maior que o painel nos
 dois eixos. No navegador comum esse botão não é renderizado.
 
+O bundle instala também o menu comum do aplicativo macOS no AppKit, com Sobre e
+Sair. A ação Sair chama o encerramento padrão do aplicativo e termina o processo
+inteiro, incluindo o serviço Tokio que fica na thread de fundo.
+
 Quem escolhe as medidas e o endereço é o Rust (`macos_status.rs`), que os
 entrega ao Objective-C no arranque: o lado nativo não conhece a configuração do
 nó, e duplicar os números nos dois lados seria convite a desencontro.
@@ -137,7 +141,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   `/network-chat` é o Chat da rede em página própria, com o mesmo padrão visual
   do Chat de IA e segue o fim do histórico quando a pessoa está no rodapé;
   `/admin-ui/chat` é o alias compacto usado pelo app de barra do macOS e
-  renderiza o mesmo Chat sem o chrome administrativo
+  renderiza o mesmo Chat sem o chrome administrativo. As duas superfícies
+  exibem `ChatSurfaceTabs`, que permite alternar entre `/chat` e
+  `/network-chat` nos dois sentidos.
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
   `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
   fatiamento embutido

@@ -475,7 +475,8 @@ profile policy remains the effective authorization boundary.
   Falha de enfileiramento ou gravação registra
   sempre a operação e o request id. Pedidos, conversas e auditoria ficam no
   mesmo `pom.db`; permissões do banco e dos sidecars WAL/SHM são aplicadas no
-  arranque.
+  arranque. Filtros de usuário e modelo vazios são ignorados antes da consulta
+  SQL, preservando a busca ampla quando o campo não foi preenchido.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,

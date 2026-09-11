@@ -135,12 +135,13 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, tipos compartilhados e o contrato de métricas de TTFT, prefill, geração e total. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
 - `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
-- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ApiKeysTable, DeploymentLogDock, OpenNativeChatWindowButton). `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
+- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList, ChatSurfaceTabs) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ApiKeysTable, DeploymentLogDock, OpenNativeChatWindowButton). `ChatSurfaceTabs` mantém `/chat` e `/network-chat` navegáveis nos dois sentidos. `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.
 
-`Chat.tsx` mantém somente a conversa de IA. `NetworkChat.tsx` é a página
+`Chat.tsx` mantém somente a conversa de IA e exibe `ChatSurfaceTabs` para que a
+rede possa ser aberta e fechada sem depender da Sidebar. `NetworkChat.tsx` é a página
 `/network-chat`: consulta o snapshot autenticado, envia texto, arquivos e
 ações de digitação com a chave da API do nó, resolve cada `node_id` pelo mapa
 de nomes usado pelo painel e mantém o histórico no fim enquanto a pessoa não

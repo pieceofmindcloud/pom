@@ -467,6 +467,8 @@ export function Preferences({ administrative = false }: { administrative?: boole
   const [quicSaving, setQuicSaving] = useState(false);
   const [logsSaving, setLogsSaving] = useState(false);
   const [networkChatSaving, setNetworkChatSaving] = useState(false);
+  const tlsRequired = node.data?.tls_required ?? false;
+  const quicEnabled = node.data?.quic_enabled ?? false;
 
   async function saveThermal(next: ThermalPolicy) {
     setThermalSaving(true);
@@ -553,8 +555,8 @@ export function Preferences({ administrative = false }: { administrative?: boole
       />
       <div className="space-y-5">
         {administrative ? <>
-          <TlsPanel tlsRequired={node.data?.tls_required ?? false} authority={node.data?.tls_authority ?? false} busy={tlsSaving} onToggle={(next) => void toggleTls(next)} />
-          <QuicPanel enabled={node.data?.quic_enabled ?? false} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />
+          {!quicEnabled && <TlsPanel tlsRequired={tlsRequired} authority={node.data?.tls_authority ?? false} busy={tlsSaving} onToggle={(next) => void toggleTls(next)} />}
+          {!tlsRequired && <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />}
           <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
         </> : <>

@@ -15,6 +15,7 @@ static id POMScriptHandlerInstance;
 static id POMStatusControllerInstance;
 static id POMApplicationDelegateInstance;
 static atomic_bool POMStopRequested = false;
+static atomic_bool POMUserQuitRequested = false;
 
 static const CGFloat POMStatusIconPoints = 18.0;
 
@@ -34,6 +35,7 @@ static void POMOpenWindow(void);
 static void POMShowUnavailable(WKWebView *webView);
 static WKWebView *POMMakeWebView(NSRect frame);
 static NSImage *POMStatusImage(void);
+static void POMInstallApplicationMenu(void);
 
 @interface POMNavigationDelegate : NSObject <WKNavigationDelegate>
 @end
@@ -256,6 +258,16 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 @implementation POMApplicationDelegate
 
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    (void)sender;
+    // The node service runs on a separate Tokio thread and has no cooperative
+    // shutdown channel. Mark a user-initiated Quit so the Rust side can end
+    // the process after AppKit returns from its event loop instead of joining
+    // a service that is still serving forever.
+    atomic_store(&POMUserQuitRequested, true);
+    return NSTerminateNow;
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -263,6 +275,7 @@ static WKWebView *POMMakeWebView(NSRect frame) {
     POMNavigationDelegateInstance = [[POMNavigationDelegate alloc] init];
     POMScriptHandlerInstance = [[POMScriptHandler alloc] init];
     POMStatusControllerInstance = [[POMStatusController alloc] init];
+    POMInstallApplicationMenu();
 
     POMStatusItem = [[NSStatusBar systemStatusBar]
         statusItemWithLength:NSVariableStatusItemLength];
@@ -282,20 +295,45 @@ static WKWebView *POMMakeWebView(NSRect frame) {
 
 @end
 
-void pom_macos_status_run(const char *url,
-                          const char *icon_path,
-                          double popover_width,
-                          double popover_height,
-                          double window_width,
-                          double window_height) {
+static void POMInstallApplicationMenu(void) {
+    NSString *appName = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"];
+    if (!appName.length) {
+        appName = @"POM";
+    }
+
+    NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:appName];
+    NSMenuItem *appMenuItem = [[NSMenuItem alloc] initWithTitle:appName
+                                                          action:nil
+                                                   keyEquivalent:@""];
+    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:appName];
+    [appMenu addItemWithTitle:POMLocalized(@"status.about", @"About POM")
+                        action:@selector(orderFrontStandardAboutPanel:)
+                 keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItem:[[NSMenuItem alloc]
+        initWithTitle:POMLocalized(@"status.quit", @"Quit POM")
+                action:@selector(terminate:)
+         keyEquivalent:@"q"]];
+    appMenuItem.submenu = appMenu;
+    [mainMenu addItem:appMenuItem];
+    NSApp.mainMenu = mainMenu;
+}
+
+int pom_macos_status_run(const char *url,
+                         const char *icon_path,
+                         double popover_width,
+                         double popover_height,
+                         double window_width,
+                         double window_height) {
     @autoreleasepool {
         // A thread do serviço pode terminar antes de o AppKit chegar ao laço
         // de eventos - um `--list-models` termina em milissegundos. Guardar o
         // pedido de paragem evita abrir um item de barra que ninguém veria e
         // que já devia estar fechado.
         if (atomic_load(&POMStopRequested)) {
-            return;
+            return 0;
         }
+        atomic_store(&POMUserQuitRequested, false);
         POMChatURL = [NSString stringWithUTF8String:url ?: ""];
         POMIconPath = [NSString stringWithUTF8String:icon_path ?: ""];
         if (popover_width > 0 && popover_height > 0) {
@@ -312,6 +350,7 @@ void pom_macos_status_run(const char *url,
         NSApp.delegate = POMApplicationDelegateInstance;
         [NSApp run];
     }
+    return atomic_load(&POMUserQuitRequested) ? 1 : 0;
 }
 
 void pom_macos_status_stop(void) {

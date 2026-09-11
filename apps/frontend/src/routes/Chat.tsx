@@ -27,6 +27,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
+import { ChatSurfaceTabs } from "../components/ChatSurfaceTabs";
 import { ExecutionTelemetry, TimingSummary, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
 import { Badge, Button, Empty } from "../components/ui";
@@ -1128,5 +1129,10 @@ export function Chat() {
       <ChatScreen />
     </ChatSessionProvider>
   );
-  return <div className="flex h-full min-h-0 flex-col">{ai}</div>;
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <ChatSurfaceTabs />
+      <div className="min-h-0 flex-1">{ai}</div>
+    </div>
+  );
 }

@@ -153,10 +153,13 @@ conduzida da thread principal. O item abre o `/admin-ui/chat` num painel de
 390 x 844 points e numa janela de 1120 x 880 points; as medidas e o endereço
 saem do Rust pela ABI, não são duplicados no Objective-C. Os dois WebViews
 usam o data store padrão do WebKit e, portanto, a mesma sessão do frontend.
-Quando o serviço termina, a ponte apenas para o laço de eventos e o acorda;
-ela não encerra o processo, porque o `join()` Rust precisa propagar a mensagem
-e o código de saída de falhas como `pom.json` inválido. Isso mantém
-`--list-models` saindo sozinho sem engolir erros. Fora do macOS o ponto de
+O menu de aplicativo do AppKit contém Sobre e Sair. Sair usa a ação padrão
+`terminate:` e encerra o processo depois que o laço de eventos volta, porque o
+serviço Tokio de longa duração ainda não tem um canal de cancelamento
+cooperativo. Quando o serviço termina por conta própria, a ponte apenas para o
+laço de eventos e o acorda; ela não encerra o processo, porque o `join()` Rust
+precisa propagar a mensagem e o código de saída de falhas como `pom.json`
+inválido. Isso mantém `--list-models` saindo sozinho sem engolir erros. Fora do macOS o ponto de
 entrada continua um CLI Tokio normal, sem nenhuma dependência de interface
 gráfica.
 

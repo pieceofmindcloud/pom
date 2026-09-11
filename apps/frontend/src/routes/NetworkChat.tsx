@@ -1,5 +1,6 @@
 import { Download, FileUp, Send, Users, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChatSurfaceTabs } from "../components/ChatSurfaceTabs";
 import { Button, Empty, Input, PageHeader } from "../components/ui";
 import { api, downloadNetworkChatFile, postNetworkChat } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
@@ -263,12 +264,20 @@ export function NetworkChat() {
   }, [latestMessageId, messages.length]);
 
   if (loading && !snapshot) {
-    return <div className="flex h-full items-center justify-center text-sm text-muted">{t("networkChat.loading")}</div>;
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-ink">
+        <ChatSurfaceTabs />
+        <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted">
+          {t("networkChat.loading")}
+        </div>
+      </div>
+    );
   }
 
   if (snapshot && !snapshot.enabled) {
     return (
       <div className="flex h-full min-h-0 flex-col bg-ink">
+        <ChatSurfaceTabs />
         <PageHeader
           title={t("networkChat.title")}
           subtitle={t("networkChat.subtitle")}
@@ -285,6 +294,7 @@ export function NetworkChat() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-ink">
+      <ChatSurfaceTabs />
       <PageHeader
         title={t("networkChat.title")}
         subtitle={t("networkChat.subtitle")}

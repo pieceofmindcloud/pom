@@ -135,8 +135,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
   dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens);
   `/network-chat` é o Chat da rede em página própria, com o mesmo padrão visual
-  do Chat de IA; `/admin-ui/chat` é o alias compacto usado pelo app de barra do
-  macOS e renderiza o mesmo Chat sem o chrome administrativo
+  do Chat de IA e segue o fim do histórico quando a pessoa está no rodapé;
+  `/admin-ui/chat` é o alias compacto usado pelo app de barra do macOS e
+  renderiza o mesmo Chat sem o chrome administrativo
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
   `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
   fatiamento embutido
@@ -159,7 +160,8 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
   requisições paginadas por scroll infinito e inspetor JSON
 - `/estatisticas` -> Statistics, tela full-bleed própria dos agregados da
-  auditoria, com um único título;
+  auditoria, com um único título e filtros de usuário, API key, modelo, nó,
+  prompt e intervalo de datas;
   `/logs/estatisticas` redireciona para a rota nova
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas
@@ -287,9 +289,10 @@ reaplicar o score de RTT/carga.
 barra compacta aplica filtros por identidade não secreta da API key, texto do
 prompt, nó e período, lista primeiro as entradas mais recentes em páginas e
 carrega a próxima quando o sentinela entra na viewport. A tela de estatísticas
-consulta `GET /api/ui/requests/stats`, que agrega no servidor por token, nó,
-dia, modelo e peer, além de tokens de entrada/saída, inferência, TTFT, cache de
-prefixo e estados terminais. Clicar em qualquer área não interativa da linha
+consulta `GET /api/ui/requests/stats`, que aceita os mesmos filtros, incluindo o
+rótulo de usuário e o modelo, e agrega no servidor por token, nó, dia e peer,
+além de tokens de entrada/saída, inferência, TTFT, cache de prefixo e estados
+terminais. Clicar em qualquer área não interativa da linha
   abre o inspetor, preserva a lupa e destaca a linha selecionada com cor de
   acento distinta do hover. O cabeçalho do inspetor repete os detalhes da linha.
   ENVIADO separa prompt novo e contexto anterior em duas superfícies Markdown
@@ -496,7 +499,12 @@ dedicada de inferência, seja qual for o perfil na tela.
 O Chat da rede gera ids de mensagem e digitação com `src/lib/id.ts`. Ele usa
 `crypto.getRandomValues` quando `crypto.randomUUID` não existe, portanto o
 composer continua funcionando na implantação HTTP da LAN, sem depender de
-secure context.
+secure context. A janela de mensagens segue novas entradas quando está próxima
+do fim; ao rolar para cima, preserva a posição até a pessoa retornar ao rodapé.
+
+O Dashboard mantém os indicadores e ações na barra superior compacta. Quando há
+uma implantação ativa, o botão de propriedades é apenas um ícone dentro do
+mapa, no canto superior direito, alinhado aos controles de zoom e Fit.
 
 ## Janelas modais: portal e pilha de Esc
 

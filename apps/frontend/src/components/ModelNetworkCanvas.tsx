@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { LayoutGrid, Minus, Plus, RotateCcw } from "lucide-react";
+import { LayoutGrid, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { gpuDisplayName, machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
@@ -195,7 +195,19 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
   </article>;
 }
 
-export function ModelNetworkCanvas({ cluster, rttMeasurements = [], pipelineCost }: { cluster: ClusterView; rttMeasurements?: ChatTelemetryRtt[]; pipelineCost?: PipelineCycleCost }) {
+export function ModelNetworkCanvas({
+  cluster,
+  rttMeasurements = [],
+  pipelineCost,
+  propertiesOpen = false,
+  onToggleProperties,
+}: {
+  cluster: ClusterView;
+  rttMeasurements?: ChatTelemetryRtt[];
+  pipelineCost?: PipelineCycleCost;
+  propertiesOpen?: boolean;
+  onToggleProperties?: () => void;
+}) {
   const { t } = useI18n();
   const graph = useMemo(() => graphFromCluster(cluster), [cluster]);
   const [model, setModel] = useState<string | undefined>();
@@ -332,6 +344,18 @@ export function ModelNetworkCanvas({ cluster, rttMeasurements = [], pipelineCost
       <Button size="sm" aria-label={t("canvas.autoLayout")} title={t("canvas.autoLayout")} onClick={organizar}><LayoutGrid className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.resetLayout")} title={t("canvas.resetLayout")} onClick={redefinir}><RotateCcw className="h-4 w-4" /></Button>
     </div>
+    {onToggleProperties && <div className="absolute right-4 top-3 z-20">
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-8 w-8 px-0"
+        aria-label={t(propertiesOpen ? "dashboard.hideProperties" : "dashboard.versionProperties")}
+        aria-pressed={propertiesOpen}
+        title={t(propertiesOpen ? "dashboard.hideProperties" : "dashboard.versionProperties")}
+        onClick={onToggleProperties}
+        icon={propertiesOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+      />
+    </div>}
     {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
         <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>

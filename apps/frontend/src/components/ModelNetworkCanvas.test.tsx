@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
 import type { PipelineCycleCost } from "./PipelineGatewayNode";
 import { LocaleProvider } from "../i18n/provider";
@@ -33,12 +33,23 @@ describe("edgeStyle", () => {
 
 const cluster = fakeCluster([fakeSlicePeer("a", 0, 15), fakeSlicePeer("b", 16, 31)]);
 
-function mount(view: ClusterView = cluster, rttMeasurements: ChatTelemetryRtt[] = [], pipelineCost?: PipelineCycleCost) {
+function mount(
+  view: ClusterView = cluster,
+  rttMeasurements: ChatTelemetryRtt[] = [],
+  pipelineCost?: PipelineCycleCost,
+  properties?: { open: boolean; onToggle: () => void },
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-      <ModelNetworkCanvas cluster={view} rttMeasurements={rttMeasurements} pipelineCost={pipelineCost} />
+      <ModelNetworkCanvas
+        cluster={view}
+        rttMeasurements={rttMeasurements}
+        pipelineCost={pipelineCost}
+        propertiesOpen={properties?.open}
+        onToggleProperties={properties?.onToggle}
+      />
       </LocaleProvider>
     </QueryClientProvider>,
   );
@@ -112,6 +123,23 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
 
     expect(screen.getByText("Total do pipeline: 150.0 ms")).toBeTruthy();
     expect(screen.getByText("rede 110.0 ms · compute 40.0 ms")).toBeTruthy();
+  });
+});
+
+describe("ModelNetworkCanvas: propriedades da implantação", () => {
+  afterEach(cleanup);
+
+  it("mantém o toggle compacto dentro do mapa", () => {
+    const onToggle = vi.fn();
+    const { container } = mount(cluster, [], undefined, { open: true, onToggle });
+    const canvas = container.querySelector("section");
+    const button = screen.getByRole("button", { name: "Ocultar propriedades da implantação" });
+
+    expect(button.textContent).toBe("");
+    expect(button.className).toContain("w-8");
+    expect(button.closest("section")).toBe(canvas);
+    fireEvent.click(button);
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -684,8 +684,9 @@ e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consul
 a licença no provider antes de a tela oferecer o download.
 
 `GET /api/ui/requests` exige `ConnectionAuth`, pois devolve prompts e corpos de
-requisição. Os filtros são `node_id`, `api_key` (id, rótulo ou nó associado),
-`prompt` (busca FTS5), `from`, `to`, `limit` e `offset`; a ordenação é por
+requisição. Os filtros são `node_id`, `user` (rótulo humano da API key),
+`api_key` (id, rótulo ou nó associado), `model`, `prompt` (busca FTS5), `from`,
+`to`, `limit` e `offset`; a ordenação é por
 `received_at` mais recente. A UI usa `limit` e `offset` para scroll infinito,
 sem carregar o histórico inteiro no primeiro pedido. O banco fica em
 `pom.db`, em `POM_DB_DIR` quando definido ou em `config::project_root()` por
@@ -703,9 +704,9 @@ ou de enfileiramento é registrada no log do servidor com a operação e o
 request id perdido, e não é propagada à requisição de inferência.
 
 `GET /api/ui/requests/stats` exige a mesma `ConnectionAuth` e aceita os filtros
-`node_id`, `api_key`, `prompt`, `from` e `to`, mas não pagina. O servidor faz uma
-única agregação sobre as linhas filtradas e devolve totais por token, nó, dia e
-modelo, consumo por peer (`bytes_sent`, `bytes_received`, `network_ms`), média
+`node_id`, `user`, `api_key`, `model`, `prompt`, `from` e `to`, mas não pagina. O
+servidor faz uma única agregação sobre as linhas filtradas e devolve totais por
+token, nó, dia e modelo, consumo por peer (`bytes_sent`, `bytes_received`, `network_ms`), média
 de inferência, TTFT médio, fichas de entrada/saída, estados terminais e cache
 de prefixo (`input_tokens`, `cached_tokens`, requisições elegíveis e acertos).
 Essa separação evita uma varredura pesada no cliente e deixa a lista de linhas

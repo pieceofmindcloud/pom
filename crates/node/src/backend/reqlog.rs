@@ -167,7 +167,10 @@ pub struct Entry {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AuditQuery {
     pub node_id: Option<String>,
+    /// Human-readable API key label used as the request user.
+    pub user: Option<String>,
     pub api_key: Option<String>,
+    pub model: Option<String>,
     pub prompt: Option<String>,
     #[serde(rename = "from")]
     pub received_from: Option<String>,
@@ -936,12 +939,20 @@ fn where_clause(query: &AuditQuery) -> (String, Vec<Value>) {
         values.push(Value::Text(node_id.into()));
         values.push(Value::Text(node_id.into()));
     }
+    if let Some(user) = query.user.as_deref().filter(|value| !value.trim().is_empty()) {
+        clauses.push("api_key_label LIKE ?");
+        values.push(Value::Text(format!("%{}%", user.trim())));
+    }
     if let Some(api_key) = query.api_key.as_deref().filter(|value| !value.is_empty()) {
         clauses.push("(api_key_id LIKE ? OR api_key_label LIKE ? OR api_key_node_id LIKE ?)");
         let pattern = format!("%{api_key}%");
         values.push(Value::Text(pattern.clone()));
         values.push(Value::Text(pattern.clone()));
         values.push(Value::Text(pattern));
+    }
+    if let Some(model) = query.model.as_deref().filter(|value| !value.trim().is_empty()) {
+        clauses.push("model LIKE ?");
+        values.push(Value::Text(format!("%{}%", model.trim())));
     }
     if let Some(prompt) = query
         .prompt
@@ -1034,7 +1045,11 @@ pub struct LogQuery {
     #[serde(default)]
     pub node_id: Option<String>,
     #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
     #[serde(rename = "from", default)]
@@ -1056,7 +1071,9 @@ pub async fn list_requests(
 ) -> impl IntoResponse {
     let query = AuditQuery {
         node_id: query.node_id,
+        user: query.user,
         api_key: query.api_key,
+        model: query.model,
         prompt: query.prompt,
         received_from: query.received_from,
         received_to: query.received_to,
@@ -1085,7 +1102,9 @@ pub async fn stats_requests(
 ) -> impl IntoResponse {
     let query = AuditQuery {
         node_id: query.node_id,
+        user: query.user,
         api_key: query.api_key,
+        model: query.model,
         prompt: query.prompt,
         received_from: query.received_from,
         received_to: query.received_to,
@@ -1259,6 +1278,38 @@ mod tests {
             .unwrap();
         assert_eq!(by_prompt.total, 1);
         assert_eq!(by_prompt.entries[0].id, "req-finance");
+    }
+
+    #[test]
+    fn searches_by_user_label_and_model() {
+        let mut db = AuditDb::open(Connection::open_in_memory().unwrap()).unwrap();
+        let mut finance = request("req-finance", "key-finance", "relatorio");
+        finance.model = "llama-3".into();
+        finance.caller.key_label = "financeiro".into();
+        db.begin(&finance).unwrap();
+
+        let mut support = request("req-support", "key-support", "atendimento");
+        support.model = "qwen".into();
+        support.caller.key_label = "suporte".into();
+        db.begin(&support).unwrap();
+
+        let by_user = db
+            .list(&AuditQuery {
+                user: Some("finance".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_user.total, 1);
+        assert_eq!(by_user.entries[0].id, "req-finance");
+
+        let by_model = db
+            .stats(&AuditQuery {
+                model: Some("llama".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_model.total, 1);
+        assert_eq!(by_model.by_model["llama-3"].requests, 1);
     }
 
     #[test]

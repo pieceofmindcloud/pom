@@ -1346,6 +1346,10 @@ profile.infer,infer,infer
 profile.node,node,node
 publicNetworks.action,Action,Ação
 publicNetworks.address,Address,Endereço
+publicNetworks.allCities,All cities,Todas as cidades
+publicNetworks.allCountries,All countries,Todos os países
+publicNetworks.city,City,Cidade
+publicNetworks.country,Country,País
 publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
 publicNetworks.discoveredTitle,Networks found,Redes encontradas
 publicNetworks.distance,{value} km away,{value} km de distância
@@ -1364,6 +1368,8 @@ publicNetworks.location,Country / city,País / cidade
 publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
 publicNetworks.models,Served models,Modelos servidos
 publicNetworks.name,Public name,Nome público
+publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
+publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
 publicNetworks.nodes,Nodes,Nós
 publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
@@ -1793,6 +1799,7 @@ tokenLogs.allLoaded,All requests loaded,Todas as requisições foram carregadas
 tokenLogs.allNodes,All nodes,Todos os nós
 tokenLogs.apiKey,API key identity,Identidade da API key
 tokenLogs.apiKeyPlaceholder,"label, id or node","rótulo, id ou nó"
+tokenLogs.applyFilters,Apply filters,Aplicar filtros
 tokenLogs.averageInference,Average inference,Tempo médio de inferência
 tokenLogs.averageTokPerSec,Average tokens/s,Média de fichas/s
 tokenLogs.averageTtft,Average TTFT,TTFT médio
@@ -1833,6 +1840,7 @@ tokenLogs.inspectorTelemetry,TELEMETRY,TELEMETRIA
 tokenLogs.inspectorTitle,Request inspector,Inspetor de requisição
 tokenLogs.loadingMore,Loading more,Carregando mais
 tokenLogs.model,Model,Modelo
+tokenLogs.modelPlaceholder,model name,nome do modelo
 tokenLogs.modelSpeedSubtitle,"Mean total generation speed, in tokens per second.","Velocidade média total de geração, em fichas por segundo."
 tokenLogs.newPrompt,New prompt,Prompt novo
 tokenLogs.noHops,No hops recorded yet.,Nenhum salto registrado ainda.
@@ -1894,6 +1902,8 @@ tokenLogs.totalInputTokens,Input tokens,Fichas de entrada
 tokenLogs.totalOutputTokens,Output tokens,Fichas de saída
 tokenLogs.ttft,TTFT {value},TTFT {value}
 tokenLogs.unavailable,not available,indisponível
+tokenLogs.user,User,Usuário
+tokenLogs.userPlaceholder,API key label,rótulo da API key
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
 topbar.closeMenu,Close menu,Fechar menu
 topbar.layers,{covered}/{total} layers,{covered}/{total} camadas

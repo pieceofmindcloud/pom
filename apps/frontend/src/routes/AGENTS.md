@@ -34,6 +34,8 @@ Per-file list:
   label geo-hierárquico, nós, latência, VRAM, modelos e ação de entrada. Usa
   `/api/public/networks`; métricas agregadas só aparecem quando o cluster local
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
+  Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
+  país, o combo de cidade mostra apenas as cidades daquele país.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
@@ -98,7 +100,9 @@ Per-file list:
   map used by the dashboard, downloads persisted file blobs on demand, and
   polls typing state without touching the AI session store. Message and typing
   ids come from `lib/id.ts`, so sending over plain HTTP does not call the
-  secure-context-only `crypto.randomUUID` API.
+  secure-context-only `crypto.randomUUID` API. The message viewport follows new
+  messages while it is near the bottom, and the page uses the full-bleed
+  `PageHeader` pattern instead of a rounded outer panel.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG
@@ -367,7 +371,8 @@ Per-file list:
   filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a tela de
   requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
   `Statistics.tsx` usa a mesma fonte agregada em `GET /api/ui/requests/stats`
-  como tela própria. Clicar em qualquer
+  como tela própria, com filtros de usuário (rótulo da API key), API key,
+  modelo, nó, prompt e intervalo de datas. Clicar em qualquer
   ponto não interativo da linha abre o inspetor e mantém a linha selecionada
   destacada com acento visível, inclusive enquanto o mouse está em outra linha;
   a lupa continua disponível. O cabeçalho do inspetor repete as métricas da

@@ -42,22 +42,30 @@ const CHART_COLORS = ["#8b7dff", "#58d5c5", "#f3b85f", "#e783a4", "#7eb4ff"];
 
 export type Filters = {
   node_id?: string;
+  user?: string;
   api_key?: string;
+  model?: string;
   prompt?: string;
   from?: string;
   to?: string;
 };
 
-function toFilters(values: {
+export type FilterDraft = {
   node: string;
+  user: string;
   apiKey: string;
+  model: string;
   prompt: string;
   from: string;
   to: string;
-}): Filters {
+};
+
+export function toFilters(values: Partial<FilterDraft> & Pick<FilterDraft, "node" | "apiKey" | "prompt" | "from" | "to">): Filters {
   return {
     node_id: values.node || undefined,
+    user: values.user?.trim() || undefined,
     api_key: values.apiKey.trim() || undefined,
+    model: values.model?.trim() || undefined,
     prompt: values.prompt.trim() || undefined,
     from: values.from ? new Date(values.from).toISOString() : undefined,
     to: values.to ? new Date(values.to).toISOString() : undefined,

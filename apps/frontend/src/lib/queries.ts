@@ -529,7 +529,9 @@ export function useApiKeys() {
 export function useRequestLog(
   params: {
     node_id?: string;
+    user?: string;
     api_key?: string;
+    model?: string;
     prompt?: string;
     from?: string;
     to?: string;
@@ -539,7 +541,9 @@ export function useRequestLog(
 ) {
   const search = new URLSearchParams();
   if (params.node_id) search.set("node_id", params.node_id);
+  if (params.user) search.set("user", params.user);
   if (params.api_key) search.set("api_key", params.api_key);
+  if (params.model) search.set("model", params.model);
   if (params.prompt) search.set("prompt", params.prompt);
   if (params.from) search.set("from", params.from);
   if (params.to) search.set("to", params.to);
@@ -570,7 +574,9 @@ export function useRequestLog(
 export function useRequestStats(
   params: {
     node_id?: string;
+    user?: string;
     api_key?: string;
+    model?: string;
     prompt?: string;
     from?: string;
     to?: string;
@@ -579,7 +585,9 @@ export function useRequestStats(
 ) {
   const search = new URLSearchParams();
   if (params.node_id) search.set("node_id", params.node_id);
+  if (params.user) search.set("user", params.user);
   if (params.api_key) search.set("api_key", params.api_key);
+  if (params.model) search.set("model", params.model);
   if (params.prompt) search.set("prompt", params.prompt);
   if (params.from) search.set("from", params.from);
   if (params.to) search.set("to", params.to);

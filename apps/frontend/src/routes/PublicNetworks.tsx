@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Globe2, RefreshCw, ShieldCheck } from "lucide-react";
 import { Confirm } from "../components/Confirm";
-import { Button, ErrorState, PageHeader, Skeleton } from "../components/ui";
+import { Button, ErrorState, PageHeader, Select, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
 import { networkStats, type NetworkStats } from "../lib/networkStats";
 import { useCluster } from "../lib/queries";
@@ -42,6 +42,8 @@ export function PublicNetworks() {
   const [viewerLocation, setViewerLocation] = useState<ViewerLocation | null>(null);
   const [joinTarget, setJoinTarget] = useState<PublicNetwork | null>(null);
   const [joining, setJoining] = useState(false);
+  const [countryFilter, setCountryFilter] = useState("");
+  const [cityFilter, setCityFilter] = useState("");
 
   async function load() {
     setRefreshing(true);
@@ -70,8 +72,38 @@ export function PublicNetworks() {
     }
   }, []);
 
+  const countryOptions = useMemo(
+    () => Array.from(
+      new Map(
+        (networks ?? [])
+          .filter((network) => network.country_code || network.country_name)
+          .map((network) => [
+            countryKey(network),
+            network.country_name || network.country_code,
+          ]),
+      ),
+    ).sort((left, right) => left[1].localeCompare(right[1])),
+    [networks],
+  );
+  const cityOptions = useMemo(
+    () => Array.from(new Set(
+      (networks ?? [])
+        .filter((network) => !countryFilter || countryKey(network) === countryFilter)
+        .map((network) => network.city)
+        .filter(Boolean),
+    )).sort((left, right) => left.localeCompare(right)),
+    [countryFilter, networks],
+  );
+  const selectedCity = cityOptions.includes(cityFilter) ? cityFilter : "";
+  const filteredNetworks = useMemo(
+    () => (networks ?? []).filter((network) =>
+      (!countryFilter || countryKey(network) === countryFilter)
+      && (!selectedCity || network.city === selectedCity),
+    ),
+    [countryFilter, networks, selectedCity],
+  );
   const orderedNetworks = useMemo(
-    () => [...(networks ?? [])].sort((left, right) => {
+    () => [...filteredNetworks].sort((left, right) => {
       const leftDistance = distanceKm(left.location, viewerLocation);
       const rightDistance = distanceKm(right.location, viewerLocation);
       if (leftDistance === null && rightDistance === null) return 0;
@@ -79,7 +111,7 @@ export function PublicNetworks() {
       if (rightDistance === null) return -1;
       return leftDistance - rightDistance;
     }),
-    [networks, viewerLocation],
+    [filteredNetworks, viewerLocation],
   );
   const metrics = networkStats(cluster.data);
 
@@ -106,11 +138,29 @@ export function PublicNetworks() {
         actions={<Button size="sm" loading={refreshing} onClick={() => void load()} icon={<RefreshCw className="h-3.5 w-3.5" />}>{t("publicNetworks.refresh")}</Button>}
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-y border-line bg-surface/35">
-        <div className="flex shrink-0 items-center gap-3 border-b border-line bg-raised/60 px-4 py-3 sm:px-5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-iris/35 bg-iris/12 text-iris"><Globe2 className="h-4 w-4" /></span>
-          <div className="min-w-0"><h2 className="font-display text-sm font-semibold text-fg">{t("publicNetworks.discoveredTitle")}</h2><p className="mt-0.5 text-xs text-muted">{t("publicNetworks.discoveredDetail")}</p></div>
+        <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-line bg-raised/60 px-4 py-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-iris/35 bg-iris/12 text-iris"><Globe2 className="h-4 w-4" /></span>
+            <div className="min-w-0"><h2 className="font-display text-sm font-semibold text-fg">{t("publicNetworks.discoveredTitle")}</h2><p className="mt-0.5 text-xs text-muted">{t("publicNetworks.discoveredDetail")}</p></div>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-end gap-2">
+            <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
+              <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.country")}</span>
+              <Select aria-label={t("publicNetworks.country")} compact value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)}>
+                <option value="">{t("publicNetworks.allCountries")}</option>
+                {countryOptions.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+              </Select>
+            </label>
+            <label className="flex w-[10rem] min-w-[8rem] flex-col gap-1">
+              <span className="text-[0.62rem] font-medium uppercase tracking-[0.1em] text-faint">{t("publicNetworks.city")}</span>
+              <Select aria-label={t("publicNetworks.city")} compact value={selectedCity} disabled={cityOptions.length === 0} onChange={(event) => setCityFilter(event.target.value)}>
+                <option value="">{t("publicNetworks.allCities")}</option>
+                {cityOptions.map((city) => <option key={city} value={city}>{city}</option>)}
+              </Select>
+            </label>
+          </div>
         </div>
-        {error ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={error} onRetry={() => void load()} /></div> : networks === null ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : networks.length === 0 ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t("publicNetworks.emptyTitle")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t("publicNetworks.emptyDetail")}</p></div> : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1100px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "geoLabel", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{orderedNetworks.map((network) => <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} distance={distanceKm(network.location, viewerLocation)} stats={localNetwork?.fingerprint === network.fingerprint ? metrics : null} joining={joining && joinTarget?.cluster_id === network.cluster_id} onJoin={() => setJoinTarget(network)} t={t} />)}</tbody></table></div>}
+        {error ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={error} onRetry={() => void load()} /></div> : networks === null ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : filteredNetworks.length === 0 ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(networks.length === 0 ? "publicNetworks.emptyTitle" : "publicNetworks.noMatches")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(networks.length === 0 ? "publicNetworks.emptyDetail" : "publicNetworks.noMatchesDetail")}</p></div> : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1100px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "geoLabel", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{orderedNetworks.map((network) => <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} distance={distanceKm(network.location, viewerLocation)} stats={localNetwork?.fingerprint === network.fingerprint ? metrics : null} joining={joining && joinTarget?.cluster_id === network.cluster_id} onJoin={() => setJoinTarget(network)} t={t} />)}</tbody></table></div>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 px-1 py-3 text-xs leading-relaxed text-faint"><span>{t("publicNetworks.locationNote")}</span><span className="flex items-center gap-2"><ShieldCheck className="h-3.5 w-3.5 shrink-0" />{t("publicNetworks.securityNote")}</span></div>
       <Confirm open={joinTarget !== null} title={t("publicNetworks.joinTitle", { name: joinTarget?.name ?? "" })} description={t("publicNetworks.joinDetail")} confirmLabel={t("publicNetworks.joinConfirm")} busy={joining} onConfirm={() => joinTarget && void join(joinTarget)} onCancel={() => !joining && setJoinTarget(null)} />
@@ -132,4 +182,8 @@ function distanceKm(location: PublicNetwork["location"], viewer: ViewerLocation 
   const longitude = (location.longitude - viewer.longitude) * Math.PI / 180;
   const a = Math.sin(latitude / 2) ** 2 + Math.cos(viewer.latitude * Math.PI / 180) * Math.cos(location.latitude * Math.PI / 180) * Math.sin(longitude / 2) ** 2;
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function countryKey(network: PublicNetwork) {
+  return network.country_code || network.country_name;
 }

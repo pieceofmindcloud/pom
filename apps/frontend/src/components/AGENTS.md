@@ -242,6 +242,10 @@ Per-file list:
   arrow. Its card shows the complete cycle cost only when every directional
   leg and peer compute measurement is present, never treating an absent leg as
   zero.
+  When the Dashboard has an active deployment, its properties toggle is a
+  compact icon button inside the map's upper-right control area, next to the
+  zoom and Fit controls; the dashboard toolbar remains reserved for cluster
+  status and actions.
 - `RouteRttLabel.tsx` - selo visual de RTT direcional compartilhado pelo mapa
   do Painel e pelo mapa de implantação. No Painel ele também identifica o
   transporte efetivo (`HTTP`, `HTTPS` ou `QUIC`) observado na execução; quando

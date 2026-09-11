@@ -7,6 +7,7 @@ import { NetworkChat } from "./NetworkChat";
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
+  toast: { error: vi.fn(), fromError: vi.fn() },
 }));
 
 vi.mock("../lib/api", () => ({
@@ -18,7 +19,7 @@ vi.mock("../lib/queries", () => ({
   useCluster: () => ({ data: { peers: [{ node_id: "node-peer", short_id: "node-peer", node: { hostname: "salem" } }] } }),
 }));
 vi.mock("../lib/toast", () => ({
-  useToast: () => ({ error: vi.fn(), fromError: vi.fn() }),
+  useToast: () => mocks.toast,
 }));
 
 const enabledSnapshot = {
@@ -83,6 +84,41 @@ describe("NetworkChat", () => {
         }),
       }));
     });
+  });
+
+  it("rola para a última mensagem quando o histórico recebe uma mensagem nova", async () => {
+    const nextSnapshot = {
+      ...enabledSnapshot,
+      messages: [
+        ...enabledSnapshot.messages,
+        {
+          ...enabledSnapshot.messages[0],
+          messageId: "message-2",
+          senderNodeId: "node-local",
+          text: "Mensagem nova",
+        },
+      ],
+    };
+    mocks.get.mockReset();
+    mocks.get.mockResolvedValueOnce(enabledSnapshot).mockResolvedValue(nextSnapshot);
+    mount();
+
+    const messages = await screen.findByTestId("network-chat-messages");
+    const scrollTo = vi.fn();
+    Object.defineProperties(messages, {
+      clientHeight: { configurable: true, value: 240 },
+      scrollHeight: { configurable: true, value: 900 },
+      scrollTop: { configurable: true, writable: true, value: 660 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+    fireEvent.scroll(messages);
+
+    const composer = screen.getByPlaceholderText("Escreva para a rede…");
+    fireEvent.change(composer, { target: { value: "Mensagem nova" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => expect(screen.getByText("Mensagem nova")).toBeTruthy());
+    expect(scrollTo).toHaveBeenCalledWith({ top: 900, behavior: "auto" });
   });
 
   it("envia texto em HTTP sem crypto.randomUUID", async () => {

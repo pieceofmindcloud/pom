@@ -4,7 +4,6 @@ import {
   LayoutGrid,
   MemoryStick,
   PanelRightClose,
-  PanelRightOpen,
   Plus,
   Route as RouteIcon,
   Zap,
@@ -86,9 +85,9 @@ function ClusterStat({
     iris: "text-iris",
   }[tone];
   return (
-    <div className="min-w-0 px-5 py-4">
-      <div className="eyebrow mb-1.5">{label}</div>
-      <div className={clsx("font-display text-xl font-bold tracking-tight", color)}>
+    <div className="min-w-0 px-3 py-2">
+      <div className="eyebrow mb-1">{label}</div>
+      <div className={clsx("font-display text-lg font-bold tracking-tight", color)}>
         {value}
       </div>
       {detail && <div className="mt-0.5 truncate text-xs text-muted">{detail}</div>}
@@ -232,7 +231,7 @@ export function Dashboard() {
   const localLoad = localNode && typeof localNode.load === "number" ? localNode.load : null;
 
   return <div className="flex h-full min-h-0 flex-col bg-ink">
-    <div className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-2 shadow-panel backdrop-blur-md">
+    <div data-testid="dashboard-toolbar" className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-1 shadow-panel backdrop-blur-md">
       <div className="grid min-w-0 flex-1 grid-cols-2 divide-x divide-y divide-line rounded-lg border border-line bg-raised/75 sm:flex sm:divide-y-0">
         {isAdmin ? (
           <>
@@ -280,14 +279,13 @@ export function Dashboard() {
           </>
         )}
         {detailed && <ViewSwitch view={view} onChange={setView} />}
-        {activeVersion && <Button size="sm" variant="outline" aria-pressed={showProperties} onClick={() => setShowProperties((value) => !value)} icon={showProperties ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}>{t(showProperties ? "dashboard.hideProperties" : "dashboard.versionProperties")}</Button>}
       </div>
     </div>
 
     <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {!detailed || view === "minima" ? (
-          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} /></div>
+          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} /></div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (

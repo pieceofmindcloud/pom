@@ -469,7 +469,10 @@ profile policy remains the effective authorization boundary.
   `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,
   abre requests em `in_progress`, completa a mesma linha, marca registros
   antigos como `incomplete` e serve consultas autenticadas paginadas mais
-  estatísticas no servidor. Falha de enfileiramento ou gravação registra
+  estatísticas no servidor. As consultas aceitam `node_id`, identidade de API
+  key, rótulo de usuário, modelo, prompt e intervalo de entrada; o usuário é o
+  rótulo humano da API key porque a auditoria não armazena uma conta separada.
+  Falha de enfileiramento ou gravação registra
   sempre a operação e o request id. Pedidos, conversas e auditoria ficam no
   mesmo `pom.db`; permissões do banco e dos sidecars WAL/SHM são aplicadas no
   arranque.

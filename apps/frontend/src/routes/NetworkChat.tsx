@@ -1,7 +1,8 @@
-import { Download, FileUp, MessageCircle, Send, Users, Wifi, WifiOff } from "lucide-react";
+import { Download, FileUp, Send, Users, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Empty, Input, Panel, PanelHeader } from "../components/ui";
+import { Button, Empty, Input, PageHeader } from "../components/ui";
 import { api, downloadNetworkChatFile, postNetworkChat } from "../lib/api";
+import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
 import { useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
@@ -150,6 +151,8 @@ export function NetworkChat() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const autoFollow = useRef(true);
   const typingTimer = useRef<number | undefined>(undefined);
   const typingActive = useRef(false);
 
@@ -245,6 +248,19 @@ export function NetworkChat() {
     () => snapshot?.typing.filter((event) => event.senderNodeId !== localNodeId) ?? [],
     [localNodeId, snapshot?.typing],
   );
+  const messages = snapshot?.messages ?? [];
+  const latestMessageId = messages[messages.length - 1]?.messageId;
+
+  useEffect(() => {
+    const element = messagesRef.current;
+    if (element && autoFollow.current) {
+      if (typeof element.scrollTo === "function") {
+        element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+      } else {
+        element.scrollTop = element.scrollHeight;
+      }
+    }
+  }, [latestMessageId, messages.length]);
 
   if (loading && !snapshot) {
     return <div className="flex h-full items-center justify-center text-sm text-muted">{t("networkChat.loading")}</div>;
@@ -252,28 +268,39 @@ export function NetworkChat() {
 
   if (snapshot && !snapshot.enabled) {
     return (
-      <Panel className="flex h-full flex-col">
-        <PanelHeader title={t("networkChat.title")} subtitle={t("networkChat.subtitle")} />
+      <div className="flex h-full min-h-0 flex-col bg-ink">
+        <PageHeader
+          title={t("networkChat.title")}
+          subtitle={t("networkChat.subtitle")}
+          className="!mb-0 shrink-0 border-b border-line bg-surface/75 px-3 py-3 sm:px-4"
+        />
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           <WifiOff className="h-8 w-8 text-amber" />
           <p className="font-display text-lg font-semibold text-fg">{t("networkChat.disabledTitle")}</p>
           <p className="max-w-md text-sm leading-relaxed text-muted">{t("networkChat.disabledDetail")}</p>
         </div>
-      </Panel>
+      </div>
     );
   }
 
-  const messages = snapshot?.messages ?? [];
   return (
-    <Panel className="flex h-full min-h-0 flex-col overflow-hidden">
-      <PanelHeader
-        title={<span className="flex items-center gap-2"><MessageCircle className="h-4 w-4 text-aqua" />{t("networkChat.title")}</span>}
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-ink">
+      <PageHeader
+        title={t("networkChat.title")}
         subtitle={t("networkChat.subtitle")}
         actions={<span className="inline-flex items-center gap-1.5 rounded-full border border-aqua/30 bg-aqua/10 px-2.5 py-1 text-xs text-aqua"><Wifi className="h-3.5 w-3.5" />{t("networkChat.online")}</span>}
+        className="!mb-0 shrink-0 border-b border-line bg-surface/75 px-3 py-3 sm:px-4"
       />
       <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_15rem]">
         <div className="flex min-h-0 flex-col">
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6">
+          <div
+            ref={messagesRef}
+            data-testid="network-chat-messages"
+            onScroll={(event) => {
+              autoFollow.current = isNearBottom(event.currentTarget);
+            }}
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
+          >
             {messages.length ? messages.map((message) => <MessageRow key={message.messageId} message={message} localNodeId={localNodeId} nodeName={nodeName} onDownload={(fileMessage) => { void download(fileMessage); }} />) : <Empty title={t("networkChat.emptyTitle")}>{t("networkChat.emptyDetail")}</Empty>}
             {typing.length > 0 && <p className="text-xs italic text-muted">{t("networkChat.typing", { node: nodeName(typing[0].senderNodeId) })}</p>}
           </div>
@@ -300,6 +327,6 @@ export function NetworkChat() {
         </div>
         <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />
       </div>
-    </Panel>
+    </div>
   );
 }

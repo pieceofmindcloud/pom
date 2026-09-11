@@ -79,7 +79,7 @@ clique no Fluxo abria - também é do administrador (`canSeePeerDetails`, em
 desenhado**, porque uma vista só não é uma escolha.
 
 - `/` -> Dashboard
-- `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens); `/network-chat` -> NetworkChat, página própria com o mesmo padrão visual do chat de IA
+- `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens); `/network-chat` -> NetworkChat, página própria com o mesmo padrão visual do chat de IA, com cabeçalho full-bleed alinhado às outras telas e acompanhamento automático do fim do histórico
 - `/admin-ui/chat` -> Chat compacto para o painel nativo da barra de status do macOS; mantém somente a tela de chat, com layout `h-full min-h-0 overflow-hidden`, e o botão de janela maior só aparece quando o WebKit nativo fornece a ponte `pomOpenWindow`.
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels (busca,
   detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também
@@ -99,7 +99,8 @@ desenhado**, porque uma vista só não é uma escolha.
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
   filtros, tabela densa, scroll infinito e inspetor com Markdown renderizado,
   expansão para leitura e redação de credenciais; `/estatisticas` -> Statistics,
-  tela full-bleed separada dos agregados da auditoria, sem título duplicado.
+  tela full-bleed separada dos agregados da auditoria, sem título duplicado, com
+  filtros de usuário, API key, modelo, nó, prompt e intervalo de datas.
   `/logs/estatisticas` redireciona para a rota nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista
@@ -141,9 +142,11 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 `Chat.tsx` mantém somente a conversa de IA. `NetworkChat.tsx` é a página
 `/network-chat`: consulta o snapshot autenticado, envia texto, arquivos e
-ações de digitação com a chave da API do nó e resolve cada `node_id` pelo mapa
-de nomes usado pelo painel. `Preferences.tsx` expõe a política de chat da rede
-somente ao administrador.
+ações de digitação com a chave da API do nó, resolve cada `node_id` pelo mapa
+de nomes usado pelo painel e mantém o histórico no fim enquanto a pessoa não
+rolou para cima. `Preferences.tsx` expõe a política de chat da rede somente ao
+administrador. `PublicNetworks.tsx` deriva os combos de país e cidade dos
+metadados públicos recebidos, mantendo a cidade limitada ao país selecionado.
 
 ## Links
 

@@ -705,10 +705,12 @@ campos da configuração original. Node também pode ler as versões por
 `stream: true`, igual a qualquer harness - o que aparece ali é o que um
 harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
 cap 50 sessões, sincronizado entre abas), não do nó. O `ChatSessionProvider`
-também mantém o stream e grava a resposta parcial a cada delta, por isso sair
-da rota não interrompe a geração: ao voltar, a conversa mostra o texto já
-recebido e o estado ao vivo. Só o botão de parar ou o envio de uma nova
-mensagem aborta o pedido anterior. Três coisas a conversa guarda além das falas:
+também mantém o stream e acumula os deltas em memória, publicando e persistindo
+o parcial em uma janela de 50 ms e fazendo flush imediato no fim ou na
+interrupção. Assim sair da rota não interrompe a geração: ao voltar, a conversa
+mostra o texto já recebido e o estado ao vivo sem forçar um re-render por token.
+Só o botão de parar ou o envio de uma nova mensagem aborta o pedido anterior.
+Três coisas a conversa guarda além das falas:
 
 - O único campo de ficheiro lê `GET /api/ui/chat/capabilities`, que agrega a
   cabeça ativa e a cobertura sem reutilizar a topologia que o perfil `infer` não

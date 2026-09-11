@@ -531,8 +531,9 @@ Key logic carriers:
   before the placeholder reply, streams deltas into `consumeChatDelta` (keeps
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
   measures browser-local first chunk/token and delivery timing, and persists
-  the partial session after every delta. Route unmounts do not abort it;
-  `stopStream` and a new message do.
+  the partial session on a 50 ms scheduler while the stream is active. The
+  final or interrupted state is flushed immediately. Route unmounts do not
+  abort it; `stopStream` and a new message do.
 - `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
   closed-by-default telemetry card shared by Chat and Logs: per-hop
   prefill/decode phases, selected

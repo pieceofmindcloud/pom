@@ -419,8 +419,9 @@ Key logic carriers:
 - `ui.tsx:ErrorState` (ui.tsx:369) — turns any error into a localized panel;
   because the backend writes server errors as i18n keys, this is where
   `localizeServerText` runs.
-- `Markdown` (Markdown.tsx:32) — `memo`ized so streaming delta updates do not
-  re-parse the whole transcript every token; fenced-code detection decides
+- `Markdown` (Markdown.tsx:32) — `memo`ized so unchanged message bubbles do
+  not re-parse their transcript during a stream; the active answer is published
+  at a 50 ms cadence by `ChatSessionProvider`. Fenced-code detection decides
   inline vs block + copy button.
 - `nav.ts:NAV` (nav.ts:40) — the source of truth for the menu, its order and
   its routes; the section that is "its own entry" (`/implantar`, deploy) is a

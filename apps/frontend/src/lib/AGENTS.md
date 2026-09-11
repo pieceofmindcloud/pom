@@ -348,8 +348,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   deletion so the Chat clears transient state; changing routes does not abort a
   live stream. `startStream` aborts the previous request when a new message is
   sent, while `stopStream` is the explicit user cancellation. Deltas are
-  persisted in the session as they arrive, and deleting a session prevents a
-  finishing stream from recreating it.
+  accumulated immediately but publish React and localStorage snapshots on a
+  50 ms cadence while the stream is active; terminal and interrupted states
+  flush immediately. Deleting a session prevents a finishing stream from
+  recreating it.
   `startStream` also carries the optional Chat `inference_head` selection in
   the OpenAI-compatible request body and sends the conversation's
   `thinkingEnabled` value as `thinking_enabled`.

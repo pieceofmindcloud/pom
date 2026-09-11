@@ -585,6 +585,8 @@ export interface ChatCapabilities {
   active_model: string;
   vision: "supported" | "unsupported" | "unavailable";
   coverage: "complete" | "incomplete" | "unavailable";
+  /** Thinking is available only when the active deployment leaves it enabled. */
+  thinking: "supported" | "unsupported" | "unavailable";
 }
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;

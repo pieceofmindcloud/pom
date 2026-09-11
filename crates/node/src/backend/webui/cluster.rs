@@ -717,6 +717,9 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
     let mut vision_supported = false;
     let mut vision_unknown = false;
     let mut vision_candidate = false;
+    let mut thinking_enabled = false;
+    let mut thinking_disabled = false;
+    let mut thinking_unknown = false;
 
     for peer in head_candidates {
         vision_candidate = true;
@@ -726,6 +729,7 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
                     "start_layer": config.start_layer,
                     "model_label": config.model_label,
                     "mmproj_path": config.mmproj_path,
+                    "no_thinking": config.no_thinking,
                 })
             })
         } else {
@@ -778,6 +782,14 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
             vision_unknown = true;
             continue;
         }
+        match config
+            .get("no_thinking")
+            .and_then(serde_json::Value::as_bool)
+        {
+            Some(true) => thinking_disabled = true,
+            Some(false) => thinking_enabled = true,
+            None => thinking_unknown = true,
+        }
         if config
             .get("mmproj_path")
             .and_then(serde_json::Value::as_str)
@@ -794,11 +806,19 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
     } else {
         "unsupported"
     };
+    let thinking_state = if thinking_unknown || (!thinking_enabled && !thinking_disabled) {
+        "unavailable"
+    } else if thinking_disabled {
+        "unsupported"
+    } else {
+        "supported"
+    };
 
     Json(json!({
         "active_model": active_model,
         "vision": vision_state,
         "coverage": coverage_state,
+        "thinking": thinking_state,
     }))
 }
 

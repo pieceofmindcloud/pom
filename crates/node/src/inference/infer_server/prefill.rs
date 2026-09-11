@@ -150,6 +150,7 @@ pub(super) async fn handle_prefill(
         }
     };
     let chat_template = meta.get("chat_template").and_then(|v| v.as_bool());
+    let thinking_enabled = meta.get("thinking_enabled").and_then(|v| v.as_bool());
     // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
     // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
     // `nextn` no `decode_hidden` (ver `prefill_blocking`). Ausente é peer antigo.
@@ -224,6 +225,7 @@ pub(super) async fn handle_prefill(
         images,
         mrope_positions,
         chat_template,
+        thinking_enabled,
         tensor,
         capture_block,
         chunk_tokens,
@@ -284,6 +286,9 @@ pub(super) async fn handle_prefill(
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
+    if let Some(value) = meta.get("thinking_enabled") {
+        local_meta["thinking_enabled"] = value.clone();
+    }
     preserve_batch_identity(&meta, &mut local_meta);
 
     // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
@@ -349,6 +354,9 @@ pub(super) async fn handle_prefill(
         });
         if let Some(sequence_id) = &prefill_sequence_id {
             forward["prefill_sequence_id"] = json!(sequence_id);
+        }
+        if let Some(value) = local_meta.get("thinking_enabled") {
+            forward["thinking_enabled"] = value.clone();
         }
         for field in ["start_pos", "next_pos", "stable_len"] {
             if let Some(value) = local_meta.get(field) {
@@ -450,6 +458,9 @@ pub(super) async fn handle_prefill(
             }
             if let Some(value) = local_meta.get("prefix_match_tokens") {
                 relay_meta["prefix_match_tokens"] = value.clone();
+            }
+            if let Some(value) = local_meta.get("thinking_enabled") {
+                relay_meta["thinking_enabled"] = value.clone();
             }
             preserve_batch_identity(&meta, &mut relay_meta);
             relay_meta
@@ -701,6 +712,7 @@ pub(super) fn prefill_blocking(
     prompt: Option<String>,
     images: Option<Vec<Vec<u8>>>,
     chat_template: Option<bool>,
+    thinking_enabled: Option<bool>,
     tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
@@ -760,7 +772,7 @@ pub(super) fn prefill_blocking(
     if let Some(ref text) = prompt {
         if chunk_index == 0 && !has_images {
             let use_tmpl = use_chat_template(chat_template, s.chat_template);
-            let no_think = s.no_thinking;
+            let no_think = s.no_thinking || !thinking_enabled.unwrap_or(!s.no_thinking);
             let formatted = if use_tmpl {
                 s.engine
                     .apply_chat_template(&[("user", text)], true, no_think)?
@@ -879,9 +891,10 @@ pub(super) fn prefill_blocking(
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("imagem sem prompt"))?;
         let use_tmpl = use_chat_template(chat_template, s.chat_template);
+        let no_think = s.no_thinking || !thinking_enabled.unwrap_or(!s.no_thinking);
         let formatted = if use_tmpl {
             s.engine
-                .apply_chat_template(&[("user", text)], true, s.no_thinking)?
+                .apply_chat_template(&[("user", text)], true, no_think)?
         } else {
             text.to_string()
         };
@@ -1204,6 +1217,7 @@ pub(super) fn prefill_batch_blocking(
             mrope_positions,
             next_pos,
             chat_template,
+            thinking_enabled,
             tensor,
             capture_block,
             chunk_tokens,
@@ -1231,7 +1245,7 @@ pub(super) fn prefill_batch_blocking(
             if let Some(text) = prompt.as_deref() {
                 if chunk_index == 0 {
                     let use_tmpl = use_chat_template(chat_template, s.chat_template);
-                    let no_think = s.no_thinking;
+                    let no_think = s.no_thinking || !thinking_enabled.unwrap_or(!s.no_thinking);
                     let formatted = if use_tmpl {
                         s.engine
                             .apply_chat_template(&[("user", text)], true, no_think)?

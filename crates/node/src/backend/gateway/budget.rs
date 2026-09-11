@@ -467,6 +467,9 @@ pub(crate) struct GenerationInput {
     /// recebe este campo; os outros peers trabalham com o estado oculto.
     pub(crate) images: Vec<Vec<u8>>,
     pub(crate) chat_template: bool,
+    /// Escolha do usuário para esta inferência. O peer head ainda aplica o
+    /// kill-switch global da implantação antes de renderizar o template.
+    pub(crate) thinking_enabled: bool,
     /// Os dois tetos desta requisição: o da perna e o do total. Ver
     /// [`OutputBudget`].
     pub(crate) budget: OutputBudget,

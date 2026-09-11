@@ -919,6 +919,7 @@ async fn conversa_com_hops_fault_kind(
                 prompt,
                 images: Vec::new(),
                 chat_template: true,
+                thinking_enabled: true,
                 budget: crate::gateway::OutputBudget::single(8),
                 stops: Vec::new(),
                 cache_key: Some(cache_key),

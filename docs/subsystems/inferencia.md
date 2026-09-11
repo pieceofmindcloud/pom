@@ -1417,6 +1417,11 @@ OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`) e
 prefill. A cabeça, que é a única dona do tokenizer, aplica o
 `tokenizer.chat_template` do GGUF uma vez e abre o turno do assistente; os
 demais peers recebem somente o estado oculto e não reformatam o prompt.
+O Chat OpenAI também envia `thinking_enabled` por inferência nesse mesmo
+metadata. O gateway normaliza a ausência para `true`; na cabeça, o pedido só
+liga thinking quando `thinking_enabled` é verdadeiro e `NodeConfig.no_thinking`
+é falso. O campo é copiado para os metadados dos relays existentes, para que
+hub, anel e resposta direta mantenham a decisão sem criar outro canal.
 Para Gemma4, o renderer lê o template do GGUF e aplica `enable_thinking` e
 `add_generation_prompt` no fluxo suportado pelo modelo, sem inserir marcadores
 de outro formato. A cauda encerra em EOS ou no fim de turno tokenizado pelo
@@ -1426,7 +1431,9 @@ vocabulário do mesmo GGUF, sem enviar esse marcador ao cliente.
 Essa flag explícita tem precedência sobre o padrão legado do servidor, que
 existia para chamadas internas sem metadado. `no_thinking` controla apenas a
 abertura do bloco de raciocínio e não decide mais se o prompt é conversa. Assim
-o modo de pensamento e o enquadramento de conversa não podem se confundir.
+o modo de pensamento e o enquadramento de conversa não podem se confundir. A
+chave de prefixo do gateway inclui o valor de `thinking_enabled`, impedindo
+reutilizar um prefixo formatado com o modo oposto.
 
 ### 3.4 Amostragem da completion
 

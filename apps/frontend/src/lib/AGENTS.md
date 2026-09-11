@@ -39,7 +39,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
   synced; keeps the initial model mark, attachment structure and private request
-  content for telemetry analysis. `ChatSessionProvider` shares the active
+  content for telemetry analysis and the conversation's persistent `thinkingEnabled`
+  choice. `ChatSessionProvider` shares the active
   session and selection/new/delete actions between `Chat` and the infer Sidebar,
   and owns the active stream so route unmounts preserve live partial replies.
   Direct Chat consumers get an isolated provider wrapper.
@@ -313,8 +314,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
 - `useCluster()` 5s with conditional GET, `useChatCapabilities()` 5s from
-  `/api/ui/chat/capabilities` (vision and coverage aggregated for the active
-  model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
+  `/api/ui/chat/capabilities` (vision, thinking availability and coverage
+  aggregated for the active model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
   60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
   while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
   waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, user,
@@ -350,7 +351,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   persisted in the session as they arrive, and deleting a session prevents a
   finishing stream from recreating it.
   `startStream` also carries the optional Chat `inference_head` selection in
-  the OpenAI-compatible request body.
+  the OpenAI-compatible request body and sends the conversation's
+  `thinkingEnabled` value as `thinking_enabled`.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.

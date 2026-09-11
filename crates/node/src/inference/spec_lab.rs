@@ -540,6 +540,7 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
             prompt: "um prompt qualquer para a bancada".into(),
             images: Vec::new(),
             chat_template: true,
+            thinking_enabled: true,
             budget: crate::gateway::OutputBudget::single(max_tokens),
             stops: Vec::new(),
             cache_key: None,

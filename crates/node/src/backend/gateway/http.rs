@@ -575,6 +575,7 @@ pub(super) async fn handle_generate(
             prompt: req.prompt,
             images: Vec::new(),
             chat_template: true,
+            thinking_enabled: true,
             budget: output_limit.budget(),
             stops,
             request_details,

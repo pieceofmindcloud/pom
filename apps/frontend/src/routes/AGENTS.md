@@ -82,6 +82,9 @@ Per-file list:
   A escolha do combo é controlada pelo `ChatScreen` e segue na próxima chamada
   como `inference_head`; o backend valida o `node_id` e preserva a cabeça no
   plano e no `x_pom.source` da telemetria.
+  O botão `Think` só aparece quando `/api/ui/chat/capabilities` retorna
+  `thinking: "supported"`. Seu valor é salvo em `ChatSession` e enviado como
+  `thinking_enabled` a cada mensagem, persistindo até nova ação do usuário.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
   Phase rows also render
@@ -599,7 +602,9 @@ A soma dos anexos é validada contra o contexto efetivo do modelo, usando
 cobertura do Chat vêm de
 `GET /api/ui/chat/capabilities`, uma leitura agregada da implantação que também
 funciona nos perfis `node` e `infer`; recusa ou falha fica como indisponível,
-nunca como modelo vazio ou cobertura zero. Imagens enviadas ficam inteiras na
+nunca como modelo vazio ou cobertura zero. O mesmo endpoint informa se o
+thinking global permite renderizar o botão `Think`; a escolha da sessão vai no
+`thinking_enabled` de cada chamada e permanece entre mensagens. Imagens enviadas ficam inteiras na
 bolha da mensagem, com legenda e texto alternativo. O botão de ditado só é
 renderizado quando o navegador expõe Web Speech e usa o locale da interface.
 

@@ -98,6 +98,8 @@ export interface ChatSession {
   model: string | null;
   /** Model selected before the first visible turn of this conversation. */
   modelAtStart?: string | null;
+  /** Per-inference Think choice, kept for every message in this conversation. */
+  thinkingEnabled?: boolean;
   messages: ChatMessage[];
   updatedAt: string;
 }
@@ -110,6 +112,8 @@ export interface StartChatStreamOptions {
   maxTokens?: number;
   /** Explicit layer-0 peer chosen in the Chat head selector. */
   inferenceHead?: string;
+  /** Per-inference choice captured when the user sends this message. */
+  thinkingEnabled: boolean;
   emptyResponseMessage: string;
   interruptedMessage: string;
   cluster: ClusterView | null;
@@ -168,6 +172,7 @@ export function emptySession(model: string | null): ChatSession {
     title: getActiveLocale() === "pt-BR" ? "Conversa nova" : "New chat",
     model,
     modelAtStart: model,
+    thinkingEnabled: true,
     messages: [],
     updatedAt: new Date().toISOString(),
   };
@@ -322,6 +327,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             ...(options.inferenceHead ? { inference_head: options.inferenceHead } : {}),
             stream: true,
             ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+            thinking_enabled: options.thinkingEnabled,
             messages: turnsOnly(options.history).map((message) => ({
               role: message.role,
               content: message.content,

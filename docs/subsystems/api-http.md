@@ -647,6 +647,14 @@ recalcula outra cabeça por RTT/carga. O `x_pom.source` e o trace da resposta
 mostram a cadeia que efetivamente começou nessa cabeça. Uma escolha ausente,
 inválida ou já desaparecida falha fechada, sem trocar silenciosamente de nó.
 
+O mesmo endpoint aceita `thinking_enabled: boolean` para a escolha daquela
+inferência. O campo ausente preserva o padrão ligado; `false` chega no metadata
+do prefill até a cabeça da implantação, que o combina com o `no_thinking` global
+antes de aplicar o template. Os relays de hub, anel e resposta direta preservam
+o campo junto do metadata existente. `GET /api/ui/chat/capabilities` publica
+`thinking: "supported"`, `"unsupported"` ou `"unavailable"` para a UI, com base
+na configuração global da cabeça do modelo ativo.
+
 `GET /api/ui/deployments` deduplica as cópias persistidas por `deploy_id` e
 marca `serving` somente quando um peer vivo anuncia o deployment. O registro
 pode continuar visível com `serving: false` para diagnóstico e recuperação,

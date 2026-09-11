@@ -242,6 +242,11 @@ pub struct ChatRequest {
     /// when the peer is not a live head for the requested model.
     #[serde(default)]
     pub inference_head: Option<String>,
+    /// Escolha por inferência do Chat. Ausente mantém o padrão habilitado;
+    /// o peer de inferência ainda força `false` quando a implantação desligou
+    /// thinking globalmente.
+    #[serde(default)]
+    pub thinking_enabled: Option<bool>,
 }
 
 /// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
@@ -659,6 +664,7 @@ async fn chat_completions(
         return error_response(status, error);
     }
     let budget = output_limit.budget();
+    let thinking_enabled = req.thinking_enabled.unwrap_or(true);
 
     info!(
         "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -687,6 +693,7 @@ async fn chat_completions(
             stops,
             Some(cache_key),
             preferred_head.clone(),
+            thinking_enabled,
             request_details.clone(),
             output_limit,
         )
@@ -707,6 +714,7 @@ async fn chat_completions(
             stops,
             Some(cache_key),
             preferred_head,
+            thinking_enabled,
             request_details,
             output_limit,
         )
@@ -761,6 +769,7 @@ async fn completions(
             // Completion crua não tem conversa: o prefixo é o próprio texto.
             None,
             None,
+            true,
             request_details.clone(),
             output_limit,
         )
@@ -781,6 +790,7 @@ async fn completions(
             stops,
             None,
             None,
+            true,
             request_details,
             output_limit,
         )
@@ -845,6 +855,7 @@ async fn blocking_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     preferred_head: Option<String>,
+    thinking_enabled: bool,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
@@ -863,6 +874,7 @@ async fn blocking_response(
             stops,
             cache_key,
             preferred_head,
+            thinking_enabled,
             request_details,
         },
     )
@@ -1051,6 +1063,7 @@ fn stream_response(
     stops: Vec<String>,
     cache_key: Option<String>,
     preferred_head: Option<String>,
+    thinking_enabled: bool,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
@@ -1070,6 +1083,7 @@ fn stream_response(
             stops,
             cache_key,
             preferred_head,
+            thinking_enabled,
             request_details,
         },
         tx,
@@ -1737,6 +1751,7 @@ mod tests {
                 }],
                 stop: None,
                 inference_head: None,
+                thinking_enabled: Some(false),
             }),
         )
         .await;
@@ -1778,6 +1793,7 @@ mod tests {
             .unwrap()
             .ends_with("User: Oi, teste"));
         assert_eq!(meta["chat_template"], true);
+        assert_eq!(meta["thinking_enabled"], false);
     }
 
     /// O que o cliente lê como economia é o que o pipeline **executou**. A
@@ -1862,6 +1878,7 @@ mod tests {
                 tools: Vec::new(),
                 stop: None,
                 inference_head: None,
+                thinking_enabled: None,
             }),
         )
         .await;
@@ -2013,6 +2030,7 @@ mod tests {
                 tools: Vec::new(),
                 stop: None,
                 inference_head: None,
+                thinking_enabled: None,
             }),
         )
         .await;
@@ -2037,6 +2055,7 @@ mod tests {
                 tools: Vec::new(),
                 stop: None,
                 inference_head: None,
+                thinking_enabled: None,
             }),
         )
         .await;
@@ -2083,6 +2102,7 @@ mod tests {
                 tools: Vec::new(),
                 stop: None,
                 inference_head: None,
+                thinking_enabled: None,
             }),
         )
         .await

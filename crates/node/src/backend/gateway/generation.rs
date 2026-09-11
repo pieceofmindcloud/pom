@@ -318,6 +318,7 @@ pub(super) async fn generate_stream_inner(
         prompt,
         images,
         chat_template,
+        thinking_enabled,
         budget,
         stops,
         cache_key,
@@ -477,7 +478,7 @@ pub(super) async fn generate_stream_inner(
     );
     let prefix_key = crate::prefix_cache::PrefixRouteKey::new(
         format!(
-            "{}|deployment={}|chat_template={chat_template}",
+            "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
             model,
             deploy_id.unwrap_or("<default>")
         ),
@@ -725,6 +726,7 @@ pub(super) async fn generate_stream_inner(
                 &prompt,
                 &images,
                 chat_template,
+                thinking_enabled,
                 chunk_tokens,
                 dtype,
                 &state.peer_http,

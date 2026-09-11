@@ -565,6 +565,8 @@ function ChatScreen() {
   }, []);
 
   const visionAvailable = chatCapabilities.data?.vision === "supported";
+  const thinkingAvailable = chatCapabilities.data?.thinking === "supported";
+  const thinkingEnabled = session.thinkingEnabled ?? thinkingAvailable;
   const servedModel = models.data?.find((candidate) => candidate.id === model);
   const contextLength = servedModel?.context_length
     ?? servedModel?.max_input_tokens
@@ -776,6 +778,7 @@ function ChatScreen() {
         session.titled || turnsOnly(session.messages).length > 0
           ? session.title
           : titleFrom(titleText),
+      thinkingEnabled,
       messages: [...history, reply],
     };
     setSession(live);
@@ -792,6 +795,7 @@ function ChatScreen() {
       model,
       maxTokens: node.data?.config?.max_new_tokens,
       inferenceHead: selectedInferenceHead ?? undefined,
+      thinkingEnabled,
       emptyResponseMessage: t("chat.emptyResponse"),
       interruptedMessage: t("chat.interrupted"),
       cluster: cluster.data ?? null,
@@ -1070,6 +1074,27 @@ function ChatScreen() {
                 </Button>
               ) : (
                 <>
+                  {thinkingAvailable && (
+                    <Button
+                      size="sm"
+                      variant={thinkingEnabled ? "outline" : "ghost"}
+                      aria-pressed={thinkingEnabled}
+                      aria-label={t("chat.thinkToggle")}
+                      title={t("chat.thinkToggleHint")}
+                      onClick={() => {
+                        const next = !thinkingEnabled;
+                        const updated = { ...session, thinkingEnabled: next };
+                        setSession(updated);
+                        upsert(updated);
+                      }}
+                      className={clsx(
+                        "shrink-0",
+                        thinkingEnabled ? "border-iris/50 bg-iris/[0.08] text-iris" : "text-faint",
+                      )}
+                    >
+                      {t("chat.thinkToggle")}
+                    </Button>
+                  )}
                   {speechSupported && (
                     <button
                       type="button"

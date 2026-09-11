@@ -275,12 +275,19 @@ mod profile_network_tests {
         config.end_layer = 15;
         config.total_layers = 32;
         config.mmproj_path = Some("/models/mmproj-qwen.gguf".into());
-        state.runtime.seed_config_for_test(config).await;
+        config.no_thinking = false;
+        state.runtime.seed_config_for_test(config.clone()).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
 
         let body = body_of(chat_capabilities(State(state.clone())).await.into_response()).await;
         assert_eq!(body["vision"], "supported");
         assert_eq!(body["coverage"], "complete");
+        assert_eq!(body["thinking"], "supported");
+
+        config.no_thinking = true;
+        state.runtime.seed_config_for_test(config).await;
+        let body = body_of(chat_capabilities(State(state.clone())).await.into_response()).await;
+        assert_eq!(body["thinking"], "unsupported");
 
         let cluster_body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
         assert_eq!(cluster_body["peers"].as_array().unwrap().len(), 1);
@@ -295,7 +302,8 @@ mod profile_network_tests {
                     "config": {
                         "start_layer": 0,
                         "model_label": "qwen",
-                        "mmproj_path": "/models/mmproj-qwen.gguf"
+                        "mmproj_path": "/models/mmproj-qwen.gguf",
+                        "no_thinking": false
                     },
                     "active_model": "qwen"
                 }))
@@ -326,6 +334,7 @@ mod profile_network_tests {
         let body = body_of(chat_capabilities(State(state)).await.into_response()).await;
         assert_eq!(body["vision"], "supported");
         assert_eq!(body["coverage"], "complete");
+        assert_eq!(body["thinking"], "supported");
     }
 
     #[tokio::test]

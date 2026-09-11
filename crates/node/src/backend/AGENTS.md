@@ -1046,11 +1046,14 @@ projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
 projetor e a mensagem para o usuário precisam permanecer alinhadas.
 O Chat consulta `GET /api/ui/chat/capabilities`, uma rota comum que agrega o
-modelo ativo, a cobertura e o `mmproj_path` da cabeça da implantação sem expor
-topologia ao perfil `infer`. A resposta usa `supported`, `unsupported` ou
-`unavailable` para visão e cobertura completa, incompleta ou indisponível;
-recusa de autorização nunca é convertida em vazio. Visão é propriedade do
-modelo servido, não privilégio do perfil.
+modelo ativo, a cobertura, o `mmproj_path` e o `no_thinking` da cabeça da
+implantação sem expor topologia ao perfil `infer`. A resposta usa `supported`,
+`unsupported` ou `unavailable` para visão, thinking e cobertura completa,
+incompleta ou indisponível; recusa de autorização nunca é convertida em vazio.
+Visão e a disponibilidade de thinking são propriedades do modelo servido, não
+privilégios do perfil. `openai::ChatRequest.thinking_enabled` segue no
+`GenerationInput` e no metadata de prefill; a cabeça aplica o kill-switch
+global antes de renderizar o template.
 
 ## Maintaining this file
 

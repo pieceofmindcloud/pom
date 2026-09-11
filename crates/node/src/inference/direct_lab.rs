@@ -618,6 +618,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         "um prompt qualquer",
         &[],
         true,
+        true,
         CHUNK,
         WireDtype::F16,
         &http,

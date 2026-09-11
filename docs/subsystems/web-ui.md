@@ -718,6 +718,12 @@ mensagem aborta o pedido anterior. Três coisas a conversa guarda além das fala
   sem inventar um modelo vazio. Imagens são redimensionadas no navegador para no
   máximo 2048 px no lado maior, preservando a proporção, antes de virar base64
   no pedido, e aparecem inteiras na bolha da fala com legenda e alt.
+- O botão `Think` usa o campo `thinking` da mesma leitura de capabilities e só
+  aparece quando o `no_thinking` global da cabeça está desligado. A escolha é
+  enviada como `thinking_enabled` em cada chamada de Chat e fica no
+  `ChatSession` persistido em `localStorage`, portanto continua entre mensagens
+  da mesma conversa até o usuário mudar o toggle. A cabeça ainda impõe o
+  desligamento global, mesmo que uma sessão antiga carregue `true`.
 - O lote é recusado antes do envio quando o tamanho bruto ultrapassa o contexto
   efetivo do modelo: primeiro `context_length` de `/v1/models`, depois `n_ctx`
   do nó ativo, com a estimativa conservadora de quatro bytes por token. O

@@ -146,6 +146,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   vez de executar experts nativos e externos. O contexto MTP criado sobre o
   modelo metadata-only recebe o mesmo hook no `LlmEngine`; sem isso
   `llama_decode` do contexto `nextn` falha e a sessão perde MTP.
+  O metadata do primeiro prefill também carrega `thinking_enabled`, a escolha
+  por inferência do Chat. A cabeça combina esse valor com `no_thinking` antes
+  do template e os caminhos hub, anel e direto o preservam nos relays.
   estado é acessado por `lock_inference_state`: um mutex envenenado vira erro
   HTTP ou falha da requisição em lote, nunca um novo panic em `unwrap`. EOS
   fecha apenas o acumulador da resposta; a sessão permanece disponível para

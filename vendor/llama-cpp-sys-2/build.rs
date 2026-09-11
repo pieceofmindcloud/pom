@@ -41,6 +41,22 @@ fn missing_llama_source_error(source: &Path) -> String {
     )
 }
 
+fn canonical_local_source(source: PathBuf) -> Result<PathBuf, String> {
+    if !source.join("ggml").is_dir() {
+        return Err(format!(
+            "LLAMA_SOURCE aponta para um checkout inválido: {}.\n\
+             O diretório precisa existir e conter `ggml`.",
+            source.display(),
+        ));
+    }
+    source.canonicalize().map_err(|error| {
+        format!(
+            "não foi possível resolver o checkout indicado por LLAMA_SOURCE em {}: {error}",
+            source.display()
+        )
+    })
+}
+
 fn source_symlink_target(source: &Path) -> Result<Option<PathBuf>, String> {
     let metadata = match std::fs::symlink_metadata(source) {
         Ok(metadata) => metadata,
@@ -88,15 +104,7 @@ fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
     }
 
     if let Ok(local_source) = env::var("LLAMA_SOURCE") {
-        let local_source = PathBuf::from(local_source);
-        if local_source.join("ggml").is_dir() {
-            return Ok(local_source);
-        }
-        return Err(format!(
-            "LLAMA_SOURCE aponta para um checkout inválido: {}.\n\
-             O diretório precisa existir e conter `ggml`.",
-            local_source.display(),
-        ));
+        return canonical_local_source(PathBuf::from(local_source));
     }
 
     let destination = clone_destination(
@@ -123,7 +131,6 @@ fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
     let reference =
         env::var("POM_LLAMA_CPP_REF").unwrap_or_else(|_| DEFAULT_LLAMA_CPP_REF.to_owned());
 
-    println!("cargo:rerun-if-env-changed=LLAMA_SOURCE");
     println!("cargo:rerun-if-env-changed=POM_LLAMA_CPP_REPOSITORY");
     println!("cargo:rerun-if-env-changed=POM_LLAMA_CPP_REF");
     println!("cargo:rerun-if-env-changed=POM_LLAMA_CPP_AUTOCLONE");
@@ -597,6 +604,7 @@ fn is_hidden(e: &DirEntry) -> bool {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=LLAMA_SOURCE");
 
     let (target_os, target_triple) =
         parse_target_os().unwrap_or_else(|t| panic!("Failed to parse target os {t}"));

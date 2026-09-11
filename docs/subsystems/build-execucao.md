@@ -426,7 +426,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_BUILD_FEATURES` | Features com que a máquina compila no devupdate (`cuda`/`metal`); sem ela a ksia perde a GPU no primeiro clique. |
 | `POM_CUDA_GRAPHS` | `=1`, `true`, `yes` ou `on` habilita CUDA Graphs no build CUDA. O padrão é desligado para reduzir o risco de OOM no lançamento do grafo. É uma opção de compilação, então exige reconstruir o binário. |
 | `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
-| `LLAMA_SOURCE` | Checkout local de `llama.cpp` já preparado; precisa conter `ggml` e evita copiar o fork para o worktree. |
+| `LLAMA_SOURCE` | Checkout local de `llama.cpp` já preparado; precisa conter `ggml`, é normalizado para caminho absoluto e evita copiar o fork para o worktree. |
 | `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remoto e branch usados pela preparação automática quando o fork está ausente. Os padrões são o fork público e `pom-tensor-parallel`. |
 | `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` para impedir o download automático e receber somente a mensagem com o procedimento manual. |
 | `VITE_API_TARGET` | Alvo do proxy do dev server da UI (padrão `http://127.0.0.1:8080`). |

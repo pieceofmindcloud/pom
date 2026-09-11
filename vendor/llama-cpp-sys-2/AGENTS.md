@@ -32,7 +32,8 @@ O diretório informado precisa conter `ggml`. `POM_LLAMA_CPP_REPOSITORY` e
 branch durante testes e desenvolvimento; o padrão é o fork público e a branch
 `pom-tensor-parallel`.
 
-Depois de escolher o checkout, o `build.rs` publica o caminho em
+Depois de escolher o checkout, o `build.rs` normaliza um `LLAMA_SOURCE` relativo
+para um caminho absoluto e publica o caminho em
 `cargo:llama_source`. O Cargo entrega esse valor ao `llama-engine` como
 `DEP_LLAMA_LLAMA_SOURCE`, para que a geração da lista MTP leia exatamente a
 mesma árvore, inclusive quando o Windows materializa o symlink em

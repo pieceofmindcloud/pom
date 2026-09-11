@@ -56,8 +56,15 @@ cargo test               # testes do nó
   fallback; macOS usa a descrição Metal e depois `system_profiler`.
 - O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
   instala `hf`, Python ou outro runtime externo.
-- O `build.rs` lê o checkout local de `llama.cpp` em modo somente leitura para
-  gerar `OUT_DIR/mtp_graph_architectures.rs`. O extrator percorre as
+- O `crates/llama-engine/build.rs` lê, em modo somente leitura, o mesmo checkout
+  preparado pelo `vendor/llama-cpp-sys-2/build.rs` para gerar
+  `OUT_DIR/mtp_graph_architectures.rs`. O primeiro caminho é o metadado Cargo
+  `DEP_LLAMA_LLAMA_SOURCE`, publicado depois que a dependência escolhe a fonte;
+  há fallback para `LLAMA_SOURCE` e depois para
+  `vendor/llama-cpp-sys-2/llama.cpp`. No Windows esse é o diretório real
+  instalado pelo preparo anterior, não a pasta `llama.cpp` ignorada na raiz;
+  Cargo executa o build script da dependência antes do build script do crate que
+  gera a lista. O extrator percorre as
   verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em `src/models`, cruza
   cada classe com o dispatch de `src/llama-model.cpp` e usa a tabela
   `LLM_ARCH_NAMES` de `src/llama-arch.cpp` para obter a cadeia comparada ao

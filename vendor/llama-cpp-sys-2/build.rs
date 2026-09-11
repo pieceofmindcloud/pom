@@ -606,6 +606,10 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
     let llama_src =
         ensure_llama_source(Path::new(&manifest_dir)).unwrap_or_else(|error| panic!("{error}"));
+    // O `llama-engine` também inspeciona o checkout para gerar sua lista MTP.
+    // O metadado mantém os dois build scripts no caminho exato escolhido aqui,
+    // inclusive o caminho materializado no Windows e um `LLAMA_SOURCE` explícito.
+    println!("cargo:llama_source={}", llama_src.display());
     let build_shared_libs = cfg!(feature = "dynamic-link");
 
     let build_shared_libs = std::env::var("LLAMA_BUILD_SHARED_LIBS")

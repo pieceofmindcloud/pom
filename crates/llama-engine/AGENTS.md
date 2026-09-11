@@ -28,6 +28,11 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   última placa **real** - ver `docs/subsystems/inferencia.md`, seção do fit.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
+  O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido
+  pelo metadado Cargo `DEP_LLAMA_LLAMA_SOURCE`; há fallback para
+  `LLAMA_SOURCE` e, por padrão, o caminho vendorizado
+  `vendor/llama-cpp-sys-2/llama.cpp`, que é materializado como diretório real
+  no Windows.
   Quando o modelo alvo usa MoE externo metadata-only, `LlmEngine::set_moe_runtime`
   instala o mesmo callback também no contexto MTP; o acompanhante CPU do recuo
   mantém o caminho nativo porque seus pesos de experts estão presentes.

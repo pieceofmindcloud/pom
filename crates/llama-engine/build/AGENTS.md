@@ -4,8 +4,12 @@ Esta pasta contém código executado pelo `build.rs`, não pelo binário em
 runtime.
 
 - `mtp_arch.rs` lê, em tempo de compilação, a árvore somente leitura do
-  `llama.cpp`. Ele encontra verificações efetivas de
-  `LLM_GRAPH_TYPE_DECODER_MTP` em `src/models`, liga a classe ao
+`llama.cpp`. A fonte vem do metadado `DEP_LLAMA_LLAMA_SOURCE`, publicado pelo
+build script da dependência depois de preparar o checkout; há fallback para
+`LLAMA_SOURCE` e depois para `vendor/llama-cpp-sys-2/llama.cpp`. Isso é
+importante no Windows, onde o symlink versionado é substituído por um diretório
+real nesse caminho. O extrator encontra verificações efetivas de
+`LLM_GRAPH_TYPE_DECODER_MTP` em `src/models`, liga a classe ao
   `LLM_ARCH_*` pelo dispatch de `llama-model.cpp` e resolve o nome oficial
   em `LLM_ARCH_NAMES`, em `llama-arch.cpp`. O resultado é gravado em
   `OUT_DIR` e incluído por `inference/mtp.rs`.

@@ -331,6 +331,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   callback registra o peer emissor e o transporte efetivo; como o callback
   persistente não espera ACK, seu RTT permanece ausente até existir uma
   observação correspondente.
+  No modo direto, `expected_decode_spans=0` significa que o total esperado não
+  foi medido; `decode_span_expectation_available=false` impede a UI de
+  apresentar uma fração `N/0` como cobertura completa.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de

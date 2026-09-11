@@ -238,6 +238,8 @@ export interface TelemetrySummary {
   missing_peers: string[];
   expected_decode_spans: number;
   reported_decode_spans: number;
+  /** False when direct per-frame mode has observations but no expected total. */
+  decode_span_expectation_available?: boolean;
   completeness_percent: number;
   duplicate_spans: number;
   late_spans: number;

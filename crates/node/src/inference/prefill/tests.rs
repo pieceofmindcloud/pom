@@ -1198,6 +1198,26 @@ mod tests {
     }
 
     #[test]
+    fn decode_coverage_without_expected_total_is_explicitly_unavailable() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 76,
+                "processing_ms": 75,
+            }),
+        );
+        trace.complete = true;
+        trace.refresh_telemetry(76);
+
+        assert_eq!(trace.telemetry.reported_decode_spans, 1);
+        assert_eq!(trace.telemetry.expected_decode_spans, 0);
+        assert!(!trace.telemetry.decode_span_expectation_available);
+        assert_eq!(trace.hops[0].decode.node_decode_ms, 0.0);
+    }
+
+    #[test]
     fn transport_telemetry_is_aggregated_instead_of_serializing_every_call() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         for (transport, fallback, round_trip_ms) in [

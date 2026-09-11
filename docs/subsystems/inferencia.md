@@ -154,6 +154,9 @@ por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
 ele só aparece quando bytes de estado oculto cruzaram o hop. Por isso fica
 ausente, em vez de afirmar f8 ou f16, no caso de um plano de modelo inteiro de
 um único nó, que não transmite estado oculto.
+Quando `expected_decode_spans` é zero, o modo direto só observou chamadas e
+não possui denominador de spans distribuídos; `decode_span_expectation_available`
+fica falso e a UI mostra a cobertura como não medida, nunca como `N/0 · 100%`.
 
 ### Trace ponta a ponta e tempos fora do nó
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PhaseTrace, RequestTrace, TelemetrySummary } from "./chatStream";
-import { analyzeTelemetry, buildTelemetryAnalysisPrompt, fitTokenLatencyRegression, serializeTelemetryTables } from "./telemetryAnalysis";
+import { analyzeTelemetry, buildTelemetryAnalysisPrompt, decodeCoverageMeasured, fitTokenLatencyRegression, serializeTelemetryTables } from "./telemetryAnalysis";
 
 function phase(overrides: Partial<PhaseTrace> = {}): PhaseTrace {
   return {
@@ -87,6 +87,14 @@ function emptyRemoteStream(): TelemetrySummary["remote_stream"] {
 }
 
 describe("telemetryAnalysis", () => {
+  it("does not treat an unavailable decode expectation as 282/0 coverage", () => {
+    expect(decodeCoverageMeasured({ expected_decode_spans: 0 })).toBe(false);
+    expect(decodeCoverageMeasured({
+      expected_decode_spans: 384,
+      decode_span_expectation_available: true,
+    })).toBe(true);
+  });
+
   it("fits fixed and per-token latency terms across the required regression sizes", () => {
     const regression = fitTokenLatencyRegression([1, 10, 50, 100, 200, 500].map((tokens) => ({
       tokens,

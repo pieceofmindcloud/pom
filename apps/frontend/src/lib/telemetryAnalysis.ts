@@ -1,4 +1,4 @@
-import type { GenerationTimings, LegacyHopTrace, PhaseTrace, RequestTrace, TpTelemetry } from "./chatStream";
+import type { GenerationTimings, LegacyHopTrace, PhaseTrace, RequestTrace, TelemetrySummary, TpTelemetry } from "./chatStream";
 import { isPhasedHop } from "./chatStream";
 import type { LayerPlacement } from "./types";
 
@@ -28,6 +28,18 @@ export interface TokenLatencyRegression {
   per_token_ms: number;
   r2: number;
   samples: number;
+}
+
+/**
+ * Direct per-frame traces report observed decode calls but have no expected
+ * span count. A zero denominator is therefore "not measured", not complete
+ * coverage. Remote-stream traces set the expectation as callbacks arrive.
+ */
+export function decodeCoverageMeasured(
+  telemetry: Pick<TelemetrySummary, "expected_decode_spans" | "decode_span_expectation_available">,
+) {
+  return telemetry.expected_decode_spans > 0
+    && telemetry.decode_span_expectation_available !== false;
 }
 
 /**

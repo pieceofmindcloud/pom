@@ -668,6 +668,9 @@ pub struct TelemetrySummary {
     pub missing_peers: Vec<String>,
     pub expected_decode_spans: u64,
     pub reported_decode_spans: u64,
+    /// False when direct per-frame mode has observations but no expected
+    /// total. The frontend must not render that state as `N/0 · 100%`.
+    pub decode_span_expectation_available: bool,
     pub completeness_percent: f64,
     pub duplicate_spans: u64,
     pub late_spans: u64,
@@ -691,6 +694,7 @@ impl Default for TelemetrySummary {
             missing_peers: Vec::new(),
             expected_decode_spans: 0,
             reported_decode_spans: 0,
+            decode_span_expectation_available: false,
             completeness_percent: 0.0,
             duplicate_spans: 0,
             late_spans: 0,
@@ -1193,7 +1197,11 @@ impl PhaseTrace {
         tls: TlsHop,
         node: &serde_json::Value,
     ) {
-        let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
+        let node_ms = |key: &str| {
+            node.get(key)
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0)
+        };
         let node_decode_ms = node_ms("decode_ms");
         let selected_path = node
             .get("selected_path")
@@ -2344,7 +2352,9 @@ impl RequestTrace {
                 on: sent.tls,
                 handshake_ms: sent.tls_handshake_ms,
             },
-            &sent.meta["node_timings"],
+            sent.meta
+                .get("node_timings")
+                .unwrap_or(&serde_json::Value::Null),
         );
         if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
             sent.transport_rtt_us,
@@ -2689,6 +2699,7 @@ impl RequestTrace {
         self.telemetry.missing_peers = missing_peers;
         self.telemetry.expected_decode_spans = expected_decode_spans;
         self.telemetry.reported_decode_spans = reported_decode_spans;
+        self.telemetry.decode_span_expectation_available = expected_decode_spans > 0;
         self.telemetry.completeness_percent = completeness_percent;
         self.telemetry.wall_clock_ms = Some(wall_clock_ms);
         self.telemetry.critical_path_ms = Some(wall_clock_ms);
@@ -2729,7 +2740,9 @@ impl RequestTrace {
                 on: entry.get("tls").and_then(|v| v.as_bool()).unwrap_or(false),
                 handshake_ms: get("tls_handshake_ms"),
             },
-            &entry["node_timings"],
+            entry
+                .get("node_timings")
+                .unwrap_or(&serde_json::Value::Null),
         );
         if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
             entry.get("transport_rtt_us").and_then(|value| value.as_u64()),

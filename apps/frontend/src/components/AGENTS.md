@@ -103,6 +103,9 @@ Per-file list:
   O resumo por transporte diferencia RTT de execução, que inclui processamento
   remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
   medição da conexão quando disponível.
+  Cobertura de decode só é exibida quando há denominador esperado; traces
+  diretos sem essa medição mostram o estado como não medido, e uma coleta de
+  transporte incompleta continua visível mesmo quando a resposta terminou.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

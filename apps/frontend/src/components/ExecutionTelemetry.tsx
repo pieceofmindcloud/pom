@@ -3,6 +3,7 @@ import { Sparkles } from "lucide-react";
 import { Button } from "./ui";
 import {
   analyzeTelemetry,
+  decodeCoverageMeasured,
   effectivePlacementCounts,
   executionNetworkMs,
   executionPipelineEdges,
@@ -75,7 +76,9 @@ function DistributedTelemetry({ trace }: { trace: RequestTrace }) {
         <span className="text-faint">{t("chat.telemetry.peersCoverage")}</span>
         <span className="font-mono text-muted">{telemetry.reported_peers}/{telemetry.expected_peers}</span>
         <span className="text-faint">{t("chat.telemetry.decodeCoverage")}</span>
-        <span className="font-mono text-muted">{telemetry.reported_decode_spans}/{telemetry.expected_decode_spans} · {num(telemetry.completeness_percent, 1)}%</span>
+        <span className="font-mono text-muted">{decodeCoverageMeasured(telemetry)
+          ? `${telemetry.reported_decode_spans}/${telemetry.expected_decode_spans} · ${num(telemetry.completeness_percent, 1)}%`
+          : t("chat.telemetry.notMeasured")}</span>
         <span className="text-faint">{t("chat.telemetry.criticalPath")}</span>
         <span className="font-mono text-muted">{telemetry.critical_path_ms == null ? t("chat.telemetry.noMeasurement") : ms(telemetry.critical_path_ms)}</span>
         <span className="text-faint">{t("chat.telemetry.accumulatedCompute")}</span>
@@ -685,7 +688,7 @@ export function ExecutionTelemetry({
     <DistributedTelemetry trace={trace} />
     <p className="mt-1 break-words font-mono text-[0.68rem] text-faint">{t("chat.telemetry.transportHttpsFallback", { calls: trace.https_fallback_calls ?? 0, reasons: trace.https_fallback_reasons?.join("; ") || "-" })}</p>
     {trace.prefill_overlap_enabled && <p className="mt-1 font-mono text-[0.68rem] text-faint">{t("chat.telemetry.overlap", { chunks: trace.prefill_overlapped_chunks ?? 0, depth: trace.prefill_pipeline_depth_max ?? 1, limit: trace.prefill_max_inflight_chunks ?? 8 })}</p>}
-    {trace.transport_trace_complete === false && trace.telemetry?.status !== "complete" && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
+    {trace.transport_trace_complete === false && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">

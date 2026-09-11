@@ -55,6 +55,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   distributed cycle, including the final peer-to-gateway return when the
   transport publishes one; missing legs remain unknown. The Dashboard uses
   this data for the virtual Gateway cost card instead of a topology probe.
+  Decode coverage with no expected span denominator is rendered as not measured,
+  and an incomplete transport receipt remains visible independently of the
+  response-complete state.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
   processamento medido no nó antes de nomear o gargalo. It refuses to label

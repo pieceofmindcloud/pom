@@ -140,7 +140,11 @@ Per-file list:
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
-  slice and in-flight requests instead. A graph view ("minima",
+  slice and in-flight requests instead. For administrators, the deployment
+  properties inspector selects the `is_default` row for the active model,
+  preferring a serving default and falling back to the live or latest local
+  record so old deployment history cannot hide the map toggle. A graph view
+  ("minima",
   `ModelNetworkCanvas`) or a details grid ("estendida") is used where the
   profile permits it.
   The model graph receives directional transport measurements and

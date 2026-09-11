@@ -154,10 +154,20 @@ export function Dashboard() {
     ? networkPeers(c)
     : { pipeline: [] as PeerView[], others: [] as PeerView[] };
   const group = c?.active_model ?? "";
-  const activeDeployment = deployments.data?.deployments.find(
-    (row) => row.serving && row.deployment.model.label === group,
-  )?.deployment ?? deployments.data?.deployments.find((row) => row.deployment.model.label === group)?.deployment;
-  const activeVersion = activeDeployment?.versions.find((version) => version.version === activeDeployment.active_version);
+  const modelDeployments = deployments.data?.deployments.filter(
+    (row) => row.deployment.model.label === group,
+  ) ?? [];
+  // A principal may have old and current copies of the same model in its
+  // local history. The API marks the current one explicitly; taking the first
+  // row made the properties toggle depend on deploy_id ordering and could
+  // leave `activeVersion` empty for an otherwise valid deployment.
+  const activeDeployment = modelDeployments.find((row) => row.is_default && row.serving)?.deployment
+    ?? modelDeployments.find((row) => row.serving)?.deployment
+    ?? modelDeployments.find((row) => row.is_default)?.deployment
+    ?? modelDeployments[0]?.deployment;
+  const activeVersion = activeDeployment?.versions.find(
+    (version) => version.version === activeDeployment.active_version,
+  ) ?? activeDeployment?.versions.at(-1);
   const activeDeployId =
     activeDeployment?.deploy_id
     ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;

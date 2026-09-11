@@ -22,6 +22,8 @@ const headQuery = vi.hoisted(() => ({
   isError: false,
 }));
 
+const thinkingScenario = vi.hoisted(() => ({ enabled: true }));
+
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
   return {
@@ -56,7 +58,13 @@ vi.mock("../lib/queries", () => ({
     isError: false,
   }),
   useCluster: () => ({ data: null }),
-  useChatCapabilities: () => ({ data: { vision: "supported", coverage: "complete" } }),
+  useChatCapabilities: () => ({
+    data: {
+      vision: "supported",
+      coverage: "complete",
+      thinking: thinkingScenario.enabled ? "supported" : "unsupported",
+    },
+  }),
   useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
   useInferenceHeads: () => headQuery,
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
@@ -96,6 +104,7 @@ afterEach(() => {
   streamScenario.release = null;
   streamScenario.signalAborted = false;
   streamScenario.lastBody = undefined;
+  thinkingScenario.enabled = true;
   headQuery.data = undefined;
   headQuery.isLoading = false;
   headQuery.isError = false;
@@ -193,6 +202,29 @@ describe("Chat", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
 
     await waitFor(() => expect(streamScenario.lastBody?.inference_head).toBe("salem"));
+  });
+
+  it("envia o toggle Think por inferência e mantém a escolha na conversa", async () => {
+    mountChat();
+    const think = screen.getByRole("button", { name: "Think" });
+    expect(think.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(think);
+    expect(think.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(streamScenario.lastBody?.thinking_enabled).toBe(false));
+
+    await waitFor(() => expect(screen.getByText(/segundo/)).toBeTruthy());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "segunda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(streamScenario.lastBody?.thinking_enabled).toBe(false));
+  });
+
+  it("não mostra Think quando a implantação desabilita thinking", () => {
+    thinkingScenario.enabled = false;
+    mountChat();
+    expect(screen.queryByRole("button", { name: "Think" })).toBeNull();
   });
 
   it("continua o stream e mostra o buffer ao remontar a rota", async () => {

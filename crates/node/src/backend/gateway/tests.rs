@@ -1433,6 +1433,7 @@ mod tests {
                 prompt: "a".repeat(30_289),
                 images: Vec::new(),
                 chat_template: false,
+                thinking_enabled: true,
                 budget: crate::gateway::OutputBudget::single(200),
                 stops: Vec::new(),
                 cache_key: None,

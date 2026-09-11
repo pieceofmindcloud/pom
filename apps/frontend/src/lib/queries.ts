@@ -250,6 +250,7 @@ const unavailableChatCapabilities: ChatCapabilities = {
   active_model: "",
   vision: "unavailable",
   coverage: "unavailable",
+  thinking: "unavailable",
 };
 
 /**

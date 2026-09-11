@@ -712,12 +712,12 @@ faz o download autenticado do blob persistido.
   `chat/telemetry` (POST autenticado, deriva transporte e RTT das pernas
   direcionais de `pipeline_cycle` no trace da execução identificada, ou da
   última execução concluída no Painel; sem `execution_id`, também enumera todas
-  as rotas completas do modelo ativo, consulta as sondas direcionais frescas do
-  gateway e dos peers, soma Gateway -> cabeça -> ... -> cauda -> Gateway e
-  ordena por custo agregado e `node_id`; também devolve `pipeline_cost` quando
-  a decomposição observada de rede e compute existe; os RTTs da execução
-  preferem a medida de fio (`net_rtt_median_ms`) e só recuam para o RTT de
-  execução em traces antigos),
+  as rotas completas do modelo ativo, soma Gateway -> cabeça -> ... -> cauda ->
+  Gateway e ordena por custo agregado e `node_id`; uma perna observada no trace
+  recente usa primeiro seu RTT de fio (`net_rtt_median_ms`), enquanto as
+  sondas direcionais frescas do gateway e dos peers ficam como fallback; também
+  devolve `pipeline_cost` quando a decomposição observada de rede e compute
+  existe; traces antigos recuam para o RTT de execução),
   `requests` (GET ->
   `crate::reqlog::list_requests`; `chat/history` (GET/POST/DELETE autenticado,
   transcriptos normalizados em `pom.db`); `requests/stats` (GET ->
@@ -1046,11 +1046,14 @@ projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
 projetor e a mensagem para o usuário precisam permanecer alinhadas.
 O Chat consulta `GET /api/ui/chat/capabilities`, uma rota comum que agrega o
-modelo ativo, a cobertura e o `mmproj_path` da cabeça da implantação sem expor
-topologia ao perfil `infer`. A resposta usa `supported`, `unsupported` ou
-`unavailable` para visão e cobertura completa, incompleta ou indisponível;
-recusa de autorização nunca é convertida em vazio. Visão é propriedade do
-modelo servido, não privilégio do perfil.
+modelo ativo, a cobertura, o `mmproj_path` e o `no_thinking` da cabeça da
+implantação sem expor topologia ao perfil `infer`. A resposta usa `supported`,
+`unsupported` ou `unavailable` para visão, thinking e cobertura completa,
+incompleta ou indisponível; recusa de autorização nunca é convertida em vazio.
+Visão e a disponibilidade de thinking são propriedades do modelo servido, não
+privilégios do perfil. `openai::ChatRequest.thinking_enabled` segue no
+`GenerationInput` e no metadata de prefill; a cabeça aplica o kill-switch
+global antes de renderizar o template.
 
 ## Maintaining this file
 

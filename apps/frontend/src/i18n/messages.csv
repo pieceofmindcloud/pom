@@ -353,6 +353,8 @@ chat.telemetry.trueResidual,True residual,Residual verdadeiro
 chat.telemetry.unaccounted,unaccounted,não atribuído
 chat.telemetry.unattributed,unattributed {ms} ms,não atribuído {ms} ms
 chat.telemetry.unknownLayers,Unclassified layers: {count},Camadas não classificadas: {count}
+chat.thinkToggle,Think,Think
+chat.thinkToggleHint,"Use thinking for this inference. The choice stays active in this conversation.","Usar thinking nesta inferência. A escolha permanece ativa nesta conversa."
 chat.thinking,Thinking,Pensamento
 chat.through,moving through the pipeline,atravessando o pipeline
 chat.timeUnit,s,s

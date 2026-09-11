@@ -2999,6 +2999,7 @@ pub(super) fn head_prefill_meta(
     is_last: bool,
     prompt: Option<&str>,
     chat_template: bool,
+    thinking_enabled: bool,
     reuse_prefix: bool,
     start_pos: Option<u32>,
     trace_id: Option<&str>,
@@ -3012,6 +3013,7 @@ pub(super) fn head_prefill_meta(
         "is_final_chunk": false,
         "prompt": prompt,
         "chat_template": chat_template,
+        "thinking_enabled": thinking_enabled,
         "reuse_prefix": reuse_prefix,
         "start_pos": start_pos,
     });

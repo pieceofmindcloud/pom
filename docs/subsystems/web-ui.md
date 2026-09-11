@@ -718,6 +718,12 @@ mensagem aborta o pedido anterior. Três coisas a conversa guarda além das fala
   sem inventar um modelo vazio. Imagens são redimensionadas no navegador para no
   máximo 2048 px no lado maior, preservando a proporção, antes de virar base64
   no pedido, e aparecem inteiras na bolha da fala com legenda e alt.
+- O botão `Think` usa o campo `thinking` da mesma leitura de capabilities e só
+  aparece quando o `no_thinking` global da cabeça está desligado. A escolha é
+  enviada como `thinking_enabled` em cada chamada de Chat e fica no
+  `ChatSession` persistido em `localStorage`, portanto continua entre mensagens
+  da mesma conversa até o usuário mudar o toggle. A cabeça ainda impõe o
+  desligamento global, mesmo que uma sessão antiga carregue `true`.
 - O lote é recusado antes do envio quando o tamanho bruto ultrapassa o contexto
   efetivo do modelo: primeiro `context_length` de `/v1/models`, depois `n_ctx`
   do nó ativo, com a estimativa conservadora de quatro bytes por token. O
@@ -1045,7 +1051,9 @@ impressão digital é só modelo + conjunto de faixas.
   GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; o
   mapa do Painel mostra o último RTT e transporte efetivos observados na
   execução de inferência para cada aresta e, no Gateway, todas as rotas
-  completas do modelo com o RTT agregado de cada perna, inclusive o retorno.
+  completas do modelo com o RTT agregado de cada perna, inclusive o retorno;
+  quando há trace recente, o RTT de fio da execução vence a sonda libp2p de
+  fallback.
   As rotas aparecem do menor custo ao maior, com o id dos nós como desempate;
   uma implantação de modelo inteiro com um único head também é consultada,
   mesmo sem aresta no grafo. O
@@ -1094,7 +1102,8 @@ impressão digital é só modelo + conjunto de faixas.
   problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
   mostra hops consecutivos somente para frente, acrescenta um Gateway virtual
-  no fim com a perna de retorno e exibe todas as rotas candidatas, destacando no
+  no fim com a perna de retorno quando a cauda ainda não é o gateway e exibe
+  todas as rotas candidatas, destacando no
   total a de menor RTT. A rolagem interna em viewport estreito não
   corta cards nem cria overflow na página.
 - **Implantações** (`Deployments`): uma linha por `deploy_id`, "no ar" separado

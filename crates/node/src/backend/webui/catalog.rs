@@ -1680,10 +1680,14 @@ pub(super) fn pipeline_routes_for(
     let mut routes = paths
         .into_iter()
         .map(|path| {
-            let node_ids = path
-                .into_iter()
-                .chain(std::iter::once(gateway_node_id.to_owned()))
-                .collect::<Vec<_>>();
+            // The gateway is a virtual return endpoint, except when it also
+            // serves the terminal slice. In that case the pipeline path
+            // already ends at the gateway and appending it would create a
+            // fake self-hop and show the same node twice in the card.
+            let mut node_ids = path;
+            if node_ids.last().map(String::as_str) != Some(gateway_node_id) {
+                node_ids.push(gateway_node_id.to_owned());
+            }
             let leg_nodes = std::iter::once(gateway_node_id.to_owned())
                 .chain(node_ids.iter().cloned())
                 .collect::<Vec<_>>();
@@ -1721,6 +1725,59 @@ pub(super) fn pipeline_routes_for(
         .then_with(|| left.node_ids.cmp(&right.node_ids))
     });
     routes
+}
+
+/// Retorna o RTT de fio observado no último trace, por perna direcionada.
+///
+/// A sonda de seleção (`RttTable`) é libp2p e mede o endpoint `/health`; ela é
+/// um fallback útil quando não há execução recente, mas não representa
+/// necessariamente o transporte escolhido pelo pipeline. Quando o trace tem
+/// `net_rtt_median_ms`, ele é a fonte do card. O decode tem precedência sobre
+/// o prefill se a mesma perna aparecer nas duas fases.
+pub(super) fn execution_network_rtts(
+    trace: &serde_json::Value,
+    gateway_node_id: &str,
+) -> HashMap<(String, String), f64> {
+    let mut values = HashMap::new();
+    let Some(cycle) = trace.get("pipeline_cycle") else {
+        return values;
+    };
+
+    for phase in ["prefill", "decode"] {
+        let Some(legs) = cycle.get(phase).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for leg in legs {
+            let Some(mut from_node_id) = leg
+                .get("from_node_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let Some(mut to_node_id) = leg
+                .get("to_node_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let Some((_, rtt_ms)) = leg
+                .get("transport_summary")
+                .and_then(dominant_transport_measurement)
+            else {
+                continue;
+            };
+            if from_node_id == "gateway" {
+                from_node_id = gateway_node_id.to_owned();
+            }
+            if to_node_id == "gateway" {
+                to_node_id = gateway_node_id.to_owned();
+            }
+            values.insert((from_node_id, to_node_id), rtt_ms);
+        }
+    }
+    values
 }
 
 fn dominant_transport_measurement(summary: &serde_json::Value) -> Option<(String, f64)> {
@@ -2056,7 +2113,13 @@ pub(super) async fn chat_telemetry(
             .map(|peer| peer.total_layers)
             .max()
             .unwrap_or(0);
-        let pairwise_rtt = pairwise_rtt_for_pipeline(&state, &peers).await;
+        let mut pairwise_rtt = pairwise_rtt_for_pipeline(&state, &peers).await;
+        if let Some(trace) = trace.as_ref() {
+            // A completed execution tells us which transport actually carried
+            // each leg. Prefer that wire RTT over the independent libp2p
+            // health probes, which may have a different path and queueing.
+            pairwise_rtt.extend(execution_network_rtts(trace, &state.network.node_id));
+        }
         pipeline_routes_for(
             &peers,
             model,

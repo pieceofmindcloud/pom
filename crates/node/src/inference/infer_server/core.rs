@@ -486,6 +486,9 @@ pub(super) struct PrefillJob {
     /// intercambiáveis neste caminho.
     pub(super) mrope_positions: Option<Vec<[u32; 4]>>,
     pub(super) chat_template: Option<bool>,
+    /// Escolha do Chat que a cabeça deve aplicar ao template. Hops apenas
+    /// repassam o campo junto do estado oculto.
+    pub(super) thinking_enabled: Option<bool>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
     pub(super) queued_at: Instant,
@@ -1140,6 +1143,7 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.prompt,
                 job.images,
                 job.chat_template,
+                job.thinking_enabled,
                 job.tensor,
                 job.capture_block,
                 job.chunk_tokens,

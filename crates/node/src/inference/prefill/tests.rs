@@ -109,11 +109,13 @@ mod tests {
             Some("Oi, teste"),
             true,
             false,
+            false,
             None,
             Some("trace-a"),
         );
         assert_eq!(meta["prompt"], "Oi, teste");
         assert_eq!(meta["chat_template"], true);
+        assert_eq!(meta["thinking_enabled"], false);
         assert_eq!(meta["trace_id"], "trace-a");
     }
 

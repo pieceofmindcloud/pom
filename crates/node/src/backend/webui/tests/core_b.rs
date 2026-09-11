@@ -211,9 +211,9 @@ mod state_transport_tests {
 #[cfg(test)]
 mod chat_telemetry_tests {
     use super::*;
+    use crate::gateway::testkit::peer;
     use axum::body::Body;
     use axum::http::Request;
-    use crate::gateway::testkit::peer;
     use serde_json::json;
     use std::collections::HashMap;
     use tower::ServiceExt;
@@ -373,6 +373,32 @@ mod chat_telemetry_tests {
     }
 
     #[test]
+    fn execution_network_rtts_use_wire_values_for_route_costs() {
+        let trace = json!({
+            "pipeline_cycle": {
+                "prefill": [
+                    {"from_node_id": "gateway", "to_node_id": "head", "transport_summary": {
+                        "transports": [{"transport": "quic", "calls": 1, "rtt_median_ms": 559, "net_rtt_median_ms": 24}]
+                    }}
+                ],
+                "decode": [
+                    {"from_node_id": "head", "to_node_id": "tail", "transport_summary": {
+                        "transports": [{"transport": "quic", "calls": 4, "rtt_median_ms": 30, "net_rtt_median_ms": 26}]
+                    }}
+                ]
+            }
+        });
+
+        assert_eq!(
+            execution_network_rtts(&trace, "gateway"),
+            HashMap::from([
+                (("gateway".into(), "head".into()), 24.0),
+                (("head".into(), "tail".into()), 26.0),
+            ])
+        );
+    }
+
+    #[test]
     fn execution_pipeline_cost_sums_each_cycle_leg_once_and_adds_compute() {
         let trace = json!({
             "hops": [
@@ -422,10 +448,32 @@ mod chat_telemetry_tests {
                 .map(|route| (&route.node_ids, route.rtt_ms))
                 .collect::<Vec<_>>(),
             vec![
-                (&vec!["head-fast".into(), "tail".into(), "gateway".into()], Some(19.0)),
-                (&vec!["head-slow".into(), "tail".into(), "gateway".into()], Some(33.0)),
+                (
+                    &vec!["head-fast".into(), "tail".into(), "gateway".into()],
+                    Some(19.0)
+                ),
+                (
+                    &vec!["head-slow".into(), "tail".into(), "gateway".into()],
+                    Some(33.0)
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn pipeline_route_does_not_append_gateway_when_gateway_is_already_the_tail() {
+        let peers = vec![served_peer("head", 0, 15), served_peer("gateway", 16, 31)];
+        let rtts = HashMap::from([
+            (("gateway".into(), "head".into()), 23.0),
+            (("head".into(), "gateway".into()), 24.0),
+        ]);
+
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts);
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].node_ids, vec!["head", "gateway"]);
+        assert_eq!(routes[0].legs_ms, vec![Some(23.0), Some(24.0)]);
+        assert_eq!(routes[0].rtt_ms, Some(47.0));
     }
 
     #[tokio::test]

@@ -1051,7 +1051,9 @@ impressão digital é só modelo + conjunto de faixas.
   GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; o
   mapa do Painel mostra o último RTT e transporte efetivos observados na
   execução de inferência para cada aresta e, no Gateway, todas as rotas
-  completas do modelo com o RTT agregado de cada perna, inclusive o retorno.
+  completas do modelo com o RTT agregado de cada perna, inclusive o retorno;
+  quando há trace recente, o RTT de fio da execução vence a sonda libp2p de
+  fallback.
   As rotas aparecem do menor custo ao maior, com o id dos nós como desempate;
   uma implantação de modelo inteiro com um único head também é consultada,
   mesmo sem aresta no grafo. O
@@ -1100,7 +1102,8 @@ impressão digital é só modelo + conjunto de faixas.
   problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
   mostra hops consecutivos somente para frente, acrescenta um Gateway virtual
-  no fim com a perna de retorno e exibe todas as rotas candidatas, destacando no
+  no fim com a perna de retorno quando a cauda ainda não é o gateway e exibe
+  todas as rotas candidatas, destacando no
   total a de menor RTT. A rolagem interna em viewport estreito não
   corta cards nem cria overflow na página.
 - **Implantações** (`Deployments`): uma linha por `deploy_id`, "no ar" separado

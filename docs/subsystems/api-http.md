@@ -619,9 +619,11 @@ respectivamente `reqlog::list_requests` e `reqlog::stats_requests`), `network/rt
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
 recebe `{ node_ids, execution_id? }` e devolve transporte e RTT de fio
 observado nas arestas da execução identificada; sem `execution_id`, também
-devolve todas as rotas completas do modelo ativo com RTT agregado das sondas
-direcionais do gateway e dos peers, incluindo um único head sem aresta no
-grafo; o RTT de execução com processamento remoto continua no trace),
+devolve todas as rotas completas do modelo ativo com RTT agregado. Quando a
+última execução contém a perna, o RTT de fio (`net_rtt_median_ms`) vence a
+sonda direcional libp2p; as sondas do gateway e dos peers continuam como
+fallback e cobrem um único head sem aresta no grafo. O RTT de execução com
+processamento remoto continua no trace),
 `chat/history` (GET/POST/DELETE autenticados para o histórico
 durável de conversas), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
@@ -861,8 +863,11 @@ solicitadas e também enumera todas as rotas completas do modelo ativo. Cada
 rota responde em `pipeline_routes` com `{ node_ids, legs_ms, rtt_ms }`, na
 ordem `Gateway -> cabeça -> ... -> cauda -> Gateway`; todas as pernas são
 somadas, e as rotas são ordenadas pelo RTT agregado crescente, com `node_ids`
-como desempate estável. Os RTTs das rotas vêm das sondas direcionais frescas do
-gateway e dos peers, incluindo o caso de um único head sem aresta no grafo.
+como desempate estável. Os RTTs das rotas vêm do trace recente quando a perna
+foi observada, usando a medida de fio, e das sondas direcionais frescas do
+gateway e dos peers para o restante, incluindo o caso de um único head sem
+aresta no grafo. Se a cauda já é o gateway, ele aparece uma única vez e não
+cria uma perna artificial para si mesmo.
 Uma perna sem medição fica `null`, portanto o custo daquela rota permanece
 desconhecido. A resposta também pode conter
 `pipeline_cost: { legs_ms, compute_ms }` para a execução observada. Os itens

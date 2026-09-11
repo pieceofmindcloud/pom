@@ -827,6 +827,8 @@ async fn internal_accept_node_promotion(
     }
     drop(cfg);
     state.network.set_profile(NodeProfile::Node);
+    state.cluster_logs.set_admin_receiver(false);
+    state.audit.set_admin_receiver(false);
     Json(json!({ "profile": "node", "node_id": state.network.node_id })).into_response()
 }
 
@@ -1321,7 +1323,13 @@ async fn internal_reconcile_admin_trust(
             .into_response();
     }
     drop(cfg);
+    state
+        .network
+        .set_policy_principal_pubkey(state.admin_trust.current_primary().pubkey);
     state.network.set_profile(profile);
+    let admin_receiver = profile == NodeProfile::Admin;
+    state.cluster_logs.set_admin_receiver(admin_receiver);
+    state.audit.set_admin_receiver(admin_receiver);
     Json(json!({ "profile": profile, "node_id": state.network.node_id })).into_response()
 }
 
@@ -1370,6 +1378,8 @@ async fn internal_complete_transfer(
     }
     drop(cfg);
     state.network.set_profile(NodeProfile::Node);
+    state.cluster_logs.set_admin_receiver(false);
+    state.audit.set_admin_receiver(false);
     Json(json!({ "completed": true })).into_response()
 }
 

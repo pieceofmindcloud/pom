@@ -1901,7 +1901,7 @@ impl Network {
     pub fn trigger_cluster_logs_probe(
         &self,
         node_id: &str,
-        profile: crate::profile::NodeProfile,
+        authority_pubkey: &str,
         announced: bool,
         tls: bool,
     ) {
@@ -1909,7 +1909,11 @@ impl Network {
             crate::cluster_logs_policy::on_announce(
                 self.cluster_logs_enabled(),
                 announced,
-                profile == crate::profile::NodeProfile::Admin,
+                self.policy_principal_pubkey
+                    .read()
+                    .ok()
+                    .and_then(|current| current.as_deref().map(|key| key == authority_pubkey))
+                    .unwrap_or(false),
                 node_id,
             )
         {
@@ -1921,8 +1925,25 @@ impl Network {
         }
     }
 
-    /// Retorna somente o principal conhecido e seu endereço libp2p. Um nó
-    /// nunca escolhe outro nó comum como próximo salto de logs.
+    /// Retorna todos os peers admin vivos e seus endereços libp2p. A lista é
+    /// usada para replicar dados locais em cada autoridade, não só no
+    /// principal.
+    pub async fn admin_peers(&self) -> Vec<(libp2p::PeerId, Vec<String>)> {
+        let peers = self.peers.read().await;
+        peers
+            .values()
+            .filter(|peer| {
+                peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin
+            })
+            .filter_map(|peer| {
+                let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
+                Some((peer_id, peer.libp2p_dialable_addrs()))
+            })
+            .collect()
+    }
+
+    /// Retorna o principal conhecido e seu endereço libp2p para os fluxos que
+    /// ainda precisam de um único próximo salto, como o Chat da rede.
     pub async fn principal_peer(&self) -> Option<(libp2p::PeerId, Vec<String>)> {
         let peers = self.peers.read().await;
         peers
@@ -2523,7 +2544,7 @@ impl Network {
 
                 self.trigger_cluster_logs_probe(
                     &peer.node_id,
-                    peer.profile,
+                    &peer.authority_pubkey,
                     cluster_logs_enabled,
                     tls,
                 );
@@ -3156,6 +3177,55 @@ mod tests {
             net.broadcast_addr,
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT)
         );
+    }
+
+    #[tokio::test]
+    async fn secondary_authority_is_not_mistaken_for_the_primary() {
+        let net = Network::testkit(
+            "local".into(),
+            "pk".into(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("socket UDP em porta efêmera");
+        let (probe, mut received) = tokio::sync::mpsc::unbounded_channel();
+        net.set_policy_principal_pubkey("primary-key");
+        net.set_cluster_logs_probe(probe);
+
+        net.trigger_cluster_logs_probe("secondary", "secondary-key", true, false);
+        assert!(received.try_recv().is_err());
+        net.trigger_cluster_logs_probe("primary", "primary-key", true, false);
+        assert_eq!(received.recv().await.unwrap().0, "primary");
+    }
+
+    #[tokio::test]
+    async fn admin_peers_returns_all_live_admin_destinations() {
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+            .await
+            .expect("socket UDP em porta efêmera");
+        let mut first = dummy_peer("admin-a", "127.0.0.1:8081");
+        first.authority_pubkey = "authority-a".into();
+        first.profile = crate::profile::NodeProfile::Admin;
+        first.gateway_port = Some(8081);
+        first.libp2p_peer_id = Some(libp2p::PeerId::random().to_string());
+        let mut second = dummy_peer("admin-b", "127.0.0.1:8082");
+        second.authority_pubkey = "authority-b".into();
+        second.profile = crate::profile::NodeProfile::Admin;
+        second.gateway_port = Some(8082);
+        second.libp2p_peer_id = Some(libp2p::PeerId::random().to_string());
+        let ordinary = dummy_peer("node-c", "127.0.0.1:8083");
+        {
+            let mut peers = net.peers.write().await;
+            peers.insert(first.node_id.clone(), first);
+            peers.insert(second.node_id.clone(), second);
+            peers.insert(ordinary.node_id.clone(), ordinary);
+        }
+
+        let peers = net.admin_peers().await;
+        assert_eq!(peers.len(), 2);
     }
 
     #[tokio::test]

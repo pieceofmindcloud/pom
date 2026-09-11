@@ -228,13 +228,6 @@ pub(super) async fn cluster_logs(
     State(state): State<GatewayState>,
     Query(query): Query<ClusterLogsQuery>,
 ) -> Response {
-    if !local_is_primary(&state).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "os logs do cluster só estão disponíveis no nó principal." })),
-        )
-            .into_response();
-    }
     match state
         .cluster_logs
         .list(query.deploy_id.as_deref(), query.limit)
@@ -1422,7 +1415,7 @@ async fn live_peer_load(state: &GatewayState, peer: &PeerInfo) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::reported_peer_load;
+    use super::*;
     use serde_json::json;
 
     #[test]
@@ -1430,6 +1423,42 @@ mod tests {
         assert_eq!(reported_peer_load(&json!({ "load": 4 })), Some(4));
         assert_eq!(reported_peer_load(&json!({})), None);
         assert_eq!(reported_peer_load(&json!({ "load": -1 })), None);
+    }
+
+    #[tokio::test]
+    async fn secondary_admin_reads_its_local_cluster_log_replica() {
+        let state = crate::gateway::testkit::secondary_admin_state("secondary").await;
+        state
+            .database
+            .append_cluster_logs(
+                &[crate::cluster_logs::LogEntry {
+                    node_id: "worker".into(),
+                    node_name: "worker-1".into(),
+                    deploy_id: "deploy-1".into(),
+                    origin_at: "2026-09-11T12:00:00Z".into(),
+                    level: "INFO".into(),
+                    target: "worker::test".into(),
+                    message: "replica local".into(),
+                }],
+                0,
+            )
+            .expect("gravar réplica local");
+
+        let response = cluster_logs(
+            ConnectionAuth,
+            State(state),
+            Query(ClusterLogsQuery {
+                deploy_id: Some("deploy-1".into()),
+                limit: Some(10),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("corpo da réplica");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON da réplica");
+        assert_eq!(body["entries"][0]["message"], "replica local");
     }
 }
 

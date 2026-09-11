@@ -99,6 +99,21 @@ describe("DeploymentLogs", () => {
     expect(screen.getByText("3 linhas descartadas antes do envio")).toBeTruthy();
   });
 
+  it("trata a réplica vazia como ausência de dados, não como bloqueio do secundário", () => {
+    queryMocks.logs.data = { entries: [], dropped: 0 };
+    render(
+      <MemoryRouter>
+        <LocaleProvider initialLocale="pt-BR">
+          <DeploymentLogs />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Nenhum log de processo ainda")).toBeTruthy();
+    expect(screen.getAllByText(/réplica local/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/nó principal/i)).toBeNull();
+  });
+
   it("segue linhas novas no fim enquanto a rolagem automática está ligada", async () => {
     const { rerender } = render(
       <MemoryRouter>

@@ -438,7 +438,7 @@ export function useDeployments() {
   });
 }
 
-/** Logs de processo em ordem de chegada ao principal. */
+/** Logs de processo em ordem de chegada à réplica local. */
 export function useClusterLogs(deployId?: string) {
   const query = new URLSearchParams();
   if (deployId) query.set("deploy_id", deployId);

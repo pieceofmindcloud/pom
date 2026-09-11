@@ -1,7 +1,7 @@
 /**
  * Console do processo inteiro do cluster. A tela de `/logs` é a auditoria de
- * requisições e continua sendo uma tabela; esta tela só mostra as linhas que o
- * principal recebeu dos nós, na ordem persistida de chegada.
+ * requisições e continua sendo uma tabela; esta tela só mostra as linhas que
+ * a réplica local recebeu dos nós, na ordem persistida de chegada.
  */
 import { ArrowDownToLine, Check, Copy, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";

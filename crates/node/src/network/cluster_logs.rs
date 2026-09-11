@@ -413,6 +413,8 @@ pub fn cluster_logs_behaviour() -> request_response::Behaviour<ClusterLogsCodec>
 
 enum PersistCommand {
     Batch(LogBatch),
+    #[cfg(test)]
+    Flush(std::sync::mpsc::Sender<()>),
 }
 
 /// Cluster log state. Its writer queue is independent from the capture queue
@@ -422,7 +424,7 @@ pub struct ClusterLogs {
     database: Arc<crate::db::PomDb>,
     writer: std::sync::mpsc::SyncSender<PersistCommand>,
     dropped: AtomicU64,
-    principal: AtomicBool,
+    admin_receiver: AtomicBool,
     started: AtomicBool,
     local_receiver: Mutex<Option<mpsc::Receiver<LogEntry>>>,
     live: broadcast::Sender<StoredLogEntry>,
@@ -439,11 +441,19 @@ impl ClusterLogs {
         std::thread::Builder::new()
             .name("pom-cluster-log-writer".into())
             .spawn(move || {
-                while let Ok(PersistCommand::Batch(batch)) = receiver.recv() {
-                    if let Err(error) =
-                        writer_database.append_cluster_logs(&batch.entries, batch.dropped)
-                    {
-                        eprintln!("cluster log persistence failed: {error:#}");
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        PersistCommand::Batch(batch) => {
+                            if let Err(error) =
+                                writer_database.append_cluster_logs(&batch.entries, batch.dropped)
+                            {
+                                eprintln!("cluster log persistence failed: {error:#}");
+                            }
+                        }
+                        #[cfg(test)]
+                        PersistCommand::Flush(done) => {
+                            let _ = done.send(());
+                        }
                     }
                 }
             })
@@ -454,7 +464,7 @@ impl ClusterLogs {
             database,
             writer,
             dropped: AtomicU64::new(0),
-            principal: AtomicBool::new(false),
+            admin_receiver: AtomicBool::new(false),
             started: AtomicBool::new(false),
             local_receiver: Mutex::new(Some(local_receiver)),
             live,
@@ -477,12 +487,14 @@ impl ClusterLogs {
         self.capture.set_identity(node_id, node_name);
     }
 
-    pub fn set_principal(&self, principal: bool) {
-        self.principal.store(principal, Ordering::Release);
+    pub fn set_admin_receiver(&self, enabled: bool) {
+        self.admin_receiver.store(enabled, Ordering::Release);
     }
 
     pub fn try_ingest_remote(&self, batch: LogBatch) -> bool {
-        if !self.principal.load(Ordering::Acquire) || batch.entries.len() > LOG_BATCH_MAX_ENTRIES {
+        if !self.admin_receiver.load(Ordering::Acquire)
+            || batch.entries.len() > LOG_BATCH_MAX_ENTRIES
+        {
             self.dropped.fetch_add(
                 batch.entries.len() as u64 + batch.dropped,
                 Ordering::Relaxed,
@@ -570,7 +582,7 @@ impl ClusterLogs {
             }
         });
 
-        if self.principal.load(Ordering::Acquire) {
+        if self.admin_receiver.load(Ordering::Acquire) {
             let service = self.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(LOG_RETENTION_INTERVAL);
@@ -619,6 +631,17 @@ impl ClusterLogs {
 
     pub fn subscribe(&self) -> broadcast::Receiver<StoredLogEntry> {
         self.live.subscribe()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush(&self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.writer
+            .send(PersistCommand::Flush(sender))
+            .expect("enfileirar barreira dos logs de processo");
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("aguardar escritor dos logs de processo");
     }
 }
 
@@ -672,22 +695,24 @@ async fn flush_local(
         entries,
         dropped,
     };
-    if service.principal.load(Ordering::Acquire) {
-        service.try_ingest(batch);
-        return;
+    if service.admin_receiver.load(Ordering::Acquire) {
+        service.try_ingest(batch.clone());
     }
-    let Some((peer_id, addr_candidates)) = network.principal_peer().await else {
-        service.try_send_dropped(batch.entries.len() as u64 + batch.dropped);
-        return;
-    };
-    if outbound
-        .try_send(LogOutbound {
-            peer_id,
-            addr_candidates,
-            request: batch.clone(),
-        })
-        .is_err()
-    {
+    let peers = network.admin_peers().await;
+    let mut sent = 0usize;
+    for (peer_id, addr_candidates) in peers {
+        if outbound
+            .try_send(LogOutbound {
+                peer_id,
+                addr_candidates,
+                request: batch.clone(),
+            })
+            .is_ok()
+        {
+            sent += 1;
+        }
+    }
+    if !service.admin_receiver.load(Ordering::Acquire) && sent == 0 {
         service.try_send_dropped(batch.entries.len() as u64 + batch.dropped);
     }
 }
@@ -902,7 +927,7 @@ mod tests {
         let database = Arc::new(crate::db::PomDb::open(&path).expect("abrir banco"));
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver, database.clone());
-        service.set_principal(true);
+        service.set_admin_receiver(true);
         assert!(service.try_ingest_remote(LogBatch {
             source_node_id: "node-a".into(),
             entries: vec![entry("aceito pelo writer")],
@@ -940,6 +965,47 @@ mod tests {
         assert_eq!(deleted, 1);
         assert!(database.cluster_logs(None, 100).unwrap().is_empty());
         drop(service);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn lote_local_e_enviado_a_todos_os_admins_conhecidos() {
+        let network = crate::network::Network::testkit(
+            "worker".into(),
+            "pk".into(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("rede de teste");
+        let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
+        admin.profile = crate::profile::NodeProfile::Admin;
+        admin.libp2p_peer_id = Some(PeerId::random().to_string());
+        network
+            .peers
+            .write()
+            .await
+            .insert(admin.node_id.clone(), admin);
+
+        let path = std::env::temp_dir().join(format!(
+            "pom-cluster-log-replication-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco de teste"));
+        let (capture, receiver) = LogCapture::new(LOG_CAPTURE_QUEUE_CAPACITY);
+        let logs = ClusterLogs::new(capture, receiver, database);
+        let (outbound, mut received) = mpsc::channel(4);
+        let mut pending = vec![entry("replicar")];
+        flush_local(&logs, &network, &mut pending, &outbound).await;
+
+        let message = received.recv().await.expect("lote para admin secundário");
+        assert_eq!(message.request.entries[0].message, "replicar");
+        assert_eq!(message.request.source_node_id, "worker");
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));

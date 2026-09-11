@@ -4,6 +4,7 @@ use crate::network::{is_valid_destination, Network, P2PMessage, PeerInfo};
 use crate::network_chat::{
     self, ChatOutbound, ChatRequest, ChatResponse, NetworkChat, NetworkChatCodec,
 };
+use crate::reqlog::{self, AuditCodec, AuditLog, AuditOutbound};
 use crate::wire;
 use anyhow::Result;
 use futures::StreamExt;
@@ -227,6 +228,7 @@ struct DiscBehaviour {
     infer_tunnel: request_response::Behaviour<InferTunnelCodec>,
     cluster_logs: request_response::Behaviour<ClusterLogsCodec>,
     network_chat: request_response::Behaviour<NetworkChatCodec>,
+    audit: request_response::Behaviour<AuditCodec>,
 }
 
 pub struct Discovery {
@@ -242,6 +244,8 @@ pub struct Discovery {
     logs: Arc<ClusterLogs>,
     chat_rx: mpsc::Receiver<ChatOutbound>,
     chat: Arc<NetworkChat>,
+    audit_rx: mpsc::Receiver<AuditOutbound>,
+    audit_log: Arc<AuditLog>,
     relay_peer_addrs: HashSet<Multiaddr>,
     relay_peer_ids: HashSet<PeerId>,
     connected_relays: HashSet<PeerId>,
@@ -278,6 +282,8 @@ impl Discovery {
         logs: Arc<ClusterLogs>,
         chat_rx: mpsc::Receiver<ChatOutbound>,
         chat: Arc<NetworkChat>,
+        audit_rx: mpsc::Receiver<AuditOutbound>,
+        audit_log: Arc<AuditLog>,
     ) -> Result<Self> {
         let libp2p_port = udp_port.saturating_add(10000);
         let topic = gossipsub::IdentTopic::new(GOSSIP_TOPIC);
@@ -370,6 +376,7 @@ impl Discovery {
                 let infer_tunnel = infer_tunnel::infer_tunnel_behaviour();
                 let cluster_logs = cluster_logs::cluster_logs_behaviour();
                 let network_chat = network_chat::network_chat_behaviour();
+                let audit = reqlog::audit_behaviour();
 
                 DiscBehaviour {
                     gossipsub,
@@ -383,6 +390,7 @@ impl Discovery {
                     infer_tunnel,
                     cluster_logs,
                     network_chat,
+                    audit,
                 }
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
@@ -438,6 +446,8 @@ impl Discovery {
             logs,
             chat_rx,
             chat,
+            audit_rx,
+            audit_log,
             relay_peer_addrs,
             relay_peer_ids,
             connected_relays: HashSet::new(),
@@ -459,6 +469,8 @@ impl Discovery {
             logs,
             mut chat_rx,
             chat,
+            mut audit_rx,
+            audit_log,
             relay_peer_addrs,
             relay_peer_ids,
             mut connected_relays,
@@ -482,7 +494,7 @@ impl Discovery {
                 biased;
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -552,6 +564,16 @@ impl Discovery {
                     let request_id = swarm.behaviour_mut().network_chat.send_request(&peer_id, request);
                     pending_chat.insert(request_id, reply);
                 }
+                out = audit_rx.recv() => {
+                    let Some(AuditOutbound { peer_id, addr_candidates, event }) = out else { break };
+                    if !swarm.is_connected(&peer_id) {
+                        if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
+                            debug!("request-audit: peer {peer_id} indisponível: {error}");
+                            continue;
+                        }
+                    }
+                    let _ = swarm.behaviour_mut().audit.send_request(&peer_id, event);
+                }
             }
         }
     }
@@ -573,6 +595,7 @@ async fn handle_event(
     inbound_response_tx: &mpsc::Sender<InboundTunnelResponse>,
     logs: &ClusterLogs,
     chat: &Arc<NetworkChat>,
+    audit_log: &AuditLog,
 ) {
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
@@ -695,7 +718,12 @@ async fn handle_event(
                 }
                 network.insert_admitted_peer(peer).await;
 
-                network.trigger_cluster_logs_probe(&node_id, profile, cluster_logs_enabled, tls);
+                network.trigger_cluster_logs_probe(
+                    &node_id,
+                    &authority_pubkey,
+                    cluster_logs_enabled,
+                    tls,
+                );
                 network.trigger_quic_probe(&node_id, &authority_pubkey, quic, tls);
                 network.trigger_network_chat_probe(
                     &node_id,
@@ -1049,6 +1077,32 @@ async fn handle_event(
             }
             request_response::Event::InboundFailure { peer, error, .. } => {
                 debug!("cluster-logs: lote recebido de {peer} falhou: {error:?}");
+            }
+            request_response::Event::ResponseSent { .. } => {}
+        },
+
+        // ── Request audit log: every admin replica ──────────────────────────
+        SwarmEvent::Behaviour(DiscBehaviourEvent::Audit(event)) => match event {
+            request_response::Event::Message { peer, message, .. } => match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    let accepted = audit_log.try_ingest_remote(request);
+                    if !accepted {
+                        debug!("request-audit: evento recusado de {peer}");
+                    }
+                    let _ = swarm
+                        .behaviour_mut()
+                        .audit
+                        .send_response(channel, reqlog::AuditResponse { accepted });
+                }
+                request_response::Message::Response { .. } => {}
+            },
+            request_response::Event::OutboundFailure { peer, error, .. } => {
+                debug!("request-audit: envio para {peer} falhou: {error:?}");
+            }
+            request_response::Event::InboundFailure { peer, error, .. } => {
+                debug!("request-audit: evento recebido de {peer} falhou: {error:?}");
             }
             request_response::Event::ResponseSent { .. } => {}
         },

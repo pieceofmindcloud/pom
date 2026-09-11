@@ -727,14 +727,14 @@ deploymentLogs.copyFailed,Could not copy logs.,Não foi possível copiar os logs
 deploymentLogs.copyLogs,Copy logs,Copiar logs
 deploymentLogs.disableAutoScroll,Disable automatic scrolling,Desligar rolagem automática
 deploymentLogs.dropped,{count} lines dropped before delivery,{count} linhas descartadas antes do envio
-deploymentLogs.emptyHint,Turn on process logs from Preferences on the main node.,Ligue os logs de processo em Preferências no nó principal.
+deploymentLogs.emptyHint,Logs appear when an authorized peer sends data to this local replica.,Os logs aparecem quando um peer autorizado envia dados para esta réplica local.
 deploymentLogs.emptyTitle,No process logs yet,Nenhum log de processo ainda
 deploymentLogs.enableAutoScroll,Enable automatic scrolling,Ligar rolagem automática
 deploymentLogs.filterLabel,Filter by deployment,Filtrar por implantação
 deploymentLogs.live,Live,Ao vivo
 deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
-deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached the main node.,A consola do processo do cluster. As linhas aparecem na ordem em que chegaram ao principal.
+deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,A consola do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
 deploymentLogs.title,Deployment logs,Logs da implantação
 deployments.actions,Actions,Ações
 deployments.activateFailed,Could not make it the default,Não deu para tornar padrão
@@ -1067,13 +1067,13 @@ network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
-network.logsHowItWorks,Every node sends only to the main node over a separate libp2p protocol. The main node stores arrival order and deployment id in SQLite.,Cada nó envia somente ao principal por um protocolo libp2p separado. O principal grava a ordem de chegada e o deploy_id no SQLite.
+network.logsHowItWorks,Every node sends a copy to each admin over a separate libp2p protocol. Each admin stores arrival order and deployment id in its local SQLite.,Cada nó envia uma cópia para cada admin por um protocolo libp2p separado. Cada admin grava a ordem de chegada e o deploy_id no próprio SQLite local.
 network.logsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando
 network.logsPropagates,No restart needed. Other nodes confirm the policy with the main node before adopting it.,Não precisa reiniciar. Os demais nós confirmam a política com o principal antes de adotar.
 network.logsState,Cluster collection,Coleta do cluster
-network.logsSubtitle,"When on, this node reports its process log to the main node. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo ao principal. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
+network.logsSubtitle,"When on, this node reports its process log to every admin replica. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo para cada réplica admin. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
 network.metricsEyebrow,Network health,Saúde da rede
 network.metricsLatency,Average latency,Latência média

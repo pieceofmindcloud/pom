@@ -679,13 +679,14 @@ realmente carregou cada hop, além de marcar o fallback.
 `DeploymentLogs.tsx`, em `/implantacoes/logs`, é a consola terminal do processo
 do cluster e não a auditoria de requisições de `/logs`. O fundo preto e a fonte
 monoespaçada deixam cada linha com o nome da máquina, nível e horário de origem;
-as linhas chegam do principal já na ordem de chegada e a tela consulta novos
-lotes a cada segundo. O seletor de implantação envia `deploy_id`, permitindo
-abrir os mesmos logs a partir de uma implantação no Histórico.
+as linhas vêm da réplica local do admin na ordem de chegada e a tela consulta
+novos lotes a cada segundo. O seletor de implantação envia `deploy_id`,
+permitindo abrir os mesmos logs a partir de uma implantação no Histórico.
 
 `Preferences.tsx` mostra o painel "Logs do cluster" junto do TLS. O interruptor
 fica desabilitado fora do principal e o backend também rejeita a operação nesses
-nós. O estado e a autoridade vêm de `GET /api/ui/node`; a alteração usa
+nós. A leitura dos logs fica disponível a qualquer admin efetivo porque a cópia
+é local. O estado e a autoridade vêm de `GET /api/ui/node`; a alteração usa
 `POST /api/ui/network/logs` e não exige reinício. O contador de entradas
 descartadas pela fila limitada aparece acima do terminal, para a tela não
 apresentar uma visão incompleta como se fosse o fluxo integral.

@@ -37,8 +37,8 @@ gated e a licença antes do download.
   adiciona o caminho MoE próprio ao lado do caminho denso, incluindo o marco
   dos quatro modelos da ksia, a salvaguarda por dtype, o diagnóstico de reserva
   de KV multiplicada por `max_sessions` e o goal CUDA posterior.
-- `subsystems/rede-p2p.md` - descoberta, identidade, TLS e o canal unidirecional
-  de logs de processo enviado ao principal.
+- `subsystems/rede-p2p.md` - descoberta, identidade, TLS e os canais libp2p de
+  logs de processo e auditoria replicados entre admins.
 
 O fluxo incremental de topologia de deployments, incluindo o modo misto e as
 versões criadas ao adicionar ou remover máquinas, é detalhado em

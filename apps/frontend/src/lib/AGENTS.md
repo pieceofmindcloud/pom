@@ -108,8 +108,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   this is a capability slice, not a general peer list.
   `useNetworkChat` polls the authenticated network-chat snapshot so the Sidebar
   can show unread messages while the chat route está desmontada.
-  `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
-  por `deploy_id`, e atualiza a consola a cada segundo.
+  `useClusterLogs` lê o log de processo da réplica local do admin,
+  opcionalmente filtrado por `deploy_id`, e atualiza a consola a cada segundo.
   `useGeoReference` consulta `/api/ui/network/geo-reference` para preencher os
   selects de país e cidade da tela de Informações da Rede.
   `useAdminSurface` is the one-shot shell probe: it distinguishes setup,

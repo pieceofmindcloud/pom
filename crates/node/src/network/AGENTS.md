@@ -32,12 +32,16 @@ fallback continua em `addr_candidates` + `RouteTable`.
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
   mesmo túnel Noise.
 - `cluster_logs.rs` - captura limitada do `tracing` e transporte request/response
-  separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão e só o
-  principal ingere e persiste lotes. `CaptureLayer` usa `INFO` como nível
+  separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão, e cada
+  lote é persistido localmente por todo admin efetivo e enviado por fanout aos
+  demais peers anunciados como admin. `CaptureLayer` usa `INFO` como nível
   mínimo por padrão, configurável por `Config.cluster_logs_min_level`, sem
-  alterar o filtro do console. No principal, `ClusterLogs::start` roda a poda
-  em segundo plano: mantém sete dias e no máximo 500.000 linhas, em lotes de
-  256 com pausa e tentativa não bloqueante.
+  alterar o filtro do console. Cada admin efetivo roda a poda em segundo plano:
+  mantém sete dias e no máximo 500.000 linhas, em lotes de 256 com pausa e
+  tentativa não bloqueante.
+- `reqlog.rs` - protocolo request/response da auditoria de requisições
+  (`/pom/request-audit/1.0.0`); cada admin efetivo mantém uma cópia local dos
+  eventos `begin` e `complete`, sem retransmitir eventos recebidos.
 - `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
   campo anunciado só dispara a leitura da política no principal.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
@@ -49,7 +53,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
   a fonte efetiva.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
   (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e o
-  protocolo de logs do cluster e Chat da rede. Põe peers no `Network` somente
+  protocolo de logs do cluster, da auditoria de requisições e do Chat da rede.
+  Põe peers no `Network` somente
   depois da catraca de admissão, e reidrata no swarm os endereços dos peers
   admitidos antes de enviar pelo túnel quando o anúncio chegou antes do
   registro de rota. A assinatura nativa do gossipsub prova a origem do
@@ -120,7 +125,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   apenas a resposta do principal é adotada e falha preserva o valor local.
 - `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
   `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
-  é a fonte, e falha preserva o valor local.
+  é a fonte, e falha preserva o valor local. A lista de admins para réplica é
+  independente dessa catraca e não torna um secundário capaz de mudar a
+  política.
 - `network_chat_enabled` segue o mesmo contrato. O gatilho só é aceito como
   decisão do principal cuja `authority_pubkey` foi confirmada pelo
   `AdminTrust`; o perfil anunciado não identifica autoridade. O interruptor
@@ -250,8 +257,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
-  só logam. O request/response de logs e o do Chat da rede usam behaviours
-  próprios, separados do túnel de inferência. O Chat valida no principal,
+  só logam. Os request/responses de logs, auditoria e Chat da rede usam
+  behaviours próprios, separados do túnel de inferência. Logs de processo são
+  aceitos por todo admin efetivo; eventos de auditoria também são persistidos
+  por todo admin efetivo e nenhum evento recebido é retransmitido. O Chat valida no principal,
   retransmite sem segredo e recusa relays que não vieram de um administrador.
   O `select!` é biased para o swarm e o túnel de inferência; filas de Chat usam
   `try_send`, descartam sob pressão e nunca esperam SQLite.

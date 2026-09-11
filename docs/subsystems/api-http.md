@@ -614,8 +614,8 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `peer/:node_id/runtime`, `paths`,
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
-`requests` e `requests/stats` (a auditoria persistente, respectivamente
-`reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
+`requests` e `requests/stats` (a auditoria persistente local de cada admin,
+respectivamente `reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
 recebe `{ node_ids, execution_id? }` e devolve somente transporte e RTT de fio
 observado nas arestas da execução identificada; o RTT de execução com
@@ -786,10 +786,16 @@ desliga a captura e o envio do log de processo do cluster em tempo real. Só o
 principal recebe a operação; o efeito é aplicado sem reinício e anunciado como
 gatilho para a busca autenticada dos demais nós.
 
-**`GET /api/ui/cluster-logs`** - exige `ConnectionAuth` no principal e devolve
-as linhas persistidas em ordem de chegada, com `deploy_id`, timestamp de origem,
-nome do nó e contador de descartes. Aceita `deploy_id` e `limit`; não reordena
-por `origin_at`.
+**`GET /api/ui/cluster-logs`** - exige `ConnectionAuth` em qualquer admin com
+autoridade efetiva e devolve as linhas persistidas na réplica local, em ordem de
+chegada, com `deploy_id`, timestamp de origem, nome do nó e contador de
+descartes. Aceita `deploy_id` e `limit`; não reordena por `origin_at`. Sem dados
+locais, a resposta vazia é legítima e não significa que o role seja secundário.
+
+**`GET /api/ui/requests`** e **`GET /api/ui/requests/stats`** - exigem
+`ConnectionAuth` em qualquer admin com autoridade efetiva e consultam o SQLite
+local. O fluxo de geração replica os eventos de auditoria para os demais admins
+por libp2p; a consulta secundária não faz fallback para o principal.
 
 **`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
 política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o

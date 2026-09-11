@@ -126,8 +126,9 @@ profile policy remains the effective authorization boundary.
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas e linhas do log de processo por `deploy_id`. Os logs preservam a
-  ordem de chegada no principal, guardam o timestamp de origem só como dado
+  conversas e linhas do log de processo por `deploy_id`. Cada admin efetivo
+  mantém sua própria réplica dos logs e da auditoria. Os logs preservam a
+  ordem de chegada nesta réplica, guardam o timestamp de origem só como dado
   informativo e acumulam descartes da fila limitada. `try_prune_cluster_logs`
   apaga somente `cluster_logs`, em transações `BEGIN IMMEDIATE` de até 256
   linhas numa conexão com timeout zero; contenda encerra a rodada e o WAL é
@@ -465,7 +466,8 @@ profile policy remains the effective authorization boundary.
   não transformar timeout em falso replay administrativo. O testkit de admin
   sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
 - `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
-  writes on a dedicated bounded thread, executadas pelo `PomDb` compartilhado;
+  writes on a dedicated bounded thread, replica eventos `begin` e `complete`
+  aos admins efetivos por libp2p e executa as escritas no `PomDb` compartilhado;
   `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,
   abre requests em `in_progress`, completa a mesma linha, marca registros
   antigos como `incomplete` e serve consultas autenticadas paginadas mais

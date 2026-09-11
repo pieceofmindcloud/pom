@@ -639,6 +639,7 @@ async fn async_main(
     }
     log_capture.set_min_level(app_config.cluster_logs_min_level);
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
+    let audit = reqlog::AuditLog::new(database.clone());
     app_config.api_keys = database.api_keys()?;
     if let Err(error) = database.save_network_settings(&app_config.network) {
         warn!("não foi possível guardar os detalhes da rede no banco: {error:#}");
@@ -726,6 +727,7 @@ async fn async_main(
             args.public_addr.clone(),
             !args.no_cycle_detection,
             cluster_logs,
+            audit,
         )
         .await;
     }
@@ -907,6 +909,8 @@ async fn async_main(
         advertise_addr: advertise_addr.clone(),
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
+        audit: audit.clone(),
+        primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
         auth: auth_config.clone(),
@@ -945,6 +949,12 @@ async fn async_main(
     let cluster_logs = stack.cluster_logs;
     let network_chat = stack.network_chat;
     let pkarr_node = stack.pkarr_node.map(Arc::new);
+    let local_is_admin = admin_trust
+        .effective_authority(&authority_principal, app_config.profile)
+        .is_some();
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
+    cluster_logs.set_admin_receiver(local_is_admin);
+    audit.set_admin_receiver(local_is_admin);
     let disc_dial_tx = stack.disc_dial_tx;
     let p2p_port = net.bind_addr.port();
     display::print_node_info(&node_id, &pubkey, p2p_port);
@@ -1146,7 +1156,7 @@ async fn async_main(
                 enabled: !args.no_cycle_detection,
                 ..crate::cycle::CycleConfig::default()
             },
-            audit: reqlog::AuditLog::new(database.clone()),
+            audit: audit.clone(),
             database: database.clone(),
             gateway_port,
             quic_server: quic_config.clone(),
@@ -1580,6 +1590,8 @@ struct P2pStackArgs {
     /// começava em HTTP e todos os RTTs remotos ficavam ausentes.
     tls_required: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    audit: Arc<reqlog::AuditLog>,
+    primary_authority_pubkey: String,
     cluster_logs_enabled: bool,
     network_chat_enabled: bool,
     auth: Arc<RwLock<config::Config>>,
@@ -1634,9 +1646,15 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .collect();
     infer_tunnel::set_local_node_id(args.node_id.clone());
     let cluster_logs = args.cluster_logs.clone();
+    let primary_authority_pubkey = args.primary_authority_pubkey.clone();
     cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
-    cluster_logs.set_principal(args.profile == crate::profile::NodeProfile::Admin);
+    // Keep the startup behavior of the existing process-log receiver until
+    // the authenticated trust document is loaded below; the final receiver
+    // state is narrowed to effective admins before the gateway is exposed.
+    cluster_logs.set_admin_receiver(args.profile == crate::profile::NodeProfile::Admin);
     cluster_logs.set_enabled(args.cluster_logs_enabled);
+    let audit = args.audit.clone();
+    audit.set_admin_receiver(args.profile == crate::profile::NodeProfile::Admin);
 
     let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
         Ok(n) => {
@@ -1714,6 +1732,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
+    net.set_policy_principal_pubkey(primary_authority_pubkey);
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
     net.set_network_chat_enabled(args.network_chat_enabled);
@@ -1733,6 +1752,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         args.auth.clone(),
         args.network_chat_enabled,
     );
+    let (audit_tx, audit_rx) = mpsc::channel(reqlog::AUDIT_TRANSPORT_QUEUE_CAPACITY);
+    audit.start_replication(net.clone(), audit_tx);
 
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
     // messages are published to gossipsub every 5 s so internet peers learn
@@ -1753,6 +1774,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         cluster_logs.clone(),
         chat_rx,
         network_chat.clone(),
+        audit_rx,
+        audit,
     ) {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
@@ -1820,6 +1843,7 @@ async fn start_gateway_only(
     public_addr_cli: String,
     cycle_detection_enabled: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    audit: Arc<reqlog::AuditLog>,
 ) -> Result<()> {
     use crate::gateway::{start_gateway, GatewayState};
     let identity = identity::Identity::load_or_create(&identity::key_path());
@@ -1861,6 +1885,8 @@ async fn start_gateway_only(
         advertise_addr: advertise_addr.clone(),
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
+        audit: audit.clone(),
+        primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
         auth: auth_state.clone(),
@@ -1928,6 +1954,12 @@ async fn start_gateway_only(
             }
         });
     }
+    let local_is_admin = admin_trust
+        .effective_authority(&authority_principal, app_config.profile)
+        .is_some();
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
+    cluster_logs.set_admin_receiver(local_is_admin);
+    audit.set_admin_receiver(local_is_admin);
 
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
@@ -2019,7 +2051,7 @@ async fn start_gateway_only(
             enabled: cycle_detection_enabled,
             ..crate::cycle::CycleConfig::default()
         },
-        audit: reqlog::AuditLog::new(database.clone()),
+        audit,
         database,
         gateway_port,
         auth: auth_state,

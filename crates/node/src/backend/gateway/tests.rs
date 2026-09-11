@@ -2248,6 +2248,105 @@ mod peer_visibility_tests {
     }
 }
 
+#[cfg(test)]
+mod replicated_admin_logs_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn secondary_lista_replicas_locais_sem_principal() {
+        let state = testkit::secondary_admin_state("secondary").await;
+        assert!(state.network.peers.read().await.is_empty());
+
+        assert!(state.cluster_logs.try_ingest_remote(crate::cluster_logs::LogBatch {
+            source_node_id: "worker".into(),
+            entries: vec![crate::cluster_logs::LogEntry {
+                node_id: "worker".into(),
+                node_name: "worker-1".into(),
+                deploy_id: "deploy-1".into(),
+                origin_at: "2026-09-11T12:00:00Z".into(),
+                level: "INFO".into(),
+                target: "worker::test".into(),
+                message: "processo iniciou".into(),
+            }],
+            dropped: 0,
+        }));
+
+        let request = crate::reqlog::AuditRequest {
+            id: "request-1".into(),
+            received_at: "2026-09-11T12:00:00Z".into(),
+            route: "/v1/chat/completions".into(),
+            model: "model".into(),
+            caller: crate::reqlog::Caller::operator(),
+            entry_node_id: "worker".into(),
+            prompt: "hello".into(),
+            request_details: serde_json::json!({"stream": false}),
+        };
+        let completion = crate::reqlog::AuditCompletion {
+            completed_at: "2026-09-11T12:00:01Z".into(),
+            result: Some("world".into()),
+            telemetry: None,
+            timings: None,
+            source: "distributed".into(),
+            hops: vec!["worker".into()],
+            prompt_tokens: Some(1),
+            completion_tokens: Some(1),
+            duration_ms: Some(1000),
+            status: crate::reqlog::AuditStatus::Ok,
+            error: None,
+        };
+        assert!(state.audit.try_ingest_remote(crate::reqlog::AuditEvent::Complete {
+            id: request.id.clone(),
+            completion,
+        }));
+        assert!(state
+            .audit
+            .try_ingest_remote(crate::reqlog::AuditEvent::Begin(request)));
+
+        state.cluster_logs.flush();
+        state.audit.flush();
+        let logs = state
+            .cluster_logs
+            .list(Some("deploy-1"), Some(10))
+            .await
+            .expect("logs locais");
+        let requests = state
+            .audit
+            .list(crate::reqlog::AuditQuery::default())
+            .await
+            .expect("auditoria local");
+
+        assert_eq!(logs.entries.len(), 1);
+        assert_eq!(logs.entries[0].message, "processo iniciou");
+        assert_eq!(requests.entries.len(), 1);
+        assert_eq!(requests.entries[0].id, "request-1");
+        assert_eq!(requests.entries[0].status, "ok");
+    }
+
+    #[tokio::test]
+    async fn secondary_admin_can_open_both_log_surfaces() {
+        let state = testkit::secondary_admin_state("secondary").await;
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+        for path in ["/api/ui/cluster-logs", "/api/ui/requests"] {
+            let mut request = Request::get(path)
+                .header("authorization", "Bearer chave")
+                .body(axum::body::Body::empty())
+                .expect("requisição de teste");
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "rota={path}");
+        }
+    }
+}
+
 /// Um nó de verdade, montado à mão, para os testes que exercitam rotas.
 ///
 /// Existe porque três módulos precisavam do mesmo andaime — `transfer`,
@@ -2350,7 +2449,15 @@ pub(crate) mod testkit {
             .set_profile(crate::profile::NodeProfile::Admin);
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
         state.admin_trust = Arc::new(admin_trust);
+        state.cluster_logs.set_admin_receiver(true);
+        state.audit.set_admin_receiver(true);
         state
+    }
+
+    /// Um admin secundário com uma cadeia de confiança válida, usado para
+    /// provar que as leituras dependem da réplica local e não do principal.
+    pub(crate) async fn secondary_admin_state(node_id: &str) -> GatewayState {
+        state_with_secondary_admin(node_id, vec![]).await
     }
 
     /// O mesmo, com um **nome anunciado** — o que `node_name` do `pom.json`

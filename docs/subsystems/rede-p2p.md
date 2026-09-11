@@ -695,11 +695,20 @@ quantis de rede ficam separados do tempo de processamento remoto.
 ## Logs de processo do cluster
 
 O log de processo usa um protocolo request/response próprio do swarm,
-`/pom/cluster-logs/1.0.0`, separado de `infer_tunnel.rs`. Cada nó envia lotes
-somente ao peer que conhece como principal; não há malha, retransmissão ou
-encaminhamento de logs entre nós. O principal registra cada entrada na ordem de
-chegada, sem ordenar pelo relógio remoto, e guarda `origin_at` apenas como dado
-informativo.
+`/pom/cluster-logs/1.0.0`, separado de `infer_tunnel.rs`. Cada nó envia uma
+cópia do lote a todos os peers vivos anunciados como admin. Cada admin efetivo
+persiste a entrada na ordem de chegada da própria réplica, sem ordenar pelo
+relógio remoto, e guarda `origin_at` apenas como dado informativo. O receptor
+confere sua própria autoridade efetiva em `AdminTrust`; um perfil `admin` sem
+concessão não vira destino de leitura nem aceita a cópia.
+
+A auditoria de requisições segue a mesma topologia em
+`/pom/request-audit/1.0.0`: `AuditLog` replica os eventos `Begin` e `Complete`
+para todos os admins conhecidos, e o receptor grava a cópia sem retransmiti-la.
+Com isso, `/api/ui/cluster-logs`, `/api/ui/requests` e suas estatísticas não
+dependem de o principal estar acessível depois que a réplica local foi
+recebida. Uma conclusão que chega antes do início fica retida numa fila
+limitada até o evento de início.
 
 `cluster_logs_enabled` no `Announce` é somente gatilho. Quando diverge da
 política local, o nó faz uma busca autenticada em `GET /api/cluster/logs` no
@@ -720,9 +729,13 @@ O `tracing` entra numa fila própria limitada a 1024 entradas. A captura usa
 snapshot lock-free do contexto e `try_send`, portanto nunca espera uma
 atualização de identidade, a inferência ou a rede; fila cheia descarta a entrada
 e acumula a contagem. Uma task fora do caminho quente envia até 64 entradas a
-cada 100 ms, em modo best-effort, sem retentativa agressiva. O principal grava
-as linhas em `pom.db`, associadas ao `deploy_id`, e também persiste o contador
-de descartes.
+cada 100 ms, em modo best-effort, sem retentativa agressiva. Cada admin grava
+as linhas em seu próprio `pom.db`, associadas ao `deploy_id`, e também persiste
+o contador de descartes. Essa escolha replica a retenção completa atual: com
+`N` admins há até `N` escritas e cópias de armazenamento por entrada. Não há
+política de retenção secundária diferente para esconder esse custo; uma redução
+futura precisa ser uma decisão explícita de produto, porque mudaria a semântica
+de auditoria.
 
 ## 6. Chat da rede
 

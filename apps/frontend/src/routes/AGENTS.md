@@ -359,8 +359,8 @@ Per-file list:
   reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
   Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
 - `DeploymentLogs.tsx` - consola full-bleed do log de processo do cluster em
-  `/implantacoes/logs`. Consulta os lotes persistidos do principal, atualiza a
-  cada segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
+  `/implantacoes/logs`. Consulta a réplica local do admin, atualiza a cada
+  segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
   `deploy_id`; mantém apenas o terminal em preto, acompanha o fim enquanto o
   leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
   botão de estado visível para reativá-lo e copia as últimas 500 linhas. Não é a

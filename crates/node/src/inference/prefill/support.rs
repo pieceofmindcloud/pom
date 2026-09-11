@@ -546,9 +546,8 @@ impl RemoteStreamTelemetry {
             .get("remote_stream_delivery_ms")
             .and_then(serde_json::Value::as_u64)
         {
-            self.remote_stream_delivery_total_ms = self
-                .remote_stream_delivery_total_ms
-                .saturating_add(value);
+            self.remote_stream_delivery_total_ms =
+                self.remote_stream_delivery_total_ms.saturating_add(value);
             self.delivery.record(value);
         }
         self.refresh_percentiles();
@@ -1025,7 +1024,9 @@ impl TransportTrace {
         let round_trip_ms = get("round_trip_ms");
         let processing_ms = get("processing_ms");
         let measured_network_ms = Self::measured_network_ms(
-            entry.get("transport_rtt_us").and_then(|value| value.as_u64()),
+            entry
+                .get("transport_rtt_us")
+                .and_then(|value| value.as_u64()),
         );
         Self {
             transport: entry
@@ -2356,9 +2357,9 @@ impl RequestTrace {
                 .get("node_timings")
                 .unwrap_or(&serde_json::Value::Null),
         );
-        if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
-            sent.transport_rtt_us,
-        ) {
+        if let Some(measured_network_ms) =
+            TransportTrace::measured_network_ms(sent.transport_rtt_us)
+        {
             if let Some(entry) = self.hops.get_mut(hop) {
                 let slot = match phase {
                     Phase::Prefill => &mut entry.prefill,
@@ -2745,7 +2746,9 @@ impl RequestTrace {
                 .unwrap_or(&serde_json::Value::Null),
         );
         if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
-            entry.get("transport_rtt_us").and_then(|value| value.as_u64()),
+            entry
+                .get("transport_rtt_us")
+                .and_then(|value| value.as_u64()),
         ) {
             if let Some(entry) = self.hops.get_mut(hop) {
                 let slot = match phase {

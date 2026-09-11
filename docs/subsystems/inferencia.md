@@ -766,7 +766,8 @@ confundida com o nome agregado do transporte.
 
 Quando `Config.quic_enabled` está ligado pelo principal, os novos hops de
 estado oculto e as entregas diretas de retorno preferem HTTP/3 sobre QUIC. O
-endpoint usa uma porta UDP dedicada, derivada da porta TCP por `TCP + 1` e
+endpoint usa uma porta UDP dedicada, derivada do `p2p_port` por
+`p2p_port + 1000` e
 anunciada como `inference_quic_port` (o gateway anuncia
 `gateway_quic_port`). O cliente recebe os endereços `host:porta` do anúncio
 público do peer, com IPv6 devidamente colchetado; `inference_url` continua
@@ -792,6 +793,10 @@ para `http` ou `https`. O campo `transport_rtt_us` carrega o RTT medido pela
 conexão QUIC, sem o processamento do handler remoto. O campo `tls` fica
 verdadeiro para QUIC porque o TLS 1.3 pertence ao próprio protocolo,
 independentemente do interruptor TCP.
+Cada tentativa completa, do handshake ao corpo da resposta, respeita um
+deadline de transporte de 30 s, inclusive no fallback HTTP/HTTPS e antes da
+autorização, para que um endpoint alcançável mas sem resposta não consuma o
+timeout de processamento do frame.
 
 **Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
 `Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,

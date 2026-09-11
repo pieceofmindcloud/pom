@@ -684,6 +684,10 @@ entre os endereços QUIC anunciados, em vez de serializar um timeout por
 endereço, e coloca um endpoint que falhou em quarentena por 5 s. Uma sessão
 saudável é reutilizada nos próximos frames. O túnel só é a última reserva
 depois de uma falha de transporte também no caminho TCP.
+Cada tentativa completa de transporte, incluindo handshake, envio, headers e
+corpo, tem teto de 30 s; isso impede que um endpoint alcançável mas sem resposta
+prenda a inferência no timeout de processamento de 600 s. Esse deadline vale
+também para o HTTP/HTTPS usado no fallback.
 A telemetria por hop publica o transporte efetivo como `http`, `https` ou
 `quic`. Para QUIC, `transport_rtt_us` é o RTT medido pela conexão UDP e os
 quantis de rede ficam separados do tempo de processamento remoto.

@@ -416,10 +416,7 @@ mod tests {
             9
         );
         assert_eq!(
-            trace
-                .telemetry
-                .remote_stream
-                .remote_stream_delivery_p95_ms,
+            trace.telemetry.remote_stream.remote_stream_delivery_p95_ms,
             5
         );
         assert_eq!(trace.telemetry.status, "complete");

@@ -676,7 +676,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   interno. Em redes públicas, HTTPS e QUIC podem validar pelo transporte seguro
   com o marcador, mas o fallback HTTP também leva o bearer compartilhado; sem a
   prova correspondente, a chamada é recusada em vez de cair para uma API key de
-  cliente.
+  cliente. A tentativa HTTP direta inteira, incluindo autorização, headers e
+  corpo, também respeita o deadline de transporte compartilhado de 30 s.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de

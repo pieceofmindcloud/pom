@@ -568,12 +568,7 @@ struct RemoteStreamWaitBreakdown {
     queue_ms: u64,
 }
 
-fn overlap_ms(
-    start: Instant,
-    end: Instant,
-    window_start: Instant,
-    window_end: Instant,
-) -> u64 {
+fn overlap_ms(start: Instant, end: Instant, window_start: Instant, window_end: Instant) -> u64 {
     let start = start.max(window_start);
     let end = end.min(window_end);
     end.saturating_duration_since(start).as_millis() as u64
@@ -790,21 +785,21 @@ pub(super) async fn remote_stream_producer(
                 };
                 let enqueued_at = Instant::now();
                 permit.send(RemoteStreamItem::Token(RemoteStreamToken {
-                        token_id: *token_id,
-                        token_index: token_index.saturating_add(index as u64),
-                        text: text.clone(),
-                        done: done && index + 1 == accepted.len(),
-                        processing_ms: if index == 0 { processing_ms } else { 0 },
-                        node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
-                        hop_timings: (index == 0).then(|| hop_timings.clone()).flatten(),
-                        speculated,
-                        speculation_active,
-                        speculation_disabled_reason: speculation_disabled_reason.clone(),
-                        speculation_disabled_detail: speculation_disabled_detail.clone(),
-                        next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
-                        downstream_wait_ms: if index == 0 { downstream_wait_ms } else { 0 },
-                        ready_at,
-                        enqueued_at,
+                    token_id: *token_id,
+                    token_index: token_index.saturating_add(index as u64),
+                    text: text.clone(),
+                    done: done && index + 1 == accepted.len(),
+                    processing_ms: if index == 0 { processing_ms } else { 0 },
+                    node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
+                    hop_timings: (index == 0).then(|| hop_timings.clone()).flatten(),
+                    speculated,
+                    speculation_active,
+                    speculation_disabled_reason: speculation_disabled_reason.clone(),
+                    speculation_disabled_detail: speculation_disabled_detail.clone(),
+                    next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
+                    downstream_wait_ms: if index == 0 { downstream_wait_ms } else { 0 },
+                    ready_at,
+                    enqueued_at,
                 }));
             }
             if done {
@@ -836,25 +831,25 @@ pub(super) async fn remote_stream_producer(
         };
         let enqueued_at = Instant::now();
         permit.send(RemoteStreamItem::Token(RemoteStreamToken {
-                token_id: token_id as u32,
-                token_index,
-                text: reply_meta
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                done,
-                processing_ms,
-                node_timings,
-                hop_timings,
-                speculated,
-                speculation_active,
-                speculation_disabled_reason,
-                speculation_disabled_detail,
-                next_draft,
-                downstream_wait_ms,
-                ready_at,
-                enqueued_at,
+            token_id: token_id as u32,
+            token_index,
+            text: reply_meta
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            done,
+            processing_ms,
+            node_timings,
+            hop_timings,
+            speculated,
+            speculation_active,
+            speculation_disabled_reason,
+            speculation_disabled_detail,
+            next_draft,
+            downstream_wait_ms,
+            ready_at,
+            enqueued_at,
         }));
         if done {
             return;

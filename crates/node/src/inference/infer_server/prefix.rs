@@ -882,7 +882,11 @@ mod internal_auth_tests {
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(
-            app.clone().oneshot(insecure_request).await.unwrap().status(),
+            app.clone()
+                .oneshot(insecure_request)
+                .await
+                .unwrap()
+                .status(),
             StatusCode::UNAUTHORIZED
         );
 

@@ -1017,9 +1017,7 @@ async fn send_frame_with_protocol(
                             profiling_spans,
                         });
                     }
-                    Ok(response)
-                        if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) =>
-                    {
+                    Ok(response) if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) => {
                         // 404/405: peer sem a rota HTTP/3. 401/403: transporte
                         // sem credencial aceita para este peer (rede pública em
                         // texto claro, política ainda não propagada) - não é uma
@@ -1069,21 +1067,18 @@ async fn send_frame_with_protocol(
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .body(body.clone())
                 .timeout(DIRECT_FRAME_TIMEOUT);
-            let sent = clients
-                .authorize_inference_request_for_session(request, session_id)
-                .await
-                .send()
-                .await;
+            let sent =
+                send_http_request_with_deadline(clients, request, session_id, DIRECT_FRAME_TIMEOUT)
+                    .await;
 
             match sent {
-                Ok(r) if r.status().is_success() => {
-                    let response_headers_at = Instant::now();
+                Ok(r) if r.status.is_success() => {
+                    let response_headers_at = r.response_headers_at;
                     let response_headers_ms = response_headers_at
                         .saturating_duration_since(started)
                         .as_millis() as u64;
-                    let response_body_started = Instant::now();
-                    let bytes = r.bytes().await?;
-                    let response_body_ms = response_body_started.elapsed().as_millis() as u64;
+                    let bytes = r.body;
+                    let response_body_ms = r.response_body_ms;
                     let response_received_at = Instant::now();
                     let transport = tcp_transport_for_url(&url);
                     let profiling_spans = profile_transport_spans(
@@ -1145,13 +1140,13 @@ async fn send_frame_with_protocol(
                         profiling_spans,
                     });
                 }
-                Ok(r) if matches!(r.status().as_u16(), 401 | 403) => {
+                Ok(r) if matches!(r.status.as_u16(), 401 | 403) => {
                     // Rejeição de autenticação do transporte direto: numa rede
                     // pública sem TLS não há credencial que o peer aceite por
                     // HTTP em claro. Não é recusa do pedido - deixa a escada
                     // seguir para o túnel libp2p (Noise), que autentica.
-                    let code = r.status();
-                    let text = r.text().await.unwrap_or_default();
+                    let code = r.status;
+                    let text = String::from_utf8_lossy(&r.body).into_owned();
                     last_error = format!("HTTP {code}: {text}");
                     transport_fallback = true;
                     transport_fallback_reason = Some(match transport_fallback_reason.take() {
@@ -1167,8 +1162,8 @@ async fn send_frame_with_protocol(
                     warn!("peer {peer_label} recusou o HTTP direto ({code}), tentando o túnel");
                 }
                 Ok(r) => {
-                    let code = r.status();
-                    let text = r.text().await.unwrap_or_default();
+                    let code = r.status;
+                    let text = String::from_utf8_lossy(&r.body).into_owned();
                     on_issue(SendIssue {
                         kind: SendIssueKind::Http,
                         attempt,
@@ -1184,7 +1179,7 @@ async fn send_frame_with_protocol(
                     last_error = e.to_string();
                     clients.remember_route_failure(&route_key, &base);
                     on_issue(SendIssue {
-                        kind: if e.is_timeout() {
+                        kind: if is_transport_timeout(&e) {
                             SendIssueKind::Timeout
                         } else {
                             SendIssueKind::Transport
@@ -1206,6 +1201,81 @@ async fn send_frame_with_protocol(
     Err(anyhow!(
         "{peer_label} não respondeu após {attempts} tentativa(s): {last_error}"
     ))
+}
+
+#[derive(Debug)]
+struct HttpTransportResponse {
+    status: reqwest::StatusCode,
+    body: Vec<u8>,
+    response_headers_at: Instant,
+    response_body_ms: u64,
+}
+
+#[derive(Debug)]
+struct TransportDeadline {
+    protocol: &'static str,
+    timeout: Duration,
+}
+
+impl std::fmt::Display for TransportDeadline {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "deadline de transporte {} expirou após {:?}",
+            self.protocol, self.timeout
+        )
+    }
+}
+
+impl std::error::Error for TransportDeadline {}
+
+fn is_transport_timeout(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<TransportDeadline>().is_some()
+        || error
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+}
+
+/// Limita a tentativa HTTP inteira, incluindo os headers e o corpo. O
+/// timeout longo do frame continua sendo o limite interno do reqwest, mas o
+/// transporte direto nunca deve deixar uma inferência presa quando o peer
+/// aceitou a conexão e parou de responder.
+async fn send_http_request_with_deadline(
+    clients: &crate::peer_client::PeerClients,
+    request: reqwest::RequestBuilder,
+    session_id: Option<&str>,
+    timeout: Duration,
+) -> Result<HttpTransportResponse> {
+    let transport_timeout = crate::quic::transport_deadline(timeout);
+    let response = tokio::time::timeout(transport_timeout, async {
+        let response = clients
+            .authorize_inference_request_for_session(request, session_id)
+            .await
+            .send()
+            .await?;
+        let status = response.status();
+        let response_headers_at = Instant::now();
+        let body_started = Instant::now();
+        let body = response.bytes().await?.to_vec();
+        Ok::<_, reqwest::Error>((status, body, response_headers_at, body_started.elapsed()))
+    })
+    .await;
+
+    match response {
+        Ok(Ok((status, body, response_headers_at, response_body_time))) => {
+            Ok(HttpTransportResponse {
+                status,
+                body,
+                response_headers_at,
+                response_body_ms: response_body_time.as_millis() as u64,
+            })
+        }
+        Ok(Err(error)) => Err(anyhow::Error::new(error)),
+        Err(_) => Err(anyhow::Error::new(TransportDeadline {
+            protocol: "HTTP",
+            timeout: transport_timeout,
+        })),
+    }
 }
 
 struct BatchTransportResponse {
@@ -1458,9 +1528,7 @@ async fn send_batch_body(
                             profiling_spans,
                         });
                     }
-                    Ok(response)
-                        if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) =>
-                    {
+                    Ok(response) if matches!(response.status.as_u16(), 401 | 403 | 404 | 405) => {
                         // 404/405: peer sem HTTP/3. 401/403: transporte sem
                         // credencial aceita - cai para TCP e, por fim, o túnel.
                         transport_fallback = true;
@@ -1495,20 +1563,17 @@ async fn send_batch_body(
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .body(body.clone())
                 .timeout(DIRECT_FRAME_TIMEOUT);
-            let response = clients
-                .authorize_inference_request_for_session(request, session_id)
-                .await
-                .send()
-                .await;
+            let response =
+                send_http_request_with_deadline(clients, request, session_id, DIRECT_FRAME_TIMEOUT)
+                    .await;
             match response {
-                Ok(response) if response.status().is_success() => {
-                    let response_headers_at = Instant::now();
+                Ok(response) if response.status.is_success() => {
+                    let response_headers_at = response.response_headers_at;
                     let response_headers_ms = response_headers_at
                         .saturating_duration_since(started)
                         .as_millis() as u64;
-                    let body_started = Instant::now();
-                    let bytes = response.bytes().await?.to_vec();
-                    let response_body_ms = body_started.elapsed().as_millis() as u64;
+                    let bytes = response.body;
+                    let response_body_ms = response.response_body_ms;
                     let response_received_at = Instant::now();
                     let transport = tcp_transport_for_url(&url);
                     let decode_started = Instant::now();
@@ -1539,9 +1604,9 @@ async fn send_batch_body(
                         ),
                     });
                 }
-                Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
-                    let status = response.status();
-                    let text = response.text().await.unwrap_or_default();
+                Ok(response) if matches!(response.status.as_u16(), 401 | 403) => {
+                    let status = response.status;
+                    let text = String::from_utf8_lossy(&response.body).into_owned();
                     last_error = format!("HTTP {status}: {text}");
                     transport_fallback = true;
                     transport_fallback_reason = Some(match transport_fallback_reason.take() {
@@ -1552,8 +1617,8 @@ async fn send_batch_body(
                     warn!("peer {peer_label} recusou o HTTP direto do batch ({status}), tentando o túnel");
                 }
                 Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.unwrap_or_default();
+                    let status = response.status;
+                    let text = String::from_utf8_lossy(&response.body).into_owned();
                     return Err(anyhow::Error::new(HttpRefusal {
                         status: status.as_u16(),
                         body: text,
@@ -2457,9 +2522,8 @@ mod tests {
             "pipeline falhou em 02eb8c40: http — peer recusou: 401 {{\"error\":\"missing Authorization header\"}}"
         );
         // O mesmo caminho já com a classificação de transporte nova.
-        let direct_transport = anyhow!(
-            "pipeline falhou em 02eb8c40: transport — quic/http: caminho morto"
-        );
+        let direct_transport =
+            anyhow!("pipeline falhou em 02eb8c40: transport — quic/http: caminho morto");
         // HttpRefusal direto de um hop 403.
         let refusal_403 = anyhow::Error::new(HttpRefusal {
             status: 403,
@@ -3250,8 +3314,9 @@ mod tests {
     /// erro terminal - era isso que pendurava o prefill.
     #[tokio::test]
     async fn a_direct_http_401_falls_back_to_the_tunnel() {
-        let port = spawn_fake_inference_server(|_body| (401, b"missing Authorization header".to_vec()))
-            .await;
+        let port =
+            spawn_fake_inference_server(|_body| (401, b"missing Authorization header".to_vec()))
+                .await;
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
@@ -3329,6 +3394,41 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "fallback demorou {:?}, deveria ser sub-segundo por transporte",
             started.elapsed()
+        );
+    }
+
+    /// O fallback TCP também pode aceitar a conexão e nunca devolver headers.
+    /// O orçamento do frame é deliberadamente longo para representar a
+    /// configuração de produção; a tentativa de transporte deve aplicar o
+    /// deadline curto antes dele.
+    #[tokio::test]
+    async fn fallback_http_sem_resposta_respeita_deadline_de_transporte() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((_stream, _)) = listener.accept().await {
+                std::future::pending::<()>().await;
+            }
+        });
+
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let request = clients
+            .plain()
+            .post(format!("http://{address}/v1/step"))
+            .body(Vec::new())
+            .timeout(Duration::from_secs(600));
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            send_http_request_with_deadline(&clients, request, None, Duration::from_secs(600)),
+        )
+        .await
+        .expect("fallback HTTP sem resposta não pode exceder o deadline");
+        let error = result.expect_err("endpoint HTTP sem headers deve falhar");
+        assert!(
+            error
+                .to_string()
+                .contains("deadline de transporte HTTP expirou"),
+            "erro inesperado: {error:#}"
         );
     }
 

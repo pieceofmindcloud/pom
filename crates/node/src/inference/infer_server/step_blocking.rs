@@ -411,9 +411,9 @@ pub(crate) fn step_blocking(
                     let id0 = *accepted_ids.last().unwrap_or(&eos);
                     let p_min = s.mtp_min_probability;
                     let mtp_started = Instant::now();
-                    let dr = s
-                        .engine
-                        .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
+                    let dr =
+                        s.engine
+                            .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
                     timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
                     if let Some(context) = profiling.as_ref() {
                         timings.record_profile_span(
@@ -593,13 +593,9 @@ pub(crate) fn step_blocking(
                 let session_n_past = s.sessions[&sid_key].n_past;
                 let p_min = s.mtp_min_probability;
                 let mtp_started = Instant::now();
-                let dr = s.engine.mtp_draft(
-                    next_id,
-                    session_n_past,
-                    seq_id,
-                    k.saturating_sub(1),
-                    p_min,
-                );
+                let dr =
+                    s.engine
+                        .mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
                 timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
                 if let Some(context) = profiling.as_ref() {
                     timings.record_profile_span(

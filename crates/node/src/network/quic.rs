@@ -65,6 +65,20 @@ pub(crate) const QUIC_ESTABLISH_TIMEOUT: Duration = Duration::from_millis(500);
 /// testar três deles não pode transformar um fallback TCP em três timeouts.
 pub(crate) const QUIC_FALLBACK_BUDGET: Duration = Duration::from_millis(300);
 
+/// Teto de uma tentativa completa de transporte, incluindo o handshake, o
+/// envio do frame e a resposta. O timeout de processamento do frame pode ser
+/// maior, mas não deve deixar um endpoint que aceitou a conexão e sumiu preso
+/// por dez minutos.
+#[cfg(not(test))]
+pub(crate) const INFERENCE_TRANSPORT_DEADLINE: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+pub(crate) const INFERENCE_TRANSPORT_DEADLINE: Duration = Duration::from_millis(500);
+
+pub(crate) fn transport_deadline(timeout: Duration) -> Duration {
+    timeout.min(INFERENCE_TRANSPORT_DEADLINE)
+}
+
 /// Uma falha de descoberta torna inútil repetir o mesmo handshake no próximo
 /// token. O caminho HTTP continua disponível imediatamente, e o QUIC volta a
 /// ser sondado depois desta janela para recuperar uma porta que foi reiniciada.
@@ -82,6 +96,7 @@ pub(crate) const QUIC_SEND_TIMEOUT: Duration = Duration::from_millis(1500);
 pub(crate) const QUIC_MAX_IDLE: Duration = Duration::from_millis(1200);
 pub(crate) const QUIC_KEEP_ALIVE: Duration = Duration::from_millis(250);
 
+#[derive(Debug)]
 pub struct QuicResponse {
     pub status: StatusCode,
     pub body: Vec<u8>,
@@ -192,11 +207,26 @@ impl ClientPool {
         timeout: Duration,
         fallback_deadline: Instant,
     ) -> Result<QuicResponse> {
-        let session = match self.session(key, peer_id, advertised, fallback_deadline).await {
-            Ok(session) => session,
-            Err(error) => return Err(error),
+        let transport_timeout = transport_deadline(timeout);
+        let request_deadline = Instant::now() + transport_timeout;
+        let session_timeout = remaining_budget(request_deadline)
+            .ok_or_else(|| anyhow!("deadline de transporte HTTP/3 expirou antes do handshake"))?;
+        let session = match tokio::time::timeout(
+            session_timeout,
+            self.session(key, peer_id, advertised, fallback_deadline),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(anyhow!(
+                    "deadline de transporte HTTP/3 expirou durante o handshake"
+                ))
+            }
         };
-        let result: Result<QuicResponse> = async {
+        let operation_timeout = remaining_budget(request_deadline)
+            .ok_or_else(|| anyhow!("deadline de transporte HTTP/3 expirou antes do stream"))?;
+        let result: Result<QuicResponse> = match tokio::time::timeout(operation_timeout, async {
             let mut request_builder = Request::builder()
                 .method("POST")
                 .uri(format!("https://{}{}", authority(base_url)?, path))
@@ -233,9 +263,10 @@ impl ClientPool {
                 .map_err(|error| anyhow!("finalização do corpo HTTP/3 falhou: {error}"))?;
             let headers_started = std::time::Instant::now();
             // A espera da resposta cobre o processamento remoto (prefill/decode
-            // legítimos passam de 1 s), então mantém o orçamento do frame como
-            // teto - mas o `max_idle_timeout` da conexão (~1,2 s) faz um
-            // caminho morto **aqui** errar em ~1 s, não em `timeout`.
+            // legítimos passam de 1 s), mas a tentativa inteira já está dentro
+            // de `INFERENCE_TRANSPORT_DEADLINE`. Assim, um endpoint que aceitou
+            // o stream e não produz headers não fica preso ao timeout de 600 s
+            // do frame.
             let response = tokio::time::timeout(timeout, stream.recv_response())
                 .await
                 .context("resposta HTTP/3 expirou")??;
@@ -258,8 +289,15 @@ impl ClientPool {
                 response_body_ms: body_started.elapsed().as_millis() as u64,
                 transport_rtt_us: session.connection.rtt().as_micros() as u64,
             })
-        }
-        .await;
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!(
+                "deadline de transporte HTTP/3 expirou após {:?}",
+                transport_timeout
+            )),
+        };
         if result.is_err() {
             self.sessions.lock().await.remove(key);
         }
@@ -383,7 +421,9 @@ pub(crate) fn inference_transport_config() -> quinn::TransportConfig {
     // idle timeout curto e keep-alive, um caminho morto falha em segundos e o
     // `send_frame_with_protocol` cai para TCP.
     transport.max_idle_timeout(Some(
-        QUIC_MAX_IDLE.try_into().expect("QUIC_MAX_IDLE cabe em VarInt"),
+        QUIC_MAX_IDLE
+            .try_into()
+            .expect("QUIC_MAX_IDLE cabe em VarInt"),
     ));
     transport.keep_alive_interval(Some(QUIC_KEEP_ALIVE));
     transport
@@ -597,15 +637,18 @@ mod tests {
         let mut remaining = QUIC_FALLBACK_BUDGET;
         let mut spent = Duration::ZERO;
         let mut attempts = 0;
-        while let Some(timeout) = (!remaining.is_zero())
-            .then_some(remaining.min(QUIC_ESTABLISH_TIMEOUT))
+        while let Some(timeout) =
+            (!remaining.is_zero()).then_some(remaining.min(QUIC_ESTABLISH_TIMEOUT))
         {
             attempts += 1;
             spent += timeout;
             remaining = remaining.saturating_sub(timeout);
         }
 
-        assert_eq!(attempts, 1, "um endpoint morto não deve serializar timeouts");
+        assert_eq!(
+            attempts, 1,
+            "um endpoint morto não deve serializar timeouts"
+        );
         assert_eq!(spent, QUIC_FALLBACK_BUDGET);
         assert!(spent < Duration::from_secs(1));
     }
@@ -654,6 +697,59 @@ mod tests {
             "warm QUIC path should report low transport RTT: {} us",
             response.transport_rtt_us
         );
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
+    }
+
+    /// Um endpoint QUIC pode completar o handshake e aceitar o stream sem
+    /// produzir headers. Isso precisa ser uma falha de transporte limitada,
+    /// não uma espera pelo timeout de processamento do frame.
+    #[tokio::test]
+    async fn endpoint_quic_alcancavel_sem_resposta_respeita_deadline_de_transporte() {
+        let identity = crate::identity::Identity::generate();
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let router = Router::new().route(
+            "/never",
+            post(|_body: Bytes| async { std::future::pending::<(StatusCode, Bytes)>().await }),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let server_config = server_config(&identity).unwrap();
+        let server = tokio::spawn(async move {
+            serve(port, router, server_config, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let pool = ClientPool::new();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            pool.request(
+                &identity.node_id.0,
+                &format!("http://127.0.0.1:{port}"),
+                &[format!("127.0.0.1:{port}")],
+                "/never",
+                "application/octet-stream",
+                None,
+                None,
+                Vec::new(),
+                Duration::from_secs(600),
+            ),
+        )
+        .await
+        .expect("endpoint HTTP/3 sem resposta não pode exceder o deadline");
+        let error = result.expect_err("endpoint sem headers deve falhar");
+        assert!(
+            error
+                .to_string()
+                .contains("deadline de transporte HTTP/3 expirou"),
+            "erro inesperado: {error:#}"
+        );
+
         stop_tx.send(()).unwrap();
         server.await.unwrap();
     }

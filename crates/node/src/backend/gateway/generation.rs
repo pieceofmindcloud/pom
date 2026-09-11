@@ -1701,15 +1701,19 @@ async fn post_session_lifecycle(
             {
                 Ok(response) if response.status.is_success() => {
                     http.remember_route_success(&route_key, &base);
-                    return Ok(serde_json::from_slice(&response.body)
-                        .unwrap_or(serde_json::Value::Null));
+                    return Ok(
+                        serde_json::from_slice(&response.body).unwrap_or(serde_json::Value::Null)
+                    );
                 }
                 Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
                     last_error = Some(format!("quic: HTTP {} (sem rota HTTP/3)", response.status));
                     break;
                 }
                 Ok(response) => {
-                    return Err(format!("{path} em {} respondeu HTTP {}", step.node_id, response.status));
+                    return Err(format!(
+                        "{path} em {} respondeu HTTP {}",
+                        step.node_id, response.status
+                    ));
                 }
                 Err(error) => {
                     last_error = Some(format!("quic: {error}"));
@@ -1727,10 +1731,7 @@ async fn post_session_lifecycle(
     };
     for base in http.route_order(&route_key, &candidates) {
         let url = format!("{}{path}", base.trim_end_matches('/'));
-        let request = cliente
-            .post(&url)
-            .json(body)
-            .timeout(timeout);
+        let request = cliente.post(&url).json(body).timeout(timeout);
         match http
             .authorize_inference_request_for_session(request, Some(session_id))
             .await

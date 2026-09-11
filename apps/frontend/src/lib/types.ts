@@ -495,6 +495,12 @@ export interface ChatTelemetryNetwork {
     legs_ms: Array<number | null>;
     compute_ms: number | null;
   } | null;
+  /** Todas as rotas completas possíveis para o modelo ativo, do head à cauda. */
+  pipeline_routes?: Array<{
+    node_ids: string[];
+    legs_ms: Array<number | null>;
+    rtt_ms: number | null;
+  }>;
 }
 
 /** Resposta do recorte de topologia que um nó infer pode consultar. */

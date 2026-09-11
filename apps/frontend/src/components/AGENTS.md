@@ -254,9 +254,11 @@ Per-file list:
   A missing peer load stays visibly unknown in the card meter and is never
   rendered as zero. The selected pipeline is drawn only forward; a virtual
   `Gateway` is placed after the last layer stage and receives the return-leg
-  arrow. Its card shows the complete cycle cost only when every directional
-  leg and peer compute measurement is present, never treating an absent leg as
-  zero.
+  arrow. Its card shows every complete deployed route, including the return
+  leg, ordered by aggregate RTT and then node ID. It uses the least-cost route
+  for the headline and keeps alternatives visible; an absent leg remains
+  unknown and is never treated as zero. An observed execution cost still
+  includes peer compute when that measurement exists.
   When the Dashboard has an active deployment, its properties toggle is a
   compact icon button inside the map's upper-right control area, next to the
   zoom and Fit controls; the dashboard toolbar remains reserved for cluster

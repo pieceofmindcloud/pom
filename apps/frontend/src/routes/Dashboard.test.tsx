@@ -17,6 +17,7 @@ import { keys } from "../lib/queries";
 import type { DeploymentRow } from "../lib/api";
 import { ProfileProvider } from "../lib/profile";
 import type { NodeInfo, RuntimeParams } from "../lib/types";
+import type { PipelineRouteCost } from "../components/PipelineGatewayNode";
 
 const deploymentParams: RuntimeParams = {
   inference_mode: "auto",
@@ -93,6 +94,7 @@ function mount(
   rttMeasurements?: { from_node_id: string; to_node_id: string; rtt_ms: number; transport: string }[],
   nodeOverride?: Partial<NodeInfo> | null,
   deployments?: { node_id: string; deployments: DeploymentRow[] },
+  pipelineRoutes?: PipelineRouteCost[],
 ) {
   // active_model is set, but there are no peers: the estendida view shows
   // "Nenhuma maquina na rede" in its panel.
@@ -106,8 +108,15 @@ function mount(
   });
   // useQuery will read from the cache immediately.
   client.setQueryData(keys.cluster, cluster);
-  if (rttMeasurements) {
-    client.setQueryData(keys.networkRtt(["a", "b"]), { measurements: rttMeasurements });
+  if (rttMeasurements || pipelineRoutes) {
+    client.setQueryData(keys.networkRtt(rttMeasurements ? ["a", "b"] : []), {
+      measurements: rttMeasurements ?? [],
+      pipeline_routes: pipelineRoutes?.map((route) => ({
+        node_ids: route.nodeIds,
+        legs_ms: route.legsMs,
+        rtt_ms: route.rttMs ?? null,
+      })),
+    });
   }
   if (deployments) client.setQueryData(keys.deployments, deployments);
   const defaultNode = {
@@ -184,6 +193,20 @@ describe("Dashboard", () => {
     }]);
 
     await waitFor(() => expect(screen.getByText("RTT 7.4 ms")).toBeTruthy());
+  });
+
+  it("mostra o custo da rota de um modelo inteiro com um unico head", async () => {
+    const cluster = fakeCluster([fakeSlicePeer("head", 0, 31)], "qwen35");
+
+    mount(cluster, "admin", undefined, undefined, undefined, [
+      { nodeIds: ["head", "gateway"], legsMs: [5, 3], computeMs: null },
+    ]);
+
+    await waitFor(() => {
+      const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
+      expect(gateway.textContent).not.toContain("não medido");
+      expect(gateway.textContent).toMatch(/head.*8\.0 ms/);
+    });
   });
 
   /**

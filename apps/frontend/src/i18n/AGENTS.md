@@ -103,9 +103,10 @@ state labels. The footnote explains the measurements but does not claim a fixed
 environment value.
 
 The `canvas.gateway*` messages belong to the virtual return node on both
-network canvases. They identify the gateway, return leg and the cycle cost
-breakdown; the component displays `pipelineTotalUnknown` whenever the cycle
-does not have all directional legs and compute values.
+network canvases. They identify the gateway, return leg, cycle cost breakdown
+and the count of deployed routes; the component displays `pipelineTotalUnknown`
+when a route does not have all directional legs and no aggregate RTT is
+available.
 
 `chat.coverageUnavailable` names the explicit unknown state returned when the
 Chat capability read is refused or cannot be completed. It must not be replaced

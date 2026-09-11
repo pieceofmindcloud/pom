@@ -334,7 +334,9 @@ export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
     queryKey: keys.networkRtt(nodeIds),
     queryFn: () =>
       api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", { node_ids: nodeIds }),
-    enabled: enabled && nodeIds.length > 1,
+    // A whole-model deployment can have one head and no graph edge. The
+    // endpoint still needs to enumerate that route and its return RTT.
+    enabled,
     retry: false,
     refetchInterval: 15000,
     staleTime: 10000,

@@ -14,6 +14,17 @@ export type PipelineCycleCost = {
   computeMs: number | null;
 };
 
+export type PipelineRouteCost = {
+  /** Nós do head à cauda, com o gateway virtual no fim da rota. */
+  nodeIds: string[];
+  /** Gateway -> head, handoffs e retorno da cauda, nessa ordem. */
+  legsMs: Array<number | null>;
+  /** Compute só existe quando a rota foi observada numa execução. */
+  computeMs: number | null;
+  /** Soma do RTT calculada pelo backend, quando todas as pernas existem. */
+  rttMs?: number | null;
+};
+
 /** Soma somente uma decomposição completa, sem transformar ausência em zero. */
 export function pipelineCycleTotalMs(cost: PipelineCycleCost | undefined): number | null {
   const computeMs = cost?.computeMs;
@@ -27,15 +38,46 @@ export function pipelineCycleTotalMs(cost: PipelineCycleCost | undefined): numbe
   return legs.reduce((sum, leg) => sum + leg, computeMs);
 }
 
+function validMs(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+export function pipelineRouteTotalMs(route: PipelineRouteCost): number | null {
+  const networkMs = route.legsMs.every(validMs)
+    ? route.legsMs.reduce((sum, leg) => sum + leg, 0)
+    : null;
+  const computeMs = validMs(route.computeMs) ? route.computeMs : null;
+  if (computeMs != null && networkMs != null) return networkMs + computeMs;
+  if (validMs(route.rttMs)) return route.rttMs;
+  return networkMs;
+}
+
 export function PipelineGatewayNode({
   position,
   cost,
+  routes = [],
 }: {
   position: CanvasPosition;
   cost?: PipelineCycleCost;
+  routes?: PipelineRouteCost[];
 }) {
   const { t } = useI18n();
   const totalMs = pipelineCycleTotalMs(cost);
+  const orderedRoutes = routes
+    .map((route) => ({ route, totalMs: pipelineRouteTotalMs(route) }))
+    .sort((left, right) => {
+      if (left.totalMs != null && right.totalMs != null) {
+        const byTotal = left.totalMs - right.totalMs;
+        if (byTotal !== 0) return byTotal;
+      } else if (left.totalMs != null) {
+        return -1;
+      } else if (right.totalMs != null) {
+        return 1;
+      }
+      return left.route.nodeIds.join("\u0000").localeCompare(right.route.nodeIds.join("\u0000"));
+    });
+  const routeTotalMs = orderedRoutes[0]?.totalMs ?? null;
+  const displayedTotalMs = orderedRoutes.length > 0 ? routeTotalMs : totalMs;
   const networkMs = cost?.legsMs.every((leg): leg is number => leg != null && Number.isFinite(leg) && leg >= 0)
     ? cost.legsMs.reduce((sum, leg) => sum + leg, 0)
     : null;
@@ -62,13 +104,31 @@ export function PipelineGatewayNode({
       <div className="mt-3 rounded-lg border border-aqua/25 bg-aqua/10 px-2.5 py-2">
         <div className="text-[9px] uppercase tracking-[0.12em] text-faint">{t("canvas.pipelineTotalLabel")}</div>
         <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-aqua">
-          {totalMs == null ? t("canvas.pipelineTotalUnknown") : t("canvas.pipelineTotal", { ms: totalMs.toFixed(1) })}
+          {displayedTotalMs == null ? t("canvas.pipelineTotalUnknown") : t("canvas.pipelineTotal", { ms: displayedTotalMs.toFixed(1) })}
         </div>
       </div>
       {networkMs != null && computeMs != null && (
         <p className="mt-2 font-mono text-[10px] tabular-nums text-muted">
           {t("canvas.pipelineCostBreakdown", { network: networkMs.toFixed(1), compute: computeMs.toFixed(1) })}
         </p>
+      )}
+      {orderedRoutes.length > 0 && (
+        <div data-testid="pipeline-routes" className="mt-2 border-t border-aqua/15 pt-2">
+          <div className="text-[9px] uppercase tracking-[0.12em] text-faint">
+            {t("canvas.pipelineRouteCount", { count: orderedRoutes.length })}
+          </div>
+          <ol className="mt-1.5 space-y-1">
+            {orderedRoutes.map(({ route, totalMs: routeMs }) => {
+              const path = route.nodeIds.join(" → ");
+              return (
+                <li key={path} className="flex min-w-0 items-center justify-between gap-2 font-mono text-[10px] tabular-nums text-muted" title={path}>
+                  <span className="min-w-0 truncate">{path}</span>
+                  <span className="shrink-0 text-aqua">{routeMs == null ? t("canvas.pipelineTotalUnknown") : `${routeMs.toFixed(1)} ms`}</span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
       )}
     </article>
   );

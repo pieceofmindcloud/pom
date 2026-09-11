@@ -213,8 +213,20 @@ mod chat_telemetry_tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use crate::gateway::testkit::peer;
     use serde_json::json;
+    use std::collections::HashMap;
     use tower::ServiceExt;
+
+    fn served_peer(node_id: &str, start_layer: u32, end_layer: u32) -> crate::network::PeerInfo {
+        let mut peer = peer(node_id, node_id, 0);
+        peer.model = "qwen35".into();
+        peer.start_layer = start_layer;
+        peer.end_layer = end_layer;
+        peer.total_layers = 32;
+        peer.inference_port = Some(8181);
+        peer
+    }
 
     #[test]
     fn execution_telemetry_keeps_only_requested_adjacent_edges() {
@@ -384,6 +396,35 @@ mod chat_telemetry_tests {
                 legs_ms: vec![Some(18.0), Some(30.0), Some(31.0), Some(29.0)],
                 compute_ms: Some(36.0),
             })
+        );
+    }
+
+    #[test]
+    fn pipeline_routes_include_each_head_and_sum_every_hop() {
+        let peers = vec![
+            served_peer("head-fast", 0, 15),
+            served_peer("head-slow", 0, 15),
+            served_peer("tail", 16, 31),
+        ];
+        let rtts = HashMap::from([
+            (("gateway".into(), "head-fast".into()), 4.0),
+            (("gateway".into(), "head-slow".into()), 18.0),
+            (("head-fast".into(), "tail".into()), 12.0),
+            (("head-slow".into(), "tail".into()), 12.0),
+            (("tail".into(), "gateway".into()), 3.0),
+        ]);
+
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts);
+
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| (&route.node_ids, route.rtt_ms))
+                .collect::<Vec<_>>(),
+            vec![
+                (&vec!["head-fast".into(), "tail".into(), "gateway".into()], Some(19.0)),
+                (&vec!["head-slow".into(), "tail".into(), "gateway".into()], Some(33.0)),
+            ]
         );
     }
 

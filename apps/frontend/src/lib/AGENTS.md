@@ -100,10 +100,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
   transport and RTT observed by the exact chat execution, and
   `usePeerRuntimes` reads `/health` for the peers in that trace without polling
-  the whole cluster. `useNetworkRtt` asks the same route for the most recent
-  completed execution matching the Dashboard edges and refreshes it every 15 s;
-  without a matching execution the edge remains unknown instead of displaying
-  a libp2p probe as inference telemetry.
+  the whole cluster. `useNetworkRtt` asks the same route for all complete
+  deployed model routes and refreshes them every 15 s. The
+  backend gathers fresh directional probes from the gateway and every serving
+  peer, so a whole-model deployment with one head is included even when the
+  graph has no edge. The response sorts routes by aggregate RTT and then node
+  ID; an incomplete leg remains unknown rather than becoming zero.
   `useInferenceHeads` polls the model head view every 15 s for every profile;
   this is a capability slice, not a general peer list.
   `useNetworkChat` polls the authenticated network-chat snapshot so the Sidebar
@@ -167,9 +169,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   hidden-state bytes per hop. `RequestTrace` carries the server trace id, local
   spans, outside-node accounting, first-token boundaries, connection reuse
   counts and stream measurements when the backend publishes them.
-  `ChatTelemetryNetwork.pipeline_cost` carries the cycle legs and measured
-  per-hop compute used by the Dashboard's final Gateway card; it is optional
-  because an asynchronous return callback may not expose a sender-side RTT.
+  `ChatTelemetryNetwork.pipeline_cost` carries the observed execution cycle
+  legs and measured per-hop compute, while `pipeline_routes` carries every
+  complete deployed route and its aggregate network RTT for the Dashboard's
+  Gateway card. The observed cost is optional because an asynchronous return
+  callback may not expose a sender-side RTT.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

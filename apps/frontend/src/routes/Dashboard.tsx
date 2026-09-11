@@ -178,7 +178,7 @@ export function Dashboard() {
         .flatMap((edge) => [edge.from_node_id, edge.to_node_id]),
     )).sort();
   }, [c]);
-  const networkRtt = useNetworkRtt(rttNodeIds, c != null);
+  const networkRtt = useNetworkRtt(rttNodeIds, c != null && Boolean(c.active_model));
 
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlightKnown = peers.every((p) => p.load != null);
@@ -295,7 +295,7 @@ export function Dashboard() {
     <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {!detailed || view === "minima" ? (
-          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} /></div>
+          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: null, rttMs: route.rtt_ms }))} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} /></div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (

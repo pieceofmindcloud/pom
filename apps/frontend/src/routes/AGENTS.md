@@ -156,10 +156,12 @@ Per-file list:
   `ModelNetworkCanvas`) or a details grid ("estendida") is used where the
   profile permits it.
   The model graph receives directional transport measurements and
-  `pipeline_cost` from the exact completed chat execution. It renders the
-  distributed cycle as Gateway -> peers -> Gateway, with the final virtual
-  Gateway showing the total only when every leg and compute measurement is
-  known.
+  `pipeline_routes` for every complete deployed route. It renders the
+  distributed cycle as Gateway -> peers -> Gateway, orders route cards by
+  aggregate RTT with node ID as a stable tie-breaker, and uses the least-cost
+  route for the headline while keeping alternatives visible. An observed
+  `pipeline_cost` from a completed chat execution remains available when every
+  execution leg and compute measurement is known.
   O detalhe local diferencia `idle` de `serving`: o primeiro mantém o nó
   ativo, mas informa que o modelo foi descarregado e será recarregado no
   próximo pedido.
@@ -194,8 +196,10 @@ Per-file list:
   (peers on `group` with `total_layers > 0`, sorted by start layer); the node
   re-scans the cluster before acting, so the list is just the preview. The flow
   canvas receives the
-  directional RTT measurements for its adjacent routing edges from
-  `useNetworkRtt`, with the same badge presentation used by deployment.
+  directional RTT measurements for its adjacent routing edges and complete
+  pipeline routes from `useNetworkRtt`, with the same badge presentation used
+  by deployment. A whole-model deployment with one head still queries this
+  endpoint even though its graph has no routing edge.
   A versão ativa do deployment também pode ser aberta num inspetor de leitura
   à direita, usando o mesmo layout e os mesmos valores configurados no Deploy
   Studio. No perfil `admin`, `DeploymentLogDock` fica recolhido no rodapé e

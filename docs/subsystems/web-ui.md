@@ -1044,8 +1044,11 @@ impressão digital é só modelo + conjunto de faixas.
   primary/worker, mesmo que outros tenham o modelo.
   GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; o
   mapa do Painel mostra o último RTT e transporte efetivos observados na
-  execução de inferência para cada aresta e deixa a medida desconhecida sem
-  execução correspondente. O
+  execução de inferência para cada aresta e, no Gateway, todas as rotas
+  completas do modelo com o RTT agregado de cada perna, inclusive o retorno.
+  As rotas aparecem do menor custo ao maior, com o id dos nós como desempate;
+  uma implantação de modelo inteiro com um único head também é consultada,
+  mesmo sem aresta no grafo. O
   survey direcional do planner continua reservado à escolha de rota e não é
   exibido como se fosse a execução. Uma GPU ausente aparece como `sem GPU`, sem barra
   indeterminada. Em Completa, todos os peers entram no canvas e na lista de
@@ -1091,8 +1094,8 @@ impressão digital é só modelo + conjunto de faixas.
   problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
   mostra hops consecutivos somente para frente, acrescenta um Gateway virtual
-  no fim com a perna de retorno e exibe o custo total do ciclo quando todas as
-  pernas e compute foram medidos. A rolagem interna em viewport estreito não
+  no fim com a perna de retorno e exibe todas as rotas candidatas, destacando no
+  total a de menor RTT. A rolagem interna em viewport estreito não
   corta cards nem cria overflow na página.
 - **Implantações** (`Deployments`): uma linha por `deploy_id`, "no ar" separado
   de "padrão", ordenada pela criação. Cada linha expande e lista as versões

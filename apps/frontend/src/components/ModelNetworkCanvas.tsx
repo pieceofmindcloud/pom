@@ -29,7 +29,7 @@ import { sumVram } from "../lib/gpu";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
-import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNode";
+import { PipelineGatewayNode, type PipelineCycleCost, type PipelineRouteCost } from "./PipelineGatewayNode";
 
 export type EdgeState = "principal" | "paralela" | "inativa";
 
@@ -199,12 +199,14 @@ export function ModelNetworkCanvas({
   cluster,
   rttMeasurements = [],
   pipelineCost,
+  pipelineRoutes = [],
   propertiesOpen = false,
   onToggleProperties,
 }: {
   cluster: ClusterView;
   rttMeasurements?: ChatTelemetryRtt[];
   pipelineCost?: PipelineCycleCost;
+  pipelineRoutes?: PipelineRouteCost[];
   propertiesOpen?: boolean;
   onToggleProperties?: () => void;
 }) {
@@ -391,7 +393,7 @@ export function ModelNetworkCanvas({
         return <RouteRttLabel key={`rtt-gateway-${range.node_id}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} left={geometry.labelX} top={geometry.labelY} />;
       })}
       {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />)}
-      {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
+      {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} />}
     </div>}
     {/* A mesma visão que a aba Detalhes mostra, no mesmo componente. */}
     <PeerDetailDialog

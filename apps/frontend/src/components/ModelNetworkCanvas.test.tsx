@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
-import type { PipelineCycleCost } from "./PipelineGatewayNode";
+import type { PipelineCycleCost, PipelineRouteCost } from "./PipelineGatewayNode";
 import { LocaleProvider } from "../i18n/provider";
 import type { ChatTelemetryRtt, ClusterView } from "../lib/types";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
@@ -38,6 +38,7 @@ function mount(
   rttMeasurements: ChatTelemetryRtt[] = [],
   pipelineCost?: PipelineCycleCost,
   properties?: { open: boolean; onToggle: () => void },
+  pipelineRoutes?: PipelineRouteCost[],
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -47,6 +48,7 @@ function mount(
         cluster={view}
         rttMeasurements={rttMeasurements}
         pipelineCost={pipelineCost}
+        pipelineRoutes={pipelineRoutes}
         propertiesOpen={properties?.open}
         onToggleProperties={properties?.onToggle}
       />
@@ -123,6 +125,29 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
 
     expect(screen.getByText("Total do pipeline: 150.0 ms")).toBeTruthy();
     expect(screen.getByText("rede 110.0 ms · compute 40.0 ms")).toBeTruthy();
+  });
+
+  it("mostra todas as rotas de cabeca, ordenadas pelo RTT agregado", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("head-fast", 0, 15),
+      fakeSlicePeer("head-slow", 0, 15),
+      fakeSlicePeer("tail", 16, 31),
+    ]);
+    view.routing_edges = [
+      { from_node_id: "head-fast", to_node_id: "tail", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+      { from_node_id: "head-slow", to_node_id: "tail", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+    ];
+
+    mount(view, [], undefined, undefined, [
+      { nodeIds: ["head-fast", "tail", "gateway"], legsMs: [4, 12, 3], computeMs: null },
+      { nodeIds: ["head-slow", "tail", "gateway"], legsMs: [18, 12, 3], computeMs: null },
+    ]);
+
+    const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
+    expect(gateway.textContent).not.toContain("não medido");
+    expect(gateway.textContent).toMatch(/head-fast.*19\.0 ms/);
+    expect(gateway.textContent).toMatch(/head-slow.*33\.0 ms/);
+    expect(gateway.textContent?.indexOf("head-fast")).toBeLessThan(gateway.textContent?.indexOf("head-slow") ?? -1);
   });
 });
 
